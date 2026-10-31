@@ -54,9 +54,12 @@ struct Step {
 
 /// Which nodes run, in what order, on which buffers: worked out once per snapshot, before running.
 ///
-/// The nodes that run are those whose outputs are all known (so can have buffers), in topological order.
-/// Each output gets a buffer of its own, except one that can be made in place from an input (see
-/// `Node::in_place`) whose data nothing else reads: that output takes over the input's buffer.
+/// The nodes that run are those whose outputs are all known (so can have buffers). Each output gets a buffer
+/// of its own, except where a node can make an output in place from an input (see `Node::in_place`): then
+/// the output takes over the input's buffer, as long as every other node reading that data can run before
+/// it. Within a pass everything runs on one thread, in an order of our choosing, so the plan orders the
+/// nodes to make that so: the other readers first (they only read, e.g. viewers copying what they show),
+/// then the one editing in place. Only if another reader depends on the editor's output can't it be.
 struct Plan<N: NodeSet> {
     graph: Arc<Graph<N>>,
     steps: Vec<Step>,
@@ -68,22 +71,57 @@ impl<N: NodeSet> Plan<N> {
     /// The plan, and the initial state of each node with state.
     fn new(graph: Arc<Graph<N>>) -> (Self, Vec<Box<dyn Any + Send>>) {
         let resolved = graph.resolve();
-        let order: Vec<NodeId> = graph
+        let runs: Vec<NodeId> = graph
             .topological_order()
             .into_iter()
             .filter(|id| resolved.get(id).is_some_and(|s| s.outputs.iter().all(|o| o.signal.is_some())))
             .collect();
-        // How many of the nodes that run read each output.
-        let mut readers: HashMap<(NodeId, usize), usize> = HashMap::new();
-        for edge in graph.edges().iter().filter(|e| e.dimension == super::Dimension::Data && order.contains(&e.to.node))
-        {
-            *readers.entry((edge.from.node, edge.from.port)).or_default() += 1;
+        let data_edges: Vec<_> = graph
+            .edges()
+            .iter()
+            .filter(|e| {
+                e.dimension == super::Dimension::Data && runs.contains(&e.from.node) && runs.contains(&e.to.node)
+            })
+            .collect();
+        // Which nodes must run before which: those feeding them, and those reading data another edits in place.
+        let mut before: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+        for edge in &data_edges {
+            before.entry(edge.from.node).or_default().push(edge.to.node);
+        }
+
+        // Pick the outputs made in place: (node, output) -> its input, and the data each takes over.
+        let mut in_place: HashMap<(NodeId, usize), usize> = HashMap::new();
+        let mut claimed: Vec<(NodeId, usize)> = Vec::new();
+        for &id in &runs {
+            let (Some(entry), Some(state)) = (graph.get(id), resolved.get(&id)) else { continue };
+            for output in 0..state.outputs.len() {
+                let Some(input) = entry.node.in_place(output) else { continue };
+                let Some(edge) = data_edges.iter().find(|e| e.to.node == id && e.to.port == input) else { continue };
+                let source = (edge.from.node, edge.from.port);
+                if claimed.contains(&source) {
+                    continue; // another node is already editing this data in place
+                }
+                let others: Vec<NodeId> = data_edges
+                    .iter()
+                    .filter(|e| (e.from.node, e.from.port) == source && e.to.node != id)
+                    .map(|e| e.to.node)
+                    .collect();
+                // The other readers must run first, which they can't if they depend on this node.
+                if others.iter().any(|&other| reaches(&before, id, other)) {
+                    continue;
+                }
+                for other in others {
+                    before.entry(other).or_default().push(id);
+                }
+                claimed.push(source);
+                in_place.insert((id, output), input);
+            }
         }
 
         let (mut steps, mut buffers, mut states) = (Vec::new(), Vec::new(), Vec::new());
         // The buffer each output (of the nodes so far) is in.
         let mut buffer_of: HashMap<(NodeId, usize), usize> = HashMap::new();
-        for id in order {
+        for id in order(&runs, &before) {
             let (Some(entry), Some(state)) = (graph.get(id), resolved.get(&id)) else { continue };
             let mut inputs: Vec<Option<usize>> = (0..state.inputs.len())
                 .map(|index| {
@@ -93,21 +131,13 @@ impl<N: NodeSet> Plan<N> {
                 .collect();
             let mut outputs = Vec::new();
             for (index, output) in state.outputs.iter().enumerate() {
-                let signal = output.signal.expect("only nodes with known outputs run");
-                let from = entry.node.in_place(index).and_then(|input| Some((input, inputs.get(input).copied()??)));
-                let source = from.and_then(|(input, _)| {
-                    let edge = graph.edge_into(Port { node: id, role: Role::Input, index: input })?;
-                    Some((edge.from.node, edge.from.port))
-                });
-                let sole_reader = source.is_some_and(|s| readers.get(&s) == Some(&1));
-                let buffer = match from {
-                    // Nothing else reads the input's data, so the node works on it where it is.
-                    Some((input, buffer)) if sole_reader && !outputs.contains(&buffer) => {
-                        inputs[input] = None;
+                let buffer = match in_place.get(&(id, index)).and_then(|&input| Some((input, inputs[input]?))) {
+                    Some((input, buffer)) => {
+                        inputs[input] = None; // its data is in the output
                         buffer
                     }
-                    _ => {
-                        buffers.push(signal);
+                    None => {
+                        buffers.push(output.signal.expect("only nodes with known outputs run"));
                         buffers.len() - 1
                     }
                 };
@@ -149,6 +179,45 @@ impl<N: NodeSet> Plan<N> {
             }
         }
     }
+}
+
+/// Whether `to` must run after `from` (or is `from`), given which nodes must run before which.
+fn reaches(before: &HashMap<NodeId, Vec<NodeId>>, from: NodeId, to: NodeId) -> bool {
+    let mut stack = vec![from];
+    let mut seen = Vec::new();
+    while let Some(id) = stack.pop() {
+        if id == to {
+            return true;
+        }
+        if !seen.contains(&id) {
+            seen.push(id);
+            stack.extend(before.get(&id).into_iter().flatten());
+        }
+    }
+    false
+}
+
+/// `nodes` ordered so each comes after those it must run after, otherwise keeping their order.
+fn order(nodes: &[NodeId], before: &HashMap<NodeId, Vec<NodeId>>) -> Vec<NodeId> {
+    let mut waiting: HashMap<NodeId, usize> = nodes.iter().map(|id| (*id, 0)).collect();
+    for later in before.values().flatten() {
+        if let Some(count) = waiting.get_mut(later) {
+            *count += 1;
+        }
+    }
+    let mut ordered = Vec::with_capacity(nodes.len());
+    while ordered.len() < nodes.len() {
+        // The first node (in the original order) with nothing left to wait for.
+        let Some(&next) = nodes.iter().find(|id| waiting.get(id) == Some(&0)) else { break };
+        waiting.remove(&next);
+        ordered.push(next);
+        for later in before.get(&next).into_iter().flatten() {
+            if let Some(count) = waiting.get_mut(later) {
+                *count -= 1;
+            }
+        }
+    }
+    ordered
 }
 
 /// A node's state, handed from each pass to the next in turn (see the module docs).
@@ -389,8 +458,12 @@ mod tests {
         graph.connect(port(from, Role::Output, output), port(to, Role::Input, input)).unwrap();
     }
 
+    fn position(plan: &Plan<Nodes>, id: NodeId) -> usize {
+        plan.steps.iter().position(|s| s.id == id).unwrap()
+    }
+
     #[test]
-    fn outputs_share_buffers_in_place_when_nothing_else_reads_them() {
+    fn outputs_are_made_in_place_after_other_readers() {
         let mut graph = Graph::default();
         let board = add(&mut graph, "Acquisition Board");
         let gain = add(&mut graph, "Gain");
@@ -401,12 +474,19 @@ mod tests {
         let (plan, _) = Plan::new(Arc::new(graph.clone()));
         assert_eq!(plan.buffers.len(), 2);
 
-        // With something else reading the board's data, the gain needs a buffer of its own; the filter can
-        // still work in the gain's.
-        let writer = add(&mut graph, "Writer");
-        link(&mut graph, board, 0, writer, 0);
+        // A viewer also reading the board's data runs before the gain edits it, so the gain still works in place.
+        let viewer = add(&mut graph, "LFP Viewer");
+        link(&mut graph, board, 0, viewer, 0);
+        let (plan, _) = Plan::new(Arc::new(graph.clone()));
+        assert_eq!(plan.buffers.len(), 2);
+        assert!(position(&plan, viewer) < position(&plan, gain));
+
+        // Two nodes that would edit the board's data in place: one does (last), the other gets its own buffer.
+        let second_gain = add(&mut graph, "Gain");
+        link(&mut graph, board, 0, second_gain, 0);
         let (plan, _) = Plan::new(Arc::new(graph));
         assert_eq!(plan.buffers.len(), 3);
+        assert!(position(&plan, second_gain) < position(&plan, gain));
     }
 
     #[test]

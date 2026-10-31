@@ -121,9 +121,9 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
         Self::State::default()
     }
 
-    /// An input that an output can be made from in place, sharing its buffer, when nothing else reads the
-    /// input's data. The plan decides, before running, whether it can be. The output must be the same signal
-    /// as the input.
+    /// An input that an output can be made from in place, editing the input's data where it is. The plan
+    /// decides, before running, whether it can be: it can if every other node reading that data can run
+    /// first. The output must be the same signal as the input.
     fn in_place(&self, _output: usize) -> Option<usize> {
         None
     }
