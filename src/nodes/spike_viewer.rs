@@ -23,6 +23,8 @@ impl Default for SpikeViewer {
 }
 
 impl Node<Edges> for SpikeViewer {
+    type State = ();
+
     const INFO: NodeInfo = NodeInfo {
         name: "Spike Viewer",
         category: Category::Visualisation,

@@ -26,6 +26,8 @@ pub enum Action {
     ResetLayout,
     ToggleInspector,
     Theme(Theme),
+    /// Starts or stops running the graph.
+    Play,
 }
 
 pub enum MenuEntry {
@@ -62,6 +64,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
         ],
     ),
     ("Insert", &[Item(Action::AddNode), Item(Action::NoteTool)]),
+    ("Run", &[Item(Action::Play)]),
     (
         "View",
         &[
@@ -77,7 +80,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
 ];
 
 /// Checked in this order, so that e.g. shift-ctrl-Z (redo) is seen before ctrl-Z (undo).
-const SHORTCUT_ORDER: [Action; 10] = [
+const SHORTCUT_ORDER: [Action; 11] = [
     Action::Redo,
     Action::Undo,
     Action::SaveAs,
@@ -88,6 +91,7 @@ const SHORTCUT_ORDER: [Action; 10] = [
     Action::SelectAll,
     Action::Delete,
     Action::FrameAll,
+    Action::Play,
 ];
 
 impl Action {
@@ -116,6 +120,7 @@ impl Action {
             Action::ResetLayout => "Reset Layout",
             Action::ToggleInspector => "Inspector",
             Action::Theme(theme) => theme.name(),
+            Action::Play => "Play",
         }
     }
 
@@ -132,13 +137,14 @@ impl Action {
             Action::Delete => Some(KeyboardShortcut::new(Modifiers::NONE, Key::Delete)),
             Action::SelectAll => command(Key::A),
             Action::FrameAll => Some(KeyboardShortcut::new(Modifiers::NONE, Key::F)),
+            Action::Play => Some(KeyboardShortcut::new(Modifiers::NONE, Key::Space)),
             _ => None,
         }
     }
 
     /// Shortcuts that would get in the way of typing, so only apply when no text field has focus.
     fn only_when_not_typing(self) -> bool {
-        matches!(self, Action::Duplicate | Action::Delete | Action::SelectAll | Action::FrameAll)
+        matches!(self, Action::Duplicate | Action::Delete | Action::SelectAll | Action::FrameAll | Action::Play)
     }
 
     /// The actions whose shortcuts were pressed this frame.

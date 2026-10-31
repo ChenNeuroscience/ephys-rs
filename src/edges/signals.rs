@@ -2,7 +2,7 @@
 
 use eframe::egui::Color32;
 
-use crate::engine::{EdgeInfo, EdgeType};
+use crate::engine::{EdgeInfo, EdgeType, SignalType};
 
 /// Regularly sampled voltages.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -73,6 +73,150 @@ impl EdgeType for Video {
 
     fn summary(&self) -> String {
         format!("{}×{} · {} fps", self.width, self.height, self.fps)
+    }
+}
+
+/// The most samples (or frames) of a signal at `rate` that fall in `duration` seconds.
+fn per_pass(rate: f32, duration: f64) -> usize {
+    (rate as f64 * duration).ceil() as usize + 1
+}
+
+/// A pass's worth of continuous data: for each channel, a row of up to `capacity` samples, of which the first
+/// `len` are this pass's.
+pub struct ContinuousBuffer {
+    pub channels: usize,
+    pub capacity: usize,
+    pub len: usize,
+    /// Channel after channel, each `capacity` long.
+    pub data: Vec<f32>,
+}
+
+impl ContinuousBuffer {
+    pub fn channel(&self, channel: usize) -> &[f32] {
+        let start = channel * self.capacity;
+        &self.data[start..start + self.len]
+    }
+
+    pub fn channel_mut(&mut self, channel: usize) -> &mut [f32] {
+        let start = channel * self.capacity;
+        &mut self.data[start..start + self.len]
+    }
+
+    /// Fills this buffer sample by sample, with `f(channel, sample)` of each sample of `input`, or (when this
+    /// buffer is being made in place, and `input` is `None`) of its own samples.
+    pub fn transform(&mut self, input: Option<&ContinuousBuffer>, mut f: impl FnMut(usize, f32) -> f32) {
+        if let Some(input) = input {
+            self.len = input.len.min(self.capacity);
+        }
+        for channel in 0..self.channels {
+            let start = channel * self.capacity;
+            let output = &mut self.data[start..start + self.len];
+            match input {
+                Some(input) => {
+                    for (y, x) in output.iter_mut().zip(input.channel(channel)) {
+                        *y = f(channel, *x);
+                    }
+                }
+                None => {
+                    for y in output {
+                        *y = f(channel, *y);
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl SignalType for Continuous {
+    type Buffer = ContinuousBuffer;
+
+    fn buffer(&self, duration: f64) -> ContinuousBuffer {
+        let (channels, capacity) = (self.channels as usize, per_pass(self.sample_rate, duration));
+        ContinuousBuffer { channels, capacity, len: 0, data: vec![0.0; channels * capacity] }
+    }
+
+    fn bytes(buffer: &ContinuousBuffer) -> usize {
+        buffer.data.capacity() * size_of::<f32>()
+    }
+}
+
+/// A digital event: a line going high or low, at a sample within the pass.
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)] // read by viewers and writers, once they're fed real data
+pub struct Event {
+    pub sample: u32,
+    pub line: u8,
+    pub high: bool,
+}
+
+pub struct EventsBuffer {
+    pub events: Vec<Event>,
+}
+
+impl SignalType for Events {
+    type Buffer = EventsBuffer;
+
+    fn buffer(&self, _duration: f64) -> EventsBuffer {
+        EventsBuffer { events: Vec::with_capacity(64 * self.lines.max(1) as usize) }
+    }
+
+    fn bytes(buffer: &EventsBuffer) -> usize {
+        buffer.events.capacity() * size_of::<Event>()
+    }
+}
+
+/// A detected spike, at a sample within the pass.
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)] // read by viewers and writers, once they're fed real data
+pub struct Spike {
+    pub sample: u32,
+    pub channel: u32,
+}
+
+pub struct SpikesBuffer {
+    /// Room for up to one spike per millisecond per channel; any beyond that are lost.
+    pub spikes: Vec<Spike>,
+}
+
+impl SignalType for Spikes {
+    type Buffer = SpikesBuffer;
+
+    fn buffer(&self, duration: f64) -> SpikesBuffer {
+        let capacity = self.channels as usize * per_pass(1000.0, duration);
+        SpikesBuffer { spikes: Vec::with_capacity(capacity) }
+    }
+
+    fn bytes(buffer: &SpikesBuffer) -> usize {
+        buffer.spikes.capacity() * size_of::<Spike>()
+    }
+}
+
+/// A pass's video frames (often none or one), each `width` × `height` bytes of grey.
+pub struct VideoBuffer {
+    pub width: usize,
+    pub height: usize,
+    pub frames: usize,
+    pub capacity: usize,
+    pub pixels: Vec<u8>,
+}
+
+impl VideoBuffer {
+    pub fn frame_mut(&mut self, frame: usize) -> &mut [u8] {
+        let size = self.width * self.height;
+        &mut self.pixels[frame * size..(frame + 1) * size]
+    }
+}
+
+impl SignalType for Video {
+    type Buffer = VideoBuffer;
+
+    fn buffer(&self, duration: f64) -> VideoBuffer {
+        let (width, height, capacity) = (self.width as usize, self.height as usize, per_pass(self.fps, duration));
+        VideoBuffer { width, height, frames: 0, capacity, pixels: vec![0; width * height * capacity] }
+    }
+
+    fn bytes(buffer: &VideoBuffer) -> usize {
+        buffer.pixels.capacity()
     }
 }
 

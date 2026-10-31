@@ -8,7 +8,9 @@
 mod edge;
 mod graph;
 mod node;
+mod run;
 
 pub use edge::*;
 pub use graph::*;
 pub use node::*;
+pub use run::*;

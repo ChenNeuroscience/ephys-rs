@@ -1,10 +1,12 @@
 //! The `Node` trait implemented by each node type, and `NodeSet`, the list of types a program is built with.
 
+use std::any::{Any, TypeId};
+
 use eframe::egui;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use super::{Edges, Kind};
+use super::{Edges, Kind, Pass};
 use crate::theme::Colours;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -75,8 +77,13 @@ pub struct Context<'a, E: Edges> {
 ///
 /// The ports may depend on the settings, and the output signals on what is connected to the inputs; the
 /// graph works these out in order from the sources down (see `Graph::resolve`).
-pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeOwned + 'static {
+pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeOwned + Send + Sync + 'static {
     const INFO: NodeInfo;
+
+    /// What the node carries from one pass to the next (a filter's history, say), or `()` for nothing.
+    /// Passes run on several threads at once, so a node with state is run for one pass at a time, in order;
+    /// nodes without it can run for several passes at once.
+    type State: Default + Send + 'static;
 
     /// Whether the node's window is a view of its own (a viewer, say) rather than just its settings.
     const HAS_VIEW: bool = false;
@@ -108,12 +115,29 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<E>);
 
     fn view_ui(&mut self, _ui: &mut egui::Ui, _context: &mut Context<E>) {}
+
+    /// The state for the first pass. `inputs` has the signal connected to each input, if any.
+    fn initial_state(&self, _inputs: &[Option<E::Signal>]) -> Self::State {
+        Self::State::default()
+    }
+
+    /// An input that an output can be made from in place, sharing its buffer, when nothing else reads the
+    /// input's data. The plan decides, before running, whether it can be. The output must be the same signal
+    /// as the input.
+    fn in_place(&self, _output: usize) -> Option<usize> {
+        None
+    }
+
+    /// Does the node's work for one pass: reads its inputs and fills its outputs, which are already sized for
+    /// the signals they carry. When an output is being made in place (see `in_place`), its input is `None`
+    /// in the pass, and the output's buffer already holds the input's data to transform.
+    fn process(&self, _pass: &mut Pass<E>, _state: &mut Self::State) {}
 }
 
 /// The closed set of node types a program is built with, as an enum with one variant per type. Implemented
 /// by `node_set!`, and forwards each `Node` method to the variant's type.
 #[allow(clippy::type_complexity)]
-pub trait NodeSet: Clone + PartialEq + Serialize + DeserializeOwned + 'static {
+pub trait NodeSet: Clone + PartialEq + Serialize + DeserializeOwned + Send + Sync + 'static {
     type Edges: Edges;
 
     /// Indexed by type index.
@@ -131,10 +155,21 @@ pub trait NodeSet: Clone + PartialEq + Serialize + DeserializeOwned + 'static {
     fn controls(&self) -> Vec<Control<Self::Edges>>;
     fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Self::Edges>);
     fn view_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Self::Edges>);
+    fn in_place(&self, output: usize) -> Option<usize>;
+    /// Whether the node carries state from one pass to the next.
+    fn has_state(&self) -> bool;
+    fn initial_state(&self, inputs: &[Option<<Self::Edges as Edges>::Signal>]) -> Box<dyn Any + Send>;
+    /// `state` is the node's state, if it has any (as made by `initial_state`).
+    fn process(&self, pass: &mut Pass<Self::Edges>, state: Option<&mut (dyn Any + Send)>);
 
     fn info(&self) -> &'static NodeInfo {
         &Self::TYPES[self.type_index()]
     }
+}
+
+/// Whether `S` is real state, rather than `()` for none.
+pub fn is_state<S: 'static>() -> bool {
+    TypeId::of::<S>() != TypeId::of::<()>()
 }
 
 /// Declares the enum of node types a program is built with, and implements `NodeSet` for it:
@@ -228,6 +263,41 @@ macro_rules! node_set {
 
             fn view_ui(&mut self, ui: &mut eframe::egui::Ui, context: &mut $crate::engine::Context<$edges>) {
                 match self { $($name::$variant(n) => $crate::engine::Node::view_ui(n, ui, context)),+ }
+            }
+
+            fn in_place(&self, output: usize) -> Option<usize> {
+                match self { $($name::$variant(n) => $crate::engine::Node::in_place(n, output)),+ }
+            }
+
+            fn has_state(&self) -> bool {
+                match self {
+                    $($name::$variant(_) => {
+                        $crate::engine::is_state::<<$ty as $crate::engine::Node<$edges>>::State>()
+                    }),+
+                }
+            }
+
+            fn initial_state(
+                &self,
+                inputs: &[Option<<$edges as $crate::engine::Edges>::Signal>],
+            ) -> Box<dyn std::any::Any + Send> {
+                match self { $($name::$variant(n) => Box::new($crate::engine::Node::initial_state(n, inputs))),+ }
+            }
+
+            fn process(
+                &self,
+                pass: &mut $crate::engine::Pass<$edges>,
+                state: Option<&mut (dyn std::any::Any + Send)>,
+            ) {
+                match self {
+                    $($name::$variant(n) => {
+                        let state = state.and_then(|s| s.downcast_mut::<<$ty as $crate::engine::Node<$edges>>::State>());
+                        match state {
+                            Some(state) => $crate::engine::Node::process(n, pass, state),
+                            None => $crate::engine::Node::process(n, pass, &mut Default::default()),
+                        }
+                    }),+
+                }
             }
         }
     };

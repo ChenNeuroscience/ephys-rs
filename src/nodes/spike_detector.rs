@@ -3,9 +3,9 @@ use serde::{Deserialize, Serialize};
 
 use super::{combo, input_summary, require_input, setting, settings_grid};
 use crate::edges::settings::Threshold;
-use crate::edges::signals::Spikes;
-use crate::edges::{Edges, Kind, Setting, Signal};
-use crate::engine::{Category, Context, Input, Node, NodeInfo, Output, SettingPort};
+use crate::edges::signals::{Spike, Spikes};
+use crate::edges::{Buffer, Edges, Kind, Setting, Signal};
+use crate::engine::{Category, Context, Input, Node, NodeInfo, Output, Pass, SettingPort};
 
 #[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum Polarity {
@@ -36,6 +36,44 @@ impl Node<Edges> for SpikeDetector {
         category: Category::Processing,
         description: "Finds threshold crossings on each channel and cuts out the waveform around them.",
     };
+
+    type State = Detector;
+
+    fn initial_state(&self, inputs: &[Option<Signal>]) -> Detector {
+        let Some(Signal::Continuous(signal)) = inputs[0] else { return Detector::default() };
+        let channels = signal.channels as usize;
+        Detector {
+            // A guess, refined as it runs.
+            noise: vec![20.0; channels],
+            wait: vec![0; channels],
+            dead_time: (signal.sample_rate / 1000.0) as u32,
+        }
+    }
+
+    fn process(&self, pass: &mut Pass<Edges>, detector: &mut Detector) {
+        let Some(Some(Buffer::Continuous(input))) = pass.inputs.first() else { return };
+        let Some(Buffer::Spikes(output)) = pass.outputs.get_mut(0) else { return };
+        output.spikes.clear();
+        for channel in 0..input.channels.min(detector.noise.len()) {
+            let (noise, wait) = (&mut detector.noise[channel], &mut detector.wait[channel]);
+            for (sample, &x) in input.channel(channel).iter().enumerate() {
+                // The noise's standard deviation, from its mean absolute value, adapting slowly.
+                *noise += 0.0005 * (1.2533 * x.abs() - *noise);
+                let threshold = self.threshold * *noise;
+                let crossed = match self.polarity {
+                    Polarity::Negative => x < -threshold,
+                    Polarity::Positive => x > threshold,
+                    Polarity::Both => x.abs() > threshold,
+                };
+                if *wait > 0 {
+                    *wait -= 1;
+                } else if crossed && output.spikes.len() < output.spikes.capacity() {
+                    output.spikes.push(Spike { sample: sample as u32, channel: channel as u32 });
+                    *wait = detector.dead_time;
+                }
+            }
+        }
+    }
 
     fn inputs(&self) -> Vec<Input<Edges>> {
         vec![Input { name: "continuous", kind: Kind::Continuous }]
@@ -84,4 +122,13 @@ impl Node<Edges> for SpikeDetector {
         });
         input_summary(ui, context.inputs);
     }
+}
+
+/// Each channel's running estimate of its noise, and how many samples until it can spike again.
+#[derive(Default)]
+pub struct Detector {
+    noise: Vec<f32>,
+    wait: Vec<u32>,
+    /// Samples after a spike before the next can be detected.
+    dead_time: u32,
 }

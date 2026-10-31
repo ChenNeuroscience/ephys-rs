@@ -27,6 +27,10 @@ pub enum Icon {
     Dock,
     /// Choose the light or dark look.
     Theme,
+    /// Start running the graph.
+    Play,
+    /// Stop running it.
+    Stop,
 }
 
 const PAPER: Color32 = Color32::from_gray(246);
@@ -150,6 +154,12 @@ impl Icon {
                     .collect();
                 painter.add(Shape::convex_polygon(dark, fade(Color32::from_gray(40)), Stroke::NONE));
                 painter.circle_stroke(centre, radius, line);
+            }
+            Icon::Play => {
+                poly(vec![p(4.0, 2.0), p(14.0, 8.0), p(4.0, 14.0)], GREEN);
+            }
+            Icon::Stop => {
+                painter.rect(r(3.0, 3.0, 13.0, 13.0), 1.5 * s, fade(RED), line, StrokeKind::Middle);
             }
             Icon::ActualSize => {
                 painter.circle(p(6.5, 6.5), 4.5 * s, fade(PAPER), line);

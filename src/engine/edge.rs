@@ -30,7 +30,7 @@ pub trait EdgeType: Copy + PartialEq + Debug + 'static {
 
 /// The closed set of edge types for one dimension: an enum with one variant per type. Implemented by
 /// `edge_types!`.
-pub trait EdgeSet: Copy + PartialEq + Debug + 'static {
+pub trait EdgeSet: Copy + PartialEq + Debug + Send + Sync + 'static {
     type Kind: Copy + Eq + Hash + Debug + 'static;
     /// Indexed by `kind_index`.
     const KINDS: &'static [EdgeInfo];
@@ -42,11 +42,33 @@ pub trait EdgeSet: Copy + PartialEq + Debug + 'static {
 
 pub type Kind<S> = <S as EdgeSet>::Kind;
 
+/// A data edge type, which besides describing a signal says how a pass's worth of it is held.
+pub trait SignalType: EdgeType {
+    type Buffer: Send + Sync + 'static;
+
+    /// An empty buffer with room for `duration` seconds of this signal. Buffers are made before running, and
+    /// reused for every pass.
+    fn buffer(&self, duration: f64) -> Self::Buffer;
+
+    /// The memory a buffer has allocated, in bytes.
+    fn bytes(buffer: &Self::Buffer) -> usize;
+}
+
+/// The data edge types, with their buffers. Implemented by `edge_types!`.
+pub trait SignalSet: EdgeSet {
+    type Buffer: Send + Sync + 'static;
+    fn buffer(&self, duration: f64) -> Self::Buffer;
+    fn bytes(buffer: &Self::Buffer) -> usize;
+}
+
 /// The edge types a program is built with, in both dimensions.
 pub trait Edges: 'static {
-    type Signal: EdgeSet;
+    type Signal: SignalSet;
     type Setting: EdgeSet;
 }
+
+/// A pass's worth of data on a data edge.
+pub type Buffer<E> = <<E as Edges>::Signal as SignalSet>::Buffer;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default, Serialize, Deserialize)]
 pub enum Dimension {
@@ -60,7 +82,7 @@ pub enum Dimension {
 /// ```ignore
 /// edge_types! {
 ///     pub struct Edges;
-///     signals: pub enum Signal, Kind {
+///     signals: pub enum Signal, Kind, Buffer {
 ///         Continuous(signals::Continuous),
 ///     }
 ///     settings: pub enum Setting, SettingKind {
@@ -69,13 +91,13 @@ pub enum Dimension {
 /// }
 /// ```
 ///
-/// This makes `Edges` (implementing `engine::Edges`), the `Signal` and `Setting` enums of values, and the
-/// `Kind` and `SettingKind` enums naming their variants.
+/// This makes `Edges` (implementing `engine::Edges`), the `Signal` and `Setting` enums of values, the `Kind`
+/// and `SettingKind` enums naming their variants, and the `Buffer` enum of the signals' buffers.
 #[macro_export]
 macro_rules! edge_types {
     (
         $vis:vis struct $edges:ident;
-        signals: $svis:vis enum $signal:ident, $kind:ident { $($sv:ident($st:ty)),+ $(,)? }
+        signals: $svis:vis enum $signal:ident, $kind:ident, $buffer:ident { $($sv:ident($st:ty)),+ $(,)? }
         settings: $cvis:vis enum $setting:ident, $ckind:ident { $($cv:ident($ct:ty)),+ $(,)? }
     ) => {
         $vis struct $edges;
@@ -87,6 +109,22 @@ macro_rules! edge_types {
 
         $crate::edge_types!(@set $svis $signal $kind $($sv($st)),+);
         $crate::edge_types!(@set $cvis $setting $ckind $($cv($ct)),+);
+
+        $svis enum $buffer {
+            $($sv(<$st as $crate::engine::SignalType>::Buffer)),+
+        }
+
+        impl $crate::engine::SignalSet for $signal {
+            type Buffer = $buffer;
+
+            fn buffer(&self, duration: f64) -> $buffer {
+                match self { $($signal::$sv(s) => $buffer::$sv($crate::engine::SignalType::buffer(s, duration))),+ }
+            }
+
+            fn bytes(buffer: &$buffer) -> usize {
+                match buffer { $($buffer::$sv(b) => <$st as $crate::engine::SignalType>::bytes(b)),+ }
+            }
+        }
     };
 
     (@set $vis:vis $value:ident $kind:ident $($variant:ident($ty:ty)),+) => {

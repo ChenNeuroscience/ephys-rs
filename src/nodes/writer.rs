@@ -26,6 +26,8 @@ impl Default for Writer {
 }
 
 impl Node<Edges> for Writer {
+    type State = ();
+
     const INFO: NodeInfo = NodeInfo {
         name: "Writer",
         category: Category::Recording,

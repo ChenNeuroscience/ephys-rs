@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{input_summary, require_input, setting, settings_grid};
 use crate::edges::settings;
-use crate::edges::{Edges, Kind, Setting, Signal};
-use crate::engine::{Category, Context, Input, Node, NodeInfo, Output, SettingPort};
+use crate::edges::{Buffer, Edges, Kind, Setting, Signal};
+use crate::engine::{Category, Context, Input, Node, NodeInfo, Output, Pass, SettingPort};
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -22,6 +22,22 @@ impl Default for Gain {
 impl Node<Edges> for Gain {
     const INFO: NodeInfo =
         NodeInfo { name: "Gain", category: Category::Processing, description: "Scales every channel by a constant." };
+
+    type State = ();
+
+    fn in_place(&self, _output: usize) -> Option<usize> {
+        Some(0)
+    }
+
+    fn process(&self, pass: &mut Pass<Edges>, _state: &mut ()) {
+        let input = match pass.inputs[0] {
+            Some(Buffer::Continuous(input)) => Some(input),
+            _ => None,
+        };
+        let Some(Buffer::Continuous(output)) = pass.outputs.get_mut(0) else { return };
+        let factor = if self.invert { -self.gain } else { self.gain };
+        output.transform(input, |_, x| x * factor);
+    }
 
     fn inputs(&self) -> Vec<Input<Edges>> {
         vec![Input { name: "continuous", kind: Kind::Continuous }]

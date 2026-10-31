@@ -39,6 +39,7 @@ impl<N: NodeSet> App<N> {
             Action::NoteTool => Some(self.canvas.tool == Tool::StickyNote),
             Action::ToggleInspector => Some(self.layout.is_shown(Pane::Inspector)),
             Action::Theme(theme) => Some(self.theme == theme),
+            Action::Play => Some(self.runner.is_some()),
             _ => None,
         }
     }
@@ -100,6 +101,14 @@ impl<N: NodeSet> App<N> {
                 }
                 ui.separator();
             }
+
+            let running = self.runner.is_some();
+            let (icon, text) = if running { (Icon::Stop, "Stop") } else { (Icon::Play, "Play") };
+            let tip = self.tooltip(&ctx, Action::Play, text);
+            if tool_button(ui, icon, &tip, true, running).clicked() {
+                chosen = Some(Action::Play);
+            }
+            ui.separator();
 
             let add = dropdown_button(ui, Icon::AddNode, "Add node")
                 .on_hover_text("Add a node (or press Tab over the graph)");

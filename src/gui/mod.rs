@@ -20,7 +20,7 @@ use std::sync::Arc;
 use eframe::egui::{self, Id, Key, Modifiers, Pos2, RichText, ViewportCommand};
 use serde::{Deserialize, Serialize};
 
-use crate::engine::{Graph, NodeId, NodeSet, Port, PortRef, Resolved, Snapshot};
+use crate::engine::{self, Graph, NodeId, NodeSet, Port, PortRef, Resolved, Runner, Snapshot, Stats};
 use crate::theme::Theme;
 use actions::Action;
 use annotations::{Annotation, AnnotationId, Annotations};
@@ -130,6 +130,8 @@ pub struct App<N: NodeSet> {
     /// Shown in the status bar until the given time (egui seconds).
     status: Option<Status>,
     history: History<N>,
+    /// The graph running, while it is.
+    runner: Option<Runner<N>>,
 }
 
 impl<N: NodeSet> App<N> {
@@ -161,6 +163,7 @@ impl<N: NodeSet> App<N> {
             selection: Selection::default(),
             menu: None,
             status: None,
+            runner: None,
         };
         if let Some(path) = path {
             if path.exists() {
@@ -180,7 +183,7 @@ impl<N: NodeSet> App<N> {
     }
 
     /// The latest version of the graph, with all its configuration.
-    #[allow(dead_code)] // for processing, to come
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn snapshot(&self) -> Snapshot<N> {
         self.history.current.snapshot.clone()
     }
@@ -396,6 +399,13 @@ impl<N: NodeSet> App<N> {
                 self.menu = Some(CreateMenu::new(screen, at, None));
             }
             Action::ToggleInspector => self.layout.toggle_pane(Pane::Inspector),
+            Action::Play => {
+                if self.runner.take().is_none() {
+                    // Run whatever's latest, including edits not yet taken as a version.
+                    self.history.commit(&self.graph, &self.annotations);
+                    self.runner = Some(Runner::start(&self.history.current.snapshot, engine::default_workers()));
+                }
+            }
             Action::Theme(theme) => {
                 self.theme = theme;
                 theme.apply(ctx);
@@ -433,9 +443,28 @@ impl<N: NodeSet> App<N> {
         }
     }
 
+    /// Keeps the runner on the latest version of the graph, restarting it when a change affects processing
+    /// (moving or renaming nodes doesn't).
+    fn keep_running(&mut self, ctx: &egui::Context) {
+        let Some(runner) = &self.runner else { return };
+        let latest = &self.history.current.snapshot;
+        if !engine::same_processing(runner.graph(), &latest.graph) {
+            let workers = runner.stats().workers;
+            self.runner = None; // stops the old run before starting the new
+            self.runner = Some(Runner::start(latest, workers));
+        }
+        // Keep the stats in the status bar fresh.
+        ctx.request_repaint_after(std::time::Duration::from_millis(250));
+    }
+
     fn status_bar(&self, ui: &mut egui::Ui) {
         let now = ui.input(|i| i.time);
         ui.horizontal(|ui| {
+            if let Some(runner) = &self.runner {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    self.run_stats(ui, &runner.stats());
+                });
+            }
             match (&self.status, self.canvas.hint()) {
                 (Some(status), _) if now < status.until => {
                     let colours = self.theme.colours();
@@ -447,6 +476,34 @@ impl<N: NodeSet> App<N> {
                     .weak("Double-click, right-click or Tab on the canvas to add a node · drag from a port to connect"),
             };
         });
+    }
+
+    /// How the run is going: workers, passes and their timing, and memory.
+    fn run_stats(&self, ui: &mut egui::Ui, stats: &Stats) {
+        let colours = self.theme.colours();
+        let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0;
+        // Right to left.
+        if stats.dropped > 0 {
+            let dropped = ui.label(RichText::new(format!("{} dropped", stats.dropped)).color(colours.warning));
+            dropped.on_hover_text("Passes skipped because the workers couldn't keep up");
+            ui.separator();
+        }
+        ui.label(format!("{:.1} MB", stats.memory as f64 / 1e6)).on_hover_text("Memory for the workers' buffers");
+        ui.separator();
+        ui.label(format!("lag {:.1} ms", ms(stats.max_lag)))
+            .on_hover_text("Longest time in the last second from a pass's data being due to its being processed");
+        ui.separator();
+        ui.label(format!("pass {:.2} ms avg, {:.2} max", ms(stats.mean_time), ms(stats.max_time)))
+            .on_hover_text("How long passes took to run, over the last second");
+        ui.separator();
+        ui.label(format!("{} passes/s", stats.passes_per_second));
+        ui.separator();
+        ui.label(format!("{} workers ({} busy)", stats.workers, stats.busy));
+        ui.label(RichText::new("Running").color(colours.success)).on_hover_text(format!(
+            "{} passes run, of {:.0} ms each",
+            stats.completed,
+            engine::PASS_DURATION * 1000.0
+        ));
     }
 
     /// Floating node windows, over everything else. They're styled like docked ones: a tab bar with the one
@@ -634,6 +691,7 @@ impl<N: NodeSet> App<N> {
         }
         self.create_menu(&ctx, &resolved);
         self.history.record(&self.graph, &self.annotations, &ctx);
+        self.keep_running(&ctx);
     }
 }
 
@@ -928,6 +986,28 @@ mod tests {
         pointer(&mut harness, grab + egui::vec2(60.0, 40.0), Some(false));
         let moved = area(&harness).unwrap().min - before.min;
         assert!(moved.x > 50.0 && moved.y > 30.0, "window should follow the drag, moved {moved:?}");
+    }
+
+    #[test]
+    fn play_runs_the_graph() {
+        let mut harness = harness();
+        harness.get_by_label("Play (Space)").click();
+        harness.run_steps(2);
+        assert!(harness.state().runner.is_some());
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let stats = harness.state().runner.as_ref().unwrap().stats();
+        assert!(stats.completed > 0, "{stats:?}");
+        // Editing a setting restarts the run on the new version of the graph.
+        let first = harness.state().runner.as_ref().unwrap().graph().clone();
+        let gain_free = node_named(harness.state(), "Spike Detector");
+        if let Some(entry) = harness.state_mut().graph.get_mut(gain_free) {
+            entry.node.set_setting(0, crate::edges::settings::Threshold { sd: 6.0 }.into());
+        }
+        harness.run_steps(2);
+        assert!(!Arc::ptr_eq(&first, harness.state().runner.as_ref().unwrap().graph()));
+        harness.key_press(Key::Space);
+        harness.run_steps(2);
+        assert!(harness.state().runner.is_none());
     }
 
     #[test]

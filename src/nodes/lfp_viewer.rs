@@ -24,6 +24,8 @@ impl Default for LfpViewer {
 }
 
 impl Node<Edges> for LfpViewer {
+    type State = ();
+
     const INFO: NodeInfo = NodeInfo {
         name: "LFP Viewer",
         category: Category::Visualisation,

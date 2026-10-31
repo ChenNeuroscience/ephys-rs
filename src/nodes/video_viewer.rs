@@ -12,6 +12,8 @@ pub struct VideoViewer {
 }
 
 impl Node<Edges> for VideoViewer {
+    type State = ();
+
     const INFO: NodeInfo =
         NodeInfo { name: "Video Viewer", category: Category::Visualisation, description: "The latest video frame." };
     const HAS_VIEW: bool = true;
