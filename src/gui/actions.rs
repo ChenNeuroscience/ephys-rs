@@ -3,6 +3,8 @@
 
 use eframe::egui::{Key, KeyboardShortcut, Modifiers};
 
+use super::style::Theme;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Action {
     New,
@@ -22,16 +24,19 @@ pub enum Action {
     FrameAll,
     ActualSize,
     ResetLayout,
+    ToggleInspector,
+    Theme(Theme),
 }
 
 pub enum MenuEntry {
     Action(Action),
     Separator,
+    Submenu(&'static str, &'static [MenuEntry]),
 }
 
-use MenuEntry::{Action as Item, Separator};
+use MenuEntry::{Action as Item, Separator, Submenu};
 
-/// The menus, in order. View also gets the theme and panel choices, which aren't plain actions.
+/// The menus, in order.
 pub const MENUS: &[(&str, &[MenuEntry])] = &[
     (
         "File",
@@ -57,7 +62,18 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
         ],
     ),
     ("Insert", &[Item(Action::AddNode), Item(Action::NoteTool)]),
-    ("View", &[Item(Action::FrameAll), Item(Action::ActualSize), Separator, Item(Action::ResetLayout)]),
+    (
+        "View",
+        &[
+            Item(Action::FrameAll),
+            Item(Action::ActualSize),
+            Separator,
+            Item(Action::ToggleInspector),
+            Item(Action::ResetLayout),
+            Separator,
+            Submenu("Theme", &[Item(Action::Theme(Theme::Dark)), Item(Action::Theme(Theme::Light))]),
+        ],
+    ),
 ];
 
 /// Checked in this order, so that e.g. shift-ctrl-Z (redo) is seen before ctrl-Z (undo).
@@ -98,6 +114,8 @@ impl Action {
             Action::FrameAll => "Frame All",
             Action::ActualSize => "Actual Size",
             Action::ResetLayout => "Reset Layout",
+            Action::ToggleInspector => "Inspector",
+            Action::Theme(theme) => theme.name(),
         }
     }
 

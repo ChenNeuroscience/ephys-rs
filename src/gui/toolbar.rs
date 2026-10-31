@@ -33,49 +33,55 @@ impl<N: NodeSet> App<N> {
         }
     }
 
+    /// For actions that are on or off (a panel showing, the theme in use), whether they're on.
+    pub(super) fn checked(&self, action: Action) -> Option<bool> {
+        match action {
+            Action::NoteTool => Some(self.canvas.tool == Tool::StickyNote),
+            Action::ToggleInspector => Some(self.layout.is_shown(Pane::Inspector)),
+            Action::Theme(theme) => Some(self.theme == theme),
+            _ => None,
+        }
+    }
+
     /// The menus, in the window. Returns the action chosen, if any.
     pub(super) fn menu_bar(&mut self, ui: &mut egui::Ui) -> Option<Action> {
-        let ctx = ui.ctx().clone();
         let mut chosen = None;
         egui::MenuBar::new().ui(ui, |ui| {
             for (title, entries) in MENUS {
-                ui.menu_button(*title, |ui| {
-                    for entry in *entries {
-                        match entry {
-                            MenuEntry::Separator => {
-                                ui.separator();
-                            }
-                            MenuEntry::Action(action) => {
-                                let mut button = egui::Button::new(action.name());
-                                if let Some(shortcut) = action.shortcut() {
-                                    button = button.shortcut_text(ctx.format_shortcut(&shortcut));
-                                }
-                                let selected = *action == Action::NoteTool && self.canvas.tool == Tool::StickyNote;
-                                if ui.add_enabled(self.enabled(*action), button.selected(selected)).clicked() {
-                                    chosen = Some(*action);
-                                }
-                            }
-                        }
-                    }
-                    if *title == "View" {
-                        ui.separator();
-                        let mut shown = self.layout.is_shown(Pane::Inspector);
-                        if ui.checkbox(&mut shown, "Inspector").clicked() {
-                            self.layout.toggle_pane(Pane::Inspector);
-                        }
-                        ui.menu_button("Theme", |ui| {
-                            for theme in Theme::ALL {
-                                if ui.radio(self.theme == theme, theme.name()).clicked() {
-                                    self.theme = theme;
-                                    theme.apply(&ctx);
-                                }
-                            }
-                        });
-                    }
-                });
+                ui.menu_button(*title, |ui| self.menu_entries(ui, entries, &mut chosen));
             }
         });
         chosen
+    }
+
+    fn menu_entries(&self, ui: &mut egui::Ui, entries: &[MenuEntry], chosen: &mut Option<Action>) {
+        for entry in entries {
+            match entry {
+                MenuEntry::Separator => {
+                    ui.separator();
+                }
+                MenuEntry::Submenu(title, inner) => {
+                    ui.menu_button(*title, |ui| self.menu_entries(ui, inner, chosen));
+                }
+                MenuEntry::Action(action) => {
+                    let clicked = match self.checked(*action) {
+                        // One of a set, like the theme.
+                        Some(on) if matches!(action, Action::Theme(_)) => ui.radio(on, action.name()).clicked(),
+                        Some(mut on) => ui.checkbox(&mut on, action.name()).clicked(),
+                        None => {
+                            let mut button = egui::Button::new(action.name());
+                            if let Some(shortcut) = action.shortcut() {
+                                button = button.shortcut_text(ui.ctx().format_shortcut(&shortcut));
+                            }
+                            ui.add_enabled(self.enabled(*action), button).clicked()
+                        }
+                    };
+                    if clicked {
+                        *chosen = Some(*action);
+                    }
+                }
+            }
+        }
     }
 
     /// The row of icon buttons. Returns the action chosen, if any.
@@ -132,6 +138,17 @@ impl<N: NodeSet> App<N> {
                     chosen = Some(action);
                 }
             }
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let button = tool_button(ui, Icon::Theme, "Theme", true, false);
+                egui::Popup::menu(&button).show(|ui| {
+                    for theme in Theme::ALL {
+                        if ui.radio(self.theme == theme, theme.name()).clicked() {
+                            chosen = Some(Action::Theme(theme));
+                        }
+                    }
+                });
+            });
         });
         chosen
     }

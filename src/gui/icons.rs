@@ -25,6 +25,8 @@ pub enum Icon {
     Undock,
     /// Put a floating window back in the layout.
     Dock,
+    /// Choose the light or dark look.
+    Theme,
 }
 
 const PAPER: Color32 = Color32::from_gray(246);
@@ -134,6 +136,20 @@ impl Icon {
                 let arrow = Stroke::new(1.6 * s, ink);
                 painter.line_segment([p(8.0, 3.5), p(8.0, 7.5)], arrow);
                 painter.add(Shape::line(vec![p(5.5, 5.5), p(8.0, 8.0), p(10.5, 5.5)], arrow));
+            }
+            Icon::Theme => {
+                // A circle, half light and half dark.
+                let centre = p(8.0, 8.0);
+                let radius = 6.0 * s;
+                painter.circle_filled(centre, radius, fade(PAPER));
+                let dark: Vec<Pos2> = (0..=16)
+                    .map(|i| {
+                        let a = -PI / 2.0 + PI * i as f32 / 16.0;
+                        centre + vec2(a.cos(), a.sin()) * radius
+                    })
+                    .collect();
+                painter.add(Shape::convex_polygon(dark, fade(Color32::from_gray(40)), Stroke::NONE));
+                painter.circle_stroke(centre, radius, line);
             }
             Icon::ActualSize => {
                 painter.circle(p(6.5, 6.5), 4.5 * s, fade(PAPER), line);

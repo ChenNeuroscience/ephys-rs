@@ -25,7 +25,7 @@ use actions::Action;
 use annotations::{Annotation, AnnotationId, Annotations};
 use canvas::{Canvas, HEADER, NODE_WIDTH, Selection, Tool};
 use create_menu::{Choice, CreateMenu};
-use docking::{Layout, Panes};
+use docking::{Layout, Pane, Panes};
 use style::Theme;
 
 /// Opens the file at `path`, or (if there isn't one) the example.
@@ -50,7 +50,7 @@ pub fn run<N: NodeSet>(path: Option<PathBuf>, example: fn() -> Graph<N>) -> efra
             app.theme.apply(&cc.egui_ctx);
             #[cfg(target_os = "macos")]
             {
-                app.mac_menu = mac_menu::MacMenu::install(&cc.egui_ctx);
+                app.mac_menu = mac_menu::MacMenu::install(&cc.egui_ctx, &|a| app.checked(a).is_some());
             }
             Ok(Box::new(app))
         }),
@@ -376,6 +376,11 @@ impl<N: NodeSet> App<N> {
                 let screen = self.add_anchor.take().unwrap_or_else(|| self.canvas.to_screen(at));
                 self.menu = Some(CreateMenu::new(screen, at, None));
             }
+            Action::ToggleInspector => self.layout.toggle_pane(Pane::Inspector),
+            Action::Theme(theme) => {
+                self.theme = theme;
+                theme.apply(ctx);
+            }
             Action::NoteTool => {
                 self.canvas.tool = if self.canvas.tool == Tool::StickyNote { Tool::Select } else { Tool::StickyNote };
             }
@@ -561,6 +566,10 @@ impl<N: NodeSet> App<N> {
         #[cfg(target_os = "macos")]
         for action in self.mac_menu.as_ref().map(|m| m.actions()).unwrap_or_default() {
             self.perform(&ctx, action);
+        }
+        #[cfg(target_os = "macos")]
+        if let Some(menu) = &self.mac_menu {
+            menu.sync(|a| self.checked(a) == Some(true));
         }
         self.graph.prune_edges();
         self.selection.retain_existing(&self.graph, &self.annotations);
@@ -761,9 +770,12 @@ mod tests {
     #[test]
     fn light_theme() {
         let mut harness = harness();
-        harness.state_mut().theme = Theme::Light;
-        Theme::Light.apply(&harness.ctx);
+        // From the toolbar's theme button.
+        harness.get_by_label("Theme").click();
         harness.run_steps(2);
+        harness.get_by_label("Light").click();
+        harness.run_steps(3);
+        assert_eq!(harness.state().theme, Theme::Light);
         harness.snapshot("graph_light");
     }
 
