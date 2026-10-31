@@ -1,9 +1,10 @@
-use eframe::egui::{self, Align2, Color32, FontId, Pos2, Shape, Stroke};
+use eframe::egui::{self, Align2, FontId, Pos2, Shape, Stroke};
 use serde::{Deserialize, Serialize};
 
 use super::{preview, require_input, setting, settings_grid};
+use crate::edges::signals::Continuous;
 use crate::edges::{Edges, Kind, Setting, SettingKind, Signal};
-use crate::engine::{Category, Context, Control, Input, Node, NodeInfo, Output};
+use crate::engine::{Category, Context, Control, EdgeType, Input, Node, NodeInfo, Output};
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -67,7 +68,7 @@ impl Node<Edges> for LfpViewer {
 
     fn view_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
         let Some(Signal::Continuous(signal)) = context.inputs[0] else {
-            return preview::unconnected(ui, "Connect a continuous signal to view it");
+            return preview::unconnected(ui, context.theme, "Connect a continuous signal to view it");
         };
         // With the gain control connected, the upstream gain can be adjusted from here.
         if let Some(Setting::Gain(mut gain)) = context.controls[0] {
@@ -77,7 +78,7 @@ impl Node<Edges> for LfpViewer {
             });
             context.controls[0] = Some(Setting::Gain(gain));
         }
-        let rect = preview::plot_area(ui);
+        let rect = preview::plot_area(ui, context.theme);
         let channels = signal.channels;
         let first = self.first_channel.min(channels.saturating_sub(1));
         let shown = self.channels_shown.min(channels - first).max(1);
@@ -106,13 +107,13 @@ impl Node<Edges> for LfpViewer {
                     egui::pos2(rect.left() + c as f32 * 2.0, centre - value.clamp(-1.0, 1.0) * row * 0.5)
                 })
                 .collect();
-            painter.add(Shape::line(points, Stroke::new(1.0, Color32::from_rgb(110, 170, 255))));
+            painter.add(Shape::line(points, Stroke::new(1.0, Continuous::INFO.colour)));
             painter.text(
                 egui::pos2(rect.left() + 4.0, centre - row * 0.5 + 2.0),
                 Align2::LEFT_TOP,
                 format!("{channel}"),
                 FontId::monospace(10.0),
-                Color32::from_gray(120),
+                context.theme.text_secondary,
             );
         }
         ui.ctx().request_repaint();

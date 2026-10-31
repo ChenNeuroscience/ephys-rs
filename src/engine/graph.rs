@@ -7,6 +7,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use super::{Context, Control, Dimension, EdgeInfo, EdgeSet, Edges, Input, NodeSet, Output, SettingPort};
+use crate::theme::Colours;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -453,11 +454,12 @@ impl<N: NodeSet> Graph<N> {
         &mut self,
         id: NodeId,
         inputs: &[Option<Signal<N>>],
+        theme: &Colours,
         f: impl FnOnce(&mut N, &mut Context<N::Edges>) -> R,
     ) -> Option<R> {
         let before = self.control_values(id);
         let mut controls = before.clone();
-        let result = f(&mut self.nodes.get_mut(&id)?.node, &mut Context { inputs, controls: &mut controls });
+        let result = f(&mut self.nodes.get_mut(&id)?.node, &mut Context { inputs, controls: &mut controls, theme });
         for (index, (old, new)) in before.into_iter().zip(controls).enumerate() {
             let Some(new) = new.filter(|new| Some(*new) != old) else { continue };
             let targets: Vec<PortRef> =
@@ -575,7 +577,9 @@ mod tests {
 
         let threshold = |sd| Setting::Threshold(settings::Threshold { sd });
         assert_eq!(graph.control_values(viewer), vec![Some(threshold(4.0))]);
-        graph.edit(viewer, &[], |_, context| context.controls[0] = Some(threshold(5.5)));
+        graph.edit(viewer, &[], crate::theme::Theme::Dark.colours(), |_, context| {
+            context.controls[0] = Some(threshold(5.5))
+        });
         assert_eq!(graph.get(detector).unwrap().node.settings()[0].value, threshold(5.5));
     }
 

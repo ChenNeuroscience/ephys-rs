@@ -34,9 +34,9 @@ impl Node<Edges> for VideoViewer {
 
     fn view_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
         let Some(Signal::Video(signal)) = context.inputs[0] else {
-            return preview::unconnected(ui, "Connect video to view it");
+            return preview::unconnected(ui, context.theme, "Connect video to view it");
         };
-        let area = preview::plot_area(ui);
+        let area = preview::plot_area(ui, context.theme);
         let aspect = signal.width as f32 / signal.height as f32;
         let size = if area.width() / area.height() > aspect {
             egui::vec2(area.height() * aspect, area.height())
@@ -45,13 +45,13 @@ impl Node<Edges> for VideoViewer {
         };
         let frame = Rect::from_center_size(area.center(), size);
         let painter = ui.painter_at(area);
-        painter.rect_filled(frame, 0.0, Color32::from_gray(32));
+        painter.rect_filled(frame, 0.0, context.theme.surface_raised);
         // Simulated: an LED wandering round the arena.
         let t = ui.input(|i| i.time) as f32;
         let led = frame.center() + egui::vec2((t * 0.7).sin() * 0.35 * size.x, (t * 0.53).cos() * 0.35 * size.y);
         painter.circle_filled(led, 6.0, Color32::from_rgb(120, 255, 140));
         if self.crosshair {
-            let stroke = Stroke::new(1.0, Color32::from_gray(90));
+            let stroke = Stroke::new(1.0, context.theme.text_secondary);
             painter.hline(frame.x_range(), frame.center().y, stroke);
             painter.vline(frame.center().x, frame.y_range(), stroke);
         }
@@ -60,7 +60,7 @@ impl Node<Edges> for VideoViewer {
             Align2::LEFT_TOP,
             signal.summary(),
             FontId::proportional(11.0),
-            Color32::from_gray(150),
+            context.theme.text_secondary,
         );
         ui.ctx().request_repaint();
     }

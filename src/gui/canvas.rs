@@ -23,8 +23,12 @@ use egui_commonmark::CommonMarkCache;
 
 use super::Event;
 use super::annotations::{Annotation, AnnotationId, AnnotationKind, Annotations, NoteColour};
-use super::style::{self, Palette, Theme};
-use crate::engine::{Dimension, Edge, Edges, Graph, NodeEntry, NodeId, NodeSet, NodeState, Port, Resolved, Role};
+use super::style;
+use crate::engine::{
+    Dimension, Edge, EdgeInfo, EdgeSet, Edges, Graph, KindKey, NodeEntry, NodeId, NodeSet, NodeState, Port, Resolved,
+    Role,
+};
+use crate::theme::{Colours, Theme};
 
 pub const NODE_WIDTH: f32 = 190.0;
 pub const HEADER: f32 = 26.0;
@@ -195,10 +199,12 @@ pub struct Canvas {
     /// The annotation whose text is being edited.
     editing: Option<AnnotationId>,
     markdown: CommonMarkCache,
-    pub palette: &'static Palette,
+    pub colours: &'static Colours,
     pub tool: Tool,
     /// Where an annotation being drawn out started, in scene coordinates.
     drawing: Option<Pos2>,
+    /// Whether the legend is expanded (rather than just its title).
+    pub legend_open: bool,
 }
 
 impl Default for Canvas {
@@ -213,9 +219,10 @@ impl Default for Canvas {
             hovered_edge: None,
             editing: None,
             markdown: CommonMarkCache::default(),
-            palette: Theme::default().palette(),
+            colours: Theme::default().colours(),
             tool: Tool::default(),
             drawing: None,
+            legend_open: true,
         }
     }
 }
@@ -428,7 +435,7 @@ impl Canvas {
             let selected = selection.nodes.contains(&id) || marquee.is_some_and(|m| m.intersects(layout.rect));
             let has_target = targets.iter().any(|t| t.node == id);
             let dim = self.wire.is_some_and(|w| w.node != id) && !has_target;
-            let ports = PortPaint { connected: &connected, targets: &targets, target, pointer, palette: self.palette };
+            let ports = PortPaint { connected: &connected, targets: &targets, target, pointer, colours: self.colours };
             paint_node(&painter, id, layout, entry, state, selected, dim, open_windows.contains(&id), &ports);
         }
 
@@ -437,13 +444,14 @@ impl Canvas {
                 r,
                 4.0 * zoom,
                 NoteColour::Yellow.fill().gamma_multiply(0.6),
-                Stroke::new(1.0, self.palette.marquee),
+                Stroke::new(1.0, self.colours.text_secondary),
                 StrokeKind::Inside,
             );
         }
+        self.legend::<N>(ui, &painter, resolved);
         if let Some(m) = marquee {
-            let stroke = Stroke::new(1.0, self.palette.marquee);
-            painter.rect(m, 0.0, self.palette.highlight, stroke, StrokeKind::Inside);
+            let stroke = Stroke::new(1.0, self.colours.text_secondary);
+            painter.rect(m, 0.0, self.colours.text_primary.gamma_multiply(0.12), stroke, StrokeKind::Inside);
         }
     }
 
@@ -492,6 +500,90 @@ impl Canvas {
             self.tool = Tool::Select;
         }
         outline.filter(|_| self.drawing.is_some())
+    }
+
+    /// A key to the edge types on the graph (on an edge or a port), in the bottom-right corner of the canvas
+    /// (not of the scene, so it stays put as the graph pans and zooms). Click its title to collapse or expand it.
+    fn legend<N: NodeSet>(&mut self, ui: &mut egui::Ui, painter: &Painter, resolved: &Resolved<N::Edges>) {
+        const WIDTH: f32 = 160.0;
+        const ROW: f32 = 18.0;
+        const PAD: f32 = 8.0;
+        const MARGIN: f32 = 10.0;
+        let sections = legend_entries::<N>(resolved);
+        if sections.is_empty() {
+            return; // nothing on the graph to explain
+        }
+        let rows: usize = if self.legend_open { sections.iter().map(|(_, _, kinds)| 1 + kinds.len()).sum() } else { 0 };
+        let height = 2.0 * PAD + ROW * (1 + rows) as f32;
+        let rect = Rect::from_min_size(
+            self.screen_rect.max - egui::vec2(WIDTH + MARGIN, height + MARGIN),
+            egui::vec2(WIDTH, height),
+        );
+        if !self.screen_rect.contains_rect(rect) {
+            return; // no room
+        }
+        // Over the whole legend, so clicks on it don't reach the graph beneath.
+        ui.interact(rect, Id::unique("legend"), Sense::click_and_drag());
+        let title = Rect::from_min_size(rect.min + egui::vec2(PAD, PAD), egui::vec2(WIDTH - 2.0 * PAD, ROW));
+        let toggle = ui.interact(title, Id::unique("legend-toggle"), Sense::click());
+        toggle.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Legend"));
+        if toggle.clicked() {
+            self.legend_open = !self.legend_open;
+        }
+
+        let colours = self.colours;
+        painter.rect_filled(rect.translate(egui::vec2(0.0, 2.0)), 6.0, colours.shadow);
+        painter.rect(rect, 6.0, colours.surface, Stroke::new(1.0, colours.border), StrokeKind::Inside);
+        let font = FontId::proportional(12.0);
+        let text = if toggle.hovered() { colours.text_primary } else { colours.text_secondary };
+        painter.text(title.left_center(), Align2::LEFT_CENTER, "Legend", font.clone(), text);
+        // A chevron: down when open, left when closed (it opens upwards).
+        let c = egui::pos2(title.right() - 6.0, title.center().y);
+        let chevron = if self.legend_open {
+            vec![c + egui::vec2(-4.0, -2.0), c + egui::vec2(0.0, 2.0), c + egui::vec2(4.0, -2.0)]
+        } else {
+            vec![c + egui::vec2(2.0, -4.0), c + egui::vec2(-2.0, 0.0), c + egui::vec2(2.0, 4.0)]
+        };
+        painter.add(Shape::line(chevron, Stroke::new(1.5, text)));
+        if !self.legend_open {
+            return;
+        }
+
+        let mut y = title.bottom();
+        for (heading, dimension, kinds) in sections {
+            painter.text(
+                egui::pos2(title.left(), y + ROW / 2.0),
+                Align2::LEFT_CENTER,
+                heading,
+                FontId::proportional(10.5),
+                colours.text_disabled,
+            );
+            y += ROW;
+            for info in kinds {
+                let mid = y + ROW / 2.0;
+                let (start, end) = (egui::pos2(title.left(), mid), egui::pos2(title.left() + 26.0, mid));
+                let stroke = Stroke::new(2.0, info.colour);
+                match dimension {
+                    Dimension::Data => {
+                        painter.line_segment([start, end], stroke);
+                    }
+                    Dimension::Settings => {
+                        painter.extend(Shape::dashed_line(&[start, end], stroke, 5.0, 3.0));
+                        let d = 4.0;
+                        let diamond = vec![
+                            end - egui::vec2(0.0, d),
+                            end + egui::vec2(d, 0.0),
+                            end + egui::vec2(0.0, d),
+                            end - egui::vec2(d, 0.0),
+                        ];
+                        painter.add(Shape::convex_polygon(diamond, info.colour, Stroke::NONE));
+                    }
+                }
+                let label = egui::pos2(title.left() + 36.0, mid);
+                painter.text(label, Align2::LEFT_CENTER, info.name, font.clone(), colours.text_primary);
+                y += ROW;
+            }
+        }
     }
 
     /// Clicks and drags on empty canvas (middle and right drags pan, in `pan_and_zoom`).
@@ -580,10 +672,10 @@ impl Canvas {
             resize.on_hover_cursor(egui::CursorIcon::ResizeNwSe);
 
             let rect = self.to_screen * annotation.rect();
-            painter.rect_filled(rect.translate(egui::vec2(0.0, 3.0 * zoom)), 4.0 * zoom, self.palette.shadow);
+            painter.rect_filled(rect.translate(egui::vec2(0.0, 3.0 * zoom)), 4.0 * zoom, self.colours.shadow);
             painter.rect_filled(rect, 4.0 * zoom, annotation.fill());
             if selection.annotations.contains(&id) {
-                let stroke = Stroke::new(2.0, self.palette.selection);
+                let stroke = Stroke::new(2.0, self.colours.accent);
                 painter.rect_stroke(rect, 4.0 * zoom, stroke, StrokeKind::Outside);
             }
             // Grip lines in the resize corner.
@@ -739,12 +831,12 @@ impl Canvas {
     fn paint_grid(&self, painter: &Painter) {
         const SPACING: f32 = 40.0;
         let clip = self.screen_rect;
-        painter.rect_filled(clip, 0.0, self.palette.canvas);
+        painter.rect_filled(clip, 0.0, self.colours.background);
         let step = SPACING * self.to_screen.scaling;
         if step < 10.0 {
             return;
         }
-        let stroke = Stroke::new(1.0, self.palette.grid);
+        let stroke = Stroke::new(1.0, self.colours.grid);
         let origin = self.to_screen * Pos2::ZERO;
         let mut x = origin.x - ((origin.x - clip.left()) / step).floor() * step;
         while x < clip.right() {
@@ -787,12 +879,31 @@ impl Canvas {
                 width
             };
             if selected {
-                let halo = Stroke::new(w + 3.0, self.palette.highlight);
+                let halo = Stroke::new(w + 3.0, self.colours.text_primary.gamma_multiply(0.12));
                 paint_wire(painter, points, Dimension::Data, halo, zoom);
             }
             paint_wire(painter, points, edge.dimension, Stroke::new(w, colour), zoom);
         }
     }
+}
+
+/// The legend's sections (data, then settings) with the edge types to list in each: those on some port of
+/// the graph (which covers the edges, as each connects two ports). Sections with none are left out.
+pub fn legend_entries<N: NodeSet>(
+    resolved: &Resolved<N::Edges>,
+) -> Vec<(&'static str, Dimension, Vec<&'static EdgeInfo>)> {
+    let present: HashSet<KindKey> =
+        resolved.iter().flat_map(|(id, state)| state.ports(*id).filter_map(|p| state.kind(p.role, p.index))).collect();
+    let shown = |dimension: Dimension, kinds: &'static [EdgeInfo]| -> Vec<&'static EdgeInfo> {
+        kinds.iter().enumerate().filter(|(i, _)| present.contains(&(dimension, *i))).map(|(_, k)| k).collect()
+    };
+    [
+        ("Data", Dimension::Data, shown(Dimension::Data, <<N::Edges as Edges>::Signal as EdgeSet>::KINDS)),
+        ("Settings", Dimension::Settings, shown(Dimension::Settings, <<N::Edges as Edges>::Setting as EdgeSet>::KINDS)),
+    ]
+    .into_iter()
+    .filter(|(_, _, kinds)| !kinds.is_empty())
+    .collect()
 }
 
 /// Moves every selected node and annotation by `delta`, in scene coordinates.
@@ -846,7 +957,7 @@ struct PortPaint<'a> {
     targets: &'a [Port],
     target: Option<Port>,
     pointer: Option<Pos2>,
-    palette: &'a Palette,
+    colours: &'a Colours,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -867,18 +978,17 @@ fn paint_node<N: NodeSet>(
     let info = entry.node.info();
     let radius = 6.0 * z;
 
-    let palette = ports.palette;
-    let shadow = if dim { palette.shadow.gamma_multiply(0.35) } else { palette.shadow };
+    let colours = ports.colours;
+    let shadow = if dim { colours.shadow.gamma_multiply(0.35) } else { colours.shadow };
     painter.rect_filled(rect.translate(egui::vec2(0.0, 3.0 * z)), radius, shadow);
-    painter.rect_filled(rect, radius, fade(palette.node));
+    painter.rect_filled(rect, radius, fade(colours.surface_raised));
     let r = radius.round().clamp(0.0, 255.0) as u8;
     let header_fill = fade(style::category_colour(info.category));
     painter.rect_filled(layout.header, CornerRadius { nw: r, ne: r, sw: 0, se: 0 }, header_fill);
-    let border =
-        if selected { Stroke::new(2.0, palette.selection) } else { Stroke::new(1.0, fade(palette.node_border)) };
+    let border = if selected { Stroke::new(2.0, colours.accent) } else { Stroke::new(1.0, fade(colours.border)) };
     painter.rect_stroke(rect, radius, border, StrokeKind::Outside);
     if let Some(y) = layout.divider {
-        painter.hline(rect.x_range().shrink(8.0 * z), y, Stroke::new(1.0, fade(palette.divider)));
+        painter.hline(rect.x_range().shrink(8.0 * z), y, Stroke::new(1.0, fade(colours.divider)));
     }
 
     let font = |size: f32| FontId::proportional(size * z);
@@ -909,7 +1019,7 @@ fn paint_node<N: NodeSet>(
             b.right_bottom() + egui::vec2(z, z),
             b.left_bottom() + egui::vec2(-z, z),
         ];
-        painter.add(Shape::convex_polygon(triangle, fade(style::AMBER), Stroke::NONE));
+        painter.add(Shape::convex_polygon(triangle, fade(colours.warning), Stroke::NONE));
         painter.text(b.center() + egui::vec2(0.0, 1.5 * z), Align2::CENTER_CENTER, "!", font(10.0), Color32::BLACK);
     }
 
@@ -923,13 +1033,17 @@ fn paint_node<N: NodeSet>(
         } else {
             (pos + egui::vec2(12.0 * z, 0.0), Align2::LEFT_CENTER)
         };
-        let name_colour = if connected || port.role.is_source() { palette.text } else { palette.text_weak };
+        let name_colour =
+            if connected || port.role.is_source() { colours.text_primary } else { colours.text_secondary };
         painter.text(name_pos, align, name, font(12.5), fade(name_colour));
         // Outputs and settings also show what they carry, on the far side.
         if on_right(port.role) {
-            let summary = state.summary(port.role, port.index).unwrap_or_else(|| "—".into());
+            let (summary, colour) = match state.summary(port.role, port.index) {
+                Some(summary) => (summary, colours.text_secondary),
+                None => ("—".into(), colours.text_disabled),
+            };
             let at = egui::pos2(rect.left() + 10.0 * z, pos.y);
-            painter.text(at, Align2::LEFT_CENTER, summary, font(11.0), fade(palette.text_weak));
+            painter.text(at, Align2::LEFT_CENTER, summary, font(11.0), fade(colour));
         }
         paint_port(painter, port, pos, colour, connected, ports, z, fade);
     }
@@ -957,7 +1071,7 @@ fn paint_port(
     } else if hovered {
         painter.circle_filled(pos, r + 4.0 * z, colour.gamma_multiply(0.25));
     }
-    let fill = if connected { colour } else { fade(ports.palette.node) };
+    let fill = if connected { colour } else { fade(ports.colours.surface_raised) };
     match port.role.dimension() {
         Dimension::Data => {
             painter.circle_filled(pos, r, fill);

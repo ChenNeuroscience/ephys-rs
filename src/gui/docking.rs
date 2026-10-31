@@ -16,6 +16,7 @@ use super::canvas::{Canvas, Selection};
 use super::icons::Icon;
 use super::{Event, inspector, toolbar};
 use crate::engine::{Graph, NodeId, NodeSet, Resolved};
+use crate::theme::Colours;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub enum Pane {
@@ -223,6 +224,7 @@ pub struct Panes<'a, N: NodeSet> {
     pub graph: &'a mut Graph<N>,
     pub annotations: &'a mut Annotations,
     pub resolved: &'a Resolved<N::Edges>,
+    pub colours: &'static Colours,
     pub canvas: &'a mut Canvas,
     pub selection: &'a mut Selection,
     pub open_windows: &'a HashSet<NodeId>,
@@ -230,10 +232,16 @@ pub struct Panes<'a, N: NodeSet> {
 }
 
 /// A node's window content: its view if it has one, otherwise its settings.
-pub fn node_ui<N: NodeSet>(ui: &mut egui::Ui, graph: &mut Graph<N>, resolved: &Resolved<N::Edges>, id: NodeId) {
+pub fn node_ui<N: NodeSet>(
+    ui: &mut egui::Ui,
+    graph: &mut Graph<N>,
+    resolved: &Resolved<N::Edges>,
+    colours: &Colours,
+    id: NodeId,
+) {
     let Some(state) = resolved.get(&id) else { return };
     let has_view = graph.get(id).is_some_and(|e| e.node.has_view());
-    graph.edit(id, &state.input_signals, |node, context| {
+    graph.edit(id, &state.input_signals, colours, |node, context| {
         if has_view { node.view_ui(ui, context) } else { node.settings_ui(ui, context) }
     });
 }
@@ -319,12 +327,13 @@ impl<N: NodeSet> egui_tiles::Behavior<Pane> for Panes<'_, N> {
                     self.graph,
                     self.annotations,
                     self.resolved,
+                    self.colours,
                     self.selection,
                     self.open_windows,
                     self.events,
                 )
             }),
-            Pane::Node(id) => padded(ui, |ui| node_ui(ui, self.graph, self.resolved, id)),
+            Pane::Node(id) => padded(ui, |ui| node_ui(ui, self.graph, self.resolved, self.colours, id)),
         }
         UiResponse::None
     }

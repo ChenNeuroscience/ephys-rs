@@ -3,7 +3,7 @@
 
 use eframe::egui::{Key, KeyboardShortcut, Modifiers};
 
-use super::style::Theme;
+use crate::theme::Theme;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Action {

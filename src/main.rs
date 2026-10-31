@@ -10,6 +10,7 @@ mod edges;
 mod engine;
 mod gui;
 mod nodes;
+mod theme;
 
 fn main() -> eframe::Result {
     gui::run(std::env::args().nth(1).map(Into::into), nodes::example)

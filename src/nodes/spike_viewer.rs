@@ -1,8 +1,9 @@
-use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Shape, Stroke};
+use eframe::egui::{self, Align2, FontId, Pos2, Rect, Sense, Shape, Stroke};
 use serde::{Deserialize, Serialize};
 
 use super::{preview, require_input, setting, settings_grid};
 use crate::edges::settings::Threshold;
+use crate::edges::signals::Spikes;
 use crate::edges::{Edges, Kind, Setting, SettingKind, Signal};
 use crate::engine::{Category, Context, Control, EdgeType, Input, Node, NodeInfo, Output};
 
@@ -55,9 +56,9 @@ impl Node<Edges> for SpikeViewer {
 
     fn view_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
         let Some(Signal::Spikes(signal)) = context.inputs[0] else {
-            return preview::unconnected(ui, "Connect spikes to view them");
+            return preview::unconnected(ui, context.theme, "Connect spikes to view them");
         };
-        let rect = preview::plot_area(ui);
+        let rect = preview::plot_area(ui, context.theme);
         let painter = ui.painter_at(rect);
         let shown = self.channels_shown.min(signal.channels).max(1);
         let columns = self.columns.clamp(1, shown);
@@ -79,7 +80,7 @@ impl Node<Edges> for SpikeViewer {
         for channel in 0..shown {
             let min = rect.min + egui::vec2((channel % columns) as f32 * cell.x, (channel / columns) as f32 * cell.y);
             let cell_rect = Rect::from_min_size(min, cell).shrink(3.0);
-            painter.rect_stroke(cell_rect, 2.0, Stroke::new(1.0, Color32::from_gray(40)), egui::StrokeKind::Inside);
+            painter.rect_stroke(cell_rect, 2.0, Stroke::new(1.0, context.theme.divider), egui::StrokeKind::Inside);
             let amplitude = 0.4 + 0.3 * preview::noise(channel as u64, -1);
             for age in 0..self.waveforms {
                 let spike = latest - age as i64;
@@ -95,8 +96,7 @@ impl Node<Edges> for SpikeViewer {
                         )
                     })
                     .collect();
-                painter
-                    .add(Shape::line(points, Stroke::new(1.0, Color32::from_rgb(255, 170, 70).gamma_multiply(alpha))));
+                painter.add(Shape::line(points, Stroke::new(1.0, Spikes::INFO.colour.gamma_multiply(alpha))));
             }
             if let Some(t) = threshold {
                 let y = cell_rect.center().y + t.sd * NOISE_SD * cell_rect.height();
@@ -107,14 +107,14 @@ impl Node<Edges> for SpikeViewer {
                 Align2::LEFT_TOP,
                 format!("{channel}"),
                 FontId::monospace(10.0),
-                Color32::from_gray(120),
+                context.theme.text_secondary,
             );
         }
         let note = match threshold {
             Some(t) => format!("threshold {}", t.summary()),
             None => "connect the threshold control to a detector to set it here".into(),
         };
-        let colour = if threshold.is_some() { Threshold::INFO.colour } else { Color32::from_gray(110) };
+        let colour = if threshold.is_some() { Threshold::INFO.colour } else { context.theme.text_secondary };
         painter.text(
             rect.right_top() + egui::vec2(-6.0, 4.0),
             Align2::RIGHT_TOP,

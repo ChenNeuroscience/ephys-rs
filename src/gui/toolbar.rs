@@ -8,8 +8,8 @@ use super::actions::{Action, MENUS, MenuEntry};
 use super::canvas::Tool;
 use super::docking::Pane;
 use super::icons::{self, Icon};
-use super::style::Theme;
 use crate::engine::NodeSet;
+use crate::theme::Theme;
 
 const BUTTON: egui::Vec2 = egui::vec2(26.0, 24.0);
 

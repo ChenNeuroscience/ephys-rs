@@ -5,6 +5,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use super::{Edges, Kind};
+use crate::theme::Colours;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Category {
@@ -66,6 +67,8 @@ pub struct Context<'a, E: Edges> {
     /// For each control, the current value of the setting it's connected to, if any. Changing a value
     /// edits that setting.
     pub controls: &'a mut [Option<E::Setting>],
+    /// The colours to draw with, by role. A node can derive more of its own from these.
+    pub theme: &'a Colours,
 }
 
 /// A node type. Implementors are plain settings structs, saved with the graph.

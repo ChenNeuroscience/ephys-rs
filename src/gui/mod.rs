@@ -21,12 +21,12 @@ use eframe::egui::{self, Id, Key, Modifiers, Pos2, RichText, ViewportCommand};
 use serde::{Deserialize, Serialize};
 
 use crate::engine::{Graph, NodeId, NodeSet, Port, PortRef, Resolved, Snapshot};
+use crate::theme::Theme;
 use actions::Action;
 use annotations::{Annotation, AnnotationId, Annotations};
 use canvas::{Canvas, HEADER, NODE_WIDTH, Selection, Tool};
 use create_menu::{Choice, CreateMenu};
 use docking::{Layout, Pane, Panes};
-use style::Theme;
 
 /// Opens the file at `path`, or (if there isn't one) the example.
 pub fn run<N: NodeSet>(path: Option<PathBuf>, example: fn() -> Graph<N>) -> eframe::Result {
@@ -98,6 +98,15 @@ struct SaveFileRef<'a, N> {
     layout: &'a Layout,
 }
 
+/// A message in the status bar.
+struct Status {
+    message: String,
+    /// When to stop showing it (egui seconds).
+    until: f64,
+    /// Whether it's news of something done, rather than a problem.
+    ok: bool,
+}
+
 pub struct App<N: NodeSet> {
     /// The file being edited, if it's been saved.
     path: Option<PathBuf>,
@@ -119,7 +128,7 @@ pub struct App<N: NodeSet> {
     selection: Selection,
     menu: Option<CreateMenu>,
     /// Shown in the status bar until the given time (egui seconds).
-    status: Option<(String, f64)>,
+    status: Option<Status>,
     history: History<N>,
 }
 
@@ -156,7 +165,11 @@ impl<N: NodeSet> App<N> {
         if let Some(path) = path {
             if path.exists() {
                 if let Err(e) = app.load(&path) {
-                    app.status = Some((format!("Couldn't open {}: {e}", path.display()), f64::INFINITY));
+                    app.status = Some(Status {
+                        message: format!("Couldn't open {}: {e}", path.display()),
+                        until: f64::INFINITY,
+                        ok: false,
+                    });
                 }
             } else {
                 // A new file: the example, until saved there.
@@ -172,8 +185,14 @@ impl<N: NodeSet> App<N> {
         self.history.current.snapshot.clone()
     }
 
+    /// Reports a problem in the status bar.
     fn set_status(&mut self, ctx: &egui::Context, message: impl Into<String>) {
-        self.status = Some((message.into(), ctx.input(|i| i.time) + 5.0));
+        self.status = Some(Status { message: message.into(), until: ctx.input(|i| i.time) + 5.0, ok: false });
+    }
+
+    /// Reports something done in the status bar.
+    fn set_done(&mut self, ctx: &egui::Context, message: impl Into<String>) {
+        self.status = Some(Status { message: message.into(), until: ctx.input(|i| i.time) + 5.0, ok: true });
     }
 
     fn unsaved(&self) -> bool {
@@ -234,7 +253,7 @@ impl<N: NodeSet> App<N> {
             .and_then(|json| std::fs::write(&path, json).map_err(|e| e.to_string()));
         match result {
             Ok(()) => {
-                self.set_status(ctx, format!("Saved {}", path.display()));
+                self.set_done(ctx, format!("Saved {}", path.display()));
                 self.path = Some(path);
                 self.saved = Some(self.history.current.snapshot.version);
                 true
@@ -418,7 +437,11 @@ impl<N: NodeSet> App<N> {
         let now = ui.input(|i| i.time);
         ui.horizontal(|ui| {
             match (&self.status, self.canvas.hint()) {
-                (Some((message, until)), _) if now < *until => ui.label(RichText::new(message).color(style::AMBER)),
+                (Some(status), _) if now < status.until => {
+                    let colours = self.theme.colours();
+                    let colour = if status.ok { colours.success } else { colours.warning };
+                    ui.label(RichText::new(&status.message).color(colour))
+                }
                 (_, Some(hint)) => ui.label(hint),
                 _ => ui
                     .weak("Double-click, right-click or Tab on the canvas to add a node · drag from a port to connect"),
@@ -446,7 +469,7 @@ impl<N: NodeSet> App<N> {
                 .show(ctx, |ui| {
                     clicks = docking::floating_header(ui, &title);
                     egui::Frame::new().inner_margin(8).show(ui, |ui| {
-                        docking::node_ui(ui, &mut self.graph, resolved, id);
+                        docking::node_ui(ui, &mut self.graph, resolved, self.theme.colours(), id);
                     });
                 });
             if let Some(response) = response
@@ -576,7 +599,7 @@ impl<N: NodeSet> App<N> {
         self.layout.retain_nodes(&self.graph);
         let resolved = self.graph.resolve();
         let open_windows = self.layout.open_windows();
-        self.canvas.palette = self.theme.palette();
+        self.canvas.colours = self.theme.colours();
 
         self.window_title(&ctx);
         self.confirm_close(&ctx);
@@ -595,6 +618,7 @@ impl<N: NodeSet> App<N> {
                 graph: &mut self.graph,
                 annotations: &mut self.annotations,
                 resolved: &resolved,
+                colours: self.theme.colours(),
                 canvas: &mut self.canvas,
                 selection: &mut self.selection,
                 open_windows: &open_windows,
@@ -765,6 +789,37 @@ mod tests {
         let id = *app.selection.annotations.first().expect("the new note is selected");
         let size = app.annotations.get(id).unwrap().size;
         assert!(size[0] > 150.0 && size[1] > 70.0, "drawn to the dragged size, got {size:?}");
+    }
+
+    #[test]
+    fn legend_collapses() {
+        let mut harness = harness();
+        assert!(harness.state().canvas.legend_open);
+        harness.get_by_label("Legend").click();
+        harness.run_steps(2);
+        assert!(!harness.state().canvas.legend_open);
+        harness.snapshot("graph_legend_collapsed");
+    }
+
+    #[test]
+    fn legend_lists_only_edge_types_on_the_graph() {
+        let names = |graph: &Graph<Nodes>| -> Vec<(&str, Vec<&str>)> {
+            canvas::legend_entries::<Nodes>(&graph.resolve())
+                .into_iter()
+                .map(|(section, _, kinds)| (section, kinds.iter().map(|k| k.name).collect()))
+                .collect()
+        };
+        let mut graph = Graph::<Nodes>::default();
+        assert!(names(&graph).is_empty(), "nothing to explain on an empty graph");
+        let camera = Nodes::TYPES.iter().position(|t| t.name == "Camera").unwrap();
+        graph.add(Nodes::create(camera), [0.0, 0.0]);
+        assert_eq!(names(&graph), vec![("Data", vec!["video"])]);
+        let detector = Nodes::TYPES.iter().position(|t| t.name == "Spike Detector").unwrap();
+        graph.add(Nodes::create(detector), [0.0, 0.0]);
+        assert_eq!(
+            names(&graph),
+            vec![("Data", vec!["continuous", "spikes", "video"]), ("Settings", vec!["threshold"])]
+        );
     }
 
     #[test]

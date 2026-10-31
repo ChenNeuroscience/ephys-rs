@@ -8,19 +8,22 @@ use super::annotations::{AnnotationId, AnnotationKind, Annotations, NoteColour};
 use super::canvas::Selection;
 use super::{Event, style};
 use crate::engine::{Dimension, Graph, NodeId, NodeSet, Port, Resolved, Role};
+use crate::theme::Colours;
 
+#[allow(clippy::too_many_arguments)]
 pub fn show<N: NodeSet>(
     ui: &mut egui::Ui,
     graph: &mut Graph<N>,
     annotations: &mut Annotations,
     resolved: &Resolved<N::Edges>,
+    colours: &Colours,
     selection: &Selection,
     open_windows: &HashSet<NodeId>,
     events: &mut Vec<Event>,
 ) {
     let count = selection.nodes.len() + selection.annotations.len();
     if let Some(id) = selection.single() {
-        node(ui, graph, resolved, id, open_windows.contains(&id), events);
+        node(ui, graph, resolved, colours, id, open_windows.contains(&id), events);
     } else if let (Some(&id), true) = (selection.annotations.first(), count == 1) {
         annotation(ui, annotations, id, events);
     } else if count > 1 {
@@ -79,6 +82,7 @@ fn node<N: NodeSet>(
     ui: &mut egui::Ui,
     graph: &mut Graph<N>,
     resolved: &Resolved<N::Edges>,
+    colours: &Colours,
     id: NodeId,
     window_open: bool,
     events: &mut Vec<Event>,
@@ -96,12 +100,12 @@ fn node<N: NodeSet>(
     });
     ui.label(RichText::new(info.description).small());
     for warning in &state.warnings {
-        ui.label(RichText::new(warning.as_str()).color(style::AMBER));
+        ui.label(RichText::new(warning.as_str()).color(colours.warning));
     }
     ui.separator();
 
     egui::ScrollArea::vertical().show(ui, |ui| {
-        graph.edit(id, &state.input_signals, |node, context| node.settings_ui(ui, context));
+        graph.edit(id, &state.input_signals, colours, |node, context| node.settings_ui(ui, context));
         ui.add_space(8.0);
         for (role, title) in [
             (Role::Input, "Inputs"),
