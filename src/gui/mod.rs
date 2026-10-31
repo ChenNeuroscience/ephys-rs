@@ -613,7 +613,9 @@ impl<N: NodeSet> App<N> {
         }
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
         let mut events = Vec::new();
-        egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
+        // Panes don't paint their own backgrounds, so this shows behind them.
+        let background = egui::Frame::NONE.fill(self.theme.colours().surface);
+        egui::CentralPanel::default().frame(background).show(ui, |ui| {
             let mut panes = Panes {
                 graph: &mut self.graph,
                 annotations: &mut self.annotations,
@@ -638,6 +640,11 @@ impl<N: NodeSet> App<N> {
 impl<N: NodeSet> eframe::App for App<N> {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.show(ui);
+    }
+
+    /// Behind everything, in the theme's colours (eframe's default is near black whatever the theme).
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        self.theme.colours().surface.to_normalized_gamma_f32()
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -883,6 +890,12 @@ mod tests {
         app.selection.only(detector);
         harness.run_steps(3);
         harness.snapshot("graph_windows");
+        Theme::Light.apply(&harness.ctx);
+        harness.state_mut().theme = Theme::Light;
+        harness.run_steps(3);
+        harness.snapshot("graph_windows_light");
+        Theme::Dark.apply(&harness.ctx);
+        harness.state_mut().theme = Theme::Dark;
         assert_eq!(harness.query_all_by_label("Undock").count(), 1, "the docked windows' tab bar can undock");
         assert_eq!(harness.query_all_by_label("Dock").count(), 1, "the floating window can be docked");
 
