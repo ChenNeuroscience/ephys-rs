@@ -171,16 +171,35 @@ fn bezier_points([a, b, c, d]: [Pos2; 4]) -> Vec<Pos2> {
         .collect()
 }
 
+/// Data edges are solid, with an arrowhead halfway along showing which way the data flows. Settings edges are
+/// dashed, with no direction.
 fn paint_wire(painter: &Painter, points: [Pos2; 4], dimension: Dimension, stroke: Stroke, zoom: f32) {
     let path = bezier_points(points);
     match dimension {
         Dimension::Data => {
             painter.add(Shape::line(path, stroke));
+            let [a, b, c, d] = points.map(|p| p.to_vec2());
+            // The curve's midpoint and its direction there.
+            let middle = ((a + 3.0 * b + 3.0 * c + d) / 8.0).to_pos2();
+            let direction = 0.75 * ((b - a) + 2.0 * (c - b) + (d - c));
+            arrowhead(painter, middle, direction, (4.0 + 1.5 * stroke.width) * zoom.sqrt(), stroke.color);
         }
         Dimension::Settings => {
             painter.extend(Shape::dashed_line(&path, stroke, 7.0 * zoom, 4.0 * zoom));
         }
     }
+}
+
+/// A filled arrowhead centred on `at`, pointing along `direction`.
+fn arrowhead(painter: &Painter, at: Pos2, direction: Vec2, size: f32, colour: Color32) {
+    let forward = direction.normalized();
+    if !forward.is_finite() {
+        return;
+    }
+    let side = forward.rot90() * size * 0.6;
+    let tip = at + forward * size * 0.6;
+    let back = at - forward * size * 0.4;
+    painter.add(Shape::convex_polygon(vec![tip, back + side, back - side], colour, Stroke::NONE));
 }
 
 pub struct Canvas {
@@ -566,6 +585,7 @@ impl Canvas {
                 match dimension {
                     Dimension::Data => {
                         painter.line_segment([start, end], stroke);
+                        arrowhead(painter, start.lerp(end, 0.5), egui::vec2(1.0, 0.0), 7.0, info.colour);
                     }
                     Dimension::Settings => {
                         painter.extend(Shape::dashed_line(&[start, end], stroke, 5.0, 3.0));
