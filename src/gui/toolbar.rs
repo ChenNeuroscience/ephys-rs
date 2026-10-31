@@ -61,22 +61,15 @@ impl<N: NodeSet> App<N> {
                     ui.separator();
                 }
                 MenuEntry::Submenu(title, inner) => {
-                    ui.menu_button(*title, |ui| self.menu_entries(ui, inner, chosen));
+                    ui.menu_button((check(false), *title), |ui| self.menu_entries(ui, inner, chosen));
                 }
                 MenuEntry::Action(action) => {
-                    let clicked = match self.checked(*action) {
-                        // One of a set, like the theme.
-                        Some(on) if matches!(action, Action::Theme(_)) => ui.radio(on, action.name()).clicked(),
-                        Some(mut on) => ui.checkbox(&mut on, action.name()).clicked(),
-                        None => {
-                            let mut button = egui::Button::new(action.name());
-                            if let Some(shortcut) = action.shortcut() {
-                                button = button.shortcut_text(ui.ctx().format_shortcut(&shortcut));
-                            }
-                            ui.add_enabled(self.enabled(*action), button).clicked()
-                        }
-                    };
-                    if clicked {
+                    let on = self.checked(*action) == Some(true);
+                    let mut button = egui::Button::new((check(on), action.name()));
+                    if let Some(shortcut) = action.shortcut() {
+                        button = button.shortcut_text(ui.ctx().format_shortcut(&shortcut));
+                    }
+                    if ui.add_enabled(self.enabled(*action), button).clicked() {
                         *chosen = Some(*action);
                     }
                 }
@@ -139,19 +132,34 @@ impl<N: NodeSet> App<N> {
                 }
             }
 
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let button = tool_button(ui, Icon::Theme, "Theme", true, false);
-                egui::Popup::menu(&button).show(|ui| {
-                    for theme in Theme::ALL {
-                        if ui.radio(self.theme == theme, theme.name()).clicked() {
-                            chosen = Some(Action::Theme(theme));
-                        }
+            ui.separator();
+            let button = tool_button(ui, Icon::Theme, "Theme", true, false);
+            egui::Popup::menu(&button).show(|ui| {
+                for theme in Theme::ALL {
+                    if ui.add(egui::Button::new((check(self.theme == theme), theme.name()))).clicked() {
+                        chosen = Some(Action::Theme(theme));
                     }
-                });
+                }
             });
         });
         chosen
     }
+}
+
+/// A menu item's checkmark, as in a native menu: ticked when `on`, otherwise blank but taking the same space,
+/// so the items' names line up.
+fn check(on: bool) -> egui::Atom<'static> {
+    egui::Atom::paint(egui::vec2(12.0, 12.0), move |ui, args| {
+        if on {
+            let r = args.rect.shrink(1.5);
+            let points = vec![
+                egui::pos2(r.left(), r.center().y),
+                egui::pos2(r.left() + r.width() * 0.38, r.bottom()),
+                egui::pos2(r.right(), r.top()),
+            ];
+            ui.painter().add(egui::Shape::line(points, Stroke::new(1.6, args.fallback_text_color)));
+        }
+    })
 }
 
 /// A flat icon button, framed only when hovered or `selected` (a tool that's in use).

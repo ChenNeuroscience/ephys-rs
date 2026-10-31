@@ -773,6 +773,7 @@ mod tests {
         // From the toolbar's theme button.
         harness.get_by_label("Theme").click();
         harness.run_steps(2);
+        harness.snapshot("toolbar_theme_menu");
         harness.get_by_label("Light").click();
         harness.run_steps(3);
         assert_eq!(harness.state().theme, Theme::Light);
