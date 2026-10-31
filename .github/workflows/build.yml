@@ -1,0 +1,101 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            platform: windows-x64
+            package_platform: windows
+            executable: target/release/ephys-rs.exe
+          - os: macos-15
+            platform: macos-arm64
+            package_platform: macos
+            executable: target/release/ephys-rs
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Set up stable Rust and check tools
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+          rustup default stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Format and lint
+        run: |
+          cargo fmt --check
+          cargo clippy --all-targets --locked -- -D warnings
+      - name: Test (engine, and the GUI rendered headless)
+        run: cargo test --locked
+      - name: Keep any GUI snapshot differences
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: snapshot-diffs-${{ matrix.platform }}
+          path: tests/snapshots/*
+          if-no-files-found: ignore
+      - name: Build release
+        run: cargo build --release --locked
+      - name: Package
+        run: python scripts/package.py --exe ${{ matrix.executable }} --output dist/ephys-rs-${{ matrix.platform }} --platform ${{ matrix.package_platform }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ephys-rs-${{ matrix.platform }}
+          path: dist/ephys-rs-${{ matrix.platform }}.zip*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    concurrency:
+      group: ephys-rs-release-${{ github.sha }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: ephys-rs-*
+          path: release
+          merge-multiple: true
+      - name: Select commit tag
+        id: package
+        run: |
+          echo "tag=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          test "$(ls release/*.zip | wc -l)" -eq 2
+      - name: Publish GitHub release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ steps.package.outputs.tag }}
+          commit: ${{ github.sha }}
+          name: ephys-rs ${{ steps.package.outputs.tag }}
+          body: |
+            Built and tested from commit ${{ github.sha }}. An early development build: the graph editor only, with simulated data.
+
+            Windows: download the windows zip, extract it, and run ephys-rs.exe.
+            macOS (Apple silicon): download the macos zip and move ephys-rs.app to Applications. It isn't notarised, so the first time, right-click it and choose Open.
+          artifacts: release/*.zip,release/*.sha256
+          artifactErrorsFailBuild: true
+          allowUpdates: true
+          makeLatest: true

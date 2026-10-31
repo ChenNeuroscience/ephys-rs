@@ -1,0 +1,4 @@
+/target
+*.graph.json
+tests/snapshots/*.diff.png
+tests/snapshots/*.new.png

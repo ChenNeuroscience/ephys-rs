@@ -1,0 +1,5 @@
+# Snapshot comparison settings for the GUI tests (see tests/snapshots). The snapshots are made on macOS;
+# Windows renders text and edges with slightly different antialiasing, so is allowed some leeway.
+[windows]
+threshold = 2.0
+max_failed_pixels = 3000
