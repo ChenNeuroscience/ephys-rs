@@ -43,6 +43,27 @@ pub struct SpikeViewer {
     pub sampling: f32,
     /// Thresholds chosen from the data are this many standard deviations of the noise.
     pub threshold_sd: f32,
+    /// What to choose from the data.
+    pub choosing: Choosing,
+}
+
+/// What to choose from the data.
+#[derive(Clone, Copy, PartialEq, Debug, Default, Serialize, Deserialize)]
+pub enum Choosing {
+    #[default]
+    Both,
+    Gains,
+    Thresholds,
+}
+
+impl Choosing {
+    fn name(self) -> &'static str {
+        match self {
+            Choosing::Both => "Gains and thresholds",
+            Choosing::Gains => "Gains",
+            Choosing::Thresholds => "Thresholds",
+        }
+    }
 }
 
 impl Default for SpikeViewer {
@@ -54,6 +75,7 @@ impl Default for SpikeViewer {
             plot_height: 120.0,
             sampling: 10.0,
             threshold_sd: 4.0,
+            choosing: Choosing::Both,
         }
     }
 }
@@ -374,19 +396,44 @@ impl SpikeViewer {
             } else {
                 "Sampling…"
             };
-            let choose = |ui: &mut egui::Ui, text: &str, connected: bool, tip: &str| {
-                let missing = format!("Connect the {} to a spike detector to set them", text.to_lowercase());
-                let response = ui.add_enabled(can && connected, egui::Button::new(text).small());
-                let response =
-                    response.on_hover_text(tip).on_disabled_hover_text(if connected { why } else { &missing });
-                response.clicked()
+            // What to choose: picked from a menu, then chosen with the button.
+            ui.add_enabled_ui(!context.locked, |ui| {
+                let options = [Choosing::Both, Choosing::Gains, Choosing::Thresholds];
+                egui::ComboBox::from_id_salt("choosing")
+                    .selected_text(self.choosing.name())
+                    .width(150.0)
+                    .show_ui(ui, |ui| {
+                        for option in options {
+                            ui.selectable_value(&mut self.choosing, option, option.name());
+                        }
+                    })
+                    .response
+                    .on_hover_text("What to choose from the data");
+            });
+            let (g, t) = match self.choosing {
+                Choosing::Both => (true, true),
+                Choosing::Gains => (true, false),
+                Choosing::Thresholds => (false, true),
             };
-            let label = ui.label("Choose");
-            let gains_tip = "Set each channel's gain so its bigger spikes fill its plot (and the recording's range)";
-            let thresholds_tip =
-                format!("Set each channel's threshold to {} standard deviations of its noise", self.threshold_sd);
-            let (g, t) = (choose(ui, "Gains", gains, gains_tip), choose(ui, "Thresholds", thresholds, &thresholds_tip));
-            ui.label("from");
+            let connected = (!g || gains) && (!t || thresholds);
+            let tip = format!(
+                "Sample the data, then set each channel's {}",
+                match self.choosing {
+                    Choosing::Both => format!(
+                        "threshold to {} standard deviations of its noise, and its gain so its bigger spikes fill its \
+                         plot (and the recording's range)",
+                        self.threshold_sd
+                    ),
+                    Choosing::Gains => "gain so its bigger spikes fill its plot (and the recording's range)".into(),
+                    Choosing::Thresholds =>
+                        format!("threshold to {} standard deviations of its noise", self.threshold_sd),
+                }
+            );
+            let missing = "Connect the thresholds and gains to a spike detector to set them";
+            let button = ui.add_enabled(can && connected, egui::Button::new("Choose").small());
+            let chosen =
+                button.on_hover_text(tip).on_disabled_hover_text(if connected { why } else { missing }).clicked();
+            let label = ui.label("from");
             ui.add_enabled_ui(!context.locked, |ui| {
                 let field = egui::DragValue::new(&mut self.sampling).range(SAMPLING).speed(0.2).suffix(" s");
                 ui.add(field).labelled_by(label.id).on_hover_text("How long to sample the data for");
@@ -395,7 +442,7 @@ impl SpikeViewer {
                 ui.add(egui::Spinner::new().size(12.0));
                 ui.weak(format!("sampling, {:.0} s of {total:.0}", elapsed.min(total)));
             }
-            if g || t {
+            if chosen {
                 static REQUESTS: AtomicU64 = AtomicU64::new(1);
                 let id = REQUESTS.fetch_add(1, Ordering::Relaxed);
                 let seconds = self.sampling.clamp(*SAMPLING.start(), *SAMPLING.end());
@@ -547,10 +594,10 @@ impl SpikeViewer {
             && interactive
             && let Some(gains) = plots.gains.as_deref_mut()
         {
-            // Gain buttons: up at the top right, down at the bottom left.
+            // Gain buttons: up at the top right, down at the bottom right.
             let button = egui::vec2(18.0, 18.0);
             let up = Rect::from_min_size(rect.right_top() + egui::vec2(-button.x - 2.0, 2.0), button);
-            let down = Rect::from_min_size(rect.left_bottom() + egui::vec2(2.0, -button.y - 2.0), button);
+            let down = Rect::from_min_size(rect.right_bottom() - button - egui::vec2(2.0, 2.0), button);
             for (place, up, text) in [(up, true, "+"), (down, false, "−")] {
                 let tip = if up { "Raise the gain: spikes look bigger" } else { "Lower the gain: spikes look smaller" };
                 if ui.put(place, egui::Button::new(text).small()).on_hover_text(tip).clicked() {

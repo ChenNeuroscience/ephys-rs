@@ -409,6 +409,16 @@ fn padded(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
 }
 
 impl<N: NodeSet, A: AnnotationSet> egui_tiles::Behavior<Pane> for Panes<'_, N, A> {
+    /// Where a dragged window would go: in the accent (egui_tiles uses the selection's stroke, which is the colour
+    /// on the accent, so hard to see on a light theme).
+    fn drag_preview_stroke(&self, _visuals: &egui::Visuals) -> egui::Stroke {
+        egui::Stroke::new(2.0, self.colours.accent)
+    }
+
+    fn drag_preview_color(&self, _visuals: &egui::Visuals) -> egui::Color32 {
+        self.colours.accent.gamma_multiply(0.35)
+    }
+
     fn pane_ui(&mut self, ui: &mut egui::Ui, _tile: TileId, pane: &mut Pane) -> UiResponse {
         match *pane {
             Pane::Canvas => self.canvas.show(
