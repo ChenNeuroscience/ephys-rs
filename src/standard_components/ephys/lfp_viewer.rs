@@ -45,9 +45,6 @@ pub struct LfpViewer {
     pub span: f32,
     /// Microvolts from a trace's centre line to the edge of its row.
     pub scale_uv: f32,
-    pub first_channel: u32,
-    /// How many channels to show from the first, or 0 for all the rest.
-    pub channels_shown: u32,
     /// Each row's height, in points.
     pub row_height: f32,
     /// Whether to show each channel's spectrum, and over which band (Hz).
@@ -57,15 +54,7 @@ pub struct LfpViewer {
 
 impl Default for LfpViewer {
     fn default() -> Self {
-        LfpViewer {
-            span: 2.0,
-            scale_uv: 200.0,
-            first_channel: 0,
-            channels_shown: 0,
-            row_height: 40.0,
-            spectrum: true,
-            band: [4.0, 12.0],
-        }
+        LfpViewer { span: 2.0, scale_uv: 200.0, row_height: 40.0, spectrum: true, band: [4.0, 12.0] }
     }
 }
 
@@ -283,9 +272,8 @@ impl Node<Edges> for LfpViewer {
     fn process(&self, pass: &mut Pass<Edges>, traces: &mut Traces) {
         let Some(Some(Buffer::Continuous(input))) = pass.inputs.first() else { return };
         let rate = traces.rate;
-        let first = (self.first_channel as usize).min(input.channels.saturating_sub(1));
-        let rest = input.channels - first;
-        let shown = if self.channels_shown == 0 { rest } else { (self.channels_shown as usize).min(rest) }.max(1);
+        // Every channel: the view scrolls through them.
+        let (first, shown) = (0, input.channels.max(1));
         let per_column = ((self.span as f64 * rate as f64) / COLUMNS as f64).round().max(1.0) as usize;
         traces.reshape((first, shown, per_column));
         for t in 0..input.len {
@@ -346,47 +334,15 @@ impl Node<Edges> for LfpViewer {
         ]
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
-        let channels = match context.inputs[0] {
-            Some(DataStream::Continuous(c)) => c.channels,
-            _ => 64,
-        };
+    fn settings_ui(&mut self, ui: &mut egui::Ui, _context: &mut Context<Edges>) {
         settings_grid(ui, |ui| {
-            setting(ui, "Span", |ui| {
-                ui.add(egui::DragValue::new(&mut self.span).range(0.1..=30.0).speed(0.05).suffix(" s"))
-            });
-            setting(ui, "Scale", |ui| {
-                ui.add(egui::DragValue::new(&mut self.scale_uv).range(10.0..=5000.0).speed(2.0).suffix(" µV"))
-            });
-            setting(ui, "First channel", |ui| {
-                ui.add(
-                    egui::DragValue::new(&mut self.first_channel)
-                        .range(0..=channels.saturating_sub(1))
-                        .custom_formatter(|v, _| format!("{}", v + 1.0))
-                        .custom_parser(|s| s.trim().parse::<f64>().ok().map(|v| v - 1.0)),
-                )
-            });
-            setting(ui, "Channels shown", |ui| {
-                ui.horizontal(|ui| {
-                    let mut all = self.channels_shown == 0;
-                    ui.checkbox(&mut all, "all");
-                    if all {
-                        self.channels_shown = 0;
-                    } else {
-                        self.channels_shown = self.channels_shown.max(1);
-                        ui.add(egui::DragValue::new(&mut self.channels_shown).range(1..=channels.max(1)));
-                    }
-                })
-                .response
-            });
+            setting(ui, "Span", |ui| ui.add(self.span_field()));
+            setting(ui, "Scale", |ui| ui.add(self.scale_field()));
         });
     }
 
     fn view_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
         let locked = context.locked;
-        crate::standard_components::widgets::view_settings(ui, |ui| {
-            ui.add_enabled_ui(!locked, |ui| self.settings_ui(ui, context));
-        });
         let Some(DataStream::Continuous(stream)) = context.inputs[0] else {
             return preview::unconnected(ui, context.theme, "Connect a continuous data stream to view it");
         };
@@ -409,7 +365,16 @@ impl Node<Edges> for LfpViewer {
 }
 
 impl LfpViewer {
-    /// The rows' height, the spectrum, the upstream gain and the channel selection (if they're connected).
+    fn span_field(&mut self) -> egui::DragValue<'_> {
+        egui::DragValue::new(&mut self.span).range(0.1..=30.0).speed(0.05).suffix(" s")
+    }
+
+    fn scale_field(&mut self) -> egui::DragValue<'_> {
+        egui::DragValue::new(&mut self.scale_uv).range(10.0..=5000.0).speed(2.0).prefix("±").suffix(" µV")
+    }
+
+    /// The span, scale and rows' height, the spectrum, the upstream gain and the channel selection (if they're
+    /// connected).
     fn toolbar(
         &mut self,
         ui: &mut egui::Ui,
@@ -419,6 +384,12 @@ impl LfpViewer {
     ) {
         ui.add_enabled_ui(!context.locked, |ui| {
             ui.horizontal_wrapped(|ui| {
+                let label = ui.label("Span");
+                ui.add(self.span_field()).labelled_by(label.id).on_hover_text("Seconds across the view");
+                let label = ui.label("Scale");
+                ui.add(self.scale_field())
+                    .labelled_by(label.id)
+                    .on_hover_text("From a trace's middle to its row's edge");
                 let label = ui.label("Row height");
                 ui.add(egui::DragValue::new(&mut self.row_height).range(12.0..=400.0).speed(0.5).suffix(" px"))
                     .labelled_by(label.id);
