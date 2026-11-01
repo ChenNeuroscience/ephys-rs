@@ -26,6 +26,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             Action::Duplicate => selected && (!locked || only_annotations),
             Action::Delete => (selected || self.selection.edge.is_some()) && (!locked || only_annotations),
             Action::AddNode => !locked,
+            Action::Arrange => self.graph.iter().count() > 1,
             _ => true,
         }
     }
@@ -170,11 +171,13 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                 }
             }
             ui.separator();
-            for (action, icon, text) in
-                [(Action::FrameAll, Icon::FrameAll, "Frame all"), (Action::ActualSize, Icon::ActualSize, "Actual size")]
-            {
+            for (action, icon, text) in [
+                (Action::Arrange, Icon::Arrange, "Arrange nodes: in columns, left to right the way data flows"),
+                (Action::FrameAll, Icon::FrameAll, "Frame all"),
+                (Action::ActualSize, Icon::ActualSize, "Actual size"),
+            ] {
                 let tip = self.tooltip(&ctx, action, text);
-                if tool_button(ui, icon, &tip, true, false).clicked() {
+                if tool_button(ui, icon, &tip, self.enabled(action), false).clicked() {
                     chosen = Some(action);
                 }
             }

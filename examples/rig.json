@@ -33,7 +33,7 @@
         "label": "Acquisition Board",
         "pos": [
           0.0,
-          0.0
+          193.5
         ]
       },
       "2": {
@@ -46,8 +46,8 @@
         },
         "label": "Band-pass Filter",
         "pos": [
-          780.0,
-          0.0
+          840.0,
+          208.0
         ]
       },
       "3": {
@@ -64,8 +64,8 @@
         },
         "label": "Spike Detector",
         "pos": [
-          1040.0,
-          0.0
+          1120.0,
+          182.0
         ]
       },
       "4": {
@@ -78,8 +78,8 @@
         },
         "label": "Spike Viewer",
         "pos": [
-          1300.0,
-          0.0
+          1400.0,
+          116.0
         ]
       },
       "5": {
@@ -92,8 +92,8 @@
         },
         "label": "LFP Viewer",
         "pos": [
-          1300.0,
-          110.0
+          840.0,
+          439.0
         ]
       },
       "6": {
@@ -106,8 +106,8 @@
         },
         "label": "Write LTX",
         "pos": [
-          1560.0,
-          120.0
+          1400.0,
+          319.0
         ]
       },
       "7": {
@@ -136,7 +136,7 @@
         "label": "Camera",
         "pos": [
           0.0,
-          320.0
+          574.5
         ]
       },
       "8": {
@@ -161,8 +161,8 @@
         },
         "label": "Position Detector",
         "pos": [
-          400.0,
-          440.0
+          280.0,
+          533.0
         ]
       },
       "9": {
@@ -187,8 +187,8 @@
         },
         "label": "Tracker View",
         "pos": [
-          1040.0,
-          330.0
+          560.0,
+          605.0
         ]
       },
       "10": {
@@ -206,8 +206,8 @@
         },
         "label": "Reference",
         "pos": [
-          520.0,
-          0.0
+          560.0,
+          255.0
         ]
       },
       "11": {
@@ -220,8 +220,8 @@
         },
         "label": "Write Raw",
         "pos": [
-          1560.0,
-          -60.0
+          1400.0,
+          0.0
         ]
       },
       "12": {
@@ -233,8 +233,8 @@
         },
         "label": "TTL Viewer",
         "pos": [
-          520.0,
-          150.0
+          280.0,
+          78.0
         ]
       },
       "13": {
@@ -247,8 +247,8 @@
         },
         "label": "Channel Selector",
         "pos": [
-          260.0,
-          0.0
+          280.0,
+          277.5
         ]
       },
       "14": {
@@ -262,8 +262,8 @@
         },
         "label": "LFP Band-pass",
         "pos": [
-          780.0,
-          110.0
+          560.0,
+          454.0
         ]
       }
     },
@@ -546,61 +546,22 @@
     ]
   },
   "annotations": {
-    "next_id": 3,
+    "next_id": 2,
     "items": {
       "1": {
         "pos": [
           0.0,
-          -270.0
+          -90.0
         ],
         "size": [
-          320.0,
-          230.0
+          520.0,
+          60.0
         ],
         "kind": {
-          "type": "Markdown",
+          "type": "Heading",
           "content": {
-            "text": "### Example rig\nThe **spike viewer** sets the detector's thresholds and gains through *settings edges* (dashed), though it's downstream of it: drag a threshold in the viewer's window to move it. **Write LTX** only reads the gains, and the position detector's settings, to record them (dotted). The **LFP viewer** chooses the **channel selector**'s channels: tick them, then apply the selection.\n\nStart the fake board and camera in [synthetic_streams](https://github.com/ChenNeuroscience/ephys-rs/tree/main/synthetic_streams), then press Play.",
-            "attachments": {}
-          }
-        }
-      },
-      "2": {
-        "pos": [
-          -30.0,
-          270.0
-        ],
-        "size": [
-          1290.0,
-          310.0
-        ],
-        "kind": {
-          "type": "Box",
-          "content": {
-            "title": "Tracking",
-            "hue": "Green",
-            "fill": true,
-            "border": "Solid"
-          }
-        }
-      },
-      "3": {
-        "pos": [
-          340.0,
-          -150.0
-        ],
-        "size": [
-          700.0,
-          130.0
-        ],
-        "kind": {
-          "type": "Arrow",
-          "content": {
-            "hue": "Grey",
-            "flipped": [
-              false,
-              false
-            ]
+            "text": "Example processing graph",
+            "size": "Large"
           }
         }
       }

@@ -18,6 +18,8 @@ pub enum Action {
     Duplicate,
     Delete,
     SelectAll,
+    /// Lays the nodes out in columns, left to right the way data flows.
+    Arrange,
     /// Opens the menu of node types.
     AddNode,
     /// Picks the tool for drawing annotations of a type (by index) on the graph.
@@ -69,6 +71,8 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Item(Action::Duplicate),
             Item(Action::Delete),
             Item(Action::SelectAll),
+            Separator,
+            Item(Action::Arrange),
         ],
     ),
     ("Insert", &[Item(Action::AddNode), DrawTools]),
@@ -124,6 +128,7 @@ impl Action {
             Action::Duplicate => "Duplicate",
             Action::Delete => "Delete",
             Action::SelectAll => "Select All",
+            Action::Arrange => "Arrange Nodes",
             Action::AddNode => "Node…",
             Action::DrawTool(index) => annotations.get(index).map_or("?", |a| a.name),
             Action::FrameAll => "Frame All",

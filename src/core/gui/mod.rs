@@ -3,6 +3,7 @@
 //! settings (`node_window`). Node windows open docked, and can float.
 
 mod actions;
+mod arrange;
 mod canvas;
 mod create_menu;
 mod dev_tools;
@@ -471,6 +472,14 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             Action::Duplicate => self.duplicate_selection(),
             Action::Delete => self.delete_selection(),
             Action::SelectAll => self.select_all(),
+            Action::Arrange => {
+                for (id, pos) in arrange::arrange(&self.graph) {
+                    if let Some(entry) = self.graph.get_mut(id) {
+                        entry.pos = pos;
+                    }
+                }
+                self.canvas.frame_all();
+            }
             Action::FrameAll => self.canvas.frame_all(),
             Action::ActualSize => self.canvas.reset_zoom(),
             Action::ResetLayout => self.layout = Layout::default(),
@@ -975,6 +984,19 @@ mod tests {
         harness
     }
 
+    /// Adds an annotation below the example's nodes, and frames them all.
+    fn with_annotation(
+        harness: &mut Harness<TestApp>,
+        kind: AnnotationTypes,
+        pos: [f32; 2],
+        size: [f32; 2],
+    ) -> crate::core::annotation::AnnotationId {
+        let id = harness.state_mut().annotations.add(crate::core::annotation::Annotation { pos, size, kind });
+        harness.state_mut().canvas.frame_all();
+        harness.run_steps(3);
+        id
+    }
+
     fn node_named(app: &TestApp, label: &str) -> NodeId {
         app.graph.iter().find(|(_, e)| e.label == label).map(|(id, _)| id).expect("node")
     }
@@ -1153,11 +1175,11 @@ mod tests {
         // Grab the bar to the right of the tab, clear of the tab's close and dock buttons.
         let grab = egui::pos2(before.center().x + 30.0, before.top() + 12.0);
         pointer(&mut harness, grab, Some(true));
-        pointer(&mut harness, grab + egui::vec2(20.0, 10.0), None);
-        pointer(&mut harness, grab + egui::vec2(60.0, 40.0), None);
-        pointer(&mut harness, grab + egui::vec2(60.0, 40.0), Some(false));
+        pointer(&mut harness, grab + egui::vec2(-20.0, 10.0), None);
+        pointer(&mut harness, grab + egui::vec2(-60.0, 40.0), None);
+        pointer(&mut harness, grab + egui::vec2(-60.0, 40.0), Some(false));
         let moved = area(&harness).unwrap().min - before.min;
-        assert!(moved.x > 50.0 && moved.y > 30.0, "window should follow the drag, moved {moved:?}");
+        assert!(moved.x < -50.0 && moved.y > 30.0, "window should follow the drag, moved {moved:?}");
     }
 
     #[test]
@@ -1220,11 +1242,8 @@ mod tests {
     #[test]
     fn a_box_is_grabbed_by_its_title_not_its_inside() {
         let mut harness = harness();
-        let id =
-            harness.state().annotations.ids().find(|id| {
-                matches!(harness.state().annotations.get(*id).map(|a| &a.kind), Some(AnnotationTypes::Box(_)))
-            });
-        let id = id.expect("the example has a box");
+        let kind = AnnotationTypes::Box(Default::default());
+        let id = with_annotation(&mut harness, kind, [0.0, 900.0], [600.0, 300.0]);
         let pos = |h: &Harness<TestApp>| h.state().annotations.get(id).unwrap().pos;
         let drag = |h: &mut Harness<TestApp>, scene: [f32; 2]| {
             let start = h.state().canvas.to_screen(egui::pos2(scene[0], scene[1]));
@@ -1246,12 +1265,8 @@ mod tests {
     fn an_arrows_ends_are_dragged_one_at_a_time() {
         use crate::core::annotation::AnnotationSet as _;
         let mut harness = harness();
-        let app = harness.state();
-        let id = app
-            .annotations
-            .ids()
-            .find(|id| matches!(app.annotations.get(*id).map(|a| &a.kind), Some(AnnotationTypes::Arrow(_))));
-        let id = id.expect("the example has an arrow");
+        let id =
+            with_annotation(&mut harness, AnnotationTypes::Arrow(Default::default()), [0.0, 900.0], [300.0, 150.0]);
         let points = |h: &Harness<TestApp>| {
             let annotation = h.state().annotations.get(id).unwrap();
             annotation.kind.points(annotation.rect()).unwrap()
@@ -1309,7 +1324,8 @@ mod tests {
     fn the_annotation_pane_is_there_while_an_annotation_is_selected() {
         let mut harness = harness();
         assert!(!harness.state().layout.is_shown(Pane::Annotation));
-        let note = harness.state().annotations.ids().next().unwrap();
+        let kind = AnnotationTypes::Markdown(Default::default());
+        let note = with_annotation(&mut harness, kind, [0.0, 900.0], [260.0, 160.0]);
         harness.state_mut().selection.only_annotation(note);
         harness.run_steps(3);
         assert!(harness.state().layout.is_shown(Pane::Annotation));

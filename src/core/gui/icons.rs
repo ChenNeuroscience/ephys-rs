@@ -18,6 +18,8 @@ pub enum Icon {
     AddNode,
     Duplicate,
     Delete,
+    /// Arrange the nodes: boxes in columns, joined.
+    Arrange,
     FrameAll,
     ActualSize,
     /// Take a docked window out, to float.
@@ -106,6 +108,19 @@ impl Icon {
                 let stroke = Stroke::new(2.2 * s, fade(RED));
                 painter.line_segment([p(3.5, 3.5), p(12.5, 12.5)], stroke);
                 painter.line_segment([p(12.5, 3.5), p(3.5, 12.5)], stroke);
+            }
+            Icon::Arrange => {
+                let link = Stroke::new(1.2 * s, ink);
+                painter.line_segment([p(5.5, 8.0), p(10.5, 4.5)], link);
+                painter.line_segment([p(5.5, 8.0), p(10.5, 11.5)], link);
+                let colour = |c| fade(style::category_colour(c));
+                for (x, y, c) in [
+                    (1.5, 6.0, Category::Source),
+                    (10.5, 2.5, Category::Processing),
+                    (10.5, 9.5, Category::Visualisation),
+                ] {
+                    painter.rect(r(x, y, x + 4.5, y + 4.0), 0.8 * s, colour(c), Stroke::NONE, StrokeKind::Middle);
+                }
             }
             Icon::FrameAll => {
                 for (x, y, dx, dy) in

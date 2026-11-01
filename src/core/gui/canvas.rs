@@ -105,6 +105,16 @@ struct Layout {
     badge: Rect,
 }
 
+/// A node's size on the graph (unzoomed): its header and a row per port, with a divider between the data and
+/// settings ports, if it has both.
+pub fn node_size<E: Edges>(state: &NodeState<E>) -> egui::Vec2 {
+    let count = |role| state.count(role);
+    let data_rows = count(Role::Output) + count(Role::Input);
+    let settings_rows = count(Role::Setting) + count(Role::Control);
+    let divider = if settings_rows > 0 && data_rows > 0 { DIVIDER } else { 0.0 };
+    egui::vec2(NODE_WIDTH, HEADER + 2.0 * PAD + ROW * (data_rows + settings_rows) as f32 + divider)
+}
+
 impl Layout {
     /// One row per port: outputs, inputs, then settings and controls.
     fn new<E: Edges>(pos: [f32; 2], state: &NodeState<E>, to_screen: &TSTransform) -> Self {
@@ -113,7 +123,7 @@ impl Layout {
         let data_rows = count(Role::Output) + count(Role::Input);
         let settings_rows = count(Role::Setting) + count(Role::Control);
         let divider = if settings_rows > 0 && data_rows > 0 { DIVIDER } else { 0.0 };
-        let height = HEADER + 2.0 * PAD + ROW * (data_rows + settings_rows) as f32 + divider;
+        let height = node_size(state).y;
         let min = *to_screen * Pos2::from(pos);
         let rect = Rect::from_min_size(min, egui::vec2(NODE_WIDTH, height) * zoom);
         let header = Rect::from_min_size(min, egui::vec2(NODE_WIDTH, HEADER) * zoom);
