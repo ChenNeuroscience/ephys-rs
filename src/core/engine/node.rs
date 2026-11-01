@@ -82,6 +82,27 @@ impl<E: Edges> Context<'_, E> {
     }
 }
 
+/// A thread a node runs of its own while the graph runs (acquiring from a board, say), shown in the dev tools.
+pub struct NodeThread {
+    pub name: &'static str,
+    /// How the thread and the node's passes hand data to each other, e.g. "block queue".
+    pub link: &'static str,
+}
+
+/// What a node's drawing of one of its threads (in the dev tools) gets to work with.
+pub struct ThreadContext<'a> {
+    pub theme: &'a Colours,
+    /// The latest live data the node's processing has shown (see `Node::display`), while running.
+    pub display: Option<&'a (dyn Any + Send)>,
+}
+
+impl ThreadContext<'_> {
+    /// The latest live display, if there is one, of type `T`.
+    pub fn display<T: 'static>(&self) -> Option<&T> {
+        self.display?.downcast_ref()
+    }
+}
+
 /// A node type. Implementors are plain settings structs, saved with the graph.
 ///
 /// The ports may depend on the settings, and the output data streams on what is connected to the inputs; the
@@ -148,6 +169,14 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     /// the data streams they carry. When an output is being made in place (see `in_place`), its input is `None`
     /// in the pass, and the output's buffer already holds the input's data to transform.
     fn process(&self, _pass: &mut Pass<E>, _state: &mut Self::State) {}
+
+    /// Threads the node runs of its own while running (started with its state, say), for the dev tools.
+    fn threads(&self) -> Vec<NodeThread> {
+        Vec::new()
+    }
+
+    /// Draws what one of `threads()` (by index) is up to, in the dev tools: briefly, a few lines.
+    fn thread_ui(&self, _thread: usize, _ui: &mut egui::Ui, _context: &ThreadContext) {}
 }
 
 /// The closed set of node types a program is built with, as an enum with one variant per type. Implemented
@@ -178,6 +207,8 @@ pub trait NodeSet: Clone + PartialEq + Serialize + DeserializeOwned + Send + Syn
     fn initial_state(&self, inputs: &[Option<<Self::Edges as Edges>::DataStream>]) -> Box<dyn Any + Send>;
     /// `state` is the node's state, if it has any (as made by `initial_state`).
     fn process(&self, pass: &mut Pass<Self::Edges>, state: Option<&mut (dyn Any + Send)>);
+    fn threads(&self) -> Vec<NodeThread>;
+    fn thread_ui(&self, thread: usize, ui: &mut egui::Ui, context: &ThreadContext);
 
     fn info(&self) -> &'static NodeInfo {
         &Self::TYPES[self.type_index()]
@@ -319,6 +350,19 @@ macro_rules! node_set {
                         }
                     }),+
                 }
+            }
+
+            fn threads(&self) -> Vec<$crate::core::engine::NodeThread> {
+                match self { $($name::$variant(n) => $crate::core::engine::Node::<$edges>::threads(n)),+ }
+            }
+
+            fn thread_ui(
+                &self,
+                thread: usize,
+                ui: &mut eframe::egui::Ui,
+                context: &$crate::core::engine::ThreadContext,
+            ) {
+                match self { $($name::$variant(n) => $crate::core::engine::Node::<$edges>::thread_ui(n, thread, ui, context)),+ }
             }
         }
     };

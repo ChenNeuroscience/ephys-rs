@@ -87,7 +87,7 @@
             "span": 2.0,
             "scale_uv": 200.0,
             "first_channel": 0,
-            "channels_shown": 16
+            "channels_shown": 0
           }
         },
         "label": "LFP Viewer",

@@ -30,6 +30,8 @@ pub enum Icon {
     Play,
     /// Stop running it.
     Stop,
+    /// Show the developer tools: a terminal window.
+    DevTools,
 }
 
 const PAPER: Color32 = Color32::from_gray(246);
@@ -147,6 +149,12 @@ impl Icon {
             }
             Icon::Play => {
                 poly(vec![p(4.0, 2.0), p(14.0, 8.0), p(4.0, 14.0)], GREEN);
+            }
+            Icon::DevTools => {
+                painter.rect(r(1.0, 2.0, 15.0, 14.0), 1.5 * s, fade(Color32::from_gray(40)), line, StrokeKind::Middle);
+                let prompt = Stroke::new(1.5 * s, fade(GREEN));
+                painter.add(Shape::line(vec![p(3.5, 5.5), p(6.5, 8.0), p(3.5, 10.5)], prompt));
+                painter.line_segment([p(8.0, 11.0), p(12.0, 11.0)], Stroke::new(1.5 * s, fade(PAPER)));
             }
             Icon::Stop => {
                 painter.rect(r(3.0, 3.0, 13.0, 13.0), 1.5 * s, fade(RED), line, StrokeKind::Middle);

@@ -38,6 +38,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         match action {
             Action::DrawTool(index) => Some(self.canvas.tool == Tool::Draw(index)),
             Action::ToggleInspector => Some(self.layout.is_shown(Pane::Inspector)),
+            Action::ToggleDevTools => Some(self.layout.is_shown(Pane::DevTools)),
             Action::Theme(index) => Some(self.theme == index),
             Action::Play => Some(self.runner.is_some()),
             _ => None,
@@ -160,6 +161,10 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             }
 
             ui.separator();
+            let tip = self.tooltip(&ctx, Action::ToggleDevTools, "Developer tools");
+            if tool_button(ui, Icon::DevTools, &tip, true, self.layout.is_shown(Pane::DevTools)).clicked() {
+                chosen = Some(Action::ToggleDevTools);
+            }
             let button = tool_button(ui, Icon::Theme, "Theme", true, false);
             egui::Popup::menu(&button).show(|ui| {
                 for (index, theme) in self.themes.iter().enumerate() {

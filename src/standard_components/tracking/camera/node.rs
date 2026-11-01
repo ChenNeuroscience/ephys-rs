@@ -3,11 +3,11 @@
 use eframe::egui::{self, RichText};
 use serde::{Deserialize, Serialize};
 
-use super::capture::{Capture, State};
+use super::capture::{self, Capture, State};
 use super::{CameraControls, CameraSettings, CameraStats, CaptureStats, Control, Range, Source};
-use crate::core::engine::{Category, Context, Node, NodeInfo, Output, Pass, SettingPort};
+use crate::core::engine::{Category, Context, Node, NodeInfo, NodeThread, Output, Pass, SettingPort, ThreadContext};
 use crate::standard_components::tracking::Video;
-use crate::standard_components::widgets::{setting, settings_grid};
+use crate::standard_components::widgets::{queue_ui, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -67,6 +67,31 @@ impl Node<Edges> for Camera {
 
     fn display(&self) -> Option<Box<dyn std::any::Any + Send>> {
         Some(Box::new(CaptureStats::default()))
+    }
+
+    fn threads(&self) -> Vec<NodeThread> {
+        vec![NodeThread { name: "Camera capture", link: "frame queue" }]
+    }
+
+    fn thread_ui(&self, _thread: usize, ui: &mut egui::Ui, context: &ThreadContext) {
+        let small = |text: String| RichText::new(text).size(11.0);
+        let Some(stats) = context.display::<CaptureStats>() else {
+            ui.label(small("Takes frames as they arrive; starts when running.".into()).weak());
+            return;
+        };
+        let status = &stats.status;
+        match &status.state {
+            State::Starting => ui.label(small("Opening the camera…".into()).weak()),
+            State::Running => ui.label(small(status.description.clone())),
+            State::Problem(problem) => ui.label(small(problem.clone()).color(context.theme.warning)),
+        };
+        ui.label(small(format!("{:.1} frames/s · {} frames", status.fps, status.frames)).weak());
+        queue_ui(ui, context.theme, "frames", status.queued, capture::QUEUE_LEN);
+        if status.camera_dropped + status.queue_dropped > 0 {
+            let text =
+                format!("{} dropped by the camera, {} not taken in time", status.camera_dropped, status.queue_dropped);
+            ui.label(small(text).color(context.theme.warning));
+        }
     }
 
     fn initial_state(&self, _inputs: &[Option<DataStream>]) -> Capturing {

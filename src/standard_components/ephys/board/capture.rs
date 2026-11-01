@@ -14,7 +14,7 @@ use crossbeam_channel::{Receiver, Sender, TrySendError};
 use super::{Block, BoardInfo, Config, Source};
 
 /// Blocks that can wait for the node's passes: a few seconds' worth, for most boards.
-const QUEUE_LEN: usize = 512;
+pub const QUEUE_LEN: usize = 512;
 /// Seconds the measured sample rate is over.
 const RATE_WINDOW: f64 = 2.0;
 
@@ -43,6 +43,8 @@ pub struct Status {
     pub queue_dropped: u64,
     /// Samples per second, as they arrive, over the last couple of seconds.
     pub rate: f64,
+    /// Blocks waiting for the node's passes (of `QUEUE_LEN`).
+    pub queued: usize,
 }
 
 impl Status {
@@ -51,8 +53,8 @@ impl Status {
         self.state.clone_from(&other.state);
         self.info.clone_from(&other.info);
         self.warnings.clone_from(&other.warnings);
-        (self.samples, self.board_dropped, self.queue_dropped, self.rate) =
-            (other.samples, other.board_dropped, other.queue_dropped, other.rate);
+        (self.samples, self.board_dropped, self.queue_dropped, self.rate, self.queued) =
+            (other.samples, other.board_dropped, other.queue_dropped, other.rate, other.queued);
     }
 }
 
@@ -97,6 +99,7 @@ impl Capture {
     /// Copies the status into `status`, reusing its memory.
     pub fn status_into(&self, status: &mut Status) {
         status.copy_from(&self.shared.status.lock().unwrap());
+        status.queued = self.blocks.len();
     }
 }
 
@@ -111,7 +114,14 @@ impl Drop for Capture {
 
 fn capture(shared: &Shared, source: &Source, config: &Config, sender: &Sender<Block>, spares: &Receiver<Block>) {
     let stopping = || shared.stop.load(Ordering::Relaxed);
-    let set_state = |state| shared.status.lock().unwrap().state = state;
+    let set_state = |state: State| {
+        let mut status = shared.status.lock().unwrap();
+        // Logged when it changes, not every time it's tried again.
+        if let (State::Problem(problem), true) = (&state, status.state != state) {
+            log::warn!("{problem}");
+        }
+        status.state = state;
+    };
     let wait = || {
         let retry_at = Instant::now() + Duration::from_millis(500);
         while !stopping() && Instant::now() < retry_at {
@@ -137,6 +147,10 @@ fn capture(shared: &Shared, source: &Source, config: &Config, sender: &Sender<Bl
             let mut status = shared.status.lock().unwrap();
             status.warnings = board.warnings();
             status.state = State::Running;
+            log::info!("Acquiring from {}", board.info().description);
+            for warning in &status.warnings {
+                log::warn!("{warning}");
+            }
         }
         let mut next = None::<u64>;
         let mut recent = VecDeque::new(); // (when, samples) within RATE_WINDOW

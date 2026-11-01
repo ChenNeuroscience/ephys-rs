@@ -1,0 +1,660 @@
+//! The dev tools' picture of the threads: each thread as a container, with links between them where they hand
+//! things over.
+//!
+//! - The GUI (the main thread), which makes snapshots of the graph and shows nodes' latest displays.
+//! - The pass dispatcher, sending a pass to the workers' queue every `PASS_DURATION`.
+//! - The pass workers: one container, stacked to show there are several, holding the plan each pass runs
+//!   through, step by step: each node with the buffers it reads and fills, where it waits for the pass before
+//!   (to hand over its state: a sync point) and where it copies out what it shows (a copy point). Then the memory
+//!   each worker has for the plan.
+//! - Threads nodes run of their own (acquiring from a board, say), each drawn by its node (see
+//!   `Node::thread_ui`), linked to the node's step.
+//!
+//! While running, it shows the plan being run, and what each worker is up to; otherwise, the plan of the latest
+//! snapshot, as it would run.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Shape, Stroke, Vec2, vec2};
+
+use crate::core::engine::{
+    EdgeSet, Edges, Graph, NodeId, NodeSet, PASS_DURATION, Plan, Resolved, RunInfo, Runner, Snapshot, Step,
+    ThreadContext,
+};
+use crate::core::gui::style;
+use crate::core::theme::Colours;
+
+type DataStream<N> = <<N as NodeSet>::Edges as Edges>::DataStream;
+
+/// Room between the columns of threads, for the links between them.
+const GAP: f32 = 70.0;
+const ROW: f32 = 20.0;
+
+/// Where things were drawn, to link them up once everything is.
+#[derive(Default)]
+struct Anchors {
+    dispatcher: Option<Rect>,
+    /// The workers' first step, taking a pass off the queue.
+    queue: Option<Rect>,
+    steps: HashMap<NodeId, Rect>,
+    /// Nodes' displays, in the GUI's container.
+    displays: Vec<(NodeId, Rect)>,
+    /// Nodes' threads, and how each hands data to the node's passes.
+    node_threads: Vec<(NodeId, Rect, &'static str)>,
+}
+
+pub fn show<N: NodeSet>(
+    ui: &mut egui::Ui,
+    graph: &Graph<N>,
+    resolved: &Resolved<N::Edges>,
+    colours: &Colours,
+    runner: Option<&Runner<N>>,
+    snapshot: &Snapshot<N>,
+) {
+    let info = runner.map(|r| r.inspect());
+    let plan = info.as_ref().and_then(|i| i.running.as_ref()).map_or_else(|| snapshot.plan.clone(), |e| e.plan.clone());
+    let mut anchors = Anchors::default();
+    egui::ScrollArea::both().auto_shrink(false).show(ui, |ui| {
+        ui.horizontal_top(|ui| {
+            let spacing = ui.spacing().item_spacing;
+            // A column, with the usual spacing inside it.
+            let column = |ui: &mut egui::Ui, width: f32, add: &mut dyn FnMut(&mut egui::Ui)| {
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing = spacing;
+                    ui.set_width(width);
+                    add(ui);
+                });
+            };
+            ui.spacing_mut().item_spacing.x = GAP;
+            column(ui, 220.0, &mut |ui| {
+                gui_thread(ui, graph, colours, snapshot, &plan, &mut anchors);
+                ui.add_space(16.0);
+                dispatcher(ui, colours, info.as_ref(), &mut anchors);
+            });
+            column(ui, 450.0, &mut |ui| {
+                workers(ui, graph, resolved, colours, info.as_ref(), snapshot, &plan, &mut anchors);
+            });
+            column(ui, 250.0, &mut |ui| node_threads(ui, graph, colours, runner, &plan, &mut anchors));
+        });
+        links(ui, colours, &anchors);
+    });
+}
+
+/// A thread: a framed box with a title, and `stacked` > 1 drawn as a stack of that many. Returns its rect.
+fn container(
+    ui: &mut egui::Ui,
+    colours: &Colours,
+    title: &str,
+    detail: &str,
+    stacked: usize,
+    active: bool,
+    add: impl FnOnce(&mut egui::Ui),
+) -> Rect {
+    let behind = ui.painter().add(Shape::Noop);
+    let border = if active { colours.border } else { colours.divider };
+    let rect = egui::Frame::new()
+        .fill(colours.surface_raised)
+        .stroke(Stroke::new(1.0, border))
+        .corner_radius(6)
+        .inner_margin(10)
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            let row = ui
+                .horizontal(|ui| {
+                    let (dot, _) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
+                    let fill = if active { colours.success } else { colours.text_disabled };
+                    ui.painter().circle_filled(dot.center(), 4.0, fill);
+                    text(ui, title, FontId::proportional(13.5), colours.text_primary);
+                })
+                .response
+                .rect;
+            let right = egui::pos2(ui.max_rect().right(), row.center().y);
+            ui.painter().text(right, Align2::RIGHT_CENTER, detail, FontId::proportional(10.5), colours.text_secondary);
+            ui.add_space(4.0);
+            add(ui);
+        })
+        .response
+        .rect;
+    let copies = stacked.saturating_sub(1).min(2);
+    let shapes = (1..=copies)
+        .rev()
+        .map(|k| {
+            let offset = rect.translate(Vec2::splat(5.0 * k as f32));
+            let stroke = Stroke::new(1.0, colours.divider);
+            Shape::Rect(egui::epaint::RectShape::new(
+                offset,
+                6.0,
+                colours.surface_raised,
+                stroke,
+                egui::StrokeKind::Inside,
+            ))
+        })
+        .collect();
+    ui.painter().set(behind, Shape::Vec(shapes));
+    if copies > 0 {
+        ui.add_space(5.0 * copies as f32);
+    }
+    rect
+}
+
+/// A node as on the graph: its label on its category's colour, `width` wide (or as wide as the label).
+fn node_chip<N: NodeSet>(ui: &mut egui::Ui, graph: &Graph<N>, id: NodeId, width: Option<f32>) -> egui::Response {
+    let (label, category) = match graph.get(id) {
+        Some(entry) => (entry.label.clone(), entry.node.info().category),
+        None => ("(removed)".to_string(), crate::core::engine::Category::Processing),
+    };
+    let font = FontId::proportional(11.0);
+    let galley = ui.painter().layout_no_wrap(label, font, Color32::WHITE);
+    let size = vec2(width.unwrap_or(galley.size().x + 12.0), 16.0);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 3.0, style::category_colour(category));
+    painter.galley(rect.left_center() + vec2(6.0, -galley.size().y / 2.0), galley, Color32::WHITE);
+    response
+}
+
+fn stream_info<N: NodeSet>(stream: &DataStream<N>) -> &'static crate::core::engine::EdgeInfo {
+    &<DataStream<N> as EdgeSet>::KINDS[<DataStream<N> as EdgeSet>::kind_index(stream.kind())]
+}
+
+/// A buffer: a dot in its data stream's colour, and its number.
+fn buffer_tag<N: NodeSet>(ui: &mut egui::Ui, plan: &Plan<N>, buffer: usize, colours: &Colours) -> egui::Response {
+    let colour = plan.buffers().get(buffer).map_or(colours.text_disabled, |s| stream_info::<N>(s).colour);
+    let text = format!("b{buffer}");
+    let font = FontId::monospace(10.5);
+    let galley = ui.painter().layout_no_wrap(text, font, colours.text_secondary);
+    let (rect, response) = ui.allocate_exact_size(vec2(12.0 + galley.size().x, ROW), Sense::hover());
+    ui.painter().circle_filled(egui::pos2(rect.left() + 4.0, rect.center().y), 4.0, colour);
+    ui.painter().galley(
+        egui::pos2(rect.left() + 11.0, rect.center().y - galley.size().y / 2.0),
+        galley,
+        colours.text_secondary,
+    );
+    response
+}
+
+#[derive(Clone, Copy)]
+enum Glyph {
+    /// A sync point: waiting for another thread.
+    Sync,
+    /// A copy point: data copied out for another thread.
+    Copy,
+    /// Made in place, in its input's buffer.
+    InPlace,
+    /// A queue between threads.
+    Queue,
+}
+
+fn glyph(painter: &egui::Painter, rect: Rect, glyph: Glyph, colour: Color32) {
+    let s = rect.width() / 12.0;
+    let p = |x: f32, y: f32| rect.min + vec2(x, y) * s;
+    let line = Stroke::new(1.2 * s, colour);
+    match glyph {
+        Glyph::Sync => {
+            // An hourglass.
+            painter.add(Shape::convex_polygon(vec![p(2.0, 1.0), p(10.0, 1.0), p(6.0, 6.0)], colour, Stroke::NONE));
+            painter.add(Shape::convex_polygon(
+                vec![p(6.0, 6.0), p(10.0, 11.0), p(2.0, 11.0)],
+                Color32::TRANSPARENT,
+                line,
+            ));
+        }
+        Glyph::Copy => {
+            painter.rect_stroke(Rect::from_min_max(p(1.0, 1.0), p(8.0, 8.0)), 1.0, line, egui::StrokeKind::Middle);
+            painter.rect_filled(Rect::from_min_max(p(4.0, 4.0), p(11.0, 11.0)), 1.0, colour);
+        }
+        Glyph::InPlace => {
+            // Round and back to where it started.
+            let centre = p(6.0, 6.0);
+            let arc: Vec<Pos2> = (0..=12)
+                .map(|i| {
+                    let a = std::f32::consts::PI * (0.3 + 1.5 * i as f32 / 12.0);
+                    centre + vec2(a.cos(), -a.sin()) * 4.0 * s
+                })
+                .collect();
+            let end = *arc.last().unwrap();
+            painter.add(Shape::line(arc, line));
+            let tip = vec![end + vec2(-2.5, -1.0) * s, end + vec2(2.5, -1.0) * s, end + vec2(0.0, 2.5) * s];
+            painter.add(Shape::convex_polygon(tip, colour, Stroke::NONE));
+        }
+        Glyph::Queue => {
+            for x in [1.0, 4.5, 8.0] {
+                painter.rect_filled(Rect::from_min_max(p(x, 3.0), p(x + 2.5, 9.0)), 0.5, colour);
+            }
+        }
+    }
+}
+
+/// A glyph with a tooltip. Returns where it is.
+fn badge(ui: &mut egui::Ui, which: Glyph, colour: Color32, tooltip: &str) -> Rect {
+    let (rect, response) = ui.allocate_exact_size(vec2(14.0, ROW), Sense::hover());
+    glyph(ui.painter(), Rect::from_center_size(rect.center(), Vec2::splat(11.0)), which, colour);
+    response.on_hover_text(tooltip);
+    rect
+}
+
+/// Text just as wide as it is (a label in a row here can be given the rest of the row, and centred in it).
+fn text(ui: &mut egui::Ui, text: &str, font: FontId, colour: Color32) -> egui::Response {
+    let galley = ui.painter().layout_no_wrap(text.to_string(), font, colour);
+    let (rect, response) = ui.allocate_exact_size(galley.size(), Sense::hover());
+    ui.painter().galley(rect.min, galley, colour);
+    response
+}
+
+fn small(text: impl Into<String>, colour: Color32) -> RichText {
+    RichText::new(text).size(11.0).color(colour)
+}
+
+/// A short name for a plan, from where it is in memory: the same plan, the same name.
+fn plan_id<N: NodeSet>(plan: &Arc<Plan<N>>) -> String {
+    format!("@{:06x}", Arc::as_ptr(plan) as usize & 0xff_ffff)
+}
+
+fn megabytes(bytes: usize) -> String {
+    if bytes >= 100_000 { format!("{:.1} MB", bytes as f64 / 1e6) } else { format!("{:.1} kB", bytes as f64 / 1e3) }
+}
+
+fn gui_thread<N: NodeSet>(
+    ui: &mut egui::Ui,
+    graph: &Graph<N>,
+    colours: &Colours,
+    snapshot: &Snapshot<N>,
+    plan: &Plan<N>,
+    anchors: &mut Anchors,
+) {
+    let frame_ms = ui.input(|i| i.unstable_dt) * 1000.0;
+    container(ui, colours, "GUI", "main thread", 1, true, |ui| {
+        ui.label(small(format!("Edits make snapshots: latest version {}", snapshot.version), colours.text_secondary));
+        ui.label(small(format!("Last frame {frame_ms:.1} ms"), colours.text_secondary));
+        let shown: Vec<NodeId> = plan.steps().iter().filter(|s| s.display.is_some()).map(|s| s.id).collect();
+        if shown.is_empty() {
+            return;
+        }
+        ui.add_space(4.0);
+        ui.label(small("Shows the latest display of", colours.text_secondary));
+        for id in shown {
+            let row = ui
+                .horizontal(|ui| {
+                    ui.set_height(ROW);
+                    node_chip(ui, graph, id, None);
+                })
+                .response;
+            anchors.displays.push((id, row.rect.with_max_x(ui.max_rect().right())));
+        }
+    });
+}
+
+fn dispatcher<N: NodeSet>(ui: &mut egui::Ui, colours: &Colours, info: Option<&RunInfo<N>>, anchors: &mut Anchors) {
+    let period = format!("every {:.0} ms", PASS_DURATION * 1000.0);
+    let rect = container(ui, colours, "Pass dispatcher", &period, 1, info.is_some(), |ui| {
+        let Some(info) = info else {
+            ui.label(small("Stopped. Press Play to run.", colours.text_secondary));
+            return;
+        };
+        ui.label(small(format!("Next pass p{}", info.next_pass), colours.text_primary));
+        let queued = info.running.as_ref().map_or(0, |e| e.queued);
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::Label::new(small(format!("Queued {queued} of {}", info.queue_capacity), colours.text_secondary))
+                    .extend(),
+            );
+            let (bar, _) = ui.allocate_exact_size(vec2(60.0, 6.0), Sense::hover());
+            ui.painter().rect_filled(bar, 2.0, colours.surface_sunken);
+            let filled = queued as f32 / info.queue_capacity.max(1) as f32;
+            let fill = if filled >= 1.0 { colours.warning } else { colours.accent };
+            ui.painter().rect_filled(bar.with_max_x(bar.left() + bar.width() * filled.min(1.0)), 2.0, fill);
+        });
+        let dropped = info.stats.dropped;
+        let colour = if dropped > 0 { colours.warning } else { colours.text_secondary };
+        ui.label(small(format!("{dropped} dropped (queue full)"), colour));
+    });
+    anchors.dispatcher = Some(rect);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn workers<N: NodeSet>(
+    ui: &mut egui::Ui,
+    graph: &Graph<N>,
+    resolved: &Resolved<N::Edges>,
+    colours: &Colours,
+    info: Option<&RunInfo<N>>,
+    snapshot: &Snapshot<N>,
+    plan: &Arc<Plan<N>>,
+    anchors: &mut Anchors,
+) {
+    let count = info.map_or(crate::core::engine::default_workers(), |i| i.workers.len());
+    let title = format!("Pass workers × {count}");
+    let running = info.and_then(|i| i.running.as_ref());
+    let detail = match running {
+        Some(epoch) => format!("epoch {} · plan {} · version {}", epoch.number, plan_id(plan), epoch.version),
+        None => format!("plan {} · version {}", plan_id(plan), snapshot.version),
+    };
+    container(ui, colours, &title, &detail, count, info.is_some(), |ui| {
+        match info {
+            Some(info) => worker_chips(ui, colours, info),
+            None => {
+                ui.label(small(
+                    "Not running: the plan for the latest snapshot, as it would run.",
+                    colours.text_secondary,
+                ));
+            }
+        }
+        if let Some(preparing) = info.and_then(|i| i.preparing.as_ref()) {
+            let text = format!(
+                "Getting ready for epoch {} (plan {}, version {}): {} of {count} workers have buffers",
+                preparing.number,
+                plan_id(&preparing.plan),
+                preparing.version,
+                preparing.ready
+            );
+            ui.label(small(text, colours.warning));
+        }
+        ui.add_space(6.0);
+        ui.label(small("Each pass", colours.text_secondary));
+        steps(ui, graph, resolved, colours, plan, anchors);
+        not_running(ui, graph, colours, plan);
+        ui.add_space(6.0);
+        memory(ui, graph, colours, plan, info);
+        ui.add_space(4.0);
+        legend(ui, colours);
+    });
+}
+
+/// What each worker is doing: the pass it's running, idle, or still on an older epoch.
+fn worker_chips<N: NodeSet>(ui: &mut egui::Ui, colours: &Colours, info: &RunInfo<N>) {
+    let running = info.running.as_ref().map(|e| e.number);
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
+        for (index, worker) in info.workers.iter().enumerate() {
+            let (text, fill, ink) = match (worker.pass, worker.epoch) {
+                (_, None) => (format!("{index} making buffers"), colours.control, colours.text_secondary),
+                (Some(pass), Some(epoch)) if Some(epoch) == running => {
+                    (format!("{index} p{pass}"), colours.accent, colours.on_accent)
+                }
+                (Some(pass), Some(epoch)) => (format!("{index} e{epoch}·p{pass}"), colours.warning, colours.on_accent),
+                (None, Some(epoch)) if Some(epoch) == running => {
+                    (format!("{index} idle"), colours.control, colours.text_primary)
+                }
+                (None, Some(epoch)) => (format!("{index} on e{epoch}"), colours.control, colours.warning),
+            };
+            let font = FontId::monospace(10.5);
+            let galley = ui.painter().layout_no_wrap(text, font, ink);
+            let (rect, response) = ui.allocate_exact_size(galley.size() + vec2(10.0, 4.0), Sense::hover());
+            ui.painter().rect_filled(rect, 3.0, fill);
+            ui.painter().galley(rect.min + vec2(5.0, 2.0), galley, ink);
+            response.on_hover_text(format!(
+                "Worker {index}: {} passes run, {} of buffers",
+                worker.passes,
+                megabytes(worker.memory)
+            ));
+        }
+    });
+}
+
+/// The plan, a step to a row, between taking the pass off the queue and finishing it.
+fn steps<N: NodeSet>(
+    ui: &mut egui::Ui,
+    graph: &Graph<N>,
+    resolved: &Resolved<N::Edges>,
+    colours: &Colours,
+    plan: &Plan<N>,
+    anchors: &mut Anchors,
+) {
+    let queue = ui
+        .horizontal(|ui| {
+            ui.set_height(ROW);
+            badge(ui, Glyph::Queue, colours.text_secondary, "The pass's turn comes: a worker takes it off the queue");
+            text(ui, "take the next pass off the queue", FontId::proportional(11.0), colours.text_secondary);
+        })
+        .response
+        .rect;
+    anchors.queue = Some(queue);
+    for (index, step) in plan.steps().iter().enumerate() {
+        let row = ui.horizontal(|ui| step_row(ui, graph, resolved, colours, plan, index, step)).response;
+        anchors.steps.insert(step.id, row.rect.with_max_x(ui.max_rect().right()));
+    }
+    if plan.steps().is_empty() {
+        ui.label(small("Nothing runs: no node has all its outputs known.", colours.text_secondary));
+    }
+}
+
+fn step_row<N: NodeSet>(
+    ui: &mut egui::Ui,
+    graph: &Graph<N>,
+    resolved: &Resolved<N::Edges>,
+    colours: &Colours,
+    plan: &Plan<N>,
+    index: usize,
+    step: &Step,
+) {
+    ui.set_height(ROW);
+    ui.spacing_mut().item_spacing.x = 4.0;
+    ui.label(RichText::new(format!("{:>2}", index + 1)).monospace().size(10.5).color(colours.text_disabled));
+    node_chip(ui, graph, step.id, Some(130.0));
+    let state = resolved.get(&step.id);
+    let input_names: Vec<&str> = state.map(|s| s.inputs.iter().map(|i| i.name).collect()).unwrap_or_default();
+    let output_names: Vec<&str> = state.map(|s| s.outputs.iter().map(|o| o.name).collect()).unwrap_or_default();
+    for (i, buffer) in step.inputs.iter().enumerate() {
+        let name = input_names.get(i).copied().unwrap_or("input");
+        match buffer {
+            Some(b) => {
+                buffer_tag(ui, plan, *b, colours).on_hover_text(format!("Reads {name} from buffer {b}"));
+            }
+            // Made in place: shown with the output.
+            None if step.in_place.contains(&Some(i)) => {}
+            None => {
+                ui.add(egui::Label::new(small("–", colours.text_disabled)).extend())
+                    .on_hover_text(format!("{name}: not connected"));
+            }
+        }
+    }
+    let (arrow, _) = ui.allocate_exact_size(vec2(12.0, ROW), Sense::hover());
+    let (y, stroke) = (arrow.center().y, Stroke::new(1.0, colours.text_secondary));
+    ui.painter().line_segment([egui::pos2(arrow.left() + 1.0, y), egui::pos2(arrow.right() - 1.0, y)], stroke);
+    let tip = egui::pos2(arrow.right() - 1.0, y);
+    ui.painter().add(Shape::line(vec![tip + vec2(-3.5, -3.0), tip, tip + vec2(-3.5, 3.0)], stroke));
+    for (o, &b) in step.outputs.iter().enumerate() {
+        let name = output_names.get(o).copied().unwrap_or("output");
+        let stream = plan.buffers().get(b).map(|s| s.summary()).unwrap_or_default();
+        match step.in_place[o] {
+            Some(input) => {
+                let input = input_names.get(input).copied().unwrap_or("input");
+                let text = format!(
+                    "Makes {name} ({stream}) in place: edits buffer {b}, where {input} was, so nothing's copied"
+                );
+                buffer_tag(ui, plan, b, colours).on_hover_text(&text);
+                badge(ui, Glyph::InPlace, colours.success, &text);
+            }
+            None => {
+                buffer_tag(ui, plan, b, colours).on_hover_text(format!("Fills {name} ({stream}) in buffer {b}"));
+            }
+        }
+    }
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        if step.display.is_some() {
+            badge(
+                ui,
+                Glyph::Copy,
+                colours.accent,
+                "Copy point: copies what it shows into a display buffer, then swaps that for the GUI's latest \
+                 (only if the GUI isn't reading it just then: it never waits)",
+            );
+        }
+        if step.state.is_some() {
+            badge(
+                ui,
+                Glyph::Sync,
+                colours.warning,
+                "Sync point: waits for the pass before to finish with the node's state (a filter's history, say), \
+                 then hands it on to the next pass once done",
+            );
+        }
+    });
+}
+
+/// Nodes that don't run, and why.
+fn not_running<N: NodeSet>(ui: &mut egui::Ui, graph: &Graph<N>, colours: &Colours, plan: &Plan<N>) {
+    let idle: Vec<NodeId> =
+        graph.iter().map(|(id, _)| id).filter(|id| !plan.steps().iter().any(|s| s.id == *id)).collect();
+    if idle.is_empty() {
+        return;
+    }
+    ui.add_space(4.0);
+    ui.label(small("Not in the plan (some output can't be known: an input not connected?)", colours.text_secondary));
+    ui.horizontal_wrapped(|ui| {
+        ui.multiply_opacity(0.5);
+        for id in idle {
+            node_chip(ui, graph, id, None);
+        }
+    });
+}
+
+/// Each buffer a worker has for the plan, what it holds and its size, then the totals.
+fn memory<N: NodeSet>(
+    ui: &mut egui::Ui,
+    graph: &Graph<N>,
+    colours: &Colours,
+    plan: &Plan<N>,
+    info: Option<&RunInfo<N>>,
+) {
+    let bytes = plan.buffer_bytes();
+    let total: usize = bytes.iter().sum();
+    egui::CollapsingHeader::new(small(format!("Memory: {} a worker", megabytes(total)), colours.text_primary))
+        .id_salt("dev tools memory")
+        .default_open(true)
+        .show(ui, |ui| {
+            egui::Grid::new("dev tools buffers").num_columns(4).spacing(vec2(12.0, 2.0)).striped(true).show(ui, |ui| {
+                for heading in ["buffer", "holds", "filled by", "size"] {
+                    ui.add(egui::Label::new(small(heading, colours.text_disabled)).extend());
+                }
+                ui.end_row();
+                for (b, stream) in plan.buffers().iter().enumerate() {
+                    buffer_tag(ui, plan, b, colours);
+                    ui.label(small(
+                        format!("{} · {}", stream_info::<N>(stream).name, stream.summary()),
+                        colours.text_primary,
+                    ));
+                    // The first step to fill it, and any making outputs in place in it after.
+                    let fillers: Vec<NodeId> =
+                        plan.steps().iter().filter(|s| s.outputs.contains(&b)).map(|s| s.id).collect();
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        for id in fillers {
+                            node_chip(ui, graph, id, None);
+                        }
+                    });
+                    ui.add(egui::Label::new(small(megabytes(bytes[b]), colours.text_secondary)).extend());
+                    ui.end_row();
+                }
+            });
+            let states = plan.steps().iter().filter(|s| s.state.is_some()).count();
+            let displays = plan.steps().iter().filter(|s| s.display.is_some()).count();
+            ui.label(small(
+                format!(
+                    "Also: {states} node states (one each, handed from pass to pass), and {displays} display buffers \
+                     a worker (and one more each, with the GUI)."
+                ),
+                colours.text_secondary,
+            ));
+            if let Some(info) = info {
+                let all: usize = info.workers.iter().map(|w| w.memory).sum();
+                ui.label(small(
+                    format!("All workers: {} (while moving to a new plan, old buffers and new)", megabytes(all)),
+                    colours.text_secondary,
+                ));
+            }
+        });
+}
+
+fn legend(ui: &mut egui::Ui, colours: &Colours) {
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 3.0;
+        for (which, colour, text) in [
+            (Glyph::Sync, colours.warning, "sync point"),
+            (Glyph::Copy, colours.accent, "copy to display"),
+            (Glyph::InPlace, colours.success, "made in place"),
+            (Glyph::Queue, colours.text_secondary, "queue"),
+        ] {
+            badge(ui, which, colour, text);
+            ui.add(egui::Label::new(small(text, colours.text_secondary)).extend());
+            ui.add_space(8.0);
+        }
+    });
+}
+
+fn node_threads<N: NodeSet>(
+    ui: &mut egui::Ui,
+    graph: &Graph<N>,
+    colours: &Colours,
+    runner: Option<&Runner<N>>,
+    plan: &Plan<N>,
+    anchors: &mut Anchors,
+) {
+    let mut any = false;
+    for step in plan.steps() {
+        let Some(entry) = graph.get(step.id) else { continue };
+        for (index, thread) in entry.node.threads().iter().enumerate() {
+            any = true;
+            let mut draw = |ui: &mut egui::Ui, display: Option<&(dyn std::any::Any + Send)>| {
+                let rect = container(ui, colours, thread.name, "", 1, runner.is_some(), |ui| {
+                    node_chip(ui, graph, step.id, None);
+                    ui.add_space(2.0);
+                    entry.node.thread_ui(index, ui, &ThreadContext { theme: colours, display });
+                });
+                anchors.node_threads.push((step.id, rect, thread.link));
+                ui.add_space(12.0);
+            };
+            let shown = runner.and_then(|r| r.with_display(step.id, |d| draw(ui, Some(d))));
+            if shown.is_none() {
+                draw(ui, None);
+            }
+        }
+    }
+    if !any {
+        ui.label(small("No node runs threads of its own.", colours.text_secondary));
+    }
+}
+
+/// Curves from one thread to another where they hand things over, with what it is.
+fn links(ui: &egui::Ui, colours: &Colours, anchors: &Anchors) {
+    let painter = ui.painter();
+    let colour = colours.text_secondary.gamma_multiply(0.7);
+    let link = |from: Pos2, to: Pos2, label: Option<&str>| {
+        let bend = ((to.x - from.x).abs() * 0.5).max(30.0);
+        let (dx_from, dx_to) = if to.x >= from.x { (bend, -bend) } else { (-bend, bend) };
+        let curve = egui::epaint::CubicBezierShape::from_points_stroke(
+            [from, from + vec2(dx_from, 0.0), to + vec2(dx_to, 0.0), to],
+            false,
+            Color32::TRANSPARENT,
+            Stroke::new(1.2, colour),
+        );
+        painter.add(curve);
+        let back = if to.x >= from.x { -1.0 } else { 1.0 };
+        let tip = vec![to, to + vec2(6.0 * back, -3.5), to + vec2(6.0 * back, 3.5)];
+        painter.add(Shape::convex_polygon(tip, colour, Stroke::NONE));
+        if let Some(label) = label {
+            let middle = from.lerp(to, 0.5);
+            let galley = painter.layout_no_wrap(label.to_string(), FontId::proportional(10.0), colours.text_secondary);
+            let rect = Align2::CENTER_CENTER.anchor_size(middle, galley.size()).expand2(vec2(4.0, 1.0));
+            painter.rect_filled(rect, 3.0, colours.surface);
+            painter.galley(rect.min + vec2(4.0, 1.0), galley, colours.text_secondary);
+        }
+    };
+    if let (Some(dispatcher), Some(queue)) = (anchors.dispatcher, anchors.queue) {
+        link(dispatcher.right_center(), queue.left_center() - vec2(10.0, 0.0), Some("pass queue"));
+    }
+    let mut labelled = false;
+    for (id, display) in &anchors.displays {
+        if let Some(step) = anchors.steps.get(id) {
+            let label = (!labelled).then_some("display swap");
+            labelled = true;
+            link(step.left_center() - vec2(10.0, 0.0), display.right_center() + vec2(10.0, 0.0), label);
+        }
+    }
+    for (id, thread, how) in &anchors.node_threads {
+        if let Some(step) = anchors.steps.get(id) {
+            link(thread.left_center(), step.right_center() + vec2(10.0, 0.0), Some(how));
+        }
+    }
+}

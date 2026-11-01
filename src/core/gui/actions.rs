@@ -26,6 +26,7 @@ pub enum Action {
     ActualSize,
     ResetLayout,
     ToggleInspector,
+    ToggleDevTools,
     /// Chooses a theme, by index.
     Theme(usize),
     /// Starts or stops running the graph.
@@ -78,6 +79,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Item(Action::ActualSize),
             Separator,
             Item(Action::ToggleInspector),
+            Item(Action::ToggleDevTools),
             Item(Action::ResetLayout),
             Separator,
             Submenu("Theme", &[Themes]),
@@ -86,7 +88,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
 ];
 
 /// Checked in this order, so that e.g. shift-ctrl-Z (redo) is seen before ctrl-Z (undo).
-const SHORTCUT_ORDER: [Action; 11] = [
+const SHORTCUT_ORDER: [Action; 12] = [
     Action::Redo,
     Action::Undo,
     Action::SaveAs,
@@ -98,6 +100,7 @@ const SHORTCUT_ORDER: [Action; 11] = [
     Action::Delete,
     Action::FrameAll,
     Action::Play,
+    Action::ToggleDevTools,
 ];
 
 impl Action {
@@ -126,6 +129,7 @@ impl Action {
             Action::ActualSize => "Actual Size",
             Action::ResetLayout => "Reset Layout",
             Action::ToggleInspector => "Inspector",
+            Action::ToggleDevTools => "Developer Tools",
             Action::Theme(index) => themes.get(index).map_or("?", |t| t.name),
             Action::Play => "Play",
         }
@@ -145,6 +149,8 @@ impl Action {
             Action::SelectAll => command(Key::A),
             Action::FrameAll => Some(KeyboardShortcut::new(Modifiers::NONE, Key::F)),
             Action::Play => Some(KeyboardShortcut::new(Modifiers::NONE, Key::Space)),
+            // As in browsers.
+            Action::ToggleDevTools => Some(KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::ALT, Key::I)),
             _ => None,
         }
     }

@@ -8,9 +8,9 @@ use super::capture::{self, Capture, State, Status};
 use super::{
     AUX_PER_HEADSTAGE, Bandwidth, Block, BoardInfo, Config, Headstage, OpalKellyKind, PORTS, SAMPLE_RATES, Source,
 };
-use crate::core::engine::{Category, Context, Node, NodeInfo, Output, Pass};
+use crate::core::engine::{Category, Context, Node, NodeInfo, NodeThread, Output, Pass, ThreadContext};
 use crate::standard_components::ephys::{Continuous, Event, Events};
-use crate::standard_components::widgets::{named_settings_grid, setting, settings_grid};
+use crate::standard_components::widgets::{named_settings_grid, queue_ui, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind};
 
 /// The board's analogue inputs.
@@ -136,6 +136,31 @@ impl Node<Edges> for AcquisitionBoard {
         Some(Box::new(BoardDisplay::default()))
     }
 
+    fn threads(&self) -> Vec<NodeThread> {
+        vec![NodeThread { name: "Board capture", link: "block queue" }]
+    }
+
+    fn thread_ui(&self, _thread: usize, ui: &mut egui::Ui, context: &ThreadContext) {
+        let small = |text: String| RichText::new(text).size(11.0);
+        let Some(display) = context.display::<BoardDisplay>() else {
+            ui.label(small("Reads the board as samples arrive; starts when running.".into()).weak());
+            return;
+        };
+        let status = &display.status;
+        match &status.state {
+            State::Starting => ui.label(small("Opening the board…".into()).weak()),
+            State::Running => ui.label(small(status.info.as_ref().map_or(String::new(), |i| i.description.clone()))),
+            State::Problem(problem) => ui.label(small(problem.clone()).color(context.theme.warning)),
+        };
+        ui.label(small(format!("{:.0} samples/s · {} samples", status.rate, status.samples)).weak());
+        queue_ui(ui, context.theme, "blocks", status.queued, capture::QUEUE_LEN);
+        if status.board_dropped + status.queue_dropped > 0 {
+            let text =
+                format!("{} dropped by the board, {} not taken in time", status.board_dropped, status.queue_dropped);
+            ui.label(small(text).color(context.theme.warning));
+        }
+    }
+
     fn initial_state(&self, _inputs: &[Option<DataStream>]) -> Acquiring {
         Acquiring { capture: Some(Capture::start(self.source.clone(), self.config())), ..Default::default() }
     }
@@ -172,6 +197,13 @@ impl Node<Edges> for AcquisitionBoard {
                 },
             };
             if !self.matches(&block) {
+                if acquiring.mismatched == 0 {
+                    let channels = block.channels(&block.ephys);
+                    log::warn!(
+                        "The board's sending {channels} headstage channels, not the {} set: skipping them",
+                        Headstage::total(&self.headstages)
+                    );
+                }
                 acquiring.mismatched += (block.samples - offset) as u64;
                 capture.recycle(block);
                 continue;

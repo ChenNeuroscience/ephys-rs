@@ -12,16 +12,18 @@ use egui_tiles::{Container, Linear, LinearDir, SimplificationOptions, Tile, Tile
 use serde::{Deserialize, Serialize};
 
 use super::canvas::{Canvas, Selection};
+use super::dev_tools::{self, DevTools};
 use super::icons::Icon;
 use super::{Event, inspector, toolbar};
 use crate::core::annotation::{AnnotationSet, Annotations};
-use crate::core::engine::{Graph, NodeId, NodeSet, Resolved, Runner};
+use crate::core::engine::{Graph, NodeId, NodeSet, Resolved, Runner, Snapshot};
 use crate::core::theme::Colours;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub enum Pane {
     Canvas,
     Inspector,
+    DevTools,
     /// A node's window: its view, or its settings.
     Node(NodeId),
 }
@@ -105,7 +107,14 @@ impl Layout {
         self.tile(pane).is_some_and(|t| self.tree.tiles.is_visible(t))
     }
 
+    /// Shows or hides a pane: the first time, a pane not in the default layout (the dev tools) goes below the
+    /// canvas, where browsers put theirs.
     pub fn toggle_pane(&mut self, pane: Pane) {
+        if self.tile(pane).is_none() {
+            let tile = self.tree.tiles.insert_pane(pane);
+            self.below_canvas(tile, 0.5);
+            return self.show(pane);
+        }
         if self.is_shown(pane) { self.hide(pane) } else { self.show(pane) }
     }
 
@@ -141,7 +150,7 @@ impl Layout {
             let new = tiles.insert_pane(pane);
             match target.and_then(|tabs| tiles.get_mut(tabs)) {
                 Some(Tile::Container(container)) => container.add_child(new),
-                _ => self.below_canvas(new),
+                _ => self.below_canvas(new, 0.65),
             }
         }
         self.show(pane);
@@ -163,13 +172,14 @@ impl Layout {
             .max_by(|a, b| area(*a).total_cmp(&area(*b)))
     }
 
-    fn below_canvas(&mut self, pane: TileId) {
+    /// Puts `pane` below the canvas, which keeps `share` of the height.
+    fn below_canvas(&mut self, pane: TileId, share: f32) {
         let tiles = &mut self.tree.tiles;
         let Some(canvas) = tiles.find_pane(&Pane::Canvas) else { return };
         let above = tiles.parent_of(canvas).unwrap_or(canvas);
         let parent = tiles.parent_of(above);
         let below = tiles.insert_tab_tile(vec![pane]);
-        let column = tiles.insert_container(Linear::new_binary(LinearDir::Vertical, [above, below], 0.65));
+        let column = tiles.insert_container(Linear::new_binary(LinearDir::Vertical, [above, below], share));
         match parent.and_then(|p| tiles.get_mut(p)) {
             Some(Tile::Container(container)) => {
                 let _ = container.replace_child(above, column);
@@ -226,6 +236,9 @@ pub struct Panes<'a, N: NodeSet, A: AnnotationSet> {
     pub resolved: &'a Resolved<N::Edges>,
     pub colours: &'static Colours,
     pub runner: Option<&'a Runner<N>>,
+    /// The latest snapshot of the graph.
+    pub snapshot: &'a Snapshot<N>,
+    pub dev_tools: &'a mut DevTools,
     pub canvas: &'a mut Canvas,
     pub selection: &'a mut Selection,
     pub open_windows: &'a HashSet<NodeId>,
@@ -342,6 +355,9 @@ impl<N: NodeSet, A: AnnotationSet> egui_tiles::Behavior<Pane> for Panes<'_, N, A
                     self.events,
                 )
             }),
+            Pane::DevTools => {
+                dev_tools::show(ui, self.dev_tools, self.graph, self.resolved, self.colours, self.runner, self.snapshot)
+            }
             Pane::Node(id) => padded(ui, |ui| node_ui(ui, self.graph, self.resolved, self.colours, self.runner, id)),
         }
         UiResponse::None
@@ -351,6 +367,7 @@ impl<N: NodeSet, A: AnnotationSet> egui_tiles::Behavior<Pane> for Panes<'_, N, A
         match pane {
             Pane::Canvas => "Graph".into(),
             Pane::Inspector => "Inspector".into(),
+            Pane::DevTools => "Developer Tools".into(),
             Pane::Node(id) => self.graph.get(*id).map_or("?".to_string(), |e| e.label.clone()).into(),
         }
     }

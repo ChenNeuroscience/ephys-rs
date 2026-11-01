@@ -13,7 +13,7 @@ use crossbeam_channel::{Receiver, Sender, TrySendError};
 use super::{self as camera, CameraControls, CameraSettings, Frame, Source};
 
 /// Frames that can wait for the next pass; enough for a second or more at most frame rates.
-const QUEUE_LEN: usize = 64;
+pub const QUEUE_LEN: usize = 64;
 /// Seconds of frames the measured frame rate is over.
 const RATE_WINDOW: f64 = 2.0;
 
@@ -44,6 +44,8 @@ pub struct Status {
     pub queue_dropped: u64,
     /// Frames per second, from the camera's timestamps over the last couple of seconds.
     pub fps: f64,
+    /// Frames waiting for the node's next pass (of `QUEUE_LEN`).
+    pub queued: usize,
 }
 
 impl Status {
@@ -52,8 +54,8 @@ impl Status {
         self.state.clone_from(&other.state);
         self.description.clone_from(&other.description);
         self.warnings.clone_from(&other.warnings);
-        (self.controls, self.frames, self.camera_dropped, self.queue_dropped, self.fps) =
-            (other.controls, other.frames, other.camera_dropped, other.queue_dropped, other.fps);
+        (self.controls, self.frames, self.camera_dropped, self.queue_dropped, self.fps, self.queued) =
+            (other.controls, other.frames, other.camera_dropped, other.queue_dropped, other.fps, other.queued);
     }
 }
 
@@ -101,6 +103,7 @@ impl Capture {
     /// Copies the status into `status`, reusing its memory.
     pub fn status_into(&self, status: &mut Status) {
         status.copy_from(&self.shared.status.lock().unwrap());
+        status.queued = self.frames.len();
     }
 }
 
@@ -115,7 +118,14 @@ impl Drop for Capture {
 
 fn capture(shared: &Shared, source: &Source, sender: &Sender<Frame>) {
     let stopping = || shared.stop.load(Ordering::Relaxed);
-    let set_state = |state| shared.status.lock().unwrap().state = state;
+    let set_state = |state: State| {
+        let mut status = shared.status.lock().unwrap();
+        // Logged when it changes, not every time it's tried again.
+        if let (State::Problem(problem), true) = (&state, status.state != state) {
+            log::warn!("{problem}");
+        }
+        status.state = state;
+    };
     while !stopping() {
         let settings = *shared.settings.lock().unwrap();
         let mut camera = match camera::open(source, &settings) {
@@ -133,6 +143,7 @@ fn capture(shared: &Shared, source: &Source, sender: &Sender<Frame>) {
             let mut status = shared.status.lock().unwrap();
             status.description = camera.description();
             status.state = State::Running;
+            log::info!("Capturing from {}", status.description);
         }
         let (mut applied, mut last) = (None, None::<u64>);
         let mut recent = VecDeque::new(); // camera timestamps within RATE_WINDOW

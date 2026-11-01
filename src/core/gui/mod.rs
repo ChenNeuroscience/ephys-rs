@@ -4,6 +4,7 @@
 mod actions;
 mod canvas;
 mod create_menu;
+mod dev_tools;
 mod docking;
 mod icons;
 mod inspector;
@@ -30,6 +31,7 @@ use docking::{Layout, Pane, Panes};
 
 /// Runs the app built from `C`'s components, opening the file at `path` (or an empty graph).
 pub fn run<C: Components>(path: Option<PathBuf>) -> eframe::Result {
+    crate::core::console::init(true);
     let app = App::<C::Nodes, C::Annotations>::open(path, C::THEMES);
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../../../assets/icon.png")).expect("valid icon");
     let options = eframe::NativeOptions {
@@ -136,6 +138,7 @@ pub struct App<N: NodeSet, A: AnnotationSet> {
     history: History<N, A>,
     /// The graph running, while it is.
     runner: Option<Runner<N>>,
+    dev_tools: dev_tools::DevTools,
 }
 
 impl<N: NodeSet, A: AnnotationSet> App<N, A> {
@@ -162,6 +165,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             menu: None,
             status: None,
             runner: None,
+            dev_tools: dev_tools::DevTools::default(),
         };
         if let Some(path) = path {
             if path.exists() {
@@ -402,6 +406,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                 self.menu = Some(CreateMenu::new(screen, at, None));
             }
             Action::ToggleInspector => self.layout.toggle_pane(Pane::Inspector),
+            Action::ToggleDevTools => self.layout.toggle_pane(Pane::DevTools),
             Action::Play => {
                 if self.runner.take().is_none() {
                     // Run whatever's latest, including edits not yet taken as a version.
@@ -641,6 +646,8 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
 
     pub fn show(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        // Keep (and echo) what's been logged, so the log's queue doesn't fill.
+        crate::core::console::drain();
         self.shortcuts(&ctx);
         #[cfg(target_os = "macos")]
         for action in self.mac_menu.as_ref().map(|m| m.actions()).unwrap_or_default() {
@@ -679,6 +686,8 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                 resolved: &resolved,
                 colours,
                 runner: self.runner.as_ref(),
+                snapshot: &self.history.current.snapshot,
+                dev_tools: &mut self.dev_tools,
                 canvas: &mut self.canvas,
                 selection: &mut self.selection,
                 open_windows: &open_windows,
@@ -1018,6 +1027,19 @@ mod tests {
         harness.key_press(Key::Space);
         harness.run_steps(2);
         assert!(harness.state().runner.is_none());
+    }
+
+    #[test]
+    fn dev_tools_show_the_plan() {
+        let mut harness = harness();
+        harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::ALT, Key::I);
+        // Other tests log at the same time, so the console's filtered to nothing, to look the same every time.
+        harness.state_mut().dev_tools.hide_console_lines();
+        harness.run_steps(3);
+        assert!(harness.state().layout.is_shown(Pane::DevTools));
+        // The plan's name is where it is in memory, which changes from run to run.
+        let options = egui_kittest::SnapshotOptions::new().max_failed_pixels(400);
+        harness.snapshot_options("dev_tools", &options);
     }
 
     #[test]

@@ -22,12 +22,13 @@ pub struct LfpViewer {
     /// Microvolts from a trace's centre line to the edge of its row.
     pub scale_uv: f32,
     pub first_channel: u32,
+    /// How many channels to show from the first, or 0 for all the rest.
     pub channels_shown: u32,
 }
 
 impl Default for LfpViewer {
     fn default() -> Self {
-        LfpViewer { span: 2.0, scale_uv: 200.0, first_channel: 0, channels_shown: 16 }
+        LfpViewer { span: 2.0, scale_uv: 200.0, first_channel: 0, channels_shown: 0 }
     }
 }
 
@@ -111,7 +112,8 @@ impl Node<Edges> for LfpViewer {
         let Some(Some(Buffer::Continuous(input))) = pass.inputs.first() else { return };
         let rate = traces.rate as f64;
         let first = (self.first_channel as usize).min(input.channels.saturating_sub(1));
-        let shown = (self.channels_shown as usize).min(input.channels - first).max(1);
+        let rest = input.channels - first;
+        let shown = if self.channels_shown == 0 { rest } else { (self.channels_shown as usize).min(rest) }.max(1);
         let per_column = ((self.span as f64 * rate) / COLUMNS as f64).round().max(1.0) as usize;
         traces.reshape((first, shown, per_column));
         for t in 0..input.len {
@@ -171,7 +173,19 @@ impl Node<Edges> for LfpViewer {
                         .custom_parser(|s| s.trim().parse::<f64>().ok().map(|v| v - 1.0)),
                 )
             });
-            setting(ui, "Channels shown", |ui| ui.add(egui::DragValue::new(&mut self.channels_shown).range(1..=64)));
+            setting(ui, "Channels shown", |ui| {
+                ui.horizontal(|ui| {
+                    let mut all = self.channels_shown == 0;
+                    ui.checkbox(&mut all, "all");
+                    if all {
+                        self.channels_shown = 0;
+                    } else {
+                        self.channels_shown = self.channels_shown.max(1);
+                        ui.add(egui::DragValue::new(&mut self.channels_shown).range(1..=channels.max(1)));
+                    }
+                })
+                .response
+            });
         });
     }
 
@@ -202,6 +216,8 @@ impl Node<Edges> for LfpViewer {
         let row = rect.height() / display.shown.max(1) as f32;
         let painter = ui.painter_at(rect);
         let column = rect.width() / COLUMNS as f32;
+        // Numbered every so many rows, so the numbers don't overlap.
+        let every = (12.0 / row).ceil().max(1.0) as usize;
         // The newest column at the right; columns not yet filled are left empty.
         let start = COLUMNS - display.columns;
         for i in 0..display.shown {
@@ -218,6 +234,9 @@ impl Node<Edges> for LfpViewer {
                 })
                 .collect();
             painter.add(Shape::line(points, Stroke::new(1.0, Continuous::INFO.colour)));
+            if i % every != 0 {
+                continue;
+            }
             painter.text(
                 egui::pos2(rect.left() + 4.0, centre - row * 0.5 + 2.0),
                 Align2::LEFT_TOP,

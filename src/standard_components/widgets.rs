@@ -4,6 +4,7 @@ use eframe::egui;
 
 use crate::DataStream;
 use crate::core::engine::EdgeSet;
+use crate::core::theme::Colours;
 
 /// Two-column grid of labelled settings.
 pub fn settings_grid(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
@@ -163,4 +164,16 @@ pub fn padlock(
     points.push(centre + egui::vec2(r, if locked { r * 0.4 } else { 0.0 }));
     painter.add(egui::Shape::line(points, stroke));
     painter.circle_filled(body.center() - egui::vec2(0.0, 0.5), body.height() * 0.14, background); // keyhole
+}
+
+/// How full a queue between threads is: "12 of 512 blocks", and a bar. For nodes' threads in the dev tools.
+pub fn queue_ui(ui: &mut egui::Ui, theme: &Colours, what: &str, queued: usize, capacity: usize) {
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(format!("{queued} of {capacity} {what} queued")).size(11.0));
+        let (bar, _) = ui.allocate_exact_size(egui::vec2(50.0, 6.0), egui::Sense::hover());
+        ui.painter().rect_filled(bar, 2.0, theme.surface_sunken);
+        let filled = (queued as f32 / capacity.max(1) as f32).min(1.0);
+        let fill = if filled > 0.75 { theme.warning } else { theme.accent };
+        ui.painter().rect_filled(bar.with_max_x(bar.left() + bar.width() * filled), 2.0, fill);
+    });
 }
