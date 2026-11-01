@@ -89,7 +89,7 @@ pub fn side_toggle(ui: &mut egui::Ui, label: &str, open: bool) -> egui::Response
 }
 
 /// The chart, filling the space left: 0 s is the oldest frame kept, so the lines fill from the left and then
-/// scroll. Frames where an LED wasn't found leave a gap in its line.
+/// scroll (see `time_axis`). Frames where an LED wasn't found leave a gap in its line.
 pub fn chart(ui: &mut egui::Ui, history: &History) {
     let start = history.front().map_or(0.0, |&(t, _)| t);
     let top = history.iter().map(|&(_, a)| a[0].max(a[1])).max().unwrap_or(0).max(10) as f64 * 1.15;
@@ -107,8 +107,9 @@ pub fn chart(ui: &mut egui::Ui, history: &History) {
         .allow_boxed_zoom(false)
         .allow_double_click_reset(false)
         .show(ui, |plot| {
-            // A little room after the last second suggests the future, yet to come.
-            plot.set_plot_bounds(PlotBounds::from_min_max([0.0, 0.0], [SECONDS + 0.2, top]));
+            let now = history.back().map_or(0.0, |&(t, _)| t - start);
+            let (left, right) = crate::core::time_axis::window(0.0, now, SECONDS);
+            plot.set_plot_bounds(PlotBounds::from_min_max([left, 0.0], [right, top]));
             for (i, name) in ["Big", "Small"].into_iter().enumerate() {
                 for run in seen_runs(history, i, start) {
                     plot.line(Line::new(name, run).color(COLOURS[i]).width(2.0));

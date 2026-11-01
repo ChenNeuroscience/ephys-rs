@@ -198,8 +198,9 @@ impl Node<Edges> for TtlViewer {
         let (label, counts) = (34.0, 170.0);
         let trace = egui::Rect::from_x_y_ranges(rect.left() + label..=rect.right() - counts, rect.y_range());
         let row = rect.height() / display.lines as f32;
-        let x =
-            |time: f64| trace.left() + ((time - (display.now - display.span)) / display.span) as f32 * trace.width();
+        // Filling from the left, then scrolling, with room for the future at the right (see `time_axis`).
+        let (left, right) = crate::core::time_axis::window(0.0, display.now, display.span);
+        let x = |time: f64| trace.left() + ((time - left) / (right - left)) as f32 * trace.width();
         let font = FontId::monospace(11.0);
         for line in 0..display.lines {
             let top = rect.top() + row * line as f32;
@@ -214,7 +215,7 @@ impl Node<Edges> for TtlViewer {
                 level = change.high;
                 points.push(Pos2::new(at, if level { high } else { low }));
             }
-            points.push(Pos2::new(trace.right(), if level { high } else { low }));
+            points.push(Pos2::new(x(display.now), if level { high } else { low }));
             painter.add(Shape::line(points, Stroke::new(1.5, Events::INFO.colour)));
             if line > 0 {
                 painter.hline(rect.x_range(), top, Stroke::new(1.0, theme.divider.gamma_multiply(0.5)));

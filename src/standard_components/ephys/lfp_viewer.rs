@@ -447,7 +447,10 @@ impl LfpViewer {
             let spectrum = if self.spectrum && width > SPECTRUM_WIDTH * 2.0 { SPECTRUM_WIDTH } else { 0.0 };
             let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height * rows.len() as f32), Sense::hover());
             let painter = ui.painter_at(rect);
-            let column = (width - label - spectrum) / COLUMNS as f32;
+            // Filling from the left, then scrolling, with room for the future at the right (see `time_axis`).
+            let future = 1.0 + crate::core::time_axis::FUTURE as f32;
+            let column = (width - label - spectrum) / (COLUMNS as f32 * future);
+            // The columns filled so far are the last of each row's.
             let start = COLUMNS - display.columns;
             for (r, i) in rows.enumerate() {
                 let top = rect.top() + r as f32 * height;
@@ -481,7 +484,7 @@ impl LfpViewer {
                 let highs = &display.highs[i * COLUMNS..(i + 1) * COLUMNS];
                 let points: Vec<Pos2> = (start..COLUMNS)
                     .flat_map(|c| {
-                        let x = rect.left() + label + (c as f32 + 0.5) * column;
+                        let x = rect.left() + label + ((c - start) as f32 + 0.5) * column;
                         // Down and up each column, so its whole range is drawn.
                         let (a, b) = if c % 2 == 0 { (lows[c], highs[c]) } else { (highs[c], lows[c]) };
                         [egui::pos2(x, y(a)), egui::pos2(x, y(b))]

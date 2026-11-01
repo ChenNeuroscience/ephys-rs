@@ -404,7 +404,8 @@ fn pass_time_chart(ui: &mut egui::Ui, colours: &Colours, times: &[[f64; 2]]) {
         .collect();
     let budget = PASS_DURATION * 1000.0;
     let top = ms.iter().map(|p| p[1]).fold(budget * 1.25, f64::max);
-    let end = ms.last().map_or(10.0, |p| p[0]);
+    let (start, end) = (ms.first().map_or(0.0, |p| p[0]), ms.last().map_or(0.0, |p| p[0]));
+    let (left, right) = crate::core::time_axis::window(start, end, 10.0);
     Plot::new("pass times")
         .height(110.0)
         .y_axis_formatter(|mark, _| format!("{} ms", mark.value))
@@ -415,7 +416,7 @@ fn pass_time_chart(ui: &mut egui::Ui, colours: &Colours, times: &[[f64; 2]]) {
         .allow_boxed_zoom(false)
         .allow_double_click_reset(false)
         .show(ui, |plot| {
-            plot.set_plot_bounds(PlotBounds::from_min_max([end - 10.0, 0.0], [end, top]));
+            plot.set_plot_bounds(PlotBounds::from_min_max([left, 0.0], [right, top]));
             plot.hline(HLine::new("each pass's time", budget).color(colours.warning.gamma_multiply(0.7)));
             let each = Line::new("pass", PlotPoints::from(ms)).color(colours.accent.gamma_multiply(0.45)).width(1.0);
             plot.line(each);
