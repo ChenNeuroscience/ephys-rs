@@ -21,7 +21,8 @@ pub struct Showing(Latest<Frame>);
 
 impl crate::core::engine::PassState for Showing {
     const WHY: &'static str = "Only where it sends the latest frame to its window, kept so the frames' memory is \
-                               reused. Nothing carries over, so this needn't be a sync point.";
+                               reused: working memory, so each worker has its own.";
+    const CARRIED_OVER: bool = false;
 }
 
 impl Node<Edges> for VideoViewer {

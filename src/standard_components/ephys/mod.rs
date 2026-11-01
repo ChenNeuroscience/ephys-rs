@@ -6,6 +6,7 @@ pub mod board;
 pub mod gain;
 pub mod lfp_viewer;
 pub mod reference;
+pub mod ttl_viewer;
 
 use eframe::egui::Color32;
 

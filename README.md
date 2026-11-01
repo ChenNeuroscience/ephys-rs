@@ -14,7 +14,7 @@ You build a graph of nodes, and press Play to run it:
 
 - **Sources**: the Acquisition Board (Open Ephys's boards, generations 1 to 3, and Intan's RHD USB board, or the fake one below), with headstage channels, auxiliary and analogue inputs, and digital inputs as events; and the Camera (FLIR cameras through Spinnaker, or the fake one).
 - **Processing**: Reference (one channel, common average or median, per group, or per channel), Band-pass Filter, Gain, Spike Detector (in tetrodes, or groups of any size), and Position Detector (LEDs in video).
-- **Viewers**: LFP, spikes, video, and the Tracker View (the camera, with detection and calibration).
+- **Viewers**: LFP, spikes, digital inputs (the TTL Viewer: each line's level, and how many times it's gone up since acquisition and recording started), video, and the Tracker View (the camera, with detection and calibration, and the path while recording).
 - **Writers**: Write LTX (tetrode spikes, 5 kHz continuous data, positions and digital inputs, for legacy tetrode analysis code) and Write Raw (Open Ephys's binary format). Press Record (or Ctrl/⌘ R): the writers open their files, then recording starts, and the acquisition clock beside Play shows how long it's been going.
 
 Nodes can also edit each other's settings, through settings edges (dashed, with arrows both ways); a node that only reads a setting, as Write LTX reads the position detector's crop and calibration to record them, has a dotted edge. While recording, settings are locked.

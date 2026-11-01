@@ -3,6 +3,8 @@
 //! detector's settings (which it edits through its controls), with eye and padlock toggles in their headers for
 //! what's shown over the video and whether it can be changed; below it, a chart of the LEDs' sizes.
 
+use std::sync::{Arc, Mutex};
+
 use eframe::egui::{self, Color32, ColorImage, Rect, RichText, Sense, TextureHandle, TextureOptions};
 use serde::{Deserialize, Serialize};
 
@@ -11,14 +13,14 @@ use super::camera::capture::State;
 use super::camera::node::camera_settings_ui;
 use super::led_chart::{self, History};
 use super::position_detector::{calibration_ui, crop_ui, detection_ui};
-use crate::core::engine::{Category, Context, Control, CopyTo, Input, Node, NodeInfo, Output, Pass};
+use crate::core::engine::{Category, Context, Control, CopyTo, EdgeType, Input, Node, NodeInfo, Output, Pass};
 use crate::core::exchange::Latest;
 use crate::core::theme::Colours;
 use crate::standard_components::preview;
 use crate::standard_components::tracking::VideoBuffer;
 use crate::standard_components::tracking::overlay::{self, Drag, Overlay, Overlays, Xform};
 use crate::standard_components::tracking::pipeline::{Blob, row_spans};
-use crate::standard_components::tracking::{Crop, Detection};
+use crate::standard_components::tracking::{Crop, Detection, Positions};
 use crate::standard_components::widgets::{named_settings_grid, section};
 use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
 
@@ -33,12 +35,19 @@ pub struct TrackerView {
     pub camera_locked: bool,
 }
 
-/// The tracker's state while running: the LEDs' recent sizes, and what it last copied for its window.
+/// The tracker's state while running: the LEDs' recent sizes, the path while recording, and what it last copied
+/// for its window.
 #[derive(Default)]
 pub struct Tracking {
     history: History,
+    path: Arc<Mutex<Path>>,
+    recording: bool,
     shown: Latest<TrackerDisplay>,
 }
+
+/// Where the animal's been while recording: the middle of the LEDs found in each frame (in pixels), NaN where
+/// none were. Shared with the window, which can clear it; recording starting clears it too.
+pub type Path = Vec<[f32; 2]>;
 
 impl crate::core::engine::PassState for Tracking {
     const WHY: &'static str = "The LEDs' sizes over the last few seconds, for the chart, which each pass adds \
@@ -72,6 +81,7 @@ pub struct TrackerDisplay {
     leds: Vec<Blob>,
     history: History,
     stats: Option<CaptureStats>,
+    path: Option<Arc<Mutex<Path>>>,
 }
 
 impl Node<Edges> for TrackerView {
@@ -119,17 +129,25 @@ impl Node<Edges> for TrackerView {
             _ => 0.0,
         };
         let history = History::with_capacity((fps * led_chart::SECONDS) as usize + 16);
-        Tracking { history, shown: Latest::default() }
+        Tracking { history, ..Default::default() }
     }
 
     /// Records the LEDs' sizes, and keeps the pass's last frame, the LEDs found in it and the camera's stats. A
     /// pass without a frame is only shown if the camera isn't running, to say why.
     fn process(&self, pass: &mut Pass<Edges>, tracking: &mut Tracking) {
-        let Tracking { history, shown } = tracking;
+        let Tracking { history, path, recording, shown } = tracking;
+        if pass.recording && !*recording {
+            path.lock().unwrap().clear();
+        }
+        *recording = pass.recording;
         if let Some(Buffer::Positions(positions)) = pass.inputs[1] {
             for sample in &positions.samples {
                 let area = |led: Option<Blob>| led.map_or(0, |b| b.area);
                 led_chart::record(history, sample.time, [area(sample.leds[0]), area(sample.leds[1])]);
+            }
+            if pass.recording && !positions.samples.is_empty() {
+                let mut path = path.lock().unwrap();
+                path.extend(positions.samples.iter().map(|sample| middle(&sample.leds)));
             }
         }
         let video = match pass.inputs[0] {
@@ -165,6 +183,9 @@ impl Node<Edges> for TrackerView {
             }
             display.history.clear();
             display.history.extend(history.iter().copied());
+            if display.path.as_ref().is_none_or(|p| !Arc::ptr_eq(p, path)) {
+                display.path = Some(path.clone());
+            }
         });
     }
 
@@ -263,6 +284,13 @@ impl TrackerView {
             overlay::draw(&ui.painter_at(rect), xf, &detection, &self.overlays, &display.leds);
         } else {
             overlay::draw(&ui.painter_at(rect), xf, &Detection::default(), &self.overlays, &display.leds);
+        }
+        if let Some(path) = &display.path {
+            let calibration = match &context.controls[1] {
+                Some(Setting::Detection(detection)) => detection.pixels_per_metre(),
+                _ => None,
+            };
+            path_ui(ui, rect, xf, path, calibration, context.theme);
         }
         ui.ctx().request_repaint();
     }
@@ -437,6 +465,49 @@ fn frame_size(context: &Context<Edges>) -> [f32; 2] {
 }
 
 /// The strip along the bottom, with the chart of the LEDs' sizes at its right (which can be closed).
+/// The middle of the LEDs found, or NaN if none were.
+fn middle(leds: &[Option<Blob>; 2]) -> [f32; 2] {
+    let found: Vec<&Blob> = leds.iter().flatten().collect();
+    if found.is_empty() {
+        return [f32::NAN; 2];
+    }
+    let n = found.len() as f32;
+    [found.iter().map(|b| b.x).sum::<f32>() / n, found.iter().map(|b| b.y).sum::<f32>() / n]
+}
+
+/// The path recorded, over the frame, with a button to clear it and how long it is.
+fn path_ui(ui: &mut egui::Ui, frame: Rect, xf: Xform, path: &Mutex<Path>, calibration: Option<f32>, theme: &Colours) {
+    let mut path = path.lock().unwrap();
+    if path.is_empty() {
+        return;
+    }
+    let painter = ui.painter_at(frame);
+    let stroke = egui::Stroke::new(1.5, Positions::INFO.colour.gamma_multiply(0.85));
+    let mut length = 0.0;
+    // Broken where no LED was found.
+    for run in path.split(|p| !p[0].is_finite()) {
+        length +=
+            run.windows(2).map(|w| ((w[1][0] - w[0][0]).powi(2) + (w[1][1] - w[0][1]).powi(2)).sqrt()).sum::<f32>();
+        if run.len() > 1 {
+            painter.add(egui::Shape::line(run.iter().map(|p| xf.to_screen(*p)).collect(), stroke));
+        }
+    }
+    let corner = Rect::from_min_size(frame.min + egui::vec2(8.0, 8.0), egui::vec2(220.0, 22.0));
+    ui.scope_builder(egui::UiBuilder::new().max_rect(corner), |ui| {
+        ui.horizontal(|ui| {
+            if ui.small_button("Clear path").clicked() {
+                path.clear();
+            }
+            let length = match calibration {
+                Some(ppm) => format!("{:.2} m", length / ppm),
+                None => format!("{length:.0} px"),
+            };
+            let text = RichText::new(format!("path {length}")).small().color(theme.text_secondary);
+            ui.label(text).on_hover_text("Where the LEDs have been while recording (cleared when recording starts)");
+        });
+    });
+}
+
 /// How the view's three parts (settings, camera, LED chart) are laid out, from the shape of its window.
 #[derive(Clone, Copy, PartialEq)]
 enum Arrangement {

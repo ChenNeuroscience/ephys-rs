@@ -627,11 +627,13 @@ fn memory<N: NodeSet>(
                 }
             });
             let states = plan.steps().iter().filter(|s| s.state.is_some()).count();
+            let working = plan.steps().iter().filter(|s| s.memory.is_some()).count();
             let copying = plan.steps().iter().filter(|s| s.copies.is_some()).count();
             ui.label(small(
                 format!(
-                    "Also: {states} node states (one each, handed from pass to pass), and whatever the {copying} \
-                     nodes copying out keep to copy into."
+                    "Also: {states} node states (one each, handed from pass to pass), {working} nodes' working \
+                     memory (each worker its own, so no waiting), and whatever the {copying} nodes copying out keep \
+                     to copy into."
                 ),
                 colours.text_secondary,
             ));

@@ -15,7 +15,7 @@ mod core;
 mod standard_components;
 
 use standard_components::annotations::{image, markdown, sticky_note};
-use standard_components::ephys::{self, band_pass, board, gain, lfp_viewer, reference};
+use standard_components::ephys::{self, band_pass, board, gain, lfp_viewer, reference, ttl_viewer};
 use standard_components::recording::{ltx, raw};
 use standard_components::spikes::{self, spike_detector, spike_viewer};
 use standard_components::tracking::{self, camera, position_detector, tracker_view, video_viewer};
@@ -51,6 +51,7 @@ node_set! {
         PositionDetector(position_detector::PositionDetector),
         LfpViewer(lfp_viewer::LfpViewer),
         SpikeViewer(spike_viewer::SpikeViewer),
+        TtlViewer(ttl_viewer::TtlViewer),
         VideoViewer(video_viewer::VideoViewer),
         TrackerView(tracker_view::TrackerView),
         WriteLtx(ltx::WriteLtx),

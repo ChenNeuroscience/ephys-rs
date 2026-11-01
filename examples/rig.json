@@ -1,6 +1,6 @@
 {
   "graph": {
-    "next_id": 12,
+    "next_id": 13,
     "nodes": {
       "1": {
         "node": {
@@ -223,6 +223,19 @@
           1300.0,
           -60.0
         ]
+      },
+      "12": {
+        "node": {
+          "type": "TtlViewer",
+          "settings": {
+            "span": 5.0
+          }
+        },
+        "label": "TTL Viewer",
+        "pos": [
+          520.0,
+          150.0
+        ]
       }
     },
     "edges": [
@@ -433,6 +446,17 @@
         "to": {
           "node": 11,
           "port": 1
+        }
+      },
+      {
+        "dimension": "Data",
+        "from": {
+          "node": 1,
+          "port": 1
+        },
+        "to": {
+          "node": 12,
+          "port": 0
         }
       }
     ]

@@ -7,7 +7,9 @@
 //! from the outputs of the nodes before it.
 //!
 //! Passes run at the same time on different workers, which is fine for most nodes but not for those that
-//! carry state from one pass to the next (a filter's history, say). Each node's state lives in a slot, on a
+//! carry state from one pass to the next (a filter's history, say). (A node whose state is only working memory,
+//! carrying nothing over, has its own on each worker instead, made with the worker's buffers: see
+//! `PassState::CARRIED_OVER`.) Each node's state lives in a slot, on a
 //! cache line of its own, with a turn number: pass n waits (spinning briefly, then yielding) for the turn to
 //! reach n, uses the state, then sets it to n + 1 to hand over to the next pass. As long as each pass stays
 //! behind the one before, there's little waiting. The first pass gets the node's initial state.
@@ -103,9 +105,11 @@ pub struct Step {
     pub outputs: Vec<usize>,
     /// For each output, the input it's made from in place (taking over its buffer), if it is.
     pub in_place: Vec<Option<usize>>,
-    /// The node's state, if it has any: an index into the run's state slots. Each pass waits here for the
-    /// pass before to hand the state over.
+    /// The node's state, if it carries any over: an index into the run's state slots. Each pass waits here for
+    /// the pass before to hand the state over.
     pub state: Option<usize>,
+    /// The node's working memory, if its state is only that: an index into each worker's own.
+    pub memory: Option<usize>,
     /// Where the node copies its inputs out to, if that's all it does with them (see `Node::copies`).
     pub copies: Option<CopyTo>,
 }
@@ -128,6 +132,8 @@ pub struct Plan<N: NodeSet> {
     buffers: Vec<DataStream<N>>,
     /// For each node with state, the data streams on its inputs (for its initial state).
     state_inputs: Vec<(NodeId, Vec<Option<DataStream<N>>>)>,
+    /// For each node with working memory, the same.
+    memory_inputs: Vec<(NodeId, Vec<Option<DataStream<N>>>)>,
     /// The memory each buffer takes, once asked (see `buffer_bytes`).
     bytes: OnceLock<Vec<usize>>,
 }
@@ -184,7 +190,8 @@ impl<N: NodeSet> Plan<N> {
 
         let copying: Vec<NodeId> =
             runs.iter().copied().filter(|id| graph.get(*id).is_some_and(|e| e.node.copies().is_some())).collect();
-        let (mut steps, mut buffers, mut state_inputs) = (Vec::new(), Vec::new(), Vec::new());
+        let (mut steps, mut buffers, mut state_inputs, mut memory_inputs) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         // The buffer each output (of the nodes so far) is in.
         let mut buffer_of: HashMap<(NodeId, usize), usize> = HashMap::new();
         for id in order(&runs, &before, &copying) {
@@ -212,14 +219,19 @@ impl<N: NodeSet> Plan<N> {
                 made_in_place.push(from.map(|(input, _)| input));
                 buffer_of.insert((id, index), buffer);
             }
-            let node_state = entry.node.has_state().then(|| {
+            let carried = entry.node.has_state() && entry.node.state_carried_over();
+            let node_state = carried.then(|| {
                 state_inputs.push((id, state.input_streams.clone()));
                 state_inputs.len() - 1
             });
+            let memory = (entry.node.has_state() && !carried).then(|| {
+                memory_inputs.push((id, state.input_streams.clone()));
+                memory_inputs.len() - 1
+            });
             let copies = entry.node.copies();
-            steps.push(Step { id, inputs, outputs, in_place: made_in_place, state: node_state, copies });
+            steps.push(Step { id, inputs, outputs, in_place: made_in_place, state: node_state, memory, copies });
         }
-        Plan { steps, buffers, state_inputs, bytes: OnceLock::new() }
+        Plan { steps, buffers, state_inputs, memory_inputs, bytes: OnceLock::new() }
     }
 
     /// The nodes that run, in the order they run in each pass.
@@ -254,14 +266,22 @@ impl<N: NodeSet> Plan<N> {
             .collect()
     }
 
-    /// The buffers a worker runs passes on.
-    fn workspace(&self) -> Workspace<N> {
-        Workspace { buffers: self.buffers.iter().map(|s| Some(s.buffer(PASS_DURATION))).collect() }
+    /// The buffers a worker runs passes on, and its own working memory for the nodes that have some.
+    fn workspace(&self, graph: &Graph<N>) -> Workspace<N> {
+        let memory = |id: NodeId, inputs: &[Option<DataStream<N>>]| graph.get(id).map(|e| e.node.initial_state(inputs));
+        Workspace {
+            buffers: self.buffers.iter().map(|s| Some(s.buffer(PASS_DURATION))).collect(),
+            memory: self
+                .memory_inputs
+                .iter()
+                .map(|(id, inputs)| memory(*id, inputs).unwrap_or_else(|| Box::new(())))
+                .collect(),
+        }
     }
 
     /// Runs a pass through every step of `snapshot`'s graph, on `workspace`.
     fn run(&self, snapshot: &Snapshot<N>, pass: PassId, workspace: &mut Workspace<N>, run: &RunSlots) {
-        let Workspace { buffers: workspace } = workspace;
+        let Workspace { buffers: workspace, memory } = workspace;
         let sequence = pass.sequence;
         for step in &self.steps {
             let pass = PassId { node: Some(step.id), ..pass };
@@ -284,9 +304,12 @@ impl<N: NodeSet> Plan<N> {
                     prepared: snapshot.recording.as_deref(),
                     exchange: &run.exchange,
                 };
-                console::in_pass(pass, || match step.state {
-                    Some(slot) => run.states[slot].with(sequence, |state| node.process(&mut pass_data, Some(state))),
-                    None => node.process(&mut pass_data, None),
+                console::in_pass(pass, || match (step.state, step.memory) {
+                    (Some(slot), _) => {
+                        run.states[slot].with(sequence, |state| node.process(&mut pass_data, Some(state)))
+                    }
+                    (None, Some(m)) => node.process(&mut pass_data, Some(memory[m].as_mut())),
+                    (None, None) => node.process(&mut pass_data, None),
                 });
             }
             for (&b, buffer) in step.outputs.iter().zip(outputs) {
@@ -341,6 +364,7 @@ fn order(nodes: &[NodeId], before: &HashMap<NodeId, Vec<NodeId>>, early: &[NodeI
 /// passes.
 struct Workspace<N: NodeSet> {
     buffers: Vec<Option<Buffer<N::Edges>>>,
+    memory: Vec<Box<dyn Any + Send>>,
 }
 
 impl<N: NodeSet> Workspace<N> {
@@ -744,7 +768,8 @@ fn work<N: NodeSet>(epochs: &Epochs<N>, shared: &Shared, index: usize) {
             if let Some((_, workspace)) = mine.take() {
                 shared.memory.fetch_sub(workspace.bytes(), Ordering::Relaxed);
             }
-            let workspace = wanted.plan.workspace();
+            let graph = wanted.snapshot.lock().unwrap().graph.clone();
+            let workspace = wanted.plan.workspace(&graph);
             let bytes = workspace.bytes();
             shared.memory.fetch_add(bytes, Ordering::Relaxed);
             slot.memory.store(bytes, Ordering::Relaxed);
@@ -958,6 +983,21 @@ pub mod tests {
     }
 
     #[test]
+    fn working_memory_is_each_workers_own() {
+        let mut graph = Graph::default();
+        let board = add(&mut graph, "Acquisition Board");
+        let reference = add(&mut graph, "Reference");
+        let filter = add(&mut graph, "Band-pass Filter");
+        link(&mut graph, board, 0, reference, 0);
+        link(&mut graph, reference, 0, filter, 0);
+        let plan = Plan::new(&graph);
+        let step = |id| plan.steps.iter().find(|s| s.id == id).unwrap();
+        assert!(step(reference).state.is_none() && step(reference).memory.is_some(), "no sync point");
+        assert!(step(filter).state.is_some(), "the filter's history is carried over");
+        assert_eq!(plan.workspace(&graph).memory.len(), 1);
+    }
+
+    #[test]
     fn passes_filter_and_detect_spikes() {
         use crate::standard_components::ephys::board::{Source, serve_test_board};
 
@@ -973,7 +1013,7 @@ pub mod tests {
         let snapshot = Snapshot::new(0, graph, None);
         let plan = &snapshot.plan;
         let slots = RunSlots { states: plan.initial_states(&snapshot.graph), exchange: Arc::default() };
-        let mut workspace = plan.workspace();
+        let mut workspace = plan.workspace(&snapshot.graph);
         // A second of samples, as they come from the board in real time.
         let (mut spikes, mut samples) = (0, 0);
         let filter_output = plan.steps.iter().find(|s| s.id == filter).unwrap().outputs[0];

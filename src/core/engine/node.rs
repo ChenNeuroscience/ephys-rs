@@ -121,6 +121,10 @@ impl ThreadContext<'_> {
 pub trait PassState: Default + Send + 'static {
     /// Why the node can't do without it, precisely: what it carries over, and what for. Empty for `()` (none).
     const WHY: &'static str;
+
+    /// Whether it carries anything over from pass to pass. If it doesn't (it's only working memory, kept so it
+    /// isn't remade every pass), each worker has its own instead, and passes needn't wait for each other.
+    const CARRIED_OVER: bool = true;
 }
 
 impl PassState for () {
@@ -243,6 +247,8 @@ pub trait NodeSet: Clone + PartialEq + Serialize + DeserializeOwned + Send + Syn
     fn has_state(&self) -> bool;
     /// Why it does (see `PassState::WHY`).
     fn state_reason(&self) -> &'static str;
+    /// Whether it carries its state over, or it's only working memory (see `PassState::CARRIED_OVER`).
+    fn state_carried_over(&self) -> bool;
     fn initial_state(&self, inputs: &[Option<<Self::Edges as Edges>::DataStream>]) -> Box<dyn Any + Send>;
     /// `state` is the node's state, if it has any (as made by `initial_state`).
     fn process(&self, pass: &mut Pass<Self::Edges>, state: Option<&mut (dyn Any + Send)>);
@@ -369,6 +375,14 @@ macro_rules! node_set {
                 match self {
                     $($name::$variant(_) => {
                         $crate::core::engine::is_state::<<$ty as $crate::core::engine::Node<$edges>>::State>()
+                    }),+
+                }
+            }
+
+            fn state_carried_over(&self) -> bool {
+                match self {
+                    $($name::$variant(_) => {
+                        <<$ty as $crate::core::engine::Node<$edges>>::State as $crate::core::engine::PassState>::CARRIED_OVER
                     }),+
                 }
             }

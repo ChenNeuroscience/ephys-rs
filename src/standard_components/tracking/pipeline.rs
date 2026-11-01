@@ -27,8 +27,8 @@ pub struct Pipeline {
 
 impl crate::core::engine::PassState for Pipeline {
     const WHY: &'static str = "Only working memory for finding LEDs (runs of bright pixels, and how they join \
-                               up), kept so it isn't remade every pass. Nothing carries over, so this needn't \
-                               be a sync point.";
+                               up), kept so it isn't remade every pass: each worker has its own.";
+    const CARRIED_OVER: bool = false;
 }
 
 /// A horizontal run of foreground pixels, carrying the totals of its region once merged.
