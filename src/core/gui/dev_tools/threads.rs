@@ -29,6 +29,10 @@ type DataStream<N> = <<N as NodeSet>::Edges as Edges>::DataStream;
 
 /// Room between the columns of threads, for the links between them.
 const GAP: f32 = 70.0;
+/// Room to the left of the threads, one above another, for the links between them.
+const GUTTER: f32 = 60.0;
+/// The width it takes to show the threads side by side.
+const WIDE: f32 = 220.0 + 450.0 + 250.0 + 2.0 * GAP + 20.0;
 const ROW: f32 = 20.0;
 
 /// Where things were drawn, to link them up once everything is.
@@ -55,29 +59,46 @@ pub fn show<N: NodeSet>(
     let info = runner.map(|r| r.inspect());
     let plan = info.as_ref().and_then(|i| i.running.as_ref()).map_or_else(|| snapshot.plan.clone(), |e| e.plan.clone());
     let mut anchors = Anchors::default();
+    // Side by side if there's room, otherwise one above another, linked down the left.
+    let wide = ui.available_width() >= WIDE;
     egui::ScrollArea::both().auto_shrink(false).show(ui, |ui| {
-        ui.horizontal_top(|ui| {
-            let spacing = ui.spacing().item_spacing;
-            // A column, with the usual spacing inside it.
-            let column = |ui: &mut egui::Ui, width: f32, add: &mut dyn FnMut(&mut egui::Ui)| {
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing = spacing;
-                    ui.set_width(width);
-                    add(ui);
+        let spacing = ui.spacing().item_spacing;
+        // A column, with the usual spacing inside it.
+        let column = |ui: &mut egui::Ui, width: f32, add: &mut dyn FnMut(&mut egui::Ui)| {
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing = spacing;
+                ui.set_width(width);
+                add(ui);
+            });
+        };
+        let gui_and_dispatcher = |ui: &mut egui::Ui, anchors: &mut Anchors| {
+            gui_thread(ui, graph, colours, snapshot, &plan, anchors);
+            ui.add_space(16.0);
+            dispatcher(ui, colours, info.as_ref(), anchors);
+        };
+        if wide {
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = GAP;
+                column(ui, 220.0, &mut |ui| gui_and_dispatcher(ui, &mut anchors));
+                column(ui, 450.0, &mut |ui| {
+                    workers(ui, graph, resolved, colours, info.as_ref(), snapshot, &plan, &mut anchors)
                 });
-            };
-            ui.spacing_mut().item_spacing.x = GAP;
-            column(ui, 220.0, &mut |ui| {
-                gui_thread(ui, graph, colours, snapshot, &plan, &mut anchors);
-                ui.add_space(16.0);
-                dispatcher(ui, colours, info.as_ref(), &mut anchors);
+                column(ui, 250.0, &mut |ui| node_threads(ui, graph, colours, runner, &plan, &mut anchors));
             });
-            column(ui, 450.0, &mut |ui| {
-                workers(ui, graph, resolved, colours, info.as_ref(), snapshot, &plan, &mut anchors);
+        } else {
+            ui.horizontal_top(|ui| {
+                ui.add_space(GUTTER);
+                let width = (ui.available_width() - 12.0).clamp(320.0, 480.0);
+                column(ui, width, &mut |ui| {
+                    gui_and_dispatcher(ui, &mut anchors);
+                    ui.add_space(16.0);
+                    workers(ui, graph, resolved, colours, info.as_ref(), snapshot, &plan, &mut anchors);
+                    ui.add_space(16.0);
+                    node_threads(ui, graph, colours, runner, &plan, &mut anchors);
+                });
             });
-            column(ui, 250.0, &mut |ui| node_threads(ui, graph, colours, runner, &plan, &mut anchors));
-        });
-        links(ui, colours, &anchors);
+        }
+        links(ui, colours, &anchors, wide);
     });
 }
 
@@ -616,45 +637,78 @@ fn node_threads<N: NodeSet>(
     }
 }
 
-/// Curves from one thread to another where they hand things over, with what it is.
-fn links(ui: &egui::Ui, colours: &Colours, anchors: &Anchors) {
+/// Curves from one thread to another where they hand things over, each kind labelled once, by where it starts.
+/// Side by side, they cross between the columns; one above another, they loop round the left, in the gutter.
+fn links(ui: &egui::Ui, colours: &Colours, anchors: &Anchors, wide: bool) {
     let painter = ui.painter();
     let colour = colours.text_secondary.gamma_multiply(0.7);
-    let link = |from: Pos2, to: Pos2, label: Option<&str>| {
-        let bend = ((to.x - from.x).abs() * 0.5).max(30.0);
-        let (dx_from, dx_to) = if to.x >= from.x { (bend, -bend) } else { (-bend, bend) };
-        let curve = egui::epaint::CubicBezierShape::from_points_stroke(
-            [from, from + vec2(dx_from, 0.0), to + vec2(dx_to, 0.0), to],
-            false,
-            Color32::TRANSPARENT,
-            Stroke::new(1.2, colour),
-        );
-        painter.add(curve);
-        let back = if to.x >= from.x { -1.0 } else { 1.0 };
+    let label = |at: Pos2, align: Align2, text: &str| {
+        let galley = painter.layout_no_wrap(text.to_string(), FontId::proportional(10.0), colours.text_secondary);
+        let rect = align.anchor_size(at, galley.size()).expand2(vec2(3.0, 1.0));
+        painter.rect_filled(rect, 3.0, colours.surface);
+        painter.galley(rect.min + vec2(3.0, 1.0), galley, colours.text_secondary);
+    };
+    let arrow = |to: Pos2, rightwards: bool| {
+        let back = if rightwards { -1.0 } else { 1.0 };
         let tip = vec![to, to + vec2(6.0 * back, -3.5), to + vec2(6.0 * back, 3.5)];
         painter.add(Shape::convex_polygon(tip, colour, Stroke::NONE));
-        if let Some(label) = label {
-            let middle = from.lerp(to, 0.5);
-            let galley = painter.layout_no_wrap(label.to_string(), FontId::proportional(10.0), colours.text_secondary);
-            let rect = Align2::CENTER_CENTER.anchor_size(middle, galley.size()).expand2(vec2(4.0, 1.0));
-            painter.rect_filled(rect, 3.0, colours.surface);
-            painter.galley(rect.min + vec2(4.0, 1.0), galley, colours.text_secondary);
-        }
+    };
+    let curve = |points: [Pos2; 4]| {
+        let stroke = Stroke::new(1.2, colour);
+        painter.add(egui::epaint::CubicBezierShape::from_points_stroke(points, false, Color32::TRANSPARENT, stroke));
+    };
+    // Across from one column to another.
+    let across = |from: Pos2, to: Pos2| {
+        let bend = ((to.x - from.x).abs() * 0.5).max(30.0);
+        let rightwards = to.x >= from.x;
+        let dx = if rightwards { bend } else { -bend };
+        curve([from, from + vec2(dx, 0.0), to - vec2(dx, 0.0), to]);
+        arrow(to, rightwards);
+    };
+    // From one left edge round to another, `depth` out into the gutter.
+    let round = |from: Pos2, to: Pos2, depth: f32| {
+        curve([from, from - vec2(depth * 1.3, 0.0), to - vec2(depth * 1.3, 0.0), to]);
+        arrow(to, true);
+    };
+
+    let ends = |rect: Rect| (rect.left_center() - vec2(4.0, 0.0), rect.right_center() + vec2(4.0, 0.0));
+    let mut depth = 14.0;
+    let mut deeper = || {
+        depth = if depth >= GUTTER - 8.0 { 14.0 } else { depth + 9.0 };
+        depth
     };
     if let (Some(dispatcher), Some(queue)) = (anchors.dispatcher, anchors.queue) {
-        link(dispatcher.right_center(), queue.left_center() - vec2(10.0, 0.0), Some("pass queue"));
+        let (from, to) =
+            if wide { (dispatcher.right_center(), ends(queue).0) } else { (dispatcher.left_center(), ends(queue).0) };
+        if wide {
+            across(from, to);
+            label(from + vec2(6.0, -4.0), Align2::LEFT_BOTTOM, "pass queue");
+        } else {
+            round(from, to, deeper());
+            label(from - vec2(6.0, 10.0), Align2::RIGHT_CENTER, "pass queue");
+        }
     }
-    let mut labelled = false;
-    for (id, display) in &anchors.displays {
-        if let Some(step) = anchors.steps.get(id) {
-            let label = (!labelled).then_some("display swap");
-            labelled = true;
-            link(step.left_center() - vec2(10.0, 0.0), display.right_center() + vec2(10.0, 0.0), label);
+    for (index, (id, display)) in anchors.displays.iter().enumerate() {
+        let Some(step) = anchors.steps.get(id) else { continue };
+        if wide {
+            let to = ends(*display).1;
+            across(ends(*step).0, to);
+            if index == 0 {
+                label(to + vec2(8.0, -6.0), Align2::LEFT_BOTTOM, "display swap");
+            }
+        } else {
+            round(ends(*step).0, ends(*display).0, deeper());
         }
     }
     for (id, thread, how) in &anchors.node_threads {
-        if let Some(step) = anchors.steps.get(id) {
-            link(thread.left_center(), step.right_center() + vec2(10.0, 0.0), Some(how));
+        let Some(step) = anchors.steps.get(id) else { continue };
+        if wide {
+            let from = thread.left_center();
+            across(from, ends(*step).1);
+            label(from + vec2(-6.0, -4.0), Align2::RIGHT_BOTTOM, how);
+        } else {
+            round(thread.left_center(), ends(*step).0, deeper());
+            label(thread.left_top() + vec2(10.0, -2.0), Align2::LEFT_BOTTOM, how);
         }
     }
 }

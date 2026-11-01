@@ -160,13 +160,21 @@ impl Node<Edges> for TrackerView {
 
     fn view_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
         let size = frame_size(context);
-        egui::Panel::left(ui.scope_id().with("tracker controls")).resizable(true).default_size(290.0).show(ui, |ui| {
+        let arrangement = Arrangement::of(ui.available_rect_before_wrap());
+        let controls = match arrangement {
+            Arrangement::Rows => {
+                let height = ui.available_height() * 0.4;
+                egui::Panel::top(ui.scope_id().with("tracker controls above")).default_size(height)
+            }
+            _ => egui::Panel::left(ui.scope_id().with("tracker controls")).default_size(290.0),
+        };
+        controls.resizable(true).show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| self.controls_ui(ui, context, size));
         });
         if self.overlays.detection.visible
             && let Some(display) = context.display.and_then(|d| d.downcast_ref::<TrackerDisplay>())
         {
-            led_strip(ui, &display.history);
+            led_panel(ui, &display.history, arrangement);
         }
 
         // Through the context's reference, so the context itself is free to change below.
@@ -375,13 +383,55 @@ fn frame_size(context: &Context<Edges>) -> [f32; 2] {
 }
 
 /// The strip along the bottom, with the chart of the LEDs' sizes at its right (which can be closed).
-fn led_strip(ui: &mut egui::Ui, history: &History) {
+/// How the view's three parts (settings, camera, LED chart) are laid out, from the shape of its window.
+#[derive(Clone, Copy, PartialEq)]
+enum Arrangement {
+    /// Much wider than tall: settings, camera and chart side by side.
+    Columns,
+    /// Taller than wide: one above another.
+    Rows,
+    /// In between: the settings beside the camera, with the chart below it.
+    Square,
+}
+
+impl Arrangement {
+    fn of(rect: Rect) -> Self {
+        let aspect = rect.width() / rect.height().max(1.0);
+        if aspect > 2.2 {
+            Arrangement::Columns
+        } else if aspect < 0.9 {
+            Arrangement::Rows
+        } else {
+            Arrangement::Square
+        }
+    }
+}
+
+/// The chart of LED sizes, which can be closed down to its toggle: a column at the right, or a strip along the
+/// bottom (in the bottom right corner, if the settings are beside the camera).
+fn led_panel(ui: &mut egui::Ui, history: &History, arrangement: Arrangement) {
     let open_id = ui.scope_id().with("led chart open");
     let open = ui.data_mut(|d| *d.get_persisted_mut_or(open_id, true));
+    if arrangement == Arrangement::Columns {
+        let panel = egui::Panel::right(ui.scope_id().with("led column"));
+        let panel = if open { panel.resizable(true).default_size(360.0) } else { panel.exact_size(110.0) };
+        panel.show(ui, |ui| {
+            ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
+                if led_chart::toggle(ui, "LED sizes", open).clicked() {
+                    ui.data_mut(|d| d.insert_persisted(open_id, !open));
+                }
+                if open {
+                    led_chart::chart(ui, history);
+                }
+            });
+        });
+        return;
+    }
     let height = if open { 170.0 } else { 26.0 };
     egui::Panel::bottom(ui.scope_id().with("led strip")).exact_size(height).resizable(false).show(ui, |ui| {
         let rect = ui.available_rect_before_wrap();
-        let chart = Rect::from_min_max(egui::pos2((rect.right() - 440.0).max(rect.left()), rect.top()), rect.max);
+        let width = if arrangement == Arrangement::Rows { rect.width() } else { 440.0 };
+        let chart = Rect::from_min_max(egui::pos2((rect.right() - width).max(rect.left()), rect.top()), rect.max);
         ui.scope_builder(
             egui::UiBuilder::new().max_rect(chart).layout(egui::Layout::top_down(egui::Align::Max)),
             |ui| {
@@ -487,6 +537,14 @@ mod tests {
     use super::*;
     use crate::Nodes;
     use crate::core::engine::{Graph, NodeId, NodeSet, Port, Role, Runner, Snapshot};
+
+    #[test]
+    fn lays_out_by_the_window_shape() {
+        let shape = |w: f32, h: f32| Arrangement::of(Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w, h)));
+        assert!(shape(1100.0, 260.0) == Arrangement::Columns);
+        assert!(shape(800.0, 520.0) == Arrangement::Square);
+        assert!(shape(400.0, 520.0) == Arrangement::Rows);
+    }
 
     fn add(graph: &mut Graph<Nodes>, name: &str) -> NodeId {
         let index = Nodes::TYPES.iter().position(|t| t.name == name).unwrap();

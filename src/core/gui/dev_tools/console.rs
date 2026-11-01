@@ -110,13 +110,13 @@ fn layout<N: NodeSet>(line: &Line, graph: &Graph<N>, colours: &Colours, font: &F
         let node = p.node.and_then(|id| graph.get(id)).map(|e| format!(" {}", e.label)).unwrap_or_default();
         format!("e{}·p{}{node}", p.epoch, p.sequence)
     });
-    let prefix = format!("{:9.3} {:5} {thread:<16}", line.time, line.level);
+    let prefix = format!("{:9.3} {:5} {thread:<16} ", line.time, line.level);
     if line.continues {
         job.append(&" ".repeat(prefix.chars().count()), 0.0, format(colours.text_secondary));
     } else {
         job.append(&format!("{:9.3} ", line.time), 0.0, format(colours.text_disabled));
         job.append(&format!("{:5} ", line.level), 0.0, format(level_colour(line.level, colours)));
-        job.append(&format!("{thread:<16}"), 0.0, format(colours.text_secondary));
+        job.append(&format!("{thread:<16} "), 0.0, format(colours.text_secondary));
         if let Some(pass) = &pass {
             job.append(pass, 0.0, format(colours.accent));
             job.append(" ", 0.0, format(colours.text_secondary));

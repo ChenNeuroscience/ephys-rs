@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use super::canvas::{Canvas, Selection};
 use super::dev_tools::{self, DevTools};
 use super::icons::Icon;
+use super::style;
 use super::{Event, inspector, toolbar};
 use crate::core::annotation::{AnnotationSet, Annotations};
 use crate::core::engine::{Graph, NodeId, NodeSet, Resolved, Runner, Snapshot};
@@ -277,7 +278,7 @@ pub struct HeaderClicks {
 
 /// The top of a floating window, drawn as egui_tiles draws a docked window's tab bar, holding just the one
 /// (active) tab, so floating and docked windows look alike. Dragging it moves the window.
-pub fn floating_header(ui: &mut egui::Ui, title: &str) -> HeaderClicks {
+pub fn floating_header(ui: &mut egui::Ui, title: &str, colour: egui::Color32) -> HeaderClicks {
     const HEIGHT: f32 = 24.0;
     const MARGIN: f32 = 8.0;
     const CLOSE: f32 = 12.0;
@@ -293,7 +294,7 @@ pub fn floating_header(ui: &mut egui::Ui, title: &str) -> HeaderClicks {
     painter.hline(bar.x_range(), bar.bottom(), egui::Stroke::new(1.0, visuals.widgets.noninteractive.bg_stroke.color));
 
     let font = egui::TextStyle::Button.resolve(ui.style());
-    let galley = painter.layout_no_wrap(title.to_string(), font, visuals.widgets.active.text_color());
+    let galley = tab_title(title, colour).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, font);
     let width = galley.size().x + 2.0 * MARGIN + 4.0 + CLOSE;
     let tab = egui::Rect::from_min_size(bar.min, egui::vec2(width.min(bar.width() - 30.0), HEIGHT));
     painter.rect(
@@ -325,6 +326,17 @@ pub fn floating_header(ui: &mut egui::Ui, title: &str) -> HeaderClicks {
         clicks.dock = toolbar::small_icon_button(ui, Icon::Dock, "Dock", "Dock into the layout").clicked();
     });
     clicks
+}
+
+/// A node window's tab title: a block of the node's colour on the graph, then its label.
+pub fn tab_title(label: &str, colour: egui::Color32) -> egui::WidgetText {
+    let font = egui::FontId::proportional(14.0);
+    let mut job = egui::text::LayoutJob::default();
+    let block = egui::TextFormat { font_id: egui::FontId::proportional(9.0), background: colour, ..Default::default() };
+    job.append("  ", 0.0, block);
+    // The placeholder colour takes the tab's text colour (lighter when it's not the active tab).
+    job.append(label, 7.0, egui::TextFormat { font_id: font, color: egui::Color32::PLACEHOLDER, ..Default::default() });
+    egui::WidgetText::LayoutJob(std::sync::Arc::new(job))
 }
 
 fn padded(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
@@ -368,7 +380,10 @@ impl<N: NodeSet, A: AnnotationSet> egui_tiles::Behavior<Pane> for Panes<'_, N, A
             Pane::Canvas => "Graph".into(),
             Pane::Inspector => "Inspector".into(),
             Pane::DevTools => "Developer Tools".into(),
-            Pane::Node(id) => self.graph.get(*id).map_or("?".to_string(), |e| e.label.clone()).into(),
+            Pane::Node(id) => match self.graph.get(*id) {
+                Some(entry) => tab_title(&entry.label, style::category_colour(entry.node.info().category)),
+                None => "?".into(),
+            },
         }
     }
 

@@ -31,7 +31,8 @@ impl DevTools {
     }
 }
 
-/// The threads above, the console below, with a bar between them to drag.
+/// The threads and the console, with a bar between them to drag: the console below, or beside the threads if
+/// the pane is much wider than it's tall.
 pub fn show<N: NodeSet>(
     ui: &mut egui::Ui,
     tools: &mut DevTools,
@@ -42,15 +43,32 @@ pub fn show<N: NodeSet>(
     snapshot: &Snapshot<N>,
 ) {
     let area = ui.available_rect_before_wrap();
-    let split = area.bottom() - area.height() * tools.console_share;
-    let bar = egui::Rect::from_x_y_ranges(area.x_range(), split - 3.0..=split + 3.0);
+    let beside = area.width() > 2.5 * area.height() && area.width() > 900.0;
+    // Along the axis the two share.
+    let (start, length) = if beside { (area.left(), area.width()) } else { (area.top(), area.height()) };
+    let split = start + length * (1.0 - tools.console_share);
+    let cross = |range: egui::Rangef| {
+        if beside {
+            egui::Rect::from_x_y_ranges(range, area.y_range())
+        } else {
+            egui::Rect::from_x_y_ranges(area.x_range(), range)
+        }
+    };
+    let bar = cross(egui::Rangef::new(split - 3.0, split + 3.0));
     let drag = ui.interact(bar, ui.scope_id().with("dev tools split"), egui::Sense::drag());
     if let Some(pointer) = drag.interact_pointer_pos().filter(|_| drag.dragged()) {
-        tools.console_share = ((area.bottom() - pointer.y) / area.height()).clamp(0.1, 0.9);
+        let at = if beside { pointer.x } else { pointer.y };
+        tools.console_share = ((start + length - at) / length).clamp(0.1, 0.9);
     }
     let bar_colour = if drag.hovered() || drag.dragged() { colours.accent } else { colours.divider };
-    ui.painter().hline(area.x_range(), split, egui::Stroke::new(1.0, bar_colour));
-    drag.on_hover_cursor(egui::CursorIcon::ResizeVertical);
+    let stroke = egui::Stroke::new(1.0, bar_colour);
+    if beside {
+        ui.painter().vline(split, area.y_range(), stroke);
+    } else {
+        ui.painter().hline(area.x_range(), split, stroke);
+    }
+    let cursor = if beside { egui::CursorIcon::ResizeHorizontal } else { egui::CursorIcon::ResizeVertical };
+    drag.on_hover_cursor(cursor);
 
     let section = |ui: &mut egui::Ui, rect: egui::Rect, add: &mut dyn FnMut(&mut egui::Ui)| {
         let layout = egui::Layout::top_down(egui::Align::Min);
@@ -59,14 +77,14 @@ pub fn show<N: NodeSet>(
             add(ui)
         });
     };
-    let threads = egui::Rect::from_x_y_ranges(area.x_range(), area.top()..=split - 3.0);
-    section(ui, threads, &mut |ui| {
+    section(ui, cross(egui::Rangef::new(start, split - 3.0)), &mut |ui| {
         ui.label(egui::RichText::new("Threads").strong());
         ui.add_space(4.0);
         threads::show(ui, graph, resolved, colours, runner, snapshot);
     });
-    let below = egui::Rect::from_x_y_ranges(area.x_range(), split + 3.0..=area.bottom());
-    section(ui, below, &mut |ui| console::show(ui, &mut tools.console, graph, colours));
+    section(ui, cross(egui::Rangef::new(split + 3.0, start + length)), &mut |ui| {
+        console::show(ui, &mut tools.console, graph, colours)
+    });
     ui.advance_cursor_after_rect(area);
     // New log lines and the workers' progress show without waiting for input.
     ui.ctx().request_repaint_after(std::time::Duration::from_millis(if runner.is_some() { 100 } else { 500 }));

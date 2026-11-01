@@ -518,6 +518,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             let has_view = entry.node.has_view();
             let beside = self.canvas.to_screen(egui::pos2(entry.pos[0] + NODE_WIDTH + 20.0, entry.pos[1]));
             let title = entry.label.clone();
+            let colour = style::category_colour(entry.node.info().category);
             let mut clicks = docking::HeaderClicks::default();
             let response = egui::Window::new(&title)
                 .id(Id::unique(("node-window", id)))
@@ -528,7 +529,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                 .default_size(if has_view { [820.0, 520.0] } else { [300.0, 200.0] })
                 .resizable(has_view)
                 .show(ctx, |ui| {
-                    clicks = docking::floating_header(ui, &title);
+                    clicks = docking::floating_header(ui, &title, colour);
                     egui::Frame::new().inner_margin(8).show(ui, |ui| {
                         docking::node_ui(ui, &mut self.graph, resolved, colours, self.runner.as_ref(), id);
                     });
