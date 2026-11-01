@@ -25,7 +25,6 @@ pub enum Action {
     FrameAll,
     ActualSize,
     ResetLayout,
-    ToggleInspector,
     ToggleDevTools,
     /// Chooses a theme, by index.
     Theme(usize),
@@ -80,7 +79,6 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Item(Action::FrameAll),
             Item(Action::ActualSize),
             Separator,
-            Item(Action::ToggleInspector),
             Item(Action::ToggleDevTools),
             Item(Action::ResetLayout),
             Separator,
@@ -131,7 +129,6 @@ impl Action {
             Action::FrameAll => "Frame All",
             Action::ActualSize => "Actual Size",
             Action::ResetLayout => "Reset Layout",
-            Action::ToggleInspector => "Inspector",
             Action::ToggleDevTools => "Developer Tools",
             Action::Theme(index) => themes.get(index).map_or("?", |t| t.name),
             Action::Play => "Play",

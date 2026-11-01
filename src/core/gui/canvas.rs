@@ -796,13 +796,16 @@ impl Canvas {
                 self.editing = Some(id);
             }
             body.context_menu(|ui| {
+                // Its settings, with what it is.
+                if let Some(annotation) = annotations.get_mut(id) {
+                    ui.set_min_width(240.0);
+                    ui.label(egui::RichText::new(annotation.kind.info().name).strong());
+                    annotation.kind.settings_ui(ui);
+                    ui.separator();
+                }
                 if ui.button("Edit").clicked() {
                     self.editing = Some(id);
                 }
-                if let Some(annotation) = annotations.get_mut(id) {
-                    annotation.kind.context_menu_ui(ui);
-                }
-                ui.separator();
                 if ui.button("Delete").clicked() {
                     events.push(Event::DeleteAnnotation(id));
                 }
@@ -920,17 +923,21 @@ impl Canvas {
         if moved {
             move_selection(graph, annotations, selection, delta);
         }
+        // A click opens its window (or brings it to the front).
         if body.clicked() {
             if !shift {
                 selection.only(id);
+                events.push(Event::OpenWindow(id));
             } else if !selection.nodes.remove(&id) {
                 selection.nodes.insert(id);
             }
         }
-        if body.double_clicked() {
-            events.push(Event::ToggleWindow(id));
-        }
         body.context_menu(|ui| {
+            if let Some(entry) = graph.get_mut(id) {
+                let name = ui.label(egui::RichText::new("Name").small().weak());
+                ui.text_edit_singleline(&mut entry.label).labelled_by(name.id);
+                ui.separator();
+            }
             if ui.button(if window_open { "Close window" } else { "Open window" }).clicked() {
                 events.push(Event::ToggleWindow(id));
             }

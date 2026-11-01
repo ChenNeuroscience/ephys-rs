@@ -111,18 +111,6 @@ impl AnnotationType for GroupBox {
         }
     }
 
-    fn context_menu_ui(&mut self, ui: &mut egui::Ui) {
-        Hue::menu(ui, &mut self.hue);
-        ui.checkbox(&mut self.fill, "Fill");
-        ui.menu_button("Border", |ui| {
-            for border in Border::ALL {
-                if ui.selectable_label(self.border == border, border.name()).clicked() {
-                    self.border = border;
-                }
-            }
-        });
-    }
-
     fn settings_ui(&mut self, ui: &mut egui::Ui) {
         let label = ui.label(RichText::new("Title").small().weak());
         ui.text_edit_singleline(&mut self.title).labelled_by(label.id);

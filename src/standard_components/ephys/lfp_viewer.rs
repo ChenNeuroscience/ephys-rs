@@ -200,6 +200,7 @@ impl Node<Edges> for LfpViewer {
     }
 
     fn view_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
+        crate::standard_components::widgets::view_settings(ui, |ui| self.settings_ui(ui, context));
         let Some(DataStream::Continuous(stream)) = context.inputs[0] else {
             return preview::unconnected(ui, context.theme, "Connect a continuous data stream to view it");
         };

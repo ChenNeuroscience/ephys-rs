@@ -86,16 +86,6 @@ impl AnnotationType for Heading {
         }
     }
 
-    fn context_menu_ui(&mut self, ui: &mut egui::Ui) {
-        ui.menu_button("Size", |ui| {
-            for size in Size::ALL {
-                if ui.selectable_label(self.size == size, size.name()).clicked() {
-                    self.size = size;
-                }
-            }
-        });
-    }
-
     fn settings_ui(&mut self, ui: &mut egui::Ui) {
         let label = ui.label(RichText::new("Text").small().weak());
         ui.text_edit_singleline(&mut self.text).labelled_by(label.id);

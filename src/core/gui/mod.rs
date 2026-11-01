@@ -1,5 +1,6 @@
-//! The main window: menus and a toolbar, then a dockable layout of panes (the graph canvas, the inspector, and node
-//! windows), then a status bar. Node windows open floating and can be docked.
+//! The main window: menus and a toolbar, then a dockable layout of panes (the graph canvas, node windows, and the
+//! developer tools), then a status bar. Clicking a node opens its window: its own view, if it has one, otherwise its
+//! settings (`node_window`). Node windows open docked, and can float.
 
 mod actions;
 mod canvas;
@@ -7,9 +8,9 @@ mod create_menu;
 mod dev_tools;
 mod docking;
 mod icons;
-mod inspector;
 #[cfg(target_os = "macos")]
 mod mac_menu;
+mod node_window;
 mod style;
 mod toolbar;
 
@@ -78,12 +79,13 @@ pub enum Event {
         from: Option<Port>,
     },
     ToggleWindow(NodeId),
+    /// Open a node's window, or bring it to the front if it's open.
+    OpenWindow(NodeId),
     FloatWindow(NodeId),
     Duplicate(NodeId),
     Disconnect(NodeId),
     Delete(NodeId),
     DeleteAnnotation(AnnotationId),
-    DeleteSelection,
     Status(String),
 }
 
@@ -479,7 +481,6 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                 let screen = self.add_anchor.take().unwrap_or_else(|| self.canvas.to_screen(at));
                 self.menu = Some(CreateMenu::new(screen, at, None));
             }
-            Action::ToggleInspector => self.layout.toggle_pane(Pane::Inspector),
             Action::ToggleDevTools => self.layout.toggle_pane(Pane::DevTools),
             Action::Play => {
                 if self.runner.is_some() {
@@ -630,12 +631,21 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                 .collapsible(false)
                 .frame(egui::Frame::window(&ctx.global_style()).inner_margin(0).corner_radius(2))
                 .default_pos(beside)
-                .default_size(if has_view { [820.0, 520.0] } else { [300.0, 200.0] })
-                .resizable(has_view)
+                .default_size(if has_view { [820.0, 520.0] } else { [340.0, 460.0] })
+                .resizable(true)
                 .show(ctx, |ui| {
                     clicks = docking::floating_header(ui, &title, colour);
                     egui::Frame::new().inner_margin(8).show(ui, |ui| {
-                        docking::node_ui(ui, &mut self.graph, resolved, colours, self.runner.as_ref(), locked, id);
+                        docking::node_ui(
+                            ui,
+                            &mut self.graph,
+                            resolved,
+                            colours,
+                            self.runner.as_ref(),
+                            locked,
+                            id,
+                            events,
+                        );
                     });
                 });
             if let Some(response) = response
@@ -656,6 +666,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         match event {
             Event::OpenMenu { screen, scene, from } => self.menu = Some(CreateMenu::new(screen, scene, from)),
             Event::ToggleWindow(id) => self.layout.toggle(id),
+            Event::OpenWindow(id) => self.layout.open(id),
             Event::FloatWindow(id) => self.layout.float(id),
             Event::Duplicate(id) => {
                 if !self.selection.nodes.contains(&id) {
@@ -680,7 +691,6 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                 self.annotations.remove(id);
                 self.selection.annotations.remove(&id);
             }
-            Event::DeleteSelection => self.delete_selection(),
             Event::Status(message) => self.set_status(ctx, message),
         }
     }
@@ -1274,6 +1284,20 @@ mod tests {
         let selection = &harness.state().selection;
         assert!(selection.annotations.contains(&id), "the image, over the node, is what's clicked");
         assert!(selection.nodes.is_empty());
+    }
+
+    #[test]
+    fn a_click_opens_a_nodes_window() {
+        let mut harness = harness();
+        let detector = node_named(harness.state(), "Spike Detector");
+        assert_eq!(harness.state().layout.window(detector), WindowState::Closed);
+        let at = on_node(&harness, "Spike Detector", [60.0, 40.0]);
+        pointer(&mut harness, at, Some(true));
+        pointer(&mut harness, at, Some(false));
+        harness.run_steps(2);
+        assert_eq!(harness.state().layout.window(detector), WindowState::Docked);
+        // Its default window: its settings, and the threshold set by the spike viewer.
+        assert!(harness.query_by_label_contains("set by Spike Viewer").is_some());
     }
 
     #[test]

@@ -93,10 +93,7 @@ pub trait AnnotationType: Default + Clone + PartialEq + Serialize + DeserializeO
     /// `editing`. Returns whether editing should carry on.
     fn content_ui(&mut self, ui: &mut egui::Ui, editing: bool) -> bool;
 
-    /// Extra items for its right-click menu.
-    fn context_menu_ui(&mut self, _ui: &mut egui::Ui) {}
-
-    /// Its settings, for the inspector.
+    /// Its settings, for its right-click menu.
     fn settings_ui(&mut self, ui: &mut egui::Ui);
 
     /// Paints its icon (for the toolbar's tool to draw one) to fill `rect`.
@@ -127,7 +124,6 @@ pub trait AnnotationSet: Clone + PartialEq + Serialize + DeserializeOwned + 'sta
     /// An annotation of the first type that shows pasted images, and its size.
     fn pasted_image(image: &ColorImage) -> Option<(Self, [f32; 2])>;
     fn content_ui(&mut self, ui: &mut egui::Ui, editing: bool) -> bool;
-    fn context_menu_ui(&mut self, ui: &mut egui::Ui);
     fn settings_ui(&mut self, ui: &mut egui::Ui);
     fn paint_icon(type_index: usize, painter: &Painter, rect: Rect);
 
@@ -284,9 +280,6 @@ macro_rules! annotation_set {
                 match self { $($name::$variant(a) => $crate::core::annotation::AnnotationType::content_ui(a, ui, editing)),+ }
             }
 
-            fn context_menu_ui(&mut self, ui: &mut eframe::egui::Ui) {
-                match self { $($name::$variant(a) => $crate::core::annotation::AnnotationType::context_menu_ui(a, ui)),+ }
-            }
 
             fn settings_ui(&mut self, ui: &mut eframe::egui::Ui) {
                 match self { $($name::$variant(a) => $crate::core::annotation::AnnotationType::settings_ui(a, ui)),+ }

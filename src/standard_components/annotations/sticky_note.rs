@@ -87,16 +87,6 @@ impl AnnotationType for StickyNote {
         }
     }
 
-    fn context_menu_ui(&mut self, ui: &mut egui::Ui) {
-        ui.menu_button("Colour", |ui| {
-            for colour in NoteColour::ALL {
-                if ui.selectable_label(colour == self.colour, colour.name()).clicked() {
-                    self.colour = colour;
-                }
-            }
-        });
-    }
-
     fn settings_ui(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             for colour in NoteColour::ALL {

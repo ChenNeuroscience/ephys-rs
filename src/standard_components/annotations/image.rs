@@ -95,14 +95,6 @@ impl AnnotationType for Image {
         false
     }
 
-    fn context_menu_ui(&mut self, ui: &mut egui::Ui) {
-        if ui.button("Replace with a file…").clicked()
-            && let Some(image) = Image::from_file()
-        {
-            *self = image;
-        }
-    }
-
     fn settings_ui(&mut self, ui: &mut egui::Ui) {
         let [w, h] = self.pixels;
         ui.label(format!("{w} × {h} pixels, {:.0} kB", self.data.len() as f64 * 0.75 / 1e3));

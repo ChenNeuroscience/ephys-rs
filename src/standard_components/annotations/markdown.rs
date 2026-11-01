@@ -125,12 +125,6 @@ impl AnnotationType for Markdown {
         }
     }
 
-    fn context_menu_ui(&mut self, ui: &mut egui::Ui) {
-        if ui.button("Add image from file…").clicked() {
-            self.add_image_file();
-        }
-    }
-
     fn settings_ui(&mut self, ui: &mut egui::Ui) {
         let label = ui.label(RichText::new("Markdown").small().weak());
         ui.add(egui::TextEdit::multiline(&mut self.text).code_editor().desired_rows(12).desired_width(f32::INFINITY))

@@ -89,13 +89,6 @@ impl AnnotationType for Arrow {
         false
     }
 
-    fn context_menu_ui(&mut self, ui: &mut egui::Ui) {
-        Hue::menu(ui, &mut self.hue);
-        if ui.button("Reverse").clicked() {
-            self.flipped = self.flipped.map(|f| !f);
-        }
-    }
-
     fn settings_ui(&mut self, ui: &mut egui::Ui) {
         Hue::picker(ui, &mut self.hue);
         if ui.button("Reverse").clicked() {

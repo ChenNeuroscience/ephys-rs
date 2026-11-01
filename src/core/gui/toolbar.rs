@@ -41,7 +41,6 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
     pub(super) fn checked(&self, action: Action) -> Option<bool> {
         match action {
             Action::DrawTool(index) => Some(self.canvas.tool == Tool::Draw(index)),
-            Action::ToggleInspector => Some(self.layout.is_shown(Pane::Inspector)),
             Action::ToggleDevTools => Some(self.layout.is_shown(Pane::DevTools)),
             Action::Theme(index) => Some(self.theme == index),
             Action::Play => Some(self.runner.is_some()),

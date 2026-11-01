@@ -1,4 +1,4 @@
-//! The dockable layout, like an IDE's: the canvas, inspector and node windows are panes that can be
+//! The dockable layout, like an IDE's: the canvas, the dev tools and node windows are panes that can be
 //! dragged by their tabs to sit beside, above or below each other, or together as tabs.
 //!
 //! A node's window opens docked: alongside the largest group of node windows, or failing that in a new panel
@@ -15,7 +15,7 @@ use super::canvas::{Canvas, Selection};
 use super::dev_tools::{self, DevTools};
 use super::icons::Icon;
 use super::style;
-use super::{Event, inspector, toolbar};
+use super::{Event, node_window, toolbar};
 use crate::core::annotation::{AnnotationSet, Annotations};
 use crate::core::engine::{Graph, NodeId, NodeSet, Resolved, Runner, Snapshot};
 use crate::core::theme::Colours;
@@ -23,7 +23,6 @@ use crate::core::theme::Colours;
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub enum Pane {
     Canvas,
-    Inspector,
     DevTools,
     /// A node's window: its view, or its settings.
     Node(NodeId),
@@ -47,18 +46,8 @@ pub struct Layout {
 impl Default for Layout {
     fn default() -> Self {
         let mut tiles = Tiles::default();
-        let columns: Vec<TileId> = [Pane::Canvas, Pane::Inspector]
-            .into_iter()
-            .map(|pane| {
-                let pane = tiles.insert_pane(pane);
-                tiles.insert_tab_tile(vec![pane])
-            })
-            .collect();
-        let mut row = Linear::new(LinearDir::Horizontal, columns.clone());
-        for (column, share) in columns.iter().zip([4.0, 1.0]) {
-            row.shares.set_share(*column, share);
-        }
-        let root = tiles.insert_container(row);
+        let canvas = tiles.insert_pane(Pane::Canvas);
+        let root = tiles.insert_tab_tile(vec![canvas]);
         Layout { tree: Tree::new(egui::Id::unique("dock"), root, tiles), floating: BTreeSet::new() }
     }
 }
@@ -101,6 +90,15 @@ impl Layout {
             }
             WindowState::Docked => self.hide(Pane::Node(id)),
             WindowState::Hidden => self.show(Pane::Node(id)),
+        }
+    }
+
+    /// Opens a node's window (where it was last, if it's been open before), or brings it to the front.
+    pub fn open(&mut self, id: NodeId) {
+        match self.window(id) {
+            WindowState::Floating => {}
+            WindowState::Docked | WindowState::Hidden => self.show(Pane::Node(id)),
+            WindowState::Closed => self.dock(id),
         }
     }
 
@@ -248,8 +246,9 @@ pub struct Panes<'a, N: NodeSet, A: AnnotationSet> {
     pub events: &'a mut Vec<Event>,
 }
 
-/// A node's window content: its view if it has one, otherwise its settings.
-/// While running, it gets the latest live data the node's processing has shown.
+/// A node's window content: its own view if it has one (which shows its settings as it likes), otherwise the
+/// default window (`node_window`). While running, it gets the latest its passes have left for its window.
+#[allow(clippy::too_many_arguments)]
 pub fn node_ui<N: NodeSet>(
     ui: &mut egui::Ui,
     graph: &mut Graph<N>,
@@ -258,18 +257,20 @@ pub fn node_ui<N: NodeSet>(
     runner: Option<&Runner<N>>,
     locked: bool,
     id: NodeId,
+    events: &mut Vec<Event>,
 ) {
     let Some(state) = resolved.get(&id) else { return };
     let has_view = graph.get(id).is_some_and(|e| e.node.has_view());
-    // A view stays live while recording (changes it makes to settings are undone: see `App::lock`).
-    if locked && !has_view {
-        ui.disable();
-    }
     let running = runner.is_some();
+    // A view stays live while recording (changes it makes to settings are undone: see `App::lock`).
     let mut show = |graph: &mut Graph<N>, display: Option<&(dyn std::any::Any + Send)>| {
-        graph.edit(id, &state.input_streams, colours, display, running, |node: &mut N, context| {
-            if has_view { node.view_ui(ui, context) } else { node.settings_ui(ui, context) }
-        });
+        if has_view {
+            graph.edit(id, &state.input_streams, colours, display, running, |node: &mut N, context| {
+                node.view_ui(ui, context)
+            });
+        } else {
+            node_window::show(ui, graph, resolved, colours, display, running, locked, id, events);
+        }
     };
     let shown = runner.and_then(|runner| runner.exchange().with_latest(id, |display| show(graph, Some(display))));
     if shown.is_none() {
@@ -365,24 +366,13 @@ impl<N: NodeSet, A: AnnotationSet> egui_tiles::Behavior<Pane> for Panes<'_, N, A
                 self.open_windows,
                 self.events,
             ),
-            Pane::Inspector => padded(ui, |ui| {
-                inspector::show(
-                    ui,
-                    self.graph,
-                    self.annotations,
-                    self.resolved,
-                    self.colours,
-                    self.selection,
-                    self.open_windows,
-                    self.locked,
-                    self.events,
-                )
-            }),
             Pane::DevTools => {
                 dev_tools::show(ui, self.dev_tools, self.graph, self.resolved, self.colours, self.runner, self.snapshot)
             }
             Pane::Node(id) => {
-                padded(ui, |ui| node_ui(ui, self.graph, self.resolved, self.colours, self.runner, self.locked, id))
+                let (graph, resolved, colours, runner, locked) =
+                    (&mut *self.graph, self.resolved, self.colours, self.runner, self.locked);
+                padded(ui, |ui| node_ui(ui, graph, resolved, colours, runner, locked, id, self.events))
             }
         }
         UiResponse::None
@@ -391,7 +381,6 @@ impl<N: NodeSet, A: AnnotationSet> egui_tiles::Behavior<Pane> for Panes<'_, N, A
     fn tab_title_for_pane(&mut self, pane: &Pane) -> egui::WidgetText {
         match pane {
             Pane::Canvas => "Graph".into(),
-            Pane::Inspector => "Inspector".into(),
             Pane::DevTools => "Developer Tools".into(),
             Pane::Node(id) => match self.graph.get(*id) {
                 Some(entry) => tab_title(&entry.label, style::category_colour(entry.node.info().category)),
