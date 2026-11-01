@@ -796,13 +796,6 @@ impl Canvas {
                 self.editing = Some(id);
             }
             body.context_menu(|ui| {
-                // Its settings, with what it is.
-                if let Some(annotation) = annotations.get_mut(id) {
-                    ui.set_min_width(240.0);
-                    ui.label(egui::RichText::new(annotation.kind.info().name).strong());
-                    annotation.kind.settings_ui(ui);
-                    ui.separator();
-                }
                 if ui.button("Edit").clicked() {
                     self.editing = Some(id);
                 }

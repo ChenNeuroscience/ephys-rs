@@ -24,6 +24,8 @@ use crate::core::theme::Colours;
 pub enum Pane {
     Canvas,
     DevTools,
+    /// The selected annotation's settings: there while an annotation's selected.
+    Annotation,
     /// A node's window: its view, or its settings.
     Node(NodeId),
 }
@@ -185,6 +187,29 @@ impl Layout {
             }
             _ => self.tree.root = Some(column),
         }
+    }
+
+    /// Shows or hides the annotation pane: the first time, at the right of everything, where it then stays.
+    pub fn show_annotation_pane(&mut self, show: bool) {
+        if self.is_shown(Pane::Annotation) == show {
+            return;
+        }
+        if !show {
+            return self.hide(Pane::Annotation);
+        }
+        if self.tile(Pane::Annotation).is_none() {
+            let tiles = &mut self.tree.tiles;
+            let pane = tiles.insert_pane(Pane::Annotation);
+            let right = tiles.insert_tab_tile(vec![pane]);
+            match self.tree.root {
+                Some(root) => {
+                    let row = Linear::new_binary(LinearDir::Horizontal, [root, right], 0.78);
+                    self.tree.root = Some(self.tree.tiles.insert_container(row));
+                }
+                None => self.tree.root = Some(right),
+            }
+        }
+        self.show(Pane::Annotation);
     }
 
     /// Takes a docked window out of the layout, to float.
@@ -350,6 +375,35 @@ pub fn tab_title(label: &str, colour: egui::Color32) -> egui::WidgetText {
     egui::WidgetText::LayoutJob(std::sync::Arc::new(job))
 }
 
+/// The selected annotation's settings; for several, how many, to delete together.
+fn annotation_ui<A: AnnotationSet>(
+    ui: &mut egui::Ui,
+    annotations: &mut Annotations<A>,
+    selection: &Selection,
+    events: &mut Vec<Event>,
+) {
+    let count = selection.annotations.len();
+    match selection.annotations.first() {
+        None => {}
+        Some(id) if count == 1 => {
+            let Some(annotation) = annotations.get_mut(*id) else { return };
+            ui.heading(annotation.kind.info().name);
+            ui.add_space(4.0);
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                annotation.kind.settings_ui(ui);
+                ui.add_space(8.0);
+                if ui.button("Delete").clicked() {
+                    events.push(Event::DeleteAnnotation(*id));
+                }
+            });
+        }
+        Some(_) => {
+            ui.heading(format!("{count} annotations"));
+            ui.weak("Select one to change its settings.");
+        }
+    }
+}
+
 fn padded(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new().inner_margin(8).show(ui, add);
 }
@@ -366,6 +420,7 @@ impl<N: NodeSet, A: AnnotationSet> egui_tiles::Behavior<Pane> for Panes<'_, N, A
                 self.open_windows,
                 self.events,
             ),
+            Pane::Annotation => padded(ui, |ui| annotation_ui(ui, self.annotations, self.selection, self.events)),
             Pane::DevTools => {
                 dev_tools::show(ui, self.dev_tools, self.graph, self.resolved, self.colours, self.runner, self.snapshot)
             }
@@ -382,6 +437,7 @@ impl<N: NodeSet, A: AnnotationSet> egui_tiles::Behavior<Pane> for Panes<'_, N, A
         match pane {
             Pane::Canvas => "Graph".into(),
             Pane::DevTools => "Developer Tools".into(),
+            Pane::Annotation => "Annotation".into(),
             Pane::Node(id) => match self.graph.get(*id) {
                 Some(entry) => tab_title(&entry.label, style::category_colour(entry.node.info().category)),
                 None => "?".into(),
@@ -389,8 +445,9 @@ impl<N: NodeSet, A: AnnotationSet> egui_tiles::Behavior<Pane> for Panes<'_, N, A
         }
     }
 
+    /// The annotation pane comes and goes with the selection, so isn't closed by hand.
     fn is_tab_closable(&self, tiles: &Tiles<Pane>, tile: TileId) -> bool {
-        !matches!(tiles.get_pane(&tile), Some(Pane::Canvas))
+        !matches!(tiles.get_pane(&tile), Some(Pane::Canvas | Pane::Annotation))
     }
 
     /// Hides rather than removes, so the pane comes back in the same place.

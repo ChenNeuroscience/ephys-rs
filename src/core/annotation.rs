@@ -93,7 +93,7 @@ pub trait AnnotationType: Default + Clone + PartialEq + Serialize + DeserializeO
     /// `editing`. Returns whether editing should carry on.
     fn content_ui(&mut self, ui: &mut egui::Ui, editing: bool) -> bool;
 
-    /// Its settings, for its right-click menu.
+    /// Its settings, for the annotation pane (shown while it's selected).
     fn settings_ui(&mut self, ui: &mut egui::Ui);
 
     /// Paints its icon (for the toolbar's tool to draw one) to fill `rect`.

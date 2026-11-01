@@ -775,6 +775,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         self.graph.prune_edges();
         self.selection.retain_existing(&self.graph, &self.annotations);
         self.layout.retain_nodes(&self.graph);
+        self.layout.show_annotation_pane(!self.selection.annotations.is_empty());
         let resolved = self.graph.resolve();
         let open_windows = self.layout.open_windows();
         self.canvas.colours = self.colours();
@@ -1298,6 +1299,21 @@ mod tests {
         assert_eq!(harness.state().layout.window(detector), WindowState::Docked);
         // Its default window: its settings, and the threshold set by the spike viewer.
         assert!(harness.query_by_label_contains("set by Spike Viewer").is_some());
+    }
+
+    #[test]
+    fn the_annotation_pane_is_there_while_an_annotation_is_selected() {
+        let mut harness = harness();
+        assert!(!harness.state().layout.is_shown(Pane::Annotation));
+        let note = harness.state().annotations.ids().next().unwrap();
+        harness.state_mut().selection.only_annotation(note);
+        harness.run_steps(3);
+        assert!(harness.state().layout.is_shown(Pane::Annotation));
+        assert!(harness.query_all_by_label("Markdown").next().is_some(), "the note's settings");
+        harness.snapshot("annotation_pane");
+        harness.state_mut().selection.clear();
+        harness.run_steps(3);
+        assert!(!harness.state().layout.is_shown(Pane::Annotation));
     }
 
     #[test]
