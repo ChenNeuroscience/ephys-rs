@@ -1,0 +1,366 @@
+{
+  "graph": {
+    "next_id": 10,
+    "nodes": {
+      "1": {
+        "node": {
+          "type": "AcquisitionBoard",
+          "settings": {
+            "channels": 64,
+            "sample_rate": 30000.0,
+            "ttl_lines": 8
+          }
+        },
+        "label": "Acquisition Board",
+        "pos": [
+          0.0,
+          0.0
+        ]
+      },
+      "2": {
+        "node": {
+          "type": "BandPassFilter",
+          "settings": {
+            "low_hz": 300.0,
+            "high_hz": 6000.0
+          }
+        },
+        "label": "Band-pass Filter",
+        "pos": [
+          260.0,
+          0.0
+        ]
+      },
+      "3": {
+        "node": {
+          "type": "SpikeDetector",
+          "settings": {
+            "threshold": 4.0,
+            "polarity": "Negative",
+            "waveform_samples": 40
+          }
+        },
+        "label": "Spike Detector",
+        "pos": [
+          520.0,
+          0.0
+        ]
+      },
+      "4": {
+        "node": {
+          "type": "SpikeViewer",
+          "settings": {
+            "columns": 4,
+            "channels_shown": 16,
+            "waveforms": 20
+          }
+        },
+        "label": "Spike Viewer",
+        "pos": [
+          780.0,
+          0.0
+        ]
+      },
+      "5": {
+        "node": {
+          "type": "LfpViewer",
+          "settings": {
+            "span": 2.0,
+            "scale_uv": 200.0,
+            "first_channel": 0,
+            "channels_shown": 16
+          }
+        },
+        "label": "LFP Viewer",
+        "pos": [
+          780.0,
+          110.0
+        ]
+      },
+      "6": {
+        "node": {
+          "type": "Writer",
+          "settings": {
+            "directory": "~/recordings",
+            "prefix": "session",
+            "format": "Binary"
+          }
+        },
+        "label": "Writer",
+        "pos": [
+          1040.0,
+          120.0
+        ]
+      },
+      "7": {
+        "node": {
+          "type": "Camera",
+          "settings": {
+            "source": {
+              "kind": "synthetic"
+            },
+            "size": [
+              640,
+              480
+            ],
+            "settings": {
+              "frame_rate": 50.0,
+              "exposure": {
+                "mode": "unchanged"
+              },
+              "gain": {
+                "mode": "unchanged"
+              }
+            }
+          }
+        },
+        "label": "Camera",
+        "pos": [
+          0.0,
+          320.0
+        ]
+      },
+      "8": {
+        "node": {
+          "type": "PositionDetector",
+          "settings": {
+            "detection": {
+              "threshold": 200,
+              "min_area": 5,
+              "max_area": null,
+              "crop": {
+                "shape": "none"
+              },
+              "edge": {
+                "enabled": false,
+                "width": 25.0,
+                "threshold": 250
+              },
+              "rulers": []
+            }
+          }
+        },
+        "label": "Position Detector",
+        "pos": [
+          400.0,
+          380.0
+        ]
+      },
+      "9": {
+        "node": {
+          "type": "TrackerView",
+          "settings": {
+            "overlays": {
+              "crop": {
+                "visible": true,
+                "locked": false
+              },
+              "detection": {
+                "visible": true,
+                "locked": false
+              },
+              "rulers": {
+                "visible": true,
+                "locked": false
+              }
+            }
+          }
+        },
+        "label": "Tracker View",
+        "pos": [
+          780.0,
+          330.0
+        ]
+      }
+    },
+    "edges": [
+      {
+        "dimension": "Data",
+        "from": {
+          "node": 1,
+          "port": 0
+        },
+        "to": {
+          "node": 2,
+          "port": 0
+        }
+      },
+      {
+        "dimension": "Data",
+        "from": {
+          "node": 2,
+          "port": 0
+        },
+        "to": {
+          "node": 3,
+          "port": 0
+        }
+      },
+      {
+        "dimension": "Data",
+        "from": {
+          "node": 2,
+          "port": 0
+        },
+        "to": {
+          "node": 5,
+          "port": 0
+        }
+      },
+      {
+        "dimension": "Data",
+        "from": {
+          "node": 3,
+          "port": 0
+        },
+        "to": {
+          "node": 4,
+          "port": 0
+        }
+      },
+      {
+        "dimension": "Data",
+        "from": {
+          "node": 1,
+          "port": 0
+        },
+        "to": {
+          "node": 6,
+          "port": 0
+        }
+      },
+      {
+        "dimension": "Data",
+        "from": {
+          "node": 1,
+          "port": 1
+        },
+        "to": {
+          "node": 6,
+          "port": 1
+        }
+      },
+      {
+        "dimension": "Data",
+        "from": {
+          "node": 3,
+          "port": 0
+        },
+        "to": {
+          "node": 6,
+          "port": 2
+        }
+      },
+      {
+        "dimension": "Data",
+        "from": {
+          "node": 7,
+          "port": 0
+        },
+        "to": {
+          "node": 8,
+          "port": 0
+        }
+      },
+      {
+        "dimension": "Data",
+        "from": {
+          "node": 7,
+          "port": 0
+        },
+        "to": {
+          "node": 9,
+          "port": 0
+        }
+      },
+      {
+        "dimension": "Data",
+        "from": {
+          "node": 8,
+          "port": 0
+        },
+        "to": {
+          "node": 9,
+          "port": 1
+        }
+      },
+      {
+        "dimension": "Data",
+        "from": {
+          "node": 7,
+          "port": 0
+        },
+        "to": {
+          "node": 6,
+          "port": 3
+        }
+      },
+      {
+        "dimension": "Data",
+        "from": {
+          "node": 8,
+          "port": 0
+        },
+        "to": {
+          "node": 6,
+          "port": 4
+        }
+      },
+      {
+        "dimension": "Settings",
+        "from": {
+          "node": 4,
+          "port": 0
+        },
+        "to": {
+          "node": 3,
+          "port": 0
+        }
+      },
+      {
+        "dimension": "Settings",
+        "from": {
+          "node": 9,
+          "port": 0
+        },
+        "to": {
+          "node": 7,
+          "port": 0
+        }
+      },
+      {
+        "dimension": "Settings",
+        "from": {
+          "node": 9,
+          "port": 1
+        },
+        "to": {
+          "node": 8,
+          "port": 0
+        }
+      }
+    ]
+  },
+  "annotations": {
+    "next_id": 1,
+    "items": {
+      "1": {
+        "pos": [
+          0.0,
+          -190.0
+        ],
+        "size": [
+          300.0,
+          130.0
+        ],
+        "kind": {
+          "type": "StickyNote",
+          "content": {
+            "text": "### Example rig\nThe **spike viewer** sets the detector's threshold through a *settings edge* (dashed), though it's downstream of it. Drag in the viewer's window to change it.",
+            "colour": "Yellow"
+          }
+        }
+      }
+    }
+  }
+}

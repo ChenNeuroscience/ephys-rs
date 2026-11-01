@@ -51,11 +51,13 @@ how can we have a downstream node control settings upstream? maybe you can just 
 Each push to `main` is tested and built on Windows and macOS by GitHub Actions, and published as a [release](https://github.com/ChenNeuroscience/ephys-rs/releases) named after the commit. On macOS the app isn't notarised, so the first time, right-click it and choose Open.
 
 ```bash
-cargo run --release              # starts with an example graph
-cargo run --release -- rig.json  # opens a graph file
-cargo test                       # includes GUI tests, rendered headless against tests/snapshots
-UPDATE_SNAPSHOTS=1 cargo test    # accept changes to how the GUI looks
+cargo run --release                            # starts with an empty graph
+cargo run --release -- examples/rig.json       # opens a graph file: here, the example
+cargo test                                     # includes GUI tests, rendered headless against tests/snapshots
+UPDATE_SNAPSHOTS=1 cargo test                  # accept changes to how the GUI looks
 ```
+
+The code is in two parts: `src/core` (the graph engine, the GUI, and the traits for annotations and themes), which knows nothing about particular node, edge or annotation types; and `src/standard_components`, grouped by feature (`ephys`, `spikes`, `tracking`...), each with its own data stream, settings and node types. `src/main.rs` puts the two together, declaring which components the program is built with.
 
 The icon is `assets/icon.svg`; `scripts/export_icon.js` exports the PNGs from it.
 

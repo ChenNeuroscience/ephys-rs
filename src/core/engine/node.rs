@@ -1,0 +1,325 @@
+//! The `Node` trait implemented by each node type, and `NodeSet`, the list of types a program is built with.
+
+use std::any::{Any, TypeId};
+
+use eframe::egui;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+
+use super::{Edges, Kind, Pass};
+use crate::core::theme::Colours;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Category {
+    Source,
+    Processing,
+    Visualisation,
+    Recording,
+}
+
+impl Category {
+    pub const ALL: [Category; 4] =
+        [Category::Source, Category::Processing, Category::Visualisation, Category::Recording];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Category::Source => "Sources",
+            Category::Processing => "Processing",
+            Category::Visualisation => "Visualisation",
+            Category::Recording => "Recording",
+        }
+    }
+}
+
+/// Static facts about a node type.
+pub struct NodeInfo {
+    pub name: &'static str,
+    pub category: Category,
+    pub description: &'static str,
+}
+
+pub struct Input<E: Edges> {
+    pub name: &'static str,
+    pub kind: Kind<E::DataStream>,
+}
+
+pub struct Output<E: Edges> {
+    pub name: &'static str,
+    pub kind: Kind<E::DataStream>,
+    /// What the output produces, or `None` while that can't be known (e.g. its input isn't connected).
+    pub stream: Option<E::DataStream>,
+}
+
+/// A setting that other nodes can edit through a settings edge, with its current value.
+pub struct SettingPort<E: Edges> {
+    pub name: &'static str,
+    pub value: E::Setting,
+}
+
+/// A setting of some other node that this one can edit, through a settings edge.
+pub struct Control<E: Edges> {
+    pub name: &'static str,
+    pub kind: Kind<E::Setting>,
+}
+
+/// What a node's UI gets to work with besides its own settings.
+pub struct Context<'a, E: Edges> {
+    /// For each input, the data stream connected to it, if any.
+    pub inputs: &'a [Option<E::DataStream>],
+    /// For each control, the current value of the setting it's connected to, if any. Changing a value
+    /// edits that setting.
+    pub controls: &'a mut [Option<E::Setting>],
+    /// The colours to draw with, by role. A node can derive more of its own from these.
+    pub theme: &'a Colours,
+    /// The latest live data the node's processing has shown (see `Node::display`), while running.
+    pub display: Option<&'a (dyn Any + Send)>,
+}
+
+impl<E: Edges> Context<'_, E> {
+    /// The latest live display, if there is one, of type `T`.
+    pub fn display<T: 'static>(&self) -> Option<&T> {
+        self.display?.downcast_ref()
+    }
+}
+
+/// A node type. Implementors are plain settings structs, saved with the graph.
+///
+/// The ports may depend on the settings, and the output data streams on what is connected to the inputs; the
+/// graph works these out in order from the sources down (see `Graph::resolve`).
+pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeOwned + Send + Sync + 'static {
+    const INFO: NodeInfo;
+
+    /// What the node carries from one pass to the next (a filter's history, say), or `()` for nothing.
+    /// Passes run on several threads at once, so a node with state is run for one pass at a time, in order;
+    /// nodes without it can run for several passes at once.
+    type State: Default + Send + 'static;
+
+    /// Whether the node's window is a view of its own (a viewer, say) rather than just its settings.
+    const HAS_VIEW: bool = false;
+
+    fn inputs(&self) -> Vec<Input<E>> {
+        Vec::new()
+    }
+
+    /// `inputs` has an entry for each of `self.inputs()`: the data stream connected to it, if any.
+    fn outputs(&self, inputs: &[Option<E::DataStream>]) -> Vec<Output<E>>;
+
+    /// Problems with the configuration, shown on the node.
+    fn warnings(&self, _inputs: &[Option<E::DataStream>]) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Settings that other nodes may edit, with their current values.
+    fn settings(&self) -> Vec<SettingPort<E>> {
+        Vec::new()
+    }
+
+    /// Called with a new value for one of `self.settings()`, of the same kind.
+    fn set_setting(&mut self, _index: usize, _value: E::Setting) {}
+
+    fn controls(&self) -> Vec<Control<E>> {
+        Vec::new()
+    }
+
+    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<E>);
+
+    fn view_ui(&mut self, _ui: &mut egui::Ui, _context: &mut Context<E>) {}
+
+    /// The state for the first pass. `inputs` has the data stream connected to each input, if any.
+    fn initial_state(&self, _inputs: &[Option<E::DataStream>]) -> Self::State {
+        Self::State::default()
+    }
+
+    /// An input that an output can be made from in place, editing the input's data where it is. The plan
+    /// decides, before running, whether it can be: it can if every other node reading that data can run
+    /// first. The output must be the same data stream as the input.
+    fn in_place(&self, _output: usize) -> Option<usize> {
+        None
+    }
+
+    /// For a node that shows live data in its window (a video frame, say): an empty buffer for it. Each pass
+    /// can fill one in (with `Pass::display`), and the window gets the latest (with `Context::display`).
+    /// Workers each have their own, so filling one in never waits on the window.
+    fn display(&self) -> Option<Box<dyn Any + Send>> {
+        None
+    }
+
+    /// Does the node's work for one pass: reads its inputs and fills its outputs, which are already sized for
+    /// the data streams they carry. When an output is being made in place (see `in_place`), its input is `None`
+    /// in the pass, and the output's buffer already holds the input's data to transform.
+    fn process(&self, _pass: &mut Pass<E>, _state: &mut Self::State) {}
+}
+
+/// The closed set of node types a program is built with, as an enum with one variant per type. Implemented
+/// by `node_set!`, and forwards each `Node` method to the variant's type.
+#[allow(clippy::type_complexity)]
+pub trait NodeSet: Clone + PartialEq + Serialize + DeserializeOwned + Send + Sync + 'static {
+    type Edges: Edges;
+
+    /// Indexed by type index.
+    const TYPES: &'static [NodeInfo];
+
+    /// A node of the given type, with default settings.
+    fn create(type_index: usize) -> Self;
+    fn type_index(&self) -> usize;
+    fn has_view(&self) -> bool;
+    fn inputs(&self) -> Vec<Input<Self::Edges>>;
+    fn outputs(&self, inputs: &[Option<<Self::Edges as Edges>::DataStream>]) -> Vec<Output<Self::Edges>>;
+    fn warnings(&self, inputs: &[Option<<Self::Edges as Edges>::DataStream>]) -> Vec<String>;
+    fn settings(&self) -> Vec<SettingPort<Self::Edges>>;
+    fn set_setting(&mut self, index: usize, value: <Self::Edges as Edges>::Setting);
+    fn controls(&self) -> Vec<Control<Self::Edges>>;
+    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Self::Edges>);
+    fn view_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Self::Edges>);
+    fn in_place(&self, output: usize) -> Option<usize>;
+    fn display(&self) -> Option<Box<dyn Any + Send>>;
+    /// Whether the node carries state from one pass to the next.
+    fn has_state(&self) -> bool;
+    fn initial_state(&self, inputs: &[Option<<Self::Edges as Edges>::DataStream>]) -> Box<dyn Any + Send>;
+    /// `state` is the node's state, if it has any (as made by `initial_state`).
+    fn process(&self, pass: &mut Pass<Self::Edges>, state: Option<&mut (dyn Any + Send)>);
+
+    fn info(&self) -> &'static NodeInfo {
+        &Self::TYPES[self.type_index()]
+    }
+}
+
+/// Whether `S` is real state, rather than `()` for none.
+pub fn is_state<S: 'static>() -> bool {
+    TypeId::of::<S>() != TypeId::of::<()>()
+}
+
+/// Declares the enum of node types a program is built with, and implements `NodeSet` for it:
+///
+/// ```ignore
+/// node_set! {
+///     edges: Edges;
+///     pub enum Nodes {
+///         Gain(gain::Gain),
+///         Writer(writer::Writer),
+///     }
+/// }
+/// ```
+///
+/// where `Edges` was declared with `edge_types!`. Saved graphs name each node by its variant, so renaming a
+/// variant breaks existing files.
+#[macro_export]
+macro_rules! node_set {
+    (edges: $edges:ty; $(#[$meta:meta])* $vis:vis enum $name:ident { $($variant:ident($ty:ty)),+ $(,)? }) => {
+        $(#[$meta])*
+        #[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+        #[serde(tag = "type", content = "settings")]
+        $vis enum $name {
+            $($variant($ty)),+
+        }
+
+        impl $crate::core::engine::NodeSet for $name {
+            type Edges = $edges;
+
+            const TYPES: &'static [$crate::core::engine::NodeInfo] =
+                &[$(<$ty as $crate::core::engine::Node<$edges>>::INFO),+];
+
+            #[allow(unused_assignments)]
+            fn create(type_index: usize) -> Self {
+                let mut i = 0;
+                $(
+                    if i == type_index {
+                        return $name::$variant(<$ty>::default());
+                    }
+                    i += 1;
+                )+
+                panic!("no node type {type_index}")
+            }
+
+            #[allow(unused_assignments)]
+            fn type_index(&self) -> usize {
+                let mut i = 0;
+                $(
+                    if let $name::$variant(_) = self {
+                        return i;
+                    }
+                    i += 1;
+                )+
+                unreachable!()
+            }
+
+            fn has_view(&self) -> bool {
+                match self { $($name::$variant(_) => <$ty as $crate::core::engine::Node<$edges>>::HAS_VIEW),+ }
+            }
+
+            fn inputs(&self) -> Vec<$crate::core::engine::Input<$edges>> {
+                match self { $($name::$variant(n) => $crate::core::engine::Node::inputs(n)),+ }
+            }
+
+            fn outputs(
+                &self,
+                inputs: &[Option<<$edges as $crate::core::engine::Edges>::DataStream>],
+            ) -> Vec<$crate::core::engine::Output<$edges>> {
+                match self { $($name::$variant(n) => $crate::core::engine::Node::outputs(n, inputs)),+ }
+            }
+
+            fn warnings(&self, inputs: &[Option<<$edges as $crate::core::engine::Edges>::DataStream>]) -> Vec<String> {
+                match self { $($name::$variant(n) => $crate::core::engine::Node::warnings(n, inputs)),+ }
+            }
+
+            fn settings(&self) -> Vec<$crate::core::engine::SettingPort<$edges>> {
+                match self { $($name::$variant(n) => $crate::core::engine::Node::settings(n)),+ }
+            }
+
+            fn set_setting(&mut self, index: usize, value: <$edges as $crate::core::engine::Edges>::Setting) {
+                match self { $($name::$variant(n) => $crate::core::engine::Node::set_setting(n, index, value)),+ }
+            }
+
+            fn controls(&self) -> Vec<$crate::core::engine::Control<$edges>> {
+                match self { $($name::$variant(n) => $crate::core::engine::Node::controls(n)),+ }
+            }
+
+            fn settings_ui(&mut self, ui: &mut eframe::egui::Ui, context: &mut $crate::core::engine::Context<$edges>) {
+                match self { $($name::$variant(n) => $crate::core::engine::Node::settings_ui(n, ui, context)),+ }
+            }
+
+            fn view_ui(&mut self, ui: &mut eframe::egui::Ui, context: &mut $crate::core::engine::Context<$edges>) {
+                match self { $($name::$variant(n) => $crate::core::engine::Node::view_ui(n, ui, context)),+ }
+            }
+
+            fn in_place(&self, output: usize) -> Option<usize> {
+                match self { $($name::$variant(n) => $crate::core::engine::Node::in_place(n, output)),+ }
+            }
+
+            fn display(&self) -> Option<Box<dyn std::any::Any + Send>> {
+                match self { $($name::$variant(n) => $crate::core::engine::Node::display(n)),+ }
+            }
+
+            fn has_state(&self) -> bool {
+                match self {
+                    $($name::$variant(_) => {
+                        $crate::core::engine::is_state::<<$ty as $crate::core::engine::Node<$edges>>::State>()
+                    }),+
+                }
+            }
+
+            fn initial_state(
+                &self,
+                inputs: &[Option<<$edges as $crate::core::engine::Edges>::DataStream>],
+            ) -> Box<dyn std::any::Any + Send> {
+                match self { $($name::$variant(n) => Box::new($crate::core::engine::Node::initial_state(n, inputs))),+ }
+            }
+
+            fn process(
+                &self,
+                pass: &mut $crate::core::engine::Pass<$edges>,
+                state: Option<&mut (dyn std::any::Any + Send)>,
+            ) {
+                match self {
+                    $($name::$variant(n) => {
+                        let state = state.and_then(|s| s.downcast_mut::<<$ty as $crate::core::engine::Node<$edges>>::State>());
+                        match state {
+                            Some(state) => $crate::core::engine::Node::process(n, pass, state),
+                            None => $crate::core::engine::Node::process(n, pass, &mut Default::default()),
+                        }
+                    }),+
+                }
+            }
+        }
+    };
+}
