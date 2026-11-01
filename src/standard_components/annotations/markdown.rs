@@ -77,7 +77,7 @@ impl AnnotationType for Markdown {
     };
 
     /// Drawn out, it starts empty, to type straight into.
-    fn drawn() -> Self {
+    fn drawn(_flipped: [bool; 2]) -> Self {
         Markdown { text: String::new(), ..Default::default() }
     }
 

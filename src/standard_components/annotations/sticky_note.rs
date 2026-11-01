@@ -60,7 +60,7 @@ impl AnnotationType for StickyNote {
     };
 
     /// Drawn out, it starts empty, to type straight into.
-    fn drawn() -> Self {
+    fn drawn(_flipped: [bool; 2]) -> Self {
         StickyNote { text: String::new(), ..Default::default() }
     }
 

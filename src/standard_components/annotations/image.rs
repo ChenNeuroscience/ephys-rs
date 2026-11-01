@@ -1,103 +1,117 @@
-//! An image on the canvas: pasted onto it (Ctrl/⌘ V), or from a file. Kept with the graph, as base64.
+//! An image on the canvas: chosen from a file, or pasted onto the canvas (Ctrl/⌘ V). It's just the image, at its
+//! own shape, which it keeps when resized. Kept with the graph, as base64.
 
-use eframe::egui::{self, Color32, ColorImage, Painter, Rect, RichText, Shape, Stroke};
+use eframe::egui::{self, Color32, ColorImage, Painter, Rect, Shape, Stroke};
 use serde::{Deserialize, Serialize};
 
-use super::{canvas_size, encode, encode_pasted, image_size, image_uri};
+use super::{encode, encode_pasted, image_size, image_uri};
 use crate::core::annotation::{AnnotationInfo, AnnotationType};
 use crate::core::theme::Colours;
-
-/// The most an image pasted onto the canvas takes across, in canvas units, to start with.
-const PASTED_SIZE: f32 = 360.0;
 
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Image {
-    /// The image's file (PNG, JPEG...), in base64; empty for none yet.
+    /// The image's file (PNG, JPEG...), in base64.
     pub data: String,
     /// Its size in pixels.
     pub pixels: [u32; 2],
 }
 
 impl Image {
-    /// Asks for an image file, and shows it.
-    fn choose_file(&mut self) {
-        let Some(path) = rfd::FileDialog::new().add_filter("Image", &["png", "jpg", "jpeg"]).pick_file() else {
-            return;
-        };
+    /// Asks for an image file, and reads it.
+    fn from_file() -> Option<Image> {
+        let path = rfd::FileDialog::new().add_filter("Image", &["png", "jpg", "jpeg"]).pick_file()?;
         match std::fs::read(&path) {
             Ok(bytes) => match image_size(&bytes) {
-                Some(pixels) => *self = Image { data: encode(&bytes), pixels },
-                None => log::warn!("{} isn't an image this can show", path.display()),
+                Some(pixels) => Some(Image { data: encode(&bytes), pixels }),
+                None => {
+                    log::warn!("{} isn't an image this can show", path.display());
+                    None
+                }
             },
-            Err(e) => log::warn!("Couldn't read {}: {e}", path.display()),
+            Err(e) => {
+                log::warn!("Couldn't read {}: {e}", path.display());
+                None
+            }
         }
+    }
+
+    fn natural_size(&self) -> [f32; 2] {
+        self.pixels.map(|n| n.max(1) as f32)
     }
 }
 
 impl AnnotationType for Image {
     const INFO: AnnotationInfo = AnnotationInfo {
         name: "Image",
-        description: "An image on the canvas: paste one (Ctrl/⌘ V), or choose a file. Not part of the graph.",
+        description: "An image on the canvas, from a file (or paste one onto the canvas). Not part of the graph.",
         default_size: [240.0, 180.0],
     };
+    const MIN_SIZE: [f32; 2] = [16.0, 16.0];
+    const DRAWN: bool = false;
 
-    fn fill(&self, theme: &Colours) -> Color32 {
-        theme.surface_raised
+    fn choose() -> Option<(Self, [f32; 2])> {
+        let image = Image::from_file()?;
+        let size = image.natural_size();
+        Some((image, size))
     }
 
     fn pasted_image(image: &ColorImage) -> Option<(Self, [f32; 2])> {
         let (data, pixels) = encode_pasted(image)?;
-        Some((Image { data, pixels }, canvas_size(pixels, PASTED_SIZE)))
+        let image = Image { data, pixels };
+        let size = image.natural_size();
+        Some((image, size))
     }
 
-    fn content_ui(&mut self, ui: &mut egui::Ui, editing: bool) -> bool {
-        // While it's selected for editing, a pasted image replaces it.
-        if editing
-            && let Some(pasted) = ui.input(|i| {
-                i.events.iter().find_map(|e| match e {
-                    egui::Event::PasteImage(image) => Some(image.clone()),
-                    _ => None,
-                })
-            })
-            && let Some((data, pixels)) = encode_pasted(&pasted)
-        {
-            *self = Image { data, pixels };
-        }
+    fn aspect(&self) -> Option<f32> {
+        let [w, h] = self.natural_size();
+        Some(w / h)
+    }
+
+    fn fill(&self, _theme: &Colours) -> Color32 {
+        Color32::TRANSPARENT
+    }
+
+    /// Just the image, filling its rect (whose shape is the image's).
+    fn paint(&self, painter: &Painter, rect: Rect, _zoom: f32, theme: &Colours) {
         if self.data.is_empty() {
-            ui.vertical_centered(|ui| {
-                ui.label(RichText::new("Paste an image (Ctrl/⌘ V) while editing, or").weak());
-                if ui.button("Choose a file…").clicked() {
-                    self.choose_file();
-                }
-            });
-            return editing;
+            painter.rect_stroke(rect, 2.0, Stroke::new(1.0, theme.text_disabled), egui::StrokeKind::Inside);
+            return;
         }
-        let uri = image_uri(ui.ctx(), &self.data);
-        let size = ui.available_size();
-        ui.centered_and_justified(|ui| {
-            ui.add(egui::Image::new(uri).max_size(size).maintain_aspect_ratio(true));
-        });
+        let uri = image_uri(painter.ctx(), &self.data);
+        let uv = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+        match painter.ctx().try_load_texture(&uri, Default::default(), egui::SizeHint::default()) {
+            Ok(egui::load::TexturePoll::Ready { texture }) => {
+                painter.image(texture.id, rect, uv, Color32::WHITE);
+            }
+            _ => {
+                painter.rect_filled(rect, 2.0, theme.surface_raised);
+                painter.ctx().request_repaint();
+            }
+        }
+    }
+
+    fn content_ui(&mut self, _ui: &mut egui::Ui, _editing: bool) -> bool {
         false
     }
 
     fn context_menu_ui(&mut self, ui: &mut egui::Ui) {
-        if ui.button("Choose a file…").clicked() {
-            self.choose_file();
+        if ui.button("Replace with a file…").clicked()
+            && let Some(image) = Image::from_file()
+        {
+            *self = image;
         }
     }
 
     fn settings_ui(&mut self, ui: &mut egui::Ui) {
-        if self.data.is_empty() {
-            ui.weak("No image yet.");
-        } else {
-            let [w, h] = self.pixels;
-            ui.label(format!("{w} × {h} pixels, {:.0} kB", self.data.len() as f64 * 0.75 / 1e3));
+        let [w, h] = self.pixels;
+        ui.label(format!("{w} × {h} pixels, {:.0} kB", self.data.len() as f64 * 0.75 / 1e3));
+        if ui.button("Replace with a file…").clicked()
+            && let Some(image) = Image::from_file()
+        {
+            *self = image;
         }
-        if ui.button("Choose a file…").clicked() {
-            self.choose_file();
-        }
-        ui.weak("Or paste an image onto the canvas to add another.");
+        ui.weak("Its shape stays the image's when resized.");
     }
 
     /// A framed picture: a sun over hills.
@@ -105,23 +119,11 @@ impl AnnotationType for Image {
         let s = rect.width() / 16.0;
         let p = |x: f32, y: f32| rect.min + egui::vec2(x, y) * s;
         let frame = Rect::from_min_max(p(1.5, 2.5), p(14.5, 13.5));
-        painter.rect(
-            frame,
-            s,
-            Color32::from_rgb(170, 210, 245),
-            Stroke::new(s, Color32::from_gray(90)),
-            egui::StrokeKind::Middle,
-        );
+        let outline = Stroke::new(s, Color32::from_gray(90));
+        painter.rect(frame, s, Color32::from_rgb(170, 210, 245), outline, egui::StrokeKind::Middle);
         painter.circle_filled(p(10.5, 5.5), 1.6 * s, Color32::from_rgb(245, 200, 70));
-        painter.add(Shape::convex_polygon(
-            vec![p(2.0, 13.0), p(6.5, 7.5), p(11.0, 13.0)],
-            Color32::from_rgb(70, 150, 80),
-            Stroke::NONE,
-        ));
-        painter.add(Shape::convex_polygon(
-            vec![p(8.0, 13.0), p(11.0, 9.5), p(14.0, 13.0)],
-            Color32::from_rgb(50, 120, 65),
-            Stroke::NONE,
-        ));
+        let hill = |points, colour| Shape::convex_polygon(points, colour, Stroke::NONE);
+        painter.add(hill(vec![p(2.0, 13.0), p(6.5, 7.5), p(11.0, 13.0)], Color32::from_rgb(70, 150, 80)));
+        painter.add(hill(vec![p(8.0, 13.0), p(11.0, 9.5), p(14.0, 13.0)], Color32::from_rgb(50, 120, 65)));
     }
 }

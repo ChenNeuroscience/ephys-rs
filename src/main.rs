@@ -14,7 +14,7 @@
 mod core;
 mod standard_components;
 
-use standard_components::annotations::{image, markdown, sticky_note};
+use standard_components::annotations::{arrow, group_box, heading, image, markdown, sticky_note};
 use standard_components::ephys::{self, band_pass, board, gain, lfp_viewer, reference, ttl_viewer};
 use standard_components::recording::{ltx, raw};
 use standard_components::spikes::{self, spike_detector, spike_viewer};
@@ -64,6 +64,9 @@ annotation_set! {
         StickyNote(sticky_note::StickyNote),
         Markdown(markdown::Markdown),
         Image(image::Image),
+        Heading(heading::Heading),
+        Box(group_box::GroupBox),
+        Arrow(arrow::Arrow),
     }
 }
 

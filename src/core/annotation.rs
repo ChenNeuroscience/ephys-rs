@@ -7,13 +7,13 @@
 
 use std::collections::BTreeMap;
 
-use eframe::egui::{self, Color32, ColorImage, Painter, Rect, UiBuilder};
+use eframe::egui::{self, Color32, ColorImage, Painter, Pos2, Rect, UiBuilder};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use super::theme::Colours;
 
-/// The smallest an annotation can be made, in canvas units.
+/// The smallest an annotation can be made, in canvas units, unless its type says otherwise.
 pub const MIN_SIZE: [f32; 2] = [80.0, 50.0];
 
 /// Static facts about an annotation type.
@@ -28,16 +28,48 @@ pub struct AnnotationInfo {
 pub trait AnnotationType: Default + Clone + PartialEq + Serialize + DeserializeOwned + 'static {
     const INFO: AnnotationInfo;
 
-    /// One just drawn out on the canvas, which goes straight into editing. By default the same as `default`.
-    fn drawn() -> Self {
+    /// The smallest it can be made, in canvas units.
+    const MIN_SIZE: [f32; 2] = MIN_SIZE;
+
+    /// One just drawn out on the canvas, which goes straight into editing. `flipped` says whether it was drawn
+    /// leftwards and upwards (an arrow drawn that way points that way, say). By default the same as `default`.
+    fn drawn(_flipped: [bool; 2]) -> Self {
         Self::default()
     }
 
-    /// Its background on the canvas, in the theme's colours if it wants.
+    /// Its background on the canvas, in the theme's colours if it wants. An opaque one has a shadow.
     fn fill(&self, theme: &Colours) -> Color32;
 
-    /// One showing an image pasted onto the canvas, if this type shows images; with its size on the canvas.
+    /// Draws what it is besides its content, over its background (a border, say), filling `rect` (on screen).
+    fn paint(&self, _painter: &Painter, _rect: Rect, _zoom: f32, _theme: &Colours) {}
+
+    /// Whether it can be grabbed (to move, select or edit) at `at`, on screen, within `rect`: by default anywhere
+    /// in it, but a box, say, only by its edge, so what's inside it can still be grabbed.
+    fn hit(&self, _rect: Rect, _at: Pos2, _zoom: f32) -> bool {
+        true
+    }
+
+    /// Whether it goes behind other annotations (a box grouping them, say).
+    fn behind(&self) -> bool {
+        false
+    }
+
+    /// One showing an image pasted onto the canvas, if this type shows images; with its natural size (which the
+    /// canvas scales down to fit the view).
     fn pasted_image(_image: &ColorImage) -> Option<(Self, [f32; 2])> {
+        None
+    }
+
+    /// Whether it's drawn out on the canvas (with its toolbar tool). If not, it's made with `choose` instead.
+    const DRAWN: bool = true;
+
+    /// One made by choosing something (an image file, say), and its natural size; `None` if nothing was chosen.
+    fn choose() -> Option<(Self, [f32; 2])> {
+        None
+    }
+
+    /// The width over the height it keeps, if it keeps one (an image, say).
+    fn aspect(&self) -> Option<f32> {
         None
     }
 
@@ -62,7 +94,15 @@ pub trait AnnotationSet: Clone + PartialEq + Serialize + DeserializeOwned + 'sta
     const TYPES: &'static [AnnotationInfo];
 
     fn create(type_index: usize) -> Self;
-    fn drawn(type_index: usize) -> Self;
+    fn drawn(type_index: usize, flipped: [bool; 2]) -> Self;
+    fn min_size(type_index: usize) -> [f32; 2];
+    /// Whether annotations of a type are drawn out, or made with `choose`.
+    fn is_drawn(type_index: usize) -> bool;
+    fn choose(type_index: usize) -> Option<(Self, [f32; 2])>;
+    fn aspect(&self) -> Option<f32>;
+    fn paint(&self, painter: &Painter, rect: Rect, zoom: f32, theme: &Colours);
+    fn hit(&self, rect: Rect, at: Pos2, zoom: f32) -> bool;
+    fn behind(&self) -> bool;
     fn type_index(&self) -> usize;
     fn fill(&self, theme: &Colours) -> Color32;
     /// An annotation of the first type that shows pasted images, and its size.
@@ -115,15 +155,73 @@ macro_rules! annotation_set {
             }
 
             #[allow(unused_assignments)]
-            fn drawn(type_index: usize) -> Self {
+            fn drawn(type_index: usize, flipped: [bool; 2]) -> Self {
                 let mut i = 0;
                 $(
                     if i == type_index {
-                        return $name::$variant(<$ty as $crate::core::annotation::AnnotationType>::drawn());
+                        return $name::$variant(<$ty as $crate::core::annotation::AnnotationType>::drawn(flipped));
                     }
                     i += 1;
                 )+
                 panic!("no annotation type {type_index}")
+            }
+
+            #[allow(unused_assignments)]
+            fn min_size(type_index: usize) -> [f32; 2] {
+                let mut i = 0;
+                $(
+                    if i == type_index {
+                        return <$ty as $crate::core::annotation::AnnotationType>::MIN_SIZE;
+                    }
+                    i += 1;
+                )+
+                $crate::core::annotation::MIN_SIZE
+            }
+
+            #[allow(unused_assignments)]
+            fn is_drawn(type_index: usize) -> bool {
+                let mut i = 0;
+                $(
+                    if i == type_index {
+                        return <$ty as $crate::core::annotation::AnnotationType>::DRAWN;
+                    }
+                    i += 1;
+                )+
+                true
+            }
+
+            #[allow(unused_assignments)]
+            fn choose(type_index: usize) -> Option<(Self, [f32; 2])> {
+                let mut i = 0;
+                $(
+                    if i == type_index {
+                        return <$ty as $crate::core::annotation::AnnotationType>::choose().map(|(a, size)| ($name::$variant(a), size));
+                    }
+                    i += 1;
+                )+
+                None
+            }
+
+            fn aspect(&self) -> Option<f32> {
+                match self { $($name::$variant(a) => $crate::core::annotation::AnnotationType::aspect(a)),+ }
+            }
+
+            fn paint(
+                &self,
+                painter: &eframe::egui::Painter,
+                rect: eframe::egui::Rect,
+                zoom: f32,
+                theme: &$crate::core::theme::Colours,
+            ) {
+                match self { $($name::$variant(a) => $crate::core::annotation::AnnotationType::paint(a, painter, rect, zoom, theme)),+ }
+            }
+
+            fn hit(&self, rect: eframe::egui::Rect, at: eframe::egui::Pos2, zoom: f32) -> bool {
+                match self { $($name::$variant(a) => $crate::core::annotation::AnnotationType::hit(a, rect, at, zoom)),+ }
+            }
+
+            fn behind(&self) -> bool {
+                match self { $($name::$variant(a) => $crate::core::annotation::AnnotationType::behind(a)),+ }
             }
 
             #[allow(unused_assignments, irrefutable_let_patterns)]

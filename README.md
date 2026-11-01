@@ -19,7 +19,7 @@ You build a graph of nodes, and press Play to run it:
 
 Nodes can also edit each other's settings, through settings edges (dashed, with arrows both ways); a node that only reads a setting, as Write LTX reads the position detector's crop and calibration to record them, has a dotted edge. While recording, settings are locked.
 
-Annotations sit on the canvas alongside the graph: sticky notes (plain text), markdown notes (with links that open in the browser, and images pasted into them), and images (pasted onto the canvas, or from a file). They're saved in the graph's file, images included.
+Annotations sit on the canvas alongside the graph: sticky notes (plain text), markdown notes (with links that open in the browser, and images pasted into them), images (from a file, or pasted onto the canvas), headings, boxes to group things (behind everything, grabbed by their border or title), and arrows (thick and straight, so they aren't mistaken for edges). They're saved in the graph's file, images included.
 
 Developer Tools (View menu, or Ctrl/⌘ Alt I) show the threads running the graph, the plan each pass runs through and the memory it takes, and the log.
 

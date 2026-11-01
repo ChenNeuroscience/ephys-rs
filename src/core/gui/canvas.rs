@@ -22,7 +22,7 @@ use eframe::egui::{
 
 use super::Event;
 use super::style;
-use crate::core::annotation::{Annotation, AnnotationId, AnnotationSet, Annotations, MIN_SIZE};
+use crate::core::annotation::{Annotation, AnnotationId, AnnotationSet, Annotations};
 use crate::core::engine::{
     Dimension, Edge, EdgeInfo, EdgeSet, Edges, Graph, KindKey, NodeEntry, NodeId, NodeSet, NodeState, Port, Resolved,
     Role,
@@ -535,7 +535,13 @@ impl Canvas {
             self.drawing = ui.input(|i| i.pointer.press_origin()).or(pointer).map(|p| to_scene * p);
         }
         let outline = self.drawing.zip(pointer).map(|(start, p)| Rect::from_two_pos(self.to_screen * start, p));
+        // Which way it was drawn: leftwards, upwards.
+        let flipped = self.drawing.zip(pointer).map_or([false; 2], |(start, p)| {
+            let end = to_scene * p;
+            [end.x < start.x, end.y < start.y]
+        });
         let default_size = Vec2::from(A::TYPES[type_index].default_size);
+        let min_size = A::min_size(type_index);
         let drawn = if response.drag_stopped() {
             self.drawing = None;
             outline.map(|r| to_scene * r)
@@ -546,12 +552,13 @@ impl Canvas {
         };
         if let Some(drawn) = drawn {
             // A slip of a drag gets the default size, rather than something too small to use.
-            let size = if drawn.width() < MIN_SIZE[0] && drawn.height() < MIN_SIZE[1] {
+            let size = if drawn.width() < min_size[0] && drawn.height() < min_size[1] {
                 default_size
             } else {
-                drawn.size().max(MIN_SIZE.into())
+                drawn.size().max(min_size.into())
             };
-            let annotation = Annotation { pos: drawn.min.into(), size: size.into(), kind: A::drawn(type_index) };
+            let kind = A::drawn(type_index, flipped);
+            let annotation = Annotation { pos: drawn.min.into(), size: size.into(), kind };
             let id = annotations.add(annotation);
             selection.only_annotation(id);
             self.editing = Some(id);
@@ -695,6 +702,36 @@ impl Canvas {
         let Some((kind, size)) = pasted.and_then(|image| A::pasted_image(&image)) else { return };
         // Centred on the pointer, or the middle of the view.
         let centre = pointer.map_or_else(|| self.view_centre(), |p| self.to_screen.inverse() * p);
+        self.place(annotations, selection, kind, size, centre);
+    }
+
+    /// Makes an annotation of a type that's chosen rather than drawn (an image from a file, say), in the middle of
+    /// the view.
+    pub fn insert_chosen<A: AnnotationSet>(
+        &mut self,
+        type_index: usize,
+        annotations: &mut Annotations<A>,
+        selection: &mut Selection,
+    ) {
+        if let Some((kind, size)) = A::choose(type_index) {
+            let centre = self.view_centre();
+            self.place(annotations, selection, kind, size, centre);
+        }
+    }
+
+    /// Adds an annotation centred on `centre`, scaled down (keeping its shape) to take no more than a quarter of
+    /// the view across or down, and selects it.
+    fn place<A: AnnotationSet>(
+        &mut self,
+        annotations: &mut Annotations<A>,
+        selection: &mut Selection,
+        kind: A,
+        size: [f32; 2],
+        centre: Pos2,
+    ) {
+        let view = self.screen_rect.size() / self.to_screen.scaling * 0.25;
+        let scale = (view.x / size[0].max(1.0)).min(view.y / size[1].max(1.0)).min(1.0);
+        let size = [size[0] * scale, size[1] * scale];
         let pos = [centre.x - size[0] / 2.0, centre.y - size[1] / 2.0];
         let id = annotations.add(Annotation { pos, size, kind });
         selection.only_annotation(id);
@@ -713,11 +750,20 @@ impl Canvas {
     ) {
         let zoom = self.to_screen.scaling;
         let shift = ui.input(|i| i.modifiers.shift);
-        let ids: Vec<AnnotationId> = annotations.ids().collect();
+        let pointer = ui.input(|i| i.pointer.hover_pos());
+        // Those that go behind the others first, so beneath them.
+        let mut ids: Vec<AnnotationId> = annotations.ids().collect();
+        ids.sort_by_key(|id| !annotations.get(*id).is_some_and(|a| a.kind.behind()));
         for id in ids {
             let Some(annotation) = annotations.get(id) else { continue };
             let rect = self.to_screen * annotation.rect();
-            let body = ui.interact(rect, Id::unique(("annotation", id)), Sense::click_and_drag());
+            // Only where it can be grabbed (or while it's being dragged), so clicks elsewhere in it reach what's
+            // beneath: a box's inside, say.
+            let body_id = Id::unique(("annotation", id));
+            let grabbable = ui.ctx().dragged_id() == Some(body_id)
+                || pointer.is_some_and(|p| rect.contains(p) && annotation.kind.hit(rect, p, zoom));
+            let sense = if grabbable { Sense::click_and_drag() } else { Sense::hover() };
+            let body = ui.interact(rect, body_id, sense);
             if body.drag_started() && !selection.annotations.contains(&id) {
                 if !shift {
                     selection.clear();
@@ -755,23 +801,40 @@ impl Canvas {
             let resize = ui.interact(handle, Id::unique(("annotation-resize", id)), Sense::drag());
             let Some(annotation) = annotations.get_mut(id) else { continue };
             if resize.dragged() {
-                let size = Vec2::from(annotation.size) + resize.drag_delta() / zoom;
-                annotation.size = size.max(MIN_SIZE.into()).into();
+                let mut size = (Vec2::from(annotation.size) + resize.drag_delta() / zoom)
+                    .max(A::min_size(annotation.kind.type_index()).into());
+                // Keeping its shape, if it keeps one: by whichever side was dragged further.
+                if let Some(aspect) = annotation.kind.aspect().filter(|a| a.is_finite() && *a > 0.0) {
+                    let old = Vec2::from(annotation.size);
+                    if (size.x - old.x).abs() / aspect >= (size.y - old.y).abs() {
+                        size.y = size.x / aspect;
+                    } else {
+                        size.x = size.y * aspect;
+                    }
+                }
+                annotation.size = size.into();
             }
             resize.on_hover_cursor(egui::CursorIcon::ResizeNwSe);
 
             let rect = self.to_screen * annotation.rect();
-            painter.rect_filled(rect.translate(egui::vec2(0.0, 3.0 * zoom)), 4.0 * zoom, self.colours.shadow);
-            painter.rect_filled(rect, 4.0 * zoom, annotation.kind.fill(self.colours));
-            if selection.annotations.contains(&id) {
+            let fill = annotation.kind.fill(self.colours);
+            let opaque = fill.a() == 255;
+            if opaque {
+                painter.rect_filled(rect.translate(egui::vec2(0.0, 3.0 * zoom)), 4.0 * zoom, self.colours.shadow);
+            }
+            painter.rect_filled(rect, 4.0 * zoom, fill);
+            annotation.kind.paint(painter, rect, zoom, self.colours);
+            let selected = selection.annotations.contains(&id);
+            if selected {
                 let stroke = Stroke::new(2.0, self.colours.accent);
                 painter.rect_stroke(rect, 4.0 * zoom, stroke, StrokeKind::Outside);
             }
-            // Grip lines in the resize corner.
-            for i in 1..=3 {
+            // Grip lines in the resize corner (only once selected, for one that's see-through).
+            let grip = if opaque { Color32::from_black_alpha(70) } else { self.colours.text_secondary };
+            for i in (1..=3).filter(|_| opaque || selected) {
                 let d = i as f32 * 3.0 * zoom;
                 let corner = rect.max - Vec2::splat(2.0 * zoom);
-                let stroke = Stroke::new(1.0, Color32::from_black_alpha(70));
+                let stroke = Stroke::new(1.0, grip);
                 painter.line_segment([corner - egui::vec2(d, 0.0), corner - egui::vec2(0.0, d)], stroke);
             }
             let editing = self.editing == Some(id);

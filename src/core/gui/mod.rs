@@ -506,6 +506,9 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                 self.theme = index;
                 self.themes[index].apply(ctx);
             }
+            Action::DrawTool(index) if !A::is_drawn(index) => {
+                self.canvas.insert_chosen(index, &mut self.annotations, &mut self.selection);
+            }
             Action::DrawTool(index) => {
                 let tool = Tool::Draw(index);
                 self.canvas.tool = if self.canvas.tool == tool { Tool::Select } else { tool };
@@ -1201,6 +1204,31 @@ mod tests {
         assert!(app.graph.get(detector).unwrap().pos[0] > 0.0, "but nodes can still move");
         harness.state_mut().set_recording(None);
         assert!(harness.state().enabled(Action::AddNode));
+    }
+
+    #[test]
+    fn a_box_is_grabbed_by_its_title_not_its_inside() {
+        let mut harness = harness();
+        let id =
+            harness.state().annotations.ids().find(|id| {
+                matches!(harness.state().annotations.get(*id).map(|a| &a.kind), Some(AnnotationTypes::Box(_)))
+            });
+        let id = id.expect("the example has a box");
+        let pos = |h: &Harness<TestApp>| h.state().annotations.get(id).unwrap().pos;
+        let drag = |h: &mut Harness<TestApp>, scene: [f32; 2]| {
+            let start = h.state().canvas.to_screen(egui::pos2(scene[0], scene[1]));
+            pointer(h, start, Some(true));
+            pointer(h, start + egui::vec2(20.0, 10.0), None);
+            pointer(h, start + egui::vec2(40.0, 20.0), None);
+            pointer(h, start + egui::vec2(40.0, 20.0), Some(false));
+        };
+        let before = pos(&harness);
+        // Inside, away from the nodes in it: a marquee, not a move.
+        drag(&mut harness, [before[0] + 120.0, before[1] + 280.0]);
+        assert_eq!(pos(&harness), before);
+        // By its title.
+        drag(&mut harness, [before[0] + 300.0, before[1] + 10.0]);
+        assert!(pos(&harness)[0] > before[0], "moved by its title");
     }
 
     #[test]
