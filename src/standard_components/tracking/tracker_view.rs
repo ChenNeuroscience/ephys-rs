@@ -160,17 +160,58 @@ impl Node<Edges> for TrackerView {
 
     fn view_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
         let size = frame_size(context);
-        let arrangement = Arrangement::of(ui.available_rect_before_wrap());
-        let controls = match arrangement {
-            Arrangement::Rows => {
-                let height = ui.available_height() * 0.4;
-                egui::Panel::top(ui.scope_id().with("tracker controls above")).default_size(height)
-            }
-            _ => egui::Panel::left(ui.scope_id().with("tracker controls")).default_size(290.0),
-        };
-        controls.resizable(true).show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| self.controls_ui(ui, context, size));
+        let area = ui.available_rect_before_wrap();
+        let arrangement = Arrangement::of(area);
+        if arrangement == Arrangement::Rows {
+            let rest = self.controls_above(ui, context, size, area);
+            ui.scope_builder(egui::UiBuilder::new().max_rect(rest), |ui| self.camera_ui(ui, context, arrangement));
+        } else {
+            // As wide as it's set, however much of it the sections take while some are closed.
+            let panel = egui::Panel::left(ui.scope_id().with("tracker controls")).resizable(true).default_size(290.0);
+            panel.show(ui, |ui| {
+                let scroll = egui::ScrollArea::vertical().auto_shrink([false, true]);
+                scroll.show(ui, |ui| self.controls_ui(ui, context, size));
+            });
+            self.camera_ui(ui, context, arrangement);
+        }
+    }
+}
+
+impl TrackerView {
+    /// The settings above the camera, as tall as they are (so closing sections makes room for the camera), up
+    /// to a height that dragging their bottom edge sets. Returns the room left below.
+    fn controls_above(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>, size: [f32; 2], area: Rect) -> Rect {
+        // The most it's to take, and how tall the settings were last time.
+        let fit_id = ui.scope_id().with("tracker controls above");
+        let (most, tall) = ui.data(|d| d.get_temp::<(f32, f32)>(fit_id)).unwrap_or((area.height() * 0.4, f32::MAX));
+        let height = most.min(tall).clamp(40.0, (area.height() - 120.0).max(40.0));
+        let top = Rect::from_min_size(area.min, egui::vec2(area.width(), height));
+        let mut content = tall;
+        ui.scope_builder(egui::UiBuilder::new().max_rect(top.shrink2(egui::vec2(8.0, 0.0))), |ui| {
+            let scroll = egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+                self.controls_ui(ui, context, size);
+            });
+            content = scroll.content_size.y + 6.0;
         });
+
+        let edge = Rect::from_x_y_ranges(area.x_range(), top.bottom() - 3.0..=top.bottom() + 3.0);
+        let drag = ui.interact(edge, fit_id.with("edge"), Sense::drag());
+        let mut most = most;
+        if let Some(pointer) = drag.interact_pointer_pos().filter(|_| drag.dragged()) {
+            most = (pointer.y - area.top()).max(40.0);
+        }
+        let colour = if drag.hovered() || drag.dragged() { context.theme.accent } else { context.theme.divider };
+        ui.painter().hline(area.x_range(), top.bottom(), egui::Stroke::new(1.0, colour));
+        drag.on_hover_cursor(egui::CursorIcon::ResizeVertical);
+        ui.data_mut(|d| d.insert_temp(fit_id, (most, content)));
+        if (content - height).abs() > 0.5 {
+            ui.ctx().request_repaint(); // to fit the settings as they now are
+        }
+        Rect::from_min_max(egui::pos2(area.left(), top.bottom() + 4.0), area.max)
+    }
+
+    /// The camera, with what's detected drawn over it, and the LED chart beside or below it.
+    fn camera_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>, arrangement: Arrangement) {
         if self.overlays.detection.visible
             && let Some(display) = context.display.and_then(|d| d.downcast_ref::<TrackerDisplay>())
         {
@@ -210,9 +251,7 @@ impl Node<Edges> for TrackerView {
         }
         ui.ctx().request_repaint();
     }
-}
 
-impl TrackerView {
     /// The camera's and the detector's settings (through the controls), in sections whose headers say what's
     /// shown over the video and lock what can be changed.
     fn controls_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>, size: [f32; 2]) {
