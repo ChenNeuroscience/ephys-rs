@@ -304,8 +304,7 @@ fn convert(channel: i32) -> u32 {
 pub fn chip_id(results: &[u16]) -> Option<(i32, i32)> {
     let byte = |t: usize| results.get(t).map(|&r| r as u8);
     let name = [24, 25, 26, 32, 33, 34, 35, 36].map(byte);
-    (name == [b'R', b'H', b'D', b'I', b'N', b'T', b'A', b'N'].map(Some))
-        .then(|| (results[19] as i32, results[23] as i32))
+    (name == b"RHDINTAN".map(Some)).then(|| (results[19] as i32, results[23] as i32))
 }
 
 #[cfg(test)]

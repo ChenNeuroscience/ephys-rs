@@ -138,7 +138,7 @@ impl Board for FakeBoard {
         let [samples, ephys, aux, adc] = [4, 8, 12, 16].map(|at| u32_at(&self.buf, at) as usize);
         block.resize(samples, ephys, aux, adc);
         block.first = u64::from_le_bytes(self.buf[20..28].try_into().unwrap());
-        let mut values = self.buf[HEADER_LEN..].chunks_exact(2).map(|b| [b[0], b[1]]);
+        let mut values = self.buf[HEADER_LEN..].as_chunks::<2>().0.iter().copied();
         let mut scale = |out: &mut [f32], per_bit: f32| {
             for (value, bytes) in out.iter_mut().zip(values.by_ref()) {
                 *value = i16::from_le_bytes(bytes) as f32 * per_bit;
