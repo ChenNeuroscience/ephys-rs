@@ -7,7 +7,9 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use super::{Context, Control, Dimension, EdgeInfo, EdgeSet, Edges, Input, NodeSet, Output, SettingPort};
+use super::{
+    Context, Control, Dimension, EdgeInfo, EdgeSet, Edges, Input, NodeSet, Output, Plan, SettingPort, same_processing,
+};
 use crate::core::theme::Colours;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
@@ -478,17 +480,30 @@ impl<N: NodeSet> Graph<N> {
     }
 }
 
-/// A frozen version of the graph, with all its configuration. Undo steps back through snapshots, and (in time)
-/// each processing pass will run against one. Cheap to clone and to share between threads.
-pub struct Snapshot<N> {
+/// A frozen version of the graph, with all its configuration, and the plan for running it. Undo steps back
+/// through snapshots, and each processing pass runs against one. Cheap to clone and to share between threads.
+pub struct Snapshot<N: NodeSet> {
     /// Increases with every snapshot taken.
     pub version: u64,
     pub graph: Arc<Graph<N>>,
+    pub plan: Arc<Plan<N>>,
 }
 
-impl<N> Clone for Snapshot<N> {
+impl<N: NodeSet> Snapshot<N> {
+    /// A snapshot of `graph`, planning how to run it, unless it processes the same as `previous` (when only
+    /// positions or labels have changed, say), whose plan it shares.
+    pub fn new(version: u64, graph: Graph<N>, previous: Option<&Snapshot<N>>) -> Self {
+        let plan = match previous {
+            Some(previous) if same_processing(&previous.graph, &graph) => previous.plan.clone(),
+            _ => Arc::new(Plan::new(&graph)),
+        };
+        Snapshot { version, graph: Arc::new(graph), plan }
+    }
+}
+
+impl<N: NodeSet> Clone for Snapshot<N> {
     fn clone(&self) -> Self {
-        Snapshot { version: self.version, graph: self.graph.clone() }
+        Snapshot { version: self.version, graph: self.graph.clone(), plan: self.plan.clone() }
     }
 }
 

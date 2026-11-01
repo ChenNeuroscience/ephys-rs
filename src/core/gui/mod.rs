@@ -447,16 +447,10 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         }
     }
 
-    /// Keeps the runner on the latest version of the graph: carrying on with it after a change of settings,
-    /// or restarting after a change in how it runs (a new node or edge, say).
+    /// Keeps the runner on the latest version of the graph (see `Runner::update`).
     fn keep_running(&mut self, ctx: &egui::Context) {
         let Some(runner) = &self.runner else { return };
-        let latest = &self.history.current.snapshot;
-        if !engine::same_processing(&runner.graph(), &latest.graph) && !runner.update(latest) {
-            let workers = runner.stats().workers;
-            self.runner = None; // stops the old run before starting the new
-            self.runner = Some(Runner::start(latest, workers));
-        }
+        runner.update(&self.history.current.snapshot);
         // Keep the stats in the status bar fresh.
         ctx.request_repaint_after(std::time::Duration::from_millis(250));
     }
@@ -718,7 +712,7 @@ impl<N: NodeSet, A: AnnotationSet> eframe::App for App<N, A> {
 }
 
 /// A version of the document: a snapshot of the graph with all its configuration, and the annotations.
-struct Version<N, A> {
+struct Version<N: NodeSet, A> {
     snapshot: Snapshot<N>,
     annotations: Arc<Annotations<A>>,
 }
@@ -726,7 +720,7 @@ struct Version<N, A> {
 /// Undo and redo step between versions. A new version is taken whenever anything has changed (including
 /// node settings) and the user isn't mid-gesture (dragging, or typing in a field), so a whole drag or edit
 /// undoes in one step.
-struct History<N, A> {
+struct History<N: NodeSet, A> {
     current: Version<N, A>,
     undo: Vec<Version<N, A>>,
     redo: Vec<Version<N, A>>,
@@ -737,10 +731,8 @@ const HISTORY_LIMIT: usize = 200;
 
 impl<N: NodeSet, A: AnnotationSet> History<N, A> {
     fn new(graph: &Graph<N>, annotations: &Annotations<A>) -> Self {
-        let current = Version {
-            snapshot: Snapshot { version: 0, graph: Arc::new(graph.clone()) },
-            annotations: Arc::new(annotations.clone()),
-        };
+        let current =
+            Version { snapshot: Snapshot::new(0, graph.clone(), None), annotations: Arc::new(annotations.clone()) };
         History { current, undo: Vec::new(), redo: Vec::new(), versions: 0 }
     }
 
@@ -757,7 +749,7 @@ impl<N: NodeSet, A: AnnotationSet> History<N, A> {
         }
         self.versions += 1;
         let version = Version {
-            snapshot: Snapshot { version: self.versions, graph: Arc::new(graph.clone()) },
+            snapshot: Snapshot::new(self.versions, graph.clone(), Some(&self.current.snapshot)),
             annotations: Arc::new(annotations.clone()),
         };
         self.undo.push(std::mem::replace(&mut self.current, version));

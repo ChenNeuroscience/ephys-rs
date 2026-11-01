@@ -280,7 +280,6 @@ fn colour_image(frame: &Frame, detection: Option<&Detection>, overlays: &Overlay
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
     use std::time::Duration;
 
     use super::*;
@@ -318,7 +317,8 @@ mod tests {
         graph.connect(port(camera, Role::Output, 0), port(detector, Role::Input, 0)).unwrap();
         graph.connect(port(camera, Role::Output, 0), port(view, Role::Input, 0)).unwrap();
         graph.connect(port(detector, Role::Output, 0), port(view, Role::Input, 1)).unwrap();
-        let runner = Runner::start(&Snapshot { version: 0, graph: Arc::new(graph.clone()) }, 2);
+        let first = Snapshot::new(0, graph.clone(), None);
+        let runner = Runner::start(&first, 2);
 
         // The synthetic scene has a big LED at 255 and a small one at 240, both over the default threshold.
         assert!(wait_for(|| leds_shown(&runner, view) == Some(2)), "both LEDs found: {:?}", leds_shown(&runner, view));
@@ -327,7 +327,7 @@ mod tests {
         if let Some(Nodes::PositionDetector(d)) = graph.get_mut(detector).map(|e| &mut e.node) {
             d.detection.threshold = 245;
         }
-        assert!(runner.update(&Snapshot { version: 1, graph: Arc::new(graph) }));
+        assert!(runner.update(&Snapshot::new(1, graph, Some(&first))));
         assert!(wait_for(|| leds_shown(&runner, view) == Some(1)), "one LED found: {:?}", leds_shown(&runner, view));
     }
 }
