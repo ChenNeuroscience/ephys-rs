@@ -9,7 +9,7 @@
 //!
 //! This is the transport: the rest is in `rhythm`, shared with the generation 3 board. Not yet tried on hardware.
 
-use std::ffi::{CString, c_char, c_int, c_long, c_ulong, c_void};
+use std::ffi::{CString, c_char, c_int, c_long, c_void};
 use std::io;
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -154,10 +154,11 @@ frontpanel_api! {
     okFrontPanel_LoadDefaultPLLConfiguration(Handle) -> c_int;
     okFrontPanel_ConfigureFPGA(Handle, *const c_char) -> c_int;
     okFrontPanel_IsFrontPanelEnabled(Handle) -> c_int;
-    okFrontPanel_SetWireInValue(Handle, c_int, c_ulong, c_ulong) -> c_int;
+    // Wire values are `UINT32` in FrontPanel's header (`unsigned long` in old ones, the same width on Windows).
+    okFrontPanel_SetWireInValue(Handle, c_int, u32, u32) -> c_int;
     okFrontPanel_UpdateWireIns(Handle) -> c_int;
     okFrontPanel_UpdateWireOuts(Handle) -> c_int;
-    okFrontPanel_GetWireOutValue(Handle, c_int) -> c_ulong;
+    okFrontPanel_GetWireOutValue(Handle, c_int) -> u32;
     okFrontPanel_ActivateTriggerIn(Handle, c_int, c_int) -> c_int;
     okFrontPanel_ReadFromPipeOut(Handle, c_int, c_long, *mut u8) -> c_long;
     okFrontPanel_ReadFromBlockPipeOut(Handle, c_int, c_int, c_long, *mut u8) -> c_long;
@@ -244,7 +245,7 @@ struct FrontPanel {
 
 impl FrontPanel {
     fn set(&self, endpoint: c_int, value: u32, mask: u32) {
-        unsafe { (self.api.okFrontPanel_SetWireInValue)(self.handle, endpoint, value as c_ulong, mask as c_ulong) };
+        unsafe { (self.api.okFrontPanel_SetWireInValue)(self.handle, endpoint, value, mask) };
     }
 
     fn update_ins(&self) {
@@ -266,7 +267,7 @@ impl FrontPanel {
     }
 
     fn out(&self, endpoint: c_int) -> u32 {
-        unsafe { (self.api.okFrontPanel_GetWireOutValue)(self.handle, endpoint) as u32 }
+        unsafe { (self.api.okFrontPanel_GetWireOutValue)(self.handle, endpoint) }
     }
 }
 
