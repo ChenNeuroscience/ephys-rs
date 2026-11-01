@@ -9,11 +9,13 @@
 //!
 //! Each file is `key value` header lines, then the data between `data_start` and `data_end`; counts and the
 //! duration are filled in at the end. Timestamps count 96 kHz ticks from the start of recording, and multi-byte
-//! values are big-endian. Voltages are stored a µV a step for spikes, two µV a step for the 5 kHz data.
+//! values are big-endian. Spikes' samples are each channel's ±(full scale / gain) as -128 to 127: the gains are
+//! the spike detector's (connected, read-only, to `gains`), and are recorded in the `.set` file, with the full scale,
+//! as Axona's are (`gain_ch_0`..., `ADC_fullscale_mv`). The 5 kHz data is stored two µV a step.
 //!
-//! The positions' header records the detector's settings (connected, read-only, to `detection`): the crop, whose
-//! bounding box positions are measured from (scaled down to fit 0–1022 if need be; 1023 means no LED), and the
-//! calibration.
+//! The positions' header records the position detector's settings (connected, read-only, to `detection`): the
+//! crop, whose bounding box positions are measured from (scaled down to fit 0–1022 if need be; 1023 means no LED),
+//! and the calibration.
 
 use std::fs::File;
 use std::io::{self, BufWriter, Seek, SeekFrom, Write};
@@ -29,7 +31,7 @@ use crate::core::engine::{
 };
 use crate::core::exchange::Latest;
 use crate::standard_components::ephys::{Continuous, Event, Events};
-use crate::standard_components::spikes::Spikes;
+use crate::standard_components::spikes::{FULL_SCALE_UV, Gains, Spikes, range_uv};
 use crate::standard_components::tracking::{Crop, Detection, PositionSample, Positions};
 use crate::standard_components::widgets::{require_input, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
@@ -118,7 +120,10 @@ impl Node<Edges> for WriteLtx {
     }
 
     fn controls(&self) -> Vec<Control<Edges>> {
-        vec![Control { name: "detection", kind: SettingKind::Detection, read_only: true }]
+        vec![
+            Control { name: "detection", kind: SettingKind::Detection, read_only: true },
+            Control { name: "gains", kind: SettingKind::Gains, read_only: true },
+        ]
     }
 
     fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
@@ -159,7 +164,7 @@ impl Node<Edges> for WriteLtx {
         controls: &[Option<Setting>],
     ) -> Option<Box<dyn std::any::Any + Send>> {
         let (start, base) = self.base();
-        let files = LtxFiles::open(&base, start, Streams::of(inputs), detection(controls).as_ref());
+        let files = LtxFiles::open(&base, start, Streams::of(inputs), Recorded::of(controls));
         let writing: Writing<Chunk> =
             Writing::new("LTX writer", base.display().to_string(), files.map(|f| Box::new(f) as Box<_>));
         Some(Box::new(writing))
@@ -172,10 +177,10 @@ impl Node<Edges> for WriteLtx {
                 recorder.writing = pass.take_prepared::<Writing<Chunk>>().or_else(|| {
                     // Not prepared (the graph changed while recording, say): the thread opens the files.
                     let (start, base) = self.base();
-                    let (streams, detection) = (recorder.streams, detection(pass.controls));
+                    let (streams, recorded) = (recorder.streams, Recorded::of(pass.controls));
                     let shown = base.display().to_string();
                     Some(Writing::start("LTX writer", shown, move || {
-                        LtxFiles::open(&base, start, streams, detection.as_ref()).map(|f| Box::new(f) as Box<_>)
+                        LtxFiles::open(&base, start, streams, recorded).map(|f| Box::new(f) as Box<_>)
                     }))
                 });
             }
@@ -214,6 +219,9 @@ impl Node<Edges> for WriteLtx {
         if context.controls[0].is_none() && context.inputs[2].is_some() {
             ui.weak("Connect the detection to record the crop and calibration with the positions.");
         }
+        if context.controls[1].is_none() && context.inputs[0].is_some() {
+            ui.weak("Connect the spike detector's gains to record the spikes at them (until then, all are ×6000).");
+        }
         ui.separator();
         status_ui(ui, context.display::<Status>(), context.theme);
     }
@@ -243,11 +251,24 @@ impl Streams {
     }
 }
 
-/// The detector's settings, from the detection control.
-fn detection(controls: &[Option<Setting>]) -> Option<Detection> {
-    match controls.first() {
-        Some(Some(Setting::Detection(detection))) => Some(detection.clone()),
-        _ => None,
+/// The settings recorded with the data, from the controls.
+#[derive(Clone, Default)]
+struct Recorded {
+    detection: Option<Detection>,
+    gains: Gains,
+}
+
+impl Recorded {
+    fn of(controls: &[Option<Setting>]) -> Self {
+        let mut recorded = Recorded::default();
+        for control in controls.iter().flatten() {
+            match control {
+                Setting::Detection(detection) => recorded.detection = Some(detection.clone()),
+                Setting::Gains(gains) => recorded.gains = gains.clone(),
+                _ => {}
+            }
+        }
+        recorded
     }
 }
 
@@ -289,7 +310,7 @@ fn egf_step(rate: f32) -> Option<usize> {
 
 /// A value as a signed byte, saturating.
 fn to_i8(value: f32) -> u8 {
-    (value as i32).clamp(-128, 127) as i8 as u8
+    (value.round() as i32).clamp(-128, 127) as i8 as u8
 }
 
 /// Seconds as ticks of the timebase.
@@ -405,6 +426,7 @@ struct LtxFiles {
     streams: Streams,
     set: LtxFile,
     tetrodes: Vec<Tetrode>,
+    gains: Gains,
     egf: Vec<Egf>,
     /// Samples of continuous data so far (for which to keep at 5 kHz), and of the spikes' and events' passes.
     continuous_samples: u64,
@@ -417,7 +439,7 @@ struct LtxFiles {
 }
 
 impl LtxFiles {
-    fn open(base: &Path, start: DateTime<Local>, streams: Streams, detection: Option<&Detection>) -> io::Result<Self> {
+    fn open(base: &Path, start: DateTime<Local>, streams: Streams, recorded: Recorded) -> io::Result<Self> {
         if let Some(parent) = base.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -437,6 +459,10 @@ impl LtxFiles {
 
         let mut tetrodes = Vec::new();
         if let Some(spikes) = streams.spikes {
+            set.header("ADC_fullscale_mv", FULL_SCALE_UV / 1000.0)?;
+            for channel in 0..spikes.channels as usize {
+                set.header(&format!("gain_ch_{channel}"), recorded.gains.get(channel))?;
+            }
             for group in 0..spikes.groups() {
                 let mut f = file(&format!(".{}", group + 1))?;
                 f.header("num_chans", SPIKE_CHANNELS)?;
@@ -465,7 +491,7 @@ impl LtxFiles {
         }
 
         let pos = match streams.positions {
-            Some(positions) => Some(open_pos(file(".pos")?, positions, detection)?),
+            Some(positions) => Some(open_pos(file(".pos")?, positions, recorded.detection.as_ref())?),
             None => None,
         };
         let ttl = match streams.events {
@@ -478,6 +504,7 @@ impl LtxFiles {
             streams,
             set,
             tetrodes,
+            gains: recorded.gains,
             egf,
             continuous_samples: 0,
             spike_samples: 0,
@@ -545,12 +572,14 @@ impl Files<Chunk> for LtxFiles {
                 let Some(tetrode) = self.tetrodes.get_mut(group as usize) else { continue };
                 let seconds = (self.spike_samples + sample as i64) as f64 / spikes.sample_rate as f64;
                 let waveform = &chunk.waveforms[i * k * samples..(i + 1) * k * samples];
+                let first = spikes.group_channels(group).start as usize;
                 self.record.clear();
                 for channel in 0..SPIKE_CHANNELS {
                     self.record.extend_from_slice(&ticks(seconds));
                     let values = waveform.get(channel * samples..(channel + 1) * samples).unwrap_or(&[]);
+                    let steps = 128.0 / range_uv(self.gains.get(first + channel));
                     let start = self.record.len();
-                    self.record.extend(values.iter().take(SPIKE_SAMPLES).map(|v| to_i8(*v)));
+                    self.record.extend(values.iter().take(SPIKE_SAMPLES).map(|v| to_i8(v * steps)));
                     self.record.resize(start + SPIKE_SAMPLES, 0);
                 }
                 tetrode.file.data(&self.record)?;
@@ -663,14 +692,18 @@ mod tests {
     fn writes_spikes_eeg_and_positions() {
         let dir = std::env::temp_dir().join(format!("ephys-rs-ltx-{}", std::process::id()));
         let base = dir.join("test");
-        let spikes = Spikes { channels: 4, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32 };
+        let spikes =
+            Spikes { channels: 4, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32, polarity: Default::default() };
         let streams = Streams {
             spikes: Some(spikes),
             continuous: Some(Continuous { channels: 2, sample_rate: 30000.0 }),
             positions: Some(Positions { fps: 50.0, width: 640, height: 480 }),
             events: None,
         };
-        let mut files = Box::new(LtxFiles::open(&base, Local::now(), streams, None).unwrap());
+        // A µV a step on the first channel, half a µV on the second.
+        let gains = Gains(vec![FULL_SCALE_UV / 128.0, FULL_SCALE_UV / 64.0]);
+        let recorded = Recorded { detection: None, gains };
+        let mut files = Box::new(LtxFiles::open(&base, Local::now(), streams, recorded).unwrap());
 
         // A spike 300 samples into the second pass of 600: at 900 samples, 30 ms, 2880 ticks.
         let mut chunk = Chunk { spike_pass_samples: 600, ..Default::default() };
@@ -697,7 +730,9 @@ mod tests {
         assert_eq!(record.len(), 4 * 54);
         assert_eq!(i32::from_be_bytes(record[..4].try_into().unwrap()), 2880);
         assert_eq!(record[4] as i8, -80, "the first channel's first sample");
-        assert_eq!(record[54 + 4] as i8, -40, "the second channel's");
+        assert_eq!(record[54 + 4] as i8, -80, "the second channel's (-40 µV), at twice the gain");
+        assert_eq!(record[2 * 54 + 4] as i8, 0, "the third's (0 µV)");
+        assert_eq!(record[3 * 54 + 4] as i8, 20, "the fourth's (40 µV) at the default gain (±250 µV)");
         let egf = read(&base, ".egf2");
         assert_eq!(header(&egf, "num_EEG_samples"), "2");
         assert_eq!(data(&egf).iter().map(|b| *b as i8).collect::<Vec<_>>(), vec![60, 90]);
@@ -706,7 +741,11 @@ mod tests {
         assert_eq!(u16::from_be_bytes([sample[4], sample[5]]), 100);
         assert_eq!(u16::from_be_bytes([sample[8], sample[9]]), MISSING, "no second LED");
         assert_eq!(u16::from_be_bytes([sample[12], sample[13]]), 30);
-        assert!(read(&base, ".set").windows(10).all(|w| w != b"data_start"), "the set file is headers only");
+        let set = read(&base, ".set");
+        assert!(set.windows(10).all(|w| w != b"data_start"), "the set file is headers only");
+        assert_eq!(header(&set, "ADC_fullscale_mv"), "1500");
+        assert_eq!(header(&set, "gain_ch_1"), "23437.5");
+        assert_eq!(header(&set, "gain_ch_3"), "6000");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

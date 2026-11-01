@@ -54,9 +54,12 @@
         "node": {
           "type": "SpikeDetector",
           "settings": {
-            "threshold": 4.0,
             "polarity": "Negative",
-            "waveform_samples": 40
+            "group_size": 4,
+            "pre": 8,
+            "post": 32,
+            "thresholds": [],
+            "gains": []
           }
         },
         "label": "Spike Detector",
@@ -69,9 +72,8 @@
         "node": {
           "type": "SpikeViewer",
           "settings": {
-            "columns": 4,
-            "channels_shown": 16,
-            "waveforms": 20
+            "waveforms": 20,
+            "plot_height": 120.0
           }
         },
         "label": "Spike Viewer",
@@ -458,6 +460,28 @@
           "node": 12,
           "port": 0
         }
+      },
+      {
+        "dimension": "Settings",
+        "from": {
+          "node": 4,
+          "port": 1
+        },
+        "to": {
+          "node": 3,
+          "port": 1
+        }
+      },
+      {
+        "dimension": "Settings",
+        "from": {
+          "node": 6,
+          "port": 1
+        },
+        "to": {
+          "node": 3,
+          "port": 1
+        }
       }
     ]
   },
@@ -476,7 +500,7 @@
         "kind": {
           "type": "Markdown",
           "content": {
-            "text": "### Example rig\nThe **spike viewer** sets the detector's threshold through a *settings edge* (dashed), though it's downstream of it: drag in the viewer's window to change it. **Write LTX** only reads the position detector's settings, to record them (dotted).\n\nStart the fake board and camera in [synthetic_streams](https://github.com/ChenNeuroscience/ephys-rs/tree/main/synthetic_streams), then press Play.",
+            "text": "### Example rig\nThe **spike viewer** sets the detector's thresholds and gains through *settings edges* (dashed), though it's downstream of it: drag a threshold in the viewer's window to move it. **Write LTX** only reads the gains, and the position detector's settings, to record them (dotted).\n\nStart the fake board and camera in [synthetic_streams](https://github.com/ChenNeuroscience/ephys-rs/tree/main/synthetic_streams), then press Play.",
             "attachments": {}
           }
         }

@@ -87,7 +87,7 @@ pub enum Dimension {
 ///         Continuous(ephys::Continuous),
 ///     }
 ///     settings: pub enum Setting, SettingKind {
-///         Threshold(spikes::Threshold),
+///         Thresholds(spikes::Thresholds),
 ///     }
 /// }
 /// ```

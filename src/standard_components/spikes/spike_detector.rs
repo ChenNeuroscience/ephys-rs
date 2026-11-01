@@ -1,7 +1,9 @@
-//! The Spike Detector: finds spikes in groups of channels (tetrodes, say) of continuous data, as the Open Ephys
-//! spike detector does: a threshold in multiples of each channel's noise (its median absolute value / 0.6745,
-//! which spikes themselves hardly move), crossed on any of a group's channels, then the waveform on all of
-//! them around the peak that follows.
+//! The Spike Detector: finds spikes in groups of channels (tetrodes, say) of continuous data: a crossing of a
+//! channel's threshold (µV past zero, the way the spikes go), on any of a group's channels, then the waveform on all
+//! of them around the peak that follows. Each channel's threshold, and gain (which spikes are recorded, and viewed,
+//! at), are settings, set from the Spike Viewer, which can also choose them from the data: the detector measures
+//! each channel's noise for that (its median absolute value / 0.6745, as the Open Ephys spike detector does, which
+//! spikes themselves hardly move).
 //!
 //! A group can't spike again until its last spike's waveform has ended, so spikes don't overlap, and a pass's
 //! spikes always fit the buffer (see `Spikes`). A spike is only found once its whole waveform has come, so
@@ -10,34 +12,35 @@
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 
+use crate::core::engine::EdgeType;
 use crate::core::engine::{Category, Context, Input, Node, NodeInfo, Output, PASS_DURATION, Pass, SettingPort};
-use crate::standard_components::spikes::{Spike, Spikes, Threshold};
+use crate::standard_components::spikes::{GAINS, Gains, Polarity, Spike, Spikes, Thresholds, range_uv};
 use crate::standard_components::widgets::{combo, input_summary, require_input, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
-
-#[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub enum Polarity {
-    Negative,
-    Positive,
-    Both,
-}
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SpikeDetector {
-    /// In multiples of each channel's noise.
-    pub threshold: f32,
     pub polarity: Polarity,
     /// Channels in each group: 4 for tetrodes, 1 for single electrodes.
     pub group_size: u32,
     /// Waveform samples kept before and after each spike's peak.
     pub pre: u32,
     pub post: u32,
+    pub thresholds: Thresholds,
+    pub gains: Gains,
 }
 
 impl Default for SpikeDetector {
     fn default() -> Self {
-        SpikeDetector { threshold: 4.0, polarity: Polarity::Negative, group_size: 4, pre: 8, post: 32 }
+        SpikeDetector {
+            polarity: Polarity::Negative,
+            group_size: 4,
+            pre: 8,
+            post: 32,
+            thresholds: Thresholds::default(),
+            gains: Gains::default(),
+        }
     }
 }
 
@@ -49,6 +52,7 @@ impl SpikeDetector {
             group_size: self.group_size.max(1),
             pre: self.pre.max(1),
             post: self.post.max(1),
+            polarity: self.polarity,
         }
     }
 }
@@ -143,8 +147,12 @@ impl Node<Edges> for SpikeDetector {
         if first && n > 0 {
             detector.noise.resize(channels, 0.0);
         }
+        for channel in 0..channels {
+            output.thresholds[channel] = self.thresholds.get(channel);
+            output.gains[channel] = self.gains.get(channel);
+        }
         if detector.noise.len() < channels {
-            output.thresholds.fill(0.0);
+            output.noise.fill(0.0);
             return;
         }
         for channel in 0..channels {
@@ -159,26 +167,15 @@ impl Node<Edges> for SpikeDetector {
                 let noise = &mut detector.noise[channel];
                 *noise = if first { sd } else { *noise + 0.05 * (sd - *noise) };
             }
-            let threshold = self.threshold * detector.noise[channel];
-            output.thresholds[channel] = if self.polarity == Polarity::Positive { threshold } else { -threshold };
+            output.noise[channel] = detector.noise[channel];
         }
 
         // Spikes peaking at positions from `pre` (the first not looked at last pass) on, whose waveform and
         // lookahead have all come.
         let (pre, post, lookahead) = (spikes.pre as usize, spikes.post as usize, detector.lookahead);
         let end = (pre + n) as i64;
-        let polarity = self.polarity;
-        let beyond = |x: f32, threshold: f32| match polarity {
-            Polarity::Negative => x < -threshold,
-            Polarity::Positive => x > threshold,
-            Polarity::Both => x.abs() > threshold,
-        };
-        // How far past the threshold a sample is, to find the peak by.
-        let extremity = |x: f32| match polarity {
-            Polarity::Negative => -x,
-            Polarity::Positive => x,
-            Polarity::Both => x.abs(),
-        };
+        let extremity = |x: f32| self.polarity.extremity(x);
+        let beyond = |x: f32, threshold: f32| extremity(x) > threshold;
         for group in 0..spikes.groups() {
             let group_channels = spikes.group_channels(group);
             let mut position = detector.next[group as usize].max(pre as i64);
@@ -186,7 +183,7 @@ impl Node<Edges> for SpikeDetector {
                 let p = position as usize;
                 let crossed = group_channels.clone().find(|&channel| {
                     let row = &detector.samples[channel as usize * stride..];
-                    let threshold = self.threshold * detector.noise[channel as usize];
+                    let threshold = output.thresholds[channel as usize];
                     beyond(row[p], threshold) && !beyond(row[p - 1], threshold)
                 });
                 let Some(channel) = crossed else {
@@ -245,25 +242,27 @@ impl Node<Edges> for SpikeDetector {
     }
 
     fn settings(&self) -> Vec<SettingPort<Edges>> {
-        vec![SettingPort { name: "threshold", value: Threshold { sd: self.threshold }.into() }]
+        vec![
+            SettingPort { name: "thresholds", value: self.thresholds.clone().into() },
+            SettingPort { name: "gains", value: self.gains.clone().into() },
+        ]
     }
 
     fn set_setting(&mut self, _index: usize, value: Setting) {
-        if let Setting::Threshold(t) = value {
-            self.threshold = t.sd.clamp(1.0, 20.0);
+        match value {
+            Setting::Thresholds(t) => self.thresholds = t,
+            Setting::Gains(g) => self.gains = g,
+            _ => {}
         }
     }
 
     fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
-        let rate = match context.inputs[0] {
-            Some(DataStream::Continuous(c)) => c.sample_rate,
-            _ => 30000.0,
+        let (rate, channels) = match context.inputs[0] {
+            Some(DataStream::Continuous(c)) => (c.sample_rate, c.channels as usize),
+            _ => (30000.0, 0),
         };
         let ms = |samples: u32| format!(" samples ({:.2} ms)", samples as f32 * 1000.0 / rate);
         settings_grid(ui, |ui| {
-            setting(ui, "Threshold", |ui| {
-                ui.add(egui::DragValue::new(&mut self.threshold).range(1.0..=20.0).speed(0.05).suffix(" SD"))
-            });
             setting(ui, "Polarity", |ui| {
                 combo(
                     ui,
@@ -283,8 +282,43 @@ impl Node<Edges> for SpikeDetector {
             let (pre, post) = (ms(self.pre), ms(self.post));
             setting(ui, "Before peak", |ui| ui.add(egui::DragValue::new(&mut self.pre).range(1..=64).suffix(pre)));
             setting(ui, "After peak", |ui| ui.add(egui::DragValue::new(&mut self.post).range(1..=128).suffix(post)));
+            setting(ui, "Thresholds", |ui| ui.label(self.thresholds.summary()));
+            setting(ui, "Gains", |ui| ui.label(self.gains.summary()));
         });
+        if channels > 0 {
+            self.channels_ui(ui, channels);
+        }
         input_summary(ui, context.inputs);
+    }
+}
+
+impl SpikeDetector {
+    /// Each channel's threshold and gain, to set by hand (they're usually set from a Spike Viewer).
+    fn channels_ui(&mut self, ui: &mut egui::Ui, channels: usize) {
+        egui::CollapsingHeader::new("Each channel").id_salt("each channel").show(ui, |ui| {
+            ui.weak("Usually set from a Spike Viewer: drag a threshold, or choose them from the data.");
+            egui::Grid::new("channels").num_columns(3).striped(true).show(ui, |ui| {
+                ui.strong("Channel");
+                ui.strong("Threshold");
+                ui.strong("Gain");
+                ui.end_row();
+                for channel in 0..channels {
+                    ui.label(format!("{}", channel + 1));
+                    let mut threshold = self.thresholds.get(channel);
+                    let field = egui::DragValue::new(&mut threshold).range(0.1..=10_000.0).speed(0.5).suffix(" µV");
+                    if ui.add(field).changed() {
+                        self.thresholds.set(channel, threshold);
+                    }
+                    let mut gain = self.gains.get(channel);
+                    let range = format!(" (±{:.0} µV)", range_uv(gain));
+                    let field = egui::DragValue::new(&mut gain).range(GAINS).speed(10.0).prefix("×").suffix(range);
+                    if ui.add(field).changed() {
+                        self.gains.set(channel, gain);
+                    }
+                    ui.end_row();
+                }
+            });
+        });
     }
 }
 

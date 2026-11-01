@@ -290,7 +290,7 @@ pub fn node_ui<N: NodeSet>(
     // A view stays live while recording (changes it makes to settings are undone: see `App::lock`).
     let mut show = |graph: &mut Graph<N>, display: Option<&(dyn std::any::Any + Send)>| {
         if has_view {
-            graph.edit(id, &state.input_streams, colours, display, running, |node: &mut N, context| {
+            graph.edit(id, &state.input_streams, colours, display, running, locked, |node: &mut N, context| {
                 node.view_ui(ui, context)
             });
         } else {

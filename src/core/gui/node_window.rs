@@ -45,7 +45,7 @@ pub fn show<N: NodeSet>(
     }
     egui::ScrollArea::vertical().show(ui, |ui| {
         ui.add_enabled_ui(!locked, |ui| {
-            graph.edit(id, &state.input_streams, colours, display, running, |node: &mut N, context| {
+            graph.edit(id, &state.input_streams, colours, display, running, locked, |node: &mut N, context| {
                 node.settings_ui(ui, context)
             });
         });

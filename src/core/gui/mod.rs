@@ -1054,7 +1054,7 @@ mod tests {
             names(&graph),
             vec![
                 ("Data", vec!["continuous", "spikes", "video", "camera stats"]),
-                ("Settings", vec!["threshold", "camera"])
+                ("Settings", vec!["thresholds", "gains", "camera"])
             ]
         );
     }
@@ -1172,7 +1172,7 @@ mod tests {
         let first = harness.state().runner.as_ref().unwrap().graph().clone();
         let gain_free = node_named(harness.state(), "Spike Detector");
         if let Some(entry) = harness.state_mut().graph.get_mut(gain_free) {
-            entry.node.set_setting(0, crate::standard_components::spikes::Threshold { sd: 6.0 }.into());
+            entry.node.set_setting(0, crate::standard_components::spikes::Thresholds(vec![60.0]).into());
         }
         harness.run_steps(2);
         assert!(!Arc::ptr_eq(&first, &harness.state().runner.as_ref().unwrap().graph()));
@@ -1199,14 +1199,14 @@ mod tests {
         let mut harness = harness();
         let detector = node_named(harness.state(), "Spike Detector");
         let threshold = |app: &TestApp| match app.graph.get(detector).map(|e| &e.node) {
-            Some(Nodes::SpikeDetector(d)) => d.threshold,
+            Some(Nodes::SpikeDetector(d)) => d.thresholds.get(0),
             _ => unreachable!(),
         };
         let before = threshold(harness.state());
         harness.state_mut().set_recording(Some(Arc::new(engine::Recording::default())));
         assert!(!harness.state().enabled(Action::Undo) && !harness.state().enabled(Action::AddNode));
         if let Some(Nodes::SpikeDetector(d)) = harness.state_mut().graph.get_mut(detector).map(|e| &mut e.node) {
-            d.threshold += 1.0;
+            d.thresholds.set(0, before + 1.0);
         }
         harness.state_mut().graph.get_mut(detector).unwrap().pos[0] += 50.0;
         harness.run_steps(2);
@@ -1302,7 +1302,7 @@ mod tests {
         harness.run_steps(2);
         assert_eq!(harness.state().layout.window(detector), WindowState::Docked);
         // Its default window: its settings, and the threshold set by the spike viewer.
-        assert!(harness.query_by_label_contains("set by Spike Viewer").is_some());
+        assert!(harness.query_all_by_label_contains("set by Spike Viewer").next().is_some());
     }
 
     #[test]

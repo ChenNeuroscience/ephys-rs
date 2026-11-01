@@ -86,6 +86,9 @@ pub struct Context<'a, E: Edges> {
     pub display: Option<&'a (dyn Any + Send)>,
     /// Whether the graph is running.
     pub running: bool,
+    /// Whether settings are locked (while recording): a view should show its settings disabled, as changes to
+    /// them are undone.
+    pub locked: bool,
 }
 
 impl<E: Edges> Context<'_, E> {

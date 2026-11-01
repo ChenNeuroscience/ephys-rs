@@ -31,7 +31,8 @@ edge_types! {
         CameraStats(camera::CameraStats),
     }
     settings: pub enum Setting, SettingKind {
-        Threshold(spikes::Threshold),
+        Thresholds(spikes::Thresholds),
+        Gains(spikes::Gains),
         Gain(ephys::Gain),
         Camera(camera::CameraSettings),
         Detection(tracking::Detection),
