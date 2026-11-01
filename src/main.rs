@@ -15,7 +15,7 @@ mod core;
 mod standard_components;
 
 use standard_components::annotations::sticky_note;
-use standard_components::ephys::{self, band_pass, board, gain, lfp_viewer};
+use standard_components::ephys::{self, band_pass, board, gain, lfp_viewer, reference};
 use standard_components::spikes::{self, spike_detector, spike_viewer};
 use standard_components::tracking::{self, camera, position_detector, tracker_view, video_viewer};
 use standard_components::writer;
@@ -44,6 +44,7 @@ node_set! {
     pub enum Nodes {
         AcquisitionBoard(board::node::AcquisitionBoard),
         Camera(camera::node::Camera),
+        Reference(reference::Reference),
         BandPassFilter(band_pass::BandPassFilter),
         Gain(gain::Gain),
         SpikeDetector(spike_detector::SpikeDetector),

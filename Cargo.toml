@@ -15,6 +15,7 @@ egui_plot = "0.38"
 egui_tiles = "0.18"
 libloading = "0.9"
 rfd = "0.17"
+sci-rs = { version = "0.4.1", default-features = false, features = ["alloc"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

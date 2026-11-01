@@ -925,12 +925,12 @@ mod tests {
         let mut harness = harness();
         let start = on_node(&harness, "Acquisition Board", FIRST_OUTPUT);
         pointer(&mut harness, start, Some(true));
-        pointer(&mut harness, start + egui::vec2(60.0, 120.0), None);
-        pointer(&mut harness, start + egui::vec2(150.0, 300.0), None);
+        pointer(&mut harness, start + egui::vec2(100.0, 60.0), None);
+        pointer(&mut harness, start + egui::vec2(250.0, 150.0), None);
         harness.snapshot("graph_dragging_wire");
 
         // Dropped on empty canvas: offers what could go there, then adds and connects the choice.
-        pointer(&mut harness, start + egui::vec2(150.0, 300.0), Some(false));
+        pointer(&mut harness, start + egui::vec2(250.0, 150.0), Some(false));
         assert!(harness.state().menu.is_some());
         harness.snapshot("graph_create_menu");
         let edges = harness.state().graph.edges().len();

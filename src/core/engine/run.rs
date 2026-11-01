@@ -60,7 +60,18 @@ pub struct Pass<'a, E: Edges> {
     shown: bool,
 }
 
-impl<E: Edges> Pass<'_, E> {
+impl<'a, E: Edges> Pass<'a, E> {
+    /// A pass for trying a node out on, with no display.
+    #[cfg(test)]
+    pub fn new(
+        sequence: u64,
+        duration: f64,
+        inputs: &'a [Option<&'a Buffer<E>>],
+        outputs: &'a mut [Buffer<E>],
+    ) -> Self {
+        Pass { sequence, duration, inputs, outputs, display: None, shown: false }
+    }
+
     /// The node's display buffer, if it has one (see `Node::display`) of type `T`. What's left in it is shown
     /// in the node's window after the pass; it may hold an earlier pass's display, to overwrite.
     pub fn display<T: 'static>(&mut self) -> Option<&mut T> {

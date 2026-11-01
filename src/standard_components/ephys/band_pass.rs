@@ -1,4 +1,9 @@
+//! The Band-pass Filter: a Butterworth band-pass on every channel, as Open Ephys's filter node has, designed and
+//! run as second-order sections by sci-rs (a port of SciPy's `butter` and `sosfilt`).
+
 use eframe::egui;
+use sci_rs::signal::filter::design::{DigitalFilter, FilterBandType, FilterOutputType, Sos, butter_dyn};
+use sci_rs::signal::filter::sosfilt_item;
 use serde::{Deserialize, Serialize};
 
 use crate::Buffer;
@@ -12,11 +17,13 @@ use crate::{DataStream, Edges, Kind};
 pub struct BandPassFilter {
     pub low_hz: f32,
     pub high_hz: f32,
+    /// The Butterworth design's order: each step steepens the roll-off (by 6 dB an octave each side).
+    pub order: u32,
 }
 
 impl Default for BandPassFilter {
     fn default() -> Self {
-        BandPassFilter { low_hz: 300.0, high_hz: 6000.0 }
+        BandPassFilter { low_hz: 300.0, high_hz: 6000.0, order: 2 }
     }
 }
 
@@ -24,16 +31,16 @@ impl Node<Edges> for BandPassFilter {
     const INFO: NodeInfo = NodeInfo {
         name: "Band-pass Filter",
         category: Category::Processing,
-        description: "Keeps frequencies between the low and high cut-offs, on every channel.",
+        description: "Keeps frequencies between the low and high cut-offs, on every channel (a Butterworth \
+                      band-pass).",
     };
 
     type State = Filters;
 
     fn initial_state(&self, inputs: &[Option<DataStream>]) -> Filters {
         let Some(DataStream::Continuous(stream)) = inputs[0] else { return Filters::default() };
-        let mut filters =
-            Filters { channels: vec![[Biquad::default(); 2]; stream.channels as usize], ..Default::default() };
-        filters.tune(self.low_hz, self.high_hz, stream.sample_rate);
+        let mut filters = Filters { channels: vec![Vec::new(); stream.channels as usize], ..Default::default() };
+        filters.tune(self, stream.sample_rate);
         filters
     }
 
@@ -51,14 +58,11 @@ impl Node<Edges> for BandPassFilter {
             return;
         }
         // The cut-offs can change while running: keep the history, with new coefficients.
-        if (filters.low_hz, filters.high_hz) != (self.low_hz, self.high_hz) {
+        if filters.design != (self.low_hz, self.high_hz, self.order) {
             let rate = filters.rate;
-            filters.tune(self.low_hz, self.high_hz, rate);
+            filters.tune(self, rate);
         }
-        output.transform(input, |channel, x| {
-            let [high_pass, low_pass] = &mut filters.channels[channel];
-            low_pass.run(high_pass.run(x))
-        });
+        output.transform(input, |channel, x| sosfilt_item(x as f64, &mut filters.channels[channel]) as f32);
     }
 
     fn inputs(&self) -> Vec<Input<Edges>> {
@@ -93,67 +97,75 @@ impl Node<Edges> for BandPassFilter {
             setting(ui, "High cut-off", |ui| {
                 ui.add(egui::DragValue::new(&mut self.high_hz).range(1.0..=20000.0).speed(10.0).suffix(" Hz"))
             });
+            setting(ui, "Order", |ui| ui.add(egui::DragValue::new(&mut self.order).range(1..=8)));
         });
         input_summary(ui, context.inputs);
     }
 }
 
-/// Each channel's filter: a high-pass then a low-pass section, with their history carried between passes.
+/// Each channel's filter (its sections, with their history carried between passes), and what it's designed for.
 #[derive(Default)]
 pub struct Filters {
-    channels: Vec<[Biquad; 2]>,
-    /// What the coefficients are for.
-    low_hz: f32,
-    high_hz: f32,
+    channels: Vec<Vec<Sos<f64>>>,
+    design: (f32, f32, u32),
     rate: f32,
 }
 
 impl Filters {
-    /// Sets every channel's coefficients for these cut-offs, keeping their history.
-    fn tune(&mut self, low_hz: f32, high_hz: f32, rate: f32) {
-        let (high_pass, low_pass) = (Biquad::new(true, low_hz, rate), Biquad::new(false, high_hz, rate));
-        for [hp, lp] in &mut self.channels {
-            hp.set_coefficients(&high_pass);
-            lp.set_coefficients(&low_pass);
+    /// Designs the filter for `settings` at `rate`. Every channel takes the new coefficients, keeping its
+    /// history if it has as many sections as before.
+    fn tune(&mut self, settings: &BandPassFilter, rate: f32) {
+        let nyquist = rate as f64 / 2.0;
+        let high = (settings.high_hz as f64).clamp(1e-3, nyquist * 0.999);
+        let low = (settings.low_hz as f64).clamp(1e-3, high * 0.999);
+        let order = settings.order.clamp(1, 8) as usize;
+        let design = butter_dyn(
+            order,
+            vec![low, high],
+            Some(FilterBandType::Bandpass),
+            Some(false),
+            Some(FilterOutputType::Sos),
+            Some(rate as f64),
+        );
+        let DigitalFilter::Sos(design) = design else { unreachable!("asked for sections") };
+        for sections in &mut self.channels {
+            if sections.len() == design.sos.len() {
+                for (section, new) in sections.iter_mut().zip(&design.sos) {
+                    (section.b, section.a) = (new.b, new.a);
+                }
+            } else {
+                *sections = design.sos.clone();
+            }
         }
-        (self.low_hz, self.high_hz, self.rate) = (low_hz, high_hz, rate);
+        (self.design, self.rate) = ((settings.low_hz, settings.high_hz, settings.order), rate);
     }
 }
 
-/// A second-order Butterworth section (coefficients from the RBJ audio EQ cookbook).
-#[derive(Clone, Copy, Default)]
-struct Biquad {
-    b0: f32,
-    b1: f32,
-    b2: f32,
-    a1: f32,
-    a2: f32,
-    z1: f32,
-    z2: f32,
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-impl Biquad {
-    fn new(high_pass: bool, cutoff: f32, rate: f32) -> Self {
-        let w = std::f32::consts::TAU * (cutoff / rate).clamp(1e-5, 0.49);
-        let (sin, cos) = w.sin_cos();
-        let alpha = sin / (2.0 * std::f32::consts::FRAC_1_SQRT_2);
-        let a0 = 1.0 + alpha;
-        let (b0, b1, b2) = if high_pass {
-            ((1.0 + cos) / 2.0, -(1.0 + cos), (1.0 + cos) / 2.0)
-        } else {
-            ((1.0 - cos) / 2.0, 1.0 - cos, (1.0 - cos) / 2.0)
-        };
-        Biquad { b0: b0 / a0, b1: b1 / a0, b2: b2 / a0, a1: -2.0 * cos / a0, a2: (1.0 - alpha) / a0, z1: 0.0, z2: 0.0 }
+    /// The gain at `hz` of the filter, from a sine's amplitude once it's settled.
+    fn gain(hz: f64) -> f64 {
+        let settings = BandPassFilter::default();
+        let mut filters = Filters { channels: vec![Vec::new()], ..Default::default() };
+        filters.tune(&settings, 30000.0);
+        let mut peak: f64 = 0.0;
+        for n in 0..60000 {
+            let x = (std::f64::consts::TAU * hz * n as f64 / 30000.0).sin();
+            let y = sosfilt_item(x, &mut filters.channels[0]);
+            if n > 30000 {
+                peak = peak.max(y.abs());
+            }
+        }
+        peak
     }
 
-    fn set_coefficients(&mut self, from: &Biquad) {
-        (self.b0, self.b1, self.b2, self.a1, self.a2) = (from.b0, from.b1, from.b2, from.a1, from.a2);
-    }
-
-    fn run(&mut self, x: f32) -> f32 {
-        let y = self.b0 * x + self.z1;
-        self.z1 = self.b1 * x - self.a1 * y + self.z2;
-        self.z2 = self.b2 * x - self.a2 * y;
-        y
+    #[test]
+    fn passes_the_band_and_stops_the_rest() {
+        assert!((gain(1500.0) - 1.0).abs() < 0.02, "{}", gain(1500.0));
+        assert!((gain(300.0) - std::f64::consts::FRAC_1_SQRT_2).abs() < 0.03, "-3 dB at the cut-off");
+        assert!(gain(10.0) < 0.01, "{}", gain(10.0));
+        assert!(gain(14000.0) < 0.1, "{}", gain(14000.0));
     }
 }

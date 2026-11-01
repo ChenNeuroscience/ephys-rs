@@ -1,10 +1,11 @@
-//! Electrophysiology: continuous voltages and digital events, from an acquisition board, filtered, scaled
-//! and viewed.
+//! Electrophysiology: continuous voltages and digital events, from an acquisition board, re-referenced,
+//! filtered, scaled and viewed.
 
 pub mod band_pass;
 pub mod board;
 pub mod gain;
 pub mod lfp_viewer;
+pub mod reference;
 
 use eframe::egui::Color32;
 

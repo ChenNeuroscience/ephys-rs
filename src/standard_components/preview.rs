@@ -1,10 +1,11 @@
-//! Stand-in data for the viewers, until real data flows through the graph.
+//! Plot areas for the viewers, and (for tests) made-up signals.
 
 use eframe::egui::{self, Align2, FontId, Rect, Sense};
 
 use crate::core::theme::Colours;
 
 /// Repeatable noise in -1..1 for any pair of integers.
+#[cfg(test)]
 pub fn noise(a: u64, b: i64) -> f32 {
     let mut x = a.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (b as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
     x ^= x >> 31;
@@ -14,6 +15,7 @@ pub fn noise(a: u64, b: i64) -> f32 {
 }
 
 /// A spike waveform over `t` in 0..1: a sharp trough then a slower rebound.
+#[cfg(test)]
 pub fn spike_shape(t: f32) -> f32 {
     let g = |centre: f32, width: f32| (-((t - centre) / width).powi(2)).exp();
     -g(0.3, 0.05) + 0.35 * g(0.48, 0.1)

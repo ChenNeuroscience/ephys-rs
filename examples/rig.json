@@ -1,6 +1,6 @@
 {
   "graph": {
-    "next_id": 10,
+    "next_id": 11,
     "nodes": {
       "1": {
         "node": {
@@ -46,7 +46,7 @@
         },
         "label": "Band-pass Filter",
         "pos": [
-          260.0,
+          520.0,
           0.0
         ]
       },
@@ -61,7 +61,7 @@
         },
         "label": "Spike Detector",
         "pos": [
-          520.0,
+          780.0,
           0.0
         ]
       },
@@ -76,7 +76,7 @@
         },
         "label": "Spike Viewer",
         "pos": [
-          780.0,
+          1040.0,
           0.0
         ]
       },
@@ -92,7 +92,7 @@
         },
         "label": "LFP Viewer",
         "pos": [
-          780.0,
+          1040.0,
           110.0
         ]
       },
@@ -107,7 +107,7 @@
         },
         "label": "Writer",
         "pos": [
-          1040.0,
+          1300.0,
           120.0
         ]
       },
@@ -188,8 +188,27 @@
         },
         "label": "Tracker View",
         "pos": [
-          780.0,
+          1040.0,
           330.0
+        ]
+      },
+      "10": {
+        "node": {
+          "type": "Reference",
+          "settings": {
+            "method": {
+              "kind": "median"
+            },
+            "reference_channels": "all",
+            "group_size": 0,
+            "channels": "all",
+            "gain": 100.0
+          }
+        },
+        "label": "Reference",
+        "pos": [
+          260.0,
+          0.0
         ]
       }
     },
@@ -198,6 +217,17 @@
         "dimension": "Data",
         "from": {
           "node": 1,
+          "port": 0
+        },
+        "to": {
+          "node": 10,
+          "port": 0
+        }
+      },
+      {
+        "dimension": "Data",
+        "from": {
+          "node": 10,
           "port": 0
         },
         "to": {
