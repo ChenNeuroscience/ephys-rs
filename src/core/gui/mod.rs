@@ -1257,6 +1257,26 @@ mod tests {
     }
 
     #[test]
+    fn images_go_above_the_graph() {
+        use crate::core::annotation::{Annotation, AnnotationType as _};
+        use crate::standard_components::annotations::image::Image;
+        let mut harness = harness();
+        let detector = node_named(harness.state(), "Spike Detector");
+        let over = harness.state().graph.get(detector).unwrap().pos;
+        let pixels = egui::ColorImage::new([40, 30], vec![egui::Color32::RED; 1200]);
+        let (image, _) = Image::pasted_image(&pixels).unwrap();
+        let annotation = Annotation { pos: over, size: [80.0, 60.0], kind: AnnotationTypes::Image(image) };
+        let id = harness.state_mut().annotations.add(annotation);
+        harness.run_steps(2);
+        let at = on_node(&harness, "Spike Detector", [20.0, 20.0]);
+        pointer(&mut harness, at, Some(true));
+        pointer(&mut harness, at, Some(false));
+        let selection = &harness.state().selection;
+        assert!(selection.annotations.contains(&id), "the image, over the node, is what's clicked");
+        assert!(selection.nodes.is_empty());
+    }
+
+    #[test]
     fn undo_restores_a_deleted_node() {
         let mut harness = harness();
         let id = node_named(harness.state(), "Spike Detector");

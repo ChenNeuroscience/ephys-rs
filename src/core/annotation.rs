@@ -54,6 +54,11 @@ pub trait AnnotationType: Default + Clone + PartialEq + Serialize + DeserializeO
         false
     }
 
+    /// Whether it goes above the graph, rather than beneath it (an image, say).
+    fn above_graph(&self) -> bool {
+        false
+    }
+
     /// For one that's a line between two points (an arrow, say): the points, within `rect`. The canvas then lets
     /// each be dragged, rather than the rect resized.
     fn points(&self, _rect: Rect) -> Option<[Pos2; 2]> {
@@ -114,6 +119,7 @@ pub trait AnnotationSet: Clone + PartialEq + Serialize + DeserializeOwned + 'sta
     fn paint(&self, painter: &Painter, rect: Rect, zoom: f32, theme: &Colours);
     fn hit(&self, rect: Rect, at: Pos2, zoom: f32) -> bool;
     fn behind(&self) -> bool;
+    fn above_graph(&self) -> bool;
     fn points(&self, rect: Rect) -> Option<[Pos2; 2]>;
     fn set_points(&mut self, points: [Pos2; 2]) -> Rect;
     fn type_index(&self) -> usize;
@@ -235,6 +241,10 @@ macro_rules! annotation_set {
 
             fn behind(&self) -> bool {
                 match self { $($name::$variant(a) => $crate::core::annotation::AnnotationType::behind(a)),+ }
+            }
+
+            fn above_graph(&self) -> bool {
+                match self { $($name::$variant(a) => $crate::core::annotation::AnnotationType::above_graph(a)),+ }
             }
 
             fn points(&self, rect: eframe::egui::Rect) -> Option<[eframe::egui::Pos2; 2]> {

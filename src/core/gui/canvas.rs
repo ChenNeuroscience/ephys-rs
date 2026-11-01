@@ -403,7 +403,7 @@ impl Canvas {
         let pointer = ui.input(|i| i.pointer.latest_pos());
         let shift = ui.input(|i| i.modifiers.shift);
 
-        self.annotations(ui, &painter, graph, annotations, selection, events);
+        self.annotations(ui, &painter, graph, annotations, selection, events, false);
         self.paste_image(ui, annotations, selection, pointer.filter(|p| rect.contains(*p)));
 
         // Selected nodes are drawn last, so on top.
@@ -501,6 +501,8 @@ impl Canvas {
             let ports = PortPaint { connected: &connected, targets: &targets, target, pointer, colours: self.colours };
             paint_node(&painter, id, layout, entry, state, selected, dim, open_windows.contains(&id), &ports);
         }
+        // Those above the graph (images), over the nodes, and grabbed before them.
+        self.annotations(ui, &painter, graph, annotations, selection, events, true);
 
         if let (Some(r), Tool::Draw(index)) = (drawn, self.tool) {
             painter.rect(
@@ -740,8 +742,9 @@ impl Canvas {
         selection.only_annotation(id);
     }
 
-    /// Annotations sit beneath the graph: drag to move (along with anything else selected), drag the corner to
-    /// resize, double-click to edit.
+    /// Annotations sit beneath the graph, or above it (`above_graph`, for those that go there: images): drag to
+    /// move (along with anything else selected), drag the corner to resize, double-click to edit.
+    #[allow(clippy::too_many_arguments)]
     fn annotations<N: NodeSet, A: AnnotationSet>(
         &mut self,
         ui: &mut egui::Ui,
@@ -750,12 +753,14 @@ impl Canvas {
         annotations: &mut Annotations<A>,
         selection: &mut Selection,
         events: &mut Vec<Event>,
+        above_graph: bool,
     ) {
         let zoom = self.to_screen.scaling;
         let shift = ui.input(|i| i.modifiers.shift);
         let pointer = ui.input(|i| i.pointer.hover_pos());
         // Those that go behind the others first, so beneath them.
-        let mut ids: Vec<AnnotationId> = annotations.ids().collect();
+        let mut ids: Vec<AnnotationId> =
+            annotations.iter().filter(|(_, a)| a.kind.above_graph() == above_graph).map(|(id, _)| id).collect();
         ids.sort_by_key(|id| !annotations.get(*id).is_some_and(|a| a.kind.behind()));
         for id in ids {
             let Some(annotation) = annotations.get(id) else { continue };

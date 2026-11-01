@@ -63,6 +63,11 @@ impl AnnotationType for Image {
         Some((image, size))
     }
 
+    /// Over the graph, so it isn't hidden behind nodes and edges.
+    fn above_graph(&self) -> bool {
+        true
+    }
+
     fn aspect(&self) -> Option<f32> {
         let [w, h] = self.natural_size();
         Some(w / h)
