@@ -101,7 +101,7 @@ struct Layout {
     ports: HashMap<(Role, usize), Pos2>,
     /// Between the data and settings ports, if it has both.
     divider: Option<f32>,
-    window_button: Rect,
+    /// Where a warning's shown, in the header's right corner.
     badge: Rect,
 }
 
@@ -129,7 +129,7 @@ impl Layout {
                 row += 1;
             }
         }
-        let window_button = Rect::from_center_size(
+        let badge = Rect::from_center_size(
             egui::pos2(header.right() - 15.0 * zoom, header.center().y),
             egui::vec2(16.0, 13.0) * zoom,
         );
@@ -139,8 +139,7 @@ impl Layout {
             zoom,
             ports,
             divider: (divider > 0.0).then(|| header.bottom() + (PAD + ROW * data_rows as f32 + divider / 2.0) * zoom),
-            window_button,
-            badge: window_button.translate(egui::vec2(-22.0 * zoom, 0.0)),
+            badge,
         }
     }
 
@@ -499,7 +498,7 @@ impl Canvas {
             let has_target = targets.iter().any(|t| t.node == id);
             let dim = self.wire.is_some_and(|w| w.node != id) && !has_target;
             let ports = PortPaint { connected: &connected, targets: &targets, target, pointer, colours: self.colours };
-            paint_node(&painter, id, layout, entry, state, selected, dim, open_windows.contains(&id), &ports);
+            paint_node(&painter, id, layout, entry, state, selected, dim, &ports);
         }
         // Those above the graph (images), over the nodes, and grabbed before them.
         self.annotations(ui, &painter, graph, annotations, selection, events, true);
@@ -916,16 +915,17 @@ impl Canvas {
         if moved {
             move_selection(graph, annotations, selection, delta);
         }
+        // A click selects it; once it's selected, a click (the second of a double-click, say) opens its window, or
+        // brings it to the front.
         if body.clicked() {
             if !shift {
+                if selection.nodes.contains(&id) {
+                    events.push(Event::OpenWindow(id));
+                }
                 selection.only(id);
             } else if !selection.nodes.remove(&id) {
                 selection.nodes.insert(id);
             }
-        }
-        // A double-click opens its window (or brings it to the front).
-        if body.double_clicked() {
-            events.push(Event::OpenWindow(id));
         }
         body.context_menu(|ui| {
             if let Some(entry) = graph.get_mut(id) {
@@ -948,11 +948,6 @@ impl Canvas {
             }
         });
 
-        let button = ui.interact(layout.window_button, Id::unique(("window-button", id)), Sense::click());
-        if button.clicked() {
-            events.push(Event::ToggleWindow(id));
-        }
-        button.on_hover_text(if window_open { "Close window" } else { "Open window" });
         if !state.warnings.is_empty() {
             ui.interact(layout.badge, Id::unique(("badge", id)), Sense::hover())
                 .on_hover_text(state.warnings.join("\n"));
@@ -1180,7 +1175,6 @@ fn paint_node<N: NodeSet>(
     state: &NodeState<N::Edges>,
     selected: bool,
     dim: bool,
-    window_open: bool,
     ports: &PortPaint,
 ) {
     let z = layout.zoom;
@@ -1203,7 +1197,7 @@ fn paint_node<N: NodeSet>(
     }
 
     let font = |size: f32| FontId::proportional(size * z);
-    let title_right = if state.warnings.is_empty() { layout.window_button.left() } else { layout.badge.left() };
+    let title_right = if state.warnings.is_empty() { layout.header.right() } else { layout.badge.left() };
     let title_clip = Rect::from_min_max(layout.header.min, egui::pos2(title_right - 4.0 * z, layout.header.bottom()));
     painter.with_clip_rect(title_clip.intersect(painter.clip_rect())).text(
         egui::pos2(layout.header.left() + 9.0 * z, layout.header.center().y),
@@ -1212,16 +1206,6 @@ fn paint_node<N: NodeSet>(
         font(13.5),
         fade(Color32::from_gray(240)),
     );
-
-    // Window button: a little window, filled in when open.
-    let icon = layout.window_button;
-    let hovered = ports.pointer.is_some_and(|p| icon.contains(p));
-    let icon_colour = fade(if window_open || hovered { Color32::WHITE } else { Color32::from_gray(170) });
-    if window_open {
-        painter.rect_filled(icon, 2.0 * z, icon_colour.gamma_multiply(0.3));
-    }
-    painter.rect_stroke(icon, 2.0 * z, Stroke::new(1.2 * z, icon_colour), StrokeKind::Inside);
-    painter.rect_filled(Rect::from_min_size(icon.min, egui::vec2(icon.width(), 3.5 * z)), 1.0 * z, icon_colour);
 
     if !state.warnings.is_empty() {
         let b = layout.badge;

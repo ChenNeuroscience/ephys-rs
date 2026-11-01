@@ -1288,7 +1288,7 @@ mod tests {
     }
 
     #[test]
-    fn a_click_selects_a_node_and_opening_shows_its_window() {
+    fn a_click_selects_a_node_and_another_opens_its_window() {
         let mut harness = harness();
         let detector = node_named(harness.state(), "Spike Detector");
         let at = on_node(&harness, "Spike Detector", [60.0, 40.0]);
@@ -1296,9 +1296,9 @@ mod tests {
         pointer(&mut harness, at, Some(false));
         assert!(harness.state().selection.nodes.contains(&detector));
         assert_eq!(harness.state().layout.window(detector), WindowState::Closed, "a click only selects it");
-        // What a double-click does. (The harness's frames are too far apart to double-click in.)
-        let ctx = harness.ctx.clone();
-        harness.state_mut().handle(&ctx, Event::OpenWindow(detector));
+        // Clicked again, once selected.
+        pointer(&mut harness, at, Some(true));
+        pointer(&mut harness, at, Some(false));
         harness.run_steps(2);
         assert_eq!(harness.state().layout.window(detector), WindowState::Docked);
         // Its default window: its settings, and the threshold set by the spike viewer.
