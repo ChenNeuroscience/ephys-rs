@@ -3,8 +3,8 @@
 use eframe::egui::{self, RichText};
 use serde::{Deserialize, Serialize};
 
-use super::capture::{Capture, State, Status};
-use super::{CameraControls, CameraSettings, Control, Range, Source};
+use super::capture::{Capture, State};
+use super::{CameraControls, CameraSettings, CameraStats, CaptureStats, Control, Range, Source};
 use crate::core::engine::{Category, Context, Node, NodeInfo, Output, Pass, SettingPort};
 use crate::standard_components::tracking::Video;
 use crate::standard_components::widgets::{setting, settings_grid};
@@ -36,15 +36,6 @@ pub struct Capturing {
     missed: u64,
 }
 
-/// How capture is going, for the node's window.
-#[derive(Default)]
-pub struct CameraDisplay {
-    status: Status,
-    wrong_size: u64,
-    last_wrong_size: [u32; 2],
-    missed: u64,
-}
-
 impl Node<Edges> for Camera {
     const INFO: NodeInfo = NodeInfo {
         name: "Camera",
@@ -58,7 +49,10 @@ impl Node<Edges> for Camera {
     fn outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {
         let [width, height] = self.size;
         let stream = Video { width, height, fps: self.settings.frame_rate as f32 };
-        vec![Output { name: "video", kind: Kind::Video, stream: Some(DataStream::Video(stream)) }]
+        vec![
+            Output { name: "video", kind: Kind::Video, stream: Some(DataStream::Video(stream)) },
+            Output { name: "stats", kind: Kind::CameraStats, stream: Some(DataStream::CameraStats(CameraStats)) },
+        ]
     }
 
     fn settings(&self) -> Vec<SettingPort<Edges>> {
@@ -72,7 +66,7 @@ impl Node<Edges> for Camera {
     }
 
     fn display(&self) -> Option<Box<dyn std::any::Any + Send>> {
-        Some(Box::new(CameraDisplay::default()))
+        Some(Box::new(CaptureStats::default()))
     }
 
     fn initial_state(&self, _inputs: &[Option<DataStream>]) -> Capturing {
@@ -99,11 +93,17 @@ impl Node<Edges> for Camera {
                 }
             }
         }
-        if let Some(display) = pass.display::<CameraDisplay>() {
-            display.status = capture.status();
-            display.wrong_size = capturing.wrong_size;
-            display.last_wrong_size = capturing.last_wrong_size;
-            display.missed = capturing.missed;
+        // The stats, on their output and in the node's window.
+        let fill = |stats: &mut CaptureStats| {
+            capture.status_into(&mut stats.status);
+            (stats.wrong_size, stats.last_wrong_size, stats.missed) =
+                (capturing.wrong_size, capturing.last_wrong_size, capturing.missed);
+        };
+        if let Some(Buffer::CameraStats(stats)) = pass.outputs.get_mut(1) {
+            fill(stats);
+        }
+        if let Some(display) = pass.display::<CaptureStats>() {
+            fill(display);
         }
     }
 
@@ -130,7 +130,7 @@ impl Node<Edges> for Camera {
                 .response
             });
         });
-        let display = context.display::<CameraDisplay>();
+        let display = context.display::<CaptureStats>();
         camera_settings_ui(ui, &mut self.settings, display.map(|d| &d.status.controls));
         ui.separator();
         let Some(display) = display else {

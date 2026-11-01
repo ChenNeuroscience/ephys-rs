@@ -11,11 +11,58 @@ use std::io;
 use eframe::egui::Color32;
 use serde::{Deserialize, Serialize};
 
-use crate::core::engine::{EdgeInfo, EdgeType};
+use crate::core::engine::{DataStreamType, EdgeInfo, EdgeType};
 pub use fake::FakeCamera;
 #[cfg(test)]
 pub use fake::serve_test_scene;
 pub use spinnaker::SpinnakerCamera;
+
+/// A camera's stats, as a data stream: how capture is going, and what the camera is and supports.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct CameraStats;
+
+impl EdgeType for CameraStats {
+    const INFO: EdgeInfo = EdgeInfo {
+        name: "camera stats",
+        colour: Color32::from_rgb(170, 175, 195),
+        description: "How a camera is doing (frames, rate, drops), and what it is and supports.",
+    };
+
+    fn summary(&self) -> String {
+        String::new()
+    }
+}
+
+/// How a camera's capture is going, as of a pass.
+#[derive(Clone, Debug, Default)]
+pub struct CaptureStats {
+    pub status: capture::Status,
+    /// Frames skipped for being the wrong size, and the size of the last of them.
+    pub wrong_size: u64,
+    pub last_wrong_size: [u32; 2],
+    /// Frames skipped because more arrived in a pass than it had room for.
+    pub missed: u64,
+}
+
+impl CaptureStats {
+    /// Copies `other`, reusing this one's memory (for its text).
+    pub fn copy_from(&mut self, other: &CaptureStats) {
+        self.status.copy_from(&other.status);
+        (self.wrong_size, self.last_wrong_size, self.missed) = (other.wrong_size, other.last_wrong_size, other.missed);
+    }
+}
+
+impl DataStreamType for CameraStats {
+    type Buffer = CaptureStats;
+
+    fn buffer(&self, _duration: f64) -> CaptureStats {
+        CaptureStats::default()
+    }
+
+    fn bytes(_buffer: &CaptureStats) -> usize {
+        size_of::<CaptureStats>()
+    }
+}
 
 /// Camera settings that another node (the Tracker View) can adjust.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]

@@ -46,6 +46,17 @@ pub struct Status {
     pub fps: f64,
 }
 
+impl Status {
+    /// Copies `other`, reusing this one's memory (for its text).
+    pub fn copy_from(&mut self, other: &Status) {
+        self.state.clone_from(&other.state);
+        self.description.clone_from(&other.description);
+        self.warnings.clone_from(&other.warnings);
+        (self.controls, self.frames, self.camera_dropped, self.queue_dropped, self.fps) =
+            (other.controls, other.frames, other.camera_dropped, other.queue_dropped, other.fps);
+    }
+}
+
 struct Shared {
     stop: AtomicBool,
     /// What to apply to the camera; exposure and gain take effect as they change.
@@ -87,8 +98,9 @@ impl Capture {
         self.frames.try_recv().ok()
     }
 
-    pub fn status(&self) -> Status {
-        self.shared.status.lock().unwrap().clone()
+    /// Copies the status into `status`, reusing its memory.
+    pub fn status_into(&self, status: &mut Status) {
+        status.copy_from(&self.shared.status.lock().unwrap());
     }
 }
 
@@ -196,7 +208,8 @@ mod tests {
                 None => std::thread::sleep(Duration::from_millis(10)),
             }
         }
-        let status = capture.status();
+        let mut status = Status::default();
+        capture.status_into(&mut status);
         drop(capture);
         child.kill().ok();
         child.wait().ok();

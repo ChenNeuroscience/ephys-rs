@@ -144,7 +144,7 @@
         "label": "Position Detector",
         "pos": [
           400.0,
-          380.0
+          440.0
         ]
       },
       "9": {
@@ -272,6 +272,17 @@
         "to": {
           "node": 9,
           "port": 0
+        }
+      },
+      {
+        "dimension": "Data",
+        "from": {
+          "node": 7,
+          "port": 1
+        },
+        "to": {
+          "node": 9,
+          "port": 2
         }
       },
       {

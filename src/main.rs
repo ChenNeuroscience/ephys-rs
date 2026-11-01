@@ -27,6 +27,7 @@ edge_types! {
         Spikes(spikes::Spikes),
         Video(tracking::Video),
         Positions(tracking::Positions),
+        CameraStats(camera::CameraStats),
     }
     settings: pub enum Setting, SettingKind {
         Threshold(spikes::Threshold),

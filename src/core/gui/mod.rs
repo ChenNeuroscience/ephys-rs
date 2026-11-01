@@ -885,12 +885,15 @@ mod tests {
         assert!(names(&graph).is_empty(), "nothing to explain on an empty graph");
         let camera = Nodes::TYPES.iter().position(|t| t.name == "Camera").unwrap();
         graph.add(Nodes::create(camera), [0.0, 0.0]);
-        assert_eq!(names(&graph), vec![("Data", vec!["video"]), ("Settings", vec!["camera"])]);
+        assert_eq!(names(&graph), vec![("Data", vec!["video", "camera stats"]), ("Settings", vec!["camera"])]);
         let detector = Nodes::TYPES.iter().position(|t| t.name == "Spike Detector").unwrap();
         graph.add(Nodes::create(detector), [0.0, 0.0]);
         assert_eq!(
             names(&graph),
-            vec![("Data", vec!["continuous", "spikes", "video"]), ("Settings", vec!["threshold", "camera"])]
+            vec![
+                ("Data", vec!["continuous", "spikes", "video", "camera stats"]),
+                ("Settings", vec!["threshold", "camera"])
+            ]
         );
     }
 

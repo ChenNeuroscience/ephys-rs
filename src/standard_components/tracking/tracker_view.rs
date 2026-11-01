@@ -3,9 +3,11 @@
 //! detector's settings (which it edits through its controls), with eye and padlock toggles in their headers for
 //! what's shown over the video and whether it can be changed; below it, a chart of the LEDs' sizes.
 
-use eframe::egui::{self, Color32, ColorImage, Rect, Sense, TextureHandle, TextureOptions};
+use eframe::egui::{self, Color32, ColorImage, Rect, RichText, Sense, TextureHandle, TextureOptions};
 use serde::{Deserialize, Serialize};
 
+use super::camera::CaptureStats;
+use super::camera::capture::State;
 use super::camera::node::camera_settings_ui;
 use super::led_chart::{self, History};
 use super::position_detector::{calibration_ui, crop_ui, detection_ui};
@@ -16,7 +18,7 @@ use crate::standard_components::tracking::VideoBuffer;
 use crate::standard_components::tracking::overlay::{self, Drag, Overlay, Overlays, Xform};
 use crate::standard_components::tracking::pipeline::{Blob, row_spans};
 use crate::standard_components::tracking::{Crop, Detection};
-use crate::standard_components::widgets::section;
+use crate::standard_components::widgets::{named_settings_grid, section};
 use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
 
 /// Above-threshold pixels, when detection's shown.
@@ -49,12 +51,14 @@ impl Frame {
     }
 }
 
-/// The latest frame and the LEDs found in it, and the LEDs' recent sizes.
+/// The latest frame and the LEDs found in it, the LEDs' recent sizes, and the camera's stats (if they're
+/// connected).
 #[derive(Default)]
 pub struct TrackerDisplay {
     frame: Frame,
     leds: Vec<Blob>,
     history: History,
+    stats: Option<CaptureStats>,
 }
 
 impl Node<Edges> for TrackerView {
@@ -70,7 +74,11 @@ impl Node<Edges> for TrackerView {
     type State = History;
 
     fn inputs(&self) -> Vec<Input<Edges>> {
-        vec![Input { name: "video", kind: Kind::Video }, Input { name: "positions", kind: Kind::Positions }]
+        vec![
+            Input { name: "video", kind: Kind::Video },
+            Input { name: "positions", kind: Kind::Positions },
+            Input { name: "stats", kind: Kind::CameraStats },
+        ]
     }
 
     fn outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {
@@ -101,7 +109,8 @@ impl Node<Edges> for TrackerView {
         History::with_capacity((fps * led_chart::SECONDS) as usize + 16)
     }
 
-    /// Records the LEDs' sizes, and keeps the pass's last frame and the LEDs found in it.
+    /// Records the LEDs' sizes, and keeps the pass's last frame, the LEDs found in it and the camera's stats. A
+    /// pass without a frame is only shown if the camera isn't running, to say why.
     fn process(&self, pass: &mut Pass<Edges>, history: &mut History) {
         if let Some(Buffer::Positions(positions)) = pass.inputs[1] {
             for sample in &positions.samples {
@@ -109,20 +118,37 @@ impl Node<Edges> for TrackerView {
                 led_chart::record(history, sample.time, [area(sample.leds[0]), area(sample.leds[1])]);
             }
         }
-        let Some(Buffer::Video(video)) = pass.inputs[0] else { return };
-        if video.frames == 0 {
+        let video = match pass.inputs[0] {
+            Some(Buffer::Video(video)) if video.frames > 0 => Some(video),
+            _ => None,
+        };
+        let stats = match pass.inputs[2] {
+            Some(Buffer::CameraStats(stats)) => Some(stats),
+            _ => None,
+        };
+        if video.is_none() && !stats.is_some_and(|s| s.status.state != State::Running) {
             return;
         }
-        let last = video.frames - 1;
-        let id = video.ids[last];
-        let leds = match pass.inputs[1] {
-            Some(Buffer::Positions(positions)) => positions.samples.iter().find(|s| s.frame == id).map(|s| s.leds),
+        let positions = match pass.inputs[1] {
+            Some(Buffer::Positions(positions)) => Some(positions),
             _ => None,
         };
         let Some(display) = pass.display::<TrackerDisplay>() else { return };
-        display.frame.copy_from(video, last);
         display.leds.clear();
-        display.leds.extend(leds.into_iter().flatten().flatten());
+        match video {
+            Some(video) => {
+                let last = video.frames - 1;
+                display.frame.copy_from(video, last);
+                let found = positions.and_then(|p| p.samples.iter().find(|s| s.frame == video.ids[last]));
+                display.leds.extend(found.into_iter().flat_map(|s| s.leds).flatten());
+            }
+            None => display.frame.width = 0,
+        }
+        match (stats, &mut display.stats) {
+            (Some(stats), Some(shown)) => shown.copy_from(stats),
+            (Some(stats), shown) => *shown = Some(stats.clone()),
+            (None, shown) => *shown = None,
+        }
         display.history.clear();
         display.history.extend(history.iter().copied());
     }
@@ -146,9 +172,14 @@ impl Node<Edges> for TrackerView {
         // Through the context's reference, so the context itself is free to change below.
         let display = context.display.and_then(|d| d.downcast_ref::<TrackerDisplay>());
         let Some(display) = display.filter(|d| d.frame.width > 0) else {
-            let message =
-                if context.display.is_some() { "Waiting for frames…" } else { "Press Play to see the camera" };
-            return preview::unconnected(ui, context.theme, message);
+            let state = display.and_then(|d| d.stats.as_ref()).map(|s| &s.status.state);
+            let message = match (context.display, state) {
+                (None, _) => "Press Play to see the camera".to_string(),
+                (_, Some(State::Starting)) => "Opening the camera…".to_string(),
+                (_, Some(State::Problem(problem))) => format!("No video: {problem}"),
+                _ => "Waiting for frames…".to_string(),
+            };
+            return preview::unconnected(ui, context.theme, &message);
         };
         let detection = match &context.controls[1] {
             Some(Setting::Detection(detection)) => Some(detection.clone()),
@@ -177,6 +208,18 @@ impl TrackerView {
     /// The camera's and the detector's settings (through the controls), in sections whose headers say what's
     /// shown over the video and lock what can be changed.
     fn controls_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>, size: [f32; 2]) {
+        let stats = context.display.and_then(|d| d.downcast_ref::<TrackerDisplay>()).and_then(|d| d.stats.as_ref());
+        let declared = match context.inputs[0] {
+            Some(DataStream::Video(video)) => Some(video.fps as f64),
+            _ => None,
+        };
+        let connected = matches!(context.inputs[2], Some(DataStream::CameraStats(_)));
+        egui::CollapsingHeader::new(RichText::new("Stats").strong())
+            .default_open(true)
+            .show(ui, |ui| stats_ui(ui, stats, connected, declared, context.theme));
+
+        // What the camera supports, once it's running.
+        let supports = stats.filter(|s| s.status.state == State::Running).map(|s| &s.status.controls);
         let mut camera_locked = self.camera_locked;
         section(ui, "Camera", None, (&mut camera_locked, "Lock the camera settings"), |ui, locked| match &mut context
             .controls[0]
@@ -185,7 +228,7 @@ impl TrackerView {
                 if locked {
                     ui.disable();
                 }
-                camera_settings_ui(ui, settings, None);
+                camera_settings_ui(ui, settings, supports);
             }
             _ => {
                 ui.weak("Connect the camera control to a Camera to adjust it here.");
@@ -264,6 +307,62 @@ impl TrackerView {
         if let Some(detection) = detection {
             context.controls[1] = Some(Setting::Detection(detection));
         }
+    }
+}
+
+/// How the camera's doing, from its stats: what it is, frames, rate and drops, and problems.
+fn stats_ui(ui: &mut egui::Ui, stats: Option<&CaptureStats>, connected: bool, declared: Option<f64>, theme: &Colours) {
+    let Some(stats) = stats else {
+        ui.weak(if connected { "Press Play to see how the camera's doing." } else { "Connect the camera's stats." });
+        return;
+    };
+    let status = &stats.status;
+    match &status.state {
+        State::Starting => {
+            ui.weak("Opening the camera…");
+        }
+        State::Running => {
+            ui.label(&status.description);
+        }
+        State::Problem(problem) => {
+            ui.label(RichText::new(problem).color(theme.warning));
+        }
+    }
+    named_settings_grid(ui, "stats", |ui| {
+        let row = |ui: &mut egui::Ui, name: &str, value: String| {
+            ui.label(name);
+            ui.label(value);
+            ui.end_row();
+        };
+        row(ui, "Frames", status.frames.to_string());
+        row(ui, "Rate", format!("{:.1} fps", status.fps));
+        row(ui, "Camera dropped", status.camera_dropped.to_string());
+        row(ui, "Not taken in time", (status.queue_dropped + stats.missed).to_string());
+    });
+    // Once a couple of seconds have run, so the rate has settled.
+    if let Some(declared) = declared
+        && status.state == State::Running
+        && status.frames as f64 > 2.0 * declared
+        && (status.fps - declared).abs() > 0.05 * declared
+    {
+        let advice = if status.controls.frame_rate_set {
+            "Frames will be dropped or missing. The camera may be triggered externally, or not keeping up \
+             (e.g. exposure too long for this rate)."
+        } else {
+            "Frames will be dropped or missing. This camera won't take a frame rate: set the Camera section's to \
+             match it."
+        };
+        let warning = format!("Camera running at {:.1} fps, video declared at {declared} fps", status.fps);
+        ui.label(RichText::new(warning).color(theme.warning).strong()).on_hover_text(advice);
+    }
+    if stats.wrong_size > 0 {
+        let [w, h] = stats.last_wrong_size;
+        let warning =
+            format!("{} frames skipped for their size ({w}×{h}): set the camera's to match", stats.wrong_size);
+        ui.label(RichText::new(warning).color(theme.warning));
+    }
+    for warning in &status.warnings {
+        ui.label(RichText::new(warning).small().color(theme.warning));
     }
 }
 
@@ -442,6 +541,8 @@ mod tests {
     #[test]
     fn window() {
         use crate::standard_components::themes::THEMES;
+        use crate::standard_components::tracking::camera::capture::Status;
+        use crate::standard_components::tracking::camera::{CameraControls, Range};
         use crate::standard_components::tracking::{Crop, Ruler};
 
         let mut graph = Graph::default();
@@ -452,6 +553,7 @@ mod tests {
         graph.connect(port(camera, Role::Output, 0), port(detector, Role::Input, 0)).unwrap();
         graph.connect(port(camera, Role::Output, 0), port(view, Role::Input, 0)).unwrap();
         graph.connect(port(detector, Role::Output, 0), port(view, Role::Input, 1)).unwrap();
+        graph.connect(port(camera, Role::Output, 1), port(view, Role::Input, 2)).unwrap();
         graph.connect(port(view, Role::Control, 0), port(camera, Role::Setting, 0)).unwrap();
         graph.connect(port(view, Role::Control, 1), port(detector, Role::Setting, 0)).unwrap();
         if let Some(Nodes::PositionDetector(d)) = graph.get_mut(detector).map(|e| &mut e.node) {
@@ -478,8 +580,27 @@ mod tests {
                 }
             }
         }
-        let mut display =
-            TrackerDisplay { frame: Frame { width, height, pixels, id: 1 }, leds: leds.to_vec(), ..Default::default() };
+        let range = |min, max, current| Some(Range { min, max, current });
+        let status = Status {
+            state: State::Running,
+            description: "Fake camera (synthetic_streams/fake_camera.py)".into(),
+            controls: CameraControls {
+                frame_rate_set: true,
+                frame_rate: range(1.0, 200.0, 50.0),
+                exposure: range(100.0, 50_000.0, 10_000.0),
+                gain: range(0.0, 24.0, 0.0),
+            },
+            frames: 2961,
+            camera_dropped: 2,
+            fps: 50.0,
+            ..Default::default()
+        };
+        let mut display = TrackerDisplay {
+            frame: Frame { width, height, pixels, id: 1 },
+            leds: leds.to_vec(),
+            stats: Some(CaptureStats { status, ..Default::default() }),
+            ..Default::default()
+        };
         for frame in 0..500 {
             let t = frame as f64 / 50.0;
             let wobble = (t * 2.0).sin();
