@@ -14,14 +14,14 @@ use crate::{Buffer, DataStream, Edges, Kind, Setting};
 #[serde(default)]
 pub struct Camera {
     pub source: Source,
-    /// The frame size: frames of other sizes are skipped. (The synthetic camera makes this size.)
+    /// The frame size: frames of other sizes are skipped.
     pub size: [u32; 2],
     pub settings: CameraSettings,
 }
 
 impl Default for Camera {
     fn default() -> Self {
-        Camera { source: Source::Synthetic, size: [640, 480], settings: CameraSettings::default() }
+        Camera { source: Source::default(), size: [640, 480], settings: CameraSettings::default() }
     }
 }
 
@@ -49,8 +49,8 @@ impl Node<Edges> for Camera {
     const INFO: NodeInfo = NodeInfo {
         name: "Camera",
         category: Category::Source,
-        description: "Video from a camera: a FLIR camera (via the Spinnaker SDK), the fake camera in tools/, or a \
-                      synthetic test scene.",
+        description: "Video from a camera: a FLIR camera (via the Spinnaker SDK), or the fake camera in \
+                      synthetic_streams/.",
     };
 
     type State = Capturing;
@@ -76,7 +76,7 @@ impl Node<Edges> for Camera {
     }
 
     fn initial_state(&self, _inputs: &[Option<DataStream>]) -> Capturing {
-        Capturing { capture: Some(Capture::start(self.source.clone(), self.settings, self.size)), ..Default::default() }
+        Capturing { capture: Some(Capture::start(self.source.clone(), self.settings)), ..Default::default() }
     }
 
     /// Takes the frames that have arrived since the last pass.
@@ -111,7 +111,6 @@ impl Node<Edges> for Camera {
         settings_grid(ui, |ui| {
             setting(ui, "Camera", |ui| source_ui(ui, &mut self.source));
             match &mut self.source {
-                Source::Synthetic => {}
                 Source::Fake { address } => {
                     setting(ui, "Address", |ui| ui.text_edit_singleline(address));
                 }
@@ -174,15 +173,10 @@ impl Node<Edges> for Camera {
 
 fn source_ui(ui: &mut egui::Ui, source: &mut Source) -> egui::Response {
     let name = |source: &Source| match source {
-        Source::Synthetic => "Synthetic test scene",
-        Source::Fake { .. } => "Fake camera (tools/)",
+        Source::Fake { .. } => "Fake camera (synthetic_streams/)",
         Source::Spinnaker { .. } => "FLIR (Spinnaker)",
     };
-    let choices = [
-        Source::Synthetic,
-        Source::Fake { address: "127.0.0.1:27030".into() },
-        Source::Spinnaker { serial: String::new(), library: String::new() },
-    ];
+    let choices = [Source::default(), Source::Spinnaker { serial: String::new(), library: String::new() }];
     egui::ComboBox::from_id_salt("source")
         .selected_text(name(source))
         .show_ui(ui, |ui| {

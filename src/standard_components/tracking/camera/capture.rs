@@ -61,9 +61,8 @@ pub struct Capture {
 }
 
 impl Capture {
-    /// Starts opening `source` at `settings` (its frame rate fixed from now on). `size` is the frame size the
-    /// synthetic camera makes.
-    pub fn start(source: Source, settings: CameraSettings, size: [u32; 2]) -> Self {
+    /// Starts opening `source` at `settings` (its frame rate fixed from now on).
+    pub fn start(source: Source, settings: CameraSettings) -> Self {
         let shared = Arc::new(Shared {
             stop: AtomicBool::new(false),
             settings: Mutex::new(settings),
@@ -73,7 +72,7 @@ impl Capture {
         let thread_shared = shared.clone();
         let thread = std::thread::Builder::new()
             .name("camera capture".into())
-            .spawn(move || capture(&thread_shared, &source, size, &sender))
+            .spawn(move || capture(&thread_shared, &source, &sender))
             .expect("capture thread");
         Capture { shared, frames, thread: Some(thread) }
     }
@@ -102,12 +101,12 @@ impl Drop for Capture {
     }
 }
 
-fn capture(shared: &Shared, source: &Source, size: [u32; 2], sender: &Sender<Frame>) {
+fn capture(shared: &Shared, source: &Source, sender: &Sender<Frame>) {
     let stopping = || shared.stop.load(Ordering::Relaxed);
     let set_state = |state| shared.status.lock().unwrap().state = state;
     while !stopping() {
         let settings = *shared.settings.lock().unwrap();
-        let mut camera = match camera::open(source, &settings, size) {
+        let mut camera = match camera::open(source, &settings) {
             Ok(camera) => camera,
             Err(e) => {
                 set_state(State::Problem(format!("waiting for camera: {e}")));
@@ -176,19 +175,19 @@ mod tests {
 
     use super::*;
 
-    /// End to end with tools/fake_camera.py, so needs python3: `cargo test -- --ignored`.
+    /// End to end with synthetic_streams/fake_camera.py, so needs python3: `cargo test -- --ignored`.
     #[test]
     #[ignore]
     fn captures_from_the_fake_camera() {
         let port = 27398;
-        let script = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/fake_camera.py");
+        let script = concat!(env!("CARGO_MANIFEST_DIR"), "/synthetic_streams/fake_camera.py");
         let mut child = Command::new("python3")
             .args([script, "--port", &port.to_string(), "--fps", "50"])
             .stdout(Stdio::null())
             .spawn()
             .expect("run python3");
         let source = Source::Fake { address: format!("127.0.0.1:{port}") };
-        let capture = Capture::start(source, CameraSettings::default(), [640, 480]);
+        let capture = Capture::start(source, CameraSettings::default());
         let mut frames = Vec::new();
         let deadline = Instant::now() + Duration::from_secs(10);
         while frames.len() < 50 && Instant::now() < deadline {

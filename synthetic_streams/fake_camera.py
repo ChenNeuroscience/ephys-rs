@@ -2,7 +2,7 @@
 Fake camera for ephys-rs: renders a mouse with two head LEDs exploring a 1x1 m arena, as seen by a
 camera looking straight down from 2.5 m, and streams raw grayscale frames over TCP. Standard library only.
 
-    python3 tools/fake_camera.py [--port 27030] [--fps 50] [--width 640] [--height 480]
+    python3 synthetic_streams/fake_camera.py [--port 27030] [--fps 50] [--width 640] [--height 480]
 
 Then set a Camera node's source to the fake camera (at the same address) and press Play in ephys-rs.
 The Camera node connects as a client; when it disconnects we wait for the next one.
@@ -15,7 +15,7 @@ Scene (world coordinates in metres, origin at the centre of the arena floor, x r
     it gets thicker as it approaches the camera
   * a bright glint on the room floor outside the arena (something for the crop to exclude)
 
-Wire format per frame, little-endian (must match src/tracking/camera/fake.rs):
+Wire format per frame, little-endian (must match src/standard_components/tracking/camera/fake.rs):
     b"FRM1", u32 width, u32 height, u64 frame_id, f64 timestamp_seconds, width*height uint8 pixels
 """
 import argparse

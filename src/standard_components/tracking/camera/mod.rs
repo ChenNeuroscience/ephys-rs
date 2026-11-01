@@ -5,7 +5,6 @@ pub mod capture;
 mod fake;
 pub mod node;
 mod spinnaker;
-mod synthetic;
 
 use std::io;
 
@@ -14,8 +13,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::engine::{EdgeInfo, EdgeType};
 pub use fake::FakeCamera;
+#[cfg(test)]
+pub use fake::serve_test_scene;
 pub use spinnaker::SpinnakerCamera;
-pub use synthetic::SyntheticCamera;
 
 /// Camera settings that another node (the Tracker View) can adjust.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -114,13 +114,11 @@ pub struct Range {
 }
 
 /// Which camera to capture from.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Source {
-    /// A test scene with two LEDs going round, made here.
-    #[default]
-    Synthetic,
-    /// Raw frames streamed over TCP by `tools/fake_camera.py`: a mouse with two head LEDs in an arena.
+    /// Raw frames streamed over TCP by `synthetic_streams/fake_camera.py`: a mouse with two head LEDs in an
+    /// arena.
     Fake { address: String },
     /// A Teledyne FLIR camera, via the Spinnaker SDK.
     Spinnaker {
@@ -131,11 +129,19 @@ pub enum Source {
     },
 }
 
-/// Opens the camera. `size` is the frame size the synthetic camera makes.
-pub fn open(source: &Source, settings: &CameraSettings, size: [u32; 2]) -> io::Result<Box<dyn Camera>> {
+impl Default for Source {
+    fn default() -> Self {
+        Source::Fake { address: FAKE_ADDRESS.into() }
+    }
+}
+
+/// Where `fake_camera.py` serves frames by default.
+pub const FAKE_ADDRESS: &str = "127.0.0.1:27030";
+
+/// Opens the camera.
+pub fn open(source: &Source, settings: &CameraSettings) -> io::Result<Box<dyn Camera>> {
     let blank_as_none = |s: &str| Some(s.trim()).filter(|s| !s.is_empty()).map(str::to_string);
     Ok(match source {
-        Source::Synthetic => Box::new(SyntheticCamera::new(size[0], size[1], settings.frame_rate)),
         // The fake camera's rate is set by fake_camera.py --fps.
         Source::Fake { address } => Box::new(FakeCamera::connect(address)?),
         Source::Spinnaker { serial, library } => Box::new(SpinnakerCamera::open(

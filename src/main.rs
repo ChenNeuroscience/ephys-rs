@@ -1,7 +1,8 @@
 //! ephys-rs: electrophysiology acquisition, processing and recording, built around a node graph.
 //!
+//!     python3 synthetic_streams/fake_camera.py      # in another terminal: video for the example's camera
+//!     cargo run --release -- examples/rig.json     # the example graph (or any graph file, or a new one)
 //!     cargo run --release                          # an empty graph
-//!     cargo run --release -- examples/rig.json     # a graph file (or a new one, saved there)
 //!
 //! This is where the program's parts are put together: the core (engine, annotations, themes, GUI) with the
 //! standard components (edge, node and annotation types, and themes), declared below.

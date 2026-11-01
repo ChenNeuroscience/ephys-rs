@@ -308,9 +308,13 @@ mod tests {
     }
 
     #[test]
-    fn tracks_the_synthetic_camera_and_adjusts_while_running() {
+    fn tracks_the_camera_and_adjusts_while_running() {
         let mut graph = Graph::default();
         let camera = add(&mut graph, "Camera");
+        let address = super::super::camera::serve_test_scene(640, 480);
+        if let Some(Nodes::Camera(c)) = graph.get_mut(camera).map(|e| &mut e.node) {
+            c.source = super::super::camera::Source::Fake { address };
+        }
         let detector = add(&mut graph, "Position Detector");
         let view = add(&mut graph, "Tracker View");
         let port = |node, role, index| Port { node, role, index };
@@ -320,7 +324,7 @@ mod tests {
         let first = Snapshot::new(0, graph.clone(), None);
         let runner = Runner::start(&first, 2);
 
-        // The synthetic scene has a big LED at 255 and a small one at 240, both over the default threshold.
+        // The test scene has a big LED at 255 and a small one at 240, both over the default threshold.
         assert!(wait_for(|| leds_shown(&runner, view) == Some(2)), "both LEDs found: {:?}", leds_shown(&runner, view));
 
         // Raising the threshold between them carries on running (a change of settings), and only one is found.

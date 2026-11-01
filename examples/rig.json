@@ -97,7 +97,8 @@
           "type": "Camera",
           "settings": {
             "source": {
-              "kind": "synthetic"
+              "kind": "fake",
+              "address": "127.0.0.1:27030"
             },
             "size": [
               640,
