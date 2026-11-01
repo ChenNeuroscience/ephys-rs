@@ -45,6 +45,11 @@ pub struct Recent {
     shown: Latest<RecentDisplay>,
 }
 
+impl crate::core::engine::PassState for Recent {
+    const WHY: &'static str = "Each group's most recent spikes (round a ring), and how many it's had, which \
+                               each pass adds to.";
+}
+
 /// The groups shown, as of the last pass.
 #[derive(Default)]
 pub struct RecentDisplay {

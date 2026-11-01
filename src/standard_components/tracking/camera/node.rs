@@ -38,6 +38,11 @@ pub struct Capturing {
     shown: Latest<CaptureStats>,
 }
 
+impl crate::core::engine::PassState for Capturing {
+    const WHY: &'static str = "The camera's capture thread and its queue of frames, which each pass takes the \
+                               next of, in order.";
+}
+
 impl Node<Edges> for Camera {
     const INFO: NodeInfo = NodeInfo {
         name: "Camera",

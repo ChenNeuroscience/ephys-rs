@@ -61,6 +61,12 @@ pub struct Acquiring {
     shown: Latest<BoardDisplay>,
 }
 
+impl crate::core::engine::PassState for Acquiring {
+    const WHY: &'static str = "The board's capture thread and its queue of samples, a block the last pass only \
+                               took part of, and the digital inputs' last levels (to find where they change): \
+                               each pass takes the next samples, in order.";
+}
+
 /// How acquisition is going, for the node's window.
 #[derive(Default)]
 pub struct BoardDisplay {

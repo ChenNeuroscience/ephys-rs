@@ -171,9 +171,9 @@ fn bezier_points([a, b, c, d]: [Pos2; 4]) -> Vec<Pos2> {
 }
 
 /// Data edges are solid, in their type's colour, with an arrowhead halfway along showing which way the data
-/// flows. Settings edges are grey (`wire_colour`) and dashed, with no direction (either end may change the
-/// setting): their ports show their type. A read-only one (to a control that only reads the setting) is dotted,
-/// with an arrowhead pointing to the reader.
+/// flows. Settings edges are grey (`wire_colour`) and dashed, with arrowheads both ways (the setting's node and
+/// the control's can both change it): their ports show their type. A read-only one (to a control that only reads
+/// the setting) is dotted, with an arrowhead pointing to the reader.
 fn paint_wire(painter: &Painter, points: [Pos2; 4], dimension: Dimension, read_only: bool, stroke: Stroke, zoom: f32) {
     let path = bezier_points(points);
     let [a, b, c, d] = points.map(|p| p.to_vec2());
@@ -193,7 +193,17 @@ fn paint_wire(painter: &Painter, points: [Pos2; 4], dimension: Dimension, read_o
         }
         Dimension::Settings => {
             painter.extend(Shape::dashed_line(&path, stroke, 7.0 * zoom, 4.0 * zoom));
+            both_ways(painter, middle, direction, size, stroke.color);
         }
+    }
+}
+
+/// A pair of arrowheads back to back at `at`, pointing either way along `direction`.
+fn both_ways(painter: &Painter, at: Pos2, direction: Vec2, size: f32, colour: Color32) {
+    let offset = direction.normalized() * size * 0.55;
+    if offset.is_finite() {
+        arrowhead(painter, at + offset, direction, size, colour);
+        arrowhead(painter, at - offset, -direction, size, colour);
     }
 }
 
@@ -391,6 +401,7 @@ impl Canvas {
         let shift = ui.input(|i| i.modifiers.shift);
 
         self.annotations(ui, &painter, graph, annotations, selection, events);
+        self.paste_image(ui, annotations, selection, pointer.filter(|p| rect.contains(*p)));
 
         // Selected nodes are drawn last, so on top.
         let mut order: Vec<NodeId> = graph.ids().filter(|id| !selection.nodes.contains(id)).collect();
@@ -492,7 +503,7 @@ impl Canvas {
             painter.rect(
                 r,
                 4.0 * zoom,
-                A::create(index).fill().gamma_multiply(0.6),
+                A::create(index).fill(self.colours).gamma_multiply(0.6),
                 Stroke::new(1.0, self.colours.text_secondary),
                 StrokeKind::Inside,
             );
@@ -624,6 +635,7 @@ impl Canvas {
                     // A grey edge into a port of the type's colour, as on the graph.
                     Dimension::Settings => {
                         painter.extend(Shape::dashed_line(&[start, end], stroke, 5.0, 3.0));
+                        both_ways(painter, start.lerp(end, 0.45), egui::vec2(1.0, 0.0), 6.0, stroke.color);
                         painter.add(Shape::convex_polygon(diamond(end, 5.0), info.colour, Stroke::NONE));
                         painter.add(Shape::convex_polygon(diamond(end, 2.0), stroke.color, Stroke::NONE));
                     }
@@ -640,6 +652,7 @@ impl Canvas {
             painter.extend(Shape::dotted_line(&[start, end], colours.text_secondary, 4.0, 1.2));
             let outline = Stroke::new(1.5, colours.text_secondary);
             painter.add(Shape::convex_polygon(diamond(start, 4.5), colours.surface, outline));
+            arrowhead(painter, start.lerp(end, 0.5), egui::vec2(-1.0, 0.0), 6.0, colours.text_secondary);
             let label = egui::pos2(title.left() + 36.0, mid);
             painter.text(label, Align2::LEFT_CENTER, "read only", font.clone(), colours.text_primary);
         }
@@ -659,6 +672,32 @@ impl Canvas {
                 selection.clear();
             }
         }
+    }
+
+    /// An image pasted over the canvas (while nothing's being typed in) becomes an annotation there, if there's
+    /// an annotation type that shows images.
+    fn paste_image<A: AnnotationSet>(
+        &mut self,
+        ui: &egui::Ui,
+        annotations: &mut Annotations<A>,
+        selection: &mut Selection,
+        pointer: Option<Pos2>,
+    ) {
+        if self.editing.is_some() || ui.ctx().egui_wants_keyboard_input() {
+            return;
+        }
+        let pasted = ui.input(|i| {
+            i.events.iter().find_map(|e| match e {
+                egui::Event::PasteImage(image) => Some(image.clone()),
+                _ => None,
+            })
+        });
+        let Some((kind, size)) = pasted.and_then(|image| A::pasted_image(&image)) else { return };
+        // Centred on the pointer, or the middle of the view.
+        let centre = pointer.map_or_else(|| self.view_centre(), |p| self.to_screen.inverse() * p);
+        let pos = [centre.x - size[0] / 2.0, centre.y - size[1] / 2.0];
+        let id = annotations.add(Annotation { pos, size, kind });
+        selection.only_annotation(id);
     }
 
     /// Annotations sit beneath the graph: drag to move (along with anything else selected), drag the corner to
@@ -723,7 +762,7 @@ impl Canvas {
 
             let rect = self.to_screen * annotation.rect();
             painter.rect_filled(rect.translate(egui::vec2(0.0, 3.0 * zoom)), 4.0 * zoom, self.colours.shadow);
-            painter.rect_filled(rect, 4.0 * zoom, annotation.kind.fill());
+            painter.rect_filled(rect, 4.0 * zoom, annotation.kind.fill(self.colours));
             if selection.annotations.contains(&id) {
                 let stroke = Stroke::new(2.0, self.colours.accent);
                 painter.rect_stroke(rect, 4.0 * zoom, stroke, StrokeKind::Outside);

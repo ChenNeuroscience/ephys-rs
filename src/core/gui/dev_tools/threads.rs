@@ -354,7 +354,11 @@ fn workers<N: NodeSet>(
     };
     container(ui, colours, &title, &detail, count, info.is_some(), |ui| {
         match info {
-            Some(info) => worker_chips(ui, colours, info),
+            Some(info) => {
+                worker_chips(ui, colours, info);
+                ui.add_space(4.0);
+                pass_time_chart(ui, colours, &info.pass_times);
+            }
             None => {
                 ui.label(small(
                     "Not running: the plan for the latest snapshot, as it would run.",
@@ -381,6 +385,47 @@ fn workers<N: NodeSet>(
         ui.add_space(4.0);
         legend(ui, colours);
     });
+}
+
+/// How long each pass of the last few seconds took to run, with a smoothed average, against the time each pass
+/// covers (which, on average, they must take less than to keep up).
+fn pass_time_chart(ui: &mut egui::Ui, colours: &Colours, times: &[[f64; 2]]) {
+    use egui_plot::{HLine, Line, Plot, PlotBounds, PlotPoints};
+    /// Passes averaged over: half a second's.
+    const SMOOTHING: usize = 25;
+    let ms: Vec<[f64; 2]> = times.iter().map(|&[t, d]| [t, d * 1000.0]).collect();
+    let average: Vec<[f64; 2]> = ms
+        .iter()
+        .enumerate()
+        .map(|(i, &[t, _])| {
+            let window = &ms[i.saturating_sub(SMOOTHING - 1)..=i];
+            [t, window.iter().map(|p| p[1]).sum::<f64>() / window.len() as f64]
+        })
+        .collect();
+    let budget = PASS_DURATION * 1000.0;
+    let top = ms.iter().map(|p| p[1]).fold(budget * 1.25, f64::max);
+    let end = ms.last().map_or(10.0, |p| p[0]);
+    Plot::new("pass times")
+        .height(110.0)
+        .y_axis_formatter(|mark, _| format!("{} ms", mark.value))
+        .x_axis_formatter(|mark, _| format!("{} s", mark.value))
+        .allow_zoom(false)
+        .allow_drag(false)
+        .allow_scroll(false)
+        .allow_boxed_zoom(false)
+        .allow_double_click_reset(false)
+        .show(ui, |plot| {
+            plot.set_plot_bounds(PlotBounds::from_min_max([end - 10.0, 0.0], [end, top]));
+            plot.hline(HLine::new("each pass's time", budget).color(colours.warning.gamma_multiply(0.7)));
+            let each = Line::new("pass", PlotPoints::from(ms)).color(colours.accent.gamma_multiply(0.45)).width(1.0);
+            plot.line(each);
+            plot.line(Line::new("average", PlotPoints::from(average)).color(colours.accent).width(2.0));
+        })
+        .response
+        .on_hover_text(format!(
+            "How long each pass took to run (thin), and the average over {SMOOTHING} passes (thick), against the \
+             {budget:.0} ms each covers (the line across): to keep up, passes must take less on average"
+        ));
 }
 
 /// What each worker is doing: the pass it's running, idle, or still on an older epoch.
@@ -516,13 +561,12 @@ fn step_row<N: NodeSet>(
             None => {}
         }
         if step.state.is_some() {
-            badge(
-                ui,
-                Glyph::Sync,
-                colours.warning,
-                "Sync point: waits for the pass before to finish with the node's state (a filter's history, say), \
-                 then hands it on to the next pass once done",
+            let why = graph.get(step.id).map_or("", |e| e.node.state_reason());
+            let text = format!(
+                "Sync point: waits for the pass before to finish with the node's state, then hands it on to the \
+                 next.\n\nWhy it has state: {why}"
             );
+            badge(ui, Glyph::Sync, colours.warning, &text);
         }
     });
 }

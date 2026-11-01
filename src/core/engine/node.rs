@@ -116,6 +116,17 @@ impl ThreadContext<'_> {
     }
 }
 
+/// What a node carries from one pass to the next. Passes wait for each other at a node with state, handing it on
+/// in order (a sync point), so each kind of state has to say why it's needed: the dev tools show it there.
+pub trait PassState: Default + Send + 'static {
+    /// Why the node can't do without it, precisely: what it carries over, and what for. Empty for `()` (none).
+    const WHY: &'static str;
+}
+
+impl PassState for () {
+    const WHY: &'static str = "";
+}
+
 /// A node type. Implementors are plain settings structs, saved with the graph.
 ///
 /// The ports may depend on the settings, and the output data streams on what is connected to the inputs; the
@@ -126,7 +137,7 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     /// What the node carries from one pass to the next (a filter's history, say), or `()` for nothing.
     /// Passes run on several threads at once, so a node with state is run for one pass at a time, in order;
     /// nodes without it can run for several passes at once.
-    type State: Default + Send + 'static;
+    type State: PassState;
 
     /// Whether the node's window is a view of its own (a viewer, say) rather than just its settings.
     const HAS_VIEW: bool = false;
@@ -230,6 +241,8 @@ pub trait NodeSet: Clone + PartialEq + Serialize + DeserializeOwned + Send + Syn
     fn copies(&self) -> Option<CopyTo>;
     /// Whether the node carries state from one pass to the next.
     fn has_state(&self) -> bool;
+    /// Why it does (see `PassState::WHY`).
+    fn state_reason(&self) -> &'static str;
     fn initial_state(&self, inputs: &[Option<<Self::Edges as Edges>::DataStream>]) -> Box<dyn Any + Send>;
     /// `state` is the node's state, if it has any (as made by `initial_state`).
     fn process(&self, pass: &mut Pass<Self::Edges>, state: Option<&mut (dyn Any + Send)>);
@@ -356,6 +369,14 @@ macro_rules! node_set {
                 match self {
                     $($name::$variant(_) => {
                         $crate::core::engine::is_state::<<$ty as $crate::core::engine::Node<$edges>>::State>()
+                    }),+
+                }
+            }
+
+            fn state_reason(&self) -> &'static str {
+                match self {
+                    $($name::$variant(_) => {
+                        <<$ty as $crate::core::engine::Node<$edges>>::State as $crate::core::engine::PassState>::WHY
                     }),+
                 }
             }

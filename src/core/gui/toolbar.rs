@@ -17,11 +17,15 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
     /// Whether an action can be done right now.
     pub(super) fn enabled(&self, action: Action) -> bool {
         let selected = !self.selection.nodes.is_empty() || !self.selection.annotations.is_empty();
+        // While recording, only annotations can change.
+        let locked = self.locked();
+        let only_annotations = self.selection.nodes.is_empty() && self.selection.edge.is_none();
         match action {
-            Action::Undo => self.history.can_undo(),
-            Action::Redo => self.history.can_redo(),
-            Action::Duplicate => selected,
-            Action::Delete => selected || self.selection.edge.is_some(),
+            Action::Undo => self.history.can_undo() && !locked,
+            Action::Redo => self.history.can_redo() && !locked,
+            Action::Duplicate => selected && (!locked || only_annotations),
+            Action::Delete => (selected || self.selection.edge.is_some()) && (!locked || only_annotations),
+            Action::AddNode => !locked,
             _ => true,
         }
     }
@@ -122,6 +126,8 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             if tool_button(ui, icon, &tip, true, running).clicked() {
                 chosen = Some(Action::Play);
             }
+            self.play_clock(ui);
+            ui.add_space(6.0);
             let recording = self.history.current.snapshot.recording.is_some();
             let text = if recording {
                 "Stop recording"
@@ -134,7 +140,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             if tool_button(ui, Icon::Record, &tip, true, recording || self.preparing.is_some()).clicked() {
                 chosen = Some(Action::Record);
             }
-            self.clock(ui, recording);
+            self.record_clock(ui, recording);
             ui.separator();
 
             let add = dropdown_button(ui, Icon::AddNode, "Add node")
@@ -193,24 +199,30 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
 }
 
 impl<N: NodeSet, A: AnnotationSet> App<N, A> {
-    /// The acquisition clock, from pressing Play, then while recording, how long it's been recording.
-    fn clock(&self, ui: &mut egui::Ui, recording: bool) {
+    /// The acquisition clock: how long the graph's been running, greyed out when it isn't.
+    fn play_clock(&self, ui: &mut egui::Ui) {
         let colours = self.colours();
         let clock = self.runner.as_ref().map(|r| r.clock());
         let text = egui::RichText::new(super::clock_text(clock.unwrap_or(0.0))).monospace();
-        ui.add_space(4.0);
         let text = if clock.is_some() { text.color(colours.text_primary) } else { text.color(colours.text_disabled) };
+        ui.add_space(2.0);
         ui.label(text).on_hover_text("Acquisition time: how long the graph has been running");
-        if self.preparing.is_some() {
-            ui.label(egui::RichText::new("preparing to record…").color(colours.text_secondary));
-        }
-        if recording {
-            let since = clock.unwrap_or(0.0) - self.recording_since;
-            let text = egui::RichText::new(format!("REC {}", super::clock_text(since))).monospace().strong();
-            ui.label(text.color(colours.error)).on_hover_text("How long it's been recording");
-        }
         if clock.is_some() {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+        }
+    }
+
+    /// How long it's been recording, greyed out when it isn't (and saying so while getting ready to).
+    fn record_clock(&self, ui: &mut egui::Ui, recording: bool) {
+        let colours = self.colours();
+        let since =
+            if recording { self.runner.as_ref().map_or(0.0, |r| r.clock()) - self.recording_since } else { 0.0 };
+        let text = egui::RichText::new(super::clock_text(since)).monospace();
+        let text = if recording { text.color(colours.error) } else { text.color(colours.text_disabled) };
+        ui.add_space(2.0);
+        ui.label(text).on_hover_text("How long it's been recording");
+        if self.preparing.is_some() {
+            ui.label(egui::RichText::new("preparing…").color(colours.text_secondary));
         }
     }
 }

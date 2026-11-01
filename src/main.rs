@@ -14,7 +14,7 @@
 mod core;
 mod standard_components;
 
-use standard_components::annotations::sticky_note;
+use standard_components::annotations::{image, markdown, sticky_note};
 use standard_components::ephys::{self, band_pass, board, gain, lfp_viewer, reference};
 use standard_components::recording::{ltx, raw};
 use standard_components::spikes::{self, spike_detector, spike_viewer};
@@ -61,6 +61,8 @@ node_set! {
 annotation_set! {
     pub enum AnnotationTypes {
         StickyNote(sticky_note::StickyNote),
+        Markdown(markdown::Markdown),
+        Image(image::Image),
     }
 }
 

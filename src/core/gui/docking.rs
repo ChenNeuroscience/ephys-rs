@@ -239,6 +239,8 @@ pub struct Panes<'a, N: NodeSet, A: AnnotationSet> {
     pub runner: Option<&'a Runner<N>>,
     /// The latest snapshot of the graph.
     pub snapshot: &'a Snapshot<N>,
+    /// Whether settings are locked (while recording).
+    pub locked: bool,
     pub dev_tools: &'a mut DevTools,
     pub canvas: &'a mut Canvas,
     pub selection: &'a mut Selection,
@@ -254,10 +256,15 @@ pub fn node_ui<N: NodeSet>(
     resolved: &Resolved<N::Edges>,
     colours: &Colours,
     runner: Option<&Runner<N>>,
+    locked: bool,
     id: NodeId,
 ) {
     let Some(state) = resolved.get(&id) else { return };
     let has_view = graph.get(id).is_some_and(|e| e.node.has_view());
+    // A view stays live while recording (changes it makes to settings are undone: see `App::lock`).
+    if locked && !has_view {
+        ui.disable();
+    }
     let running = runner.is_some();
     let mut show = |graph: &mut Graph<N>, display: Option<&(dyn std::any::Any + Send)>| {
         graph.edit(id, &state.input_streams, colours, display, running, |node: &mut N, context| {
@@ -367,13 +374,16 @@ impl<N: NodeSet, A: AnnotationSet> egui_tiles::Behavior<Pane> for Panes<'_, N, A
                     self.colours,
                     self.selection,
                     self.open_windows,
+                    self.locked,
                     self.events,
                 )
             }),
             Pane::DevTools => {
                 dev_tools::show(ui, self.dev_tools, self.graph, self.resolved, self.colours, self.runner, self.snapshot)
             }
-            Pane::Node(id) => padded(ui, |ui| node_ui(ui, self.graph, self.resolved, self.colours, self.runner, id)),
+            Pane::Node(id) => {
+                padded(ui, |ui| node_ui(ui, self.graph, self.resolved, self.colours, self.runner, self.locked, id))
+            }
         }
         UiResponse::None
     }

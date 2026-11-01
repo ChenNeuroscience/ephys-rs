@@ -111,6 +111,12 @@ pub struct Filters {
     rate: f32,
 }
 
+impl crate::core::engine::PassState for Filters {
+    const WHY: &'static str = "Each channel's filter history (its sections' state): each pass's filtering \
+                               carries on where the last pass's left off, so there's no step where passes \
+                               join.";
+}
+
 impl Filters {
     /// Designs the filter for `settings` at `rate`. Every channel takes the new coefficients, keeping its
     /// history if it has as many sections as before.

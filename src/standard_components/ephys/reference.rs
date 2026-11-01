@@ -93,6 +93,12 @@ pub struct Referencing {
     scratch: Vec<f32>,
 }
 
+impl crate::core::engine::PassState for Referencing {
+    const WHY: &'static str = "Only working memory (what the settings work out to, and room for a copy of the \
+                               samples), kept so it isn't remade every pass. Nothing carries over, so this \
+                               needn't be a sync point.";
+}
+
 impl Referencing {
     fn plan(&mut self, settings: &Reference, count: usize) {
         if self.settings.as_ref() == Some(settings) && self.count == count {

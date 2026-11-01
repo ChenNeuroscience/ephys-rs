@@ -443,17 +443,17 @@
       "1": {
         "pos": [
           0.0,
-          -190.0
+          -240.0
         ],
         "size": [
-          300.0,
-          130.0
+          320.0,
+          200.0
         ],
         "kind": {
-          "type": "StickyNote",
+          "type": "Markdown",
           "content": {
-            "text": "### Example rig\nThe **spike viewer** sets the detector's threshold through a *settings edge* (dashed), though it's downstream of it. Drag in the viewer's window to change it.",
-            "colour": "Yellow"
+            "text": "### Example rig\nThe **spike viewer** sets the detector's threshold through a *settings edge* (dashed), though it's downstream of it: drag in the viewer's window to change it. **Write LTX** only reads the position detector's settings, to record them (dotted).\n\nStart the fake board and camera in [synthetic_streams](https://github.com/ChenNeuroscience/ephys-rs/tree/main/synthetic_streams), then press Play.",
+            "attachments": {}
           }
         }
       }

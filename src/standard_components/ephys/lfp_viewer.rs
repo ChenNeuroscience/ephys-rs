@@ -51,6 +51,11 @@ pub struct Traces {
     shown: Latest<TracesDisplay>,
 }
 
+impl crate::core::engine::PassState for Traces {
+    const WHY: &'static str = "The last few seconds of each channel shown (each column's lowest and highest \
+                               sample, round a ring), which each pass adds its samples to.";
+}
+
 impl Traces {
     fn reshape(&mut self, shape: (usize, usize, usize)) {
         if self.shape != shape {

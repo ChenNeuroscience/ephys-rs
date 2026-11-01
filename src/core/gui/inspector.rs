@@ -19,11 +19,12 @@ pub fn show<N: NodeSet, A: AnnotationSet>(
     colours: &Colours,
     selection: &Selection,
     open_windows: &HashSet<NodeId>,
+    locked: bool,
     events: &mut Vec<Event>,
 ) {
     let count = selection.nodes.len() + selection.annotations.len();
     if let Some(id) = selection.single() {
-        node(ui, graph, resolved, colours, id, open_windows.contains(&id), events);
+        node(ui, graph, resolved, colours, id, open_windows.contains(&id), locked, events);
     } else if let (Some(&id), true) = (selection.annotations.first(), count == 1) {
         annotation(ui, annotations, id, events);
     } else if count > 1 {
@@ -78,6 +79,7 @@ fn tips(ui: &mut egui::Ui) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn node<N: NodeSet>(
     ui: &mut egui::Ui,
     graph: &mut Graph<N>,
@@ -85,6 +87,7 @@ fn node<N: NodeSet>(
     colours: &Colours,
     id: NodeId,
     window_open: bool,
+    locked: bool,
     events: &mut Vec<Event>,
 ) {
     let Some(state) = resolved.get(&id) else { return };
@@ -104,9 +107,14 @@ fn node<N: NodeSet>(
     }
     ui.separator();
 
+    if locked {
+        ui.label(RichText::new("Settings are locked while recording.").color(colours.warning));
+    }
     egui::ScrollArea::vertical().show(ui, |ui| {
-        graph.edit(id, &state.input_streams, colours, None, false, |node: &mut N, context| {
-            node.settings_ui(ui, context)
+        ui.add_enabled_ui(!locked, |ui| {
+            graph.edit(id, &state.input_streams, colours, None, false, |node: &mut N, context| {
+                node.settings_ui(ui, context)
+            });
         });
         ui.add_space(8.0);
         for (role, title) in [

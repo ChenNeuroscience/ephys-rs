@@ -417,6 +417,7 @@ pub struct Stats {
 }
 
 struct Record {
+    sequence: u64,
     finished: Instant,
     time: Duration,
     lag: Duration,
@@ -493,6 +494,8 @@ pub struct RunInfo<N: NodeSet> {
     /// How many passes can wait for a worker before they're dropped.
     pub queue_capacity: usize,
     pub stats: Stats,
+    /// Recent passes' times (see `Runner::pass_times`).
+    pub pass_times: Vec<[f64; 2]>,
 }
 
 struct Job {
@@ -672,7 +675,18 @@ impl<N: NodeSet> Runner<N> {
             next_pass: self.shared.next_pass.load(Ordering::Relaxed),
             queue_capacity: queue_capacity(self.workers),
             stats: self.stats(),
+            pass_times: self.pass_times(),
         }
+    }
+
+    /// Each pass run over the last few seconds: when its data was due (seconds on the acquisition clock), and how
+    /// long it took to run (in seconds), in order.
+    pub fn pass_times(&self) -> Vec<[f64; 2]> {
+        let recent = self.shared.recent.lock().unwrap();
+        let mut times: Vec<[f64; 2]> =
+            recent.iter().map(|r| [(r.sequence + 1) as f64 * PASS_DURATION, r.time.as_secs_f64()]).collect();
+        times.sort_by(|a, b| a[0].total_cmp(&b[0]));
+        times
     }
 
     pub fn stats(&self) -> Stats {
@@ -706,6 +720,9 @@ impl<N: NodeSet> Drop for Runner<N> {
         log::info!("Stopped after {completed} passes ({dropped} dropped)");
     }
 }
+
+/// How long passes' times are kept (see `Runner::pass_times`).
+const PASS_TIMES: Duration = Duration::from_secs(10);
 
 /// How long an idle worker waits for a pass before checking for a newer epoch to get ready for.
 const IDLE_CHECK: Duration = Duration::from_millis(2);
@@ -754,11 +771,11 @@ fn work<N: NodeSet>(epochs: &Epochs<N>, shared: &Shared, index: usize) {
                 slot.passes.fetch_add(1, Ordering::Relaxed);
                 shared.busy.fetch_sub(1, Ordering::Relaxed);
                 shared.completed.fetch_add(1, Ordering::Relaxed);
-                let record =
-                    Record { finished, time: finished - start, lag: finished.saturating_duration_since(job.due) };
+                let (time, lag) = (finished - start, finished.saturating_duration_since(job.due));
+                let record = Record { sequence: job.sequence, finished, time, lag };
                 let mut recent = shared.recent.lock().unwrap();
                 recent.push_back(record);
-                while recent.front().is_some_and(|r| finished - r.finished > Duration::from_secs(2)) {
+                while recent.front().is_some_and(|r| finished - r.finished > PASS_TIMES) {
                     recent.pop_front();
                 }
             }

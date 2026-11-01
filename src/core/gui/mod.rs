@@ -51,6 +51,8 @@ pub fn run<C: Components>(path: Option<PathBuf>) -> eframe::Result {
                 app.theme = index;
             }
             app.themes[app.theme].apply(&cc.egui_ctx);
+            // For images in annotations.
+            egui_extras::install_image_loaders(&cc.egui_ctx);
             #[cfg(target_os = "macos")]
             {
                 let checkable = |a| app.checked(a).is_some();
@@ -326,6 +328,28 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         }
     }
 
+    /// Whether settings are locked: while recording, or preparing to.
+    fn locked(&self) -> bool {
+        self.history.current.snapshot.recording.is_some() || self.preparing.is_some()
+    }
+
+    /// While recording, undoes any change to how the graph processes (a setting, an edge, a node added or
+    /// removed), keeping where nodes are and what they're called.
+    fn lock(&mut self, ctx: &egui::Context) {
+        let recorded = &self.history.current.snapshot.graph;
+        if !self.locked() || engine::same_processing(&self.graph, recorded) {
+            return;
+        }
+        let mut graph = (**recorded).clone();
+        for (id, entry) in self.graph.iter() {
+            if let Some(kept) = graph.get_mut(id) {
+                (kept.pos, kept.label) = (entry.pos, entry.label.clone());
+            }
+        }
+        self.graph = graph;
+        self.set_status(ctx, "Settings are locked while recording");
+    }
+
     /// Starts running whatever's latest, including edits not yet taken as a version.
     fn play(&mut self) {
         self.history.commit(&self.graph, &self.annotations);
@@ -528,12 +552,19 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         ctx.request_repaint_after(std::time::Duration::from_millis(250));
     }
 
-    fn status_bar(&self, ui: &mut egui::Ui) {
+    /// Returns whether the run's stats were clicked (to open the dev tools).
+    fn status_bar(&self, ui: &mut egui::Ui) -> bool {
         let now = ui.input(|i| i.time);
+        let mut clicked = false;
         ui.horizontal(|ui| {
             if let Some(runner) = &self.runner {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    self.run_stats(ui, &runner.stats());
+                    let stats = ui.scope(|ui| self.run_stats(ui, &runner.stats())).response.rect;
+                    // Watched rather than made a button, so the stats keep their own tooltips.
+                    if ui.rect_contains_pointer(stats) {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        clicked = ui.input(|i| i.pointer.primary_clicked());
+                    }
                 });
             }
             match (&self.status, self.canvas.hint()) {
@@ -547,6 +578,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                     .weak("Double-click, right-click or Tab on the canvas to add a node · drag from a port to connect"),
             };
         });
+        clicked
     }
 
     /// How the run is going: workers, passes and their timing, and memory.
@@ -580,6 +612,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
     /// Floating node windows, over everything else. They're styled like docked ones: a tab bar with the one
     /// tab, rather than a window title bar.
     fn floating_windows(&mut self, ctx: &egui::Context, resolved: &Resolved<N::Edges>, events: &mut Vec<Event>) {
+        let locked = self.locked();
         let colours = self.colours();
         for id in self.layout.floating() {
             let Some(entry) = self.graph.get(id) else { continue };
@@ -599,7 +632,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                 .show(ctx, |ui| {
                     clicks = docking::floating_header(ui, &title, colour);
                     egui::Frame::new().inner_margin(8).show(ui, |ui| {
-                        docking::node_ui(ui, &mut self.graph, resolved, colours, self.runner.as_ref(), id);
+                        docking::node_ui(ui, &mut self.graph, resolved, colours, self.runner.as_ref(), locked, id);
                     });
                 });
             if let Some(response) = response
@@ -743,11 +776,15 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         if let Some(action) = chosen {
             self.perform(&ctx, action);
         }
-        egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
+        let stats_clicked = egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui)).inner;
+        if stats_clicked && !self.layout.is_shown(Pane::DevTools) {
+            self.layout.toggle_pane(Pane::DevTools);
+        }
         let mut events = Vec::new();
         // Panes don't paint their own backgrounds, so this shows behind them.
         let colours = self.colours();
         let background = egui::Frame::NONE.fill(colours.surface);
+        let locked = self.locked();
         egui::CentralPanel::default().frame(background).show(ui, |ui| {
             let mut panes = Panes {
                 graph: &mut self.graph,
@@ -756,6 +793,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                 colours,
                 runner: self.runner.as_ref(),
                 snapshot: &self.history.current.snapshot,
+                locked,
                 dev_tools: &mut self.dev_tools,
                 canvas: &mut self.canvas,
                 selection: &mut self.selection,
@@ -769,6 +807,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             self.handle(&ctx, event);
         }
         self.create_menu(&ctx, &resolved);
+        self.lock(&ctx);
         self.history.record(&self.graph, &self.annotations, &ctx);
         self.keep_running(&ctx);
     }
@@ -1139,6 +1178,29 @@ mod tests {
         // The plan's name is where it is in memory, which changes from run to run.
         let options = egui_kittest::SnapshotOptions::new().max_failed_pixels(400);
         harness.snapshot_options("dev_tools", &options);
+    }
+
+    #[test]
+    fn settings_are_locked_while_recording() {
+        let mut harness = harness();
+        let detector = node_named(harness.state(), "Spike Detector");
+        let threshold = |app: &TestApp| match app.graph.get(detector).map(|e| &e.node) {
+            Some(Nodes::SpikeDetector(d)) => d.threshold,
+            _ => unreachable!(),
+        };
+        let before = threshold(harness.state());
+        harness.state_mut().set_recording(Some(Arc::new(engine::Recording::default())));
+        assert!(!harness.state().enabled(Action::Undo) && !harness.state().enabled(Action::AddNode));
+        if let Some(Nodes::SpikeDetector(d)) = harness.state_mut().graph.get_mut(detector).map(|e| &mut e.node) {
+            d.threshold += 1.0;
+        }
+        harness.state_mut().graph.get_mut(detector).unwrap().pos[0] += 50.0;
+        harness.run_steps(2);
+        let app = harness.state();
+        assert_eq!(threshold(app), before, "the setting's put back");
+        assert!(app.graph.get(detector).unwrap().pos[0] > 0.0, "but nodes can still move");
+        harness.state_mut().set_recording(None);
+        assert!(harness.state().enabled(Action::AddNode));
     }
 
     #[test]

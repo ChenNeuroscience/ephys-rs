@@ -15,13 +15,21 @@ pub struct VideoViewer {
     pub crosshair: bool,
 }
 
+/// Where it sends the latest frame to its window.
+#[derive(Default)]
+pub struct Showing(Latest<Frame>);
+
+impl crate::core::engine::PassState for Showing {
+    const WHY: &'static str = "Only where it sends the latest frame to its window, kept so the frames' memory is \
+                               reused. Nothing carries over, so this needn't be a sync point.";
+}
+
 impl Node<Edges> for VideoViewer {
     const INFO: NodeInfo =
         NodeInfo { name: "Video Viewer", category: Category::Visualisation, description: "The latest video frame." };
     const HAS_VIEW: bool = true;
 
-    /// The latest frame, for the window.
-    type State = Latest<Frame>;
+    type State = Showing;
 
     fn inputs(&self) -> Vec<Input<Edges>> {
         vec![Input { name: "video", kind: Kind::Video }]
@@ -40,10 +48,10 @@ impl Node<Edges> for VideoViewer {
     }
 
     /// Keeps the pass's last frame.
-    fn process(&self, pass: &mut Pass<Edges>, shown: &mut Latest<Frame>) {
+    fn process(&self, pass: &mut Pass<Edges>, showing: &mut Showing) {
         let Some(Buffer::Video(video)) = pass.inputs[0] else { return };
         if video.frames > 0 {
-            shown.send(pass, |frame| frame.copy_from(video, video.frames - 1));
+            showing.0.send(pass, |frame| frame.copy_from(video, video.frames - 1));
         }
     }
 

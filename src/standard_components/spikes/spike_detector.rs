@@ -71,6 +71,12 @@ pub struct Detector {
     next: Vec<i64>,
 }
 
+impl crate::core::engine::PassState for Detector {
+    const WHY: &'static str = "Each channel's last samples (so a spike across two passes is found whole), its \
+                               noise level (smoothed over passes), and when each group can next spike (so a \
+                               group's spikes don't overlap).";
+}
+
 impl Detector {
     fn new(spikes: Spikes) -> Self {
         let channels = spikes.channels as usize;

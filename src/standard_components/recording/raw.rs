@@ -58,6 +58,11 @@ pub struct Recorder {
     shown: Latest<Status>,
 }
 
+impl crate::core::engine::PassState for Recorder {
+    const WHY: &'static str = "The writer's thread while recording, which each pass's copy goes to, in order, \
+                               so the files are written in order.";
+}
+
 /// A pass's data, copied for the writer's thread.
 #[derive(Default)]
 pub struct Chunk {

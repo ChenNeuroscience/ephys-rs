@@ -2,13 +2,16 @@
 //! along with the graph, but take no part in processing.
 //!
 //! Like node types, annotation types are declared by the program (with `annotation_set!`): each is a struct
-//! implementing `AnnotationType`, which draws its own content, toolbar icon and settings.
+//! implementing `AnnotationType`, which draws its own content, toolbar icon and settings. An image pasted onto
+//! the canvas becomes an annotation of the first type that takes one (see `AnnotationType::pasted_image`).
 
 use std::collections::BTreeMap;
 
-use eframe::egui::{self, Color32, Painter, Rect, UiBuilder};
+use eframe::egui::{self, Color32, ColorImage, Painter, Rect, UiBuilder};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+
+use super::theme::Colours;
 
 /// The smallest an annotation can be made, in canvas units.
 pub const MIN_SIZE: [f32; 2] = [80.0, 50.0];
@@ -30,8 +33,13 @@ pub trait AnnotationType: Default + Clone + PartialEq + Serialize + DeserializeO
         Self::default()
     }
 
-    /// Its background on the canvas.
-    fn fill(&self) -> Color32;
+    /// Its background on the canvas, in the theme's colours if it wants.
+    fn fill(&self, theme: &Colours) -> Color32;
+
+    /// One showing an image pasted onto the canvas, if this type shows images; with its size on the canvas.
+    fn pasted_image(_image: &ColorImage) -> Option<(Self, [f32; 2])> {
+        None
+    }
 
     /// Shows its content in `ui` (sized and scaled to fit it on the canvas): as it looks, or for editing while
     /// `editing`. Returns whether editing should carry on.
@@ -56,7 +64,9 @@ pub trait AnnotationSet: Clone + PartialEq + Serialize + DeserializeOwned + 'sta
     fn create(type_index: usize) -> Self;
     fn drawn(type_index: usize) -> Self;
     fn type_index(&self) -> usize;
-    fn fill(&self) -> Color32;
+    fn fill(&self, theme: &Colours) -> Color32;
+    /// An annotation of the first type that shows pasted images, and its size.
+    fn pasted_image(image: &ColorImage) -> Option<(Self, [f32; 2])>;
     fn content_ui(&mut self, ui: &mut egui::Ui, editing: bool) -> bool;
     fn context_menu_ui(&mut self, ui: &mut egui::Ui);
     fn settings_ui(&mut self, ui: &mut egui::Ui);
@@ -128,8 +138,17 @@ macro_rules! annotation_set {
                 unreachable!()
             }
 
-            fn fill(&self) -> eframe::egui::Color32 {
-                match self { $($name::$variant(a) => $crate::core::annotation::AnnotationType::fill(a)),+ }
+            fn fill(&self, theme: &$crate::core::theme::Colours) -> eframe::egui::Color32 {
+                match self { $($name::$variant(a) => $crate::core::annotation::AnnotationType::fill(a, theme)),+ }
+            }
+
+            fn pasted_image(image: &eframe::egui::ColorImage) -> Option<(Self, [f32; 2])> {
+                $(
+                    if let Some((a, size)) = <$ty as $crate::core::annotation::AnnotationType>::pasted_image(image) {
+                        return Some(($name::$variant(a), size));
+                    }
+                )+
+                None
             }
 
             fn content_ui(&mut self, ui: &mut eframe::egui::Ui, editing: bool) -> bool {

@@ -40,6 +40,11 @@ pub struct Tracking {
     shown: Latest<TrackerDisplay>,
 }
 
+impl crate::core::engine::PassState for Tracking {
+    const WHY: &'static str = "The LEDs' sizes over the last few seconds, for the chart, which each pass adds \
+                               to.";
+}
+
 /// A video frame, copied for display.
 #[derive(Default)]
 pub struct Frame {
