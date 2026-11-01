@@ -898,9 +898,10 @@ fn describe<N: NodeSet>(plan: &Plan<N>) -> String {
     )
 }
 
-/// How many workers to use by default: one fewer than the cores (leaving one for the GUI), up to 8.
+/// How many workers to use by default: half the cores (leaving the rest for the GUI, nodes' own threads and
+/// everything else), up to 4.
 pub fn default_workers() -> usize {
-    std::thread::available_parallelism().map_or(2, |n| n.get().saturating_sub(1)).clamp(1, 8)
+    std::thread::available_parallelism().map_or(2, |n| n.get() / 2).clamp(1, 4)
 }
 
 /// Whether two graphs would process the same way: the same nodes, settings and edges, whatever their
