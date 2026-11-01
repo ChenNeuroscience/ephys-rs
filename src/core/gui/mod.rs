@@ -1,5 +1,5 @@
 //! The main window: menus and a toolbar, then a dockable layout of panes (the graph canvas, node windows, and the
-//! developer tools), then a status bar. Clicking a node opens its window: its own view, if it has one, otherwise its
+//! developer tools), then a status bar. Double-clicking a node opens its window: its own view, if it has one, otherwise its
 //! settings (`node_window`). Node windows open docked, and can float.
 
 mod actions;
@@ -1288,13 +1288,17 @@ mod tests {
     }
 
     #[test]
-    fn a_click_opens_a_nodes_window() {
+    fn a_click_selects_a_node_and_opening_shows_its_window() {
         let mut harness = harness();
         let detector = node_named(harness.state(), "Spike Detector");
-        assert_eq!(harness.state().layout.window(detector), WindowState::Closed);
         let at = on_node(&harness, "Spike Detector", [60.0, 40.0]);
         pointer(&mut harness, at, Some(true));
         pointer(&mut harness, at, Some(false));
+        assert!(harness.state().selection.nodes.contains(&detector));
+        assert_eq!(harness.state().layout.window(detector), WindowState::Closed, "a click only selects it");
+        // What a double-click does. (The harness's frames are too far apart to double-click in.)
+        let ctx = harness.ctx.clone();
+        harness.state_mut().handle(&ctx, Event::OpenWindow(detector));
         harness.run_steps(2);
         assert_eq!(harness.state().layout.window(detector), WindowState::Docked);
         // Its default window: its settings, and the threshold set by the spike viewer.

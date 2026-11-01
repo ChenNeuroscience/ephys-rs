@@ -916,14 +916,16 @@ impl Canvas {
         if moved {
             move_selection(graph, annotations, selection, delta);
         }
-        // A click opens its window (or brings it to the front).
         if body.clicked() {
             if !shift {
                 selection.only(id);
-                events.push(Event::OpenWindow(id));
             } else if !selection.nodes.remove(&id) {
                 selection.nodes.insert(id);
             }
+        }
+        // A double-click opens its window (or brings it to the front).
+        if body.double_clicked() {
+            events.push(Event::OpenWindow(id));
         }
         body.context_menu(|ui| {
             if let Some(entry) = graph.get_mut(id) {
