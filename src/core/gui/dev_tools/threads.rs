@@ -55,6 +55,7 @@ pub fn show<N: NodeSet>(
     colours: &Colours,
     runner: Option<&Runner<N>>,
     snapshot: &Snapshot<N>,
+    workers: usize,
 ) {
     let info = runner.map(|r| r.inspect());
     let plan = info.as_ref().and_then(|i| i.running.as_ref()).map_or_else(|| snapshot.plan.clone(), |e| e.plan.clone());
@@ -81,7 +82,7 @@ pub fn show<N: NodeSet>(
                 ui.spacing_mut().item_spacing.x = GAP;
                 column(ui, 220.0, &mut |ui| gui_and_dispatcher(ui, &mut anchors));
                 column(ui, 450.0, &mut |ui| {
-                    workers(ui, graph, resolved, colours, info.as_ref(), snapshot, &plan, &mut anchors)
+                    workers_ui(ui, graph, resolved, colours, info.as_ref(), snapshot, &plan, &mut anchors, workers)
                 });
                 column(ui, 250.0, &mut |ui| node_threads(ui, graph, colours, runner, &plan, &mut anchors));
             });
@@ -92,7 +93,7 @@ pub fn show<N: NodeSet>(
                 column(ui, width, &mut |ui| {
                     gui_and_dispatcher(ui, &mut anchors);
                     ui.add_space(16.0);
-                    workers(ui, graph, resolved, colours, info.as_ref(), snapshot, &plan, &mut anchors);
+                    workers_ui(ui, graph, resolved, colours, info.as_ref(), snapshot, &plan, &mut anchors, workers);
                     ui.add_space(16.0);
                     node_threads(ui, graph, colours, runner, &plan, &mut anchors);
                 });
@@ -335,7 +336,7 @@ fn dispatcher<N: NodeSet>(ui: &mut egui::Ui, colours: &Colours, info: Option<&Ru
 }
 
 #[allow(clippy::too_many_arguments)]
-fn workers<N: NodeSet>(
+fn workers_ui<N: NodeSet>(
     ui: &mut egui::Ui,
     graph: &Graph<N>,
     resolved: &Resolved<N::Edges>,
@@ -344,8 +345,9 @@ fn workers<N: NodeSet>(
     snapshot: &Snapshot<N>,
     plan: &Arc<Plan<N>>,
     anchors: &mut Anchors,
+    workers: usize,
 ) {
-    let count = info.map_or(crate::core::engine::default_workers(), |i| i.workers.len());
+    let count = info.map_or(workers, |i| i.workers.len());
     let title = format!("Pass workers × {count}");
     let running = info.and_then(|i| i.running.as_ref());
     let detail = match running {

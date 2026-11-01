@@ -33,6 +33,7 @@ impl DevTools {
 
 /// The threads and the console, with a bar between them to drag: the console below, or beside the threads if
 /// the pane is much wider than it's tall.
+#[allow(clippy::too_many_arguments)]
 pub fn show<N: NodeSet>(
     ui: &mut egui::Ui,
     tools: &mut DevTools,
@@ -41,6 +42,7 @@ pub fn show<N: NodeSet>(
     colours: &Colours,
     runner: Option<&Runner<N>>,
     snapshot: &Snapshot<N>,
+    workers: usize,
 ) {
     let area = ui.available_rect_before_wrap();
     let beside = area.width() > 2.5 * area.height() && area.width() > 900.0;
@@ -80,7 +82,7 @@ pub fn show<N: NodeSet>(
     section(ui, cross(egui::Rangef::new(start, split - 3.0)), &mut |ui| {
         ui.label(egui::RichText::new("Threads").strong());
         ui.add_space(4.0);
-        threads::show(ui, graph, resolved, colours, runner, snapshot);
+        threads::show(ui, graph, resolved, colours, runner, snapshot, workers);
     });
     section(ui, cross(egui::Rangef::new(split + 3.0, start + length)), &mut |ui| {
         console::show(ui, &mut tools.console, graph, colours)

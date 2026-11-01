@@ -262,6 +262,8 @@ pub struct Panes<'a, N: NodeSet, A: AnnotationSet> {
     pub runner: Option<&'a Runner<N>>,
     /// The latest snapshot of the graph.
     pub snapshot: &'a Snapshot<N>,
+    /// How many workers runs start with.
+    pub workers: usize,
     /// Whether settings are locked (while recording).
     pub locked: bool,
     pub dev_tools: &'a mut DevTools,
@@ -431,9 +433,16 @@ impl<N: NodeSet, A: AnnotationSet> egui_tiles::Behavior<Pane> for Panes<'_, N, A
                 self.events,
             ),
             Pane::Annotation => padded(ui, |ui| annotation_ui(ui, self.annotations, self.selection, self.events)),
-            Pane::DevTools => {
-                dev_tools::show(ui, self.dev_tools, self.graph, self.resolved, self.colours, self.runner, self.snapshot)
-            }
+            Pane::DevTools => dev_tools::show(
+                ui,
+                self.dev_tools,
+                self.graph,
+                self.resolved,
+                self.colours,
+                self.runner,
+                self.snapshot,
+                self.workers,
+            ),
             Pane::Node(id) => {
                 let (graph, resolved, colours, runner, locked) =
                     (&mut *self.graph, self.resolved, self.colours, self.runner, self.locked);

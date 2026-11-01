@@ -151,6 +151,8 @@ pub struct App<N: NodeSet, A: AnnotationSet> {
     /// While the nodes prepare to record, where the recording comes from when they're ready.
     preparing: Option<std::sync::mpsc::Receiver<engine::Recording>>,
     dev_tools: dev_tools::DevTools,
+    /// How many workers runs start with.
+    workers: usize,
 }
 
 impl<N: NodeSet, A: AnnotationSet> App<N, A> {
@@ -180,6 +182,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             recording_since: 0.0,
             preparing: None,
             dev_tools: dev_tools::DevTools::default(),
+            workers: engine::default_workers(),
         };
         if let Some(path) = path {
             if path.exists() {
@@ -356,7 +359,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
     /// Starts running whatever's latest, including edits not yet taken as a version.
     fn play(&mut self) {
         self.history.commit(&self.graph, &self.annotations);
-        self.runner = Some(Runner::start(&self.history.current.snapshot, engine::default_workers()));
+        self.runner = Some(Runner::start(&self.history.current.snapshot, self.workers));
     }
 
     /// Has the nodes prepare to record (see `Node::prepare_to_record`), on a thread of their own: once they're
@@ -816,6 +819,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                 colours,
                 runner: self.runner.as_ref(),
                 snapshot: &self.history.current.snapshot,
+                workers: self.workers,
                 locked,
                 dev_tools: &mut self.dev_tools,
                 canvas: &mut self.canvas,
@@ -1206,6 +1210,8 @@ mod tests {
     #[test]
     fn dev_tools_show_the_plan() {
         let mut harness = harness();
+        // However many cores the machine has.
+        harness.state_mut().workers = 4;
         harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::ALT, Key::I);
         // Other tests log at the same time, so the console's filtered to nothing, to look the same every time.
         harness.state_mut().dev_tools.hide_console_lines();
