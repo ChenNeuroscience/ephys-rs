@@ -13,11 +13,11 @@
             "sample_rate": 30000,
             "headstages": [
               {
-                "port": "A",
+                "port": "A1",
                 "channels": 32
               },
               {
-                "port": "B",
+                "port": "B1",
                 "channels": 32
               }
             ],

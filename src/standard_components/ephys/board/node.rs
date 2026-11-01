@@ -5,7 +5,7 @@ use eframe::egui::{self, RichText};
 use serde::{Deserialize, Serialize};
 
 use super::capture::{self, Capture, State, Status};
-use super::{AUX_PER_HEADSTAGE, Bandwidth, Block, BoardInfo, Config, Headstage, SAMPLE_RATES, Source};
+use super::{AUX_PER_HEADSTAGE, Bandwidth, Block, BoardInfo, Config, Headstage, PORTS, Rhythm, SAMPLE_RATES, Source};
 use crate::core::engine::{Category, Context, Node, NodeInfo, Output, Pass};
 use crate::standard_components::ephys::{Continuous, Event, Events};
 use crate::standard_components::widgets::{named_settings_grid, setting, settings_grid};
@@ -13,8 +13,6 @@ use crate::{Buffer, DataStream, Edges, Kind};
 
 /// The board's analogue inputs.
 pub const ADC_CHANNELS: u32 = 8;
-/// The board's digital inputs.
-pub const TTL_LINES: u32 = 8;
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -34,7 +32,10 @@ impl Default for AcquisitionBoard {
         AcquisitionBoard {
             source: Source::default(),
             sample_rate: 30000,
-            headstages: vec![Headstage { port: 'A', channels: 32 }, Headstage { port: 'B', channels: 32 }],
+            headstages: vec![
+                Headstage { port: "A1".into(), channels: 32 },
+                Headstage { port: "B1".into(), channels: 32 },
+            ],
             aux: false,
             adc: false,
             bandwidth: Bandwidth::default(),
@@ -66,7 +67,7 @@ pub struct BoardDisplay {
 
 impl AcquisitionBoard {
     fn config(&self) -> Config {
-        Config { sample_rate: self.sample_rate, bandwidth: self.bandwidth }
+        Config { sample_rate: self.sample_rate, bandwidth: self.bandwidth, headstages: self.headstages.clone() }
     }
 
     /// The outputs' indices: headstages and digital inputs, then auxiliary and analogue inputs if they're on.
@@ -91,7 +92,7 @@ impl Node<Edges> for AcquisitionBoard {
         name: "Acquisition Board",
         category: Category::Source,
         description: "Headstage channels, and auxiliary, analogue and digital inputs, from an acquisition board: \
-                      the fake board in synthetic_streams/ for now.",
+                      an Open Ephys board, Intan's RHD USB board, or the fake board in synthetic_streams/.",
     };
 
     type State = Acquiring;
@@ -108,7 +109,7 @@ impl Node<Edges> for AcquisitionBoard {
             Output {
                 name: "digital",
                 kind: Kind::Events,
-                stream: Some(DataStream::Events(Events { lines: TTL_LINES })),
+                stream: Some(DataStream::Events(Events { lines: self.source.ttl_lines() })),
             },
         ];
         if self.aux {
@@ -142,6 +143,7 @@ impl Node<Edges> for AcquisitionBoard {
     fn process(&self, pass: &mut Pass<Edges>, acquiring: &mut Acquiring) {
         let Some(capture) = &acquiring.capture else { return };
         let (aux_output, adc_output) = (self.aux_output(), self.adc_output());
+        let lines = self.source.ttl_lines();
         let room = match pass.outputs.first() {
             Some(Buffer::Continuous(out)) => out.capacity,
             _ => return,
@@ -185,8 +187,8 @@ impl Node<Edges> for AcquisitionBoard {
             copy(adc_output, &block.adc);
             if let Some(Buffer::Events(events)) = pass.outputs.get_mut(1) {
                 for (i, &word) in block.ttl[offset..offset + n].iter().enumerate() {
-                    let changed = (word ^ acquiring.ttl) & ((1 << TTL_LINES) - 1);
-                    for line in (0..TTL_LINES).filter(|line| changed & (1 << line) != 0) {
+                    let changed = (word ^ acquiring.ttl) & ((1 << lines) - 1);
+                    for line in (0..lines).filter(|line| changed & (1 << line) != 0) {
                         if events.events.len() < events.events.capacity() {
                             let high = word & (1 << line) != 0;
                             events.events.push(Event { sample: (taken + i) as u32, line: line as u8, high });
@@ -222,6 +224,23 @@ impl Node<Edges> for AcquisitionBoard {
             match &mut self.source {
                 Source::Fake { address } => {
                     setting(ui, "Address", |ui| ui.text_edit_singleline(address));
+                }
+                Source::OpalKelly { board, bitfile, library } => {
+                    setting(ui, "Kind", |ui| {
+                        egui::ComboBox::from_id_salt("rhythm")
+                            .selected_text(board.name())
+                            .show_ui(ui, |ui| {
+                                for kind in [Rhythm::OpenEphys, Rhythm::IntanRhdUsb] {
+                                    ui.selectable_value(board, kind, kind.name());
+                                }
+                            })
+                            .response
+                    });
+                    let path = |ui: &mut egui::Ui, value: &mut String| {
+                        ui.add(egui::TextEdit::singleline(value).hint_text("found automatically"))
+                    };
+                    setting(ui, "Bitfile", |ui| path(ui, bitfile));
+                    setting(ui, "Library", |ui| path(ui, library));
                 }
             }
             setting(ui, "Sample rate", |ui| {
@@ -313,8 +332,12 @@ impl Node<Edges> for AcquisitionBoard {
 fn source_ui(ui: &mut egui::Ui, source: &mut Source) -> egui::Response {
     let name = |source: &Source| match source {
         Source::Fake { .. } => "Fake board (synthetic_streams/)",
+        Source::OpalKelly { .. } => "Opal Kelly (Rhythm)",
     };
-    let choices = [Source::default()];
+    let choices = [
+        Source::default(),
+        Source::OpalKelly { board: Rhythm::OpenEphys, bitfile: String::new(), library: String::new() },
+    ];
     egui::ComboBox::from_id_salt("board")
         .selected_text(name(source))
         .show_ui(ui, |ui| {
@@ -342,7 +365,7 @@ fn headstages_ui(ui: &mut egui::Ui, headstages: &mut Vec<Headstage>) {
             egui::ComboBox::from_id_salt(("channels", i))
                 .selected_text(format!("{} ch", headstage.channels))
                 .show_ui(ui, |ui| {
-                    for channels in [16, 32, 64, 128] {
+                    for channels in [16, 32, 64] {
                         ui.selectable_value(&mut headstage.channels, channels, format!("{channels} ch"));
                     }
                 })
@@ -357,12 +380,15 @@ fn headstages_ui(ui: &mut egui::Ui, headstages: &mut Vec<Headstage>) {
     if let Some(i) = remove {
         headstages.remove(i);
     }
-    let next_port = ('A'..='H').find(|port| headstages.iter().all(|h| h.port != *port));
-    if let Some(port) = next_port
+    let order = |port: &str| PORTS.iter().position(|p| *p == port).unwrap_or(PORTS.len());
+    // The next port's first MISO line, or failing that any free one.
+    let free = |port: &&&str| headstages.iter().all(|h| h.port != **port);
+    let next = PORTS.iter().step_by(2).find(free).or_else(|| PORTS.iter().find(free));
+    if let Some(port) = next
         && ui.small_button("Add headstage").clicked()
     {
-        headstages.push(Headstage { port, channels: 32 });
-        headstages.sort_by_key(|h| h.port);
+        headstages.push(Headstage { port: port.to_string(), channels: 32 });
+        headstages.sort_by_key(|h| order(&h.port));
     }
 }
 
@@ -425,7 +451,7 @@ mod tests {
         let board = graph.add(Nodes::create(index), [0.0, 0.0]);
         let info = BoardInfo {
             description: "Fake acquisition board (synthetic_streams/fake_acquisition_board.py)".into(),
-            headstages: vec![Headstage { port: 'A', channels: 64 }],
+            headstages: vec![Headstage { port: "A1".into(), channels: 64 }],
             adc_channels: 8,
             ttl_lines: 8,
         };

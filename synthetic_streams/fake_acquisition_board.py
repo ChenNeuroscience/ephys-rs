@@ -2,7 +2,7 @@
 Fake acquisition board for ephys-rs: streams headstage channels, auxiliary (accelerometer) inputs, analogue
 inputs and digital inputs over TCP, as an Open Ephys acquisition board would deliver them. Standard library only.
 
-    python3 synthetic_streams/fake_acquisition_board.py [--port 27031] [--headstages A:32,B:32]
+    python3 synthetic_streams/fake_acquisition_board.py [--port 27031] [--headstages A1:32,B1:32]
 
 Then press Play in ephys-rs: Acquisition Board nodes use this board by default. The node connects as a client;
 when it disconnects we wait for the next one.
@@ -218,7 +218,7 @@ def parse_headstages(text):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--port", type=int, default=27031)
-    parser.add_argument("--headstages", default="A:32,B:32", help="port:channels, comma separated")
+    parser.add_argument("--headstages", default="A1:32,B1:32", help="port:channels, comma separated")
     args = parser.parse_args()
     headstages = parse_headstages(args.headstages)
 

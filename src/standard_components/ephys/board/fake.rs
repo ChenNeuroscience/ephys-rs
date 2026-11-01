@@ -2,7 +2,7 @@
 //! describing itself:
 //!
 //! ```text
-//! {"description": "...", "headstages": [{"port": "A", "channels": 32}, ...], "adc_channels": 8, "ttl_lines": 8}
+//! {"description": "...", "headstages": [{"port": "A1", "channels": 32}, ...], "adc_channels": 8, "ttl_lines": 8}
 //! ```
 //!
 //! We reply with a line of JSON saying how to run, `{"sample_rate": 30000}`, and it streams blocks of samples,
@@ -161,7 +161,7 @@ fn u32_at(buf: &[u8], offset: usize) -> u32 {
 }
 
 /// Serves a board the way `fake_acquisition_board.py` does, for tests that can't rely on Python: headstages
-/// A and B of 32 channels, 8 analogue inputs and 8 digital lines. Each headstage channel has a slow wave,
+/// A1 and B1 of 32 channels, 8 analogue inputs and 8 digital lines. Each headstage channel has a slow wave,
 /// noise, and a spike now and then; the first digital line goes high for 10 ms every half second. Blocks of
 /// 10 ms go out in real time until the client goes. Returns the address.
 #[cfg(test)]
@@ -174,7 +174,8 @@ pub fn serve_test_board() -> String {
     let address = listener.local_addr().unwrap().to_string();
     std::thread::spawn(move || {
         let Ok((mut stream, _)) = listener.accept() else { return };
-        let headstages = vec![Headstage { port: 'A', channels: 32 }, Headstage { port: 'B', channels: 32 }];
+        let headstages =
+            vec![Headstage { port: "A1".into(), channels: 32 }, Headstage { port: "B1".into(), channels: 32 }];
         let description = Description {
             description: "Test board".into(),
             headstages: headstages.clone(),

@@ -203,12 +203,13 @@ mod tests {
         let port = 27399;
         let script = concat!(env!("CARGO_MANIFEST_DIR"), "/synthetic_streams/fake_acquisition_board.py");
         let mut child = Command::new("python3")
-            .args([script, "--port", &port.to_string(), "--headstages", "A:32,C:16"])
+            .args([script, "--port", &port.to_string(), "--headstages", "A1:32,C1:16"])
             .stdout(Stdio::null())
             .spawn()
             .expect("run python3");
         let source = Source::Fake { address: format!("127.0.0.1:{port}") };
-        let capture = Capture::start(source, Config { sample_rate: 20000, bandwidth: Bandwidth::default() });
+        let config = Config { sample_rate: 20000, bandwidth: Bandwidth::default(), headstages: Vec::new() };
+        let capture = Capture::start(source, config);
         let (mut samples, mut layout, mut ttl_changes, mut last_ttl, mut peak) = (0, None, 0, 0, 0f32);
         let deadline = Instant::now() + Duration::from_secs(15);
         while samples < 20000 && Instant::now() < deadline {
@@ -232,7 +233,8 @@ mod tests {
         child.wait().ok();
         assert!(samples >= 20000, "a second at 20 kHz; status {status:?}");
         let info = status.info.expect("the board described itself");
-        assert_eq!(info.headstages, [Headstage { port: 'A', channels: 32 }, Headstage { port: 'C', channels: 16 }]);
+        let expected = [Headstage { port: "A1".into(), channels: 32 }, Headstage { port: "C1".into(), channels: 16 }];
+        assert_eq!(info.headstages, expected);
         assert_eq!(layout, Some((48, 6, 8)), "headstage, aux and adc channels");
         assert!((50.0..2000.0).contains(&peak), "microvolts, as headstages see them: {peak}");
         assert!(ttl_changes >= 2, "the sync pulse goes up and down each second");
