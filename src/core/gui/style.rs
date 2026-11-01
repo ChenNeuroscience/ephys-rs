@@ -4,12 +4,13 @@ use eframe::egui::Color32;
 
 use crate::core::engine::Category;
 
-/// Node header colour.
+/// Node header colour: Open Ephys's colours for its kinds of processor (sources orange, filters sky blue,
+/// sinks green, recording red), toned down to sit behind white text in either theme.
 pub fn category_colour(category: Category) -> Color32 {
     match category {
-        Category::Source => Color32::from_rgb(40, 96, 78),
-        Category::Processing => Color32::from_rgb(48, 72, 120),
-        Category::Visualisation => Color32::from_rgb(98, 66, 112),
-        Category::Recording => Color32::from_rgb(124, 52, 52),
+        Category::Source => Color32::from_rgb(168, 82, 40),
+        Category::Processing => Color32::from_rgb(30, 104, 150),
+        Category::Visualisation => Color32::from_rgb(34, 116, 72),
+        Category::Recording => Color32::from_rgb(158, 44, 44),
     }
 }
