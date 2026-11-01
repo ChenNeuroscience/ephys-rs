@@ -742,7 +742,7 @@ impl Canvas {
         selection.only_annotation(id);
     }
 
-    /// Annotations sit beneath the graph, or above it (`above_graph`, for those that go there: images): drag to
+    /// Annotations sit above the graph, or beneath it (those that go there: boxes, see `above_graph`): drag to
     /// move (along with anything else selected), drag the corner to resize, double-click to edit.
     #[allow(clippy::too_many_arguments)]
     fn annotations<N: NodeSet, A: AnnotationSet>(

@@ -54,9 +54,9 @@ pub trait AnnotationType: Default + Clone + PartialEq + Serialize + DeserializeO
         false
     }
 
-    /// Whether it goes above the graph, rather than beneath it (an image, say).
+    /// Whether it goes above the graph (as most do), rather than beneath it (a box grouping nodes, say).
     fn above_graph(&self) -> bool {
-        false
+        true
     }
 
     /// For one that's a line between two points (an arrow, say): the points, within `rect`. The canvas then lets

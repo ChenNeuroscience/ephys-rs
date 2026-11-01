@@ -85,6 +85,11 @@ impl AnnotationType for GroupBox {
         true
     }
 
+    /// Beneath the graph, so the nodes it groups are on it.
+    fn above_graph(&self) -> bool {
+        false
+    }
+
     fn content_ui(&mut self, ui: &mut egui::Ui, editing: bool) -> bool {
         let size = egui::TextStyle::Body.resolve(ui.style()).size * 1.2;
         let colour = self.hue.colour();

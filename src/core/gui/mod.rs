@@ -1257,7 +1257,7 @@ mod tests {
     }
 
     #[test]
-    fn images_go_above_the_graph() {
+    fn annotations_but_boxes_go_above_the_graph() {
         use crate::core::annotation::{Annotation, AnnotationType as _};
         use crate::standard_components::annotations::image::Image;
         let mut harness = harness();
