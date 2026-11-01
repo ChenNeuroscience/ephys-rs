@@ -1,7 +1,7 @@
 //! The Spike Viewer: each group's (tetrode's, say) recent spikes overlaid, a plot per channel of the group, each
 //! with the channel's threshold. Connected to a spike detector's thresholds and gains, it sets them: drag a
 //! threshold's line, use a channel's gain buttons (shown over it), or type either (G or T over the channel). Or
-//! choose them from the data: the passes sample it for a while (a few seconds), then the thresholds are so many
+//! auto-detect them from the data: the passes sample it for a while (a few seconds), then the thresholds are so many
 //! standard deviations of each channel's noise, and the gains have each channel's bigger spikes fill its plot.
 //!
 //! A plot shows a channel's ±(full scale / gain): just what the LTX format's 8-bit samples hold, so a spike that
@@ -29,14 +29,12 @@ const ASPECT: f32 = 0.75;
 const SAMPLED_SPIKES: usize = 4000;
 /// How long the passes can sample for, in seconds.
 const SAMPLING: std::ops::RangeInclusive<f32> = 4.0..=60.0;
+/// The most recent waveforms overlaid on each group.
+const WAVEFORMS: usize = 30;
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SpikeViewer {
-    pub first_group: u32,
-    pub groups_shown: u32,
-    /// Most recent waveforms overlaid on each group.
-    pub waveforms: u32,
     /// Each channel's plot's height, in points (its width follows).
     pub plot_height: f32,
     /// Seconds to sample the data for, to choose gains or thresholds from.
@@ -68,15 +66,7 @@ impl Choosing {
 
 impl Default for SpikeViewer {
     fn default() -> Self {
-        SpikeViewer {
-            first_group: 0,
-            groups_shown: 16,
-            waveforms: 30,
-            plot_height: 120.0,
-            sampling: 10.0,
-            threshold_sd: 4.0,
-            choosing: Choosing::Both,
-        }
+        SpikeViewer { plot_height: 120.0, sampling: 10.0, threshold_sd: 4.0, choosing: Choosing::Both }
     }
 }
 
@@ -214,7 +204,7 @@ impl Node<Edges> for SpikeViewer {
     fn initial_state(&self, inputs: &[Option<DataStream>]) -> Recent {
         let Some(DataStream::Spikes(stream)) = inputs[0] else { return Recent::default() };
         let groups = stream.groups() as usize;
-        let keep = self.waveforms.clamp(1, 200) as usize;
+        let keep = WAVEFORMS;
         let size = (stream.group_size * stream.waveform_samples()) as usize;
         Recent {
             stream: Some(stream),
@@ -273,34 +263,12 @@ impl Node<Edges> for SpikeViewer {
         });
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
-        let groups = match context.inputs[0] {
-            Some(DataStream::Spikes(s)) => s.groups(),
-            _ => 16,
-        };
-        settings_grid(ui, |ui| {
-            setting(ui, "First group", |ui| {
-                ui.add(
-                    egui::DragValue::new(&mut self.first_group)
-                        .range(0..=groups.saturating_sub(1))
-                        .custom_formatter(|v, _| format!("{}", v + 1.0))
-                        .custom_parser(|s| s.trim().parse::<f64>().ok().map(|v| v - 1.0)),
-                )
-            });
-            setting(ui, "Groups shown", |ui| ui.add(egui::DragValue::new(&mut self.groups_shown).range(1..=64)));
-            setting(ui, "Waveforms", |ui| ui.add(egui::DragValue::new(&mut self.waveforms).range(1..=200)));
-            setting(ui, "Chosen thresholds", |ui| {
-                ui.add(egui::DragValue::new(&mut self.threshold_sd).range(1.0..=20.0).speed(0.05).suffix(" SD"))
-                    .on_hover_text("Thresholds chosen from the data are this many standard deviations of the noise")
-            });
-        });
+    fn settings_ui(&mut self, ui: &mut egui::Ui, _context: &mut Context<Edges>) {
+        settings_grid(ui, |ui| setting(ui, "Auto-detected thresholds", |ui| ui.add(self.threshold_sd_field())));
     }
 
     fn view_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
         let locked = context.locked;
-        crate::standard_components::widgets::view_settings(ui, |ui| {
-            ui.add_enabled_ui(!locked, |ui| self.settings_ui(ui, context));
-        });
         let Some(DataStream::Spikes(stream)) = context.inputs[0] else {
             return preview::unconnected(ui, context.theme, "Connect spikes to view them");
         };
@@ -364,14 +332,17 @@ struct Plots<'a> {
 }
 
 impl SpikeViewer {
-    /// The first group shown, and how many, of `groups`.
+    /// The first group shown, and how many, of `groups`: all of them, scrolled through.
     fn groups(&self, groups: usize) -> (usize, usize) {
-        let first = (self.first_group as usize).min(groups.saturating_sub(1));
-        (first, (self.groups_shown as usize).min(groups - first))
+        (0, groups)
     }
 
-    /// The plots' height, and choosing gains or thresholds from the data, with a hint of what else can be done.
-    /// Returns a request to choose them, if one's been made.
+    fn threshold_sd_field(&mut self) -> egui::DragValue<'_> {
+        egui::DragValue::new(&mut self.threshold_sd).range(1.0..=20.0).speed(0.05).suffix(" SD")
+    }
+
+    /// The plots' height, and auto-detecting gains or thresholds from the data, with a hint of what else can be
+    /// done. Returns a request to detect them, if one's been made.
     fn toolbar(
         &mut self,
         ui: &mut egui::Ui,
@@ -396,7 +367,8 @@ impl SpikeViewer {
             } else {
                 "Sampling…"
             };
-            // What to choose: picked from a menu, then chosen with the button.
+            // Auto detect: what, over how long, and (for thresholds) how many standard deviations; then run.
+            let label = ui.strong("Auto detect");
             ui.add_enabled_ui(!context.locked, |ui| {
                 let options = [Choosing::Both, Choosing::Gains, Choosing::Thresholds];
                 egui::ComboBox::from_id_salt("choosing")
@@ -408,13 +380,25 @@ impl SpikeViewer {
                         }
                     })
                     .response
-                    .on_hover_text("What to choose from the data");
+                    .labelled_by(label.id)
+                    .on_hover_text("What to detect from the data");
             });
             let (g, t) = match self.choosing {
                 Choosing::Both => (true, true),
                 Choosing::Gains => (true, false),
                 Choosing::Thresholds => (false, true),
             };
+            ui.add_enabled_ui(!context.locked, |ui| {
+                let label = ui.label("over");
+                let field = egui::DragValue::new(&mut self.sampling).range(SAMPLING).speed(0.2).suffix(" s");
+                ui.add(field).labelled_by(label.id).on_hover_text("How long to sample the data for");
+                if t {
+                    let label = ui.label("at");
+                    ui.add(self.threshold_sd_field())
+                        .labelled_by(label.id)
+                        .on_hover_text("Thresholds are this many standard deviations of each channel's noise");
+                }
+            });
             let connected = (!g || gains) && (!t || thresholds);
             let tip = format!(
                 "Sample the data, then set each channel's {}",
@@ -430,14 +414,9 @@ impl SpikeViewer {
                 }
             );
             let missing = "Connect the thresholds and gains to a spike detector to set them";
-            let button = ui.add_enabled(can && connected, egui::Button::new("Choose").small());
+            let button = ui.add_enabled(can && connected, egui::Button::new("Run").small());
             let chosen =
                 button.on_hover_text(tip).on_disabled_hover_text(if connected { why } else { missing }).clicked();
-            let label = ui.label("from");
-            ui.add_enabled_ui(!context.locked, |ui| {
-                let field = egui::DragValue::new(&mut self.sampling).range(SAMPLING).speed(0.2).suffix(" s");
-                ui.add(field).labelled_by(label.id).on_hover_text("How long to sample the data for");
-            });
             if let Some((elapsed, total)) = sampling {
                 ui.add(egui::Spinner::new().size(12.0));
                 ui.weak(format!("sampling, {:.0} s of {total:.0}", elapsed.min(total)));

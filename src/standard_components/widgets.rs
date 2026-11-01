@@ -177,11 +177,3 @@ pub fn queue_ui(ui: &mut egui::Ui, theme: &Colours, what: &str, queued: usize, c
         ui.painter().rect_filled(bar.with_max_x(bar.left() + bar.width() * filled), 2.0, fill);
     });
 }
-
-/// A view's settings, folded away at its top until they're wanted.
-pub fn view_settings(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
-    egui::CollapsingHeader::new("Settings")
-        .id_salt(ui.scope_id().with("view settings"))
-        .default_open(false)
-        .show(ui, add);
-}

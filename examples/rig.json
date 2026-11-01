@@ -72,7 +72,6 @@
         "node": {
           "type": "SpikeViewer",
           "settings": {
-            "waveforms": 20,
             "plot_height": 120.0
           }
         },

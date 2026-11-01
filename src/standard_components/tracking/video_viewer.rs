@@ -61,7 +61,7 @@ impl Node<Edges> for VideoViewer {
     }
 
     fn view_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
-        crate::standard_components::widgets::view_settings(ui, |ui| self.settings_ui(ui, context));
+        ui.add_enabled_ui(!context.locked, |ui| ui.checkbox(&mut self.crosshair, "Crosshair"));
         let Some(DataStream::Video(stream)) = context.inputs[0] else {
             return preview::unconnected(ui, context.theme, "Connect video to view it");
         };
