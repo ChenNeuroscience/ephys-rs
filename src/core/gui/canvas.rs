@@ -170,8 +170,8 @@ fn bezier_points([a, b, c, d]: [Pos2; 4]) -> Vec<Pos2> {
         .collect()
 }
 
-/// Data edges are solid, with an arrowhead halfway along showing which way the data flows. Settings edges are
-/// dashed, with no direction.
+/// Data edges are solid, in their type's colour, with an arrowhead halfway along showing which way the data
+/// flows. Settings edges are grey (`wire_colour`) and dashed, with no direction: their ports show their type.
 fn paint_wire(painter: &Painter, points: [Pos2; 4], dimension: Dimension, stroke: Stroke, zoom: f32) {
     let path = bezier_points(points);
     match dimension {
@@ -187,6 +187,20 @@ fn paint_wire(painter: &Painter, points: [Pos2; 4], dimension: Dimension, stroke
             painter.extend(Shape::dashed_line(&path, stroke, 7.0 * zoom, 4.0 * zoom));
         }
     }
+}
+
+/// The colour to draw an edge of a type with colour `colour`: settings edges are all the same grey, so they
+/// stay in the background of the data flowing through the graph.
+fn wire_colour(dimension: Dimension, colour: Color32, colours: &Colours) -> Color32 {
+    match dimension {
+        Dimension::Data => colour,
+        Dimension::Settings => colours.text_secondary,
+    }
+}
+
+/// A diamond centred on `at`, `d` from its centre to each corner.
+fn diamond(at: Pos2, d: f32) -> Vec<Pos2> {
+    vec![at - egui::vec2(0.0, d), at + egui::vec2(d, 0.0), at + egui::vec2(0.0, d), at - egui::vec2(d, 0.0)]
 }
 
 /// A filled arrowhead centred on `at`, pointing along `direction`.
@@ -442,7 +456,9 @@ impl Canvas {
             } else {
                 bezier(tip, !on_right(port.role), start, on_right(port.role), zoom)
             };
-            paint_wire(&painter, points, port.role.dimension(), Stroke::new(2.0 * zoom.sqrt(), info.colour), zoom);
+            let dimension = port.role.dimension();
+            let colour = wire_colour(dimension, info.colour, self.colours);
+            paint_wire(&painter, points, dimension, Stroke::new(2.0 * zoom.sqrt(), colour), zoom);
         }
 
         let connected: HashSet<Port> = graph.edges().iter().flat_map(|e| [e.source(), e.target()]).collect();
@@ -578,22 +594,17 @@ impl Canvas {
             for info in kinds {
                 let mid = y + ROW / 2.0;
                 let (start, end) = (egui::pos2(title.left(), mid), egui::pos2(title.left() + 26.0, mid));
-                let stroke = Stroke::new(2.0, info.colour);
+                let stroke = Stroke::new(2.0, wire_colour(dimension, info.colour, colours));
                 match dimension {
                     Dimension::Data => {
                         painter.line_segment([start, end], stroke);
                         arrowhead(painter, start.lerp(end, 0.5), egui::vec2(1.0, 0.0), 7.0, info.colour);
                     }
+                    // A grey edge into a port of the type's colour, as on the graph.
                     Dimension::Settings => {
                         painter.extend(Shape::dashed_line(&[start, end], stroke, 5.0, 3.0));
-                        let d = 4.0;
-                        let diamond = vec![
-                            end - egui::vec2(0.0, d),
-                            end + egui::vec2(d, 0.0),
-                            end + egui::vec2(0.0, d),
-                            end - egui::vec2(d, 0.0),
-                        ];
-                        painter.add(Shape::convex_polygon(diamond, info.colour, Stroke::NONE));
+                        painter.add(Shape::convex_polygon(diamond(end, 5.0), info.colour, Stroke::NONE));
+                        painter.add(Shape::convex_polygon(diamond(end, 2.0), stroke.color, Stroke::NONE));
                     }
                 }
                 let label = egui::pos2(title.left() + 36.0, mid);
@@ -873,7 +884,7 @@ impl Canvas {
             let source = edge.source();
             let Some(state) = resolved.get(&source.node) else { continue };
             let Some(info) = state.info(source.role, source.index) else { continue };
-            let mut colour = info.colour;
+            let mut colour = wire_colour(edge.dimension, info.colour, self.colours);
             let unknown = edge.dimension == Dimension::Data && state.summary(source.role, source.index).is_none();
             if unknown || self.wire.is_some() {
                 colour = colour.gamma_multiply(0.4);
@@ -1092,16 +1103,15 @@ fn paint_port(
                 painter.circle_stroke(pos, r - 0.75 * z, Stroke::new(1.5 * z, colour));
             }
         }
-        // Settings ports are diamonds.
+        // Settings ports are diamonds, of the type's colour. A connected one has a grey centre, the colour of
+        // its edge, to tie the two together.
         Dimension::Settings => {
             let d = r * 1.25;
-            let diamond = vec![
-                pos - egui::vec2(0.0, d),
-                pos + egui::vec2(d, 0.0),
-                pos + egui::vec2(0.0, d),
-                pos - egui::vec2(d, 0.0),
-            ];
-            painter.add(Shape::convex_polygon(diamond, fill, Stroke::new(1.5 * z, colour)));
+            painter.add(Shape::convex_polygon(diamond(pos, d), fill, Stroke::new(1.5 * z, colour)));
+            if connected {
+                let centre = fade(wire_colour(Dimension::Settings, colour, ports.colours));
+                painter.add(Shape::convex_polygon(diamond(pos, d * 0.45), centre, Stroke::NONE));
+            }
         }
     }
 }
