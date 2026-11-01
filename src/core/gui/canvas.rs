@@ -182,29 +182,90 @@ fn bezier_points([a, b, c, d]: [Pos2; 4]) -> Vec<Pos2> {
 /// Data edges are solid, in their type's colour, with an arrowhead halfway along showing which way the data
 /// flows. Settings edges are grey (`wire_colour`) and dashed, with arrowheads both ways (the setting's node and
 /// the control's can both change it): their ports show their type. A read-only one (to a control that only reads
-/// the setting) is dotted, with an arrowhead pointing to the reader.
-fn paint_wire(painter: &Painter, points: [Pos2; 4], dimension: Dimension, read_only: bool, stroke: Stroke, zoom: f32) {
+/// the setting) is dotted, with an arrowhead pointing to the reader. Where nodes (`covers`) hide much of a wire, each
+/// stretch of it that shows gets arrowheads of its own (see `arrow_places`).
+fn paint_wire(
+    painter: &Painter,
+    points: [Pos2; 4],
+    dimension: Dimension,
+    read_only: bool,
+    stroke: Stroke,
+    zoom: f32,
+    covers: &[Rect],
+) {
     let path = bezier_points(points);
     let [a, b, c, d] = points.map(|p| p.to_vec2());
     // The curve's midpoint and its direction there.
     let middle = ((a + 3.0 * b + 3.0 * c + d) / 8.0).to_pos2();
     let direction = 0.75 * ((b - a) + 2.0 * (c - b) + (d - c));
     let size = (4.0 + 1.5 * stroke.width) * zoom.sqrt();
+    let places = arrow_places(&path, covers, (middle, direction), size);
     match dimension {
         Dimension::Data => {
             painter.add(Shape::line(path, stroke));
-            arrowhead(painter, middle, direction, size, stroke.color);
+            for (at, direction) in places {
+                arrowhead(painter, at, direction, size, stroke.color);
+            }
         }
         Dimension::Settings if read_only => {
             painter.extend(Shape::dotted_line(&path, stroke.color, 5.0 * zoom, stroke.width * 0.6));
             // From the setting (where the wire ends) back to the control reading it.
-            arrowhead(painter, middle, -direction, size, stroke.color);
+            for (at, direction) in places {
+                arrowhead(painter, at, -direction, size, stroke.color);
+            }
         }
         Dimension::Settings => {
             painter.extend(Shape::dashed_line(&path, stroke, 7.0 * zoom, 4.0 * zoom));
-            both_ways(painter, middle, direction, size, stroke.color);
+            for (at, direction) in places {
+                both_ways(painter, at, direction, size, stroke.color);
+            }
         }
     }
+}
+
+/// Where along a wire (`path`) its arrowheads go, and which way each points: just `middle`, unless nodes (`covers`)
+/// hide a good part of the wire, or its middle; then halfway along each stretch that shows, if it's long enough for
+/// one (or still just `middle`, if none is).
+fn arrow_places(path: &[Pos2], covers: &[Rect], middle: (Pos2, Vec2), size: f32) -> Vec<(Pos2, Vec2)> {
+    /// The part of a wire hidden for it to get an arrowhead on each stretch that shows.
+    const HIDDEN: f32 = 0.15;
+    let hidden = |p: Pos2| covers.iter().any(|r| r.contains(p));
+    let segments = path.windows(2).map(|w| (w[0], w[1], w[0].distance(w[1])));
+    let total: f32 = segments.clone().map(|(_, _, l)| l).sum();
+    let covered: f32 = segments.clone().filter(|(a, b, _)| hidden(*a) && hidden(*b)).map(|(_, _, l)| l).sum();
+    if covered < HIDDEN * total && !hidden(middle.0) {
+        return vec![middle];
+    }
+    // The stretches that show: runs of segments with neither end hidden.
+    let mut runs: Vec<Vec<(Pos2, Pos2, f32)>> = vec![Vec::new()];
+    for segment in segments {
+        if hidden(segment.0) || hidden(segment.1) {
+            if !runs.last().unwrap().is_empty() {
+                runs.push(Vec::new());
+            }
+        } else {
+            runs.last_mut().unwrap().push(segment);
+        }
+    }
+    let places: Vec<(Pos2, Vec2)> = runs
+        .iter()
+        .filter_map(|run| {
+            let length: f32 = run.iter().map(|s| s.2).sum();
+            if length < 4.0 * size {
+                return None;
+            }
+            // Halfway along the run.
+            let mut left = length / 2.0;
+            for &(a, b, l) in run {
+                if left <= l {
+                    return Some((a + (b - a) * (left / l.max(1e-6)), b - a));
+                }
+                left -= l;
+            }
+            None
+        })
+        .collect();
+    if places.is_empty() { vec![middle] } else { places }
 }
 
 /// A pair of arrowheads back to back at `at`, pointing either way along `direction`.
@@ -496,7 +557,8 @@ impl Canvas {
             let dimension = port.role.dimension();
             let colour = wire_colour(dimension, info.colour, self.colours);
             let read_only = read_only(resolved, port) || target.is_some_and(|t| read_only(resolved, t));
-            paint_wire(&painter, points, dimension, read_only, Stroke::new(2.0 * zoom.sqrt(), colour), zoom);
+            let stroke = Stroke::new(2.0 * zoom.sqrt(), colour);
+            paint_wire(&painter, points, dimension, read_only, stroke, zoom, &[]);
         }
 
         let connected: HashSet<Port> = graph.edges().iter().flat_map(|e| [e.source(), e.target()]).collect();
@@ -1070,6 +1132,8 @@ impl Canvas {
     ) {
         let zoom = self.to_screen.scaling;
         let width = 2.0 * zoom.sqrt();
+        // Nodes are drawn over the wires, hiding parts of some.
+        let covers: Vec<Rect> = layouts.values().map(|l| l.rect).collect();
         for edge in graph.edges() {
             let Some(points) = edge_points(edge, layouts, zoom) else { continue };
             let source = edge.source();
@@ -1090,10 +1154,10 @@ impl Canvas {
             };
             if selected {
                 let halo = Stroke::new(w + 3.0, self.colours.text_primary.gamma_multiply(0.12));
-                paint_wire(painter, points, Dimension::Data, false, halo, zoom);
+                paint_wire(painter, points, Dimension::Data, false, halo, zoom, &covers);
             }
             let read_only = read_only(resolved, source);
-            paint_wire(painter, points, edge.dimension, read_only, Stroke::new(w, colour), zoom);
+            paint_wire(painter, points, edge.dimension, read_only, Stroke::new(w, colour), zoom, &covers);
         }
     }
 }
@@ -1297,5 +1361,27 @@ fn paint_port(
                 painter.add(Shape::convex_polygon(diamond(pos, d * 0.45), centre, Stroke::NONE));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_wire_mostly_hidden_gets_an_arrow_on_each_stretch_that_shows() {
+        // Straight, 0 to 300 across.
+        let path: Vec<Pos2> = (0..=30).map(|i| egui::pos2(i as f32 * 10.0, 0.0)).collect();
+        let middle = (egui::pos2(150.0, 0.0), egui::vec2(1.0, 0.0));
+        assert_eq!(arrow_places(&path, &[], middle, 6.0), vec![middle], "nothing in the way");
+        // A node over the middle third: an arrow on each side of it.
+        let node = Rect::from_min_max(egui::pos2(100.0, -20.0), egui::pos2(200.0, 20.0));
+        let places = arrow_places(&path, &[node], middle, 6.0);
+        assert_eq!(places.len(), 2, "{places:?}");
+        assert!(places[0].0.x < 100.0 && places[1].0.x > 200.0, "{places:?}");
+        assert!(places.iter().all(|(_, d)| d.x > 0.0), "pointing along the wire");
+        // A small node off the middle hides too little to matter.
+        let small = Rect::from_min_max(egui::pos2(40.0, -20.0), egui::pos2(60.0, 20.0));
+        assert_eq!(arrow_places(&path, &[small], middle, 6.0), vec![middle]);
     }
 }
