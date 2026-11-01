@@ -3,6 +3,7 @@
 
 pub mod band_pass;
 pub mod board;
+pub mod channel_selector;
 pub mod gain;
 pub mod lfp_viewer;
 pub mod reference;
@@ -154,6 +155,26 @@ impl EdgeType for Gain {
 
     fn summary(&self) -> String {
         format!("×{:.2}", self.factor)
+    }
+}
+
+/// Which channels a channel selector passes on: a set such as "1-4, 9" (see `reference::parse_channels`), and
+/// whether it's applied (if not, all are passed on, but the set's kept, to choose from).
+#[derive(Clone, PartialEq, Debug)]
+pub struct ChannelSelection {
+    pub apply: bool,
+    pub channels: String,
+}
+
+impl EdgeType for ChannelSelection {
+    const INFO: EdgeInfo = EdgeInfo {
+        name: "channel selection",
+        colour: Color32::from_rgb(215, 175, 120),
+        description: "Which channels to pass on, and whether that's applied.",
+    };
+
+    fn summary(&self) -> String {
+        if self.apply { format!("channels {}", self.channels) } else { "all channels".into() }
     }
 }
 

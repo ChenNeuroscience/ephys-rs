@@ -15,7 +15,7 @@ mod core;
 mod standard_components;
 
 use standard_components::annotations::{arrow, group_box, heading, image, markdown, sticky_note};
-use standard_components::ephys::{self, band_pass, board, gain, lfp_viewer, reference, ttl_viewer};
+use standard_components::ephys::{self, band_pass, board, channel_selector, gain, lfp_viewer, reference, ttl_viewer};
 use standard_components::recording::{ltx, raw};
 use standard_components::spikes::{self, spike_detector, spike_viewer};
 use standard_components::tracking::{self, camera, position_detector, tracker_view, video_viewer};
@@ -34,6 +34,7 @@ edge_types! {
         Thresholds(spikes::Thresholds),
         Gains(spikes::Gains),
         Gain(ephys::Gain),
+        ChannelSelection(ephys::ChannelSelection),
         Camera(camera::CameraSettings),
         Detection(tracking::Detection),
     }
@@ -46,6 +47,7 @@ node_set! {
         AcquisitionBoard(board::node::AcquisitionBoard),
         Camera(camera::node::Camera),
         Reference(reference::Reference),
+        ChannelSelector(channel_selector::ChannelSelector),
         BandPassFilter(band_pass::BandPassFilter),
         Gain(gain::Gain),
         SpikeDetector(spike_detector::SpikeDetector),

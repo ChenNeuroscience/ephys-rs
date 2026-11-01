@@ -52,12 +52,15 @@ impl Default for Reference {
     }
 }
 
-/// The channels a set such as "all", "1-4, 9" names (counting from 1), out of `count`, as indices from 0; or why
+/// The channels a set such as "all", "none", "1-4, 9" names (counting from 1), out of `count`, as indices from 0; or why
 /// it doesn't make sense.
 pub fn parse_channels(text: &str, count: u32) -> Result<Vec<u32>, String> {
     let text = text.trim();
     if text.eq_ignore_ascii_case("all") || text.is_empty() {
         return Ok((0..count).collect());
+    }
+    if text.eq_ignore_ascii_case("none") {
+        return Ok(Vec::new());
     }
     let mut channels = Vec::new();
     for part in text.split(',').map(str::trim).filter(|p| !p.is_empty()) {
@@ -74,6 +77,28 @@ pub fn parse_channels(text: &str, count: u32) -> Result<Vec<u32>, String> {
     channels.sort_unstable();
     channels.dedup();
     Ok(channels)
+}
+
+/// Channels (indices from 0) as a set `parse_channels` reads: "all" if they're all `count`, else runs like "1-4, 9".
+pub fn format_channels(channels: &[u32], count: u32) -> String {
+    let mut sorted = channels.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    if sorted.len() == count as usize && sorted.iter().enumerate().all(|(i, &c)| i as u32 == c) {
+        return "all".into();
+    }
+    if sorted.is_empty() {
+        return "none".into();
+    }
+    let mut runs: Vec<(u32, u32)> = Vec::new();
+    for c in sorted {
+        match runs.last_mut() {
+            Some((_, last)) if *last + 1 == c => *last = c,
+            _ => runs.push((c, c)),
+        }
+    }
+    let run = |&(a, b): &(u32, u32)| if a == b { format!("{}", a + 1) } else { format!("{}-{}", a + 1, b + 1) };
+    runs.iter().map(run).collect::<Vec<_>>().join(", ")
 }
 
 /// What a pass needs, worked out from the settings (again whenever they change).

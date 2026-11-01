@@ -1,6 +1,6 @@
 {
   "graph": {
-    "next_id": 13,
+    "next_id": 15,
     "nodes": {
       "1": {
         "node": {
@@ -46,7 +46,7 @@
         },
         "label": "Band-pass Filter",
         "pos": [
-          520.0,
+          780.0,
           0.0
         ]
       },
@@ -64,7 +64,7 @@
         },
         "label": "Spike Detector",
         "pos": [
-          780.0,
+          1040.0,
           0.0
         ]
       },
@@ -78,7 +78,7 @@
         },
         "label": "Spike Viewer",
         "pos": [
-          1040.0,
+          1300.0,
           0.0
         ]
       },
@@ -94,7 +94,7 @@
         },
         "label": "LFP Viewer",
         "pos": [
-          1040.0,
+          1300.0,
           110.0
         ]
       },
@@ -108,7 +108,7 @@
         },
         "label": "Write LTX",
         "pos": [
-          1300.0,
+          1560.0,
           120.0
         ]
       },
@@ -208,7 +208,7 @@
         },
         "label": "Reference",
         "pos": [
-          260.0,
+          520.0,
           0.0
         ]
       },
@@ -222,7 +222,7 @@
         },
         "label": "Write Raw",
         "pos": [
-          1300.0,
+          1560.0,
           -60.0
         ]
       },
@@ -238,31 +238,38 @@
           520.0,
           150.0
         ]
+      },
+      "13": {
+        "node": {
+          "type": "ChannelSelector",
+          "settings": {
+            "apply": false,
+            "channels": "all"
+          }
+        },
+        "label": "Channel Selector",
+        "pos": [
+          260.0,
+          0.0
+        ]
+      },
+      "14": {
+        "node": {
+          "type": "BandPassFilter",
+          "settings": {
+            "low_hz": 1.0,
+            "high_hz": 300.0,
+            "order": 2
+          }
+        },
+        "label": "LFP Band-pass",
+        "pos": [
+          780.0,
+          110.0
+        ]
       }
     },
     "edges": [
-      {
-        "dimension": "Data",
-        "from": {
-          "node": 1,
-          "port": 0
-        },
-        "to": {
-          "node": 10,
-          "port": 0
-        }
-      },
-      {
-        "dimension": "Data",
-        "from": {
-          "node": 10,
-          "port": 0
-        },
-        "to": {
-          "node": 2,
-          "port": 0
-        }
-      },
       {
         "dimension": "Data",
         "from": {
@@ -271,17 +278,6 @@
         },
         "to": {
           "node": 3,
-          "port": 0
-        }
-      },
-      {
-        "dimension": "Data",
-        "from": {
-          "node": 2,
-          "port": 0
-        },
-        "to": {
-          "node": 5,
           "port": 0
         }
       },
@@ -482,6 +478,72 @@
           "node": 3,
           "port": 1
         }
+      },
+      {
+        "dimension": "Data",
+        "from": {
+          "node": 13,
+          "port": 0
+        },
+        "to": {
+          "node": 14,
+          "port": 0
+        }
+      },
+      {
+        "dimension": "Data",
+        "from": {
+          "node": 14,
+          "port": 0
+        },
+        "to": {
+          "node": 5,
+          "port": 0
+        }
+      },
+      {
+        "dimension": "Settings",
+        "from": {
+          "node": 5,
+          "port": 1
+        },
+        "to": {
+          "node": 13,
+          "port": 0
+        }
+      },
+      {
+        "dimension": "Data",
+        "from": {
+          "node": 1,
+          "port": 0
+        },
+        "to": {
+          "node": 13,
+          "port": 0
+        }
+      },
+      {
+        "dimension": "Data",
+        "from": {
+          "node": 13,
+          "port": 0
+        },
+        "to": {
+          "node": 10,
+          "port": 0
+        }
+      },
+      {
+        "dimension": "Data",
+        "from": {
+          "node": 10,
+          "port": 0
+        },
+        "to": {
+          "node": 2,
+          "port": 0
+        }
       }
     ]
   },
@@ -491,16 +553,16 @@
       "1": {
         "pos": [
           0.0,
-          -240.0
+          -270.0
         ],
         "size": [
           320.0,
-          200.0
+          230.0
         ],
         "kind": {
           "type": "Markdown",
           "content": {
-            "text": "### Example rig\nThe **spike viewer** sets the detector's thresholds and gains through *settings edges* (dashed), though it's downstream of it: drag a threshold in the viewer's window to move it. **Write LTX** only reads the gains, and the position detector's settings, to record them (dotted).\n\nStart the fake board and camera in [synthetic_streams](https://github.com/ChenNeuroscience/ephys-rs/tree/main/synthetic_streams), then press Play.",
+            "text": "### Example rig\nThe **spike viewer** sets the detector's thresholds and gains through *settings edges* (dashed), though it's downstream of it: drag a threshold in the viewer's window to move it. **Write LTX** only reads the gains, and the position detector's settings, to record them (dotted). The **LFP viewer** chooses the **channel selector**'s channels: tick them, then apply the selection.\n\nStart the fake board and camera in [synthetic_streams](https://github.com/ChenNeuroscience/ephys-rs/tree/main/synthetic_streams), then press Play.",
             "attachments": {}
           }
         }
@@ -530,7 +592,7 @@
           -150.0
         ],
         "size": [
-          420.0,
+          700.0,
           130.0
         ],
         "kind": {
