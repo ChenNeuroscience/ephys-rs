@@ -332,10 +332,12 @@ pub fn floating_header(ui: &mut egui::Ui, title: &str, colour: egui::Color32) ->
 pub fn tab_title(label: &str, colour: egui::Color32) -> egui::WidgetText {
     let font = egui::FontId::proportional(14.0);
     let mut job = egui::text::LayoutJob::default();
-    let block = egui::TextFormat { font_id: egui::FontId::proportional(9.0), background: colour, ..Default::default() };
-    job.append("  ", 0.0, block);
+    // A space with the colour behind it, in the title's font so it's as tall as the title and level with it.
+    let block =
+        egui::TextFormat { font_id: font.clone(), background: colour, extra_letter_spacing: 1.5, ..Default::default() };
+    job.append(" ", 0.0, block);
     // The placeholder colour takes the tab's text colour (lighter when it's not the active tab).
-    job.append(label, 7.0, egui::TextFormat { font_id: font, color: egui::Color32::PLACEHOLDER, ..Default::default() });
+    job.append(label, 6.0, egui::TextFormat { font_id: font, color: egui::Color32::PLACEHOLDER, ..Default::default() });
     egui::WidgetText::LayoutJob(std::sync::Arc::new(job))
 }
 

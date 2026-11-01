@@ -27,6 +27,23 @@ pub fn record(history: &mut History, time: f64, areas: [u32; 2]) {
 /// A toggle with its label first and the triangle at the right (for right-aligned placement); label and
 /// triangle are one click target.
 pub fn toggle(ui: &mut egui::Ui, label: &str, open: bool) -> egui::Response {
+    // Pointing left (towards the label) when closed, and down when open.
+    toggle_with(ui, label, open, |c, h| {
+        if open {
+            vec![c + egui::vec2(-h, -h / 2.0), c + egui::vec2(h, -h / 2.0), c + egui::vec2(0.0, h * 0.75)]
+        } else {
+            vec![c + egui::vec2(h / 2.0, -h), c + egui::vec2(h / 2.0, h), c + egui::vec2(-h * 0.75, 0.0)]
+        }
+    })
+}
+
+/// A label, then a triangle made by `triangle` (from its centre and half-size).
+fn toggle_with(
+    ui: &mut egui::Ui,
+    label: &str,
+    open: bool,
+    triangle: impl Fn(egui::Pos2, f32) -> Vec<egui::Pos2>,
+) -> egui::Response {
     let colour = ui.visuals().text_color();
     let galley = ui.painter().layout_no_wrap(label.to_owned(), egui::TextStyle::Body.resolve(ui.style()), colour);
     let icon = 8.0;
@@ -36,14 +53,37 @@ pub fn toggle(ui: &mut egui::Ui, label: &str, open: bool) -> egui::Response {
     if ui.is_rect_visible(rect) {
         let colour = if response.hovered() { ui.visuals().strong_text_color() } else { colour };
         ui.painter().galley(egui::pos2(rect.left(), rect.center().y - galley.size().y / 2.0), galley, colour);
-        // Pointing left (towards the label) when closed, and down when open.
         let (c, h) = (egui::pos2(rect.right() - icon / 2.0, rect.center().y), icon / 2.0);
-        let points = if open {
-            vec![c + egui::vec2(-h, -h / 2.0), c + egui::vec2(h, -h / 2.0), c + egui::vec2(0.0, h * 0.75)]
-        } else {
-            vec![c + egui::vec2(h / 2.0, -h), c + egui::vec2(h / 2.0, h), c + egui::vec2(-h * 0.75, 0.0)]
-        };
+        let points = triangle(c, h);
         ui.painter().add(egui::Shape::convex_polygon(points, colour, egui::Stroke::NONE));
+    }
+    response
+}
+
+/// A toggle for a chart at the side: open, its label then a triangle pointing right (to put it away); closed, a
+/// narrow strip with a triangle pointing left (to bring it out) and the label running down.
+pub fn side_toggle(ui: &mut egui::Ui, label: &str, open: bool) -> egui::Response {
+    if open {
+        let response = toggle_with(ui, label, open, |c, h| {
+            vec![c + egui::vec2(-h / 2.0, -h), c + egui::vec2(-h / 2.0, h), c + egui::vec2(h * 0.75, 0.0)]
+        });
+        return response;
+    }
+    let colour = ui.visuals().text_color();
+    let galley = ui.painter().layout_no_wrap(label.to_owned(), egui::TextStyle::Body.resolve(ui.style()), colour);
+    let icon = 8.0;
+    let size = egui::vec2(galley.size().y.max(icon), icon + 8.0 + galley.size().x);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    response.widget_info(|| egui::WidgetInfo::selected(egui::Role::DisclosureTriangle, ui.is_enabled(), open, label));
+    if ui.is_rect_visible(rect) {
+        let colour = if response.hovered() { ui.visuals().strong_text_color() } else { colour };
+        let (c, h) = (egui::pos2(rect.center().x, rect.top() + icon / 2.0), icon / 2.0);
+        let points = vec![c + egui::vec2(h / 2.0, -h), c + egui::vec2(h / 2.0, h), c + egui::vec2(-h * 0.75, 0.0)];
+        ui.painter().add(egui::Shape::convex_polygon(points, colour, egui::Stroke::NONE));
+        // Turned a quarter clockwise, to read downwards: it then lies to the left of where it's put.
+        let at = egui::pos2(rect.center().x + galley.size().y / 2.0, rect.top() + icon + 8.0);
+        let text = egui::epaint::TextShape::new(at, galley, colour).with_angle(std::f32::consts::FRAC_PI_2);
+        ui.painter().add(text);
     }
     response
 }

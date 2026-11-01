@@ -413,11 +413,17 @@ fn led_panel(ui: &mut egui::Ui, history: &History, arrangement: Arrangement) {
     let open_id = ui.scope_id().with("led chart open");
     let open = ui.data_mut(|d| *d.get_persisted_mut_or(open_id, true));
     if arrangement == Arrangement::Columns {
-        let panel = egui::Panel::right(ui.scope_id().with("led column"));
-        let panel = if open { panel.resizable(true).default_size(360.0) } else { panel.exact_size(110.0) };
+        // Open, a third of the width to start with; closed, a strip just wide enough for the toggle. Each is a
+        // panel of its own, so closing doesn't forget how wide it was open.
+        let panel = if open {
+            let third = ui.available_width() / 3.0;
+            egui::Panel::right(ui.scope_id().with("led column")).resizable(true).default_size(third)
+        } else {
+            egui::Panel::right(ui.scope_id().with("led column closed")).exact_size(30.0)
+        };
         panel.show(ui, |ui| {
             ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
-                if led_chart::toggle(ui, "LED sizes", open).clicked() {
+                if led_chart::side_toggle(ui, "LED sizes", open).clicked() {
                     ui.data_mut(|d| d.insert_persisted(open_id, !open));
                 }
                 if open {
