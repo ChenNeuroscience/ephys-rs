@@ -170,3 +170,41 @@ fn capture(shared: &Shared, source: &Source, size: [u32; 2], sender: &Sender<Fra
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::process::{Command, Stdio};
+
+    use super::*;
+
+    /// End to end with tools/fake_camera.py, so needs python3: `cargo test -- --ignored`.
+    #[test]
+    #[ignore]
+    fn captures_from_the_fake_camera() {
+        let port = 27398;
+        let script = concat!(env!("CARGO_MANIFEST_DIR"), "/tools/fake_camera.py");
+        let mut child = Command::new("python3")
+            .args([script, "--port", &port.to_string(), "--fps", "50"])
+            .stdout(Stdio::null())
+            .spawn()
+            .expect("run python3");
+        let source = Source::Fake { address: format!("127.0.0.1:{port}") };
+        let capture = Capture::start(source, CameraSettings::default(), [640, 480]);
+        let mut frames = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while frames.len() < 50 && Instant::now() < deadline {
+            match capture.next() {
+                Some(frame) => frames.push((frame.width, frame.height, frame.timestamp)),
+                None => std::thread::sleep(Duration::from_millis(10)),
+            }
+        }
+        let status = capture.status();
+        drop(capture);
+        child.kill().ok();
+        child.wait().ok();
+        assert_eq!(frames.len(), 50, "frames from the fake camera; status {status:?}");
+        assert!(frames.iter().all(|&(w, h, _)| (w, h) == (640, 480)));
+        let span = frames.last().unwrap().2 - frames[0].2;
+        assert!((0.8..1.2).contains(&span), "50 frames at 50 fps should span about a second, got {span}");
+    }
+}
