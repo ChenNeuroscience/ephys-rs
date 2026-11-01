@@ -1,8 +1,8 @@
 //! Acquisition boards: the Acquisition Board node (`node`), acquiring on a thread of its own (`capture`), and
 //! the backends it acquires from, after the Open Ephys acquisition board plugins: the fake board in
-//! synthetic_streams/ (`fake`), boards on Opal Kelly FPGAs running Intan's Rhythm firmware (the Open Ephys
-//! Acquisition Board before generation 3, and Intan's RHD USB Interface Board), and the generation 3 Open
-//! Ephys board, over ONI.
+//! synthetic_streams/ (`fake`), and boards running Intan's Rhythm firmware (`rhythm`): on Opal Kelly FPGAs (the
+//! Open Ephys Acquisition Board before generation 3, and Intan's RHD USB Interface Board: `opal_kelly`), and
+//! the generation 3 Open Ephys board, over ONI (`oni`). The RHD2000 chips themselves are in `rhd`.
 //!
 //! Every board has headstages of Intan RHD chips on its ports, each with 3 auxiliary inputs (accelerometers,
 //! say), and most have analogue (ADC) and digital (TTL) inputs of their own. All are sampled together.
@@ -10,8 +10,10 @@
 pub mod capture;
 mod fake;
 pub mod node;
+mod oni;
 pub mod opal_kelly;
 mod rhd;
+mod rhythm;
 
 use std::io;
 
@@ -20,7 +22,7 @@ use serde::{Deserialize, Serialize};
 pub use fake::FakeBoard;
 #[cfg(test)]
 pub use fake::serve_test_board;
-pub use opal_kelly::{OpalKellyBoard, Rhythm};
+pub use opal_kelly::OpalKellyKind;
 
 /// Microvolts per bit of headstage data.
 pub const EPHYS_MICROVOLTS_PER_BIT: f32 = 0.195;
@@ -152,10 +154,15 @@ pub enum Source {
     Fake { address: String },
     /// A board on an Opal Kelly FPGA running Rhythm firmware.
     OpalKelly {
-        board: Rhythm,
+        board: OpalKellyKind,
         /// The FPGA's bitfile, if it isn't found automatically; blank to search.
         bitfile: String,
         /// Opal Kelly's FrontPanel library, if it isn't found automatically; blank to search.
+        library: String,
+    },
+    /// The generation 3 Open Ephys Acquisition Board.
+    Oni {
+        /// liboni, if it isn't found automatically; blank to search.
         library: String,
     },
 }
@@ -166,6 +173,7 @@ impl Source {
         match self {
             Source::Fake { .. } => 8,
             Source::OpalKelly { board, .. } => board.ttl_lines(),
+            Source::Oni { .. } => 8,
         }
     }
 }
@@ -184,10 +192,9 @@ pub fn open(source: &Source) -> io::Result<Box<dyn Board>> {
     let blank_as_none = |s: &str| Some(s.trim()).filter(|s| !s.is_empty()).map(str::to_string);
     Ok(match source {
         Source::Fake { address } => Box::new(FakeBoard::connect(address)?),
-        Source::OpalKelly { board, bitfile, library } => Box::new(OpalKellyBoard::open(
-            *board,
-            blank_as_none(bitfile).as_deref(),
-            blank_as_none(library).as_deref(),
-        )?),
+        Source::OpalKelly { board, bitfile, library } => {
+            Box::new(opal_kelly::open(*board, blank_as_none(bitfile).as_deref(), blank_as_none(library).as_deref())?)
+        }
+        Source::Oni { library } => Box::new(oni::open(blank_as_none(library).as_deref())?),
     })
 }

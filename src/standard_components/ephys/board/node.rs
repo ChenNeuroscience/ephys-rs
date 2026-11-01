@@ -5,7 +5,9 @@ use eframe::egui::{self, RichText};
 use serde::{Deserialize, Serialize};
 
 use super::capture::{self, Capture, State, Status};
-use super::{AUX_PER_HEADSTAGE, Bandwidth, Block, BoardInfo, Config, Headstage, PORTS, Rhythm, SAMPLE_RATES, Source};
+use super::{
+    AUX_PER_HEADSTAGE, Bandwidth, Block, BoardInfo, Config, Headstage, OpalKellyKind, PORTS, SAMPLE_RATES, Source,
+};
 use crate::core::engine::{Category, Context, Node, NodeInfo, Output, Pass};
 use crate::standard_components::ephys::{Continuous, Event, Events};
 use crate::standard_components::widgets::{named_settings_grid, setting, settings_grid};
@@ -230,7 +232,7 @@ impl Node<Edges> for AcquisitionBoard {
                         egui::ComboBox::from_id_salt("rhythm")
                             .selected_text(board.name())
                             .show_ui(ui, |ui| {
-                                for kind in [Rhythm::OpenEphys, Rhythm::IntanRhdUsb] {
+                                for kind in [OpalKellyKind::OpenEphys, OpalKellyKind::IntanRhdUsb] {
                                     ui.selectable_value(board, kind, kind.name());
                                 }
                             })
@@ -241,6 +243,11 @@ impl Node<Edges> for AcquisitionBoard {
                     };
                     setting(ui, "Bitfile", |ui| path(ui, bitfile));
                     setting(ui, "Library", |ui| path(ui, library));
+                }
+                Source::Oni { library } => {
+                    setting(ui, "Library", |ui| {
+                        ui.add(egui::TextEdit::singleline(library).hint_text("found automatically"))
+                    });
                 }
             }
             setting(ui, "Sample rate", |ui| {
@@ -332,11 +339,13 @@ impl Node<Edges> for AcquisitionBoard {
 fn source_ui(ui: &mut egui::Ui, source: &mut Source) -> egui::Response {
     let name = |source: &Source| match source {
         Source::Fake { .. } => "Fake board (synthetic_streams/)",
-        Source::OpalKelly { .. } => "Opal Kelly (Rhythm)",
+        Source::OpalKelly { .. } => "Open Ephys gen 1/2, or Intan USB",
+        Source::Oni { .. } => "Open Ephys gen 3",
     };
     let choices = [
         Source::default(),
-        Source::OpalKelly { board: Rhythm::OpenEphys, bitfile: String::new(), library: String::new() },
+        Source::OpalKelly { board: OpalKellyKind::OpenEphys, bitfile: String::new(), library: String::new() },
+        Source::Oni { library: String::new() },
     ];
     egui::ComboBox::from_id_salt("board")
         .selected_text(name(source))
