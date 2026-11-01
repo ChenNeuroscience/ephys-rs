@@ -1,8 +1,8 @@
 //! Electrophysiology: continuous voltages and digital events, from an acquisition board, filtered, scaled
 //! and viewed.
 
-pub mod acquisition_board;
 pub mod band_pass;
+pub mod board;
 pub mod gain;
 pub mod lfp_viewer;
 
@@ -98,8 +98,11 @@ impl ContinuousBuffer {
 impl DataStreamType for Continuous {
     type Buffer = ContinuousBuffer;
 
+    /// Room for a quarter more than a pass's worth, so a source can catch up after a hiccup (samples arriving
+    /// late, say).
     fn buffer(&self, duration: f64) -> ContinuousBuffer {
-        let (channels, capacity) = (self.channels as usize, per_pass(self.sample_rate, duration));
+        let capacity = per_pass(self.sample_rate, duration) * 5 / 4;
+        let channels = self.channels as usize;
         ContinuousBuffer { channels, capacity, len: 0, data: vec![0.0; channels * capacity] }
     }
 

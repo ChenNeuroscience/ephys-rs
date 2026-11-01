@@ -6,9 +6,28 @@
         "node": {
           "type": "AcquisitionBoard",
           "settings": {
-            "channels": 64,
-            "sample_rate": 30000.0,
-            "ttl_lines": 8
+            "source": {
+              "kind": "fake",
+              "address": "127.0.0.1:27031"
+            },
+            "sample_rate": 30000,
+            "headstages": [
+              {
+                "port": "A",
+                "channels": 32
+              },
+              {
+                "port": "B",
+                "channels": 32
+              }
+            ],
+            "aux": false,
+            "adc": false,
+            "bandwidth": {
+              "lower_hz": 1.0,
+              "upper_hz": 7500.0,
+              "dsp_hz": 0.5
+            }
           }
         },
         "label": "Acquisition Board",

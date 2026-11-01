@@ -1,8 +1,9 @@
 //! ephys-rs: electrophysiology acquisition, processing and recording, built around a node graph.
 //!
-//!     python3 synthetic_streams/fake_camera.py      # in another terminal: video for the example's camera
-//!     cargo run --release -- examples/rig.json     # the example graph (or any graph file, or a new one)
-//!     cargo run --release                          # an empty graph
+//!     python3 synthetic_streams/fake_acquisition_board.py   # in other terminals: the example's board...
+//!     python3 synthetic_streams/fake_camera.py              # ...and camera
+//!     cargo run --release -- examples/rig.json             # the example graph (or any graph file, or a new one)
+//!     cargo run --release                                  # an empty graph
 //!
 //! This is where the program's parts are put together: the core (engine, annotations, themes, GUI) with the
 //! standard components (edge, node and annotation types, and themes), declared below.
@@ -14,7 +15,7 @@ mod core;
 mod standard_components;
 
 use standard_components::annotations::sticky_note;
-use standard_components::ephys::{self, acquisition_board, band_pass, gain, lfp_viewer};
+use standard_components::ephys::{self, band_pass, board, gain, lfp_viewer};
 use standard_components::spikes::{self, spike_detector, spike_viewer};
 use standard_components::tracking::{self, camera, position_detector, tracker_view, video_viewer};
 use standard_components::writer;
@@ -41,7 +42,7 @@ edge_types! {
 node_set! {
     edges: Edges;
     pub enum Nodes {
-        AcquisitionBoard(acquisition_board::AcquisitionBoard),
+        AcquisitionBoard(board::node::AcquisitionBoard),
         Camera(camera::node::Camera),
         BandPassFilter(band_pass::BandPassFilter),
         Gain(gain::Gain),

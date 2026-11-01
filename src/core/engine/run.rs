@@ -47,8 +47,10 @@ pub const PASS_DURATION: f64 = 0.02;
 
 /// What a node works on for one pass.
 pub struct Pass<'a, E: Edges> {
-    /// Passes are numbered from 0, each covering the next `duration` seconds.
+    /// Passes are numbered from 0, each covering the next `duration` seconds. (No node needs them just now.)
+    #[allow(dead_code)]
     pub sequence: u64,
+    #[allow(dead_code)]
     pub duration: f64,
     /// For each input, this pass's data on it, if it's connected.
     pub inputs: &'a [Option<&'a Buffer<E>>],
@@ -763,27 +765,41 @@ mod tests {
 
     #[test]
     fn passes_filter_and_detect_spikes() {
+        use crate::standard_components::ephys::board::{Source, serve_test_board};
+
         let mut graph = Graph::default();
         let board = add(&mut graph, "Acquisition Board");
+        if let Some(Nodes::AcquisitionBoard(b)) = graph.get_mut(board).map(|e| &mut e.node) {
+            b.source = Source::Fake { address: serve_test_board() };
+        }
         let filter = add(&mut graph, "Band-pass Filter");
         let detector = add(&mut graph, "Spike Detector");
         link(&mut graph, board, 0, filter, 0);
         link(&mut graph, filter, 0, detector, 0);
         let plan = Plan::new(&graph);
-        let slots = RunSlots { states: plan.initial_states(&graph), displays: Vec::new() };
+        let displays = plan.empty_displays(&graph).into_iter().map(DisplaySlot::new).collect();
+        let slots = RunSlots { states: plan.initial_states(&graph), displays };
         let mut workspace = plan.workspace(&graph);
-        let mut spikes = 0;
-        for sequence in 0..50 {
+        // A second of samples, as they come from the board in real time.
+        let (mut spikes, mut samples) = (0, 0);
+        let filter_output = plan.steps.iter().find(|s| s.id == filter).unwrap().outputs[0];
+        let detector_output = plan.steps.iter().find(|s| s.id == detector).unwrap().outputs[0];
+        let deadline = Instant::now() + Duration::from_secs(5);
+        for sequence in 0.. {
             plan.run(&graph, sequence, &mut workspace, &slots);
-            let detector_output = plan.steps.iter().find(|s| s.id == detector).unwrap().outputs[0];
             let Some(Buffer::Spikes(output)) = &workspace.buffers[detector_output] else { panic!("spikes buffer") };
             spikes += output.spikes.len();
+            let Some(Buffer::Continuous(filtered)) = &workspace.buffers[filter_output] else { panic!("continuous") };
+            assert!(filtered.len <= filtered.capacity);
+            assert!(filtered.channel(0)[..filtered.len].iter().all(|x| x.is_finite() && x.abs() < 1000.0));
+            samples += filtered.len;
+            if samples >= 30000 || Instant::now() > deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_secs_f64(PASS_DURATION));
         }
-        let filter_output = plan.steps.iter().find(|s| s.id == filter).unwrap().outputs[0];
-        let Some(Buffer::Continuous(filtered)) = &workspace.buffers[filter_output] else { panic!("continuous buffer") };
-        assert_eq!(filtered.len, 600, "20 ms at 30 kHz");
-        assert!(filtered.channel(0).iter().all(|x| x.is_finite() && x.abs() < 1000.0));
-        // The simulation puts a spike in about 1% of milliseconds on each of 64 channels: about 640 in a second.
+        assert!(samples >= 30000, "a second at 30 kHz, got {samples} samples");
+        // The test board puts a spike in about 1% of milliseconds on each of 64 channels: about 640 in a second.
         assert!((100..3000).contains(&spikes), "found {spikes} spikes in a second");
     }
 

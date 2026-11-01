@@ -61,4 +61,7 @@ The code is in two parts: `src/core` (the graph engine, the GUI, and the traits 
 
 The icon is `assets/icon.svg`; `scripts/export_icon.js` exports the PNGs from it.
 
-For a camera to track without real hardware, `python3 synthetic_streams/fake_camera.py` streams video of a mouse with two head LEDs in an arena. Camera nodes use it by default (the example included).
+Without real hardware, `synthetic_streams/` has stand-ins, which nodes use by default (the example's included):
+
+- `python3 synthetic_streams/fake_acquisition_board.py` streams an acquisition board's headstage channels (tetrodes picking up spiking units over theta LFP), accelerometers, analogue inputs and digital inputs.
+- `python3 synthetic_streams/fake_camera.py` streams video of a mouse with two head LEDs in an arena.
