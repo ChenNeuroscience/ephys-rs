@@ -74,14 +74,27 @@ impl Node<Edges> for PositionDetector {
             Some(DataStream::Video(video)) => [video.width as f32, video.height as f32],
             _ => [640.0, 480.0],
         };
-        detection_ui(ui, &mut self.detection, size);
+        all_detection_ui(ui, &mut self.detection, size);
     }
 }
 
 /// The detection settings: threshold, sizes, crop and calibration rulers. `size` is the frame size, for placing
 /// new crops and rulers.
-pub(super) fn detection_ui(ui: &mut egui::Ui, detection: &mut Detection, size: [f32; 2]) {
+fn all_detection_ui(ui: &mut egui::Ui, detection: &mut Detection, size: [f32; 2]) {
     ui.label(RichText::new("Detection").strong());
+    detection_ui(ui, detection);
+
+    ui.add_space(6.0);
+    ui.label(RichText::new("Crop").strong());
+    crop_ui(ui, &mut detection.crop, size);
+
+    ui.add_space(6.0);
+    ui.label(RichText::new("Calibration").strong());
+    calibration_ui(ui, detection, size, false);
+}
+
+/// The threshold and the sizes of LED to look for.
+pub(super) fn detection_ui(ui: &mut egui::Ui, detection: &mut Detection) {
     named_settings_grid(ui, "detection", |ui| {
         setting(ui, "Threshold", |ui| ui.add(egui::Slider::new(&mut detection.threshold, 0..=255)));
         setting(ui, "Min area", |ui| {
@@ -116,17 +129,10 @@ pub(super) fn detection_ui(ui: &mut egui::Ui, detection: &mut Detection, size: [
             }
         });
     }
-
-    ui.add_space(6.0);
-    ui.label(RichText::new("Crop").strong());
-    crop_ui(ui, &mut detection.crop, size);
-
-    ui.add_space(6.0);
-    ui.label(RichText::new("Calibration").strong());
-    rulers_ui(ui, detection, size);
 }
 
-fn crop_ui(ui: &mut egui::Ui, crop: &mut Crop, size: [f32; 2]) {
+/// The crop's shape and where it is. Returns whether the shape was changed.
+pub(super) fn crop_ui(ui: &mut egui::Ui, crop: &mut Crop, size: [f32; 2]) -> bool {
     let kinds = ["None", "Circle", "Square", "Rectangle"];
     let current = match crop {
         Crop::None => 0,
@@ -134,10 +140,12 @@ fn crop_ui(ui: &mut egui::Ui, crop: &mut Crop, size: [f32; 2]) {
         Crop::Square { .. } => 2,
         Crop::Rectangle { .. } => 3,
     };
+    let mut changed = false;
     ui.horizontal_wrapped(|ui| {
         for (kind, name) in kinds.iter().enumerate() {
             if ui.selectable_label(current == kind, *name).clicked() && current != kind {
                 *crop = convert(crop, kind, size);
+                changed = true;
             }
         }
     });
@@ -170,6 +178,7 @@ fn crop_ui(ui: &mut egui::Ui, crop: &mut Crop, size: [f32; 2]) {
             }
         }
     });
+    changed
 }
 
 fn px(v: &mut f32) -> egui::DragValue<'_> {
@@ -191,19 +200,26 @@ fn convert(crop: &Crop, kind: usize, image: [f32; 2]) -> Crop {
     }
 }
 
-fn rulers_ui(ui: &mut egui::Ui, detection: &mut Detection, size: [f32; 2]) {
+/// The calibration, and the rulers it's from: the rulers can't be edited while `locked`. Returns whether a ruler
+/// was added.
+pub(super) fn calibration_ui(ui: &mut egui::Ui, detection: &mut Detection, size: [f32; 2], locked: bool) -> bool {
     match detection.pixels_per_metre() {
         Some(ppm) => {
             let measured = detection.rulers.iter().filter(|r| r.length_cm > 0.0).count();
-            ui.label(RichText::new(format!("{ppm:.1} px/m")).strong());
+            ui.label(RichText::new(format!("{ppm:.1} px/m")).size(18.0).strong());
             ui.weak(format!("{:.2} mm/px, the mean of {measured} ruler(s)", 1000.0 / ppm));
         }
         None => {
             ui.weak("Not calibrated: add a ruler, drag its ends onto something of known size and enter its length.");
         }
     }
+    // The readout above stays readable when locked.
+    if locked {
+        ui.disable();
+    }
     let rulers = &mut detection.rulers;
-    if ui.button("Add ruler").clicked() {
+    let added = ui.button("Add ruler").clicked();
+    if added {
         let y = size[1] / 2.0 + 20.0 * (rulers.len() % 8) as f32;
         rulers.push(Ruler { a: [size[0] / 3.0, y], b: [size[0] * 2.0 / 3.0, y], length_cm: 0.0 });
     }
@@ -224,4 +240,5 @@ fn rulers_ui(ui: &mut egui::Ui, detection: &mut Detection, size: [f32; 2]) {
     if let Some(i) = remove {
         rulers.remove(i);
     }
+    added
 }

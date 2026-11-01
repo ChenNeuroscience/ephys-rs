@@ -1,11 +1,14 @@
-//! The tracker's window: the camera's video with the LEDs found, and the crop and calibration rulers over it to
-//! drag; beside it, the camera's and the detector's settings. It edits those nodes through its controls.
+//! The tracker's window, laid out as in the Open Ephys tracker plugin: the camera's video with the LEDs found,
+//! and the crop and calibration rulers over it to drag; beside it, collapsible sections of the camera's and the
+//! detector's settings (which it edits through its controls), with eye and padlock toggles in their headers for
+//! what's shown over the video and whether it can be changed; below it, a chart of the LEDs' sizes.
 
-use eframe::egui::{self, Color32, ColorImage, Rect, RichText, Sense, TextureHandle, TextureOptions};
+use eframe::egui::{self, Color32, ColorImage, Rect, Sense, TextureHandle, TextureOptions};
 use serde::{Deserialize, Serialize};
 
 use super::camera::node::camera_settings_ui;
-use super::position_detector::detection_ui;
+use super::led_chart::{self, History};
+use super::position_detector::{calibration_ui, crop_ui, detection_ui};
 use crate::core::engine::{Category, Context, Control, Input, Node, NodeInfo, Output, Pass};
 use crate::core::theme::Colours;
 use crate::standard_components::preview;
@@ -13,6 +16,7 @@ use crate::standard_components::tracking::VideoBuffer;
 use crate::standard_components::tracking::overlay::{self, Drag, Overlay, Overlays, Xform};
 use crate::standard_components::tracking::pipeline::{Blob, row_spans};
 use crate::standard_components::tracking::{Crop, Detection};
+use crate::standard_components::widgets::section;
 use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
 
 /// Above-threshold pixels, when detection's shown.
@@ -22,6 +26,8 @@ const HIGHLIGHT: Color32 = Color32::from_rgb(255, 70, 70);
 #[serde(default)]
 pub struct TrackerView {
     pub overlays: Overlays,
+    /// Whether the camera's settings are locked against changes here.
+    pub camera_locked: bool,
 }
 
 /// A video frame, copied for display.
@@ -43,11 +49,12 @@ impl Frame {
     }
 }
 
-/// The latest frame and the LEDs found in it.
+/// The latest frame and the LEDs found in it, and the LEDs' recent sizes.
 #[derive(Default)]
 pub struct TrackerDisplay {
     frame: Frame,
     leds: Vec<Blob>,
+    history: History,
 }
 
 impl Node<Edges> for TrackerView {
@@ -59,7 +66,8 @@ impl Node<Edges> for TrackerView {
     };
     const HAS_VIEW: bool = true;
 
-    type State = ();
+    /// The LEDs' recent sizes.
+    type State = History;
 
     fn inputs(&self) -> Vec<Input<Edges>> {
         vec![Input { name: "video", kind: Kind::Video }, Input { name: "positions", kind: Kind::Positions }]
@@ -84,8 +92,23 @@ impl Node<Edges> for TrackerView {
         Some(Box::new(TrackerDisplay::default()))
     }
 
-    /// Keeps the pass's last frame, and the LEDs found in it.
-    fn process(&self, pass: &mut Pass<Edges>, _state: &mut ()) {
+    /// Room for the LEDs' sizes over `led_chart::SECONDS`, so it isn't allocated while running.
+    fn initial_state(&self, inputs: &[Option<DataStream>]) -> History {
+        let fps = match inputs[1] {
+            Some(DataStream::Positions(positions)) => positions.fps as f64,
+            _ => 0.0,
+        };
+        History::with_capacity((fps * led_chart::SECONDS) as usize + 16)
+    }
+
+    /// Records the LEDs' sizes, and keeps the pass's last frame and the LEDs found in it.
+    fn process(&self, pass: &mut Pass<Edges>, history: &mut History) {
+        if let Some(Buffer::Positions(positions)) = pass.inputs[1] {
+            for sample in &positions.samples {
+                let area = |led: Option<Blob>| led.map_or(0, |b| b.area);
+                led_chart::record(history, sample.time, [area(sample.leds[0]), area(sample.leds[1])]);
+            }
+        }
         let Some(Buffer::Video(video)) = pass.inputs[0] else { return };
         if video.frames == 0 {
             return;
@@ -100,20 +123,25 @@ impl Node<Edges> for TrackerView {
         display.frame.copy_from(video, last);
         display.leds.clear();
         display.leds.extend(leds.into_iter().flatten().flatten());
+        display.history.clear();
+        display.history.extend(history.iter().copied());
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, _context: &mut Context<Edges>) {
-        overlays_ui(ui, &mut self.overlays);
+    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
+        let size = frame_size(context);
+        self.controls_ui(ui, context, size);
     }
 
     fn view_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
-        let size = match context.inputs[0] {
-            Some(DataStream::Video(video)) => [video.width as f32, video.height as f32],
-            _ => [640.0, 480.0],
-        };
-        egui::Panel::left(ui.scope_id().with("tracker controls")).resizable(true).default_size(280.0).show(ui, |ui| {
+        let size = frame_size(context);
+        egui::Panel::left(ui.scope_id().with("tracker controls")).resizable(true).default_size(290.0).show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| self.controls_ui(ui, context, size));
         });
+        if self.overlays.detection.visible
+            && let Some(display) = context.display.and_then(|d| d.downcast_ref::<TrackerDisplay>())
+        {
+            led_strip(ui, &display.history);
+        }
 
         // Through the context's reference, so the context itself is free to change below.
         let display = context.display.and_then(|d| d.downcast_ref::<TrackerDisplay>());
@@ -146,51 +174,126 @@ impl Node<Edges> for TrackerView {
 }
 
 impl TrackerView {
-    /// The camera's and the detector's settings (through the controls), and what's shown over the video.
+    /// The camera's and the detector's settings (through the controls), in sections whose headers say what's
+    /// shown over the video and lock what can be changed.
     fn controls_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>, size: [f32; 2]) {
-        ui.label(RichText::new("Camera").strong());
-        match context.controls[0].clone() {
-            Some(Setting::Camera(mut settings)) => {
-                camera_settings_ui(ui, &mut settings, None);
-                context.controls[0] = Some(Setting::Camera(settings));
+        let mut camera_locked = self.camera_locked;
+        section(ui, "Camera", None, (&mut camera_locked, "Lock the camera settings"), |ui, locked| match &mut context
+            .controls[0]
+        {
+            Some(Setting::Camera(settings)) => {
+                if locked {
+                    ui.disable();
+                }
+                camera_settings_ui(ui, settings, None);
             }
             _ => {
                 ui.weak("Connect the camera control to a Camera to adjust it here.");
             }
+        });
+        self.camera_locked = camera_locked;
+
+        let mut detection = match &context.controls[1] {
+            Some(Setting::Detection(detection)) => Some(detection.clone()),
+            _ => None,
+        };
+        let unconnected = |ui: &mut egui::Ui| {
+            ui.weak("Connect the detection control to a Position Detector to adjust it here.");
+        };
+        let Overlays { crop, detection: found, rulers } = &mut self.overlays;
+
+        let mut reshaped = false;
+        section(
+            ui,
+            "Crop",
+            Some((
+                &mut crop.visible,
+                "Show the whole frame with the crop outline, or hide it and mask out everything outside the crop",
+            )),
+            (
+                &mut crop.locked,
+                "Lock the crop. Unlocked: drag inside to move, drag the square handles to resize, and the round \
+                 handle on the stalk to rotate (hold shift to snap to 15°)",
+            ),
+            |ui, locked| match &mut detection {
+                Some(detection) => {
+                    if locked {
+                        ui.disable();
+                    }
+                    reshaped = crop_ui(ui, &mut detection.crop, size);
+                }
+                None => unconnected(ui),
+            },
+        );
+        // A new shape is for adjusting.
+        if reshaped {
+            *crop = Overlay { visible: true, locked: false };
         }
-        ui.separator();
-        match context.controls[1].clone() {
-            Some(Setting::Detection(mut detection)) => {
-                detection_ui(ui, &mut detection, size);
-                context.controls[1] = Some(Setting::Detection(detection));
-            }
-            _ => {
-                ui.weak("Connect the detection control to a Position Detector to adjust it here.");
-            }
+
+        section(
+            ui,
+            "Detection",
+            Some((&mut found.visible, "Highlight pixels above the threshold and circle the LEDs found")),
+            (&mut found.locked, "Lock the detection settings"),
+            |ui, locked| match &mut detection {
+                Some(detection) => {
+                    if locked {
+                        ui.disable();
+                    }
+                    detection_ui(ui, detection);
+                }
+                None => unconnected(ui),
+            },
+        );
+
+        let mut added = false;
+        section(
+            ui,
+            "Calibration",
+            Some((&mut rulers.visible, "Show or hide the rulers (they still count towards px/m)")),
+            (&mut rulers.locked, "Lock the rulers so they can't be dragged or edited"),
+            |ui, locked| match &mut detection {
+                Some(detection) => added = calibration_ui(ui, detection, size, locked),
+                None => unconnected(ui),
+            },
+        );
+        if added {
+            rulers.visible = true;
         }
-        ui.separator();
-        overlays_ui(ui, &mut self.overlays);
+
+        if let Some(detection) = detection {
+            context.controls[1] = Some(Setting::Detection(detection));
+        }
     }
 }
 
-/// Whether the crop, detection and rulers are shown over the video, and whether they can be dragged.
-fn overlays_ui(ui: &mut egui::Ui, overlays: &mut Overlays) {
-    ui.label(RichText::new("Over the video").strong());
-    egui::Grid::new("overlays").num_columns(3).show(ui, |ui| {
-        let row = |ui: &mut egui::Ui, name: &str, overlay: &mut Overlay, tip: &str| {
-            ui.label(name).on_hover_text(tip);
-            ui.toggle_value(&mut overlay.visible, "Show");
-            ui.toggle_value(&mut overlay.locked, "Lock");
-            ui.end_row();
-        };
-        row(
-            ui,
-            "Crop",
-            &mut overlays.crop,
-            "Shown: the whole frame with the crop's outline. Hidden: outside it masked out.",
+/// The size of the frames coming in, or a likely one if none are.
+fn frame_size(context: &Context<Edges>) -> [f32; 2] {
+    match context.inputs[0] {
+        Some(DataStream::Video(video)) => [video.width as f32, video.height as f32],
+        _ => [640.0, 480.0],
+    }
+}
+
+/// The strip along the bottom, with the chart of the LEDs' sizes at its right (which can be closed).
+fn led_strip(ui: &mut egui::Ui, history: &History) {
+    let open_id = ui.scope_id().with("led chart open");
+    let open = ui.data_mut(|d| *d.get_persisted_mut_or(open_id, true));
+    let height = if open { 170.0 } else { 26.0 };
+    egui::Panel::bottom(ui.scope_id().with("led strip")).exact_size(height).resizable(false).show(ui, |ui| {
+        let rect = ui.available_rect_before_wrap();
+        let chart = Rect::from_min_max(egui::pos2((rect.right() - 440.0).max(rect.left()), rect.top()), rect.max);
+        ui.scope_builder(
+            egui::UiBuilder::new().max_rect(chart).layout(egui::Layout::top_down(egui::Align::Max)),
+            |ui| {
+                if led_chart::toggle(ui, "LED sizes", open).clicked() {
+                    ui.data_mut(|d| d.insert_persisted(open_id, !open));
+                }
+                if open {
+                    led_chart::chart(ui, history);
+                }
+            },
         );
-        row(ui, "Detection", &mut overlays.detection, "Pixels over the threshold highlighted, and the LEDs circled");
-        row(ui, "Rulers", &mut overlays.rulers, "The calibration rulers (which count even when hidden)");
     });
 }
 
@@ -333,5 +436,68 @@ mod tests {
         }
         assert!(runner.update(&Snapshot::new(1, graph, Some(&first))));
         assert!(wait_for(|| leds_shown(&runner, view) == Some(1)), "one LED found: {:?}", leds_shown(&runner, view));
+    }
+
+    /// The window, laid out as in the tracker plugin, on a made-up frame. See tests/snapshots/.
+    #[test]
+    fn window() {
+        use crate::standard_components::themes::THEMES;
+        use crate::standard_components::tracking::{Crop, Ruler};
+
+        let mut graph = Graph::default();
+        let camera = add(&mut graph, "Camera");
+        let detector = add(&mut graph, "Position Detector");
+        let view = add(&mut graph, "Tracker View");
+        let port = |node, role, index| Port { node, role, index };
+        graph.connect(port(camera, Role::Output, 0), port(detector, Role::Input, 0)).unwrap();
+        graph.connect(port(camera, Role::Output, 0), port(view, Role::Input, 0)).unwrap();
+        graph.connect(port(detector, Role::Output, 0), port(view, Role::Input, 1)).unwrap();
+        graph.connect(port(view, Role::Control, 0), port(camera, Role::Setting, 0)).unwrap();
+        graph.connect(port(view, Role::Control, 1), port(detector, Role::Setting, 0)).unwrap();
+        if let Some(Nodes::PositionDetector(d)) = graph.get_mut(detector).map(|e| &mut e.node) {
+            d.detection.crop = Crop::Rectangle { center: [320.0, 240.0], width: 420.0, height: 300.0, angle: 0.3 };
+            d.detection.rulers.push(Ruler { a: [110.0, 420.0], b: [470.0, 420.0], length_cm: 100.0 });
+        }
+
+        // A lit arena on a dark floor, and the two LEDs.
+        let (width, height) = (640, 480);
+        let mut pixels = vec![25u8; width * height];
+        for y in 90..390 {
+            for x in 110..530 {
+                pixels[y * width + x] = 70 + ((x * 7 + y * 13) % 11) as u8;
+            }
+        }
+        let leds = [Blob { x: 400.0, y: 200.0, area: 30 }, Blob { x: 380.0, y: 215.0, area: 12 }];
+        for (led, value) in leds.iter().zip([255, 240]) {
+            let r = (led.area as f32 / std::f32::consts::PI).sqrt();
+            for y in (led.y - r) as usize..=(led.y + r) as usize {
+                for x in (led.x - r) as usize..=(led.x + r) as usize {
+                    if (x as f32 - led.x).powi(2) + (y as f32 - led.y).powi(2) <= r * r {
+                        pixels[y * width + x] = value;
+                    }
+                }
+            }
+        }
+        let mut display =
+            TrackerDisplay { frame: Frame { width, height, pixels, id: 1 }, leds: leds.to_vec(), ..Default::default() };
+        for frame in 0..500 {
+            let t = frame as f64 / 50.0;
+            let wobble = (t * 2.0).sin();
+            let small = if (300..312).contains(&frame) { 0 } else { (12.0 + wobble) as u32 };
+            led_chart::record(&mut display.history, t, [(30.0 + 2.0 * wobble) as u32, small]);
+        }
+
+        let resolved = graph.resolve();
+        let inputs = resolved[&view].input_streams.clone();
+        let mut harness = egui_kittest::Harness::builder().with_size([1150.0, 650.0]).wgpu().build_ui_state(
+            |ui, graph: &mut Graph<Nodes>| {
+                let display: &(dyn std::any::Any + Send) = &display;
+                graph.edit(view, &inputs, &THEMES[0].colours, Some(display), |node, context| node.view_ui(ui, context));
+            },
+            graph,
+        );
+        THEMES[0].apply(&harness.ctx);
+        harness.run_steps(3);
+        harness.snapshot("tracker_view");
     }
 }

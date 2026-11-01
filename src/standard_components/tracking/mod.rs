@@ -6,6 +6,7 @@
 //! Image coordinates are continuous pixels: pixel (i, j) covers [i, i+1) × [j, j+1).
 
 pub mod camera;
+pub mod led_chart;
 pub mod overlay;
 pub mod pipeline;
 pub mod position_detector;
