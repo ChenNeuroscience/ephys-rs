@@ -1232,6 +1232,31 @@ mod tests {
     }
 
     #[test]
+    fn an_arrows_ends_are_dragged_one_at_a_time() {
+        use crate::core::annotation::AnnotationSet as _;
+        let mut harness = harness();
+        let app = harness.state();
+        let id = app
+            .annotations
+            .ids()
+            .find(|id| matches!(app.annotations.get(*id).map(|a| &a.kind), Some(AnnotationTypes::Arrow(_))));
+        let id = id.expect("the example has an arrow");
+        let points = |h: &Harness<TestApp>| {
+            let annotation = h.state().annotations.get(id).unwrap();
+            annotation.kind.points(annotation.rect()).unwrap()
+        };
+        let [start, end] = points(&harness);
+        let at = harness.state().canvas.to_screen(end);
+        pointer(&mut harness, at, Some(true));
+        pointer(&mut harness, at + egui::vec2(20.0, 20.0), None);
+        pointer(&mut harness, at + egui::vec2(-40.0, 60.0), None);
+        pointer(&mut harness, at + egui::vec2(-40.0, 60.0), Some(false));
+        let [new_start, new_end] = points(&harness);
+        assert!(new_start.distance(start) < 0.5, "the start stays put");
+        assert!(new_end.y > end.y + 20.0 && new_end.x < end.x, "the end follows the drag");
+    }
+
+    #[test]
     fn undo_restores_a_deleted_node() {
         let mut harness = harness();
         let id = node_named(harness.state(), "Spike Detector");

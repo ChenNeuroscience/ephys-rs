@@ -13,13 +13,17 @@ pub fn finish_later(thread: JoinHandle<()>) {
     finishing.push(thread);
 }
 
-/// Waits for every thread left to finish.
+/// Waits for every thread left to finish, including any they leave to finish in turn (a node's state, let go of
+/// in the background, handing on its writer's thread, say).
 pub fn wait() {
-    let threads = std::mem::take(&mut *FINISHING.lock().unwrap());
-    if !threads.is_empty() {
+    loop {
+        let threads = std::mem::take(&mut *FINISHING.lock().unwrap());
+        if threads.is_empty() {
+            return;
+        }
         log::info!("Waiting for {} threads to finish", threads.len());
-    }
-    for thread in threads {
-        let _ = thread.join();
+        for thread in threads {
+            let _ = thread.join();
+        }
     }
 }

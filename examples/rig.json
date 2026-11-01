@@ -512,7 +512,7 @@
         "kind": {
           "type": "Arrow",
           "content": {
-            "hue": "Orange",
+            "hue": "Grey",
             "flipped": [
               false,
               false

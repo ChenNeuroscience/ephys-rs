@@ -573,9 +573,19 @@ impl<N: NodeSet> Epoch<N> {
 }
 
 impl<N: NodeSet> Drop for Epoch<N> {
-    /// Passes still queued when no worker is left to run them were never run.
+    /// Passes still queued when no worker is left to run them were never run. The nodes' state is let go of in
+    /// the background: that can take a while (a capture thread stopping, say), and this may be on a worker, whose
+    /// passes mustn't wait, or the GUI.
     fn drop(&mut self) {
         self.shared.dropped.fetch_add(self.receiver.len() as u64, Ordering::Relaxed);
+        let states = std::mem::take(&mut self.slots.states);
+        if states.is_empty() {
+            return;
+        }
+        let dropping = std::thread::Builder::new().name("dropping node state".into()).spawn(move || drop(states));
+        if let Ok(thread) = dropping {
+            crate::core::background::finish_later(thread);
+        }
     }
 }
 

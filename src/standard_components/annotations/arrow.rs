@@ -1,6 +1,6 @@
 //! An arrow on the canvas, to point things out: straight, thick and with a large head, in a colour of its own, so
-//! it isn't taken for one of the graph's edges (thin curves, with small arrowheads halfway along). It runs from
-//! one corner of its box to the other, the way it was drawn.
+//! it isn't taken for one of the graph's edges (thin curves, with small arrowheads halfway along). It runs between
+//! two points, the way it was drawn, and each end can be dragged.
 
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, Shape, Stroke, Vec2};
 use serde::{Deserialize, Serialize};
@@ -22,7 +22,7 @@ pub struct Arrow {
 
 impl Default for Arrow {
     fn default() -> Self {
-        Arrow { hue: Hue::Orange, flipped: [false; 2] }
+        Arrow { hue: Hue::Grey, flipped: [false; 2] }
     }
 }
 
@@ -68,6 +68,16 @@ impl AnnotationType for Arrow {
         painter.add(Shape::convex_polygon(vec![end, base + side, base - side], colour, Stroke::NONE));
     }
 
+    fn points(&self, rect: Rect) -> Option<[Pos2; 2]> {
+        let (start, end) = self.ends(rect);
+        Some([start, end])
+    }
+
+    fn set_points(&mut self, [start, end]: [Pos2; 2]) -> Rect {
+        self.flipped = [end.x < start.x, end.y < start.y];
+        Rect::from_two_pos(start, end)
+    }
+
     fn hit(&self, rect: Rect, at: Pos2, _zoom: f32) -> bool {
         let (start, end) = self.ends(rect);
         let along: Vec2 = end - start;
@@ -91,16 +101,16 @@ impl AnnotationType for Arrow {
         if ui.button("Reverse").clicked() {
             self.flipped = self.flipped.map(|f| !f);
         }
-        ui.weak("Drag its bottom-right corner to resize it.");
+        ui.weak("Drag either end to move it.");
     }
 
-    /// A thick orange arrow, up and to the right.
+    /// A thick grey arrow, up and to the right.
     fn paint_icon(painter: &Painter, rect: Rect) {
         let s = rect.width() / 16.0;
         let p = |x: f32, y: f32| rect.min + egui::vec2(x, y) * s;
-        let orange = Hue::Orange.colour();
-        painter.line_segment([p(2.5, 13.5), p(10.0, 6.0)], Stroke::new(2.2 * s, orange));
-        painter.add(Shape::convex_polygon(vec![p(14.0, 2.0), p(13.0, 9.5), p(6.5, 3.0)], orange, Stroke::NONE));
+        let grey = Hue::Grey.colour();
+        painter.line_segment([p(2.5, 13.5), p(10.0, 6.0)], Stroke::new(2.2 * s, grey));
+        painter.add(Shape::convex_polygon(vec![p(14.0, 2.0), p(13.0, 9.5), p(6.5, 3.0)], grey, Stroke::NONE));
     }
 }
 
@@ -115,5 +125,10 @@ mod tests {
         assert_eq!(up_left.ends(rect), (egui::pos2(100.0, 50.0), egui::pos2(0.0, 0.0)));
         assert!(up_left.hit(rect, egui::pos2(52.0, 24.0), 1.0), "on the line");
         assert!(!up_left.hit(rect, egui::pos2(90.0, 5.0), 1.0), "in its box, but away from the line");
+        // Dragging its start past its end turns it round.
+        let mut arrow = up_left;
+        let moved = arrow.set_points([egui::pos2(0.0, 0.0), egui::pos2(60.0, 40.0)]);
+        assert_eq!(arrow.flipped, [false, false]);
+        assert_eq!(arrow.points(moved), Some([egui::pos2(0.0, 0.0), egui::pos2(60.0, 40.0)]));
     }
 }

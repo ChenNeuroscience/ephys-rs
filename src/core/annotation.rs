@@ -54,6 +54,17 @@ pub trait AnnotationType: Default + Clone + PartialEq + Serialize + DeserializeO
         false
     }
 
+    /// For one that's a line between two points (an arrow, say): the points, within `rect`. The canvas then lets
+    /// each be dragged, rather than the rect resized.
+    fn points(&self, _rect: Rect) -> Option<[Pos2; 2]> {
+        None
+    }
+
+    /// Makes it run between two points, returning the rect that now holds it.
+    fn set_points(&mut self, points: [Pos2; 2]) -> Rect {
+        Rect::from_two_pos(points[0], points[1])
+    }
+
     /// One showing an image pasted onto the canvas, if this type shows images; with its natural size (which the
     /// canvas scales down to fit the view).
     fn pasted_image(_image: &ColorImage) -> Option<(Self, [f32; 2])> {
@@ -103,6 +114,8 @@ pub trait AnnotationSet: Clone + PartialEq + Serialize + DeserializeOwned + 'sta
     fn paint(&self, painter: &Painter, rect: Rect, zoom: f32, theme: &Colours);
     fn hit(&self, rect: Rect, at: Pos2, zoom: f32) -> bool;
     fn behind(&self) -> bool;
+    fn points(&self, rect: Rect) -> Option<[Pos2; 2]>;
+    fn set_points(&mut self, points: [Pos2; 2]) -> Rect;
     fn type_index(&self) -> usize;
     fn fill(&self, theme: &Colours) -> Color32;
     /// An annotation of the first type that shows pasted images, and its size.
@@ -222,6 +235,14 @@ macro_rules! annotation_set {
 
             fn behind(&self) -> bool {
                 match self { $($name::$variant(a) => $crate::core::annotation::AnnotationType::behind(a)),+ }
+            }
+
+            fn points(&self, rect: eframe::egui::Rect) -> Option<[eframe::egui::Pos2; 2]> {
+                match self { $($name::$variant(a) => $crate::core::annotation::AnnotationType::points(a, rect)),+ }
+            }
+
+            fn set_points(&mut self, points: [eframe::egui::Pos2; 2]) -> eframe::egui::Rect {
+                match self { $($name::$variant(a) => $crate::core::annotation::AnnotationType::set_points(a, points)),+ }
             }
 
             #[allow(unused_assignments, irrefutable_let_patterns)]
