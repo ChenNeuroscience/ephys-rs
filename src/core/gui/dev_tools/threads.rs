@@ -19,7 +19,7 @@ use std::sync::Arc;
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Shape, Stroke, Vec2, vec2};
 
 use crate::core::engine::{
-    EdgeSet, Edges, Graph, NodeId, NodeSet, PASS_DURATION, Plan, Resolved, RunInfo, Runner, Snapshot, Step,
+    CopyTo, EdgeSet, Edges, Graph, NodeId, NodeSet, PASS_DURATION, Plan, Resolved, RunInfo, Runner, Snapshot, Step,
     ThreadContext,
 };
 use crate::core::gui::style;
@@ -288,12 +288,13 @@ fn gui_thread<N: NodeSet>(
     container(ui, colours, "GUI", "main thread", 1, true, |ui| {
         ui.label(small(format!("Edits make snapshots: latest version {}", snapshot.version), colours.text_secondary));
         ui.label(small(format!("Last frame {frame_ms:.1} ms"), colours.text_secondary));
-        let shown: Vec<NodeId> = plan.steps().iter().filter(|s| s.display.is_some()).map(|s| s.id).collect();
+        let shown: Vec<NodeId> =
+            plan.steps().iter().filter(|s| s.copies == Some(CopyTo::Window)).map(|s| s.id).collect();
         if shown.is_empty() {
             return;
         }
         ui.add_space(4.0);
-        ui.label(small("Shows the latest display of", colours.text_secondary));
+        ui.label(small("Shows the latest copied for the windows of", colours.text_secondary));
         for id in shown {
             let row = ui
                 .horizontal(|ui| {
@@ -493,14 +494,26 @@ fn step_row<N: NodeSet>(
         }
     }
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        if step.display.is_some() {
-            badge(
-                ui,
-                Glyph::Copy,
-                colours.accent,
-                "Copy point: copies what it shows into a display buffer, then swaps that for the GUI's latest \
-                 (only if the GUI isn't reading it just then: it never waits)",
-            );
+        match step.copies {
+            Some(CopyTo::Window) => {
+                badge(
+                    ui,
+                    Glyph::Copy,
+                    colours.accent,
+                    "Copy point: only copies its inputs out, to show in its window. It makes the copy itself, so \
+                     runs as early as it can",
+                );
+            }
+            Some(CopyTo::Thread) => {
+                badge(
+                    ui,
+                    Glyph::Copy,
+                    colours.accent,
+                    "Copy point: only copies its inputs out, to a thread of its own. It makes the copy itself, so \
+                     runs as early as it can",
+                );
+            }
+            None => {}
         }
         if step.state.is_some() {
             badge(
@@ -570,11 +583,11 @@ fn memory<N: NodeSet>(
                 }
             });
             let states = plan.steps().iter().filter(|s| s.state.is_some()).count();
-            let displays = plan.steps().iter().filter(|s| s.display.is_some()).count();
+            let copying = plan.steps().iter().filter(|s| s.copies.is_some()).count();
             ui.label(small(
                 format!(
-                    "Also: {states} node states (one each, handed from pass to pass), and {displays} display buffers \
-                     a worker (and one more each, with the GUI)."
+                    "Also: {states} node states (one each, handed from pass to pass), and whatever the {copying} \
+                     nodes copying out keep to copy into."
                 ),
                 colours.text_secondary,
             ));
@@ -593,7 +606,7 @@ fn legend(ui: &mut egui::Ui, colours: &Colours) {
         ui.spacing_mut().item_spacing.x = 3.0;
         for (which, colour, text) in [
             (Glyph::Sync, colours.warning, "sync point"),
-            (Glyph::Copy, colours.accent, "copy to display"),
+            (Glyph::Copy, colours.accent, "copy point"),
             (Glyph::InPlace, colours.success, "made in place"),
             (Glyph::Queue, colours.text_secondary, "queue"),
         ] {
@@ -626,7 +639,7 @@ fn node_threads<N: NodeSet>(
                 anchors.node_threads.push((step.id, rect, thread.link));
                 ui.add_space(12.0);
             };
-            let shown = runner.and_then(|r| r.with_display(step.id, |d| draw(ui, Some(d))));
+            let shown = runner.and_then(|r| r.exchange().with_latest(step.id, |d| draw(ui, Some(d))));
             if shown.is_none() {
                 draw(ui, None);
             }
@@ -694,7 +707,7 @@ fn links(ui: &egui::Ui, colours: &Colours, anchors: &Anchors, wide: bool) {
             let to = ends(*display).1;
             across(ends(*step).0, to);
             if index == 0 {
-                label(to + vec2(8.0, -6.0), Align2::LEFT_BOTTOM, "display swap");
+                label(to + vec2(8.0, -6.0), Align2::LEFT_BOTTOM, "latest copy");
             }
         } else {
             round(ends(*step).0, ends(*display).0, deeper());

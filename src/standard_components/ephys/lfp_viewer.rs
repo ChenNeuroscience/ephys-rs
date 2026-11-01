@@ -5,7 +5,8 @@
 use eframe::egui::{self, Align2, FontId, Pos2, Shape, Stroke};
 use serde::{Deserialize, Serialize};
 
-use crate::core::engine::{Category, Context, Control, EdgeType, Input, Node, NodeInfo, Output, Pass};
+use crate::core::engine::{Category, Context, Control, CopyTo, EdgeType, Input, Node, NodeInfo, Output, Pass};
+use crate::core::exchange::Latest;
 use crate::standard_components::ephys::Continuous;
 use crate::standard_components::preview;
 use crate::standard_components::widgets::{require_input, setting, settings_grid};
@@ -47,6 +48,7 @@ pub struct Traces {
     filled: usize,
     /// Columns filled since starting (up to `COLUMNS`).
     columns: usize,
+    shown: Latest<TracesDisplay>,
 }
 
 impl Traces {
@@ -58,6 +60,7 @@ impl Traces {
                 shape,
                 lows: vec![0.0; shown * COLUMNS],
                 highs: vec![0.0; shown * COLUMNS],
+                shown: std::mem::take(&mut self.shown),
                 ..Default::default()
             };
         }
@@ -96,8 +99,8 @@ impl Node<Edges> for LfpViewer {
         require_input(inputs, "a continuous data stream")
     }
 
-    fn display(&self) -> Option<Box<dyn std::any::Any + Send>> {
-        Some(Box::new(TracesDisplay::default()))
+    fn copies(&self) -> Option<CopyTo> {
+        Some(CopyTo::Window)
     }
 
     fn initial_state(&self, inputs: &[Option<DataStream>]) -> Traces {
@@ -133,24 +136,26 @@ impl Node<Edges> for LfpViewer {
                 traces.columns = (traces.columns + 1).min(COLUMNS);
             }
         }
-        let Some(display) = pass.display::<TracesDisplay>() else { return };
-        (display.first, display.shown, display.columns) = (first, shown, traces.columns);
-        display.lows.clear();
-        display.highs.clear();
-        for i in 0..shown {
-            // Oldest first: from the column after the one being filled, round to it.
-            let row = i * COLUMNS..(i + 1) * COLUMNS;
-            let (older, newer) = traces.lows[row.clone()].split_at(traces.head);
-            display.lows.extend_from_slice(newer);
-            display.lows.extend_from_slice(older);
-            let (older, newer) = traces.highs[row].split_at(traces.head);
-            display.highs.extend_from_slice(newer);
-            display.highs.extend_from_slice(older);
-        }
+        let Traces { lows, highs, head, columns, shown: latest, .. } = traces;
+        latest.send(pass, |display| {
+            (display.first, display.shown, display.columns) = (first, shown, *columns);
+            display.lows.clear();
+            display.highs.clear();
+            for i in 0..shown {
+                // Oldest first: from the column after the one being filled, round to it.
+                let row = i * COLUMNS..(i + 1) * COLUMNS;
+                let (older, newer) = lows[row.clone()].split_at(*head);
+                display.lows.extend_from_slice(newer);
+                display.lows.extend_from_slice(older);
+                let (older, newer) = highs[row].split_at(*head);
+                display.highs.extend_from_slice(newer);
+                display.highs.extend_from_slice(older);
+            }
+        });
     }
 
     fn controls(&self) -> Vec<Control<Edges>> {
-        vec![Control { name: "gain", kind: SettingKind::Gain }]
+        vec![Control { name: "gain", kind: SettingKind::Gain, read_only: false }]
     }
 
     fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {

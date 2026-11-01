@@ -1,6 +1,6 @@
 {
   "graph": {
-    "next_id": 11,
+    "next_id": 12,
     "nodes": {
       "1": {
         "node": {
@@ -98,14 +98,13 @@
       },
       "6": {
         "node": {
-          "type": "Writer",
+          "type": "WriteLtx",
           "settings": {
             "directory": "~/recordings",
-            "prefix": "session",
-            "format": "Binary"
+            "prefix": "session"
           }
         },
-        "label": "Writer",
+        "label": "Write LTX",
         "pos": [
           1300.0,
           120.0
@@ -210,6 +209,20 @@
           260.0,
           0.0
         ]
+      },
+      "11": {
+        "node": {
+          "type": "WriteRaw",
+          "settings": {
+            "directory": "~/recordings",
+            "prefix": "session"
+          }
+        },
+        "label": "Write Raw",
+        "pos": [
+          1300.0,
+          -60.0
+        ]
       }
     },
     "edges": [
@@ -271,39 +284,6 @@
       {
         "dimension": "Data",
         "from": {
-          "node": 1,
-          "port": 0
-        },
-        "to": {
-          "node": 6,
-          "port": 0
-        }
-      },
-      {
-        "dimension": "Data",
-        "from": {
-          "node": 1,
-          "port": 1
-        },
-        "to": {
-          "node": 6,
-          "port": 1
-        }
-      },
-      {
-        "dimension": "Data",
-        "from": {
-          "node": 3,
-          "port": 0
-        },
-        "to": {
-          "node": 6,
-          "port": 2
-        }
-      },
-      {
-        "dimension": "Data",
-        "from": {
           "node": 7,
           "port": 0
         },
@@ -343,28 +323,6 @@
         "to": {
           "node": 9,
           "port": 1
-        }
-      },
-      {
-        "dimension": "Data",
-        "from": {
-          "node": 7,
-          "port": 0
-        },
-        "to": {
-          "node": 6,
-          "port": 3
-        }
-      },
-      {
-        "dimension": "Data",
-        "from": {
-          "node": 8,
-          "port": 0
-        },
-        "to": {
-          "node": 6,
-          "port": 4
         }
       },
       {
@@ -398,6 +356,83 @@
         "to": {
           "node": 8,
           "port": 0
+        }
+      },
+      {
+        "dimension": "Data",
+        "from": {
+          "node": 3,
+          "port": 0
+        },
+        "to": {
+          "node": 6,
+          "port": 0
+        }
+      },
+      {
+        "dimension": "Data",
+        "from": {
+          "node": 10,
+          "port": 0
+        },
+        "to": {
+          "node": 6,
+          "port": 1
+        }
+      },
+      {
+        "dimension": "Data",
+        "from": {
+          "node": 8,
+          "port": 0
+        },
+        "to": {
+          "node": 6,
+          "port": 2
+        }
+      },
+      {
+        "dimension": "Data",
+        "from": {
+          "node": 1,
+          "port": 1
+        },
+        "to": {
+          "node": 6,
+          "port": 3
+        }
+      },
+      {
+        "dimension": "Settings",
+        "from": {
+          "node": 6,
+          "port": 0
+        },
+        "to": {
+          "node": 8,
+          "port": 0
+        }
+      },
+      {
+        "dimension": "Data",
+        "from": {
+          "node": 1,
+          "port": 0
+        },
+        "to": {
+          "node": 11,
+          "port": 0
+        }
+      },
+      {
+        "dimension": "Data",
+        "from": {
+          "node": 1,
+          "port": 1
+        },
+        "to": {
+          "node": 11,
+          "port": 1
         }
       }
     ]

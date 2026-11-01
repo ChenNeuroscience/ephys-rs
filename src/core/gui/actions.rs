@@ -31,6 +31,8 @@ pub enum Action {
     Theme(usize),
     /// Starts or stops running the graph.
     Play,
+    /// Starts or stops recording (starting the graph running, if it isn't).
+    Record,
 }
 
 pub enum MenuEntry {
@@ -71,7 +73,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
         ],
     ),
     ("Insert", &[Item(Action::AddNode), DrawTools]),
-    ("Run", &[Item(Action::Play)]),
+    ("Run", &[Item(Action::Play), Item(Action::Record)]),
     (
         "View",
         &[
@@ -88,7 +90,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
 ];
 
 /// Checked in this order, so that e.g. shift-ctrl-Z (redo) is seen before ctrl-Z (undo).
-const SHORTCUT_ORDER: [Action; 12] = [
+const SHORTCUT_ORDER: [Action; 13] = [
     Action::Redo,
     Action::Undo,
     Action::SaveAs,
@@ -100,6 +102,7 @@ const SHORTCUT_ORDER: [Action; 12] = [
     Action::Delete,
     Action::FrameAll,
     Action::Play,
+    Action::Record,
     Action::ToggleDevTools,
 ];
 
@@ -132,6 +135,7 @@ impl Action {
             Action::ToggleDevTools => "Developer Tools",
             Action::Theme(index) => themes.get(index).map_or("?", |t| t.name),
             Action::Play => "Play",
+            Action::Record => "Record",
         }
     }
 
@@ -149,6 +153,7 @@ impl Action {
             Action::SelectAll => command(Key::A),
             Action::FrameAll => Some(KeyboardShortcut::new(Modifiers::NONE, Key::F)),
             Action::Play => Some(KeyboardShortcut::new(Modifiers::NONE, Key::Space)),
+            Action::Record => command(Key::R),
             // As in browsers.
             Action::ToggleDevTools => Some(KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::ALT, Key::I)),
             _ => None,

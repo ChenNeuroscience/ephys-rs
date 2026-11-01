@@ -125,6 +125,7 @@ impl Node<Edges> for SpikeDetector {
         let Some(Some(Buffer::Continuous(input))) = pass.inputs.first() else { return };
         let Some(Buffer::Spikes(output)) = pass.outputs.get_mut(0) else { return };
         output.clear();
+        output.pass_samples = input.len;
         let Some(spikes) = detector.spikes else { return };
         let channels = (spikes.channels as usize).min(input.channels);
         let n = input.len;

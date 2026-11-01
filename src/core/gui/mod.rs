@@ -41,7 +41,7 @@ pub fn run<C: Components>(path: Option<PathBuf>) -> eframe::Result {
             .with_icon(icon),
         ..Default::default()
     };
-    eframe::run_native(
+    let result = eframe::run_native(
         "ephys-rs",
         options,
         Box::new(|cc| {
@@ -58,7 +58,10 @@ pub fn run<C: Components>(path: Option<PathBuf>) -> eframe::Result {
             }
             Ok(Box::new(app))
         }),
-    )
+    );
+    // Writers finishing their files, say.
+    crate::core::background::wait();
+    result
 }
 
 /// Where the theme (by name) is kept among the app's preferences (which eframe saves, separately from graph files).
@@ -138,6 +141,10 @@ pub struct App<N: NodeSet, A: AnnotationSet> {
     history: History<N, A>,
     /// The graph running, while it is.
     runner: Option<Runner<N>>,
+    /// The acquisition clock when recording last started.
+    recording_since: f64,
+    /// While the nodes prepare to record, where the recording comes from when they're ready.
+    preparing: Option<std::sync::mpsc::Receiver<engine::Recording>>,
     dev_tools: dev_tools::DevTools,
 }
 
@@ -165,6 +172,8 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             menu: None,
             status: None,
             runner: None,
+            recording_since: 0.0,
+            preparing: None,
             dev_tools: dev_tools::DevTools::default(),
         };
         if let Some(path) = path {
@@ -317,6 +326,47 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         }
     }
 
+    /// Starts running whatever's latest, including edits not yet taken as a version.
+    fn play(&mut self) {
+        self.history.commit(&self.graph, &self.annotations);
+        self.runner = Some(Runner::start(&self.history.current.snapshot, engine::default_workers()));
+    }
+
+    /// Has the nodes prepare to record (see `Node::prepare_to_record`), on a thread of their own: once they're
+    /// ready, recording starts (in `keep_running`).
+    fn prepare_to_record(&mut self, ctx: &egui::Context) {
+        self.history.commit(&self.graph, &self.annotations);
+        let snapshot = self.history.current.snapshot.clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let repaint = ctx.clone();
+        log::info!("Preparing to record");
+        let spawned = std::thread::Builder::new().name("preparing to record".into()).spawn(move || {
+            let _ = sender.send(engine::Recording::prepare(&snapshot));
+            repaint.request_repaint();
+        });
+        match spawned {
+            Ok(_) => self.preparing = Some(receiver),
+            Err(e) => self.set_status(ctx, format!("Couldn't prepare to record: {e}")),
+        }
+    }
+
+    /// Starts or stops recording: a new snapshot, which the run carries on with (see `Snapshot::with_recording`).
+    /// Recording isn't an edit, so it's not undone, and doesn't count as an unsaved change.
+    fn set_recording(&mut self, recording: Option<Arc<engine::Recording>>) {
+        let on = recording.is_some();
+        let Some((old, new)) = self.history.set_recording(recording) else { return };
+        if self.saved == Some(old) {
+            self.saved = Some(new);
+        }
+        let clock = self.runner.as_ref().map_or(0.0, |r| r.clock());
+        if on {
+            self.recording_since = clock;
+            log::info!("Recording, from {}", clock_text(clock));
+        } else {
+            log::info!("Stopped recording after {}", clock_text(clock - self.recording_since));
+        }
+    }
+
     fn undo(&mut self) {
         if let Some(version) = self.history.undo() {
             self.restore(version);
@@ -408,10 +458,24 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             Action::ToggleInspector => self.layout.toggle_pane(Pane::Inspector),
             Action::ToggleDevTools => self.layout.toggle_pane(Pane::DevTools),
             Action::Play => {
-                if self.runner.take().is_none() {
-                    // Run whatever's latest, including edits not yet taken as a version.
-                    self.history.commit(&self.graph, &self.annotations);
-                    self.runner = Some(Runner::start(&self.history.current.snapshot, engine::default_workers()));
+                if self.runner.is_some() {
+                    self.set_recording(None);
+                    self.preparing = None;
+                    self.runner = None;
+                } else {
+                    self.play();
+                }
+            }
+            Action::Record => {
+                if self.history.current.snapshot.recording.is_some() {
+                    self.set_recording(None);
+                } else if self.preparing.take().is_some() {
+                    log::info!("Cancelled recording");
+                } else {
+                    if self.runner.is_none() {
+                        self.play();
+                    }
+                    self.prepare_to_record(ctx);
                 }
             }
             Action::Theme(index) => {
@@ -454,6 +518,10 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
 
     /// Keeps the runner on the latest version of the graph (see `Runner::update`).
     fn keep_running(&mut self, ctx: &egui::Context) {
+        if let Some(recording) = self.preparing.as_ref().and_then(|r| r.try_recv().ok()) {
+            self.preparing = None;
+            self.set_recording(Some(Arc::new(recording)));
+        }
         let Some(runner) = &self.runner else { return };
         runner.update(&self.history.current.snapshot);
         // Keep the stats in the status bar fresh.
@@ -721,6 +789,17 @@ impl<N: NodeSet, A: AnnotationSet> eframe::App for App<N, A> {
     }
 }
 
+/// "1:02:03.4", or "02:03.4" under an hour.
+fn clock_text(seconds: f64) -> String {
+    let tenths = (seconds.max(0.0) * 10.0) as u64;
+    let (hours, minutes, seconds, tenths) = (tenths / 36000, tenths / 600 % 60, tenths / 10 % 60, tenths % 10);
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{seconds:02}.{tenths}")
+    } else {
+        format!("{minutes:02}:{seconds:02}.{tenths}")
+    }
+}
+
 /// A version of the document: a snapshot of the graph with all its configuration, and the annotations.
 struct Version<N: NodeSet, A> {
     snapshot: Snapshot<N>,
@@ -783,13 +862,33 @@ impl<N: NodeSet, A: AnnotationSet> History<N, A> {
 
     fn undo(&mut self) -> Option<(Graph<N>, Annotations<A>)> {
         let previous = self.undo.pop()?;
+        let recording = self.current.snapshot.recording.clone();
         self.redo.push(std::mem::replace(&mut self.current, previous));
+        self.set_recording(recording); // undoing an edit doesn't start or stop recording
         Some(self.restored())
+    }
+
+    /// Makes the current version recording or not, as a new version (not one to undo to). Returns the old version
+    /// and the new, if it changed.
+    fn set_recording(&mut self, recording: Option<Arc<engine::Recording>>) -> Option<(u64, u64)> {
+        let old = self.current.snapshot.version;
+        let same = match (&self.current.snapshot.recording, &recording) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (a, b) => a.is_none() && b.is_none(),
+        };
+        if same {
+            return None;
+        }
+        self.versions += 1;
+        self.current.snapshot = self.current.snapshot.with_recording(self.versions, recording);
+        Some((old, self.versions))
     }
 
     fn redo(&mut self) -> Option<(Graph<N>, Annotations<A>)> {
         let next = self.redo.pop()?;
+        let recording = self.current.snapshot.recording.clone();
         self.undo.push(std::mem::replace(&mut self.current, next));
+        self.set_recording(recording);
         Some(self.restored())
     }
 }

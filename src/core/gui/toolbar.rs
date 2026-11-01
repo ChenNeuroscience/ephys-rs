@@ -41,6 +41,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             Action::ToggleDevTools => Some(self.layout.is_shown(Pane::DevTools)),
             Action::Theme(index) => Some(self.theme == index),
             Action::Play => Some(self.runner.is_some()),
+            Action::Record => Some(self.history.current.snapshot.recording.is_some() || self.preparing.is_some()),
             _ => None,
         }
     }
@@ -121,6 +122,19 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             if tool_button(ui, icon, &tip, true, running).clicked() {
                 chosen = Some(Action::Play);
             }
+            let recording = self.history.current.snapshot.recording.is_some();
+            let text = if recording {
+                "Stop recording"
+            } else if self.preparing.is_some() {
+                "Preparing to record (the writers opening their files): click to cancel"
+            } else {
+                "Record (starting the graph, if it isn't running)"
+            };
+            let tip = self.tooltip(&ctx, Action::Record, text);
+            if tool_button(ui, Icon::Record, &tip, true, recording || self.preparing.is_some()).clicked() {
+                chosen = Some(Action::Record);
+            }
+            self.clock(ui, recording);
             ui.separator();
 
             let add = dropdown_button(ui, Icon::AddNode, "Add node")
@@ -175,6 +189,29 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             });
         });
         chosen
+    }
+}
+
+impl<N: NodeSet, A: AnnotationSet> App<N, A> {
+    /// The acquisition clock, from pressing Play, then while recording, how long it's been recording.
+    fn clock(&self, ui: &mut egui::Ui, recording: bool) {
+        let colours = self.colours();
+        let clock = self.runner.as_ref().map(|r| r.clock());
+        let text = egui::RichText::new(super::clock_text(clock.unwrap_or(0.0))).monospace();
+        ui.add_space(4.0);
+        let text = if clock.is_some() { text.color(colours.text_primary) } else { text.color(colours.text_disabled) };
+        ui.label(text).on_hover_text("Acquisition time: how long the graph has been running");
+        if self.preparing.is_some() {
+            ui.label(egui::RichText::new("preparing to record…").color(colours.text_secondary));
+        }
+        if recording {
+            let since = clock.unwrap_or(0.0) - self.recording_since;
+            let text = egui::RichText::new(format!("REC {}", super::clock_text(since))).monospace().strong();
+            ui.label(text.color(colours.error)).on_hover_text("How long it's been recording");
+        }
+        if clock.is_some() {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+        }
     }
 }
 

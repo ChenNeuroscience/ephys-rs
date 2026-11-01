@@ -1,50 +1,25 @@
+<img src="assets/icon.svg" width="96" height="96" alt="Three blue, green and red spikes on a black background">
+
 # ephys-rs
-electrophysiology software
+Electrophysiology software derived from [Open Ephys](https://github.com/open-ephys), but rewritten in Rust with a custom built execution engine and more flexible user interface.
 
 
-## Super high level vision
+## Status
 
-- Adobe AfterEfects inspired graph interface with lots of window panes.
-- In code, each node type is fairly self contained module, but the whole program is a single compliation unit (in the near term at least). This means we can avoid designing an ultra generic API, and can instead support a metaprogramming solution of some sort. 
-- Use the same ui machinery as the open-ephys-plugin-camera, i think.
-- Need a basic buffer and threading model that supports high throughput.
-- Each node type exposes a certain number of inputs and outputs, each with some kind of requirements info. And then when you click on the connectors it highlights mathcing nodes already in the graph and also offers a list of supported types that could go there to create a new node.
-- Visualiser nodes, recorder nodes, settings nodes, synchronisation nodes, source nodes ... they all work pretty much the same way.
-- Support for raw recording and for spikes-only recording.
+Development of this project started on 2026-Oct-31. With the help of today's AI, progress has been incredibly rapid. No serious testing has been done yet though and there are lots of things still to be done.
 
+## What's there
 
-We will have a pool of data processing threads, each thread will execute a full pass over the graph.
+You build a graph of nodes, and press Play to run it:
 
-The input to that pass will be a reference to a frozen graph version (continaing all configuration options), plus a filled buffer of data from each source in the graph, plus pre-allocated buffers for processing needs in the graph. It then executes the processing over the whole of the provided graph. The number of threads will be configurable with some feedback to the user on how many are needed and if passes are taking too long.  
-Unfortunately this is not enough though because many nodes will need output from their previous pass (e.g. band pass filters, spike detection). To support this, nodes can output data to chain to their next execution (a kind of reduction). We will use a dedicated flag (on its own cache line) for
-each required synchronisation point, and a reference to that and the associated previous output buffer will be provided at the start of the pass (since the previous pass must have already allocated it before starting). Then we'll use somehting like this to wait on readiness. Note that as long as each pass stays ahead of the previous pass there will be very miniaml blocking, and even if it gets ahead it wont be that expensive to spin read a single cache line until the other thread grabs it to write with.
+- **Sources**: the Acquisition Board (Open Ephys's boards, generations 1 to 3, and Intan's RHD USB board, or the fake one below), with headstage channels, auxiliary and analogue inputs, and digital inputs as events; and the Camera (FLIR cameras through Spinnaker, or the fake one).
+- **Processing**: Reference (one channel, common average or median, per group, or per channel), Band-pass Filter, Gain, Spike Detector (in tetrodes, or groups of any size), and Position Detector (LEDs in video).
+- **Viewers**: LFP, spikes, video, and the Tracker View (the camera, with detection and calibration).
+- **Writers**: Write LTX (tetrode spikes, 5 kHz continuous data, positions and digital inputs, for legacy tetrode analysis code) and Write Raw (Open Ephys's binary format). Press Record (or Ctrl/⌘ R): the writers open their files, then recording starts, and the acquisition clock beside Play shows how long it's been going.
 
-```
-// Producer
-ready.store(sequence, Ordering::Release);
+Nodes can also edit each other's settings, through settings edges (dashed); a node that only reads a setting, as Write LTX reads the position detector's crop and calibration to record them, has a dotted edge.
 
-// Consumer
-while ready.load(Ordering::Acquire) != sequence {
-    std::hint::spin_loop();
-}
-```
-
-One more complex idea for writer threads that avoids synchronisation is this, but i don't think it's worth it given we are going to need to force synchronisation in other cases:
-
- Writer nodes will operate on this same thread and must write to their own fragment files during recording and then finalise by combining the recorded files into the right order. (we should offer some support for finalising afer a crash too, which ought to be a similar thing). This avoids true statefulness for writing (it is still stateful within the threads, but not across). But if you really do need something stateful that's a bit more painful as you would need some proper sychronisation mechanism where one thread can wait for the previous pass to complete the given thing..but i'm not sure we need 
-
-
-
-how can we have a downstream node control settings upstream? maybe you can just allow that as a special kind of connection that's a settings connection not a data connection and it doesn't actually run in the graph like data.
-
-## Plan
-
-- Do the basic GUI, not worrying at all about the actual data processing to begin with.
-- Create simmulated voltage and camera input nodes, band pass filters, gains, spikes.
-- Switch in real camera, based on the open-ephys-plugin-camera.
-- Switch in real acquisition.
-- Record data.
-- ...
+Developer Tools (View menu, or Ctrl/⌘ Alt I) show the threads running the graph, the plan each pass runs through and the memory it takes, and the log.
 
 ## Downloads and development
 

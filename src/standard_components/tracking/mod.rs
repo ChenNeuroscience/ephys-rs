@@ -41,6 +41,9 @@ impl EdgeType for Video {
 pub struct Positions {
     /// Frames per second.
     pub fps: f32,
+    /// The frames' size, in pixels.
+    pub width: u32,
+    pub height: u32,
 }
 
 impl EdgeType for Positions {

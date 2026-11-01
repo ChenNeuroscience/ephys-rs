@@ -56,10 +56,21 @@ pub struct SettingPort<E: Edges> {
     pub value: E::Setting,
 }
 
-/// A setting of some other node that this one can edit, through a settings edge.
+/// A setting of some other node that this one can see, and edit unless it's read-only, through a settings edge.
 pub struct Control<E: Edges> {
     pub name: &'static str,
     pub kind: Kind<E::Setting>,
+    /// Only reads the setting (a writer recording it, say): changes the node makes to it are ignored.
+    pub read_only: bool,
+}
+
+/// Where a node copies its inputs out to, if that's all it does with them (see `Node::copies`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CopyTo {
+    /// To show in its window (see `crate::core::exchange`).
+    Window,
+    /// To a thread of its own (see `Node::threads`): a writer's, say.
+    Thread,
 }
 
 /// What a node's UI gets to work with besides its own settings.
@@ -71,8 +82,10 @@ pub struct Context<'a, E: Edges> {
     pub controls: &'a mut [Option<E::Setting>],
     /// The colours to draw with, by role. A node can derive more of its own from these.
     pub theme: &'a Colours,
-    /// The latest live data the node's processing has shown (see `Node::display`), while running.
+    /// The latest the node's passes have left for its window (see `crate::core::exchange`), while running.
     pub display: Option<&'a (dyn Any + Send)>,
+    /// Whether the graph is running.
+    pub running: bool,
 }
 
 impl<E: Edges> Context<'_, E> {
@@ -92,7 +105,7 @@ pub struct NodeThread {
 /// What a node's drawing of one of its threads (in the dev tools) gets to work with.
 pub struct ThreadContext<'a> {
     pub theme: &'a Colours,
-    /// The latest live data the node's processing has shown (see `Node::display`), while running.
+    /// The latest the node's passes have left for its window (see `crate::core::exchange`), while running.
     pub display: Option<&'a (dyn Any + Send)>,
 }
 
@@ -158,10 +171,11 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
         None
     }
 
-    /// For a node that shows live data in its window (a video frame, say): an empty buffer for it. Each pass
-    /// can fill one in (with `Pass::display`), and the window gets the latest (with `Context::display`).
-    /// Workers each have their own, so filling one in never waits on the window.
-    fn display(&self) -> Option<Box<dyn Any + Send>> {
+    /// Where the node copies its inputs out to, if that's all it does with them: a viewer copying what it shows
+    /// to its window, a writer handing data to its writing thread. The node makes the copy itself (for a window,
+    /// see `crate::core::exchange`); this just tells the plan, which runs such nodes as early as it can, so the
+    /// copies are made before anything else is done with the data, and shows them as copy points.
+    fn copies(&self) -> Option<CopyTo> {
         None
     }
 
@@ -169,6 +183,18 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     /// the data streams they carry. When an output is being made in place (see `in_place`), its input is `None`
     /// in the pass, and the output's buffer already holds the input's data to transform.
     fn process(&self, _pass: &mut Pass<E>, _state: &mut Self::State) {}
+
+    /// Gets ready to record (a writer opening its files, say), given the data streams on its inputs and what its
+    /// controls see. Called on a thread of its own when recording's asked for; passes only start recording once
+    /// every node's ready, so this can take its time. What it returns is the node's (with `Pass::take_prepared`)
+    /// on the first pass that records.
+    fn prepare_to_record(
+        &self,
+        _inputs: &[Option<E::DataStream>],
+        _controls: &[Option<E::Setting>],
+    ) -> Option<Box<dyn Any + Send>> {
+        None
+    }
 
     /// Threads the node runs of its own while running (started with its state, say), for the dev tools.
     fn threads(&self) -> Vec<NodeThread> {
@@ -201,12 +227,17 @@ pub trait NodeSet: Clone + PartialEq + Serialize + DeserializeOwned + Send + Syn
     fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Self::Edges>);
     fn view_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Self::Edges>);
     fn in_place(&self, output: usize) -> Option<usize>;
-    fn display(&self) -> Option<Box<dyn Any + Send>>;
+    fn copies(&self) -> Option<CopyTo>;
     /// Whether the node carries state from one pass to the next.
     fn has_state(&self) -> bool;
     fn initial_state(&self, inputs: &[Option<<Self::Edges as Edges>::DataStream>]) -> Box<dyn Any + Send>;
     /// `state` is the node's state, if it has any (as made by `initial_state`).
     fn process(&self, pass: &mut Pass<Self::Edges>, state: Option<&mut (dyn Any + Send)>);
+    fn prepare_to_record(
+        &self,
+        inputs: &[Option<<Self::Edges as Edges>::DataStream>],
+        controls: &[Option<<Self::Edges as Edges>::Setting>],
+    ) -> Option<Box<dyn Any + Send>>;
     fn threads(&self) -> Vec<NodeThread>;
     fn thread_ui(&self, thread: usize, ui: &mut egui::Ui, context: &ThreadContext);
 
@@ -317,8 +348,8 @@ macro_rules! node_set {
                 match self { $($name::$variant(n) => $crate::core::engine::Node::in_place(n, output)),+ }
             }
 
-            fn display(&self) -> Option<Box<dyn std::any::Any + Send>> {
-                match self { $($name::$variant(n) => $crate::core::engine::Node::display(n)),+ }
+            fn copies(&self) -> Option<$crate::core::engine::CopyTo> {
+                match self { $($name::$variant(n) => $crate::core::engine::Node::copies(n)),+ }
             }
 
             fn has_state(&self) -> bool {
@@ -350,6 +381,14 @@ macro_rules! node_set {
                         }
                     }),+
                 }
+            }
+
+            fn prepare_to_record(
+                &self,
+                inputs: &[Option<<$edges as $crate::core::engine::Edges>::DataStream>],
+                controls: &[Option<<$edges as $crate::core::engine::Edges>::Setting>],
+            ) -> Option<Box<dyn std::any::Any + Send>> {
+                match self { $($name::$variant(n) => $crate::core::engine::Node::prepare_to_record(n, inputs, controls)),+ }
             }
 
             fn threads(&self) -> Vec<$crate::core::engine::NodeThread> {

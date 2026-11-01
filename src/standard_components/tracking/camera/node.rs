@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use super::capture::{self, Capture, State};
 use super::{CameraControls, CameraSettings, CameraStats, CaptureStats, Control, Range, Source};
 use crate::core::engine::{Category, Context, Node, NodeInfo, NodeThread, Output, Pass, SettingPort, ThreadContext};
+use crate::core::exchange::Latest;
 use crate::standard_components::tracking::Video;
 use crate::standard_components::widgets::{queue_ui, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
@@ -34,6 +35,7 @@ pub struct Capturing {
     last_wrong_size: [u32; 2],
     /// Frames skipped because more arrived in a pass than it had room for.
     missed: u64,
+    shown: Latest<CaptureStats>,
 }
 
 impl Node<Edges> for Camera {
@@ -63,10 +65,6 @@ impl Node<Edges> for Camera {
         if let Setting::Camera(settings) = value {
             self.settings = settings;
         }
-    }
-
-    fn display(&self) -> Option<Box<dyn std::any::Any + Send>> {
-        Some(Box::new(CaptureStats::default()))
     }
 
     fn threads(&self) -> Vec<NodeThread> {
@@ -119,17 +117,15 @@ impl Node<Edges> for Camera {
             }
         }
         // The stats, on their output and in the node's window.
+        let counts = (capturing.wrong_size, capturing.last_wrong_size, capturing.missed);
         let fill = |stats: &mut CaptureStats| {
             capture.status_into(&mut stats.status);
-            (stats.wrong_size, stats.last_wrong_size, stats.missed) =
-                (capturing.wrong_size, capturing.last_wrong_size, capturing.missed);
+            (stats.wrong_size, stats.last_wrong_size, stats.missed) = counts;
         };
         if let Some(Buffer::CameraStats(stats)) = pass.outputs.get_mut(1) {
             fill(stats);
         }
-        if let Some(display) = pass.display::<CaptureStats>() {
-            fill(display);
-        }
+        capturing.shown.send(pass, fill);
     }
 
     fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {

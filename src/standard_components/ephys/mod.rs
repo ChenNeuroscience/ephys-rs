@@ -36,6 +36,8 @@ impl EdgeType for Continuous {
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Events {
     pub lines: u32,
+    /// The rate of the samples the events are timed by.
+    pub sample_rate: f32,
 }
 
 impl EdgeType for Events {
@@ -123,13 +125,15 @@ pub struct Event {
 
 pub struct EventsBuffer {
     pub events: Vec<Event>,
+    /// How many samples the pass covers (for timing events across passes).
+    pub pass_samples: usize,
 }
 
 impl DataStreamType for Events {
     type Buffer = EventsBuffer;
 
     fn buffer(&self, _duration: f64) -> EventsBuffer {
-        EventsBuffer { events: Vec::with_capacity(64 * self.lines.max(1) as usize) }
+        EventsBuffer { events: Vec::with_capacity(64 * self.lines.max(1) as usize), pass_samples: 0 }
     }
 
     fn bytes(buffer: &EventsBuffer) -> usize {

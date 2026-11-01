@@ -33,7 +33,9 @@ impl Node<Edges> for PositionDetector {
 
     fn outputs(&self, inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {
         let stream = match inputs[0] {
-            Some(DataStream::Video(video)) => Some(DataStream::Positions(Positions { fps: video.fps })),
+            Some(DataStream::Video(video)) => {
+                Some(DataStream::Positions(Positions { fps: video.fps, width: video.width, height: video.height }))
+            }
             _ => None,
         };
         vec![Output { name: "positions", kind: Kind::Positions, stream }]

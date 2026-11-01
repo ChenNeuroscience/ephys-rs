@@ -258,12 +258,13 @@ pub fn node_ui<N: NodeSet>(
 ) {
     let Some(state) = resolved.get(&id) else { return };
     let has_view = graph.get(id).is_some_and(|e| e.node.has_view());
+    let running = runner.is_some();
     let mut show = |graph: &mut Graph<N>, display: Option<&(dyn std::any::Any + Send)>| {
-        graph.edit(id, &state.input_streams, colours, display, |node: &mut N, context| {
+        graph.edit(id, &state.input_streams, colours, display, running, |node: &mut N, context| {
             if has_view { node.view_ui(ui, context) } else { node.settings_ui(ui, context) }
         });
     };
-    let shown = runner.and_then(|runner| runner.with_display(id, |display| show(graph, Some(display))));
+    let shown = runner.and_then(|runner| runner.exchange().with_latest(id, |display| show(graph, Some(display))));
     if shown.is_none() {
         show(graph, None);
     }

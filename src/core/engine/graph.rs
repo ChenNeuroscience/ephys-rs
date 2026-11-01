@@ -3,7 +3,7 @@
 use std::any::Any;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
@@ -459,13 +459,19 @@ impl<N: NodeSet> Graph<N> {
         inputs: &[Option<DataStream<N>>],
         theme: &Colours,
         display: Option<&(dyn Any + Send)>,
+        running: bool,
         f: impl FnOnce(&mut N, &mut Context<N::Edges>) -> R,
     ) -> Option<R> {
         let before = self.control_values(id);
         let mut controls = before.clone();
-        let result =
-            f(&mut self.nodes.get_mut(&id)?.node, &mut Context { inputs, controls: &mut controls, theme, display });
+        let entry = self.nodes.get_mut(&id)?;
+        let read_only: Vec<bool> = entry.node.controls().iter().map(|c| c.read_only).collect();
+        let context = &mut Context { inputs, controls: &mut controls, theme, display, running };
+        let result = f(&mut entry.node, context);
         for (index, (old, new)) in before.into_iter().zip(controls).enumerate() {
+            if read_only.get(index) == Some(&true) {
+                continue;
+            }
             let Some(new) = new.filter(|new| Some(new) != old.as_ref()) else { continue };
             let targets: Vec<PortRef> =
                 self.edges_from(Port { node: id, role: Role::Control, index }).map(|e| e.to).collect();
@@ -480,30 +486,89 @@ impl<N: NodeSet> Graph<N> {
     }
 }
 
-/// A frozen version of the graph, with all its configuration, and the plan for running it. Undo steps back
-/// through snapshots, and each processing pass runs against one. Cheap to clone and to share between threads.
+/// For each node with controls, the value of the setting each is connected to, if it is.
+pub type ControlValues<N> = HashMap<NodeId, Vec<Option<Setting<N>>>>;
+
+/// A recording, once the nodes have prepared for it (see `Node::prepare_to_record`): what each prepared, until its
+/// first recording pass takes it.
+#[derive(Default)]
+pub struct Recording {
+    prepared: Mutex<HashMap<NodeId, Box<dyn Any + Send>>>,
+}
+
+impl Recording {
+    /// Has every node that runs in `snapshot` prepare to record. Can take a while (opening files, say), so isn't
+    /// for the GUI's thread.
+    pub fn prepare<N: NodeSet>(snapshot: &Snapshot<N>) -> Self {
+        let resolved = snapshot.graph.resolve();
+        let mut prepared = HashMap::new();
+        for step in snapshot.plan.steps() {
+            let (Some(entry), Some(state)) = (snapshot.graph.get(step.id), resolved.get(&step.id)) else { continue };
+            let controls = snapshot.controls.get(&step.id).map_or(&[][..], Vec::as_slice);
+            if let Some(ready) = entry.node.prepare_to_record(&state.input_streams, controls) {
+                prepared.insert(step.id, ready);
+            }
+        }
+        Recording { prepared: Mutex::new(prepared) }
+    }
+
+    /// What node `id` prepared, if it did and it hasn't been taken.
+    pub fn take(&self, id: NodeId) -> Option<Box<dyn Any + Send>> {
+        self.prepared.lock().unwrap().remove(&id)
+    }
+}
+
+/// A frozen version of the graph, with all its configuration (whether it's recording, too), and the plan for
+/// running it. Undo steps back through snapshots, and each processing pass runs against one. Cheap to clone and to
+/// share between threads.
 pub struct Snapshot<N: NodeSet> {
     /// Increases with every snapshot taken.
     pub version: u64,
     pub graph: Arc<Graph<N>>,
     pub plan: Arc<Plan<N>>,
+    /// What each node's controls see (for the passes; see `Pass::controls`).
+    pub controls: Arc<ControlValues<N>>,
+    /// The recording, while recording.
+    pub recording: Option<Arc<Recording>>,
 }
 
 impl<N: NodeSet> Snapshot<N> {
     /// A snapshot of `graph`, planning how to run it, unless it processes the same as `previous` (when only
-    /// positions or labels have changed, say), whose plan it shares.
+    /// positions or labels have changed, say), whose plan it shares. It records if `previous` does.
     pub fn new(version: u64, graph: Graph<N>, previous: Option<&Snapshot<N>>) -> Self {
-        let plan = match previous {
-            Some(previous) if same_processing(&previous.graph, &graph) => previous.plan.clone(),
-            _ => Arc::new(Plan::new(&graph)),
+        let (plan, controls) = match previous {
+            Some(previous) if same_processing(&previous.graph, &graph) => {
+                (previous.plan.clone(), previous.controls.clone())
+            }
+            _ => {
+                let controls = graph
+                    .iter()
+                    .filter(|(_, entry)| !entry.node.controls().is_empty())
+                    .map(|(id, _)| (id, graph.control_values(id)))
+                    .collect();
+                (Arc::new(Plan::new(&graph)), Arc::new(controls))
+            }
         };
-        Snapshot { version, graph: Arc::new(graph), plan }
+        let recording = previous.and_then(|p| p.recording.clone());
+        Snapshot { version, graph: Arc::new(graph), plan, controls, recording }
+    }
+
+    /// This snapshot as version `version`, recording or not. Recording doesn't change how the graph runs, so the
+    /// plan's the same, and a run carries on with it.
+    pub fn with_recording(&self, version: u64, recording: Option<Arc<Recording>>) -> Self {
+        Snapshot { version, recording, ..self.clone() }
     }
 }
 
 impl<N: NodeSet> Clone for Snapshot<N> {
     fn clone(&self) -> Self {
-        Snapshot { version: self.version, graph: self.graph.clone(), plan: self.plan.clone() }
+        Snapshot {
+            version: self.version,
+            graph: self.graph.clone(),
+            plan: self.plan.clone(),
+            controls: self.controls.clone(),
+            recording: self.recording.clone(),
+        }
     }
 }
 
@@ -596,7 +661,7 @@ mod tests {
 
         let threshold = |sd| Setting::Threshold(spikes::Threshold { sd });
         assert_eq!(graph.control_values(viewer), vec![Some(threshold(4.0))]);
-        graph.edit(viewer, &[], &crate::standard_components::themes::THEMES[0].colours, None, |_, context| {
+        graph.edit(viewer, &[], &crate::standard_components::themes::THEMES[0].colours, None, false, |_, context| {
             context.controls[0] = Some(threshold(5.5))
         });
         assert_eq!(graph.get(detector).unwrap().node.settings()[0].value, threshold(5.5));

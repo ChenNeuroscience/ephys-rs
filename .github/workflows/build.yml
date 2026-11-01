@@ -40,6 +40,9 @@ jobs:
           rustup toolchain install stable --profile minimal --component rustfmt --component clippy
           rustup default stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Otherwise a failing step (a lint, a test) throws away the whole build, and the next run starts cold.
+          cache-on-failure: true
       - name: Format and lint
         run: |
           cargo fmt --check

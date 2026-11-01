@@ -16,9 +16,9 @@ mod standard_components;
 
 use standard_components::annotations::sticky_note;
 use standard_components::ephys::{self, band_pass, board, gain, lfp_viewer, reference};
+use standard_components::recording::{ltx, raw};
 use standard_components::spikes::{self, spike_detector, spike_viewer};
 use standard_components::tracking::{self, camera, position_detector, tracker_view, video_viewer};
-use standard_components::writer;
 
 edge_types! {
     pub struct Edges;
@@ -53,7 +53,8 @@ node_set! {
         SpikeViewer(spike_viewer::SpikeViewer),
         VideoViewer(video_viewer::VideoViewer),
         TrackerView(tracker_view::TrackerView),
-        Writer(writer::Writer),
+        WriteLtx(ltx::WriteLtx),
+        WriteRaw(raw::WriteRaw),
     }
 }
 

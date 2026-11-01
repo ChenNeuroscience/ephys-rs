@@ -4,7 +4,8 @@
 use eframe::egui::{self, Align2, FontId, Pos2, Rect, Sense, Shape, Stroke};
 use serde::{Deserialize, Serialize};
 
-use crate::core::engine::{Category, Context, Control, EdgeType, Input, Node, NodeInfo, Output, Pass};
+use crate::core::engine::{Category, Context, Control, CopyTo, EdgeType, Input, Node, NodeInfo, Output, Pass};
+use crate::core::exchange::Latest;
 use crate::standard_components::preview;
 use crate::standard_components::spikes::{Spikes, Threshold};
 use crate::standard_components::widgets::{require_input, setting, settings_grid};
@@ -41,6 +42,7 @@ pub struct Recent {
     /// Spikes found, for each group.
     total: Vec<u64>,
     thresholds: Vec<f32>,
+    shown: Latest<RecentDisplay>,
 }
 
 /// The groups shown, as of the last pass.
@@ -81,11 +83,11 @@ impl Node<Edges> for SpikeViewer {
     }
 
     fn controls(&self) -> Vec<Control<Edges>> {
-        vec![Control { name: "threshold", kind: SettingKind::Threshold }]
+        vec![Control { name: "threshold", kind: SettingKind::Threshold, read_only: false }]
     }
 
-    fn display(&self) -> Option<Box<dyn std::any::Any + Send>> {
-        Some(Box::new(RecentDisplay::default()))
+    fn copies(&self) -> Option<CopyTo> {
+        Some(CopyTo::Window)
     }
 
     fn initial_state(&self, inputs: &[Option<DataStream>]) -> Recent {
@@ -101,6 +103,7 @@ impl Node<Edges> for SpikeViewer {
             count: vec![0; groups],
             total: vec![0; groups],
             thresholds: vec![0.0; stream.channels as usize],
+            shown: Latest::default(),
         }
     }
 
@@ -120,25 +123,27 @@ impl Node<Edges> for SpikeViewer {
         let channels = recent.thresholds.len();
         recent.thresholds.copy_from_slice(&input.thresholds[..channels]);
 
-        let Some(display) = pass.display::<RecentDisplay>() else { return };
         let groups = stream.groups() as usize;
         let first = (self.first_group as usize).min(groups.saturating_sub(1));
         let shown = (self.groups_shown as usize).min(groups - first);
-        (display.stream, display.first, display.shown, display.keep) = (Some(stream), first, shown, keep);
-        display.waveforms.clear();
-        display.count.clear();
-        display.total.clear();
-        for group in first..first + shown {
-            // Newest first.
-            for age in 0..recent.count[group] {
-                let slot = (recent.head[group] + keep - 1 - age) % keep;
-                let at = (group * keep + slot) * size;
-                display.waveforms.extend_from_slice(&recent.waveforms[at..at + size]);
+        let Recent { waveforms, head, count, total, thresholds, shown: latest, .. } = recent;
+        latest.send(pass, |display| {
+            (display.stream, display.first, display.shown, display.keep) = (Some(stream), first, shown, keep);
+            display.waveforms.clear();
+            display.count.clear();
+            display.total.clear();
+            for group in first..first + shown {
+                // Newest first.
+                for age in 0..count[group] {
+                    let slot = (head[group] + keep - 1 - age) % keep;
+                    let at = (group * keep + slot) * size;
+                    display.waveforms.extend_from_slice(&waveforms[at..at + size]);
+                }
+                display.count.push(count[group]);
+                display.total.push(total[group]);
             }
-            display.count.push(recent.count[group]);
-            display.total.push(recent.total[group]);
-        }
-        display.thresholds.clone_from(&recent.thresholds);
+            display.thresholds.clone_from(thresholds);
+        });
     }
 
     fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {

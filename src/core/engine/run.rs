@@ -22,10 +22,9 @@
 //! one queued), and the dispatcher only sends passes for it once a worker is ready, to the workers that are;
 //! until then, passes carry on with the old one. So a worker is never handed a pass it isn't ready to run.
 //!
-//! Nodes that show live data in their windows (a video frame, say) fill a display buffer of their own on
-//! each worker, which is then swapped with the latest one shown, if it's newer. The swap only `try_lock`s,
-//! so a worker never waits on the GUI: if the window is reading the latest just then, that pass's display
-//! is skipped. The buffers are reused, so nothing is allocated.
+//! A node that only copies its inputs out to another thread (to show in its window, say, or to write to disk) says
+//! so (see `Node::copies`), and the plan runs it as early as it can; it makes the copy itself. Each run has an
+//! `Exchange` where nodes can leave things for their windows (see `crate::core::exchange`).
 
 use std::any::Any;
 use std::cell::UnsafeCell;
@@ -39,8 +38,9 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError};
 use crossbeam_utils::CachePadded;
 
 use crate::core::console::{self, PassId};
+use crate::core::exchange::Exchange;
 
-use super::{Buffer, DataStreamSet, Edges, Graph, NodeId, NodeSet, Port, Role, Snapshot};
+use super::{Buffer, CopyTo, DataStreamSet, Edges, Graph, NodeId, NodeSet, Port, Recording, Role, Snapshot};
 
 type DataStream<N> = <<N as NodeSet>::Edges as Edges>::DataStream;
 
@@ -54,16 +54,25 @@ pub struct Pass<'a, E: Edges> {
     pub sequence: u64,
     #[allow(dead_code)]
     pub duration: f64,
+    /// The node being run.
+    pub node: NodeId,
     /// For each input, this pass's data on it, if it's connected.
     pub inputs: &'a [Option<&'a Buffer<E>>],
     /// For each output, a buffer to fill.
     pub outputs: &'a mut [Buffer<E>],
-    display: Option<&'a mut (dyn Any + Send)>,
-    shown: bool,
+    /// For each of the node's controls, the value of the setting it's connected to, if it is (for a writer to
+    /// record, say).
+    pub controls: &'a [Option<E::Setting>],
+    /// Whether the graph is recording.
+    pub recording: bool,
+    /// The recording, with what nodes prepared for it.
+    prepared: Option<&'a Recording>,
+    /// Where the node can leave things for its window (see `crate::core::exchange`).
+    pub exchange: &'a Exchange,
 }
 
 impl<'a, E: Edges> Pass<'a, E> {
-    /// A pass for trying a node out on, with no display.
+    /// A pass for trying a node out on, not recording, with no controls connected.
     #[cfg(test)]
     pub fn new(
         sequence: u64,
@@ -71,15 +80,16 @@ impl<'a, E: Edges> Pass<'a, E> {
         inputs: &'a [Option<&'a Buffer<E>>],
         outputs: &'a mut [Buffer<E>],
     ) -> Self {
-        Pass { sequence, duration, inputs, outputs, display: None, shown: false }
+        let exchange: &'static Exchange = Box::leak(Box::default());
+        let (node, controls, recording, prepared) = (NodeId(0), &[], false, None);
+        Pass { sequence, duration, node, inputs, outputs, controls, recording, prepared, exchange }
     }
 
-    /// The node's display buffer, if it has one (see `Node::display`) of type `T`. What's left in it is shown
-    /// in the node's window after the pass; it may hold an earlier pass's display, to overwrite.
-    pub fn display<T: 'static>(&mut self) -> Option<&mut T> {
-        let display = self.display.as_deref_mut()?.downcast_mut::<T>()?;
-        self.shown = true;
-        Some(display)
+    /// What the node prepared to record (see `Node::prepare_to_record`), if it did and it's of type `T`: given once,
+    /// to the first pass that asks while recording.
+    pub fn take_prepared<T: 'static>(&self) -> Option<T> {
+        let prepared = self.prepared?.take(self.node)?;
+        prepared.downcast().ok().map(|b| *b)
     }
 }
 
@@ -96,9 +106,8 @@ pub struct Step {
     /// The node's state, if it has any: an index into the run's state slots. Each pass waits here for the
     /// pass before to hand the state over.
     pub state: Option<usize>,
-    /// Whether the node shows live data in its window: an index into the run's display slots. Each pass
-    /// copies what it shows into a display buffer, swapped for the window's latest.
-    pub display: Option<usize>,
+    /// Where the node copies its inputs out to, if that's all it does with them (see `Node::copies`).
+    pub copies: Option<CopyTo>,
 }
 
 /// Which nodes run, in what order, on which buffers: worked out when a snapshot is taken (see `Snapshot`), so
@@ -110,14 +119,15 @@ pub struct Step {
 /// it. Within a pass everything runs on one thread, in an order of our choosing, so the plan orders the
 /// nodes to make that so: the other readers first (they only read, e.g. viewers copying what they show),
 /// then the one editing in place. Only if another reader depends on the editor's output can't it be.
+///
+/// Otherwise nodes run in the graph's order, except that nodes only copying their inputs out (see `Node::copies`)
+/// run as soon as their inputs are ready, so the copies are made early in the pass.
 pub struct Plan<N: NodeSet> {
     steps: Vec<Step>,
     /// The data stream each buffer in the pool holds.
     buffers: Vec<DataStream<N>>,
     /// For each node with state, the data streams on its inputs (for its initial state).
     state_inputs: Vec<(NodeId, Vec<Option<DataStream<N>>>)>,
-    /// The nodes that show live data in their windows.
-    displays: Vec<NodeId>,
     /// The memory each buffer takes, once asked (see `buffer_bytes`).
     bytes: OnceLock<Vec<usize>>,
 }
@@ -172,10 +182,12 @@ impl<N: NodeSet> Plan<N> {
             }
         }
 
-        let (mut steps, mut buffers, mut state_inputs, mut displays) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let copying: Vec<NodeId> =
+            runs.iter().copied().filter(|id| graph.get(*id).is_some_and(|e| e.node.copies().is_some())).collect();
+        let (mut steps, mut buffers, mut state_inputs) = (Vec::new(), Vec::new(), Vec::new());
         // The buffer each output (of the nodes so far) is in.
         let mut buffer_of: HashMap<(NodeId, usize), usize> = HashMap::new();
-        for id in order(&runs, &before) {
+        for id in order(&runs, &before, &copying) {
             let (Some(entry), Some(state)) = (graph.get(id), resolved.get(&id)) else { continue };
             let mut inputs: Vec<Option<usize>> = (0..state.inputs.len())
                 .map(|index| {
@@ -204,13 +216,10 @@ impl<N: NodeSet> Plan<N> {
                 state_inputs.push((id, state.input_streams.clone()));
                 state_inputs.len() - 1
             });
-            let display = entry.node.display().is_some().then(|| {
-                displays.push(id);
-                displays.len() - 1
-            });
-            steps.push(Step { id, inputs, outputs, in_place: made_in_place, state: node_state, display });
+            let copies = entry.node.copies();
+            steps.push(Step { id, inputs, outputs, in_place: made_in_place, state: node_state, copies });
         }
-        Plan { steps, buffers, state_inputs, displays, bytes: OnceLock::new() }
+        Plan { steps, buffers, state_inputs, bytes: OnceLock::new() }
     }
 
     /// The nodes that run, in the order they run in each pass.
@@ -246,50 +255,39 @@ impl<N: NodeSet> Plan<N> {
     }
 
     /// The buffers a worker runs passes on.
-    fn workspace(&self, graph: &Graph<N>) -> Workspace<N> {
-        Workspace {
-            buffers: self.buffers.iter().map(|s| Some(s.buffer(PASS_DURATION))).collect(),
-            displays: self.empty_displays(graph).into_iter().map(Some).collect(),
-        }
+    fn workspace(&self) -> Workspace<N> {
+        Workspace { buffers: self.buffers.iter().map(|s| Some(s.buffer(PASS_DURATION))).collect() }
     }
 
-    /// An empty display buffer for each node that shows live data.
-    fn empty_displays(&self, graph: &Graph<N>) -> Vec<Box<dyn Any + Send>> {
-        let empty = |id: &NodeId| graph.get(*id).and_then(|e| e.node.display());
-        self.displays.iter().map(|id| empty(id).unwrap_or_else(|| Box::new(()))).collect()
-    }
-
-    /// Runs pass `sequence` through every step of `graph`, on `workspace`.
-    fn run(&self, graph: &Graph<N>, pass: PassId, workspace: &mut Workspace<N>, run: &RunSlots) {
-        let Workspace { buffers: workspace, displays } = workspace;
+    /// Runs a pass through every step of `snapshot`'s graph, on `workspace`.
+    fn run(&self, snapshot: &Snapshot<N>, pass: PassId, workspace: &mut Workspace<N>, run: &RunSlots) {
+        let Workspace { buffers: workspace } = workspace;
         let sequence = pass.sequence;
         for step in &self.steps {
             let pass = PassId { node: Some(step.id), ..pass };
-            let Some(node) = graph.get(step.id).map(|e| &e.node) else { continue };
+            let Some(node) = snapshot.graph.get(step.id).map(|e| &e.node) else { continue };
+            let controls = snapshot.controls.get(&step.id).map_or(&[][..], Vec::as_slice);
             // Take the outputs out of the pool, so the rest of it can be read as inputs.
             let mut outputs: Vec<Buffer<N::Edges>> =
                 step.outputs.iter().map(|&b| workspace[b].take().expect("buffer in pool")).collect();
             {
                 let inputs: Vec<Option<&Buffer<N::Edges>>> =
                     step.inputs.iter().map(|b| b.and_then(|b| workspace[b].as_ref())).collect();
-                let display = step.display.and_then(|d| displays[d].as_deref_mut());
                 let mut pass_data = Pass {
                     sequence,
                     duration: PASS_DURATION,
+                    node: step.id,
                     inputs: &inputs,
                     outputs: &mut outputs,
-                    display,
-                    shown: false,
+                    controls,
+                    recording: snapshot.recording.is_some(),
+                    prepared: snapshot.recording.as_deref(),
+                    exchange: &run.exchange,
                 };
                 console::in_pass(pass, || match step.state {
                     Some(slot) => run.states[slot].with(sequence, |state| node.process(&mut pass_data, Some(state))),
                     None => node.process(&mut pass_data, None),
                 });
-                if let (true, Some(d)) = (pass_data.shown, step.display)
-                    && let Some(display) = displays[d].as_mut()
-                {
-                    run.displays[d].offer(sequence, display);
-                }
             }
             for (&b, buffer) in step.outputs.iter().zip(outputs) {
                 workspace[b] = Some(buffer);
@@ -314,8 +312,9 @@ fn reaches(before: &HashMap<NodeId, Vec<NodeId>>, from: NodeId, to: NodeId) -> b
     false
 }
 
-/// `nodes` ordered so each comes after those it must run after, otherwise keeping their order.
-fn order(nodes: &[NodeId], before: &HashMap<NodeId, Vec<NodeId>>) -> Vec<NodeId> {
+/// `nodes` ordered so each comes after those it must run after, otherwise keeping their order, but with those
+/// in `early` as soon as they can be.
+fn order(nodes: &[NodeId], before: &HashMap<NodeId, Vec<NodeId>>, early: &[NodeId]) -> Vec<NodeId> {
     let mut waiting: HashMap<NodeId, usize> = nodes.iter().map(|id| (*id, 0)).collect();
     for later in before.values().flatten() {
         if let Some(count) = waiting.get_mut(later) {
@@ -324,8 +323,9 @@ fn order(nodes: &[NodeId], before: &HashMap<NodeId, Vec<NodeId>>) -> Vec<NodeId>
     }
     let mut ordered = Vec::with_capacity(nodes.len());
     while ordered.len() < nodes.len() {
-        // The first node (in the original order) with nothing left to wait for.
-        let Some(&next) = nodes.iter().find(|id| waiting.get(id) == Some(&0)) else { break };
+        // The first node (in the original order, those to run early first) with nothing left to wait for.
+        let ready = |id: &&NodeId| waiting.get(id) == Some(&0);
+        let Some(&next) = early.iter().find(ready).or_else(|| nodes.iter().find(ready)) else { break };
         waiting.remove(&next);
         ordered.push(next);
         for later in before.get(&next).into_iter().flatten() {
@@ -337,11 +337,10 @@ fn order(nodes: &[NodeId], before: &HashMap<NodeId, Vec<NodeId>>) -> Vec<NodeId>
     ordered
 }
 
-/// A worker's buffers: data buffers for every step, and display buffers for the steps that show live data.
-/// Made once per worker per plan, before the worker runs any of the plan's passes.
+/// A worker's buffers, for every step. Made once per worker per plan, before the worker runs any of the plan's
+/// passes.
 struct Workspace<N: NodeSet> {
     buffers: Vec<Option<Buffer<N::Edges>>>,
-    displays: Vec<Option<Box<dyn Any + Send>>>,
 }
 
 impl<N: NodeSet> Workspace<N> {
@@ -351,34 +350,11 @@ impl<N: NodeSet> Workspace<N> {
     }
 }
 
-/// What the workers share during a run, besides the graph: node state and the latest displays.
+/// What the workers share during a run of one plan, besides the graph: the nodes' state, and the run's
+/// exchange.
 struct RunSlots {
     states: Vec<StateSlot>,
-    displays: Vec<DisplaySlot>,
-}
-
-/// The latest display of a node that shows live data, for its window.
-struct DisplaySlot {
-    /// The pass it's from (`None` until the first), and the display.
-    latest: Mutex<(Option<u64>, Box<dyn Any + Send>)>,
-}
-
-impl DisplaySlot {
-    /// Starts with an empty display buffer, swapped out for the first pass's display.
-    fn new(empty: Box<dyn Any + Send>) -> Self {
-        DisplaySlot { latest: Mutex::new((None, empty)) }
-    }
-
-    /// Swaps `display` (from pass `sequence`) in as the latest, if it's newer and the window isn't reading it
-    /// just now. `display` is left holding a buffer to reuse.
-    fn offer(&self, sequence: u64, display: &mut Box<dyn Any + Send>) {
-        let Ok(mut latest) = self.latest.try_lock() else { return };
-        let (shown, previous) = &mut *latest;
-        if shown.is_none_or(|shown| shown < sequence) {
-            std::mem::swap(previous, display);
-            *shown = Some(sequence);
-        }
-    }
+    exchange: Arc<Exchange>,
 }
 
 /// A node's state, handed from each pass to the next in turn (see the module docs).
@@ -454,6 +430,8 @@ struct Shared {
     completed: AtomicU64,
     dropped: AtomicU64,
     recent: Mutex<VecDeque<Record>>,
+    /// Where nodes leave things for their windows.
+    exchange: Arc<Exchange>,
     /// What each worker is up to.
     workers: Vec<WorkerSlot>,
     /// The next pass the dispatcher will send.
@@ -523,14 +501,12 @@ struct Job {
     due: Instant,
 }
 
-/// A run of one plan: the graph its passes run against (swapped for newer snapshots of the same shape), the
+/// A run of one plan: the snapshot its passes run against (swapped for newer snapshots of the same shape), the
 /// plan, what the workers share running it, and the queue its passes are dispatched on. A change to the graph
 /// that changes the plan starts a new epoch, which the dispatcher moves on to once a worker is ready for it.
 struct Epoch<N: NodeSet> {
     number: u64,
-    graph: Mutex<Arc<Graph<N>>>,
-    /// The version of the snapshot `graph` is from.
-    version: AtomicU64,
+    snapshot: Mutex<Snapshot<N>>,
     plan: Arc<Plan<N>>,
     slots: RunSlots,
     /// How many workers have a workspace for this epoch, ready to run its passes.
@@ -544,18 +520,14 @@ struct Epoch<N: NodeSet> {
 
 impl<N: NodeSet> Epoch<N> {
     fn new(snapshot: &Snapshot<N>, workers: usize, shared: Arc<Shared>) -> Self {
-        let (graph, plan) = (snapshot.graph.clone(), snapshot.plan.clone());
-        let slots = RunSlots {
-            states: plan.initial_states(&graph),
-            displays: plan.empty_displays(&graph).into_iter().map(DisplaySlot::new).collect(),
-        };
+        let plan = snapshot.plan.clone();
+        let slots = RunSlots { states: plan.initial_states(&snapshot.graph), exchange: shared.exchange.clone() };
         // A few passes may queue, beyond which they're dropped.
         let (sender, receiver) = crossbeam_channel::bounded(queue_capacity(workers));
         let number = shared.epochs.fetch_add(1, Ordering::Relaxed) + 1;
         Epoch {
             number,
-            graph: Mutex::new(graph),
-            version: AtomicU64::new(snapshot.version),
+            snapshot: Mutex::new(snapshot.clone()),
             plan,
             slots,
             ready: AtomicUsize::new(0),
@@ -580,11 +552,10 @@ impl<N: NodeSet> Drop for Epoch<N> {
     }
 }
 
-/// The epochs a run has: the newest (which workers prepare for), and those whose displays are shown.
+/// The epochs a run has: the newest (which workers prepare for), and the one being dispatched.
 struct Epochs<N: NodeSet> {
     wanted: Mutex<Arc<Epoch<N>>>,
-    /// The epoch being dispatched and the one before, whose displays are shown until the new one has some.
-    shown: Mutex<[Option<Arc<Epoch<N>>>; 2]>,
+    running: Mutex<Option<Arc<Epoch<N>>>>,
 }
 
 /// The graph running: a dispatcher and a pool of workers, until dropped.
@@ -605,7 +576,7 @@ impl<N: NodeSet> Runner<N> {
         let epoch = Arc::new(Epoch::new(snapshot, workers, shared.clone()));
         log::info!("Running on {workers} workers, {} ms passes", PASS_DURATION * 1000.0);
         log::debug!("Epoch {} for version {}: {}", epoch.number, snapshot.version, describe(&epoch.plan));
-        let epochs = Arc::new(Epochs { wanted: Mutex::new(epoch), shown: Mutex::new([None, None]) });
+        let epochs = Arc::new(Epochs { wanted: Mutex::new(epoch), running: Mutex::new(None) });
 
         let mut threads = Vec::new();
         for index in 0..workers {
@@ -624,7 +595,17 @@ impl<N: NodeSet> Runner<N> {
     /// The graph of the latest snapshot given to the run.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn graph(&self) -> Arc<Graph<N>> {
-        self.epochs.wanted.lock().unwrap().graph.lock().unwrap().clone()
+        self.epochs.wanted.lock().unwrap().snapshot.lock().unwrap().graph.clone()
+    }
+
+    /// Where the run's nodes leave things for their windows.
+    pub fn exchange(&self) -> &Exchange {
+        &self.shared.exchange
+    }
+
+    /// The acquisition clock: seconds of passes sent so far.
+    pub fn clock(&self) -> f64 {
+        self.shared.next_pass.load(Ordering::Relaxed) as f64 * PASS_DURATION
     }
 
     /// Moves the run on to a newer snapshot. If it runs the same way (as after a change of settings), passes
@@ -637,8 +618,7 @@ impl<N: NodeSet> Runner<N> {
         }
         let mut wanted = self.epochs.wanted.lock().unwrap();
         if Arc::ptr_eq(&wanted.plan, &snapshot.plan) || wanted.plan.same_shape(&snapshot.plan) {
-            *wanted.graph.lock().unwrap() = snapshot.graph.clone();
-            wanted.version.store(snapshot.version, Ordering::Relaxed);
+            *wanted.snapshot.lock().unwrap() = snapshot.clone();
             log::trace!("Version {} carries on epoch {}", snapshot.version, wanted.number);
             true
         } else {
@@ -653,36 +633,22 @@ impl<N: NodeSet> Runner<N> {
         }
     }
 
-    /// Runs `f` on the latest live display of node `id`, if it's shown any yet. While `f` runs, workers skip
-    /// updating it rather than wait.
-    pub fn with_display<R>(&self, id: NodeId, f: impl FnOnce(&(dyn Any + Send)) -> R) -> Option<R> {
-        let shown = self.epochs.shown.lock().unwrap();
-        for epoch in shown.iter().flatten() {
-            let Some(index) = epoch.plan.displays.iter().position(|d| *d == id) else { continue };
-            let latest = epoch.slots.displays[index].latest.lock().unwrap();
-            if latest.0.is_some() {
-                return Some(f(latest.1.as_ref()));
-            }
-        }
-        None
-    }
-
     /// The plan passes are being dispatched for, once they are.
     #[cfg(test)]
     fn running_plan(&self) -> Option<Arc<Plan<N>>> {
-        self.epochs.shown.lock().unwrap()[0].as_ref().map(|e| e.plan.clone())
+        self.epochs.running.lock().unwrap().as_ref().map(|e| e.plan.clone())
     }
 
     /// Everything about the run as of now: its epochs, workers and dispatcher, and the stats.
     pub fn inspect(&self) -> RunInfo<N> {
         let info = |epoch: &Epoch<N>| EpochInfo {
             number: epoch.number,
-            version: epoch.version.load(Ordering::Relaxed),
+            version: epoch.snapshot.lock().unwrap().version,
             plan: epoch.plan.clone(),
             ready: epoch.ready.load(Ordering::Relaxed),
             queued: epoch.receiver.len(),
         };
-        let running = self.epochs.shown.lock().unwrap()[0].as_deref().map(info);
+        let running = self.epochs.running.lock().unwrap().as_deref().map(info);
         let wanted = self.epochs.wanted.lock().unwrap().clone();
         let preparing = (running.as_ref().map(|r| r.number) != Some(wanted.number)).then(|| info(&wanted));
         let workers = self
@@ -761,8 +727,7 @@ fn work<N: NodeSet>(epochs: &Epochs<N>, shared: &Shared, index: usize) {
             if let Some((_, workspace)) = mine.take() {
                 shared.memory.fetch_sub(workspace.bytes(), Ordering::Relaxed);
             }
-            let graph = wanted.graph.lock().unwrap().clone();
-            let workspace = wanted.plan.workspace(&graph);
+            let workspace = wanted.plan.workspace();
             let bytes = workspace.bytes();
             shared.memory.fetch_add(bytes, Ordering::Relaxed);
             slot.memory.store(bytes, Ordering::Relaxed);
@@ -781,9 +746,9 @@ fn work<N: NodeSet>(epochs: &Epochs<N>, shared: &Shared, index: usize) {
                 shared.busy.fetch_add(1, Ordering::Relaxed);
                 slot.pass.store(job.sequence, Ordering::Relaxed);
                 let start = Instant::now();
-                let graph = epoch.graph.lock().unwrap().clone();
+                let snapshot = epoch.snapshot.lock().unwrap().clone();
                 let pass = PassId { epoch: epoch.number, sequence: job.sequence, node: None };
-                epoch.plan.run(&graph, pass, workspace, &epoch.slots);
+                epoch.plan.run(&snapshot, pass, workspace, &epoch.slots);
                 let finished = Instant::now();
                 slot.pass.store(IDLE, Ordering::Relaxed);
                 slot.passes.fetch_add(1, Ordering::Relaxed);
@@ -831,9 +796,8 @@ fn dispatch<N: NodeSet>(epochs: &Epochs<N>, shared: &Shared) {
             }
             wanted.begin(sequence);
             log::debug!("Epoch {} running from pass {sequence}", wanted.number);
-            let previous = current.take().map(|(epoch, _)| epoch); // dropping its sender ends its passes
-            *epochs.shown.lock().unwrap() = [Some(wanted.clone()), previous];
-            current = Some((wanted, sender));
+            *epochs.running.lock().unwrap() = Some(wanted.clone());
+            current = Some((wanted, sender)); // dropping the old epoch's sender ends its passes
         }
         let Some((_, sender)) = &current else {
             std::thread::sleep(IDLE_CHECK);
@@ -869,16 +833,16 @@ fn queue_capacity(workers: usize) -> usize {
     2 * workers
 }
 
-/// "4 steps, 6 buffers (1.2 MB a worker), 3 with state, 2 shown".
+/// "4 steps, 6 buffers (1.2 MB a worker), 3 with state, 2 copying out".
 fn describe<N: NodeSet>(plan: &Plan<N>) -> String {
     let bytes: usize = plan.buffer_bytes().iter().sum();
     format!(
-        "{} steps, {} buffers ({:.2} MB a worker), {} with state, {} shown",
+        "{} steps, {} buffers ({:.2} MB a worker), {} with state, {} copying out",
         plan.steps.len(),
         plan.buffers.len(),
         bytes as f64 / 1e6,
         plan.state_inputs.len(),
-        plan.displays.len()
+        plan.steps.iter().filter(|s| s.copies.is_some()).count()
     )
 }
 
@@ -964,6 +928,19 @@ pub mod tests {
     }
 
     #[test]
+    fn nodes_only_copying_out_run_as_soon_as_they_can() {
+        let mut graph = Graph::default();
+        let board = add(&mut graph, "Acquisition Board");
+        let detector = add(&mut graph, "Spike Detector");
+        let viewer = add(&mut graph, "LFP Viewer");
+        link(&mut graph, board, 0, detector, 0);
+        link(&mut graph, board, 0, viewer, 0);
+        let plan = Plan::new(&graph);
+        assert_eq!(plan.steps.iter().map(|s| s.id).collect::<Vec<_>>(), vec![board, viewer, detector]);
+        assert_eq!(plan.steps[1].copies, Some(CopyTo::Window));
+    }
+
+    #[test]
     fn passes_filter_and_detect_spikes() {
         use crate::standard_components::ephys::board::{Source, serve_test_board};
 
@@ -976,17 +953,17 @@ pub mod tests {
         let detector = add(&mut graph, "Spike Detector");
         link(&mut graph, board, 0, filter, 0);
         link(&mut graph, filter, 0, detector, 0);
-        let plan = Plan::new(&graph);
-        let displays = plan.empty_displays(&graph).into_iter().map(DisplaySlot::new).collect();
-        let slots = RunSlots { states: plan.initial_states(&graph), displays };
-        let mut workspace = plan.workspace(&graph);
+        let snapshot = Snapshot::new(0, graph, None);
+        let plan = &snapshot.plan;
+        let slots = RunSlots { states: plan.initial_states(&snapshot.graph), exchange: Arc::default() };
+        let mut workspace = plan.workspace();
         // A second of samples, as they come from the board in real time.
         let (mut spikes, mut samples) = (0, 0);
         let filter_output = plan.steps.iter().find(|s| s.id == filter).unwrap().outputs[0];
         let detector_output = plan.steps.iter().find(|s| s.id == detector).unwrap().outputs[0];
         let deadline = Instant::now() + Duration::from_secs(5);
         for sequence in 0.. {
-            plan.run(&graph, PassId { epoch: 1, sequence, node: None }, &mut workspace, &slots);
+            plan.run(&snapshot, PassId { epoch: 1, sequence, node: None }, &mut workspace, &slots);
             let Some(Buffer::Spikes(output)) = &workspace.buffers[detector_output] else { panic!("spikes buffer") };
             spikes += output.spikes.len();
             let Some(Buffer::Continuous(filtered)) = &workspace.buffers[filter_output] else { panic!("continuous") };

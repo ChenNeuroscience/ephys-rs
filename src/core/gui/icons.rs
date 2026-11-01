@@ -32,6 +32,8 @@ pub enum Icon {
     Stop,
     /// Show the developer tools: a terminal window.
     DevTools,
+    /// Start or stop recording: a red dot.
+    Record,
 }
 
 const PAPER: Color32 = Color32::from_gray(246);
@@ -149,6 +151,9 @@ impl Icon {
             }
             Icon::Play => {
                 poly(vec![p(4.0, 2.0), p(14.0, 8.0), p(4.0, 14.0)], GREEN);
+            }
+            Icon::Record => {
+                painter.circle(p(8.0, 8.0), 5.0 * s, fade(RED), line);
             }
             Icon::DevTools => {
                 painter.rect(r(1.0, 2.0, 15.0, 14.0), 1.5 * s, fade(Color32::from_gray(40)), line, StrokeKind::Middle);

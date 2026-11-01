@@ -11,7 +11,8 @@ use super::camera::capture::State;
 use super::camera::node::camera_settings_ui;
 use super::led_chart::{self, History};
 use super::position_detector::{calibration_ui, crop_ui, detection_ui};
-use crate::core::engine::{Category, Context, Control, Input, Node, NodeInfo, Output, Pass};
+use crate::core::engine::{Category, Context, Control, CopyTo, Input, Node, NodeInfo, Output, Pass};
+use crate::core::exchange::Latest;
 use crate::core::theme::Colours;
 use crate::standard_components::preview;
 use crate::standard_components::tracking::VideoBuffer;
@@ -30,6 +31,13 @@ pub struct TrackerView {
     pub overlays: Overlays,
     /// Whether the camera's settings are locked against changes here.
     pub camera_locked: bool,
+}
+
+/// The tracker's state while running: the LEDs' recent sizes, and what it last copied for its window.
+#[derive(Default)]
+pub struct Tracking {
+    history: History,
+    shown: Latest<TrackerDisplay>,
 }
 
 /// A video frame, copied for display.
@@ -70,8 +78,7 @@ impl Node<Edges> for TrackerView {
     };
     const HAS_VIEW: bool = true;
 
-    /// The LEDs' recent sizes.
-    type State = History;
+    type State = Tracking;
 
     fn inputs(&self) -> Vec<Input<Edges>> {
         vec![
@@ -91,27 +98,29 @@ impl Node<Edges> for TrackerView {
 
     fn controls(&self) -> Vec<Control<Edges>> {
         vec![
-            Control { name: "camera", kind: SettingKind::Camera },
-            Control { name: "detection", kind: SettingKind::Detection },
+            Control { name: "camera", kind: SettingKind::Camera, read_only: false },
+            Control { name: "detection", kind: SettingKind::Detection, read_only: false },
         ]
     }
 
-    fn display(&self) -> Option<Box<dyn std::any::Any + Send>> {
-        Some(Box::new(TrackerDisplay::default()))
+    fn copies(&self) -> Option<CopyTo> {
+        Some(CopyTo::Window)
     }
 
     /// Room for the LEDs' sizes over `led_chart::SECONDS`, so it isn't allocated while running.
-    fn initial_state(&self, inputs: &[Option<DataStream>]) -> History {
+    fn initial_state(&self, inputs: &[Option<DataStream>]) -> Tracking {
         let fps = match inputs[1] {
             Some(DataStream::Positions(positions)) => positions.fps as f64,
             _ => 0.0,
         };
-        History::with_capacity((fps * led_chart::SECONDS) as usize + 16)
+        let history = History::with_capacity((fps * led_chart::SECONDS) as usize + 16);
+        Tracking { history, shown: Latest::default() }
     }
 
     /// Records the LEDs' sizes, and keeps the pass's last frame, the LEDs found in it and the camera's stats. A
     /// pass without a frame is only shown if the camera isn't running, to say why.
-    fn process(&self, pass: &mut Pass<Edges>, history: &mut History) {
+    fn process(&self, pass: &mut Pass<Edges>, tracking: &mut Tracking) {
+        let Tracking { history, shown } = tracking;
         if let Some(Buffer::Positions(positions)) = pass.inputs[1] {
             for sample in &positions.samples {
                 let area = |led: Option<Blob>| led.map_or(0, |b| b.area);
@@ -133,24 +142,25 @@ impl Node<Edges> for TrackerView {
             Some(Buffer::Positions(positions)) => Some(positions),
             _ => None,
         };
-        let Some(display) = pass.display::<TrackerDisplay>() else { return };
-        display.leds.clear();
-        match video {
-            Some(video) => {
-                let last = video.frames - 1;
-                display.frame.copy_from(video, last);
-                let found = positions.and_then(|p| p.samples.iter().find(|s| s.frame == video.ids[last]));
-                display.leds.extend(found.into_iter().flat_map(|s| s.leds).flatten());
+        shown.send(pass, |display| {
+            display.leds.clear();
+            match video {
+                Some(video) => {
+                    let last = video.frames - 1;
+                    display.frame.copy_from(video, last);
+                    let found = positions.and_then(|p| p.samples.iter().find(|s| s.frame == video.ids[last]));
+                    display.leds.extend(found.into_iter().flat_map(|s| s.leds).flatten());
+                }
+                None => display.frame.width = 0,
             }
-            None => display.frame.width = 0,
-        }
-        match (stats, &mut display.stats) {
-            (Some(stats), Some(shown)) => shown.copy_from(stats),
-            (Some(stats), shown) => *shown = Some(stats.clone()),
-            (None, shown) => *shown = None,
-        }
-        display.history.clear();
-        display.history.extend(history.iter().copied());
+            match (stats, &mut display.stats) {
+                (Some(stats), Some(shown)) => shown.copy_from(stats),
+                (Some(stats), shown) => *shown = Some(stats.clone()),
+                (None, shown) => *shown = None,
+            }
+            display.history.clear();
+            display.history.extend(history.iter().copied());
+        });
     }
 
     fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
@@ -599,7 +609,8 @@ mod tests {
     /// The LEDs in the view's latest display, once it has a frame.
     fn leds_shown(runner: &Runner<Nodes>, view: NodeId) -> Option<usize> {
         runner
-            .with_display(view, |d| {
+            .exchange()
+            .with_latest(view, |d| {
                 d.downcast_ref::<TrackerDisplay>().filter(|d| d.frame.width > 0).map(|d| d.leds.len())
             })
             .flatten()
@@ -717,7 +728,9 @@ mod tests {
         let mut harness = egui_kittest::Harness::builder().with_size([1150.0, 650.0]).wgpu().build_ui_state(
             |ui, graph: &mut Graph<Nodes>| {
                 let display: &(dyn std::any::Any + Send) = &display;
-                graph.edit(view, &inputs, &THEMES[0].colours, Some(display), |node, context| node.view_ui(ui, context));
+                graph.edit(view, &inputs, &THEMES[0].colours, Some(display), true, |node, context| {
+                    node.view_ui(ui, context)
+                });
             },
             graph,
         );

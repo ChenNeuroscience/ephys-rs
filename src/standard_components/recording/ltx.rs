@@ -1,0 +1,707 @@
+//! Write LTX: recording in the LTX format, as the Open Ephys LTX plugin writes it, for legacy tetrode analysis
+//! code (and Waveform GUI). For a recording called `name` (the prefix and when it started):
+//!
+//! - `name.set`: headers only.
+//! - `name.1`, `name.2`...: each tetrode's spikes, each as 4 × (a 4-byte timestamp, then 50 one-byte samples).
+//! - `name.egf`, `name.egf2`...: each continuous channel at 5 kHz, a byte a sample.
+//! - `name.pos`: LED positions, a 4-byte timestamp then 8 two-byte values (x1, y1, x2, y2, and the LEDs' sizes).
+//! - `name.ttl`: digital input changes, as text.
+//!
+//! Each file is `key value` header lines, then the data between `data_start` and `data_end`; counts and the
+//! duration are filled in at the end. Timestamps count 96 kHz ticks from the start of recording, and multi-byte
+//! values are big-endian. Voltages are stored a µV a step for spikes, two µV a step for the 5 kHz data.
+//!
+//! The positions' header records the detector's settings (connected, read-only, to `detection`): the crop, whose
+//! bounding box positions are measured from (scaled down to fit 0–1022 if need be; 1023 means no LED), and the
+//! calibration.
+
+use std::fs::File;
+use std::io::{self, BufWriter, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
+
+use chrono::{DateTime, Local};
+use eframe::egui;
+use serde::{Deserialize, Serialize};
+
+use super::{Files, Status, Writing, path_in, session_name, status_ui};
+use crate::core::engine::{
+    Category, Context, Control, CopyTo, EdgeSet, Input, Node, NodeInfo, NodeThread, Output, Pass, ThreadContext,
+};
+use crate::core::exchange::Latest;
+use crate::standard_components::ephys::{Continuous, Event, Events};
+use crate::standard_components::spikes::Spikes;
+use crate::standard_components::tracking::{Crop, Detection, PositionSample, Positions};
+use crate::standard_components::widgets::{require_input, setting, settings_grid};
+use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
+
+/// Ticks a second, for timestamps.
+const TIMEBASE: f64 = 96000.0;
+/// The continuous data's rate, once downsampled.
+const EGF_RATE: u32 = 5000;
+/// Samples stored for each channel of a spike.
+const SPIKE_SAMPLES: usize = 50;
+const SPIKE_CHANNELS: usize = 4;
+/// What a position that wasn't found is stored as.
+const MISSING: u16 = 1023;
+
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WriteLtx {
+    pub directory: String,
+    pub prefix: String,
+}
+
+impl Default for WriteLtx {
+    fn default() -> Self {
+        WriteLtx { directory: "~/recordings".into(), prefix: "session".into() }
+    }
+}
+
+/// The inputs' data streams, as the run started.
+#[derive(Clone, Copy, Default)]
+struct Streams {
+    spikes: Option<Spikes>,
+    continuous: Option<Continuous>,
+    positions: Option<Positions>,
+    events: Option<Events>,
+}
+
+/// While running: the writer's thread while recording, and its status for the window.
+#[derive(Default)]
+pub struct Recorder {
+    streams: Streams,
+    writing: Option<Writing<Chunk>>,
+    shown: Latest<Status>,
+}
+
+/// A pass's data, copied for the writer's thread.
+#[derive(Default)]
+pub struct Chunk {
+    /// Each spike's group and peak (a sample of its pass), and their waveforms (as in `SpikesBuffer`).
+    spikes: Vec<(u32, i32)>,
+    waveforms: Vec<f32>,
+    spike_pass_samples: usize,
+    /// The continuous data, channel after channel, `continuous_len` samples each.
+    continuous: Vec<f32>,
+    continuous_len: usize,
+    positions: Vec<PositionSample>,
+    events: Vec<Event>,
+    event_pass_samples: usize,
+}
+
+impl Node<Edges> for WriteLtx {
+    type State = Recorder;
+
+    const INFO: NodeInfo = NodeInfo {
+        name: "Write LTX",
+        category: Category::Recording,
+        description: "Records tetrode spikes, continuous data (at 5 kHz), positions and digital inputs in the LTX \
+                      format, for legacy tetrode analysis code.",
+    };
+
+    fn inputs(&self) -> Vec<Input<Edges>> {
+        vec![
+            Input { name: "spikes", kind: Kind::Spikes },
+            Input { name: "continuous", kind: Kind::Continuous },
+            Input { name: "positions", kind: Kind::Positions },
+            Input { name: "events", kind: Kind::Events },
+        ]
+    }
+
+    fn outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {
+        Vec::new()
+    }
+
+    fn controls(&self) -> Vec<Control<Edges>> {
+        vec![Control { name: "detection", kind: SettingKind::Detection, read_only: true }]
+    }
+
+    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
+        let mut warnings = require_input(inputs, "something to record");
+        if let Some(DataStream::Spikes(spikes)) = inputs[0]
+            && spikes.group_size != SPIKE_CHANNELS as u32
+        {
+            warnings.push(format!("LTX spikes are in tetrodes: groups of 4, not {}", spikes.group_size));
+        }
+        if let Some(DataStream::Continuous(continuous)) = inputs[1]
+            && egf_step(continuous.sample_rate).is_none()
+        {
+            warnings.push(format!("LTX continuous data is {EGF_RATE} Hz: the input's rate must be a multiple"));
+        }
+        warnings
+    }
+
+    fn copies(&self) -> Option<CopyTo> {
+        Some(CopyTo::Thread)
+    }
+
+    fn threads(&self) -> Vec<NodeThread> {
+        vec![NodeThread { name: "LTX writer", link: "chunk queue" }]
+    }
+
+    fn thread_ui(&self, _thread: usize, ui: &mut egui::Ui, context: &ThreadContext) {
+        status_ui(ui, context.display::<Status>(), context.theme);
+    }
+
+    fn initial_state(&self, inputs: &[Option<DataStream>]) -> Recorder {
+        Recorder { streams: Streams::of(inputs), ..Default::default() }
+    }
+
+    /// Opens the files, and starts the thread to write them.
+    fn prepare_to_record(
+        &self,
+        inputs: &[Option<DataStream>],
+        controls: &[Option<Setting>],
+    ) -> Option<Box<dyn std::any::Any + Send>> {
+        let (start, base) = self.base();
+        let files = LtxFiles::open(&base, start, Streams::of(inputs), detection(controls).as_ref());
+        let writing: Writing<Chunk> =
+            Writing::new("LTX writer", base.display().to_string(), files.map(|f| Box::new(f) as Box<_>));
+        Some(Box::new(writing))
+    }
+
+    /// While recording, copies the pass's data for the writer's thread.
+    fn process(&self, pass: &mut Pass<Edges>, recorder: &mut Recorder) {
+        match (pass.recording, &recorder.writing) {
+            (true, None) => {
+                recorder.writing = pass.take_prepared::<Writing<Chunk>>().or_else(|| {
+                    // Not prepared (the graph changed while recording, say): the thread opens the files.
+                    let (start, base) = self.base();
+                    let (streams, detection) = (recorder.streams, detection(pass.controls));
+                    let shown = base.display().to_string();
+                    Some(Writing::start("LTX writer", shown, move || {
+                        LtxFiles::open(&base, start, streams, detection.as_ref()).map(|f| Box::new(f) as Box<_>)
+                    }))
+                });
+            }
+            (false, Some(_)) => recorder.writing = None, // finishes the files
+            _ => {}
+        }
+        if let Some(writing) = &recorder.writing {
+            let mut chunk = writing.chunk();
+            copy(pass, &mut chunk);
+            writing.send(chunk);
+        }
+        let writing = &recorder.writing;
+        recorder.shown.send(pass, |status| match writing {
+            Some(writing) => writing.status_into(status),
+            None => *status = Status::default(),
+        });
+    }
+
+    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
+        settings_grid(ui, |ui| {
+            setting(ui, "Directory", |ui| ui.text_edit_singleline(&mut self.directory));
+            setting(ui, "File prefix", |ui| ui.text_edit_singleline(&mut self.prefix));
+        });
+        ui.add_space(4.0);
+        let recording: Vec<String> = self
+            .inputs()
+            .iter()
+            .zip(context.inputs)
+            .filter_map(|(input, stream)| stream.map(|s| format!("{}: {}", input.name, s.summary())))
+            .collect();
+        if recording.is_empty() {
+            ui.weak("Nothing connected to record.");
+        } else {
+            ui.label(format!("Records {}.", recording.join(", ")));
+        }
+        if context.controls[0].is_none() && context.inputs[2].is_some() {
+            ui.weak("Connect the detection to record the crop and calibration with the positions.");
+        }
+        ui.separator();
+        status_ui(ui, context.display::<Status>(), context.theme);
+    }
+}
+
+impl WriteLtx {
+    /// When a recording starts, and its files' path (without their extensions).
+    fn base(&self) -> (DateTime<Local>, PathBuf) {
+        let start = Local::now();
+        (start, path_in(&self.directory, &session_name(&self.prefix, &start)))
+    }
+}
+
+impl Streams {
+    fn of(inputs: &[Option<DataStream>]) -> Self {
+        let mut streams = Streams::default();
+        for input in inputs.iter().flatten() {
+            match *input {
+                DataStream::Spikes(s) => streams.spikes = Some(s),
+                DataStream::Continuous(c) => streams.continuous = Some(c),
+                DataStream::Positions(p) => streams.positions = Some(p),
+                DataStream::Events(e) => streams.events = Some(e),
+                _ => {}
+            }
+        }
+        streams
+    }
+}
+
+/// The detector's settings, from the detection control.
+fn detection(controls: &[Option<Setting>]) -> Option<Detection> {
+    match controls.first() {
+        Some(Some(Setting::Detection(detection))) => Some(detection.clone()),
+        _ => None,
+    }
+}
+
+/// Copies a pass's inputs into `chunk`.
+fn copy(pass: &Pass<Edges>, chunk: &mut Chunk) {
+    chunk.spikes.clear();
+    chunk.waveforms.clear();
+    chunk.spike_pass_samples = 0;
+    if let Some(Some(Buffer::Spikes(spikes))) = pass.inputs.first() {
+        chunk.spikes.extend(spikes.spikes.iter().map(|s| (s.group, s.sample)));
+        chunk.waveforms.extend_from_slice(&spikes.waveforms);
+        chunk.spike_pass_samples = spikes.pass_samples;
+    }
+    chunk.continuous.clear();
+    chunk.continuous_len = 0;
+    if let Some(Some(Buffer::Continuous(continuous))) = pass.inputs.get(1) {
+        for channel in 0..continuous.channels {
+            chunk.continuous.extend_from_slice(&continuous.channel(channel)[..continuous.len]);
+        }
+        chunk.continuous_len = continuous.len;
+    }
+    chunk.positions.clear();
+    if let Some(Some(Buffer::Positions(positions))) = pass.inputs.get(2) {
+        chunk.positions.extend_from_slice(&positions.samples);
+    }
+    chunk.events.clear();
+    chunk.event_pass_samples = 0;
+    if let Some(Some(Buffer::Events(events))) = pass.inputs.get(3) {
+        chunk.events.extend_from_slice(&events.events);
+        chunk.event_pass_samples = events.pass_samples;
+    }
+}
+
+/// How many samples to step for each 5 kHz sample, if the rate's a multiple of 5 kHz.
+fn egf_step(rate: f32) -> Option<usize> {
+    let rate = rate.round() as u32;
+    (rate >= EGF_RATE && rate.is_multiple_of(EGF_RATE)).then_some((rate / EGF_RATE) as usize)
+}
+
+/// A value as a signed byte, saturating.
+fn to_i8(value: f32) -> u8 {
+    (value as i32).clamp(-128, 127) as i8 as u8
+}
+
+/// Seconds as ticks of the timebase.
+fn ticks(seconds: f64) -> [u8; 4] {
+    ((seconds * TIMEBASE).round().clamp(0.0, i32::MAX as f64) as i32).to_be_bytes()
+}
+
+/// An LTX file: header lines, then the data, with the duration (and one count) filled in at the end.
+struct LtxFile {
+    file: BufWriter<File>,
+    /// Where the duration's value goes, and the count's.
+    duration_at: u64,
+    count_at: Option<u64>,
+    in_data: bool,
+}
+
+/// Room for a value filled in at the end.
+const PLACEHOLDER: &str = "              ";
+
+impl LtxFile {
+    fn create(path: &Path, start: &DateTime<Local>) -> io::Result<Self> {
+        let mut file = BufWriter::new(File::create(path)?);
+        write!(file, "trial_date {}", start.format("%A, %d %b %Y"))?;
+        write!(file, "\r\ntrial_time {}", start.format("%H:%M"))?;
+        write!(file, "\r\ncreated_by ephys-rs {}", env!("CARGO_PKG_VERSION"))?;
+        write!(file, "\r\nduration ")?;
+        let duration_at = file.stream_position()?;
+        write!(file, "{PLACEHOLDER}")?;
+        Ok(LtxFile { file, duration_at, count_at: None, in_data: false })
+    }
+
+    fn header(&mut self, key: &str, value: impl std::fmt::Display) -> io::Result<()> {
+        write!(self.file, "\r\n{key} {value}")
+    }
+
+    /// A header whose value (a count) is filled in at the end.
+    fn count_header(&mut self, key: &str) -> io::Result<()> {
+        write!(self.file, "\r\n{key} ")?;
+        self.count_at = Some(self.file.stream_position()?);
+        write!(self.file, "{PLACEHOLDER}")
+    }
+
+    fn data(&mut self, bytes: &[u8]) -> io::Result<()> {
+        if !self.in_data {
+            write!(self.file, "\r\ndata_start")?;
+            self.in_data = true;
+        }
+        self.file.write_all(bytes)
+    }
+
+    fn finish(mut self, seconds: u64, count: u64) -> io::Result<()> {
+        if self.in_data {
+            write!(self.file, "\r\ndata_end")?;
+        }
+        self.file.seek(SeekFrom::Start(self.duration_at))?;
+        write!(self.file, "{seconds}")?;
+        if let Some(at) = self.count_at {
+            self.file.seek(SeekFrom::Start(at))?;
+            write!(self.file, "{count}")?;
+        }
+        self.file.flush()
+    }
+}
+
+/// How positions are stored: relative to the crop's bounding box (the frame, without a crop), scaled down if need
+/// be to fit 0–1022.
+#[derive(Clone, Copy)]
+struct Encoding {
+    origin: [f32; 2],
+    scale: f32,
+}
+
+impl Encoding {
+    fn coordinate(&self, value: f32, axis: usize) -> u16 {
+        if !value.is_finite() {
+            return MISSING;
+        }
+        ((value - self.origin[axis]) * self.scale).round().clamp(0.0, (MISSING - 1) as f32) as u16
+    }
+}
+
+/// The crop's bounding box (min x, min y, max x, max y), or the frame's, in pixels.
+fn window(crop: Option<&Crop>, frame: [u32; 2]) -> [f32; 4] {
+    let frame = [0.0, 0.0, frame[0] as f32, frame[1] as f32];
+    let Some(crop) = crop else { return frame };
+    let (Some([cx, cy]), Some([hx, hy])) = (crop.center(), crop.half_extents()) else { return frame };
+    let (sin, cos) = crop.angle().sin_cos();
+    let (ex, ey) = ((hx * cos).abs() + (hy * sin).abs(), (hx * sin).abs() + (hy * cos).abs());
+    [cx - ex, cy - ey, cx + ex, cy + ey]
+}
+
+struct Tetrode {
+    file: LtxFile,
+    spikes: u64,
+}
+
+struct Egf {
+    file: LtxFile,
+    samples: u64,
+}
+
+struct Pos {
+    file: LtxFile,
+    encoding: Encoding,
+    /// The camera's time of the first position, which timestamps count from.
+    first: Option<f64>,
+    samples: u64,
+}
+
+/// A recording's LTX files, written on the writer's thread.
+struct LtxFiles {
+    start: DateTime<Local>,
+    streams: Streams,
+    set: LtxFile,
+    tetrodes: Vec<Tetrode>,
+    egf: Vec<Egf>,
+    /// Samples of continuous data so far (for which to keep at 5 kHz), and of the spikes' and events' passes.
+    continuous_samples: u64,
+    spike_samples: i64,
+    event_samples: u64,
+    pos: Option<Pos>,
+    ttl: Option<LtxFile>,
+    /// For each record of `bytes`.
+    record: Vec<u8>,
+}
+
+impl LtxFiles {
+    fn open(base: &Path, start: DateTime<Local>, streams: Streams, detection: Option<&Detection>) -> io::Result<Self> {
+        if let Some(parent) = base.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let file = |extension: &str| -> io::Result<LtxFile> {
+            let mut path: PathBuf = base.to_path_buf();
+            path.as_mut_os_string().push(extension);
+            LtxFile::create(&path, &start)
+        };
+        let mut set = file(".set")?;
+        set.header("lasttrialdatetime", start.timestamp())?;
+        for (i, bearing) in [0, 180, 0, 0].into_iter().enumerate() {
+            set.header(&format!("lightBearing_{}", i + 1), bearing)?;
+        }
+        for (i, active) in [1, 1, 0, 0].into_iter().enumerate() {
+            set.header(&format!("colactive_{}", i + 1), active)?;
+        }
+
+        let mut tetrodes = Vec::new();
+        if let Some(spikes) = streams.spikes {
+            for group in 0..spikes.groups() {
+                let mut f = file(&format!(".{}", group + 1))?;
+                f.header("num_chans", SPIKE_CHANNELS)?;
+                f.header("bytes_per_timestamp", 4)?;
+                f.header("samples_per_spike", SPIKE_SAMPLES)?;
+                f.header("bytes_per_sample", 1)?;
+                f.header("spike_format", "t,ch1,t,ch2,t,ch3,t,ch4")?;
+                f.header("sample_rate", format!("{:.6} hz", spikes.sample_rate))?;
+                f.header("timebase", format!("{TIMEBASE} hz"))?;
+                f.count_header("num_spikes")?;
+                tetrodes.push(Tetrode { file: f, spikes: 0 });
+            }
+        }
+
+        let mut egf = Vec::new();
+        if let Some(continuous) = streams.continuous.filter(|c| egf_step(c.sample_rate).is_some()) {
+            for channel in 0..continuous.channels {
+                let mut f = file(&if channel == 0 { ".egf".into() } else { format!(".egf{}", channel + 1) })?;
+                f.header("num_chans", 1)?;
+                f.header("sample_rate", format!("{EGF_RATE} hz"))?;
+                f.header("stream_name", "continuous")?;
+                f.header("chan_name", format!("CH{}", channel + 1))?;
+                f.count_header("num_EEG_samples")?;
+                egf.push(Egf { file: f, samples: 0 });
+            }
+        }
+
+        let pos = match streams.positions {
+            Some(positions) => Some(open_pos(file(".pos")?, positions, detection)?),
+            None => None,
+        };
+        let ttl = match streams.events {
+            Some(_) => Some(file(".ttl")?),
+            None => None,
+        };
+        log::info!("Recording LTX to {}", base.display());
+        Ok(LtxFiles {
+            start,
+            streams,
+            set,
+            tetrodes,
+            egf,
+            continuous_samples: 0,
+            spike_samples: 0,
+            event_samples: 0,
+            pos,
+            ttl,
+            record: Vec::new(),
+        })
+    }
+}
+
+/// The position file's headers: what's needed to read the positions, and the detector's settings.
+fn open_pos(mut f: LtxFile, positions: Positions, detection: Option<&Detection>) -> io::Result<Pos> {
+    let crop = detection.map(|d| &d.crop).filter(|c| **c != Crop::None);
+    let [min_x, min_y, max_x, max_y] = window(crop, [positions.width, positions.height]);
+    let (width, height) = (max_x - min_x, max_y - min_y);
+    let scale = (((MISSING - 1) as f32) / width.max(height).max(1.0)).min(1.0);
+    let ppm = detection.and_then(Detection::pixels_per_metre);
+    let fps = format!("{:.6} hz", positions.fps);
+    f.header("timestamp_timebase", format!("{TIMEBASE} hz"))?;
+    f.header("timebase", &fps)?;
+    f.header("sample_rate", &fps)?;
+    f.header("bytes_per_timestamp", 4)?;
+    f.header("bytes_per_coord", 2)?;
+    f.header("pos_format", "t,x1,y1,x2,y2,numpix1,numpix2")?;
+    f.header("num_colours", 4)?;
+    for (i, bearing) in [330, 150, 0, 0].into_iter().enumerate() {
+        f.header(&format!("bearing_colour_{}", i + 1), bearing)?;
+    }
+    f.header("position_metadata_source", "camera_tracker")?;
+    f.header("data_source", format!("ephys-rs {}", env!("CARGO_PKG_VERSION")))?;
+    f.header("pixels_per_metre", ppm.map_or(f32::NAN, |p| p * scale))?;
+    let (right, bottom) = ((width * scale).round(), (height * scale).round());
+    for (key, value) in [("min_x", 0.0), ("max_x", right), ("min_y", 0.0), ("max_y", bottom)] {
+        f.header(&format!("window_{key}"), value)?;
+    }
+    for (key, value) in [("min_x", 0.0), ("max_x", right), ("min_y", 0.0), ("max_y", bottom)] {
+        f.header(key, value)?;
+    }
+    if let Some(ppm) = ppm {
+        f.header("camera_tracker.pixels_per_metre", ppm)?;
+    }
+    f.header("camera_tracker.window", format!("{min_x} {min_y} {max_x} {max_y}"))?;
+    if let Some(crop) = crop {
+        f.header("camera_tracker.crop", format!("{crop:?}"))?;
+    }
+    f.header("camera_tracker.frame_size", format!("{} {}", positions.width, positions.height))?;
+    let transformed = scale < 1.0 || min_x != 0.0 || min_y != 0.0;
+    f.header("position_coordinate_transform", if transformed { "crop_relative_uniform_scale" } else { "identity" })?;
+    f.header("position_coordinate_origin_x", min_x)?;
+    f.header("position_coordinate_origin_y", min_y)?;
+    f.header("position_coordinate_scale", scale)?;
+    f.header("position_missing_coordinate", MISSING)?;
+    f.header("position_area_units", "camera_pixels_saturated_uint16")?;
+    f.count_header("num_pos_samples")?;
+    Ok(Pos { file: f, encoding: Encoding { origin: [min_x, min_y], scale }, first: None, samples: 0 })
+}
+
+impl Files<Chunk> for LtxFiles {
+    fn write(&mut self, chunk: &Chunk) -> io::Result<u64> {
+        let mut bytes = 0;
+        if let Some(spikes) = self.streams.spikes {
+            let (k, samples) = (spikes.group_size as usize, spikes.waveform_samples() as usize);
+            for (i, &(group, sample)) in chunk.spikes.iter().enumerate() {
+                let Some(tetrode) = self.tetrodes.get_mut(group as usize) else { continue };
+                let seconds = (self.spike_samples + sample as i64) as f64 / spikes.sample_rate as f64;
+                let waveform = &chunk.waveforms[i * k * samples..(i + 1) * k * samples];
+                self.record.clear();
+                for channel in 0..SPIKE_CHANNELS {
+                    self.record.extend_from_slice(&ticks(seconds));
+                    let values = waveform.get(channel * samples..(channel + 1) * samples).unwrap_or(&[]);
+                    let start = self.record.len();
+                    self.record.extend(values.iter().take(SPIKE_SAMPLES).map(|v| to_i8(*v)));
+                    self.record.resize(start + SPIKE_SAMPLES, 0);
+                }
+                tetrode.file.data(&self.record)?;
+                tetrode.spikes += 1;
+                bytes += self.record.len() as u64;
+            }
+            self.spike_samples += chunk.spike_pass_samples as i64;
+        }
+
+        if let Some(step) = self.streams.continuous.and_then(|c| egf_step(c.sample_rate))
+            && chunk.continuous_len > 0
+        {
+            let len = chunk.continuous_len;
+            // The first sample of this chunk to keep, carrying on the step from earlier chunks.
+            let first = (step - (self.continuous_samples % step as u64) as usize) % step;
+            for (channel, egf) in self.egf.iter_mut().enumerate() {
+                let values = &chunk.continuous[channel * len..(channel + 1) * len];
+                self.record.clear();
+                self.record.extend(values[first.min(len)..].iter().step_by(step).map(|v| to_i8(v / 2.0)));
+                egf.file.data(&self.record)?;
+                egf.samples += self.record.len() as u64;
+                bytes += self.record.len() as u64;
+            }
+            self.continuous_samples += len as u64;
+        }
+
+        if let Some(pos) = &mut self.pos {
+            for sample in &chunk.positions {
+                let first = *pos.first.get_or_insert(sample.time);
+                self.record.clear();
+                self.record.extend_from_slice(&ticks(sample.time - first));
+                let led = |i: usize| sample.leds[i].map_or([f32::NAN, f32::NAN, 0.0], |b| [b.x, b.y, b.area as f32]);
+                let (a, b) = (led(0), led(1));
+                let values = [
+                    pos.encoding.coordinate(a[0], 0),
+                    pos.encoding.coordinate(a[1], 1),
+                    pos.encoding.coordinate(b[0], 0),
+                    pos.encoding.coordinate(b[1], 1),
+                    a[2].min(u16::MAX as f32) as u16,
+                    b[2].min(u16::MAX as f32) as u16,
+                    0,
+                    0,
+                ];
+                for value in values {
+                    self.record.extend_from_slice(&value.to_be_bytes());
+                }
+                pos.file.data(&self.record)?;
+                pos.samples += 1;
+                bytes += self.record.len() as u64;
+            }
+        }
+
+        if let (Some(ttl), Some(events)) = (&mut self.ttl, self.streams.events) {
+            for event in &chunk.events {
+                let seconds = (self.event_samples + event.sample as u64) as f64 / events.sample_rate as f64;
+                let line = format!("ttl_{} {seconds} {}\r\n", event.line + 1, event.high as u8);
+                ttl.data(line.as_bytes())?;
+                bytes += line.len() as u64;
+            }
+            self.event_samples += chunk.event_pass_samples as u64;
+        }
+        Ok(bytes)
+    }
+
+    fn finish(self: Box<Self>) -> io::Result<()> {
+        let seconds = (Local::now() - self.start).num_seconds().max(0) as u64;
+        self.set.finish(seconds, 0)?;
+        for tetrode in self.tetrodes {
+            tetrode.file.finish(seconds, tetrode.spikes)?;
+        }
+        for egf in self.egf {
+            egf.file.finish(seconds, egf.samples)?;
+        }
+        if let Some(pos) = self.pos {
+            pos.file.finish(seconds, pos.samples)?;
+        }
+        if let Some(ttl) = self.ttl {
+            ttl.finish(seconds, 0)?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::standard_components::spikes::Spike;
+    use crate::standard_components::tracking::pipeline::Blob;
+
+    fn read(path: &Path, extension: &str) -> Vec<u8> {
+        let mut path = path.to_path_buf();
+        path.as_mut_os_string().push(extension);
+        std::fs::read(path).unwrap()
+    }
+
+    /// The header's value for `key`.
+    fn header(bytes: &[u8], key: &str) -> String {
+        let text = String::from_utf8_lossy(bytes);
+        let line = text.split("\r\n").find(|l| l.starts_with(&format!("{key} "))).expect(key);
+        line[key.len() + 1..].trim().to_string()
+    }
+
+    /// The bytes between `data_start` and `data_end`.
+    fn data(bytes: &[u8]) -> &[u8] {
+        let find = |token: &[u8]| bytes.windows(token.len()).position(|w| w == token).unwrap();
+        &bytes[find(b"data_start") + 10..find(b"\r\ndata_end")]
+    }
+
+    #[test]
+    fn writes_spikes_eeg_and_positions() {
+        let dir = std::env::temp_dir().join(format!("ephys-rs-ltx-{}", std::process::id()));
+        let base = dir.join("test");
+        let spikes = Spikes { channels: 4, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32 };
+        let streams = Streams {
+            spikes: Some(spikes),
+            continuous: Some(Continuous { channels: 2, sample_rate: 30000.0 }),
+            positions: Some(Positions { fps: 50.0, width: 640, height: 480 }),
+            events: None,
+        };
+        let mut files = Box::new(LtxFiles::open(&base, Local::now(), streams, None).unwrap());
+
+        // A spike 300 samples into the second pass of 600: at 900 samples, 30 ms, 2880 ticks.
+        let mut chunk = Chunk { spike_pass_samples: 600, ..Default::default() };
+        files.write(&chunk).unwrap();
+        let spike = Spike { sample: 300, group: 0, channel: 0 };
+        chunk.spikes.push((spike.group, spike.sample));
+        chunk.waveforms = (0..160).map(|i| i as f32 - 80.0).collect();
+        // 12 samples on each channel: every sixth kept, halved.
+        chunk.continuous = (0..24).map(|i| i as f32 * 10.0).collect();
+        chunk.continuous_len = 12;
+        let blob = Blob { x: 100.0, y: 50.0, area: 30 };
+        chunk.positions.push(PositionSample {
+            frame: 1,
+            time: 5.0,
+            leds: [Some(blob), None],
+            pixels_per_metre: f32::NAN,
+        });
+        files.write(&chunk).unwrap();
+        files.finish().unwrap();
+
+        let tetrode = read(&base, ".1");
+        assert_eq!(header(&tetrode, "num_spikes"), "1");
+        let record = data(&tetrode);
+        assert_eq!(record.len(), 4 * 54);
+        assert_eq!(i32::from_be_bytes(record[..4].try_into().unwrap()), 2880);
+        assert_eq!(record[4] as i8, -80, "the first channel's first sample");
+        assert_eq!(record[54 + 4] as i8, -40, "the second channel's");
+        let egf = read(&base, ".egf2");
+        assert_eq!(header(&egf, "num_EEG_samples"), "2");
+        assert_eq!(data(&egf).iter().map(|b| *b as i8).collect::<Vec<_>>(), vec![60, 90]);
+        let pos = read(&base, ".pos");
+        let sample = data(&pos);
+        assert_eq!(u16::from_be_bytes([sample[4], sample[5]]), 100);
+        assert_eq!(u16::from_be_bytes([sample[8], sample[9]]), MISSING, "no second LED");
+        assert_eq!(u16::from_be_bytes([sample[12], sample[13]]), 30);
+        assert!(read(&base, ".set").windows(10).all(|w| w != b"data_start"), "the set file is headers only");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}

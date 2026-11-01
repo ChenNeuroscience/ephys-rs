@@ -105,7 +105,9 @@ fn node<N: NodeSet>(
     ui.separator();
 
     egui::ScrollArea::vertical().show(ui, |ui| {
-        graph.edit(id, &state.input_streams, colours, None, |node: &mut N, context| node.settings_ui(ui, context));
+        graph.edit(id, &state.input_streams, colours, None, false, |node: &mut N, context| {
+            node.settings_ui(ui, context)
+        });
         ui.add_space(8.0);
         for (role, title) in [
             (Role::Input, "Inputs"),

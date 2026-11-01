@@ -80,6 +80,8 @@ pub struct SpikesBuffer {
     pub samples: usize,
     /// Each channel's threshold as the pass ended, in µV (negative for negative-going spikes).
     pub thresholds: Vec<f32>,
+    /// How many samples of continuous data the pass covers (for timing spikes across passes).
+    pub pass_samples: usize,
 }
 
 impl SpikesBuffer {
@@ -124,6 +126,7 @@ impl DataStreamType for Spikes {
             group_size,
             samples: waveform,
             thresholds: vec![0.0; self.channels as usize],
+            pass_samples: 0,
         }
     }
 

@@ -2,7 +2,8 @@ use eframe::egui::{self, Align2, Color32, FontId, Stroke};
 use serde::{Deserialize, Serialize};
 
 use super::tracker_view::{Frame, show_frame};
-use crate::core::engine::{Category, Context, EdgeType, Input, Node, NodeInfo, Output, Pass};
+use crate::core::engine::{Category, Context, CopyTo, EdgeType, Input, Node, NodeInfo, Output, Pass};
+use crate::core::exchange::Latest;
 use crate::standard_components::preview;
 use crate::standard_components::tracking::overlay::Overlays;
 use crate::standard_components::widgets::require_input;
@@ -19,7 +20,8 @@ impl Node<Edges> for VideoViewer {
         NodeInfo { name: "Video Viewer", category: Category::Visualisation, description: "The latest video frame." };
     const HAS_VIEW: bool = true;
 
-    type State = ();
+    /// The latest frame, for the window.
+    type State = Latest<Frame>;
 
     fn inputs(&self) -> Vec<Input<Edges>> {
         vec![Input { name: "video", kind: Kind::Video }]
@@ -33,17 +35,15 @@ impl Node<Edges> for VideoViewer {
         require_input(inputs, "video")
     }
 
-    fn display(&self) -> Option<Box<dyn std::any::Any + Send>> {
-        Some(Box::new(Frame::default()))
+    fn copies(&self) -> Option<CopyTo> {
+        Some(CopyTo::Window)
     }
 
     /// Keeps the pass's last frame.
-    fn process(&self, pass: &mut Pass<Edges>, _state: &mut ()) {
+    fn process(&self, pass: &mut Pass<Edges>, shown: &mut Latest<Frame>) {
         let Some(Buffer::Video(video)) = pass.inputs[0] else { return };
-        if video.frames > 0
-            && let Some(frame) = pass.display::<Frame>()
-        {
-            frame.copy_from(video, video.frames - 1);
+        if video.frames > 0 {
+            shown.send(pass, |frame| frame.copy_from(video, video.frames - 1));
         }
     }
 
@@ -56,8 +56,7 @@ impl Node<Edges> for VideoViewer {
             return preview::unconnected(ui, context.theme, "Connect video to view it");
         };
         let Some(frame) = context.display::<Frame>().filter(|f| f.width > 0) else {
-            let message =
-                if context.display.is_some() { "Waiting for frames…" } else { "Press Play to see the video" };
+            let message = if context.running { "Waiting for frames…" } else { "Press Play to see the video" };
             return preview::unconnected(ui, context.theme, message);
         };
         let (rect, _) = show_frame(ui, frame, None, &Overlays::default(), context.theme);

@@ -171,22 +171,36 @@ fn bezier_points([a, b, c, d]: [Pos2; 4]) -> Vec<Pos2> {
 }
 
 /// Data edges are solid, in their type's colour, with an arrowhead halfway along showing which way the data
-/// flows. Settings edges are grey (`wire_colour`) and dashed, with no direction: their ports show their type.
-fn paint_wire(painter: &Painter, points: [Pos2; 4], dimension: Dimension, stroke: Stroke, zoom: f32) {
+/// flows. Settings edges are grey (`wire_colour`) and dashed, with no direction (either end may change the
+/// setting): their ports show their type. A read-only one (to a control that only reads the setting) is dotted,
+/// with an arrowhead pointing to the reader.
+fn paint_wire(painter: &Painter, points: [Pos2; 4], dimension: Dimension, read_only: bool, stroke: Stroke, zoom: f32) {
     let path = bezier_points(points);
+    let [a, b, c, d] = points.map(|p| p.to_vec2());
+    // The curve's midpoint and its direction there.
+    let middle = ((a + 3.0 * b + 3.0 * c + d) / 8.0).to_pos2();
+    let direction = 0.75 * ((b - a) + 2.0 * (c - b) + (d - c));
+    let size = (4.0 + 1.5 * stroke.width) * zoom.sqrt();
     match dimension {
         Dimension::Data => {
             painter.add(Shape::line(path, stroke));
-            let [a, b, c, d] = points.map(|p| p.to_vec2());
-            // The curve's midpoint and its direction there.
-            let middle = ((a + 3.0 * b + 3.0 * c + d) / 8.0).to_pos2();
-            let direction = 0.75 * ((b - a) + 2.0 * (c - b) + (d - c));
-            arrowhead(painter, middle, direction, (4.0 + 1.5 * stroke.width) * zoom.sqrt(), stroke.color);
+            arrowhead(painter, middle, direction, size, stroke.color);
+        }
+        Dimension::Settings if read_only => {
+            painter.extend(Shape::dotted_line(&path, stroke.color, 5.0 * zoom, stroke.width * 0.6));
+            // From the setting (where the wire ends) back to the control reading it.
+            arrowhead(painter, middle, -direction, size, stroke.color);
         }
         Dimension::Settings => {
             painter.extend(Shape::dashed_line(&path, stroke, 7.0 * zoom, 4.0 * zoom));
         }
     }
+}
+
+/// Whether a control only reads the setting it's linked to.
+fn read_only<E: Edges>(resolved: &Resolved<E>, port: Port) -> bool {
+    port.role == Role::Control
+        && resolved.get(&port.node).and_then(|s| s.controls.get(port.index)).is_some_and(|c| c.read_only)
 }
 
 /// The colour to draw an edge of a type with colour `colour`: settings edges are all the same grey, so they
@@ -458,7 +472,8 @@ impl Canvas {
             };
             let dimension = port.role.dimension();
             let colour = wire_colour(dimension, info.colour, self.colours);
-            paint_wire(&painter, points, dimension, Stroke::new(2.0 * zoom.sqrt(), colour), zoom);
+            let read_only = read_only(resolved, port) || target.is_some_and(|t| read_only(resolved, t));
+            paint_wire(&painter, points, dimension, read_only, Stroke::new(2.0 * zoom.sqrt(), colour), zoom);
         }
 
         let connected: HashSet<Port> = graph.edges().iter().flat_map(|e| [e.source(), e.target()]).collect();
@@ -545,7 +560,13 @@ impl Canvas {
         if sections.is_empty() {
             return; // nothing on the graph to explain
         }
-        let rows: usize = if self.legend_open { sections.iter().map(|(_, _, kinds)| 1 + kinds.len()).sum() } else { 0 };
+        // Whether to explain read-only settings edges too.
+        let read_only = resolved.values().any(|s| s.controls.iter().any(|c| c.read_only));
+        let rows: usize = if self.legend_open {
+            sections.iter().map(|(_, _, kinds)| 1 + kinds.len()).sum::<usize>() + read_only as usize
+        } else {
+            0
+        };
         let height = 2.0 * PAD + ROW * (1 + rows) as f32;
         let rect = Rect::from_min_size(
             self.screen_rect.max - egui::vec2(WIDTH + MARGIN, height + MARGIN),
@@ -611,6 +632,16 @@ impl Canvas {
                 painter.text(label, Align2::LEFT_CENTER, info.name, font.clone(), colours.text_primary);
                 y += ROW;
             }
+        }
+        if read_only {
+            // A dotted edge into a hollow port, as a control that only reads a setting has.
+            let mid = y + ROW / 2.0;
+            let (start, end) = (egui::pos2(title.left(), mid), egui::pos2(title.left() + 26.0, mid));
+            painter.extend(Shape::dotted_line(&[start, end], colours.text_secondary, 4.0, 1.2));
+            let outline = Stroke::new(1.5, colours.text_secondary);
+            painter.add(Shape::convex_polygon(diamond(start, 4.5), colours.surface, outline));
+            let label = egui::pos2(title.left() + 36.0, mid);
+            painter.text(label, Align2::LEFT_CENTER, "read only", font.clone(), colours.text_primary);
         }
     }
 
@@ -801,6 +832,9 @@ impl Canvas {
             let help = match port.role {
                 Role::Input | Role::Output => "Drag to connect; click to add or pick a node to connect",
                 Role::Setting => "Other nodes can edit this. Drag to a control to link them",
+                Role::Control if state.controls.get(port.index).is_some_and(|c| c.read_only) => {
+                    "Reads a setting of another node, without changing it. Drag to a setting to link them"
+                }
                 Role::Control => "Edits a setting of another node. Drag to a setting to link them",
             };
             response.on_hover_text(format!("{name} ({kind} {}): {summary}\n{description}\n\n{help}", port.role.name()));
@@ -899,9 +933,10 @@ impl Canvas {
             };
             if selected {
                 let halo = Stroke::new(w + 3.0, self.colours.text_primary.gamma_multiply(0.12));
-                paint_wire(painter, points, Dimension::Data, halo, zoom);
+                paint_wire(painter, points, Dimension::Data, false, halo, zoom);
             }
-            paint_wire(painter, points, edge.dimension, Stroke::new(w, colour), zoom);
+            let read_only = read_only(resolved, source);
+            paint_wire(painter, points, edge.dimension, read_only, Stroke::new(w, colour), zoom);
         }
     }
 }
@@ -1069,7 +1104,8 @@ fn paint_node<N: NodeSet>(
             let at = egui::pos2(rect.left() + 10.0 * z, pos.y);
             painter.text(at, Align2::LEFT_CENTER, summary, font(11.0), fade(colour));
         }
-        paint_port(painter, port, pos, colour, connected, ports, z, fade);
+        let read_only = port.role == Role::Control && state.controls.get(port.index).is_some_and(|c| c.read_only);
+        paint_port(painter, port, pos, colour, connected, read_only, ports, z, fade);
     }
 }
 
@@ -1080,6 +1116,7 @@ fn paint_port(
     pos: Pos2,
     colour: Color32,
     connected: bool,
+    read_only: bool,
     ports: &PortPaint,
     z: f32,
     fade: impl Fn(Color32) -> Color32,
@@ -1104,9 +1141,10 @@ fn paint_port(
             }
         }
         // Settings ports are diamonds, of the type's colour. A connected one has a grey centre, the colour of
-        // its edge, to tie the two together.
+        // its edge, to tie the two together. A read-only control is only an outline: it can't fill in the setting.
         Dimension::Settings => {
             let d = r * 1.25;
+            let fill = if read_only { fade(ports.colours.surface_raised) } else { fill };
             painter.add(Shape::convex_polygon(diamond(pos, d), fill, Stroke::new(1.5 * z, colour)));
             if connected {
                 let centre = fade(wire_colour(Dimension::Settings, colour, ports.colours));

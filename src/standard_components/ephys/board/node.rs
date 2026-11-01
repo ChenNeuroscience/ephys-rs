@@ -9,6 +9,7 @@ use super::{
     AUX_PER_HEADSTAGE, Bandwidth, Block, BoardInfo, Config, Headstage, OpalKellyKind, PORTS, SAMPLE_RATES, Source,
 };
 use crate::core::engine::{Category, Context, Node, NodeInfo, NodeThread, Output, Pass, ThreadContext};
+use crate::core::exchange::Latest;
 use crate::standard_components::ephys::{Continuous, Event, Events};
 use crate::standard_components::widgets::{named_settings_grid, queue_ui, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind};
@@ -57,6 +58,7 @@ pub struct Acquiring {
     mismatched: u64,
     /// Digital input changes lost because a pass had no room for them.
     lost_events: u64,
+    shown: Latest<BoardDisplay>,
 }
 
 /// How acquisition is going, for the node's window.
@@ -111,7 +113,7 @@ impl Node<Edges> for AcquisitionBoard {
             Output {
                 name: "digital",
                 kind: Kind::Events,
-                stream: Some(DataStream::Events(Events { lines: self.source.ttl_lines() })),
+                stream: Some(DataStream::Events(Events { lines: self.source.ttl_lines(), sample_rate: rate })),
             },
         ];
         if self.aux {
@@ -130,10 +132,6 @@ impl Node<Edges> for AcquisitionBoard {
         } else {
             Vec::new()
         }
-    }
-
-    fn display(&self) -> Option<Box<dyn std::any::Any + Send>> {
-        Some(Box::new(BoardDisplay::default()))
     }
 
     fn threads(&self) -> Vec<NodeThread> {
@@ -245,10 +243,14 @@ impl Node<Edges> for AcquisitionBoard {
                 out.len = taken;
             }
         }
-        if let Some(display) = pass.display::<BoardDisplay>() {
-            capture.status_into(&mut display.status);
-            (display.mismatched, display.lost_events) = (acquiring.mismatched, acquiring.lost_events);
+        if let Some(Buffer::Events(events)) = pass.outputs.get_mut(1) {
+            events.pass_samples = taken;
         }
+        let (mismatched, lost_events) = (acquiring.mismatched, acquiring.lost_events);
+        acquiring.shown.send(pass, |display| {
+            capture.status_into(&mut display.status);
+            (display.mismatched, display.lost_events) = (mismatched, lost_events);
+        });
     }
 
     fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
@@ -502,8 +504,9 @@ mod tests {
         let mut harness = egui_kittest::Harness::builder().with_size([420.0, 560.0]).wgpu().build_ui_state(
             |ui, graph: &mut Graph<Nodes>| {
                 let display: &(dyn std::any::Any + Send) = &display;
-                graph
-                    .edit(board, &[], &THEMES[0].colours, Some(display), |node, context| node.settings_ui(ui, context));
+                graph.edit(board, &[], &THEMES[0].colours, Some(display), true, |node, context| {
+                    node.settings_ui(ui, context)
+                });
             },
             graph,
         );
