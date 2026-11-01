@@ -16,9 +16,12 @@ edge_types! {
         Events(signals::Events),
         Spikes(signals::Spikes),
         Video(signals::Video),
+        Positions(signals::Positions),
     }
     settings: pub enum Setting, SettingKind {
         Threshold(settings::Threshold),
         Gain(settings::Gain),
+        Camera(crate::tracking::CameraSettings),
+        Detection(crate::tracking::Detection),
     }
 }

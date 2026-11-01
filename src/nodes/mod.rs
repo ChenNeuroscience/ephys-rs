@@ -8,9 +8,11 @@ mod band_pass;
 mod camera;
 mod gain;
 mod lfp_viewer;
+mod position_detector;
 mod preview;
 mod spike_detector;
 mod spike_viewer;
+mod tracker_view;
 mod video_viewer;
 mod writer;
 
@@ -28,14 +30,17 @@ node_set! {
         BandPassFilter(band_pass::BandPassFilter),
         Gain(gain::Gain),
         SpikeDetector(spike_detector::SpikeDetector),
+        PositionDetector(position_detector::PositionDetector),
         LfpViewer(lfp_viewer::LfpViewer),
         SpikeViewer(spike_viewer::SpikeViewer),
         VideoViewer(video_viewer::VideoViewer),
+        TrackerView(tracker_view::TrackerView),
         Writer(writer::Writer),
     }
 }
 
-/// A small rig: an acquisition board filtered into a spike detector, and a camera, all viewed and recorded.
+/// A small rig: an acquisition board filtered into a spike detector, and a camera tracking LEDs, all viewed and
+/// recorded.
 pub fn example() -> Graph<Nodes> {
     let mut graph = Graph::default();
     let mut add = |name: &str, pos: [f32; 2]| {
@@ -48,8 +53,9 @@ pub fn example() -> Graph<Nodes> {
     let spikes = add("Spike Viewer", [780.0, 0.0]);
     let lfp = add("LFP Viewer", [780.0, 110.0]);
     let writer = add("Writer", [1040.0, 120.0]);
-    let camera = add("Camera", [0.0, 300.0]);
-    let video = add("Video Viewer", [780.0, 360.0]);
+    let camera = add("Camera", [0.0, 320.0]);
+    let positions = add("Position Detector", [400.0, 380.0]);
+    let tracker = add("Tracker View", [780.0, 330.0]);
     let mut link = |from, from_role, from_index, to, to_role, to_index| {
         let port = |node, role, index| Port { node, role, index };
         graph.connect(port(from, from_role, from_index), port(to, to_role, to_index)).expect("example edge");
@@ -62,16 +68,27 @@ pub fn example() -> Graph<Nodes> {
     link(board, Output, 0, writer, Input, 0);
     link(board, Output, 1, writer, Input, 1);
     link(detector, Output, 0, writer, Input, 2);
-    link(camera, Output, 0, video, Input, 0);
+    link(camera, Output, 0, positions, Input, 0);
+    link(camera, Output, 0, tracker, Input, 0);
+    link(positions, Output, 0, tracker, Input, 1);
     link(camera, Output, 0, writer, Input, 3);
-    // The spike viewer sets the detector's threshold, though it's downstream of it.
+    link(positions, Output, 0, writer, Input, 4);
+    // Viewers adjust nodes upstream of them: the spike viewer the detector's threshold, and the tracker view
+    // the camera and the position detector.
     link(spikes, Control, 0, detector, Setting, 0);
+    link(tracker, Control, 0, camera, Setting, 0);
+    link(tracker, Control, 1, positions, Setting, 0);
     graph
 }
 
 /// Two-column grid of labelled settings.
 fn settings_grid(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
-    egui::Grid::new("settings").num_columns(2).spacing([12.0, 6.0]).show(ui, add);
+    named_settings_grid(ui, "settings", add);
+}
+
+/// A settings grid with its own id, for when there's more than one in the same place.
+fn named_settings_grid(ui: &mut egui::Ui, id: &str, add: impl FnOnce(&mut egui::Ui)) {
+    egui::Grid::new(id).num_columns(2).spacing([12.0, 6.0]).show(ui, add);
 }
 
 /// A row of `settings_grid`: a label and the widget it names.

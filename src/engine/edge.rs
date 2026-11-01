@@ -21,7 +21,7 @@ pub struct EdgeInfo {
     pub description: &'static str,
 }
 
-pub trait EdgeType: Copy + PartialEq + Debug + 'static {
+pub trait EdgeType: Clone + PartialEq + Debug + Send + Sync + 'static {
     const INFO: EdgeInfo;
 
     /// Short description, e.g. "32 ch · 30 kHz".
@@ -30,7 +30,7 @@ pub trait EdgeType: Copy + PartialEq + Debug + 'static {
 
 /// The closed set of edge types for one dimension: an enum with one variant per type. Implemented by
 /// `edge_types!`.
-pub trait EdgeSet: Copy + PartialEq + Debug + Send + Sync + 'static {
+pub trait EdgeSet: Clone + PartialEq + Debug + Send + Sync + 'static {
     type Kind: Copy + Eq + Hash + Debug + 'static;
     /// Indexed by `kind_index`.
     const KINDS: &'static [EdgeInfo];
@@ -42,8 +42,9 @@ pub trait EdgeSet: Copy + PartialEq + Debug + Send + Sync + 'static {
 
 pub type Kind<S> = <S as EdgeSet>::Kind;
 
-/// A data edge type, which besides describing a signal says how a pass's worth of it is held.
-pub trait SignalType: EdgeType {
+/// A data edge type, which besides describing a signal says how a pass's worth of it is held. Signals are
+/// small descriptions, so `Copy`; settings may hold more (a list, say), so needn't be.
+pub trait SignalType: EdgeType + Copy {
     type Buffer: Send + Sync + 'static;
 
     /// An empty buffer with room for `duration` seconds of this signal. Buffers are made before running, and
@@ -55,7 +56,7 @@ pub trait SignalType: EdgeType {
 }
 
 /// The data edge types, with their buffers. Implemented by `edge_types!`.
-pub trait SignalSet: EdgeSet {
+pub trait SignalSet: EdgeSet + Copy {
     type Buffer: Send + Sync + 'static;
     fn buffer(&self, duration: f64) -> Self::Buffer;
     fn bytes(buffer: &Self::Buffer) -> usize;
@@ -110,6 +111,9 @@ macro_rules! edge_types {
         $crate::edge_types!(@set $svis $signal $kind $($sv($st)),+);
         $crate::edge_types!(@set $cvis $setting $ckind $($cv($ct)),+);
 
+        // Signals are all `Copy` (see `SignalType`), so their enum can be too.
+        impl Copy for $signal {}
+
         $svis enum $buffer {
             $($sv(<$st as $crate::engine::SignalType>::Buffer)),+
         }
@@ -128,7 +132,7 @@ macro_rules! edge_types {
     };
 
     (@set $vis:vis $value:ident $kind:ident $($variant:ident($ty:ty)),+) => {
-        #[derive(Clone, Copy, PartialEq, Debug)]
+        #[derive(Clone, PartialEq, Debug)]
         $vis enum $value {
             $($variant($ty)),+
         }

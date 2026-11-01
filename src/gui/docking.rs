@@ -15,7 +15,7 @@ use super::annotations::Annotations;
 use super::canvas::{Canvas, Selection};
 use super::icons::Icon;
 use super::{Event, inspector, toolbar};
-use crate::engine::{Graph, NodeId, NodeSet, Resolved};
+use crate::engine::{Graph, NodeId, NodeSet, Resolved, Runner};
 use crate::theme::Colours;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
@@ -225,6 +225,7 @@ pub struct Panes<'a, N: NodeSet> {
     pub annotations: &'a mut Annotations,
     pub resolved: &'a Resolved<N::Edges>,
     pub colours: &'static Colours,
+    pub runner: Option<&'a Runner<N>>,
     pub canvas: &'a mut Canvas,
     pub selection: &'a mut Selection,
     pub open_windows: &'a HashSet<NodeId>,
@@ -232,18 +233,26 @@ pub struct Panes<'a, N: NodeSet> {
 }
 
 /// A node's window content: its view if it has one, otherwise its settings.
+/// While running, it gets the latest live data the node's processing has shown.
 pub fn node_ui<N: NodeSet>(
     ui: &mut egui::Ui,
     graph: &mut Graph<N>,
     resolved: &Resolved<N::Edges>,
     colours: &Colours,
+    runner: Option<&Runner<N>>,
     id: NodeId,
 ) {
     let Some(state) = resolved.get(&id) else { return };
     let has_view = graph.get(id).is_some_and(|e| e.node.has_view());
-    graph.edit(id, &state.input_signals, colours, |node, context| {
-        if has_view { node.view_ui(ui, context) } else { node.settings_ui(ui, context) }
-    });
+    let mut show = |graph: &mut Graph<N>, display: Option<&(dyn std::any::Any + Send)>| {
+        graph.edit(id, &state.input_signals, colours, display, |node: &mut N, context| {
+            if has_view { node.view_ui(ui, context) } else { node.settings_ui(ui, context) }
+        });
+    };
+    let shown = runner.and_then(|runner| runner.with_display(id, |display| show(graph, Some(display))));
+    if shown.is_none() {
+        show(graph, None);
+    }
 }
 
 /// What was clicked in a floating window's header.
@@ -333,7 +342,7 @@ impl<N: NodeSet> egui_tiles::Behavior<Pane> for Panes<'_, N> {
                     self.events,
                 )
             }),
-            Pane::Node(id) => padded(ui, |ui| node_ui(ui, self.graph, self.resolved, self.colours, id)),
+            Pane::Node(id) => padded(ui, |ui| node_ui(ui, self.graph, self.resolved, self.colours, self.runner, id)),
         }
         UiResponse::None
     }

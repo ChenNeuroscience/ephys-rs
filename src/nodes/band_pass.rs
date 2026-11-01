@@ -31,9 +31,10 @@ impl Node<Edges> for BandPassFilter {
 
     fn initial_state(&self, inputs: &[Option<Signal>]) -> Filters {
         let Some(Signal::Continuous(signal)) = inputs[0] else { return Filters::default() };
-        let rate = signal.sample_rate;
-        let sections = [Biquad::new(true, self.low_hz, rate), Biquad::new(false, self.high_hz, rate)];
-        Filters { channels: vec![sections; signal.channels as usize] }
+        let mut filters =
+            Filters { channels: vec![[Biquad::default(); 2]; signal.channels as usize], ..Default::default() };
+        filters.tune(self.low_hz, self.high_hz, signal.sample_rate);
+        filters
     }
 
     fn in_place(&self, _output: usize) -> Option<usize> {
@@ -48,6 +49,11 @@ impl Node<Edges> for BandPassFilter {
         let Some(Buffer::Continuous(output)) = pass.outputs.get_mut(0) else { return };
         if filters.channels.len() < output.channels {
             return;
+        }
+        // The cut-offs can change while running: keep the history, with new coefficients.
+        if (filters.low_hz, filters.high_hz) != (self.low_hz, self.high_hz) {
+            let rate = filters.rate;
+            filters.tune(self.low_hz, self.high_hz, rate);
         }
         output.transform(input, |channel, x| {
             let [high_pass, low_pass] = &mut filters.channels[channel];
@@ -96,6 +102,22 @@ impl Node<Edges> for BandPassFilter {
 #[derive(Default)]
 pub struct Filters {
     channels: Vec<[Biquad; 2]>,
+    /// What the coefficients are for.
+    low_hz: f32,
+    high_hz: f32,
+    rate: f32,
+}
+
+impl Filters {
+    /// Sets every channel's coefficients for these cut-offs, keeping their history.
+    fn tune(&mut self, low_hz: f32, high_hz: f32, rate: f32) {
+        let (high_pass, low_pass) = (Biquad::new(true, low_hz, rate), Biquad::new(false, high_hz, rate));
+        for [hp, lp] in &mut self.channels {
+            hp.set_coefficients(&high_pass);
+            lp.set_coefficients(&low_pass);
+        }
+        (self.low_hz, self.high_hz, self.rate) = (low_hz, high_hz, rate);
+    }
 }
 
 /// A second-order Butterworth section (coefficients from the RBJ audio EQ cookbook).
@@ -122,6 +144,10 @@ impl Biquad {
             ((1.0 - cos) / 2.0, 1.0 - cos, (1.0 - cos) / 2.0)
         };
         Biquad { b0: b0 / a0, b1: b1 / a0, b2: b2 / a0, a1: -2.0 * cos / a0, a2: (1.0 - alpha) / a0, z1: 0.0, z2: 0.0 }
+    }
+
+    fn set_coefficients(&mut self, from: &Biquad) {
+        (self.b0, self.b1, self.b2, self.a1, self.a2) = (from.b0, from.b1, from.b2, from.a1, from.a2);
     }
 
     fn run(&mut self, x: f32) -> f32 {

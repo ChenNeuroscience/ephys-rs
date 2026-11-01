@@ -71,6 +71,15 @@ pub struct Context<'a, E: Edges> {
     pub controls: &'a mut [Option<E::Setting>],
     /// The colours to draw with, by role. A node can derive more of its own from these.
     pub theme: &'a Colours,
+    /// The latest live data the node's processing has shown (see `Node::display`), while running.
+    pub display: Option<&'a (dyn Any + Send)>,
+}
+
+impl<E: Edges> Context<'_, E> {
+    /// The latest live display, if there is one, of type `T`.
+    pub fn display<T: 'static>(&self) -> Option<&T> {
+        self.display?.downcast_ref()
+    }
 }
 
 /// A node type. Implementors are plain settings structs, saved with the graph.
@@ -128,6 +137,13 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
         None
     }
 
+    /// For a node that shows live data in its window (a video frame, say): an empty buffer for it. Each pass
+    /// can fill one in (with `Pass::display`), and the window gets the latest (with `Context::display`).
+    /// Workers each have their own, so filling one in never waits on the window.
+    fn display(&self) -> Option<Box<dyn Any + Send>> {
+        None
+    }
+
     /// Does the node's work for one pass: reads its inputs and fills its outputs, which are already sized for
     /// the signals they carry. When an output is being made in place (see `in_place`), its input is `None`
     /// in the pass, and the output's buffer already holds the input's data to transform.
@@ -156,6 +172,7 @@ pub trait NodeSet: Clone + PartialEq + Serialize + DeserializeOwned + Send + Syn
     fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Self::Edges>);
     fn view_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Self::Edges>);
     fn in_place(&self, output: usize) -> Option<usize>;
+    fn display(&self) -> Option<Box<dyn Any + Send>>;
     /// Whether the node carries state from one pass to the next.
     fn has_state(&self) -> bool;
     fn initial_state(&self, inputs: &[Option<<Self::Edges as Edges>::Signal>]) -> Box<dyn Any + Send>;
@@ -267,6 +284,10 @@ macro_rules! node_set {
 
             fn in_place(&self, output: usize) -> Option<usize> {
                 match self { $($name::$variant(n) => $crate::engine::Node::in_place(n, output)),+ }
+            }
+
+            fn display(&self) -> Option<Box<dyn std::any::Any + Send>> {
+                match self { $($name::$variant(n) => $crate::engine::Node::display(n)),+ }
             }
 
             fn has_state(&self) -> bool {

@@ -3,6 +3,7 @@
 use eframe::egui::Color32;
 
 use crate::engine::{EdgeInfo, EdgeType, SignalType};
+use crate::tracking::pipeline::Blob;
 
 /// Regularly sampled voltages.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -73,6 +74,54 @@ impl EdgeType for Video {
 
     fn summary(&self) -> String {
         format!("{}×{} · {} fps", self.width, self.height, self.fps)
+    }
+}
+
+/// The positions of LEDs tracked in video: for each frame, the biggest two found.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Positions {
+    /// Frames per second.
+    pub fps: f32,
+}
+
+impl EdgeType for Positions {
+    const INFO: EdgeInfo = EdgeInfo {
+        name: "positions",
+        colour: Color32::from_rgb(240, 100, 160),
+        description: "LED positions tracked in video, frame by frame.",
+    };
+
+    fn summary(&self) -> String {
+        format!("{} fps", self.fps)
+    }
+}
+
+/// Where the LEDs were in one frame.
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)] // the time and calibration are for writers
+pub struct PositionSample {
+    /// The camera's frame id and timestamp (seconds, in the camera's clock).
+    pub frame: u64,
+    pub time: f64,
+    /// The biggest LED found, then the second biggest, in pixels.
+    pub leds: [Option<Blob>; 2],
+    /// The calibration when it was found; NaN if there wasn't one.
+    pub pixels_per_metre: f32,
+}
+
+pub struct PositionsBuffer {
+    pub samples: Vec<PositionSample>,
+}
+
+impl SignalType for Positions {
+    type Buffer = PositionsBuffer;
+
+    fn buffer(&self, duration: f64) -> PositionsBuffer {
+        PositionsBuffer { samples: Vec::with_capacity(per_pass(self.fps, duration) + 1) }
+    }
+
+    fn bytes(buffer: &PositionsBuffer) -> usize {
+        buffer.samples.capacity() * size_of::<PositionSample>()
     }
 }
 
@@ -198,9 +247,17 @@ pub struct VideoBuffer {
     pub frames: usize,
     pub capacity: usize,
     pub pixels: Vec<u8>,
+    /// For each frame, the camera's frame id and timestamp (seconds, in the camera's clock).
+    pub ids: Vec<u64>,
+    pub times: Vec<f64>,
 }
 
 impl VideoBuffer {
+    pub fn frame(&self, frame: usize) -> &[u8] {
+        let size = self.width * self.height;
+        &self.pixels[frame * size..(frame + 1) * size]
+    }
+
     pub fn frame_mut(&mut self, frame: usize) -> &mut [u8] {
         let size = self.width * self.height;
         &mut self.pixels[frame * size..(frame + 1) * size]
@@ -211,8 +268,17 @@ impl SignalType for Video {
     type Buffer = VideoBuffer;
 
     fn buffer(&self, duration: f64) -> VideoBuffer {
-        let (width, height, capacity) = (self.width as usize, self.height as usize, per_pass(self.fps, duration));
-        VideoBuffer { width, height, frames: 0, capacity, pixels: vec![0; width * height * capacity] }
+        // A frame more than strictly needed, as cameras' timing jitters.
+        let (width, height, capacity) = (self.width as usize, self.height as usize, per_pass(self.fps, duration) + 1);
+        VideoBuffer {
+            width,
+            height,
+            frames: 0,
+            capacity,
+            pixels: vec![0; width * height * capacity],
+            ids: vec![0; capacity],
+            times: vec![0.0; capacity],
+        }
     }
 
     fn bytes(buffer: &VideoBuffer) -> usize {

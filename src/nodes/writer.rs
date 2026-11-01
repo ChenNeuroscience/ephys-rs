@@ -31,7 +31,7 @@ impl Node<Edges> for Writer {
     const INFO: NodeInfo = NodeInfo {
         name: "Writer",
         category: Category::Recording,
-        description: "Records whatever is connected: raw continuous data, events, spikes and video.",
+        description: "Records whatever is connected: raw continuous data, events, spikes, video and positions.",
     };
 
     fn inputs(&self) -> Vec<Input<Edges>> {
@@ -40,6 +40,7 @@ impl Node<Edges> for Writer {
             Input { name: "events", kind: Kind::Events },
             Input { name: "spikes", kind: Kind::Spikes },
             Input { name: "video", kind: Kind::Video },
+            Input { name: "positions", kind: Kind::Positions },
         ]
     }
 

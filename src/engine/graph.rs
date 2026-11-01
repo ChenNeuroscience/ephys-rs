@@ -1,5 +1,6 @@
 //! The graph of node instances and the edges between their ports.
 
+use std::any::Any;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fmt;
 use std::sync::Arc;
@@ -443,7 +444,7 @@ impl<N: NodeSet> Graph<N> {
         (0..entry.node.controls().len())
             .map(|index| {
                 let edge = self.edges_from(Port { node: id, role: Role::Control, index }).next()?;
-                Some(self.nodes.get(&edge.to.node)?.node.settings().get(edge.to.port)?.value)
+                self.nodes.get(&edge.to.node)?.node.settings().into_iter().nth(edge.to.port).map(|s| s.value)
             })
             .collect()
     }
@@ -455,19 +456,21 @@ impl<N: NodeSet> Graph<N> {
         id: NodeId,
         inputs: &[Option<Signal<N>>],
         theme: &Colours,
+        display: Option<&(dyn Any + Send)>,
         f: impl FnOnce(&mut N, &mut Context<N::Edges>) -> R,
     ) -> Option<R> {
         let before = self.control_values(id);
         let mut controls = before.clone();
-        let result = f(&mut self.nodes.get_mut(&id)?.node, &mut Context { inputs, controls: &mut controls, theme });
+        let result =
+            f(&mut self.nodes.get_mut(&id)?.node, &mut Context { inputs, controls: &mut controls, theme, display });
         for (index, (old, new)) in before.into_iter().zip(controls).enumerate() {
-            let Some(new) = new.filter(|new| Some(*new) != old) else { continue };
+            let Some(new) = new.filter(|new| Some(new) != old.as_ref()) else { continue };
             let targets: Vec<PortRef> =
                 self.edges_from(Port { node: id, role: Role::Control, index }).map(|e| e.to).collect();
             for target in targets {
                 let Some(entry) = self.nodes.get_mut(&target.node) else { continue };
                 if entry.node.settings().get(target.port).is_some_and(|s| s.value.kind() == new.kind()) {
-                    entry.node.set_setting(target.port, new);
+                    entry.node.set_setting(target.port, new.clone());
                 }
             }
         }
@@ -577,7 +580,7 @@ mod tests {
 
         let threshold = |sd| Setting::Threshold(settings::Threshold { sd });
         assert_eq!(graph.control_values(viewer), vec![Some(threshold(4.0))]);
-        graph.edit(viewer, &[], crate::theme::Theme::Dark.colours(), |_, context| {
+        graph.edit(viewer, &[], crate::theme::Theme::Dark.colours(), None, |_, context| {
             context.controls[0] = Some(threshold(5.5))
         });
         assert_eq!(graph.get(detector).unwrap().node.settings()[0].value, threshold(5.5));

@@ -1,0 +1,256 @@
+//! Tracking LEDs on an animal in video, ported from the Open Ephys camera plugin: the cameras (`camera`),
+//! capturing from them on a thread of their own (`capture`), finding the LEDs in each frame (`pipeline`), and
+//! drawing and editing the crop and rulers over the video (`overlay`). Used by the Camera, Position Detector
+//! and Tracker View nodes.
+//!
+//! Image coordinates are continuous pixels: pixel (i, j) covers [i, i+1) × [j, j+1).
+
+pub mod camera;
+pub mod capture;
+pub mod overlay;
+pub mod pipeline;
+
+use serde::{Deserialize, Serialize};
+
+/// Camera settings that another node (the Tracker View) can adjust.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CameraSettings {
+    /// Frames per second: also the rate of the video signal, so changing it restarts the run.
+    pub frame_rate: f64,
+    /// Microseconds.
+    pub exposure: Control,
+    /// Decibels.
+    pub gain: Control,
+}
+
+impl Default for CameraSettings {
+    fn default() -> Self {
+        CameraSettings { frame_rate: 50.0, exposure: Control::Unchanged, gain: Control::Unchanged }
+    }
+}
+
+/// How to set a camera feature that can be automatic.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "mode", content = "value", rename_all = "snake_case")]
+pub enum Control {
+    /// Leave it as the camera is configured (e.g. in SpinView).
+    #[default]
+    Unchanged,
+    Auto,
+    Manual(f64),
+}
+
+/// How LEDs are found in each frame: bright regions of a size within limits, inside the crop. Also the
+/// calibration, from rulers laid over the video.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Detection {
+    /// Pixels strictly brighter than this are foreground.
+    pub threshold: u8,
+    pub min_area: u32,
+    /// `None` means unbounded.
+    pub max_area: Option<u32>,
+    /// Only pixels inside this region are considered.
+    pub crop: Crop,
+    /// A higher threshold near the crop boundary, to ignore LED reflections off the walls.
+    pub edge: EdgeThreshold,
+    pub rulers: Vec<Ruler>,
+}
+
+impl Default for Detection {
+    fn default() -> Self {
+        Detection {
+            threshold: 200,
+            min_area: 5,
+            max_area: None,
+            crop: Crop::None,
+            edge: EdgeThreshold::default(),
+            rulers: Vec::new(),
+        }
+    }
+}
+
+impl Detection {
+    /// The threshold for pixels within the edge band; never below `threshold` (the pipeline's quick
+    /// rejection of empty rows relies on that). 255 means nothing there can count.
+    pub fn edge_threshold(&self) -> u8 {
+        if self.edge_width() <= 0.0 {
+            return self.threshold;
+        }
+        self.edge.threshold.max(self.threshold)
+    }
+
+    /// Width of the edge band in effect: 0 when it's switched off or there's no crop.
+    pub fn edge_width(&self) -> f32 {
+        if self.edge.enabled && self.crop != Crop::None { self.edge.width.max(0.0) } else { 0.0 }
+    }
+
+    /// The mean over rulers that have a physical length entered.
+    pub fn pixels_per_metre(&self) -> Option<f32> {
+        let values: Vec<f32> = self.rulers.iter().filter_map(Ruler::pixels_per_metre).collect();
+        (!values.is_empty()).then(|| values.iter().sum::<f32>() / values.len() as f32)
+    }
+}
+
+/// When enabled, pixels within `width` of the crop boundary use `threshold` instead of the main threshold.
+/// The values are kept while it's switched off.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EdgeThreshold {
+    pub enabled: bool,
+    /// Pixels.
+    pub width: f32,
+    pub threshold: u8,
+}
+
+impl Default for EdgeThreshold {
+    fn default() -> Self {
+        EdgeThreshold { enabled: false, width: 25.0, threshold: 250 }
+    }
+}
+
+/// Region of interest. Angles are radians, clockwise on screen (since y points down).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "shape", rename_all = "snake_case")]
+pub enum Crop {
+    #[default]
+    None,
+    Circle {
+        center: [f32; 2],
+        radius: f32,
+    },
+    Square {
+        center: [f32; 2],
+        size: f32,
+        angle: f32,
+    },
+    Rectangle {
+        center: [f32; 2],
+        width: f32,
+        height: f32,
+        angle: f32,
+    },
+}
+
+impl Crop {
+    pub fn center(&self) -> Option<[f32; 2]> {
+        match *self {
+            Crop::None => None,
+            Crop::Circle { center, .. } | Crop::Square { center, .. } | Crop::Rectangle { center, .. } => Some(center),
+        }
+    }
+
+    pub fn angle(&self) -> f32 {
+        match *self {
+            Crop::Square { angle, .. } | Crop::Rectangle { angle, .. } => angle,
+            _ => 0.0,
+        }
+    }
+
+    /// Half width and half height in the shape's own (rotated) frame; for a circle, the radius twice.
+    pub fn half_extents(&self) -> Option<[f32; 2]> {
+        match *self {
+            Crop::None => None,
+            Crop::Circle { radius, .. } => Some([radius, radius]),
+            Crop::Square { size, .. } => Some([size / 2.0, size / 2.0]),
+            Crop::Rectangle { width, height, .. } => Some([width / 2.0, height / 2.0]),
+        }
+    }
+
+    pub fn contains(&self, p: [f32; 2]) -> bool {
+        let (Some(center), Some([hw, hh])) = (self.center(), self.half_extents()) else { return true };
+        let [x, y] = to_local(center, self.angle(), p);
+        match self {
+            Crop::Circle { .. } => x * x + y * y <= hw * hw,
+            _ => x.abs() <= hw && y.abs() <= hh,
+        }
+    }
+
+    /// The points at least `d` inside the boundary, which for these shapes is the same shape shrunk by `d`.
+    /// `None` if nothing is left (or there's no crop).
+    pub fn inset(&self, d: f32) -> Option<Crop> {
+        match *self {
+            Crop::None => None,
+            Crop::Circle { center, radius } => (radius > d).then_some(Crop::Circle { center, radius: radius - d }),
+            Crop::Square { center, size, angle } => {
+                (size > 2.0 * d).then_some(Crop::Square { center, size: size - 2.0 * d, angle })
+            }
+            Crop::Rectangle { center, width, height, angle } => (width > 2.0 * d && height > 2.0 * d)
+                .then_some(Crop::Rectangle { center, width: width - 2.0 * d, height: height - 2.0 * d, angle }),
+        }
+    }
+
+    pub fn set_center(&mut self, c: [f32; 2]) {
+        match self {
+            Crop::None => {}
+            Crop::Circle { center, .. } | Crop::Square { center, .. } | Crop::Rectangle { center, .. } => *center = c,
+        }
+    }
+}
+
+/// Rotates `p` about `center` by -angle, giving coordinates in a shape's own frame.
+pub fn to_local(center: [f32; 2], angle: f32, p: [f32; 2]) -> [f32; 2] {
+    let (s, c) = angle.sin_cos();
+    let (dx, dy) = (p[0] - center[0], p[1] - center[1]);
+    [dx * c + dy * s, -dx * s + dy * c]
+}
+
+/// Inverse of [`to_local`].
+pub fn from_local(center: [f32; 2], angle: f32, l: [f32; 2]) -> [f32; 2] {
+    let (s, c) = angle.sin_cos();
+    [center[0] + l[0] * c - l[1] * s, center[1] + l[0] * s + l[1] * c]
+}
+
+/// A line laid over the video between two points, with the physical length it spans, for calibration.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Ruler {
+    pub a: [f32; 2],
+    pub b: [f32; 2],
+    /// Physical length; 0 means not entered yet.
+    pub length_cm: f32,
+}
+
+impl Ruler {
+    pub fn pixels(&self) -> f32 {
+        (self.b[0] - self.a[0]).hypot(self.b[1] - self.a[1])
+    }
+
+    pub fn pixels_per_metre(&self) -> Option<f32> {
+        (self.length_cm > 0.0).then(|| self.pixels() / (self.length_cm / 100.0))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rotated_rectangle_contains() {
+        let crop =
+            Crop::Rectangle { center: [50.0, 50.0], width: 40.0, height: 10.0, angle: std::f32::consts::FRAC_PI_2 };
+        // Rotated by 90 degrees the long side runs vertically.
+        assert!(crop.contains([50.0, 68.0]));
+        assert!(!crop.contains([68.0, 50.0]));
+    }
+
+    #[test]
+    fn local_round_trip() {
+        let (c, a, p) = ([3.0, -2.0], 0.7, [10.0, 4.0]);
+        let back = from_local(c, a, to_local(c, a, p));
+        assert!((back[0] - p[0]).abs() < 1e-4 && (back[1] - p[1]).abs() < 1e-4);
+    }
+
+    #[test]
+    fn pixels_per_metre_averages_measured_rulers() {
+        let detection = Detection {
+            rulers: vec![
+                Ruler { a: [0.0, 0.0], b: [300.0, 0.0], length_cm: 100.0 },
+                Ruler { a: [0.0, 0.0], b: [0.0, 160.0], length_cm: 50.0 },
+                Ruler { a: [0.0, 0.0], b: [10.0, 0.0], length_cm: 0.0 }, // not measured: ignored
+            ],
+            ..Default::default()
+        };
+        assert_eq!(detection.pixels_per_metre(), Some(310.0));
+    }
+}

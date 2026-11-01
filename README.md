@@ -58,3 +58,5 @@ UPDATE_SNAPSHOTS=1 cargo test    # accept changes to how the GUI looks
 ```
 
 The icon is `assets/icon.svg`; `scripts/export_icon.js` exports the PNGs from it.
+
+For a camera to track without real hardware, `python3 tools/fake_camera.py` streams video of a mouse with two head LEDs in an arena; set a Camera node's source to the fake camera to use it.

@@ -443,12 +443,12 @@ impl<N: NodeSet> App<N> {
         }
     }
 
-    /// Keeps the runner on the latest version of the graph, restarting it when a change affects processing
-    /// (moving or renaming nodes doesn't).
+    /// Keeps the runner on the latest version of the graph: carrying on with it after a change of settings,
+    /// or restarting after a change in how it runs (a new node or edge, say).
     fn keep_running(&mut self, ctx: &egui::Context) {
         let Some(runner) = &self.runner else { return };
         let latest = &self.history.current.snapshot;
-        if !engine::same_processing(runner.graph(), &latest.graph) {
+        if !engine::same_processing(&runner.graph(), &latest.graph) && !runner.update(latest) {
             let workers = runner.stats().workers;
             self.runner = None; // stops the old run before starting the new
             self.runner = Some(Runner::start(latest, workers));
@@ -521,12 +521,12 @@ impl<N: NodeSet> App<N> {
                 .collapsible(false)
                 .frame(egui::Frame::window(&ctx.global_style()).inner_margin(0).corner_radius(2))
                 .default_pos(beside)
-                .default_size(if has_view { [520.0, 340.0] } else { [280.0, 160.0] })
+                .default_size(if has_view { [820.0, 520.0] } else { [300.0, 200.0] })
                 .resizable(has_view)
                 .show(ctx, |ui| {
                     clicks = docking::floating_header(ui, &title);
                     egui::Frame::new().inner_margin(8).show(ui, |ui| {
-                        docking::node_ui(ui, &mut self.graph, resolved, self.theme.colours(), id);
+                        docking::node_ui(ui, &mut self.graph, resolved, self.theme.colours(), self.runner.as_ref(), id);
                     });
                 });
             if let Some(response) = response
@@ -678,6 +678,7 @@ impl<N: NodeSet> App<N> {
                 annotations: &mut self.annotations,
                 resolved: &resolved,
                 colours: self.theme.colours(),
+                runner: self.runner.as_ref(),
                 canvas: &mut self.canvas,
                 selection: &mut self.selection,
                 open_windows: &open_windows,
@@ -878,12 +879,12 @@ mod tests {
         assert!(names(&graph).is_empty(), "nothing to explain on an empty graph");
         let camera = Nodes::TYPES.iter().position(|t| t.name == "Camera").unwrap();
         graph.add(Nodes::create(camera), [0.0, 0.0]);
-        assert_eq!(names(&graph), vec![("Data", vec!["video"])]);
+        assert_eq!(names(&graph), vec![("Data", vec!["video"]), ("Settings", vec!["camera"])]);
         let detector = Nodes::TYPES.iter().position(|t| t.name == "Spike Detector").unwrap();
         graph.add(Nodes::create(detector), [0.0, 0.0]);
         assert_eq!(
             names(&graph),
-            vec![("Data", vec!["continuous", "spikes", "video"]), ("Settings", vec!["threshold"])]
+            vec![("Data", vec!["continuous", "spikes", "video"]), ("Settings", vec!["threshold", "camera"])]
         );
     }
 
@@ -997,14 +998,14 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(300));
         let stats = harness.state().runner.as_ref().unwrap().stats();
         assert!(stats.completed > 0, "{stats:?}");
-        // Editing a setting restarts the run on the new version of the graph.
+        // Editing a setting carries the run on with the new version of the graph.
         let first = harness.state().runner.as_ref().unwrap().graph().clone();
         let gain_free = node_named(harness.state(), "Spike Detector");
         if let Some(entry) = harness.state_mut().graph.get_mut(gain_free) {
             entry.node.set_setting(0, crate::edges::settings::Threshold { sd: 6.0 }.into());
         }
         harness.run_steps(2);
-        assert!(!Arc::ptr_eq(&first, harness.state().runner.as_ref().unwrap().graph()));
+        assert!(!Arc::ptr_eq(&first, &harness.state().runner.as_ref().unwrap().graph()));
         harness.key_press(Key::Space);
         harness.run_steps(2);
         assert!(harness.state().runner.is_none());
