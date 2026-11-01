@@ -1014,8 +1014,7 @@ mod tests {
         harness.get_by_label("Play (Space)").click();
         harness.run_steps(2);
         assert!(harness.state().runner.is_some());
-        std::thread::sleep(std::time::Duration::from_millis(300));
-        let stats = harness.state().runner.as_ref().unwrap().stats();
+        let stats = engine::tests::wait_for_passes(harness.state().runner.as_ref().unwrap(), 1);
         assert!(stats.completed > 0, "{stats:?}");
         // Editing a setting carries the run on with the new version of the graph.
         let first = harness.state().runner.as_ref().unwrap().graph().clone();

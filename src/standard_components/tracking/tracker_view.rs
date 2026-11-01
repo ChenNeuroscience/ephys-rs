@@ -605,8 +605,9 @@ mod tests {
             .flatten()
     }
 
+    /// Waits (ten seconds at most, on a busy machine) for `done`.
     fn wait_for(mut done: impl FnMut() -> bool) -> bool {
-        (0..100).any(|_| {
+        (0..330).any(|_| {
             std::thread::sleep(Duration::from_millis(30));
             done()
         })

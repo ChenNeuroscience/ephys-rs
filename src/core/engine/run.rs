@@ -896,7 +896,7 @@ pub fn same_processing<N: NodeSet>(a: &Graph<N>, b: &Graph<N>) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
 
     #[test]
@@ -1005,13 +1005,27 @@ mod tests {
 
     #[test]
     fn runs_the_example_graph() {
-        let snapshot = Snapshot::new(0, crate::example_graph(), None);
-        let runner = Runner::start(&snapshot, 2);
-        std::thread::sleep(Duration::from_millis(300));
-        let stats = runner.stats();
-        drop(runner);
-        assert!(stats.completed >= 5, "expected passes to run: {stats:?}");
-        assert!(stats.memory > 0);
+        // One worker, as on a two-core machine, and several.
+        for workers in [1, 2] {
+            let snapshot = Snapshot::new(0, crate::example_graph(), None);
+            let runner = Runner::start(&snapshot, workers);
+            let stats = wait_for_passes(&runner, 5);
+            drop(runner);
+            assert!(stats.completed >= 5, "expected passes to run on {workers} workers: {stats:?}");
+            assert!(stats.memory > 0);
+        }
+    }
+
+    /// Waits (a few seconds at most, on a busy machine) for `passes` passes to have run, then the stats.
+    pub fn wait_for_passes(runner: &Runner<Nodes>, passes: u64) -> Stats {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let stats = runner.stats();
+            if stats.completed >= passes || Instant::now() > deadline {
+                return stats;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     #[test]
@@ -1054,14 +1068,13 @@ mod tests {
         assert!(!runner.update(&latest));
 
         // Passes move on to the new plan once a worker has buffers for it, without a pass going undone.
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_secs(10);
         while !runner.running_plan().is_some_and(|p| Arc::ptr_eq(&p, &latest.plan)) {
             assert!(Instant::now() < deadline, "passes should move on to the new plan");
             std::thread::sleep(Duration::from_millis(5));
         }
         let completed = runner.stats().completed;
-        std::thread::sleep(Duration::from_millis(100));
-        let stats = runner.stats();
+        let stats = wait_for_passes(&runner, completed + 1);
         assert!(stats.completed > completed, "{stats:?}");
         assert_eq!(stats.dropped, 0, "{stats:?}");
     }
