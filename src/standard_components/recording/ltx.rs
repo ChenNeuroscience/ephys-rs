@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{Files, Status, Writing, path_in, session_name, status_ui};
 use crate::core::engine::{
-    Category, Context, Control, CopyTo, EdgeSet, Input, Node, NodeInfo, NodeThread, Output, Pass, ThreadContext,
+    Category, Context, Control, CopyTo, EdgeSet, Flow, Input, Node, NodeInfo, NodeThread, Output, Pass, ThreadContext,
 };
 use crate::core::exchange::Latest;
 use crate::standard_components::ephys::{Continuous, Event, Events};
@@ -73,6 +73,9 @@ struct Streams {
 pub struct Recorder {
     streams: Streams,
     writing: Option<Writing<Chunk>>,
+    /// Continuous samples so far while recording: the EEG keeps every so many (see `egf_step`), carrying on from
+    /// pass to pass.
+    continuous_samples: u64,
     shown: Latest<Status>,
 }
 
@@ -88,7 +91,7 @@ pub struct Chunk {
     spikes: Vec<(u32, i32)>,
     waveforms: Vec<f32>,
     spike_pass_samples: usize,
-    /// The continuous data, channel after channel, `continuous_len` samples each.
+    /// The continuous data the EEG keeps (at 5 kHz), channel after channel, `continuous_len` samples each.
     continuous: Vec<f32>,
     continuous_len: usize,
     positions: Vec<PositionSample>,
@@ -146,7 +149,7 @@ impl Node<Edges> for WriteLtx {
     }
 
     fn threads(&self) -> Vec<NodeThread> {
-        vec![NodeThread { name: "LTX writer", link: "chunk queue" }]
+        vec![NodeThread { name: "LTX writer", link: "chunk queue", flow: Flow::FromPasses }]
     }
 
     fn thread_ui(&self, _thread: usize, ui: &mut egui::Ui, context: &ThreadContext) {
@@ -174,6 +177,7 @@ impl Node<Edges> for WriteLtx {
     fn process(&self, pass: &mut Pass<Edges>, recorder: &mut Recorder) {
         match (pass.recording, &recorder.writing) {
             (true, None) => {
+                recorder.continuous_samples = 0;
                 recorder.writing = pass.take_prepared::<Writing<Chunk>>().or_else(|| {
                     // Not prepared (the graph changed while recording, say): the thread opens the files.
                     let (start, base) = self.base();
@@ -189,7 +193,8 @@ impl Node<Edges> for WriteLtx {
         }
         if let Some(writing) = &recorder.writing {
             let mut chunk = writing.chunk();
-            copy(pass, &mut chunk);
+            let step = recorder.streams.continuous.and_then(|c| egf_step(c.sample_rate));
+            copy(pass, &mut chunk, step, &mut recorder.continuous_samples);
             writing.send(chunk);
         }
         let writing = &recorder.writing;
@@ -272,8 +277,9 @@ impl Recorded {
     }
 }
 
-/// Copies a pass's inputs into `chunk`.
-fn copy(pass: &Pass<Edges>, chunk: &mut Chunk) {
+/// Copies a pass's inputs into `chunk`: of the continuous data, only what the EEG keeps, every `step`th sample
+/// (counting from the `continuous_samples` so far).
+fn copy(pass: &Pass<Edges>, chunk: &mut Chunk, step: Option<usize>, continuous_samples: &mut u64) {
     chunk.spikes.clear();
     chunk.waveforms.clear();
     chunk.spike_pass_samples = 0;
@@ -284,11 +290,13 @@ fn copy(pass: &Pass<Edges>, chunk: &mut Chunk) {
     }
     chunk.continuous.clear();
     chunk.continuous_len = 0;
-    if let Some(Some(Buffer::Continuous(continuous))) = pass.inputs.get(1) {
+    if let (Some(Some(Buffer::Continuous(continuous))), Some(step)) = (pass.inputs.get(1), step) {
+        let first = keeping_from(*continuous_samples, step);
         for channel in 0..continuous.channels {
-            chunk.continuous.extend_from_slice(&continuous.channel(channel)[..continuous.len]);
+            chunk.continuous.extend(continuous.channel(channel).iter().skip(first).step_by(step));
         }
-        chunk.continuous_len = continuous.len;
+        chunk.continuous_len = continuous.len.saturating_sub(first).div_ceil(step);
+        *continuous_samples += continuous.len as u64;
     }
     chunk.positions.clear();
     if let Some(Some(Buffer::Positions(positions))) = pass.inputs.get(2) {
@@ -303,6 +311,11 @@ fn copy(pass: &Pass<Edges>, chunk: &mut Chunk) {
 }
 
 /// How many samples to step for each 5 kHz sample, if the rate's a multiple of 5 kHz.
+/// The first of the next samples to keep, keeping every `step`th, with `so_far` before them.
+fn keeping_from(so_far: u64, step: usize) -> usize {
+    (step - (so_far % step as u64) as usize) % step
+}
+
 fn egf_step(rate: f32) -> Option<usize> {
     let rate = rate.round() as u32;
     (rate >= EGF_RATE && rate.is_multiple_of(EGF_RATE)).then_some((rate / EGF_RATE) as usize)
@@ -429,7 +442,6 @@ struct LtxFiles {
     gains: Gains,
     egf: Vec<Egf>,
     /// Samples of continuous data so far (for which to keep at 5 kHz), and of the spikes' and events' passes.
-    continuous_samples: u64,
     spike_samples: i64,
     event_samples: u64,
     pos: Option<Pos>,
@@ -506,7 +518,6 @@ impl LtxFiles {
             tetrodes,
             gains: recorded.gains,
             egf,
-            continuous_samples: 0,
             spike_samples: 0,
             event_samples: 0,
             pos,
@@ -589,21 +600,16 @@ impl Files<Chunk> for LtxFiles {
             self.spike_samples += chunk.spike_pass_samples as i64;
         }
 
-        if let Some(step) = self.streams.continuous.and_then(|c| egf_step(c.sample_rate))
-            && chunk.continuous_len > 0
-        {
+        if chunk.continuous_len > 0 {
             let len = chunk.continuous_len;
-            // The first sample of this chunk to keep, carrying on the step from earlier chunks.
-            let first = (step - (self.continuous_samples % step as u64) as usize) % step;
             for (channel, egf) in self.egf.iter_mut().enumerate() {
                 let values = &chunk.continuous[channel * len..(channel + 1) * len];
                 self.record.clear();
-                self.record.extend(values[first.min(len)..].iter().step_by(step).map(|v| to_i8(v / 2.0)));
+                self.record.extend(values.iter().map(|v| to_i8(v / 2.0)));
                 egf.file.data(&self.record)?;
                 egf.samples += self.record.len() as u64;
                 bytes += self.record.len() as u64;
             }
-            self.continuous_samples += len as u64;
         }
 
         if let Some(pos) = &mut self.pos {
@@ -689,6 +695,19 @@ mod tests {
     }
 
     #[test]
+    fn the_eeg_keeps_every_step_th_sample_across_passes() {
+        // Keeping every 6th of passes 4, 9 and 5 samples long: samples 0, 6 and 12 (of 18).
+        let (mut so_far, mut kept) = (0u64, Vec::new());
+        for len in [4usize, 9, 5] {
+            let first = keeping_from(so_far, 6);
+            kept.extend((first..len).step_by(6).map(|t| so_far + t as u64));
+            assert_eq!(len.saturating_sub(first).div_ceil(6), (first..len).step_by(6).count());
+            so_far += len as u64;
+        }
+        assert_eq!(kept, vec![0, 6, 12]);
+    }
+
+    #[test]
     fn writes_spikes_eeg_and_positions() {
         let dir = std::env::temp_dir().join(format!("ephys-rs-ltx-{}", std::process::id()));
         let base = dir.join("test");
@@ -711,9 +730,9 @@ mod tests {
         let spike = Spike { sample: 300, group: 0, channel: 0 };
         chunk.spikes.push((spike.group, spike.sample));
         chunk.waveforms = (0..160).map(|i| i as f32 - 80.0).collect();
-        // 12 samples on each channel: every sixth kept, halved.
-        chunk.continuous = (0..24).map(|i| i as f32 * 10.0).collect();
-        chunk.continuous_len = 12;
+        // Two samples kept on each channel (at 5 kHz), halved.
+        chunk.continuous = vec![0.0, 60.0, 120.0, 180.0];
+        chunk.continuous_len = 2;
         let blob = Blob { x: 100.0, y: 50.0, area: 30 };
         chunk.positions.push(PositionSample {
             frame: 1,
