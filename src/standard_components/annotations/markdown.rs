@@ -85,9 +85,22 @@ const CHEATS: &[(&str, &str)] = &[
     ("---", "a line across"),
 ];
 
-/// Markdown, briefly, under a header to open it.
+/// The cheat sheet's open-or-closed state, kept by egui.
+fn cheat_sheet_state(ui: &egui::Ui) -> egui::collapsing_header::CollapsingState {
+    egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), egui::Id::unique(CHEAT_SHEET), false)
+}
+
+/// Markdown, briefly, under a header to open it (clicking its triangle or its title).
 fn cheat_sheet(ui: &mut egui::Ui) {
-    egui::CollapsingHeader::new(CHEAT_SHEET).id_salt(CHEAT_SHEET).show(ui, |ui| {
+    let mut state = cheat_sheet_state(ui);
+    let header = ui.horizontal(|ui| {
+        state.show_toggle_button(ui, egui::collapsing_header::paint_default_icon);
+        ui.add(egui::Label::new(CHEAT_SHEET).sense(egui::Sense::click()))
+    });
+    if header.inner.clicked() {
+        state.toggle(ui);
+    }
+    state.show_body_unindented(ui, |ui| {
         egui::Grid::new("markdown cheats").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
             for (markdown, gives) in CHEATS {
                 ui.label(RichText::new(*markdown).monospace());
@@ -111,17 +124,10 @@ impl Markdown {
         });
     }
 
-    /// Its images: each, to remove, and a button to add one from a file.
+    /// Its images, each to remove (added with the toolbar's button, or pasted in while editing).
     fn images_ui(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
+        if !self.attachments.is_empty() {
             ui.label(RichText::new("Images").small().weak());
-            let tip = "Add an image from a file (or paste one in while editing the note)";
-            if super::icon_button(ui, "Add an image", tip, super::image::Image::paint_icon).clicked() {
-                self.add_image_file();
-            }
-        });
-        if self.attachments.is_empty() {
-            ui.label(RichText::new("None yet: paste one in while editing the note, or add one").small().weak());
         }
         let mut remove = None;
         for (name, base64) in &self.attachments {
@@ -197,6 +203,14 @@ impl AnnotationType for Markdown {
 
     /// The text, filling most of the pane; its images (to add from a file, or remove); and a cheat sheet. Side by
     /// side if the pane is wide, otherwise one above another.
+    /// A button to add an image from a file.
+    fn toolbar_ui(&mut self, ui: &mut egui::Ui) {
+        let tip = "Add an image from a file (or paste one in while editing the note)";
+        if super::icon_button(ui, "Add an image", tip, super::image::Image::paint_icon).clicked() {
+            self.add_image_file();
+        }
+    }
+
     fn settings_ui(&mut self, ui: &mut egui::Ui) {
         let size = ui.available_size();
         let wide = size.x > 1.3 * size.y && size.x > 560.0;
@@ -214,10 +228,9 @@ impl AnnotationType for Markdown {
             });
         } else {
             // Room below the text for the images (and the cheat sheet, if it's open).
-            let cheat_open =
-                egui::collapsing_header::CollapsingState::load(ui.ctx(), ui.make_persistent_id(CHEAT_SHEET))
-                    .is_some_and(|s| s.is_open());
-            let below = 70.0 + 22.0 * self.attachments.len() as f32 + if cheat_open { 250.0 } else { 0.0 };
+            let cheat_open = cheat_sheet_state(ui).is_open();
+            let images = if self.attachments.is_empty() { 0.0 } else { 20.0 + 24.0 * self.attachments.len() as f32 };
+            let below = 40.0 + images + if cheat_open { 280.0 } else { 0.0 };
             let editor = egui::vec2(ui.available_width(), (size.y - below).max(120.0));
             self.editor(ui, editor);
             ui.add_space(6.0);

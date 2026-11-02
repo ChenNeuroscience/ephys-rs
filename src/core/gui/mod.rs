@@ -1675,7 +1675,11 @@ mod tests {
         assert!(harness.query_by_label("Add an image").is_some());
         harness.get_by_label("Markdown cheat sheet").click();
         harness.run_steps(2);
-        assert!(harness.query_by_label("a numbered list").is_some(), "the cheat sheet opens");
+        harness.run_steps(2);
+        // Open, the text makes room for it, so it's all in view.
+        let last = harness.get_by_label("a line across").rect();
+        assert!(last.bottom() < 850.0, "the cheat sheet shows: {last:?}");
+        harness.snapshot("annotation_pane_cheat_sheet");
         harness.state_mut().selection.clear();
         harness.run_steps(3);
         assert!(!harness.state().layout.is_shown(Pane::Annotation));

@@ -96,6 +96,9 @@ pub trait AnnotationType: Default + Clone + PartialEq + Serialize + DeserializeO
     /// Its settings, for the annotation pane (shown while it's selected).
     fn settings_ui(&mut self, ui: &mut egui::Ui);
 
+    /// Buttons of its own in the annotation pane's toolbar, beside its delete button (laid out right to left).
+    fn toolbar_ui(&mut self, _ui: &mut egui::Ui) {}
+
     /// Paints its icon (for the toolbar's tool to draw one) to fill `rect`.
     fn paint_icon(painter: &Painter, rect: Rect);
 }
@@ -125,6 +128,7 @@ pub trait AnnotationSet: Clone + PartialEq + Serialize + DeserializeOwned + 'sta
     fn pasted_image(image: &ColorImage) -> Option<(Self, [f32; 2])>;
     fn content_ui(&mut self, ui: &mut egui::Ui, editing: bool) -> bool;
     fn settings_ui(&mut self, ui: &mut egui::Ui);
+    fn toolbar_ui(&mut self, ui: &mut egui::Ui);
     fn paint_icon(type_index: usize, painter: &Painter, rect: Rect);
 
     fn info(&self) -> &'static AnnotationInfo {
@@ -283,6 +287,10 @@ macro_rules! annotation_set {
 
             fn settings_ui(&mut self, ui: &mut eframe::egui::Ui) {
                 match self { $($name::$variant(a) => $crate::core::annotation::AnnotationType::settings_ui(a, ui)),+ }
+            }
+
+            fn toolbar_ui(&mut self, ui: &mut eframe::egui::Ui) {
+                match self { $($name::$variant(a) => $crate::core::annotation::AnnotationType::toolbar_ui(a, ui)),+ }
             }
 
             #[allow(unused_assignments)]

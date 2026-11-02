@@ -556,10 +556,13 @@ fn annotation_ui<A: AnnotationSet>(
             ui.horizontal(|ui| {
                 ui.heading(annotation.kind.info().name);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // A mini toolbar: delete, and the annotation's own buttons.
+                    ui.spacing_mut().item_spacing.x = 2.0;
                     let delete = toolbar::small_icon_button(ui, Icon::Delete, "Delete", "Delete this annotation");
                     if delete.clicked() {
                         events.push(Event::DeleteAnnotation(*id));
                     }
+                    annotation.kind.toolbar_ui(ui);
                 });
             });
             ui.add_space(4.0);
