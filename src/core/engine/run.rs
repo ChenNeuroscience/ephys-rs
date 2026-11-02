@@ -287,7 +287,7 @@ impl<N: NodeSet> Plan<N> {
     fn run(&self, snapshot: &Snapshot<N>, pass: PassId, workspace: &mut Workspace<N>, run: &RunSlots) {
         let Workspace { buffers: workspace, memory } = workspace;
         let sequence = pass.sequence;
-        for step in &self.steps {
+        for (step, times) in self.steps.iter().zip(&run.times) {
             let Some(node) = snapshot.graph.get(step.id).map(|e| &e.node) else { continue };
             let pass = PassId { node: Some(step.id), node_type: Some(node.info().name), ..pass };
             let controls = snapshot.controls.get(&step.id).map_or(&[][..], Vec::as_slice);
@@ -308,13 +308,21 @@ impl<N: NodeSet> Plan<N> {
                     prepared: snapshot.recording.as_deref(),
                     exchange: &run.exchange,
                 };
+                let start = Instant::now();
+                // When the node's state is handed over, after waiting for it, if it has any.
+                let mut began = start;
                 console::in_pass(pass, || match (step.state, step.memory) {
-                    (Some(slot), _) => {
-                        run.states[slot].with(sequence, |state| node.process(&mut pass_data, Some(state)))
-                    }
+                    (Some(slot), _) => run.states[slot].with(sequence, |state| {
+                        began = Instant::now();
+                        node.process(&mut pass_data, Some(state))
+                    }),
                     (None, Some(m)) => node.process(&mut pass_data, Some(memory[m].as_mut())),
                     (None, None) => node.process(&mut pass_data, None),
                 });
+                StepTimes::add(&times.work, began.elapsed());
+                if step.state.is_some() {
+                    StepTimes::add(&times.wait, began - start);
+                }
             }
             for (&b, buffer) in step.outputs.iter().zip(outputs) {
                 workspace[b] = Some(buffer);
@@ -378,11 +386,53 @@ impl<N: NodeSet> Workspace<N> {
     }
 }
 
-/// What the workers share during a run of one plan, besides the graph: the nodes' state, and the run's
-/// exchange.
+/// What the workers share during a run of one plan, besides the graph: the nodes' state, the run's exchange, and how
+/// long each step's taking.
 struct RunSlots {
     states: Vec<StateSlot>,
     exchange: Arc<Exchange>,
+    times: Vec<StepTimes>,
+}
+
+impl RunSlots {
+    fn new<N: NodeSet>(plan: &Plan<N>, graph: &Graph<N>, exchange: Arc<Exchange>) -> Self {
+        let times = plan.steps.iter().map(|_| StepTimes::default()).collect();
+        RunSlots { states: plan.initial_states(graph), exchange, times }
+    }
+}
+
+/// How long a step's taking, on average over its last few dozen passes (in µs, as `f64` bits): working, and
+/// waiting for the pass before to hand over the node's state. Workers update them without waiting for each other,
+/// so an update's occasionally lost, which doesn't matter for an average.
+#[derive(Default)]
+struct StepTimes {
+    work: AtomicU64,
+    wait: AtomicU64,
+}
+
+impl StepTimes {
+    /// How much of each pass's time goes into the average.
+    const WEIGHT: f64 = 0.05;
+
+    fn add(average: &AtomicU64, time: Duration) {
+        let micros = time.as_secs_f64() * 1e6;
+        let old = f64::from_bits(average.load(Ordering::Relaxed));
+        let new = if old == 0.0 { micros } else { old + Self::WEIGHT * (micros - old) };
+        average.store(new.to_bits(), Ordering::Relaxed);
+    }
+
+    fn get(&self) -> StepTime {
+        let read = |average: &AtomicU64| f64::from_bits(average.load(Ordering::Relaxed));
+        StepTime { work_us: read(&self.work), wait_us: read(&self.wait) }
+    }
+}
+
+/// How long a step's taking, on average (see `StepTimes`).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct StepTime {
+    pub work_us: f64,
+    /// Waiting at its sync point, for the pass before to hand over the node's state.
+    pub wait_us: f64,
 }
 
 /// A node's state, handed from each pass to the next in turn (see the module docs).
@@ -508,6 +558,8 @@ pub struct EpochInfo<N: NodeSet> {
     pub ready: usize,
     /// Passes waiting for a worker.
     pub queued: usize,
+    /// How long each of the plan's steps is taking.
+    pub step_times: Vec<StepTime>,
 }
 
 /// Everything about a run, as of now, for the dev tools.
@@ -550,7 +602,7 @@ struct Epoch<N: NodeSet> {
 impl<N: NodeSet> Epoch<N> {
     fn new(snapshot: &Snapshot<N>, workers: usize, shared: Arc<Shared>) -> Self {
         let plan = snapshot.plan.clone();
-        let slots = RunSlots { states: plan.initial_states(&snapshot.graph), exchange: shared.exchange.clone() };
+        let slots = RunSlots::new(&plan, &snapshot.graph, shared.exchange.clone());
         // A few passes may queue, beyond which they're dropped.
         let (sender, receiver) = crossbeam_channel::bounded(queue_capacity(workers));
         let number = shared.epochs.fetch_add(1, Ordering::Relaxed) + 1;
@@ -686,6 +738,7 @@ impl<N: NodeSet> Runner<N> {
             plan: epoch.plan.clone(),
             ready: epoch.ready.load(Ordering::Relaxed),
             queued: epoch.receiver.len(),
+            step_times: epoch.slots.times.iter().map(StepTimes::get).collect(),
         };
         let running = self.epochs.running.lock().unwrap().as_deref().map(info);
         let wanted = self.epochs.wanted.lock().unwrap().clone();
@@ -1025,7 +1078,7 @@ pub mod tests {
         link(&mut graph, filter, 0, detector, 0);
         let snapshot = Snapshot::new(0, graph, None);
         let plan = &snapshot.plan;
-        let slots = RunSlots { states: plan.initial_states(&snapshot.graph), exchange: Arc::default() };
+        let slots = RunSlots::new(plan, &snapshot.graph, Arc::default());
         let mut workspace = plan.workspace(&snapshot.graph);
         // A second of samples, as they come from the board in real time.
         let (mut spikes, mut samples) = (0, 0);

@@ -20,7 +20,7 @@ use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, RichText, Sense, S
 
 use crate::core::engine::{
     CopyTo, EdgeSet, Edges, Flow, Graph, NodeId, NodeSet, PASS_DURATION, Plan, Resolved, RunInfo, Runner, Snapshot,
-    Step, ThreadContext,
+    Step, StepTime, ThreadContext,
 };
 use crate::core::gui::style;
 use crate::core::theme::Colours;
@@ -372,8 +372,16 @@ fn workers_ui<N: NodeSet>(
             ui.label(small(text, colours.warning));
         }
         ui.add_space(6.0);
-        ui.label(small("Each pass", colours.text_secondary));
-        steps(ui, graph, resolved, colours, plan, anchors);
+        let times = running.map(|epoch| &epoch.step_times[..]);
+        let each_pass = match times {
+            Some(times) => {
+                let work: f64 = times.iter().map(|t| t.work_us).sum();
+                format!("Each pass: {:.2} ms of work, on average", work / 1000.0)
+            }
+            None => "Each pass".to_owned(),
+        };
+        ui.label(small(each_pass, colours.text_secondary));
+        steps(ui, graph, resolved, colours, plan, times, anchors);
         not_running(ui, graph, colours, plan);
         ui.add_space(6.0);
         memory(ui, graph, colours, plan, info);
@@ -423,6 +431,7 @@ fn steps<N: NodeSet>(
     resolved: &Resolved<N::Edges>,
     colours: &Colours,
     plan: &Plan<N>,
+    times: Option<&[StepTime]>,
     anchors: &mut Anchors,
 ) {
     let queue = ui
@@ -435,7 +444,8 @@ fn steps<N: NodeSet>(
         .rect;
     anchors.queue = Some(queue);
     for (index, step) in plan.steps().iter().enumerate() {
-        let row = ui.horizontal(|ui| step_row(ui, graph, resolved, colours, plan, index, step)).response;
+        let time = times.and_then(|t| t.get(index)).copied();
+        let row = ui.horizontal(|ui| step_row(ui, graph, resolved, colours, plan, index, step, time)).response;
         anchors.steps.insert(step.id, row.rect.with_max_x(ui.max_rect().right()));
     }
     if plan.steps().is_empty() {
@@ -443,6 +453,7 @@ fn steps<N: NodeSet>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn step_row<N: NodeSet>(
     ui: &mut egui::Ui,
     graph: &Graph<N>,
@@ -451,6 +462,7 @@ fn step_row<N: NodeSet>(
     plan: &Plan<N>,
     index: usize,
     step: &Step,
+    time: Option<StepTime>,
 ) {
     ui.set_height(ROW);
     ui.spacing_mut().item_spacing.x = 4.0;
@@ -524,6 +536,22 @@ fn step_row<N: NodeSet>(
                  next.\n\nWhy it has state: {why}"
             );
             badge(ui, Glyph::Sync, colours.warning, &text);
+        }
+        if let Some(time) = time {
+            let mut text = format!("{:.0} µs", time.work_us);
+            if time.wait_us >= 10.0 {
+                text += &format!(" +{:.0} waiting", time.wait_us);
+            }
+            let tip = format!(
+                "On average, over its last few dozen passes: {:.0} µs working{}",
+                time.work_us,
+                if step.state.is_some() {
+                    format!(", and {:.0} µs waiting for the pass before to hand over the node's state", time.wait_us)
+                } else {
+                    String::new()
+                }
+            );
+            ui.label(RichText::new(text).monospace().size(10.5).color(colours.text_secondary)).on_hover_text(tip);
         }
     });
 }
