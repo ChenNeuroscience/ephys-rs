@@ -10,6 +10,8 @@ Development of this project started on 2026-Oct-31. With the help of today's AI,
 
 ## What's there
 
+It opens on the **basic view**: the graph's viewers, large, to open beside it, and **quick actions** that build the graph for you (adding spike, EEG or position tracking, each recorded by Write LTX), reusing what's already there. The toolbar's Basic | Graph (or ⌘1 / ⌘2) switches the main pane to the **graph**, where you build it node by node.
+
 You build a graph of nodes, and press Play to run it:
 
 - **Sources**: the Acquisition Board (Open Ephys's boards, generations 1 to 3, and Intan's RHD USB board, or the fake one below), with headstage channels, auxiliary and analogue inputs, and digital inputs as events; and the Camera (FLIR cameras through Spinnaker, or the fake one).

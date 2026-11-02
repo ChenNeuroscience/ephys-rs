@@ -345,10 +345,15 @@ impl<N: NodeSet> Graph<N> {
         })
     }
 
-    /// Connects `a` and `b` (in either order), replacing anything already going into the input or setting.
+    /// Connects `a` and `b` (in either order), replacing anything already going into the input, or the setting the
+    /// control was linked to. (An input has one source, but a setting can have many controls: one editing it, say,
+    /// and others reading it. A control has just the one setting.)
     pub fn connect(&mut self, a: Port, b: Port) -> Result<Edge, ConnectError> {
         let edge = self.check(a, b)?;
-        self.edges.retain(|e| e.target() != edge.target());
+        self.edges.retain(|e| match edge.dimension {
+            Dimension::Data => e.target() != edge.target(),
+            Dimension::Settings => e.source() != edge.source(),
+        });
         self.edges.push(edge);
         Ok(edge)
     }
@@ -668,6 +673,16 @@ mod tests {
             context.controls[0] = Some(thresholds(vec![55.0]))
         });
         assert_eq!(graph.get(detector).unwrap().node.settings()[0].value, thresholds(vec![55.0]));
+
+        // A setting can have several controls (an LTX writer reading the gains the viewer sets); a control, one
+        // setting.
+        let writer = graph.add(create("Write LTX"), [0.0, 0.0]);
+        graph.connect(port(viewer, Role::Control, 1), port(detector, Role::Setting, 1)).unwrap();
+        graph.connect(port(writer, Role::Control, 1), port(detector, Role::Setting, 1)).unwrap();
+        let into_gains = |graph: &Graph<Nodes>| {
+            graph.edges().iter().filter(|e| e.target() == port(detector, Role::Setting, 1)).count()
+        };
+        assert_eq!(into_gains(&graph), 2);
     }
 
     #[test]

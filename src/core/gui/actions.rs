@@ -24,6 +24,10 @@ pub enum Action {
     AddNode,
     /// Picks the tool for drawing annotations of a type (by index) on the graph.
     DrawTool(usize),
+    /// Shows the basic view in the main pane.
+    ShowBasic,
+    /// Shows the graph in the main pane.
+    ShowGraph,
     FrameAll,
     ActualSize,
     ResetLayout,
@@ -80,6 +84,9 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
     (
         "View",
         &[
+            Item(Action::ShowBasic),
+            Item(Action::ShowGraph),
+            Separator,
             Item(Action::FrameAll),
             Item(Action::ActualSize),
             Separator,
@@ -92,7 +99,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
 ];
 
 /// Checked in this order, so that e.g. shift-ctrl-Z (redo) is seen before ctrl-Z (undo).
-const SHORTCUT_ORDER: [Action; 13] = [
+const SHORTCUT_ORDER: [Action; 15] = [
     Action::Redo,
     Action::Undo,
     Action::SaveAs,
@@ -106,6 +113,8 @@ const SHORTCUT_ORDER: [Action; 13] = [
     Action::Play,
     Action::Record,
     Action::ToggleDevTools,
+    Action::ShowBasic,
+    Action::ShowGraph,
 ];
 
 impl Action {
@@ -131,6 +140,8 @@ impl Action {
             Action::Arrange => "Arrange Nodes",
             Action::AddNode => "Node…",
             Action::DrawTool(index) => annotations.get(index).map_or("?", |a| a.name),
+            Action::ShowBasic => "Basic View",
+            Action::ShowGraph => "Graph View",
             Action::FrameAll => "Frame All",
             Action::ActualSize => "Actual Size",
             Action::ResetLayout => "Reset Layout",
@@ -156,6 +167,8 @@ impl Action {
             Action::FrameAll => Some(KeyboardShortcut::new(Modifiers::NONE, Key::F)),
             Action::Play => Some(KeyboardShortcut::new(Modifiers::NONE, Key::Space)),
             Action::Record => command(Key::R),
+            Action::ShowBasic => command(Key::Num1),
+            Action::ShowGraph => command(Key::Num2),
             // As in browsers.
             Action::ToggleDevTools => Some(KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::ALT, Key::I)),
             _ => None,

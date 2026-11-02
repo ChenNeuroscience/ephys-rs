@@ -4,6 +4,7 @@
 
 mod actions;
 mod arrange;
+mod basic;
 mod canvas;
 mod create_menu;
 mod dev_tools;
@@ -29,12 +30,12 @@ use crate::core::theme::{Colours, Theme};
 use actions::Action;
 use canvas::{Canvas, HEADER, NODE_WIDTH, Selection, Tool};
 use create_menu::{Choice, CreateMenu};
-use docking::{Layout, Pane, Panes};
+use docking::{Layout, Mode, Pane, Panes};
 
 /// Runs the app built from `C`'s components, opening the file at `path` (or an empty graph).
 pub fn run<C: Components>(path: Option<PathBuf>) -> eframe::Result {
     crate::core::console::init(true);
-    let app = App::<C::Nodes, C::Annotations>::open(path, C::THEMES);
+    let app = App::<C::Nodes, C::Annotations>::open(path, C::THEMES).with_quick_actions(C::QUICK_ACTIONS);
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../../../assets/icon.png")).expect("valid icon");
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -88,6 +89,10 @@ pub enum Event {
     Delete(NodeId),
     DeleteAnnotation(AnnotationId),
     Status(String),
+    /// Do the quick action of this index.
+    QuickAction(usize),
+    /// Show the graph in the main pane.
+    ShowGraph,
 }
 
 /// The file: the graph, its annotations, and the window layout.
@@ -151,6 +156,8 @@ pub struct App<N: NodeSet, A: AnnotationSet> {
     /// While the nodes prepare to record, where the recording comes from when they're ready.
     preparing: Option<std::sync::mpsc::Receiver<engine::Recording>>,
     dev_tools: dev_tools::DevTools,
+    /// Offered in the basic view.
+    quick_actions: &'static [crate::core::quick_action::QuickAction<N>],
     /// How many workers runs start with.
     workers: usize,
 }
@@ -183,6 +190,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             preparing: None,
             dev_tools: dev_tools::DevTools::default(),
             workers: engine::default_workers(),
+            quick_actions: &[],
         };
         if let Some(path) = path {
             if path.exists() {
@@ -460,7 +468,42 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         self.selection.annotations = self.annotations.ids().collect();
     }
 
+    /// Offers `quick_actions` in the basic view.
+    pub fn with_quick_actions(mut self, quick_actions: &'static [crate::core::quick_action::QuickAction<N>]) -> Self {
+        self.quick_actions = quick_actions;
+        self
+    }
+
+    /// Shows the basic view or the graph in the main pane, bringing it to the front.
+    fn show_mode(&mut self, mode: Mode) {
+        self.layout.mode = mode;
+        self.layout.show(Pane::Main);
+    }
+
+    /// Does a quick action: changes the graph, and opens windows, as it says (unless it no longer applies).
+    fn quick_action(&mut self, index: usize) {
+        let Some(action) = self.quick_actions.get(index) else { return };
+        if self.locked() {
+            return;
+        }
+        let open_windows = self.layout.open_windows();
+        let state = crate::core::quick_action::QuickState { graph: &self.graph, open_windows: &open_windows };
+        let Some(change) = (action.run)(&state) else { return };
+        self.graph = change.graph;
+        for id in change.open {
+            self.layout.open(id);
+        }
+        log::info!("{}", action.name);
+    }
+
     fn perform(&mut self, ctx: &egui::Context, action: Action) {
+        // What's done on the graph shows it.
+        if matches!(
+            action,
+            Action::AddNode | Action::DrawTool(_) | Action::FrameAll | Action::ActualSize | Action::Arrange
+        ) {
+            self.show_mode(Mode::Graph);
+        }
         match action {
             Action::New => self.new_file(ctx),
             Action::Open => self.open_file(ctx),
@@ -475,6 +518,8 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             Action::Duplicate => self.duplicate_selection(),
             Action::Delete => self.delete_selection(),
             Action::SelectAll => self.select_all(),
+            Action::ShowBasic => self.show_mode(Mode::Basic),
+            Action::ShowGraph => self.show_mode(Mode::Graph),
             Action::Arrange => {
                 for (id, pos) in arrange::arrange(&self.graph) {
                     if let Some(entry) = self.graph.get_mut(id) {
@@ -589,7 +634,10 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                     let colour = if status.ok { colours.success } else { colours.warning };
                     ui.label(RichText::new(&status.message).color(colour))
                 }
-                (_, Some(hint)) => ui.label(hint),
+                (_, Some(hint)) if self.layout.mode == Mode::Graph => ui.label(hint),
+                _ if self.layout.mode == Mode::Basic => {
+                    ui.weak("Open a view, or add some with a quick action · the graph shows how it all fits together")
+                }
                 _ => ui
                     .weak("Double-click, right-click or Tab on the canvas to add a node · drag from a port to connect"),
             };
@@ -704,6 +752,8 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                 self.selection.annotations.remove(&id);
             }
             Event::Status(message) => self.set_status(ctx, message),
+            Event::QuickAction(index) => self.quick_action(index),
+            Event::ShowGraph => self.show_mode(Mode::Graph),
         }
     }
 
@@ -819,6 +869,8 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                 colours,
                 runner: self.runner.as_ref(),
                 snapshot: &self.history.current.snapshot,
+                mode: self.layout.mode,
+                quick_actions: self.quick_actions,
                 workers: self.workers,
                 locked,
                 dev_tools: &mut self.dev_tools,
@@ -978,7 +1030,10 @@ mod tests {
     }
 
     fn harness() -> Harness<'static, TestApp> {
-        let app = TestApp::open(Some(example()), THEMES);
+        let mut app = TestApp::open(Some(example()), THEMES)
+            .with_quick_actions(crate::standard_components::quick_actions::QUICK_ACTIONS);
+        // Most tests work on the graph.
+        app.layout.mode = Mode::Graph;
         assert!(app.status.is_none(), "the example opens");
         let mut harness = Harness::builder()
             .with_size([1400.0, 850.0])
@@ -1340,6 +1395,44 @@ mod tests {
         harness.state_mut().selection.clear();
         harness.run_steps(3);
         assert!(!harness.state().layout.is_shown(Pane::Annotation));
+    }
+
+    #[test]
+    fn quick_actions_build_the_graph_from_the_basic_view() {
+        let app =
+            TestApp::open(None, THEMES).with_quick_actions(crate::standard_components::quick_actions::QUICK_ACTIONS);
+        let mut harness = Harness::builder()
+            .with_size([1400.0, 850.0])
+            .wgpu()
+            .build_ui_state(|ui, app: &mut TestApp| app.show(ui), app);
+        harness.run_steps(3);
+        assert_eq!(harness.state().layout.mode, Mode::Basic, "it starts in the basic view");
+        harness.snapshot("basic_empty");
+        for (action, viewer) in [
+            ("Add spike tracking", "Spike Viewer"),
+            ("Add EEG tracking", "LFP Viewer"),
+            ("Add position tracking", "Tracker View"),
+        ] {
+            harness.get_by_role_and_label(egui::accesskit::Role::Button, action).click();
+            harness.run_steps(3);
+            let id = node_named(harness.state(), viewer);
+            assert_eq!(harness.state().layout.window(id), WindowState::Docked, "{action} opens the {viewer}");
+            assert!(harness.state().layout.is_shown(Pane::Main), "the basic view stays");
+            let offered = harness.query_by_role_and_label(egui::accesskit::Role::Button, action).is_some();
+            assert!(!offered, "{action} isn't offered once done");
+        }
+        harness.snapshot("basic_after_quick_actions");
+        // Undone in one step each.
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+        harness.run_steps(2);
+        assert!(harness.query_by_role_and_label(egui::accesskit::Role::Button, "Add position tracking").is_some());
+        // To the graph, and back.
+        harness.get_by_label("Open the graph").click();
+        harness.run_steps(2);
+        assert_eq!(harness.state().layout.mode, Mode::Graph);
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::Num1);
+        harness.run_steps(2);
+        assert_eq!(harness.state().layout.mode, Mode::Basic);
     }
 
     #[test]

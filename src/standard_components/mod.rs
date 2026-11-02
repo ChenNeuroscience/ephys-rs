@@ -7,6 +7,7 @@
 pub mod annotations;
 pub mod ephys;
 mod preview;
+pub mod quick_actions;
 pub mod recording;
 pub mod spikes;
 pub mod themes;

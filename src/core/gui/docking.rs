@@ -1,8 +1,10 @@
-//! The dockable layout, like an IDE's: the canvas, the dev tools and node windows are panes that can be
-//! dragged by their tabs to sit beside, above or below each other, or together as tabs.
+//! The dockable layout, like an IDE's: the main pane, the dev tools and node windows are panes that can be
+//! dragged by their tabs to sit beside, above or below each other, or together as tabs. The main pane is in one of
+//! two modes: the basic view (the viewers, and quick actions), or the graph.
 //!
-//! A node's window opens docked: alongside the largest group of node windows, or failing that in a new panel
-//! below the canvas. It can be undocked to float, and docked again. Closing a docked window hides it but keeps
+//! A node's window opens docked. In the graph mode, it goes alongside the largest group of node windows, or failing
+//! that in a new panel below the graph. In the basic mode, it goes beside the basic view, the windows sharing the
+//! space beside it (a few, one above another, then as tabs). It can be undocked to float, and docked again. Closing a docked window hides it but keeps
 //! its place in the layout, so it comes back where it was when reopened.
 
 use std::collections::{BTreeSet, HashSet};
@@ -15,20 +17,45 @@ use super::canvas::{Canvas, Selection};
 use super::dev_tools::{self, DevTools};
 use super::icons::Icon;
 use super::style;
-use super::{Event, node_window, toolbar};
+use super::{Event, basic, node_window, toolbar};
 use crate::core::annotation::{AnnotationSet, Annotations};
 use crate::core::engine::{Graph, NodeId, NodeSet, Resolved, Runner, Snapshot};
+use crate::core::quick_action::QuickAction;
 use crate::core::theme::Colours;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub enum Pane {
-    Canvas,
+    /// The basic view, or the graph (see `Mode`).
+    #[serde(alias = "Canvas")]
+    Main,
     DevTools,
     /// The selected annotation's settings: there while an annotation's selected.
     Annotation,
     /// A node's window: its view, or its settings.
     Node(NodeId),
 }
+
+/// What the main pane shows.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub enum Mode {
+    /// The viewers, large, and quick actions: for most people, most of the time.
+    #[default]
+    Basic,
+    /// The graph, to build and change it node by node.
+    Graph,
+}
+
+impl Mode {
+    pub fn name(self) -> &'static str {
+        match self {
+            Mode::Basic => "Basic",
+            Mode::Graph => "Graph",
+        }
+    }
+}
+
+/// How many groups of windows share the space beside the basic view before more go in as tabs.
+const BESIDE: usize = 3;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum WindowState {
@@ -43,14 +70,16 @@ pub enum WindowState {
 pub struct Layout {
     tree: Tree<Pane>,
     floating: BTreeSet<NodeId>,
+    #[serde(default)]
+    pub mode: Mode,
 }
 
 impl Default for Layout {
     fn default() -> Self {
         let mut tiles = Tiles::default();
-        let canvas = tiles.insert_pane(Pane::Canvas);
-        let root = tiles.insert_tab_tile(vec![canvas]);
-        Layout { tree: Tree::new(egui::Id::unique("dock"), root, tiles), floating: BTreeSet::new() }
+        let main = tiles.insert_pane(Pane::Main);
+        let root = tiles.insert_tab_tile(vec![main]);
+        Layout { tree: Tree::new(egui::Id::unique("dock"), root, tiles), floating: BTreeSet::new(), mode: Mode::Basic }
     }
 }
 
@@ -109,11 +138,11 @@ impl Layout {
     }
 
     /// Shows or hides a pane: the first time, a pane not in the default layout (the dev tools) goes below the
-    /// canvas, where browsers put theirs.
+    /// main pane, where browsers put theirs.
     pub fn toggle_pane(&mut self, pane: Pane) {
         if self.tile(pane).is_none() {
             let tile = self.tree.tiles.insert_pane(pane);
-            self.below_canvas(tile, 0.5);
+            self.below_main(tile, 0.5);
             return self.show(pane);
         }
         if self.is_shown(pane) { self.hide(pane) } else { self.show(pane) }
@@ -140,21 +169,88 @@ impl Layout {
         }
     }
 
-    /// Puts a node's window in the layout: back where it was if it's been docked before, otherwise as a tab
-    /// in the largest group of node windows showing, or failing that in a new panel below the canvas.
+    /// Puts a node's window in the layout: back where it was if it's been docked before; otherwise, in the graph
+    /// mode, as a tab in the largest group of node windows showing, or failing that in a new panel below the graph;
+    /// in the basic mode, beside the basic view (see `beside_main`).
     pub fn dock(&mut self, id: NodeId) {
         self.floating.remove(&id);
         let pane = Pane::Node(id);
         if self.tile(pane).is_none() {
             let target = self.largest_window_tabs();
-            let tiles = &mut self.tree.tiles;
-            let new = tiles.insert_pane(pane);
-            match target.and_then(|tabs| tiles.get_mut(tabs)) {
-                Some(Tile::Container(container)) => container.add_child(new),
-                _ => self.below_canvas(new, 0.65),
+            let new = self.tree.tiles.insert_pane(pane);
+            if self.mode == Mode::Basic {
+                self.beside_main(new);
+            } else {
+                match target.and_then(|tabs| self.tree.tiles.get_mut(tabs)) {
+                    Some(Tile::Container(container)) => container.add_child(new),
+                    _ => self.below_main(new, 0.65),
+                }
             }
         }
         self.show(pane);
+    }
+
+    /// Puts a new window beside the basic view, so the windows share the space at its right: the first in a
+    /// panel there (the basic view keeping a third of the width), the next few each splitting the biggest group of
+    /// windows in two, one above the other; and after that, as a tab in the biggest group.
+    fn beside_main(&mut self, pane: TileId) {
+        let groups = self.window_tab_groups();
+        let biggest = groups.iter().copied().max_by(|a, b| self.area(*a).total_cmp(&self.area(*b)));
+        let tiles = &mut self.tree.tiles;
+        match biggest {
+            None => {
+                let Some(main) = tiles.find_pane(&Pane::Main) else { return };
+                let left = tiles.parent_of(main).unwrap_or(main);
+                let parent = tiles.parent_of(left);
+                let right = tiles.insert_tab_tile(vec![pane]);
+                let row = tiles.insert_container(Linear::new_binary(LinearDir::Horizontal, [left, right], 0.34));
+                match parent.and_then(|p| tiles.get_mut(p)) {
+                    Some(Tile::Container(container)) => {
+                        let _ = container.replace_child(left, row);
+                    }
+                    _ => self.tree.root = Some(row),
+                }
+            }
+            Some(group) if groups.len() < BESIDE => {
+                let parent = tiles.parent_of(group);
+                let below = tiles.insert_tab_tile(vec![pane]);
+                let column = tiles.insert_container(Linear::new_binary(LinearDir::Vertical, [group, below], 0.5));
+                match parent.and_then(|p| tiles.get_mut(p)) {
+                    Some(Tile::Container(container)) => {
+                        let _ = container.replace_child(group, column);
+                    }
+                    _ => self.tree.root = Some(column),
+                }
+            }
+            Some(group) => {
+                if let Some(Tile::Container(container)) = tiles.get_mut(group) {
+                    container.add_child(pane);
+                }
+            }
+        }
+    }
+
+    /// The groups of tabs showing that hold node windows (and not the main pane).
+    fn window_tab_groups(&self) -> Vec<TileId> {
+        let tiles = &self.tree.tiles;
+        tiles
+            .iter()
+            .filter(|(tile, t)| match t {
+                Tile::Container(Container::Tabs(tabs)) => {
+                    let panes = || tabs.children.iter().filter_map(|c| tiles.get_pane(c));
+                    tiles.is_visible(**tile)
+                        && panes().any(|p| matches!(p, Pane::Node(_)))
+                        && !panes().any(|p| *p == Pane::Main)
+                }
+                _ => false,
+            })
+            .map(|(tile, _)| *tile)
+            .collect()
+    }
+
+    /// A tile's area, as last laid out.
+    fn area(&self, tile: TileId) -> f32 {
+        self.tree.tiles.rect(tile).map_or(0.0, |r| r.area())
     }
 
     /// The biggest (as last laid out) group of tabs that holds node windows and is showing.
@@ -173,11 +269,11 @@ impl Layout {
             .max_by(|a, b| area(*a).total_cmp(&area(*b)))
     }
 
-    /// Puts `pane` below the canvas, which keeps `share` of the height.
-    fn below_canvas(&mut self, pane: TileId, share: f32) {
+    /// Puts `pane` below the main pane, which keeps `share` of the height.
+    fn below_main(&mut self, pane: TileId, share: f32) {
         let tiles = &mut self.tree.tiles;
-        let Some(canvas) = tiles.find_pane(&Pane::Canvas) else { return };
-        let above = tiles.parent_of(canvas).unwrap_or(canvas);
+        let Some(main) = tiles.find_pane(&Pane::Main) else { return };
+        let above = tiles.parent_of(main).unwrap_or(main);
         let parent = tiles.parent_of(above);
         let below = tiles.insert_tab_tile(vec![pane]);
         let column = tiles.insert_container(Linear::new_binary(LinearDir::Vertical, [above, below], share));
@@ -262,6 +358,9 @@ pub struct Panes<'a, N: NodeSet, A: AnnotationSet> {
     pub runner: Option<&'a Runner<N>>,
     /// The latest snapshot of the graph.
     pub snapshot: &'a Snapshot<N>,
+    /// What the main pane shows, and the quick actions the basic view offers.
+    pub mode: Mode,
+    pub quick_actions: &'a [QuickAction<N>],
     /// How many workers runs start with.
     pub workers: usize,
     /// Whether settings are locked (while recording).
@@ -423,7 +522,17 @@ impl<N: NodeSet, A: AnnotationSet> egui_tiles::Behavior<Pane> for Panes<'_, N, A
 
     fn pane_ui(&mut self, ui: &mut egui::Ui, _tile: TileId, pane: &mut Pane) -> UiResponse {
         match *pane {
-            Pane::Canvas => self.canvas.show(
+            Pane::Main if self.mode == Mode::Basic => basic::show(
+                ui,
+                self.graph,
+                self.resolved,
+                self.colours,
+                self.quick_actions,
+                self.open_windows,
+                self.locked,
+                self.events,
+            ),
+            Pane::Main => self.canvas.show(
                 ui,
                 self.graph,
                 self.annotations,
@@ -454,7 +563,7 @@ impl<N: NodeSet, A: AnnotationSet> egui_tiles::Behavior<Pane> for Panes<'_, N, A
 
     fn tab_title_for_pane(&mut self, pane: &Pane) -> egui::WidgetText {
         match pane {
-            Pane::Canvas => "Graph".into(),
+            Pane::Main => self.mode.name().into(),
             Pane::DevTools => "Developer Tools".into(),
             Pane::Annotation => "Annotation".into(),
             Pane::Node(id) => match self.graph.get(*id) {
@@ -466,7 +575,7 @@ impl<N: NodeSet, A: AnnotationSet> egui_tiles::Behavior<Pane> for Panes<'_, N, A
 
     /// The annotation pane comes and goes with the selection, so isn't closed by hand.
     fn is_tab_closable(&self, tiles: &Tiles<Pane>, tile: TileId) -> bool {
-        !matches!(tiles.get_pane(&tile), Some(Pane::Canvas | Pane::Annotation))
+        !matches!(tiles.get_pane(&tile), Some(Pane::Main | Pane::Annotation))
     }
 
     /// Hides rather than removes, so the pane comes back in the same place.

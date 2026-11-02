@@ -6,7 +6,7 @@ use eframe::egui::{self, Rect, Sense, Stroke, StrokeKind};
 use super::App;
 use super::actions::{Action, MENUS, MenuEntry};
 use super::canvas::Tool;
-use super::docking::Pane;
+use super::docking::{Mode, Pane};
 use super::icons::{self, Icon};
 use crate::core::annotation::AnnotationSet;
 use crate::core::engine::NodeSet;
@@ -43,6 +43,8 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         match action {
             Action::DrawTool(index) => Some(self.canvas.tool == Tool::Draw(index)),
             Action::ToggleDevTools => Some(self.layout.is_shown(Pane::DevTools)),
+            Action::ShowBasic => Some(self.layout.mode == Mode::Basic),
+            Action::ShowGraph => Some(self.layout.mode == Mode::Graph),
             Action::Theme(index) => Some(self.theme == index),
             Action::Play => Some(self.runner.is_some()),
             Action::Record => Some(self.history.current.snapshot.recording.is_some() || self.preparing.is_some()),
@@ -119,6 +121,19 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                 }
                 ui.separator();
             }
+
+            // What the main pane shows: clicking either brings it to the front, too.
+            for (action, mode, text) in [
+                (Action::ShowBasic, Mode::Basic, "Basic view: the viewers, and quick actions"),
+                (Action::ShowGraph, Mode::Graph, "Graph view: every node, to build and change the graph"),
+            ] {
+                let tip = self.tooltip(&ctx, action, text);
+                let selected = self.layout.mode == mode;
+                if ui.selectable_label(selected, mode.name()).on_hover_text(tip).clicked() {
+                    chosen = Some(action);
+                }
+            }
+            ui.separator();
 
             let running = self.runner.is_some();
             let (icon, text) = if running { (Icon::Stop, "Stop") } else { (Icon::Play, "Play") };

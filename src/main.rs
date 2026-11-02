@@ -80,6 +80,8 @@ impl core::Components for Standard {
     type Nodes = Nodes;
     type Annotations = AnnotationTypes;
     const THEMES: &'static [core::theme::Theme] = standard_components::themes::THEMES;
+    const QUICK_ACTIONS: &'static [core::quick_action::QuickAction<Nodes>] =
+        standard_components::quick_actions::QUICK_ACTIONS;
 }
 
 /// The graph in examples/rig.json, for tests.
