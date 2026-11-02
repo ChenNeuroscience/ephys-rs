@@ -691,8 +691,10 @@ impl<N: NodeSet, A: AnnotationSet> Panes<'_, N, A> {
                 )
             }
             Pane::Home => {
+                // The line under the toolbar right under it, so its margins above and below are the same.
+                ui.spacing_mut().item_spacing.y = 0.0;
                 toolbar::graph_toolbar::<A>(ui, self.graph_tools, self.canvas.tool, self.events);
-                ui.separator();
+                ui.add(egui::Separator::default().spacing(1.0));
                 self.canvas.show(
                     ui,
                     self.graph,
