@@ -191,10 +191,12 @@ impl Layout {
     }
 
     /// Puts a new window beside the basic view, so the windows share the space at its right: the first in a
-    /// panel there (the basic view keeping a third of the width), the next few each splitting the biggest group of
-    /// windows in two, one above the other; and after that, as a tab in the biggest group.
+    /// panel there (the basic view keeping a third of the width), the next few below the biggest group of windows,
+    /// sharing its column equally; and after that, as a tab in the biggest group.
     fn beside_main(&mut self, pane: TileId) {
-        let groups = self.window_tab_groups();
+        let mut groups = self.window_tab_groups();
+        // The same one every time, when two are as big.
+        groups.sort_by_key(|tile| std::cmp::Reverse(tile.0));
         let biggest = groups.iter().copied().max_by(|a, b| self.area(*a).total_cmp(&self.area(*b)));
         let tiles = &mut self.tree.tiles;
         match biggest {
@@ -214,6 +216,16 @@ impl Layout {
             Some(group) if groups.len() < BESIDE => {
                 let parent = tiles.parent_of(group);
                 let below = tiles.insert_tab_tile(vec![pane]);
+                // Already in a column of windows: another at its bottom, all sharing the column equally.
+                if let Some(Tile::Container(Container::Linear(column))) = parent.and_then(|p| tiles.get_mut(p))
+                    && column.dir == LinearDir::Vertical
+                {
+                    column.children.push(below);
+                    for child in column.children.clone() {
+                        column.shares.set_share(child, 1.0);
+                    }
+                    return;
+                }
                 let column = tiles.insert_container(Linear::new_binary(LinearDir::Vertical, [group, below], 0.5));
                 match parent.and_then(|p| tiles.get_mut(p)) {
                     Some(Tile::Container(container)) => {
