@@ -31,18 +31,13 @@ pub struct GraphTools {
     pub arrange: bool,
 }
 
-/// The graph's toolbar, along the top of its pane: back to the basic view; adding nodes, and drawing annotations;
-/// duplicating and deleting; and arranging and framing it.
+/// The graph's toolbar, along the top of its pane: adding nodes, and drawing annotations; duplicating and deleting;
+/// arranging and framing it; and, at the right, back to the basic view.
 pub fn graph_toolbar<A: AnnotationSet>(ui: &mut egui::Ui, tools: GraphTools, tool: Tool, events: &mut Vec<Event>) {
     let ctx = ui.ctx().clone();
     let mut perform = |action, anchor| events.push(Event::Perform(action, anchor));
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
-        let basic = egui::Button::new("Basic view").small();
-        if ui.add(basic).on_hover_text("Show the basic view here: the components, and quick actions").clicked() {
-            perform(Action::ShowBasic, None);
-        }
-        ui.separator();
         let add =
             dropdown_button(ui, Icon::AddNode, "Add node").on_hover_text("Add a node (or press Tab over the graph)");
         if add.clicked() && tools.add {
@@ -81,6 +76,13 @@ pub fn graph_toolbar<A: AnnotationSet>(ui: &mut egui::Ui, tools: GraphTools, too
                 perform(action, None);
             }
         }
+        // Back to the basic view, at the right (as the basic view has the graph at its right).
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let basic = egui::Button::new("Basic view").small();
+            if ui.add(basic).on_hover_text("Show the basic view here: the components, and quick actions").clicked() {
+                perform(Action::ShowBasic, None);
+            }
+        });
     });
 }
 
