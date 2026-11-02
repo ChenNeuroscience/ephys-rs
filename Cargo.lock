@@ -996,8 +996,8 @@ dependencies = [
  "libloading 0.9.0",
  "log",
  "muda",
+ "realfft",
  "rfd",
- "rustfft",
  "sci-rs",
  "serde",
  "serde_json",
@@ -3193,6 +3193,15 @@ dependencies = [
  "bytemuck",
  "font-types",
  "once_cell",
+]
+
+[[package]]
+name = "realfft"
+version = "3.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "538895ccf2006b473aafbe8d72770e21038961ab67aae34f3c577485fc703a7d"
+dependencies = [
+ "rustfft",
 ]
 
 [[package]]

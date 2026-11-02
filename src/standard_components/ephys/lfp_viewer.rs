@@ -13,8 +13,8 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use eframe::egui::{self, Align2, FontId, Pos2, Rect, Sense, Shape, Stroke};
-use rustfft::num_complex::Complex;
-use rustfft::{Fft, FftPlanner};
+use realfft::num_complex::Complex;
+use realfft::{RealFftPlanner, RealToComplex};
 use serde::{Deserialize, Serialize};
 
 use crate::core::engine::{Category, Context, Control, CopyTo, EdgeType, Input, Node, NodeInfo, Output, Pass};
@@ -144,9 +144,12 @@ struct Spectra {
     done: Vec<bool>,
     /// The next channel to work out.
     next: usize,
-    fft: Option<Arc<dyn Fft<f32>>>,
+    /// A real FFT (the samples being real, half the work of a complex one), and what it works in: the windowed
+    /// samples, the spectrum (to half the rate kept), and its scratch.
+    fft: Option<Arc<dyn RealToComplex<f32>>>,
     window: Vec<f32>,
-    buffer: Vec<Complex<f32>>,
+    samples: Vec<f32>,
+    spectrum: Vec<Complex<f32>>,
     scratch: Vec<Complex<f32>>,
 }
 
@@ -171,8 +174,8 @@ impl Spectra {
         }
         let bins = shape.2.len();
         let n = SPECTRUM_SAMPLES;
-        let fft = self.fft.take().unwrap_or_else(|| FftPlanner::new().plan_fft_forward(n));
-        let scratch = vec![Complex::default(); fft.get_inplace_scratch_len()];
+        let fft = self.fft.take().unwrap_or_else(|| RealFftPlanner::new().plan_fft_forward(n));
+        let (samples, spectrum, scratch) = (fft.make_input_vec(), fft.make_output_vec(), fft.make_scratch_vec());
         // Keep the samples so far, if they're for the same channels.
         let (kept, head, count) = if self.shape.0 == channels && self.shape.1 == shape.1 {
             (std::mem::take(&mut self.kept), self.head, self.count)
@@ -191,7 +194,8 @@ impl Spectra {
             next: 0,
             fft: Some(fft),
             window: (0..n).map(|i| 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / n as f32).cos()).collect(),
-            buffer: vec![Complex::default(); n],
+            samples,
+            spectrum,
             scratch,
         };
     }
@@ -232,15 +236,15 @@ impl Spectra {
             // Oldest first, less the mean, windowed.
             let kept = &self.kept[c * n..(c + 1) * n];
             let mean = kept.iter().sum::<f32>() / n as f32;
-            for (i, value) in self.buffer.iter_mut().enumerate() {
-                let x = kept[(self.head + i) % n] - mean;
-                *value = Complex::new(x * self.window[i], 0.0);
+            for (i, value) in self.samples.iter_mut().enumerate() {
+                *value = (kept[(self.head + i) % n] - mean) * self.window[i];
             }
-            fft.process_with_scratch(&mut self.buffer, &mut self.scratch);
+            // Only fails if the vectors are the wrong lengths, which they're made not to be.
+            let _ = fft.process_with_scratch(&mut self.samples, &mut self.spectrum, &mut self.scratch);
             let power = &mut self.power[c * bins.len()..(c + 1) * bins.len()];
             let first = !self.done[c];
             for (p, bin) in power.iter_mut().zip(bins.clone()) {
-                let new = self.buffer[bin].norm_sqr() / n as f32;
+                let new = self.spectrum[bin].norm_sqr() / n as f32;
                 *p = if first { new } else { *p + SMOOTHING * (new - *p) };
             }
             self.done[c] = true;
