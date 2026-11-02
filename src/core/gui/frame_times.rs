@@ -16,9 +16,29 @@ pub struct Frame {
     pub parts: Vec<(String, f32)>,
 }
 
+/// Something that changed the run, marked on the chart.
+pub struct Mark {
+    pub at: f64,
+    pub kind: MarkKind,
+    /// Short, to label the mark; and what changed, in full.
+    pub label: String,
+    pub detail: String,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MarkKind {
+    /// Recording started or stopped.
+    Recording,
+    /// A new version that runs differently: a new epoch, with fresh state.
+    Epoch,
+    /// A new version the run carried on with (new settings, say).
+    Version,
+}
+
 pub struct FrameTimes {
     started: Instant,
     pub frames: VecDeque<Frame>,
+    pub marks: VecDeque<Mark>,
     /// The frame being built.
     current: Option<Frame>,
     /// When the graph started running, if it is (seconds since the app started), for timing passes alike.
@@ -29,7 +49,14 @@ pub struct FrameTimes {
 
 impl Default for FrameTimes {
     fn default() -> Self {
-        FrameTimes { started: Instant::now(), frames: VecDeque::new(), current: None, run_started: None, paused: None }
+        FrameTimes {
+            started: Instant::now(),
+            frames: VecDeque::new(),
+            marks: VecDeque::new(),
+            current: None,
+            run_started: None,
+            paused: None,
+        }
     }
 }
 
@@ -67,6 +94,15 @@ impl FrameTimes {
             self.frames.pop_front();
         }
         self.current = Some(Frame { at, parts: Vec::new() });
+    }
+
+    /// Marks a change to the run, now.
+    pub fn mark(&mut self, kind: MarkKind, label: String, detail: String) {
+        let at = self.now();
+        while self.marks.front().is_some_and(|m| m.at < at - KEPT) {
+            self.marks.pop_front();
+        }
+        self.marks.push_back(Mark { at, kind, label, detail });
     }
 
     /// Adds `ms` to `part` of this frame.

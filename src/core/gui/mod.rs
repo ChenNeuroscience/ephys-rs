@@ -175,6 +175,8 @@ pub struct App<N: NodeSet, A: AnnotationSet> {
     /// How long each part of the GUI's taking, frame by frame, for the dev tools; and the last frame's CPU time.
     frame_times: frame_times::FrameTimes,
     last_cpu: Option<f32>,
+    /// The snapshot the run last took, to mark what changes on the dev tools' chart.
+    ran: Option<engine::Snapshot<N>>,
 }
 
 impl<N: NodeSet, A: AnnotationSet> App<N, A> {
@@ -207,6 +209,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             workers: engine::default_workers(),
             frame_times: Default::default(),
             last_cpu: None,
+            ran: None,
             quick_actions: &[],
             home_mode: Mode::Basic,
         };
@@ -388,6 +391,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         self.history.commit(&self.graph, &self.annotations);
         self.runner = Some(Runner::start(&self.history.current.snapshot, self.workers));
         self.frame_times.run_started = Some(self.frame_times.now());
+        self.ran = Some(self.history.current.snapshot.clone());
     }
 
     /// Has the nodes prepare to record (see `Node::prepare_to_record`), on a thread of their own: once they're
@@ -639,7 +643,28 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             self.set_recording(Some(Arc::new(recording)));
         }
         let Some(runner) = &self.runner else { return };
-        runner.update(&self.history.current.snapshot);
+        let snapshot = &self.history.current.snapshot;
+        let same_epoch = runner.update(snapshot);
+        // Marking what changed, for the dev tools' chart.
+        if let Some(before) = self.ran.take_if(|ran| ran.version != snapshot.version) {
+            if let Some((label, detail)) = describe_change(&before, snapshot) {
+                use frame_times::MarkKind;
+                let kind = if before.recording.is_some() != snapshot.recording.is_some() {
+                    MarkKind::Recording
+                } else if same_epoch {
+                    MarkKind::Version
+                } else {
+                    MarkKind::Epoch
+                };
+                let label = match kind {
+                    MarkKind::Recording => label,
+                    MarkKind::Epoch => format!("v{} new epoch", snapshot.version),
+                    MarkKind::Version => format!("v{}", snapshot.version),
+                };
+                self.frame_times.mark(kind, label, detail);
+            }
+            self.ran = Some(snapshot.clone());
+        }
         // Keep the stats in the status bar fresh.
         ctx.request_repaint_after(std::time::Duration::from_millis(250));
     }
@@ -947,6 +972,50 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         self.keep_running(&ctx);
         self.frame_times.add("Upkeep", ms_since(started));
     }
+}
+
+/// What changed from one snapshot to the next, as it runs: a short label, and the detail; nothing if only how it's
+/// shown changed (nodes moved, say).
+fn describe_change<N: NodeSet>(before: &engine::Snapshot<N>, after: &engine::Snapshot<N>) -> Option<(String, String)> {
+    let mut changes = Vec::new();
+    let mut label = "changed".to_owned();
+    match (before.recording.is_some(), after.recording.is_some()) {
+        (false, true) => {
+            changes.push("Recording started".to_owned());
+            label = "recording".into();
+        }
+        (true, false) => {
+            changes.push("Recording stopped".to_owned());
+            label = "stopped recording".into();
+        }
+        _ => {}
+    }
+    let (old, new) = (&before.graph, &after.graph);
+    let names = |graph: &Graph<N>, ids: Vec<NodeId>| -> String {
+        ids.iter().filter_map(|id| graph.get(*id).map(|e| e.label.clone())).collect::<Vec<_>>().join(", ")
+    };
+    let added: Vec<NodeId> = new.iter().map(|(id, _)| id).filter(|id| !old.contains(*id)).collect();
+    let removed: Vec<NodeId> = old.iter().map(|(id, _)| id).filter(|id| !new.contains(*id)).collect();
+    let changed: Vec<NodeId> =
+        new.iter().filter(|(id, e)| old.get(*id).is_some_and(|o| o.node != e.node)).map(|(id, _)| id).collect();
+    if !added.is_empty() {
+        changes.push(format!("Added {}", names(new, added)));
+    }
+    if !removed.is_empty() {
+        changes.push(format!("Removed {}", names(old, removed)));
+    }
+    if !changed.is_empty() {
+        changes.push(format!("Settings of {}", names(new, changed)));
+    }
+    let connected = new.edges().iter().filter(|e| !old.edges().contains(e)).count();
+    let disconnected = old.edges().iter().filter(|e| !new.edges().contains(e)).count();
+    if connected > 0 {
+        changes.push(format!("{connected} connected"));
+    }
+    if disconnected > 0 {
+        changes.push(format!("{disconnected} disconnected"));
+    }
+    (!changes.is_empty()).then(|| (label, format!("Version {}: {}", after.version, changes.join("; "))))
 }
 
 /// Milliseconds since `start`.
@@ -1533,6 +1602,31 @@ mod tests {
         harness.get_by_label_contains("Home: the graph").click();
         harness.run_steps(2);
         assert!(harness.state().layout.is_shown(Pane::Home) && harness.state().layout.mode == Mode::Graph);
+    }
+
+    #[test]
+    fn changes_to_the_run_are_described() {
+        let mut harness = harness();
+        // Without the writers, so recording doesn't write files.
+        for writer in ["Write LTX", "Write Raw"] {
+            let id = node_named(harness.state(), writer);
+            harness.state_mut().graph.remove(id);
+        }
+        let ctx = harness.ctx.clone();
+        harness.state_mut().perform(&ctx, Action::Play);
+        harness.run_steps(2);
+        let detector = node_named(harness.state(), "Spike Detector");
+        if let Some(Nodes::SpikeDetector(d)) = harness.state_mut().graph.get_mut(detector).map(|e| &mut e.node) {
+            d.thresholds.set(0, 70.0);
+        }
+        harness.run_steps(3);
+        harness.state_mut().set_recording(Some(Arc::new(engine::Recording::default())));
+        harness.run_steps(3);
+        let marks: Vec<String> = harness.state().frame_times.marks.iter().map(|m| m.detail.clone()).collect();
+        assert!(marks.iter().any(|m| m.contains("Settings of Spike Detector")), "{marks:?}");
+        assert!(marks.iter().any(|m| m.contains("Recording started")), "{marks:?}");
+        harness.state_mut().set_recording(None);
+        harness.state_mut().perform(&ctx, Action::Play);
     }
 
     #[test]

@@ -400,8 +400,11 @@ fn worker_chips<N: NodeSet>(ui: &mut egui::Ui, colours: &Colours, info: &RunInfo
                 (None, Some(epoch)) => (format!("{index} on e{epoch}"), colours.control, colours.warning),
             };
             let font = FontId::monospace(10.5);
+            // All as wide as the widest a chip gets, so they don't change size as workers take passes.
+            let widest = ui.painter().layout_no_wrap(format!("{index} making buffers"), font.clone(), ink).size();
             let galley = ui.painter().layout_no_wrap(text, font, ink);
-            let (rect, response) = ui.allocate_exact_size(galley.size() + vec2(10.0, 4.0), Sense::hover());
+            let size = vec2(galley.size().x.max(widest.x), galley.size().y) + vec2(10.0, 4.0);
+            let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
             ui.painter().rect_filled(rect, 3.0, fill);
             ui.painter().galley(rect.min + vec2(5.0, 2.0), galley, ink);
             response.on_hover_text(format!(

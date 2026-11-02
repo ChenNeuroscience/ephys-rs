@@ -4,10 +4,10 @@
 //! out in every frame.
 
 use eframe::egui::{self, RichText, Sense, Stroke};
-use egui_plot::{Bar, BarChart, HLine, Line, Plot, PlotBounds, PlotPoints};
+use egui_plot::{Bar, BarChart, HLine, Line, Plot, PlotBounds, PlotPoint, PlotPoints, PlotUi, Text, VLine};
 
 use crate::core::engine::PASS_DURATION;
-use crate::core::gui::frame_times::{FrameTimes, PAINTING};
+use crate::core::gui::frame_times::{FrameTimes, Mark, MarkKind, PAINTING};
 use crate::core::theme::Colours;
 use crate::core::time_axis;
 
@@ -42,6 +42,7 @@ pub fn show(
     let start = frames.frames.front().map_or(now, |f| f.at);
     let (left, right) = time_axis::window(start, now, SPAN);
     let shown: Vec<_> = frames.frames.iter().filter(|f| f.at >= left).collect();
+    let marks: Vec<&Mark> = frames.marks.iter().filter(|m| m.at >= left).collect();
     // Each part, in the order they first come, for the key and the bars.
     let mut parts: Vec<&str> = Vec::new();
     for frame in &shown {
@@ -110,19 +111,19 @@ pub fn show(
         let budget = PASS_DURATION * 1000.0;
         let top = ms.iter().map(|p| p[1]).fold(budget * 1.25, f64::max);
         ui.label(RichText::new("Passes").small().color(colours.text_secondary));
-        plot("pass times", passes_height)
-            .show(ui, |plot| {
-                plot.set_plot_bounds(PlotBounds::from_min_max([left, 0.0], [right, top]));
-                plot.hline(HLine::new("each pass's time", budget).color(colours.warning.gamma_multiply(0.7)));
-                let each = Line::new("pass", PlotPoints::from(ms)).color(colours.accent.gamma_multiply(0.45));
-                plot.line(each.width(1.0));
-                plot.line(Line::new("average", PlotPoints::from(average)).color(colours.accent).width(2.0));
-            })
-            .response
-            .on_hover_text(format!(
-                "How long each pass took to run (thin), and the average over {SMOOTHING} passes (thick), against the \
-                 {budget:.0} ms each covers (the line across): to keep up, passes must take less on average"
-            ));
+        let shown = plot("pass times", passes_height).show(ui, |plot| {
+            plot.set_plot_bounds(PlotBounds::from_min_max([left, 0.0], [right, top]));
+            plot.hline(HLine::new("each pass's time", budget).color(colours.warning.gamma_multiply(0.7)));
+            let each = Line::new("pass", PlotPoints::from(ms)).color(colours.accent.gamma_multiply(0.45));
+            plot.line(each.width(1.0));
+            plot.line(Line::new("average", PlotPoints::from(average)).color(colours.accent).width(2.0));
+            show_marks(plot, &marks, colours, top, true)
+        });
+        let tip = format!(
+            "How long each pass took to run (thin), and the average over {SMOOTHING} passes (thick), against the \
+             {budget:.0} ms each covers (the line across): to keep up, passes must take less on average"
+        );
+        let _ = shown.response.on_hover_text(shown.inner.unwrap_or(tip));
     }
 
     // The GUI's frames: a bar each, split into its parts.
@@ -140,45 +141,44 @@ pub fn show(
     };
     let top = shown.iter().map(total).fold(FRAME_BUDGET as f32 * 1.25, f32::max) as f64;
     ui.label(RichText::new("GUI frames").small().color(colours.text_secondary));
-    plot("frame times", frames_height)
-        .show(ui, |plot| {
-            plot.set_plot_bounds(PlotBounds::from_min_max([left, 0.0], [right, top]));
-            plot.hline(HLine::new("60 frames a second", FRAME_BUDGET).color(colours.warning.gamma_multiply(0.7)));
-            // The slowest frame in each bin.
-            let mut slowest: Vec<&crate::core::gui::frame_times::Frame> = Vec::new();
-            for frame in &shown {
-                let bin = |f: &crate::core::gui::frame_times::Frame| (f.at / BIN).floor() as i64;
-                match slowest.last_mut() {
-                    Some(last) if bin(last) == bin(frame) => {
-                        if total(frame) > total(last) {
-                            *last = frame;
-                        }
+    let labelled = !running;
+    let shown_plot = plot("frame times", frames_height).show(ui, |plot| {
+        plot.set_plot_bounds(PlotBounds::from_min_max([left, 0.0], [right, top]));
+        plot.hline(HLine::new("60 frames a second", FRAME_BUDGET).color(colours.warning.gamma_multiply(0.7)));
+        // The slowest frame in each bin.
+        let mut slowest: Vec<&crate::core::gui::frame_times::Frame> = Vec::new();
+        for frame in &shown {
+            let bin = |f: &crate::core::gui::frame_times::Frame| (f.at / BIN).floor() as i64;
+            match slowest.last_mut() {
+                Some(last) if bin(last) == bin(frame) => {
+                    if total(frame) > total(last) {
+                        *last = frame;
                     }
-                    _ => slowest.push(frame),
                 }
+                _ => slowest.push(frame),
             }
-            let mut bases = vec![0.0f64; slowest.len()];
-            for (index, part) in parts.iter().enumerate() {
-                let bars: Vec<Bar> = slowest
-                    .iter()
-                    .zip(&mut bases)
-                    .filter_map(|(frame, base)| {
-                        let ms = frame.parts.iter().find(|p| p.0 == *part)?.1 as f64;
-                        let x = ((frame.at / BIN).floor() + 0.5) * BIN;
-                        let bar = Bar::new(x, ms).base_offset(*base).width(BIN).fill(colour(index, part));
-                        *base += ms;
-                        Some(bar.stroke(Stroke::NONE))
-                    })
-                    .collect();
-                plot.bar_chart(BarChart::new(*part, bars).allow_hover(false));
-            }
-        })
-        .response
-        .on_hover_text(
-            "How long the GUI took over each frame, part by part: those it builds, then laying it out and \
-                        painting it; the slowest in each twentieth of a second. Against the 1/60 s a frame can take, \
-                        at 60 frames a second (the line across)",
-        );
+        }
+        let mut bases = vec![0.0f64; slowest.len()];
+        for (index, part) in parts.iter().enumerate() {
+            let bars: Vec<Bar> = slowest
+                .iter()
+                .zip(&mut bases)
+                .filter_map(|(frame, base)| {
+                    let ms = frame.parts.iter().find(|p| p.0 == *part)?.1 as f64;
+                    let x = ((frame.at / BIN).floor() + 0.5) * BIN;
+                    let bar = Bar::new(x, ms).base_offset(*base).width(BIN).fill(colour(index, part));
+                    *base += ms;
+                    Some(bar.stroke(Stroke::NONE))
+                })
+                .collect();
+            plot.bar_chart(BarChart::new(*part, bars).allow_hover(false));
+        }
+        show_marks(plot, &marks, colours, top, labelled)
+    });
+    let tip = "How long the GUI took over each frame, part by part: those it builds, then laying it out and painting \
+               it; the slowest in each twentieth of a second. Against the 1/60 s a frame can take, at 60 frames a \
+               second (the line across). The lines down mark changes to the run: hover one for what changed";
+    let _ = shown_plot.response.on_hover_text(shown_plot.inner.unwrap_or_else(|| tip.to_owned()));
 
     // The key: each part's colour, name and average time; hover to pick it out, click to keep it picked out.
     let mut hovered_now = None;
@@ -213,4 +213,29 @@ pub fn show(
         }
         None => d.remove::<String>(key_id),
     });
+}
+
+/// The changes to the run in view, as lines down a plot (labelled, if `labelled`, at its `top`): red for recording
+/// starting or stopping, amber for a new epoch, grey for other versions. Returns what changed at the one under the
+/// pointer, if any.
+fn show_marks(plot: &mut PlotUi, marks: &[&Mark], colours: &Colours, top: f64, labelled: bool) -> Option<String> {
+    let colour = |kind: MarkKind| match kind {
+        MarkKind::Recording => colours.error,
+        MarkKind::Epoch => colours.warning,
+        MarkKind::Version => colours.text_secondary,
+    };
+    for mark in marks {
+        plot.vline(VLine::new(mark.label.clone(), mark.at).color(colour(mark.kind)).width(1.5));
+        if labelled {
+            let text = RichText::new(&mark.label).small().color(colour(mark.kind));
+            plot.text(Text::new(mark.label.clone(), PlotPoint::new(mark.at, top), text).anchor(egui::Align2::LEFT_TOP));
+        }
+    }
+    let pointer = plot.pointer_coordinate()?;
+    let reach = plot.transform().dvalue_dpos()[0].abs() * 5.0;
+    marks
+        .iter()
+        .filter(|m| (m.at - pointer.x).abs() < reach)
+        .min_by(|a, b| (a.at - pointer.x).abs().total_cmp(&(b.at - pointer.x).abs()))
+        .map(|m| m.detail.clone())
 }
