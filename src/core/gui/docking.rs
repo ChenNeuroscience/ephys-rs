@@ -403,6 +403,8 @@ pub struct Panes<'a, N: NodeSet, A: AnnotationSet> {
     pub snapshot: &'a Snapshot<N>,
     /// What the home pane shows, and the quick actions the basic view offers.
     pub mode: Mode,
+    /// What the graph's toolbar can do.
+    pub graph_tools: toolbar::GraphTools,
     pub quick_actions: &'a [QuickAction<N>],
     /// How many workers runs start with.
     pub workers: usize,
@@ -593,15 +595,21 @@ impl<N: NodeSet, A: AnnotationSet> Panes<'_, N, A> {
                 self.locked,
                 self.events,
             ),
-            Pane::Home => self.canvas.show(
-                ui,
-                self.graph,
-                self.annotations,
-                self.resolved,
-                self.selection,
-                self.open_windows,
-                self.events,
-            ),
+            Pane::Home => {
+                egui::Frame::new()
+                    .inner_margin(egui::Margin::symmetric(6, 3))
+                    .show(ui, |ui| toolbar::graph_toolbar::<A>(ui, self.graph_tools, self.canvas.tool, self.events));
+                ui.separator();
+                self.canvas.show(
+                    ui,
+                    self.graph,
+                    self.annotations,
+                    self.resolved,
+                    self.selection,
+                    self.open_windows,
+                    self.events,
+                )
+            }
             Pane::Annotation => padded(ui, |ui| annotation_ui(ui, self.annotations, self.selection, self.events)),
             Pane::DevTools => dev_tools::show(
                 ui,

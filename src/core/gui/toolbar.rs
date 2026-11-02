@@ -1,17 +1,88 @@
 //! The menu bar and toolbar along the top of the window, in the style of desktop apps before ribbons: menus
-//! of every action, then a row of small flat icon buttons for the common ones.
+//! of every action, then a row of small flat icon buttons for the common ones. The graph has a toolbar of its own,
+//! along the top of its pane, for what's done to it (`graph_toolbar`).
 
 use eframe::egui::{self, Rect, Sense, Stroke, StrokeKind};
 
-use super::App;
 use super::actions::{Action, MENUS, MenuEntry};
 use super::canvas::Tool;
 use super::docking::{Mode, Pane};
 use super::icons::{self, Icon};
+use super::{App, Event};
 use crate::core::annotation::AnnotationSet;
 use crate::core::engine::NodeSet;
 
 const BUTTON: egui::Vec2 = egui::vec2(26.0, 24.0);
+
+/// `text`, with the action's shortcut, for a tooltip.
+fn tooltip(ctx: &egui::Context, action: Action, text: &str) -> String {
+    match action.shortcut() {
+        Some(shortcut) => format!("{text} ({})", ctx.format_shortcut(&shortcut)),
+        None => text.to_string(),
+    }
+}
+
+/// Which of the graph's toolbar's actions can be done right now.
+#[derive(Clone, Copy)]
+pub struct GraphTools {
+    pub add: bool,
+    pub duplicate: bool,
+    pub delete: bool,
+    pub arrange: bool,
+}
+
+/// The graph's toolbar, along the top of its pane: back to the basic view; adding nodes, and drawing annotations;
+/// duplicating and deleting; and arranging and framing it.
+pub fn graph_toolbar<A: AnnotationSet>(ui: &mut egui::Ui, tools: GraphTools, tool: Tool, events: &mut Vec<Event>) {
+    let ctx = ui.ctx().clone();
+    let mut perform = |action, anchor| events.push(Event::Perform(action, anchor));
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        let basic = egui::Button::new("Basic view").small();
+        if ui.add(basic).on_hover_text("Show the basic view here: the components, and quick actions").clicked() {
+            perform(Action::ShowBasic, None);
+        }
+        ui.separator();
+        let add =
+            dropdown_button(ui, Icon::AddNode, "Add node").on_hover_text("Add a node (or press Tab over the graph)");
+        if add.clicked() && tools.add {
+            perform(Action::AddNode, Some(add.rect.left_bottom()));
+        }
+        // A tool for drawing each type of annotation.
+        for (index, info) in A::TYPES.iter().enumerate() {
+            let tip = format!("{}: {}", info.name, info.description);
+            let paint =
+                |painter: &egui::Painter, rect: Rect, _: egui::Color32, _: bool| A::paint_icon(index, painter, rect);
+            if icon_button(ui, &paint, &tip, &tip, BUTTON, 16.0, true, tool == Tool::Draw(index)).clicked() {
+                perform(Action::DrawTool(index), None);
+            }
+        }
+        ui.separator();
+        for (action, icon, text, enabled) in [
+            (Action::Duplicate, Icon::Duplicate, "Duplicate", tools.duplicate),
+            (Action::Delete, Icon::Delete, "Delete", tools.delete),
+        ] {
+            if tool_button(ui, icon, &tooltip(&ctx, action, text), enabled, false).clicked() {
+                perform(action, None);
+            }
+        }
+        ui.separator();
+        for (action, icon, text, enabled) in [
+            (
+                Action::Arrange,
+                Icon::Arrange,
+                "Arrange nodes: in columns, left to right the way data flows",
+                tools.arrange,
+            ),
+            (Action::FrameAll, Icon::FrameAll, "Frame all", true),
+            (Action::ActualSize, Icon::ActualSize, "Actual size", true),
+        ] {
+            if tool_button(ui, icon, &tooltip(&ctx, action, text), enabled, false).clicked() {
+                perform(action, None);
+            }
+        }
+    });
+}
 
 impl<N: NodeSet, A: AnnotationSet> App<N, A> {
     /// Whether an action can be done right now.
@@ -35,9 +106,16 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
     }
 
     fn tooltip(&self, ctx: &egui::Context, action: Action, text: &str) -> String {
-        match action.shortcut() {
-            Some(shortcut) => format!("{text} ({})", ctx.format_shortcut(&shortcut)),
-            None => text.to_string(),
+        tooltip(ctx, action, text)
+    }
+
+    /// Which of the graph's toolbar's actions can be done right now.
+    pub(super) fn graph_tools(&self) -> GraphTools {
+        GraphTools {
+            add: self.enabled(Action::AddNode),
+            duplicate: self.enabled(Action::Duplicate),
+            delete: self.enabled(Action::Delete),
+            arrange: self.enabled(Action::Arrange),
         }
     }
 
@@ -173,45 +251,6 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             }
             self.record_clock(ui, recording);
             ui.separator();
-
-            let add = dropdown_button(ui, Icon::AddNode, "Add node")
-                .on_hover_text("Add a node (or press Tab over the graph)");
-            if add.clicked() {
-                self.add_anchor = Some(add.rect.left_bottom());
-                chosen = Some(Action::AddNode);
-            }
-            // A tool for drawing each type of annotation.
-            for (index, info) in A::TYPES.iter().enumerate() {
-                let drawing = self.canvas.tool == Tool::Draw(index);
-                let tip = format!("{}: {}", info.name, info.description);
-                let paint = |painter: &egui::Painter, rect: Rect, _: egui::Color32, _: bool| {
-                    A::paint_icon(index, painter, rect)
-                };
-                if icon_button(ui, &paint, &tip, &tip, BUTTON, 16.0, true, drawing).clicked() {
-                    chosen = Some(Action::DrawTool(index));
-                }
-            }
-            ui.separator();
-
-            for (action, icon, text) in
-                [(Action::Duplicate, Icon::Duplicate, "Duplicate"), (Action::Delete, Icon::Delete, "Delete")]
-            {
-                let tip = self.tooltip(&ctx, action, text);
-                if tool_button(ui, icon, &tip, self.enabled(action), false).clicked() {
-                    chosen = Some(action);
-                }
-            }
-            ui.separator();
-            for (action, icon, text) in [
-                (Action::Arrange, Icon::Arrange, "Arrange nodes: in columns, left to right the way data flows"),
-                (Action::FrameAll, Icon::FrameAll, "Frame all"),
-                (Action::ActualSize, Icon::ActualSize, "Actual size"),
-            ] {
-                let tip = self.tooltip(&ctx, action, text);
-                if tool_button(ui, icon, &tip, self.enabled(action), false).clicked() {
-                    chosen = Some(action);
-                }
-            }
 
             ui.separator();
             let tip = self.tooltip(&ctx, Action::ToggleDevTools, "Developer tools");

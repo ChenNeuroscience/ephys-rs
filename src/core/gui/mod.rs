@@ -101,6 +101,8 @@ pub enum Event {
     QuickAction(usize),
     /// Show the graph in the home pane.
     ShowGraph,
+    /// Do an action (from the graph's toolbar), with where a menu it opens goes.
+    Perform(Action, Option<Pos2>),
     /// List a node in the basic view, or not.
     InBasic(NodeId, bool),
     /// Disable a node (or enable it), and the rest of the selection if it's in it.
@@ -816,9 +818,9 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                 _ if !self.layout.is_shown(Pane::Home) => {
                     ui.weak("Home, at the left of the toolbar, brings back the basic view or the graph")
                 }
-                _ if self.layout.mode == Mode::Basic => {
-                    ui.weak("Open a component, or add some with a quick action · the graph shows how it all fits together")
-                }
+                _ if self.layout.mode == Mode::Basic => ui.weak(
+                    "Open a component, or add some with a quick action · the graph shows how it all fits together",
+                ),
                 _ => ui
                     .weak("Double-click, right-click or Tab on the canvas to add a node · drag from a port to connect"),
             };
@@ -944,6 +946,16 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             Event::Status(message) => self.set_status(ctx, message),
             Event::QuickAction(index) => self.quick_action(index),
             Event::ShowGraph => self.show_mode(Mode::Graph),
+            Event::Perform(action, anchor) => {
+                // Showing the basic view from the graph's toolbar doesn't change home.
+                if action == Action::ShowBasic {
+                    return self.show_mode(Mode::Basic);
+                }
+                if anchor.is_some() {
+                    self.add_anchor = anchor;
+                }
+                self.perform(ctx, action);
+            }
             Event::SetDisabled(id, disabled) => {
                 for id in self.selected_or(id) {
                     if let Some(entry) = self.graph.get_mut(id) {
@@ -1075,6 +1087,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         let background = egui::Frame::NONE.fill(colours.surface);
         let locked = self.locked();
         let mut timings = Vec::new();
+        let graph_tools = self.graph_tools();
         egui::CentralPanel::default().frame(background).show(ui, |ui| {
             let mut panes = Panes {
                 graph: &mut self.graph,
@@ -1084,6 +1097,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                 runner: self.runner.as_ref(),
                 snapshot: &self.history.current.snapshot,
                 mode: self.layout.mode,
+                graph_tools,
                 quick_actions: self.quick_actions,
                 workers: self.workers,
                 locked,
@@ -1507,11 +1521,11 @@ mod tests {
         // Grab the bar to the right of the tab, clear of the tab's close and dock buttons.
         let grab = egui::pos2(before.center().x + 30.0, before.top() + 12.0);
         pointer(&mut harness, grab, Some(true));
-        pointer(&mut harness, grab + egui::vec2(-20.0, 10.0), None);
-        pointer(&mut harness, grab + egui::vec2(-60.0, 40.0), None);
-        pointer(&mut harness, grab + egui::vec2(-60.0, 40.0), Some(false));
+        pointer(&mut harness, grab + egui::vec2(-20.0, 5.0), None);
+        pointer(&mut harness, grab + egui::vec2(-60.0, 20.0), None);
+        pointer(&mut harness, grab + egui::vec2(-60.0, 20.0), Some(false));
         let moved = area(&harness).unwrap().min - before.min;
-        assert!(moved.x < -50.0 && moved.y > 30.0, "window should follow the drag, moved {moved:?}");
+        assert!(moved.x < -50.0 && moved.y > 15.0, "window should follow the drag, moved {moved:?}");
     }
 
     #[test]
@@ -1854,6 +1868,16 @@ mod tests {
         let both = paste_settings::copy(&harness.state().graph, &[detector, viewer]);
         harness.state_mut().paste_text(&ctx, &both, Some(detector));
         assert!(harness.state().paste.is_some());
+    }
+
+    #[test]
+    fn the_graphs_toolbar_switches_to_the_basic_view() {
+        let mut harness = harness();
+        harness.state_mut().home_mode = Mode::Graph;
+        harness.get_by_label("Basic view").click();
+        harness.run_steps(2);
+        assert_eq!(harness.state().layout.mode, Mode::Basic);
+        assert_eq!(harness.state().home_mode, Mode::Graph, "home's unchanged");
     }
 
     #[test]

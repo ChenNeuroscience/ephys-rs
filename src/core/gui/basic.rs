@@ -49,9 +49,7 @@ pub fn show<N: NodeSet>(
                 .collect();
             views.sort_by_key(|(id, label, _)| (graph.get(*id).map(|e| e.pos[1] as i64), *label));
             if views.is_empty() {
-                ui.label(
-                    RichText::new("None yet: add some with a quick action below.").color(colours.text_secondary),
-                );
+                ui.label(RichText::new("None yet: add some with a quick action below.").color(colours.text_secondary));
             }
             for (id, label, category) in views {
                 let open = open_windows.contains(&id);
