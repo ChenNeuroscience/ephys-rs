@@ -75,7 +75,13 @@ impl Node<Edges> for Camera {
     }
 
     fn threads(&self) -> Vec<NodeThread> {
-        vec![NodeThread { name: "Camera capture", link: "frame queue", flow: Flow::ToPasses }]
+        vec![NodeThread {
+            name: "Camera capture",
+            link: "frame queue",
+            flow: Flow::ToPasses,
+            why: "On a thread of its own so frames are taken from the camera as they come, whatever the passes \
+                  are doing.",
+        }]
     }
 
     fn thread_ui(&self, _thread: usize, ui: &mut egui::Ui, context: &ThreadContext) {

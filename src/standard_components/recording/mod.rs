@@ -25,6 +25,11 @@ use eframe::egui::{self, RichText};
 use crate::core::theme::Colours;
 use crate::standard_components::widgets::queue_ui;
 
+/// Why a writer writes on a thread of its own, for the dev tools.
+pub const WHY_A_THREAD: &str = "On a thread of its own so the disk can stall (flushing its cache, a virus scanner, a \
+                                slow drive) without holding up the passes: the files are written in order, so each \
+                                pass would wait for the one before to finish writing.";
+
 /// Chunks that can wait to be written: a few seconds' worth of passes.
 pub const QUEUE_LEN: usize = 256;
 

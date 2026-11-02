@@ -99,7 +99,7 @@ impl Node<Edges> for WriteRaw {
     }
 
     fn threads(&self) -> Vec<NodeThread> {
-        vec![NodeThread { name: "Raw writer", link: "chunk queue", flow: Flow::FromPasses }]
+        vec![NodeThread { name: "Raw writer", link: "chunk queue", flow: Flow::FromPasses, why: super::WHY_A_THREAD }]
     }
 
     fn thread_ui(&self, _thread: usize, ui: &mut egui::Ui, context: &ThreadContext) {

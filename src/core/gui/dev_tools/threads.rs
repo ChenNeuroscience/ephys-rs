@@ -668,6 +668,8 @@ fn node_threads<N: NodeSet>(
                     node_chip(ui, graph, step.id, None);
                     ui.add_space(2.0);
                     entry.node.thread_ui(index, ui, &ThreadContext { theme: colours, display });
+                    ui.add_space(2.0);
+                    ui.label(small(thread.why, colours.text_disabled));
                 });
                 anchors.node_threads.push((step.id, rect, thread.link, thread.flow));
                 ui.add_space(12.0);

@@ -141,7 +141,13 @@ impl Node<Edges> for AcquisitionBoard {
     }
 
     fn threads(&self) -> Vec<NodeThread> {
-        vec![NodeThread { name: "Board capture", link: "block queue", flow: Flow::ToPasses }]
+        vec![NodeThread {
+            name: "Board capture",
+            link: "block queue",
+            flow: Flow::ToPasses,
+            why: "On a thread of its own so samples are taken from the board as they come (before its buffer \
+                  overflows), whatever the passes are doing.",
+        }]
     }
 
     fn thread_ui(&self, _thread: usize, ui: &mut egui::Ui, context: &ThreadContext) {

@@ -157,6 +157,8 @@ pub struct NodeThread {
     pub link: &'static str,
     /// Which way the data goes: to the passes (from a board, say) or from them (to disk).
     pub flow: Flow,
+    /// Why it's a thread of its own, rather than done in the passes.
+    pub why: &'static str,
 }
 
 /// Which way data goes between a node's thread and its passes.
