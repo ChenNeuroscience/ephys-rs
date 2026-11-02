@@ -30,6 +30,8 @@ pub enum Icon {
     Theme,
     /// Go home: the home pane, basic or graph. A house.
     Home,
+    /// On or off: the power symbol.
+    Power,
     /// Start running the graph.
     Play,
     /// Stop running it.
@@ -158,6 +160,20 @@ impl Icon {
                 let walls = vec![p(3.5, 7.0), p(3.5, 14.0), p(12.5, 14.0), p(12.5, 7.0)];
                 painter.add(Shape::line(walls, Stroke::new(1.6 * s, ink)));
                 painter.rect_filled(r(6.8, 9.5, 9.2, 14.0), 0.0, fade(BLUE));
+            }
+            Icon::Power => {
+                let stroke = Stroke::new(1.7 * s, ink);
+                let centre = p(8.0, 8.8);
+                let radius = 5.2 * s;
+                // An arc open at the top, and a line down into it.
+                let arc: Vec<Pos2> = (0..=24)
+                    .map(|i| {
+                        let a = -PI / 2.0 + 0.55 + (2.0 * PI - 1.1) * i as f32 / 24.0;
+                        centre + vec2(a.cos(), a.sin()) * radius
+                    })
+                    .collect();
+                painter.add(Shape::line(arc, stroke));
+                painter.line_segment([p(8.0, 2.0), p(8.0, 8.5)], stroke);
             }
             Icon::Theme => {
                 // A circle, half light and half dark.

@@ -295,6 +295,20 @@ pub fn small_icon_button(ui: &mut egui::Ui, icon: Icon, label: &str, tooltip: &s
     )
 }
 
+/// A small icon button that's on or off (shown selected while on).
+pub fn small_toggle_button(ui: &mut egui::Ui, icon: Icon, label: &str, tooltip: &str, on: bool) -> egui::Response {
+    icon_button(
+        ui,
+        &|p, r, ink, enabled| icon.paint(p, r, ink, enabled),
+        label,
+        tooltip,
+        egui::vec2(22.0, 22.0),
+        14.0,
+        true,
+        on,
+    )
+}
+
 /// Paints an icon to fill a rect, given the ink colour and whether it's enabled.
 type PaintIcon<'a> = &'a dyn Fn(&egui::Painter, Rect, egui::Color32, bool);
 

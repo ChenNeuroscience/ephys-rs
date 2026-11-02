@@ -1754,6 +1754,13 @@ mod tests {
         assert!(harness.state().graph.is_edge_disabled(&edge));
         harness.state_mut().perform(&ctx, Action::ToggleDisabled);
         assert!(!harness.state().graph.is_edge_disabled(&edge));
+        // And from its window's toggle.
+        harness.state_mut().graph.get_mut(detector).unwrap().disabled = false;
+        harness.state_mut().layout.open(detector);
+        harness.run_steps(2);
+        harness.get_by_label("Enabled").click();
+        harness.run_steps(2);
+        assert!(harness.state().graph.get(detector).unwrap().disabled);
     }
 
     #[test]
