@@ -54,6 +54,10 @@ pub fn run<C: Components>(path: Option<PathBuf>) -> eframe::Result {
                 app.theme = index;
             }
             app.themes[app.theme].apply(&cc.egui_ctx);
+            if let Some(home) = cc.storage.and_then(|s| eframe::get_value::<Mode>(s, HOME_KEY)) {
+                app.home = home;
+                app.layout.mode = home;
+            }
             // For images in annotations.
             egui_extras::install_image_loaders(&cc.egui_ctx);
             #[cfg(target_os = "macos")]
@@ -71,6 +75,7 @@ pub fn run<C: Components>(path: Option<PathBuf>) -> eframe::Result {
 
 /// Where the theme (by name) is kept among the app's preferences (which eframe saves, separately from graph files).
 const THEME_KEY: &str = "theme";
+const HOME_KEY: &str = "home";
 
 /// Something a pane asked for, handled once the panes are drawn.
 pub enum Event {
@@ -93,6 +98,8 @@ pub enum Event {
     QuickAction(usize),
     /// Show the graph in the main pane.
     ShowGraph,
+    /// List a node in the basic view, or not.
+    InBasic(NodeId, bool),
 }
 
 /// The file: the graph, its annotations, and the window layout.
@@ -156,6 +163,9 @@ pub struct App<N: NodeSet, A: AnnotationSet> {
     /// While the nodes prepare to record, where the recording comes from when they're ready.
     preparing: Option<std::sync::mpsc::Receiver<engine::Recording>>,
     dev_tools: dev_tools::DevTools,
+    /// What the main pane shows at home: when the app starts, a file's opened, or Home's pressed. The user's, kept
+    /// across files (as the theme is).
+    home: Mode,
     /// Offered in the basic view.
     quick_actions: &'static [crate::core::quick_action::QuickAction<N>],
     /// How many workers runs start with.
@@ -191,6 +201,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             dev_tools: dev_tools::DevTools::default(),
             workers: engine::default_workers(),
             quick_actions: &[],
+            home: Mode::Basic,
         };
         if let Some(path) = path {
             if path.exists() {
@@ -252,6 +263,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         let json = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
         let file: SaveFile<N, A> = serde_json::from_str(&json).map_err(|e| e.to_string())?;
         self.layout = file.layout.and_then(|l| serde_json::from_value(l).ok()).unwrap_or_default();
+        self.layout.mode = self.home;
         self.history = History::new(&file.graph, &file.annotations);
         self.graph = file.graph;
         self.annotations = file.annotations;
@@ -518,8 +530,16 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             Action::Duplicate => self.duplicate_selection(),
             Action::Delete => self.delete_selection(),
             Action::SelectAll => self.select_all(),
-            Action::ShowBasic => self.show_mode(Mode::Basic),
-            Action::ShowGraph => self.show_mode(Mode::Graph),
+            Action::Home => self.show_mode(self.home),
+            Action::ShowBasic => {
+                self.home = Mode::Basic;
+                self.show_mode(Mode::Basic);
+            }
+            Action::ShowGraph => {
+                self.home = Mode::Graph;
+                self.show_mode(Mode::Graph);
+            }
+            Action::CloseMain => self.layout.hide(Pane::Main),
             Action::Arrange => {
                 for (id, pos) in arrange::arrange(&self.graph) {
                     if let Some(entry) = self.graph.get_mut(id) {
@@ -530,7 +550,10 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             }
             Action::FrameAll => self.canvas.frame_all(),
             Action::ActualSize => self.canvas.reset_zoom(),
-            Action::ResetLayout => self.layout = Layout::default(),
+            Action::ResetLayout => {
+                self.layout = Layout::default();
+                self.layout.mode = self.home;
+            }
             // Goes through `confirm_close`, like closing the window.
             Action::Quit => ctx.send_viewport_cmd(ViewportCommand::Close),
             Action::AddNode => {
@@ -635,6 +658,9 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                     ui.label(RichText::new(&status.message).color(colour))
                 }
                 (_, Some(hint)) if self.layout.mode == Mode::Graph => ui.label(hint),
+                _ if !self.layout.is_shown(Pane::Main) => {
+                    ui.weak("Home, at the left of the toolbar, brings back the basic view or the graph")
+                }
                 _ if self.layout.mode == Mode::Basic => {
                     ui.weak("Open a view, or add some with a quick action · the graph shows how it all fits together")
                 }
@@ -754,6 +780,11 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             Event::Status(message) => self.set_status(ctx, message),
             Event::QuickAction(index) => self.quick_action(index),
             Event::ShowGraph => self.show_mode(Mode::Graph),
+            Event::InBasic(id, shown) => {
+                if let Some(entry) = self.graph.get_mut(id) {
+                    entry.basic = Some(shown);
+                }
+            }
         }
     }
 
@@ -904,6 +935,7 @@ impl<N: NodeSet, A: AnnotationSet> eframe::App for App<N, A> {
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, THEME_KEY, &self.themes[self.theme].name);
+        eframe::set_value(storage, HOME_KEY, &self.home);
     }
 }
 
@@ -1433,6 +1465,35 @@ mod tests {
         harness.key_press_modifiers(Modifiers::COMMAND, Key::Num1);
         harness.run_steps(2);
         assert_eq!(harness.state().layout.mode, Mode::Basic);
+
+        // The basic view lists viewers, not other nodes, unless set otherwise.
+        let card = |h: &Harness<TestApp>, label: &str| {
+            h.query_by_role_and_label(egui::accesskit::Role::Button, label).is_some()
+        };
+        assert!(card(&harness, "Spike Viewer") && !card(&harness, "Spike Detector"));
+        let detector = node_named(harness.state(), "Spike Detector");
+        let viewer = node_named(harness.state(), "Spike Viewer");
+        harness.state_mut().graph.get_mut(detector).unwrap().basic = Some(true);
+        harness.state_mut().graph.get_mut(viewer).unwrap().basic = Some(false);
+        harness.run_steps(2);
+        assert!(!card(&harness, "Spike Viewer") && card(&harness, "Spike Detector"));
+
+        // Closed, Home brings it back, in the home mode: the graph, once chosen from Home's menu.
+        let ctx = harness.ctx.clone();
+        harness.state_mut().perform(&ctx, Action::CloseMain);
+        harness.run_steps(2);
+        assert!(!harness.state().layout.is_shown(Pane::Main));
+        harness.get_by_label("Home menu").click();
+        harness.run_steps(2);
+        harness.get_by_label_contains("Graph: every node").click();
+        harness.run_steps(2);
+        assert_eq!((harness.state().home, harness.state().layout.mode), (Mode::Graph, Mode::Graph));
+        let ctx = harness.ctx.clone();
+        harness.state_mut().perform(&ctx, Action::CloseMain);
+        harness.run_steps(2);
+        harness.get_by_label_contains("Home: the graph").click();
+        harness.run_steps(2);
+        assert!(harness.state().layout.is_shown(Pane::Main) && harness.state().layout.mode == Mode::Graph);
     }
 
     #[test]

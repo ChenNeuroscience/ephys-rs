@@ -24,10 +24,14 @@ pub enum Action {
     AddNode,
     /// Picks the tool for drawing annotations of a type (by index) on the graph.
     DrawTool(usize),
-    /// Shows the basic view in the main pane.
+    /// Shows the main pane in the home mode (the user's choice of basic or graph).
+    Home,
+    /// Shows the basic view in the main pane, and makes it home.
     ShowBasic,
-    /// Shows the graph in the main pane.
+    /// Shows the graph in the main pane, and makes it home.
     ShowGraph,
+    /// Closes the main pane (Home brings it back).
+    CloseMain,
     FrameAll,
     ActualSize,
     ResetLayout,
@@ -84,8 +88,10 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
     (
         "View",
         &[
+            Item(Action::Home),
             Item(Action::ShowBasic),
             Item(Action::ShowGraph),
+            Item(Action::CloseMain),
             Separator,
             Item(Action::FrameAll),
             Item(Action::ActualSize),
@@ -99,7 +105,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
 ];
 
 /// Checked in this order, so that e.g. shift-ctrl-Z (redo) is seen before ctrl-Z (undo).
-const SHORTCUT_ORDER: [Action; 15] = [
+const SHORTCUT_ORDER: [Action; 16] = [
     Action::Redo,
     Action::Undo,
     Action::SaveAs,
@@ -113,6 +119,7 @@ const SHORTCUT_ORDER: [Action; 15] = [
     Action::Play,
     Action::Record,
     Action::ToggleDevTools,
+    Action::Home,
     Action::ShowBasic,
     Action::ShowGraph,
 ];
@@ -140,8 +147,10 @@ impl Action {
             Action::Arrange => "Arrange Nodes",
             Action::AddNode => "Node…",
             Action::DrawTool(index) => annotations.get(index).map_or("?", |a| a.name),
+            Action::Home => "Home",
             Action::ShowBasic => "Basic View",
             Action::ShowGraph => "Graph View",
+            Action::CloseMain => "Close Home",
             Action::FrameAll => "Frame All",
             Action::ActualSize => "Actual Size",
             Action::ResetLayout => "Reset Layout",
@@ -167,6 +176,7 @@ impl Action {
             Action::FrameAll => Some(KeyboardShortcut::new(Modifiers::NONE, Key::F)),
             Action::Play => Some(KeyboardShortcut::new(Modifiers::NONE, Key::Space)),
             Action::Record => command(Key::R),
+            Action::Home => command(Key::Num0),
             Action::ShowBasic => command(Key::Num1),
             Action::ShowGraph => command(Key::Num2),
             // As in browsers.

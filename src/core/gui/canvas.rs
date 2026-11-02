@@ -1003,6 +1003,10 @@ impl Canvas {
             if let Some(entry) = graph.get_mut(id) {
                 let name = ui.label(egui::RichText::new("Name").small().weak());
                 ui.text_edit_singleline(&mut entry.label).labelled_by(name.id);
+                let mut basic = entry.in_basic();
+                if ui.checkbox(&mut basic, "Show in basic view").changed() {
+                    entry.basic = Some(basic);
+                }
                 ui.separator();
             }
             if ui.button(if window_open { "Close window" } else { "Open window" }).clicked() {

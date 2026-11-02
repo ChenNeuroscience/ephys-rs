@@ -54,8 +54,8 @@ impl Mode {
     }
 }
 
-/// How many groups of windows share the space beside the basic view before more go in as tabs.
-const BESIDE: usize = 3;
+/// How wide the basic view is left, beside the first window opened from it.
+const BASIC_WIDTH: f32 = 360.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum WindowState {
@@ -70,7 +70,8 @@ pub enum WindowState {
 pub struct Layout {
     tree: Tree<Pane>,
     floating: BTreeSet<NodeId>,
-    #[serde(default)]
+    /// Not kept with the file: the main pane opens at home (see `App::home`).
+    #[serde(skip)]
     pub mode: Mode,
 }
 
@@ -191,50 +192,62 @@ impl Layout {
     }
 
     /// Puts a new window beside the basic view, so the windows share the space at its right: the first in a
-    /// panel there (the basic view keeping a third of the width), the next few below the biggest group of windows,
-    /// sharing its column equally; and after that, as a tab in the biggest group.
+    /// panel there (the basic view narrowing to `BASIC_WIDTH`); the second below it; the third in a column of its own
+    /// beside them; and after that, as a tab in the biggest group.
     fn beside_main(&mut self, pane: TileId) {
         let mut groups = self.window_tab_groups();
         // The same one every time, when two are as big.
         groups.sort_by_key(|tile| std::cmp::Reverse(tile.0));
         let biggest = groups.iter().copied().max_by(|a, b| self.area(*a).total_cmp(&self.area(*b)));
         let tiles = &mut self.tree.tiles;
-        match biggest {
-            None => {
-                let Some(main) = tiles.find_pane(&Pane::Main) else { return };
-                let left = tiles.parent_of(main).unwrap_or(main);
+        let Some(main) = tiles.find_pane(&Pane::Main) else { return };
+        let left = tiles.parent_of(main).unwrap_or(main);
+        let new = tiles.insert_tab_tile(vec![pane]);
+        // Puts `container` where `old` was, in `parent`: looked up before `container` took `old` in (which then
+        // becomes `old`'s parent).
+        let replace = |tree: &mut Tree<Pane>, parent: Option<TileId>, old: TileId, container: TileId| match parent
+            .and_then(|p| tree.tiles.get_mut(p))
+        {
+            Some(Tile::Container(parent)) => {
+                let _ = parent.replace_child(old, container);
+            }
+            _ => tree.root = Some(container),
+        };
+        match (groups.len(), biggest) {
+            (0, _) | (_, None) => {
+                let width = tiles.rect(left).map_or(1400.0, |r| r.width());
+                let share = (BASIC_WIDTH / width).clamp(0.15, 0.5);
                 let parent = tiles.parent_of(left);
-                let right = tiles.insert_tab_tile(vec![pane]);
-                let row = tiles.insert_container(Linear::new_binary(LinearDir::Horizontal, [left, right], 0.34));
-                match parent.and_then(|p| tiles.get_mut(p)) {
-                    Some(Tile::Container(container)) => {
-                        let _ = container.replace_child(left, row);
-                    }
-                    _ => self.tree.root = Some(row),
-                }
+                let row = tiles.insert_container(Linear::new_binary(LinearDir::Horizontal, [left, new], share));
+                replace(&mut self.tree, parent, left, row);
             }
-            Some(group) if groups.len() < BESIDE => {
+            (1, Some(group)) => {
                 let parent = tiles.parent_of(group);
-                let below = tiles.insert_tab_tile(vec![pane]);
-                // Already in a column of windows: another at its bottom, all sharing the column equally.
-                if let Some(Tile::Container(Container::Linear(column))) = parent.and_then(|p| tiles.get_mut(p))
-                    && column.dir == LinearDir::Vertical
-                {
-                    column.children.push(below);
-                    for child in column.children.clone() {
-                        column.shares.set_share(child, 1.0);
+                let column = tiles.insert_container(Linear::new_binary(LinearDir::Vertical, [group, new], 0.5));
+                replace(&mut self.tree, parent, group, column);
+            }
+            (2, Some(group)) => {
+                // A column of its own, beside the basic view and the others, sharing their width.
+                let row = tiles.parent_of(left);
+                match row.and_then(|r| tiles.get_mut(r)) {
+                    Some(Tile::Container(Container::Linear(row))) if row.dir == LinearDir::Horizontal => {
+                        // Halving the other windows' share, so the basic view keeps its width.
+                        if let Some(others) = row.children.iter().copied().find(|c| *c != left) {
+                            let share = row.shares[others] / 2.0;
+                            row.shares.set_share(others, share);
+                            row.shares.set_share(new, share);
+                        }
+                        row.children.push(new);
                     }
-                    return;
-                }
-                let column = tiles.insert_container(Linear::new_binary(LinearDir::Vertical, [group, below], 0.5));
-                match parent.and_then(|p| tiles.get_mut(p)) {
-                    Some(Tile::Container(container)) => {
-                        let _ = container.replace_child(group, column);
+                    _ => {
+                        let parent = tiles.parent_of(group);
+                        let column = tiles.insert_container(Linear::new_binary(LinearDir::Vertical, [group, new], 0.5));
+                        replace(&mut self.tree, parent, group, column);
                     }
-                    _ => self.tree.root = Some(column),
                 }
             }
-            Some(group) => {
+            (_, Some(group)) => {
+                tiles.remove(new);
                 if let Some(Tile::Container(container)) = tiles.get_mut(group) {
                     container.add_child(pane);
                 }
@@ -585,9 +598,10 @@ impl<N: NodeSet, A: AnnotationSet> egui_tiles::Behavior<Pane> for Panes<'_, N, A
         }
     }
 
-    /// The annotation pane comes and goes with the selection, so isn't closed by hand.
+    /// The annotation pane comes and goes with the selection, so isn't closed by hand. (The main pane can be: the
+    /// toolbar's Basic | Graph brings it back.)
     fn is_tab_closable(&self, tiles: &Tiles<Pane>, tile: TileId) -> bool {
-        !matches!(tiles.get_pane(&tile), Some(Pane::Main | Pane::Annotation))
+        !matches!(tiles.get_pane(&tile), Some(Pane::Annotation))
     }
 
     /// Hides rather than removes, so the pane comes back in the same place.

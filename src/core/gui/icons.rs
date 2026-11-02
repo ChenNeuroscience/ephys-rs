@@ -28,6 +28,8 @@ pub enum Icon {
     Dock,
     /// Choose the light or dark look.
     Theme,
+    /// Go home: the main pane, basic or graph. A house.
+    Home,
     /// Start running the graph.
     Play,
     /// Stop running it.
@@ -149,6 +151,13 @@ impl Icon {
                 let arrow = Stroke::new(1.6 * s, ink);
                 painter.line_segment([p(8.0, 3.5), p(8.0, 7.5)], arrow);
                 painter.add(Shape::line(vec![p(5.5, 5.5), p(8.0, 8.0), p(10.5, 5.5)], arrow));
+            }
+            Icon::Home => {
+                let roof = vec![p(1.5, 8.0), p(8.0, 2.0), p(14.5, 8.0)];
+                painter.add(Shape::line(roof, Stroke::new(1.6 * s, ink)));
+                let walls = vec![p(3.5, 7.0), p(3.5, 14.0), p(12.5, 14.0), p(12.5, 7.0)];
+                painter.add(Shape::line(walls, Stroke::new(1.6 * s, ink)));
+                painter.rect_filled(r(6.8, 9.5, 9.2, 14.0), 0.0, fade(BLUE));
             }
             Icon::Theme => {
                 // A circle, half light and half dark.

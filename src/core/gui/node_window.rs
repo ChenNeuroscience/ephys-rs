@@ -35,6 +35,10 @@ pub fn show<N: NodeSet>(
         ui.weak(info.name);
     });
     ui.label(RichText::new(info.description).small());
+    let mut basic = entry.in_basic();
+    if ui.checkbox(&mut basic, "Show in basic view").changed() {
+        entry.basic = Some(basic);
+    }
     for warning in &state.warnings {
         ui.label(RichText::new(warning.as_str()).color(colours.warning));
     }
@@ -68,10 +72,22 @@ pub fn show<N: NodeSet>(
                     Role::Input | Role::Output => state.summary(role, index).unwrap_or_else(|| "not connected".into()),
                     Role::Setting => {
                         let value = state.summary(role, index).unwrap_or_default();
-                        match graph.edge_into(port) {
-                            Some(edge) => format!("{value}, set by {}", label(edge.from.node)),
-                            None => value,
+                        // Each control linked to it, editing it or only reading it.
+                        let (mut set, mut read) = (Vec::new(), Vec::new());
+                        for edge in graph.edges().iter().filter(|e| e.target() == port) {
+                            let read_only = graph
+                                .get(edge.from.node)
+                                .is_some_and(|e| e.node.controls().get(edge.from.port).is_some_and(|c| c.read_only));
+                            if read_only { &mut read } else { &mut set }.push(label(edge.from.node));
                         }
+                        let mut detail = value;
+                        if !set.is_empty() {
+                            detail += &format!(", set by {}", set.join(", "));
+                        }
+                        if !read.is_empty() {
+                            detail += &format!(", read by {}", read.join(", "));
+                        }
+                        detail
                     }
                     Role::Control => {
                         let targets: Vec<String> = graph.edges_from(port).map(|e| label(e.to.node)).collect();

@@ -106,6 +106,16 @@ pub struct NodeEntry<N> {
     pub label: String,
     /// Top-left corner on the canvas.
     pub pos: [f32; 2],
+    /// Whether it's listed in the basic view, if set; otherwise, whether it's a visualisation (see `in_basic`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub basic: Option<bool>,
+}
+
+impl<N: NodeSet> NodeEntry<N> {
+    /// Whether it's listed in the basic view: as set, or by default if it's a visualisation.
+    pub fn in_basic(&self) -> bool {
+        self.basic.unwrap_or(self.node.info().category == super::Category::Visualisation)
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -256,7 +266,7 @@ impl<N: NodeSet> Graph<N> {
         let id = NodeId(self.next_id);
         self.next_id += 1;
         let label = self.unique_label(node.info().name);
-        self.nodes.insert(id, NodeEntry { node, label, pos });
+        self.nodes.insert(id, NodeEntry { node, label, pos, basic: None });
         id
     }
 

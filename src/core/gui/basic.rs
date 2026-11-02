@@ -1,6 +1,7 @@
-//! The basic view, the main pane's first mode, for people who'd rather not work with the graph: the graph's
-//! viewers, large, to open (beside it); and the quick actions that apply to the graph, to build it a step at a
-//! time. The graph's a click away (or the toolbar's Basic | Graph).
+//! The basic view, the main pane's first mode, for people who'd rather not work with the graph: the nodes shown in
+//! it (viewers, unless set otherwise: see `NodeEntry::in_basic`), large, to open their windows (beside it); and the
+//! quick actions that apply to the graph, to build it a step at a time. The graph's a click away (or the toolbar's
+//! Basic | Graph).
 
 use std::collections::HashSet;
 
@@ -43,7 +44,7 @@ pub fn show<N: NodeSet>(
             ui.add_space(8.0);
             let mut views: Vec<(NodeId, &str, Category)> = graph
                 .iter()
-                .filter(|(_, e)| e.node.has_view())
+                .filter(|(_, e)| e.in_basic())
                 .map(|(id, e)| (id, e.label.as_str(), e.node.info().category))
                 .collect();
             views.sort_by_key(|(id, label, _)| (graph.get(*id).map(|e| e.pos[1] as i64), *label));
@@ -76,9 +77,15 @@ pub fn show<N: NodeSet>(
                 };
                 let state = if open { "Showing" } else { "Open" };
                 let card = card(ui, colours, style::category_colour(category), label, &detail, detail_colour, state);
-                if card.on_hover_text("Open its window beside this view").clicked() {
+                let card = card.on_hover_text("Open its window beside this view (right-click to hide it from here)");
+                if card.clicked() {
                     events.push(Event::OpenWindow(id));
                 }
+                card.context_menu(|ui| {
+                    if ui.button("Hide from the basic view").clicked() {
+                        events.push(Event::InBasic(id, false));
+                    }
+                });
                 ui.add_space(6.0);
             }
 

@@ -27,6 +27,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             Action::Delete => (selected || self.selection.edge.is_some()) && (!locked || only_annotations),
             Action::AddNode => !locked,
             Action::Arrange => self.graph.iter().count() > 1,
+            Action::CloseMain => self.layout.is_shown(Pane::Main),
             _ => true,
         }
     }
@@ -43,8 +44,8 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         match action {
             Action::DrawTool(index) => Some(self.canvas.tool == Tool::Draw(index)),
             Action::ToggleDevTools => Some(self.layout.is_shown(Pane::DevTools)),
-            Action::ShowBasic => Some(self.layout.mode == Mode::Basic),
-            Action::ShowGraph => Some(self.layout.mode == Mode::Graph),
+            Action::ShowBasic => Some(self.home == Mode::Basic),
+            Action::ShowGraph => Some(self.home == Mode::Graph),
             Action::Theme(index) => Some(self.theme == index),
             Action::Play => Some(self.runner.is_some()),
             Action::Record => Some(self.history.current.snapshot.recording.is_some() || self.preparing.is_some()),
@@ -122,17 +123,30 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                 ui.separator();
             }
 
-            // What the main pane shows: clicking either brings it to the front, too.
-            for (action, mode, text) in [
-                (Action::ShowBasic, Mode::Basic, "Basic view: the viewers, and quick actions"),
-                (Action::ShowGraph, Mode::Graph, "Graph view: every node, to build and change the graph"),
-            ] {
-                let tip = self.tooltip(&ctx, action, text);
-                let selected = self.layout.mode == mode;
-                if ui.selectable_label(selected, mode.name()).on_hover_text(tip).clicked() {
-                    chosen = Some(action);
-                }
+            // Home: the main pane, in the basic view or the graph, as chosen from its menu.
+            let tip = format!("Home: the {}", if self.home == Mode::Basic { "basic view" } else { "graph" });
+            let tip = self.tooltip(&ctx, Action::Home, &tip);
+            let home_showing = self.layout.is_shown(Pane::Main) && self.layout.mode == self.home;
+            if tool_button(ui, Icon::Home, &tip, true, home_showing).clicked() {
+                chosen = Some(Action::Home);
             }
+            let arrow = arrow_button(ui, "Home menu", "Choose home: the basic view or the graph");
+            egui::Popup::menu(&arrow).show(|ui| {
+                for (action, mode, text) in [
+                    (Action::ShowBasic, Mode::Basic, "Basic view: the viewers, and quick actions"),
+                    (Action::ShowGraph, Mode::Graph, "Graph: every node, to build and change it"),
+                ] {
+                    let shortcut = action.shortcut().map(|s| ctx.format_shortcut(&s)).unwrap_or_default();
+                    let button = egui::Button::new((check(self.home == mode), text)).shortcut_text(shortcut);
+                    if ui.add(button).clicked() {
+                        chosen = Some(action);
+                    }
+                }
+                ui.separator();
+                if ui.add_enabled(self.enabled(Action::CloseMain), egui::Button::new("Close")).clicked() {
+                    chosen = Some(Action::CloseMain);
+                }
+            });
             ui.separator();
 
             let running = self.runner.is_some();
@@ -299,6 +313,15 @@ fn icon_button(
     frame(ui, rect, &response, enabled, selected);
     let icon_rect = Rect::from_center_size(rect.center(), egui::vec2(icon_size, icon_size));
     paint(ui.painter(), icon_rect, ui.visuals().text_color(), enabled);
+    response.on_hover_text(tooltip)
+}
+
+/// A narrow button with just a down arrow, opening a menu for the button before it.
+fn arrow_button(ui: &mut egui::Ui, label: &str, tooltip: &str) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(14.0, BUTTON.y), Sense::click());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label));
+    frame(ui, rect, &response, true, false);
+    icons::dropdown_arrow(ui.painter(), rect.center(), ui.visuals().text_color());
     response.on_hover_text(tooltip)
 }
 
