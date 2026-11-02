@@ -43,8 +43,6 @@ fn level_colour(level: Level, colours: &Colours) -> Color32 {
 
 pub fn show<N: NodeSet>(ui: &mut egui::Ui, view: &mut ConsoleView, graph: &Graph<N>, colours: &Colours) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new("Console").strong());
-        ui.add_space(8.0);
         let current = LEVELS.iter().find(|(l, _)| *l == view.level).map_or("", |(_, name)| name);
         egui::ComboBox::new("console level", "shown").selected_text(current).show_ui(ui, |ui| {
             for (level, name) in LEVELS {

@@ -73,7 +73,7 @@ pub fn show<N: NodeSet>(
             });
         };
         let gui_and_dispatcher = |ui: &mut egui::Ui, anchors: &mut Anchors| {
-            gui_thread(ui, graph, colours, snapshot, &plan, anchors);
+            gui_thread(ui, graph, colours, &plan, anchors);
             ui.add_space(16.0);
             dispatcher(ui, colours, info.as_ref(), anchors);
         };
@@ -281,20 +281,16 @@ fn gui_thread<N: NodeSet>(
     ui: &mut egui::Ui,
     graph: &Graph<N>,
     colours: &Colours,
-    snapshot: &Snapshot<N>,
     plan: &Plan<N>,
     anchors: &mut Anchors,
 ) {
+    // The windows it shows the latest copied for.
     container(ui, colours, "GUI", "main thread", 1, true, |ui| {
-        ui.label(small(format!("Edits make snapshots: latest version {}", snapshot.version), colours.text_secondary));
-        ui.label(small("Its frames' times, part by part: under Performance", colours.text_secondary));
         let shown: Vec<NodeId> =
             plan.steps().iter().filter(|s| s.copies == Some(CopyTo::Window)).map(|s| s.id).collect();
         if shown.is_empty() {
             return;
         }
-        ui.add_space(4.0);
-        ui.label(small("Shows the latest copied for the windows of", colours.text_secondary));
         for id in shown {
             let row = ui
                 .horizontal(|ui| {

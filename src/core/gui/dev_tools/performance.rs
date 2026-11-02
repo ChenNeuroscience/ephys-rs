@@ -27,8 +27,9 @@ pub struct Performance {
     pinned: Option<String>,
 }
 
-/// The height the section takes.
-pub const HEIGHT: f32 = 330.0;
+/// The height the section takes, given room; and the least it takes, to make room for the console.
+pub const HEIGHT: f32 = 300.0;
+pub const MIN_HEIGHT: f32 = 180.0;
 
 pub fn show(
     ui: &mut egui::Ui,
@@ -57,14 +58,20 @@ pub fn show(
     let seconds = shown.last().map_or(0.0, |f| f.at) - shown.first().map_or(0.0, |f| f.at);
     let fps = if seconds > 0.0 { (shown.len() - 1) as f64 / seconds } else { 0.0 };
 
-    ui.label(RichText::new("Performance").strong());
-    let mut summary =
-        format!("GUI: {fps:.0} frames a second, {average:.1} ms a frame on average, {slowest:.0} ms at most");
+    let mut summary = if shown.len() > 1 {
+        format!("GUI: {fps:.0} frames a second, {average:.1} ms a frame on average, {slowest:.0} ms at most")
+    } else {
+        "GUI: no frames timed yet".to_owned()
+    };
     if let Some(passes) = passes.filter(|p| !p.is_empty()) {
         let average = passes.iter().map(|p| p[1]).sum::<f64>() / passes.len() as f64 * 1000.0;
         summary += &format!(" · passes: {average:.2} ms on average");
     }
     ui.label(RichText::new(summary).small().color(colours.text_secondary));
+    // The plots share the height left (less their labels and the key): the frames more, as they're split up.
+    let running = passes.is_some() && frames.run_started.is_some();
+    let room = (ui.available_height() - if running { 70.0 } else { 50.0 }).max(80.0);
+    let (passes_height, frames_height) = if running { (room * 0.4, room * 0.6) } else { (0.0, room) };
     // Seconds ago (the future, at the right, has none).
     let axis = |mark: egui_plot::GridMark, _: &std::ops::RangeInclusive<f64>| {
         let ago = now - mark.value;
@@ -103,7 +110,7 @@ pub fn show(
         let budget = PASS_DURATION * 1000.0;
         let top = ms.iter().map(|p| p[1]).fold(budget * 1.25, f64::max);
         ui.label(RichText::new("Passes").small().color(colours.text_secondary));
-        plot("pass times", 80.0)
+        plot("pass times", passes_height)
             .show(ui, |plot| {
                 plot.set_plot_bounds(PlotBounds::from_min_max([left, 0.0], [right, top]));
                 plot.hline(HLine::new("each pass's time", budget).color(colours.warning.gamma_multiply(0.7)));
@@ -133,7 +140,7 @@ pub fn show(
     };
     let top = shown.iter().map(total).fold(FRAME_BUDGET as f32 * 1.25, f32::max) as f64;
     ui.label(RichText::new("GUI frames").small().color(colours.text_secondary));
-    plot("frame times", 110.0)
+    plot("frame times", frames_height)
         .show(ui, |plot| {
             plot.set_plot_bounds(PlotBounds::from_min_max([left, 0.0], [right, top]));
             plot.hline(HLine::new("60 frames a second", FRAME_BUDGET).color(colours.warning.gamma_multiply(0.7)));
@@ -158,7 +165,7 @@ pub fn show(
                     .filter_map(|(frame, base)| {
                         let ms = frame.parts.iter().find(|p| p.0 == *part)?.1 as f64;
                         let x = ((frame.at / BIN).floor() + 0.5) * BIN;
-                        let bar = Bar::new(x, ms).base_offset(*base).width(BIN * 0.8).fill(colour(index, part));
+                        let bar = Bar::new(x, ms).base_offset(*base).width(BIN).fill(colour(index, part));
                         *base += ms;
                         Some(bar.stroke(Stroke::NONE))
                     })
