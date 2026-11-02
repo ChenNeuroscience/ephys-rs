@@ -272,7 +272,7 @@ impl Node<Edges> for SpikeViewer {
         let Some(DataStream::Spikes(stream)) = context.inputs[0] else {
             return preview::unconnected(ui, context.theme, "Connect spikes to view them");
         };
-        let display = context.display::<RecentDisplay>().filter(|d| d.stream.is_some());
+        let display = context.display.and_then(|d| d.downcast_ref::<RecentDisplay>()).filter(|d| d.stream.is_some());
         let mut thresholds = match &context.controls[0] {
             Some(Setting::Thresholds(t)) => Some(t.clone()),
             _ => None,
@@ -346,7 +346,7 @@ impl SpikeViewer {
     fn toolbar(
         &mut self,
         ui: &mut egui::Ui,
-        context: &Context<Edges>,
+        context: &mut Context<Edges>,
         sampling: Option<(f32, f32)>,
         thresholds: bool,
         gains: bool,
@@ -429,6 +429,7 @@ impl SpikeViewer {
             }
             ui.separator();
             ui.weak("Over a channel: G to type its gain, T its threshold. Drag a threshold to move it.");
+            context.node_toolbar(ui);
         });
         request
     }

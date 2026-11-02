@@ -89,6 +89,48 @@ pub struct Context<'a, E: Edges> {
     /// Whether settings are locked (while recording): a view should show its settings disabled, as changes to
     /// them are undone.
     pub locked: bool,
+    /// The buttons every node has (copying and pasting its settings, showing it in the basic view, enabling it,
+    /// deleting it), for a view to put where it likes: all together (`node_toolbar`), or one by one. None where
+    /// there's no GUI to act on them (tests, say).
+    pub tools: Option<&'a mut dyn NodeToolbar>,
+}
+
+impl<E: Edges> Context<'_, E> {
+    /// The node's toolbar (see `NodeToolbar::toolbar`), if there is one here.
+    pub fn node_toolbar(&mut self, ui: &mut egui::Ui) {
+        if let Some(tools) = &mut self.tools {
+            tools.toolbar(ui);
+        }
+    }
+}
+
+/// The buttons every node has, for its window: each on its own, or all together. The GUI does what they ask.
+pub trait NodeToolbar {
+    /// Copy its settings.
+    fn copy_button(&mut self, ui: &mut egui::Ui) -> egui::Response;
+    /// Paste settings onto it.
+    fn paste_button(&mut self, ui: &mut egui::Ui) -> egui::Response;
+    /// Whether it's shown in the basic view: on or off.
+    fn basic_toggle(&mut self, ui: &mut egui::Ui) -> egui::Response;
+    /// Whether it's enabled: on or off.
+    fn enabled_toggle(&mut self, ui: &mut egui::Ui) -> egui::Response;
+    /// Delete it.
+    fn delete_button(&mut self, ui: &mut egui::Ui) -> egui::Response;
+
+    /// All of them, in a row, laid out right to left (for the right of a toolbar): copy and paste; shown in the
+    /// basic view, and enabled; delete.
+    fn toolbar(&mut self, ui: &mut egui::Ui) {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            self.delete_button(ui);
+            ui.separator();
+            self.enabled_toggle(ui);
+            self.basic_toggle(ui);
+            ui.separator();
+            self.paste_button(ui);
+            self.copy_button(ui);
+        });
+    }
 }
 
 impl<E: Edges> Context<'_, E> {

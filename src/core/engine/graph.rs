@@ -527,13 +527,26 @@ impl<N: NodeSet> Graph<N> {
         display: Option<&(dyn Any + Send)>,
         running: bool,
         locked: bool,
+        tools: Option<&mut dyn super::NodeToolbar>,
         f: impl FnOnce(&mut N, &mut Context<N::Edges>) -> R,
     ) -> Option<R> {
         let before = self.control_values(id);
         let mut controls = before.clone();
         let entry = self.nodes.get_mut(&id)?;
         let read_only: Vec<bool> = entry.node.controls().iter().map(|c| c.read_only).collect();
-        let context = &mut Context { inputs, controls: &mut controls, theme, display, running, locked };
+        let context = &mut Context {
+            inputs,
+            controls: &mut controls,
+            theme,
+            display,
+            running,
+            locked,
+            // Reborrowed, to live as long as the context.
+            tools: match tools {
+                Some(tools) => Some(&mut *tools),
+                None => None,
+            },
+        };
         let result = f(&mut entry.node, context);
         for (index, (old, new)) in before.into_iter().zip(controls).enumerate() {
             if read_only.get(index) == Some(&true) {
@@ -729,7 +742,7 @@ mod tests {
         let thresholds = |uv: Vec<f32>| Setting::Thresholds(spikes::Thresholds(uv));
         assert_eq!(graph.control_values(viewer), vec![Some(thresholds(vec![])), None]);
         let theme = &crate::standard_components::themes::THEMES[0].colours;
-        graph.edit(viewer, &[], theme, None, false, false, |_, context| {
+        graph.edit(viewer, &[], theme, None, false, false, None, |_, context| {
             context.controls[0] = Some(thresholds(vec![55.0]))
         });
         assert_eq!(graph.get(detector).unwrap().node.settings()[0].value, thresholds(vec![55.0]));

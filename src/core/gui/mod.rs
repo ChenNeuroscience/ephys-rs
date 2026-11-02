@@ -13,6 +13,7 @@ mod frame_times;
 mod icons;
 #[cfg(target_os = "macos")]
 mod mac_menu;
+mod node_tools;
 mod node_window;
 mod paste_settings;
 mod style;
@@ -899,12 +900,6 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             }
             if clicks.close {
                 events.push(Event::ToggleWindow(id));
-            }
-            if clicks.copy {
-                events.push(Event::CopySettings(vec![id]));
-            }
-            if clicks.paste {
-                events.push(Event::PasteSettings(Some(id)));
             }
             if clicks.dock {
                 self.layout.dock(id);

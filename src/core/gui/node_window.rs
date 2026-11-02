@@ -5,9 +5,9 @@ use std::any::Any;
 
 use eframe::egui::{self, RichText};
 
-use super::icons::Icon;
-use super::toolbar;
+use super::node_tools::NodeTools;
 use super::{Event, style};
+use crate::core::engine::NodeToolbar;
 use crate::core::engine::{Graph, NodeId, NodeSet, Port, Resolved, Role};
 use crate::core::theme::Colours;
 
@@ -28,31 +28,16 @@ pub fn show<N: NodeSet>(
     let Some(state) = resolved.get(&id) else { return };
     let Some(entry) = graph.get_mut(id) else { return };
     let info = entry.node.info();
-    // Its name, and toggles: whether it's in the basic view, and whether it's enabled. Then its type.
+    // Its name, and its toolbar (see `node_tools`). Then its type.
     ui.horizontal(|ui| {
-        let width = (ui.available_width() - 56.0).clamp(80.0, 260.0);
+        let width = (ui.available_width() - 160.0).clamp(80.0, 260.0);
         let name = egui::TextEdit::singleline(&mut entry.label)
             .font(egui::TextStyle::Heading)
             .hint_text("Name")
             .desired_width(width);
         ui.add(name).on_hover_text("Its name");
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let enabled = !entry.disabled;
-            let tip = if enabled {
-                "Enabled: click to disable it (run the graph as if it weren't there, keeping it)"
-            } else {
-                "Disabled: click to enable it"
-            };
-            if toolbar::small_toggle_button(ui, Icon::Power, "Enabled", tip, enabled).clicked() {
-                events.push(Event::SetDisabled(id, enabled));
-            }
-            let basic = entry.in_basic();
-            let tip =
-                if basic { "In the basic view: click to leave it out" } else { "Click to show it in the basic view" };
-            if toolbar::small_toggle_button(ui, Icon::Home, "Show in basic view", tip, basic).clicked() {
-                entry.basic = Some(!basic);
-            }
-        });
+        let mut tools = NodeTools { id, in_basic: entry.in_basic(), enabled: !entry.disabled, events: &mut *events };
+        tools.toolbar(ui);
     });
     ui.horizontal_wrapped(|ui| {
         let (chip, _) = ui.allocate_exact_size(egui::vec2(9.0, 9.0), egui::Sense::hover());
@@ -70,7 +55,7 @@ pub fn show<N: NodeSet>(
     }
     egui::ScrollArea::vertical().show(ui, |ui| {
         ui.add_enabled_ui(!locked, |ui| {
-            graph.edit(id, &state.input_streams, colours, display, running, locked, |node: &mut N, context| {
+            graph.edit(id, &state.input_streams, colours, display, running, locked, None, |node: &mut N, context| {
                 node.settings_ui(ui, context)
             });
         });
@@ -127,10 +112,6 @@ pub fn show<N: NodeSet>(
                     ui.weak(detail);
                 });
             }
-        }
-        ui.add_space(8.0);
-        if ui.button("Delete").clicked() {
-            events.push(Event::Delete(id));
         }
     });
 }

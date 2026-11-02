@@ -17,6 +17,7 @@ use super::canvas::{Canvas, Selection};
 use super::dev_tools::{self, DevTools};
 use super::frame_times::FrameTimes;
 use super::icons::Icon;
+use super::node_tools::NodeTools;
 use super::style;
 use super::{Event, basic, node_window, toolbar};
 use crate::core::annotation::{AnnotationSet, Annotations};
@@ -439,7 +440,11 @@ pub fn node_ui<N: NodeSet>(
     // A view stays live while recording (changes it makes to settings are undone: see `App::lock`).
     let mut show = |graph: &mut Graph<N>, display: Option<&(dyn std::any::Any + Send)>| {
         if has_view {
-            graph.edit(id, &state.input_streams, colours, display, running, locked, |node: &mut N, context| {
+            let Some(entry) = graph.get(id) else { return };
+            let mut tools =
+                NodeTools { id, in_basic: entry.in_basic(), enabled: !entry.disabled, events: &mut *events };
+            let tools = Some(&mut tools as &mut dyn crate::core::engine::NodeToolbar);
+            graph.edit(id, &state.input_streams, colours, display, running, locked, tools, |node: &mut N, context| {
                 node.view_ui(ui, context)
             });
         } else {
@@ -457,20 +462,6 @@ pub fn node_ui<N: NodeSet>(
 pub struct HeaderClicks {
     pub close: bool,
     pub dock: bool,
-    pub copy: bool,
-    pub paste: bool,
-}
-
-/// A node window's buttons to copy its settings, and paste some onto it. Returns which was clicked.
-pub fn copy_paste_buttons(ui: &mut egui::Ui) -> (bool, bool) {
-    let paste = toolbar::small_icon_button(
-        ui,
-        Icon::Paste,
-        "Paste settings",
-        "Paste settings onto this node (if one node's were copied; otherwise choose where each goes)",
-    );
-    let copy = toolbar::small_icon_button(ui, Icon::Copy, "Copy settings", "Copy this node's settings");
-    (copy.clicked(), paste.clicked())
 }
 
 /// The top of a floating window, drawn as egui_tiles draws a docked window's tab bar, holding just the one
@@ -525,7 +516,6 @@ pub fn floating_header(ui: &mut egui::Ui, title: &str, colour: egui::Color32) ->
     ui.scope_builder(egui::UiBuilder::new().max_rect(buttons).layout(layout), |ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
         clicks.dock = toolbar::small_icon_button(ui, Icon::Dock, "Dock", "Dock into the layout").clicked();
-        (clicks.copy, clicks.paste) = copy_paste_buttons(ui);
     });
     clicks
 }
@@ -697,13 +687,6 @@ impl<N: NodeSet, A: AnnotationSet> egui_tiles::Behavior<Pane> for Panes<'_, N, A
             ui.add_space(2.0);
             if toolbar::small_icon_button(ui, Icon::Undock, "Undock", "Undock into a floating window").clicked() {
                 self.events.push(Event::FloatWindow(*id));
-            }
-            let (copy, paste) = copy_paste_buttons(ui);
-            if copy {
-                self.events.push(Event::CopySettings(vec![*id]));
-            }
-            if paste {
-                self.events.push(Event::PasteSettings(Some(*id)));
             }
         }
     }

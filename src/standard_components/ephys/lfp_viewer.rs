@@ -419,6 +419,7 @@ impl LfpViewer {
                     ui.separator();
                     selection_ui(ui, selection, stream.channels);
                 }
+                context.node_toolbar(ui);
             });
         });
     }

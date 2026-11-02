@@ -510,7 +510,7 @@ mod tests {
         let mut harness = egui_kittest::Harness::builder().with_size([420.0, 560.0]).wgpu().build_ui_state(
             |ui, graph: &mut Graph<Nodes>| {
                 let display: &(dyn std::any::Any + Send) = &display;
-                graph.edit(board, &[], &THEMES[0].colours, Some(display), true, false, |node, context| {
+                graph.edit(board, &[], &THEMES[0].colours, Some(display), true, false, None, |node, context| {
                     node.settings_ui(ui, context)
                 });
             },

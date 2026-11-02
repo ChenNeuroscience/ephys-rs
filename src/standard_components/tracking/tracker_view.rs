@@ -195,6 +195,10 @@ impl Node<Edges> for TrackerView {
     }
 
     fn view_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
+        // The node's toolbar, along the top.
+        if context.tools.is_some() {
+            ui.horizontal(|ui| context.node_toolbar(ui));
+        }
         let size = frame_size(context);
         let area = ui.available_rect_before_wrap();
         let arrangement = Arrangement::of(area);
@@ -806,7 +810,7 @@ mod tests {
         let mut harness = egui_kittest::Harness::builder().with_size([1150.0, 650.0]).wgpu().build_ui_state(
             |ui, graph: &mut Graph<Nodes>| {
                 let display: &(dyn std::any::Any + Send) = &display;
-                graph.edit(view, &inputs, &THEMES[0].colours, Some(display), true, false, |node, context| {
+                graph.edit(view, &inputs, &THEMES[0].colours, Some(display), true, false, None, |node, context| {
                     node.view_ui(ui, context)
                 });
             },

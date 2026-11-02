@@ -183,12 +183,14 @@ impl Node<Edges> for TtlViewer {
     }
 
     fn view_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
-        ui.add_enabled_ui(!context.locked, |ui| {
-            ui.horizontal(|ui| {
+        let locked = context.locked;
+        ui.horizontal(|ui| {
+            ui.add_enabled_ui(!locked, |ui| {
                 let label = ui.label("Span");
                 let field = egui::DragValue::new(&mut self.span).range(0.1..=LONGEST).speed(0.05).suffix(" s");
                 ui.add(field).labelled_by(label.id).on_hover_text("Seconds across the view");
             });
+            context.node_toolbar(ui);
         });
         let Some(DataStream::Events(stream)) = context.inputs[0] else {
             return preview::unconnected(ui, context.theme, "Connect events to view them");
