@@ -533,6 +533,7 @@ pub fn node_ui<N: NodeSet>(
     colours: &Colours,
     runner: Option<&Runner<N>>,
     locked: bool,
+    basic: bool,
     id: NodeId,
     events: &mut Vec<Event>,
 ) {
@@ -544,13 +545,13 @@ pub fn node_ui<N: NodeSet>(
         if has_view {
             let Some(entry) = graph.get(id) else { return };
             let mut tools =
-                NodeTools { id, in_basic: entry.in_basic(), enabled: !entry.disabled, events: &mut *events };
+                NodeTools { id, in_basic: entry.in_basic(), enabled: !entry.disabled, basic, events: &mut *events };
             let tools = Some(&mut tools as &mut dyn crate::core::engine::NodeToolbar);
             graph.edit(id, &state.input_streams, colours, display, running, locked, tools, |node: &mut N, context| {
                 node.view_ui(ui, context)
             });
         } else {
-            node_window::show(ui, graph, resolved, colours, display, running, locked, id, events);
+            node_window::show(ui, graph, resolved, colours, display, running, locked, basic, id, events);
         }
     };
     let shown = runner.and_then(|runner| runner.exchange().with_latest(id, |display| show(graph, Some(display))));
@@ -720,7 +721,8 @@ impl<N: NodeSet, A: AnnotationSet> Panes<'_, N, A> {
             Pane::Node(id) => {
                 let (graph, resolved, colours, runner, locked) =
                     (&mut *self.graph, self.resolved, self.colours, self.runner, self.locked);
-                padded(ui, |ui| node_ui(ui, graph, resolved, colours, runner, locked, id, self.events))
+                let basic = self.mode == Mode::Basic;
+                padded(ui, |ui| node_ui(ui, graph, resolved, colours, runner, locked, basic, id, self.events))
             }
         }
     }

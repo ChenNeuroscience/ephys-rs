@@ -1,5 +1,5 @@
 //! The buttons every node has, for its window (see `NodeToolbar`): copying and pasting its settings, showing it in
-//! the basic view, enabling it, and deleting it. A node's default window has them beside its name; a view puts them
+//! the basic view, enabling it, and deleting it (those last three not in the basic view, where they'd confuse). A node's default window has them beside its name; a view puts them
 //! where it likes, through its `Context`.
 
 use eframe::egui;
@@ -14,6 +14,8 @@ pub struct NodeTools<'e> {
     /// Whether it's in the basic view, and enabled, now.
     pub in_basic: bool,
     pub enabled: bool,
+    /// Whether it's in the basic view, which leaves out what changes the graph (see `NodeToolbar::basic_toggle`).
+    pub basic: bool,
     /// What's clicked becomes these.
     pub events: &'e mut Vec<Event>,
 }
@@ -36,7 +38,10 @@ impl NodeToolbar for NodeTools<'_> {
         button
     }
 
-    fn basic_toggle(&mut self, ui: &mut egui::Ui) -> egui::Response {
+    fn basic_toggle(&mut self, ui: &mut egui::Ui) -> Option<egui::Response> {
+        if self.basic {
+            return None;
+        }
         let tip = if self.in_basic {
             "In the basic view: click to leave it out"
         } else {
@@ -46,10 +51,13 @@ impl NodeToolbar for NodeTools<'_> {
         if button.clicked() {
             self.events.push(Event::InBasic(self.id, !self.in_basic));
         }
-        button
+        Some(button)
     }
 
-    fn enabled_toggle(&mut self, ui: &mut egui::Ui) -> egui::Response {
+    fn enabled_toggle(&mut self, ui: &mut egui::Ui) -> Option<egui::Response> {
+        if self.basic {
+            return None;
+        }
         let tip = if self.enabled {
             "Enabled: click to disable it (run the graph as if it weren't there, keeping it)"
         } else {
@@ -59,14 +67,17 @@ impl NodeToolbar for NodeTools<'_> {
         if button.clicked() {
             self.events.push(Event::SetDisabled(self.id, self.enabled));
         }
-        button
+        Some(button)
     }
 
-    fn delete_button(&mut self, ui: &mut egui::Ui) -> egui::Response {
+    fn delete_button(&mut self, ui: &mut egui::Ui) -> Option<egui::Response> {
+        if self.basic {
+            return None;
+        }
         let button = toolbar::small_icon_button(ui, Icon::Delete, "Delete", "Delete this node");
         if button.clicked() {
             self.events.push(Event::Delete(self.id));
         }
-        button
+        Some(button)
     }
 }

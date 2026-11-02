@@ -110,15 +110,16 @@ pub trait NodeToolbar {
     fn copy_button(&mut self, ui: &mut egui::Ui) -> egui::Response;
     /// Paste settings onto it.
     fn paste_button(&mut self, ui: &mut egui::Ui) -> egui::Response;
-    /// Whether it's shown in the basic view: on or off.
-    fn basic_toggle(&mut self, ui: &mut egui::Ui) -> egui::Response;
+    /// Whether it's shown in the basic view: on or off. This and the others that change the graph (enabling and
+    /// deleting) aren't there (are `None`) in the basic view, where the graph isn't changed node by node.
+    fn basic_toggle(&mut self, ui: &mut egui::Ui) -> Option<egui::Response>;
     /// Whether it's enabled: on or off.
-    fn enabled_toggle(&mut self, ui: &mut egui::Ui) -> egui::Response;
+    fn enabled_toggle(&mut self, ui: &mut egui::Ui) -> Option<egui::Response>;
     /// Delete it.
-    fn delete_button(&mut self, ui: &mut egui::Ui) -> egui::Response;
+    fn delete_button(&mut self, ui: &mut egui::Ui) -> Option<egui::Response>;
 
-    /// All of them, in a row, laid out right to left (for the right of a toolbar): copy and paste; shown in the
-    /// basic view, and enabled; delete. In a wrapping toolbar, on a row of their own if there isn't room left.
+    /// All of them (that are there), in a row, laid out right to left (for the right of a toolbar): copy and paste;
+    /// shown in the basic view, and enabled; delete. In a wrapping toolbar, on a row of their own if there isn't room left.
     fn toolbar(&mut self, ui: &mut egui::Ui) {
         let width_id = ui.scope_id().with("node toolbar width");
         let width: f32 = ui.data(|d| d.get_temp(width_id)).unwrap_or(0.0);
@@ -127,11 +128,13 @@ pub trait NodeToolbar {
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
-            self.delete_button(ui);
-            ui.separator();
-            self.enabled_toggle(ui);
-            self.basic_toggle(ui);
-            ui.separator();
+            if self.delete_button(ui).is_some() {
+                ui.separator();
+            }
+            let enabled = self.enabled_toggle(ui);
+            if self.basic_toggle(ui).is_some() || enabled.is_some() {
+                ui.separator();
+            }
             self.paste_button(ui);
             self.copy_button(ui);
             let width = ui.min_rect().width();

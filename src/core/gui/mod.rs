@@ -906,6 +906,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
     fn floating_windows(&mut self, ctx: &egui::Context, resolved: &Resolved<N::Edges>, events: &mut Vec<Event>) {
         let locked = self.locked();
         let colours = self.colours();
+        let in_basic_view = self.layout.mode == Mode::Basic;
         for id in self.layout.floating() {
             let started = Instant::now();
             let Some(entry) = self.graph.get(id) else { continue };
@@ -932,6 +933,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                             colours,
                             self.runner.as_ref(),
                             locked,
+                            in_basic_view,
                             id,
                             events,
                         );
@@ -1789,6 +1791,12 @@ mod tests {
         assert_eq!(layout.tab_group(Pane::DevTools), Some((spikes.0, false)), "the dev tools behind the spikes");
         assert_eq!(group(&harness, "TTL Viewer"), (eeg.0, false), "the TTLs behind the EEG");
         harness.snapshot("standard_ltx_layout");
+        // The panes' toolbars, in the basic view, leave out what changes the graph.
+        let buttons = |h: &Harness<TestApp>, label: &str| h.query_all_by_label(label).count();
+        assert!(buttons(&harness, "Copy settings") > 0 && buttons(&harness, "Paste settings") > 0);
+        for left_out in ["Enabled", "Show in basic view", "Delete"] {
+            assert_eq!(buttons(&harness, left_out), 0, "no {left_out} in the basic view");
+        }
         harness.state_mut().layout.toggle_pane(Pane::DevTools);
         harness.state_mut().layout.show(Pane::Home);
         harness.run_steps(2);
