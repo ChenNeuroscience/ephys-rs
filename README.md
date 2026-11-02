@@ -10,7 +10,7 @@ Development of this project started on 2026-Oct-31. With the help of today's AI,
 
 ## What's there
 
-It opens on the **basic view**: the graph's viewers, large, to open beside it, and **quick actions** that build the graph for you (adding spike, EEG or position tracking, each recorded by Write LTX), reusing what's already there. The toolbar's **Home** brings back the home pane (which can be closed, once the windows you want are open); its menu switches it between the basic view and the **graph**, where you build it node by node (⌘1 / ⌘2), and whichever you pick is home from then on. Any node can be listed in the basic view (viewers are, to begin with).
+It opens on the **basic view**: the graph's components (its viewers, to begin with), large, to open beside it, and **quick actions**: building the standard LTX graph (spikes, EEG, digital inputs and positions, recorded by Write LTX), turning position tracking off or on, and switching between real devices and synthetic data. The toolbar's **Home** brings back the home pane (which can be closed, once the windows you want are open); its menu switches it between the basic view and the **graph**, where you build it node by node (⌘1 / ⌘2), and whichever you pick is home from then on. Any node can be listed in the basic view (viewers are, to begin with).
 
 You build a graph of nodes, and press Play to run it:
 

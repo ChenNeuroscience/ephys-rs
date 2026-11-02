@@ -1,7 +1,7 @@
-//! The basic view, the home pane's first mode, for people who'd rather not work with the graph: the nodes shown in
-//! it (viewers, unless set otherwise: see `NodeEntry::in_basic`), large, to open their windows (beside it); and the
-//! quick actions that apply to the graph, to build it a step at a time. The graph's a click away (or the toolbar's
-//! Basic | Graph).
+//! The basic view, the home pane's first mode, for people who'd rather not work with the graph: the components shown
+//! in it (viewers, unless set otherwise: see `NodeEntry::in_basic`), large, to open their windows (beside it); and the
+//! quick actions that apply to the graph, in grey (blue is for processing). The graph's a click away (or in Home's
+//! menu).
 
 use std::collections::HashSet;
 
@@ -31,7 +31,7 @@ pub fn show<N: NodeSet>(
         egui::Frame::new().inner_margin(egui::Margin::symmetric(20, 16)).show(ui, |ui| {
             ui.set_max_width(WIDTH.min(ui.available_width()));
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Views").size(22.0).color(colours.text_primary));
+                ui.label(RichText::new("Components").size(22.0).color(colours.text_primary));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let graph_button = ui.button("Open the graph").on_hover_text(
                         "The graph: every node, and how data flows between them, to build and change it node by node",
@@ -50,7 +50,7 @@ pub fn show<N: NodeSet>(
             views.sort_by_key(|(id, label, _)| (graph.get(*id).map(|e| e.pos[1] as i64), *label));
             if views.is_empty() {
                 ui.label(
-                    RichText::new("No views yet: add some with a quick action below.").color(colours.text_secondary),
+                    RichText::new("None yet: add some with a quick action below.").color(colours.text_secondary),
                 );
             }
             for (id, label, category) in views {
@@ -75,9 +75,10 @@ pub fn show<N: NodeSet>(
                     Some(detail) => (detail, colours.text_secondary),
                     None => ("Nothing connected yet".to_owned(), colours.warning),
                 };
-                let state = if open { "Showing" } else { "Open" };
-                let card = card(ui, colours, style::category_colour(category), label, &detail, detail_colour, state);
-                let card = card.on_hover_text("Open its window beside this view (right-click to hide it from here)");
+                let colour = style::category_colour(category);
+                let card = card(ui, colours, colour, label, &detail, detail_colour, None);
+                let tip = if open { "Its window's open" } else { "Open its window beside this view" };
+                let card = card.on_hover_text(format!("{tip} (right-click to hide it from here)"));
                 if card.clicked() {
                     events.push(Event::OpenWindow(id));
                 }
@@ -103,11 +104,11 @@ pub fn show<N: NodeSet>(
                     let card = card(
                         ui,
                         colours,
-                        colours.accent,
+                        colours.text_secondary,
                         action.name,
                         action.description,
                         colours.text_secondary,
-                        "Apply",
+                        Some("Apply"),
                     );
                     if card.on_disabled_hover_text("Not while recording").clicked() {
                         events.push(Event::QuickAction(index));
@@ -128,7 +129,7 @@ fn card(
     title: &str,
     detail: &str,
     detail_colour: Color32,
-    action: &str,
+    action: Option<&str>,
 ) -> egui::Response {
     let enabled = ui.is_enabled();
     let width = ui.available_width();
@@ -146,7 +147,9 @@ fn card(
                     ui.label(RichText::new(detail).size(12.0).color(detail_colour));
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(RichText::new(action).color(colours.accent));
+                    if let Some(action) = action {
+                        ui.label(RichText::new(action).color(colours.text_primary));
+                    }
                 });
             });
         })

@@ -817,7 +817,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                     ui.weak("Home, at the left of the toolbar, brings back the basic view or the graph")
                 }
                 _ if self.layout.mode == Mode::Basic => {
-                    ui.weak("Open a view, or add some with a quick action · the graph shows how it all fits together")
+                    ui.weak("Open a component, or add some with a quick action · the graph shows how it all fits together")
                 }
                 _ => ui
                     .weak("Double-click, right-click or Tab on the canvas to add a node · drag from a port to connect"),
