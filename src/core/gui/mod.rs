@@ -713,6 +713,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         let locked = self.locked();
         let colours = self.colours();
         for id in self.layout.floating() {
+            let started = Instant::now();
             let Some(entry) = self.graph.get(id) else { continue };
             let has_view = entry.node.has_view();
             let beside = self.canvas.to_screen(egui::pos2(entry.pos[0] + NODE_WIDTH + 20.0, entry.pos[1]));
@@ -753,6 +754,8 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             if clicks.dock {
                 self.layout.dock(id);
             }
+            // Timed as the window, as it is when docked.
+            self.frame_times.add(&title, ms_since(started));
         }
     }
 
@@ -933,9 +936,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         for (part, ms) in timings {
             self.frame_times.add(&part, ms);
         }
-        let started = Instant::now();
         self.floating_windows(&ctx, &resolved, &mut events);
-        self.frame_times.add("Floating windows", ms_since(started));
         let started = Instant::now();
         for event in events {
             self.handle(&ctx, event);

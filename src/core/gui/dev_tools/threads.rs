@@ -285,10 +285,9 @@ fn gui_thread<N: NodeSet>(
     plan: &Plan<N>,
     anchors: &mut Anchors,
 ) {
-    let frame_ms = ui.input(|i| i.unstable_dt) * 1000.0;
     container(ui, colours, "GUI", "main thread", 1, true, |ui| {
         ui.label(small(format!("Edits make snapshots: latest version {}", snapshot.version), colours.text_secondary));
-        ui.label(small(format!("Last frame {frame_ms:.1} ms"), colours.text_secondary));
+        ui.label(small("Its frames' times, part by part: under Performance", colours.text_secondary));
         let shown: Vec<NodeId> =
             plan.steps().iter().filter(|s| s.copies == Some(CopyTo::Window)).map(|s| s.id).collect();
         if shown.is_empty() {
