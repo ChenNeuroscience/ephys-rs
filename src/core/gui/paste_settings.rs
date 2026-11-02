@@ -50,8 +50,15 @@ pub struct PasteSettings<N> {
 pub enum Outcome<N> {
     Open,
     Cancelled,
-    /// Each node to change, and its new settings.
-    Paste(Vec<(NodeId, N)>),
+    /// The settings to paste, and what's left out (and why), to log.
+    Paste(Vec<Pasted<N>>, Vec<String>),
+}
+
+/// Settings to paste: onto which node, from which copied node.
+pub struct Pasted<N> {
+    pub target: NodeId,
+    pub node: N,
+    pub from: String,
 }
 
 impl<N: NodeSet> PasteSettings<N> {
@@ -152,13 +159,8 @@ impl<N: NodeSet> PasteSettings<N> {
                 );
             });
             ui.add_space(8.0);
-            let pasting: Vec<(NodeId, N)> = self
-                .rows
-                .iter()
-                .filter(|r| r.paste)
-                .filter_map(|r| Some((r.target?, r.node.as_ref().ok()?.clone())))
-                .collect();
-            let mut targets: Vec<NodeId> = pasting.iter().map(|p| p.0).collect();
+            let (pasting, skipped) = self.plan(graph);
+            let mut targets: Vec<NodeId> = pasting.iter().map(|p| p.target).collect();
             targets.sort();
             targets.dedup();
             if targets.len() < pasting.len() {
@@ -170,7 +172,7 @@ impl<N: NodeSet> PasteSettings<N> {
             ui.horizontal(|ui| {
                 let text = format!("Paste to {} node{}", targets.len(), if targets.len() == 1 { "" } else { "s" });
                 if ui.add_enabled(!pasting.is_empty() && !locked, egui::Button::new(text)).clicked() {
-                    outcome = Outcome::Paste(pasting);
+                    outcome = Outcome::Paste(pasting, skipped);
                 }
                 if ui.button("Cancel").clicked() {
                     outcome = Outcome::Cancelled;
@@ -182,10 +184,60 @@ impl<N: NodeSet> PasteSettings<N> {
         }
         outcome
     }
+
+    /// What would be pasted, as the rows are now, and what left out, and why. Two going to the same node, the
+    /// later is what it gets.
+    fn plan(&self, graph: &Graph<N>) -> (Vec<Pasted<N>>, Vec<String>) {
+        let mut pasting: Vec<Pasted<N>> = Vec::new();
+        let mut skipped = Vec::new();
+        for row in &self.rows {
+            let node = match &row.node {
+                Ok(node) => node,
+                Err(problem) => {
+                    skipped.push(format!("{}: {problem}", row.label));
+                    continue;
+                }
+            };
+            let what = format!("{} ({})", row.label, node.info().name);
+            match row.target {
+                None => skipped.push(format!("{what}: no node of its type to paste to")),
+                Some(_) if !row.paste => skipped.push(format!("{what}: left out")),
+                Some(target) => {
+                    if let Some(earlier) = pasting.iter().position(|p| p.target == target) {
+                        let name = graph.get(target).map_or("?".into(), |e| e.label.clone());
+                        skipped.push(format!("{}: {name} got {what}'s instead", pasting[earlier].from));
+                        pasting.remove(earlier);
+                    }
+                    pasting.push(Pasted { target, node: node.clone(), from: what });
+                }
+            }
+        }
+        (pasting, skipped)
+    }
+
+    /// Pasting straight onto `target`, without asking, if there's just one node's settings: them, if they're of its
+    /// type, or why not. Nothing if there are several (to review).
+    pub fn onto(&self, target: NodeId, graph: &Graph<N>) -> Option<Result<Pasted<N>, String>> {
+        let [row] = self.rows.as_slice() else { return None };
+        let entry = graph.get(target)?;
+        Some(match &row.node {
+            Err(problem) => Err(format!("{}: {problem}", row.label)),
+            Ok(node) if node.info().name != entry.node.info().name => Err(format!(
+                "The settings copied are of {}, a {}: not of {}, a {}",
+                row.label,
+                node.info().name,
+                entry.label,
+                entry.node.info().name
+            )),
+            Ok(node) => {
+                Ok(Pasted { target, node: node.clone(), from: format!("{} ({})", row.label, node.info().name) })
+            }
+        })
+    }
 }
 
 /// Which of a node's settings `new` would change, by name.
-fn changed_settings<N: NodeSet>(old: &N, new: &N) -> String {
+pub fn changed_settings<N: NodeSet>(old: &N, new: &N) -> String {
     let settings = |n: &N| serde_json::to_value(n).ok().and_then(|v| v.get("settings").cloned()).unwrap_or_default();
     let (old, new) = (settings(old), settings(new));
     let (Some(old), Some(new)) = (old.as_object(), new.as_object()) else {

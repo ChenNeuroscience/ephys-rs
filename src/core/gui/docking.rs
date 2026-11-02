@@ -441,6 +441,20 @@ pub fn node_ui<N: NodeSet>(
 pub struct HeaderClicks {
     pub close: bool,
     pub dock: bool,
+    pub copy: bool,
+    pub paste: bool,
+}
+
+/// A node window's buttons to copy its settings, and paste some onto it. Returns which was clicked.
+pub fn copy_paste_buttons(ui: &mut egui::Ui) -> (bool, bool) {
+    let paste = toolbar::small_icon_button(
+        ui,
+        Icon::Paste,
+        "Paste settings",
+        "Paste settings onto this node (if one node's were copied; otherwise choose where each goes)",
+    );
+    let copy = toolbar::small_icon_button(ui, Icon::Copy, "Copy settings", "Copy this node's settings");
+    (copy.clicked(), paste.clicked())
 }
 
 /// The top of a floating window, drawn as egui_tiles draws a docked window's tab bar, holding just the one
@@ -487,10 +501,15 @@ pub fn floating_header(ui: &mut egui::Ui, title: &str, colour: egui::Color32) ->
     clicks.close = close.clicked();
 
     // Where a docked tab bar has its undock button.
-    let dock_rect =
-        egui::Rect::from_center_size(egui::pos2(bar.right() - 14.0, bar.center().y), egui::vec2(20.0, 20.0));
-    ui.scope_builder(egui::UiBuilder::new().max_rect(dock_rect), |ui| {
+    let buttons = egui::Rect::from_min_max(
+        egui::pos2(bar.right() - 72.0, bar.top()),
+        egui::pos2(bar.right() - 4.0, bar.bottom()),
+    );
+    let layout = egui::Layout::right_to_left(egui::Align::Center);
+    ui.scope_builder(egui::UiBuilder::new().max_rect(buttons).layout(layout), |ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
         clicks.dock = toolbar::small_icon_button(ui, Icon::Dock, "Dock", "Dock into the layout").clicked();
+        (clicks.copy, clicks.paste) = copy_paste_buttons(ui);
     });
     clicks
 }
@@ -653,6 +672,13 @@ impl<N: NodeSet, A: AnnotationSet> egui_tiles::Behavior<Pane> for Panes<'_, N, A
             ui.add_space(2.0);
             if toolbar::small_icon_button(ui, Icon::Undock, "Undock", "Undock into a floating window").clicked() {
                 self.events.push(Event::FloatWindow(*id));
+            }
+            let (copy, paste) = copy_paste_buttons(ui);
+            if copy {
+                self.events.push(Event::CopySettings(vec![*id]));
+            }
+            if paste {
+                self.events.push(Event::PasteSettings(Some(*id)));
             }
         }
     }

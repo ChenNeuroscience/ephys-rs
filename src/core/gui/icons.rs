@@ -32,6 +32,10 @@ pub enum Icon {
     Home,
     /// On or off: the power symbol.
     Power,
+    /// Copy settings: two sheets.
+    Copy,
+    /// Paste settings: a clipboard.
+    Paste,
     /// Start running the graph.
     Play,
     /// Stop running it.
@@ -160,6 +164,19 @@ impl Icon {
                 let walls = vec![p(3.5, 7.0), p(3.5, 14.0), p(12.5, 14.0), p(12.5, 7.0)];
                 painter.add(Shape::line(walls, Stroke::new(1.6 * s, ink)));
                 painter.rect_filled(r(6.8, 9.5, 9.2, 14.0), 0.0, fade(BLUE));
+            }
+            Icon::Copy => {
+                page(painter, &p, 1.5, 0.5, fade(PAPER), line);
+                page(painter, &p, 5.0, 2.0, fade(PAPER), line);
+            }
+            Icon::Paste => {
+                let board = Color32::from_rgb(178, 132, 82);
+                painter.rect(r(2.5, 2.0, 13.5, 15.0), 1.5 * s, fade(board), line, StrokeKind::Middle);
+                painter.rect(r(4.5, 4.5, 11.5, 13.5), 0.5 * s, fade(PAPER), Stroke::NONE, StrokeKind::Middle);
+                painter.rect(r(5.5, 0.8, 10.5, 3.6), 1.0 * s, fade(Color32::from_gray(140)), line, StrokeKind::Middle);
+                for y in [7.0, 9.0, 11.0] {
+                    painter.line_segment([p(6.0, y), p(10.0, y)], Stroke::new(0.8 * s, fade(Color32::from_gray(120))));
+                }
             }
             Icon::Power => {
                 let stroke = Stroke::new(1.7 * s, ink);

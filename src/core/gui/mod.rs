@@ -107,10 +107,11 @@ pub enum Event {
     SetDisabled(NodeId, bool),
     SetEdgeDisabled(engine::Edge, bool),
     DeleteEdge(engine::Edge),
-    /// Copy a node's settings (and the rest of the selection's, if it's in it).
-    CopySettings(NodeId),
-    /// Open the window for pasting settings from the clipboard.
-    PasteSettings,
+    /// Copy these nodes' settings.
+    CopySettings(Vec<NodeId>),
+    /// Paste settings from the clipboard: straight onto a node, if given and there's one node's settings there;
+    /// otherwise through the window, to review them.
+    PasteSettings(Option<NodeId>),
 }
 
 /// The file: the graph, its annotations, and the window layout.
@@ -534,13 +535,44 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         self.set_done(ctx, format!("Copied the settings of {what}"));
     }
 
-    /// Opens the window for pasting settings from the clipboard, if there are some there.
-    fn open_paste(&mut self, ctx: &egui::Context) {
+    /// Pastes settings from the clipboard: straight onto `target`, if given and there's just one node's settings
+    /// there; otherwise opening the window to review them.
+    fn open_paste(&mut self, ctx: &egui::Context, target: Option<NodeId>) {
         let text = arboard::Clipboard::new().and_then(|mut c| c.get_text()).unwrap_or_default();
-        match paste_settings::PasteSettings::new(&text, &self.graph) {
-            Ok(paste) => self.paste = Some(paste),
-            Err(problem) => self.set_status(ctx, problem),
+        self.paste_text(ctx, &text, target);
+    }
+
+    fn paste_text(&mut self, ctx: &egui::Context, text: &str, target: Option<NodeId>) {
+        let paste = match paste_settings::PasteSettings::new(text, &self.graph) {
+            Ok(paste) => paste,
+            Err(problem) => return self.set_status(ctx, problem),
+        };
+        match target.and_then(|target| paste.onto(target, &self.graph)) {
+            Some(Ok(pasted)) if !self.locked() => self.paste_settings(ctx, vec![pasted], Vec::new()),
+            Some(Ok(_)) => self.set_status(ctx, "Settings are locked while recording"),
+            Some(Err(problem)) => {
+                log::warn!("Didn't paste settings: {problem}");
+                self.set_status(ctx, problem);
+            }
+            None => self.paste = Some(paste),
         }
+    }
+
+    /// Pastes settings onto nodes, logging what changed, and what was left out.
+    fn paste_settings(&mut self, ctx: &egui::Context, pasted: Vec<paste_settings::Pasted<N>>, skipped: Vec<String>) {
+        let count = pasted.len();
+        for paste_settings::Pasted { target, node, from } in pasted {
+            let Some(entry) = self.graph.get_mut(target) else { continue };
+            let changes = paste_settings::changed_settings(&entry.node, &node);
+            log::info!("Pasted the settings of {from} onto {}: changing {changes}", entry.label);
+            entry.node = node;
+        }
+        for reason in &skipped {
+            log::warn!("Didn't paste the settings of {reason}");
+        }
+        let left_out = if skipped.is_empty() { String::new() } else { format!(", leaving out {}", skipped.len()) };
+        let plural = if count == 1 { "" } else { "s" };
+        self.set_done(ctx, format!("Pasted settings onto {count} node{plural}{left_out} (see the console)"));
     }
 
     /// The window for pasting settings, while it's open; pasting them when it says to.
@@ -550,15 +582,9 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         match paste.show(ctx, &self.graph, colours, locked) {
             paste_settings::Outcome::Open => {}
             paste_settings::Outcome::Cancelled => self.paste = None,
-            paste_settings::Outcome::Paste(nodes) => {
-                let count = nodes.len();
-                for (id, node) in nodes {
-                    if let Some(entry) = self.graph.get_mut(id) {
-                        entry.node = node;
-                    }
-                }
+            paste_settings::Outcome::Paste(pasted, skipped) => {
                 self.paste = None;
-                self.set_done(ctx, format!("Pasted settings to {count} node{}", if count == 1 { "" } else { "s" }));
+                self.paste_settings(ctx, pasted, skipped);
             }
         }
     }
@@ -612,7 +638,12 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                 ids.sort();
                 self.copy_settings(ctx, &ids);
             }
-            Action::PasteSettings => self.open_paste(ctx),
+            Action::PasteSettings => {
+                // Straight onto the node selected, if just one is.
+                let target =
+                    (self.selection.nodes.len() == 1).then(|| self.selection.nodes.iter().next().copied()).flatten();
+                self.open_paste(ctx, target);
+            }
             Action::ToggleDisabled => {
                 let all = self.selection.nodes.iter().all(|id| self.graph.get(*id).is_some_and(|e| e.disabled));
                 for id in self.selection.nodes.clone() {
@@ -859,6 +890,12 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             if clicks.close {
                 events.push(Event::ToggleWindow(id));
             }
+            if clicks.copy {
+                events.push(Event::CopySettings(vec![id]));
+            }
+            if clicks.paste {
+                events.push(Event::PasteSettings(Some(id)));
+            }
             if clicks.dock {
                 self.layout.dock(id);
             }
@@ -908,11 +945,8 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             }
             Event::SetEdgeDisabled(edge, disabled) => self.graph.set_edge_disabled(edge, disabled),
             Event::DeleteEdge(edge) => self.graph.disconnect(edge),
-            Event::CopySettings(id) => {
-                let ids = self.selected_or(id);
-                self.copy_settings(ctx, &ids);
-            }
-            Event::PasteSettings => self.open_paste(ctx),
+            Event::CopySettings(ids) => self.copy_settings(ctx, &ids),
+            Event::PasteSettings(target) => self.open_paste(ctx, target),
             Event::InBasic(id, shown) => {
                 if let Some(entry) = self.graph.get_mut(id) {
                     entry.basic = Some(shown);
@@ -1789,6 +1823,24 @@ mod tests {
         harness.run_steps(2);
         assert_eq!(threshold(&harness), before, "pasted back");
         assert!(harness.state().paste.is_none());
+
+        // Onto a node (from its window, say), one node's settings go straight on.
+        if let Some(Nodes::SpikeDetector(d)) = harness.state_mut().graph.get_mut(detector).map(|e| &mut e.node) {
+            d.thresholds.set(0, before + 20.0);
+        }
+        let ctx = harness.ctx.clone();
+        harness.state_mut().paste_text(&ctx, &copied, Some(detector));
+        assert_eq!(threshold(&harness), before, "pasted straight on");
+        assert!(harness.state().paste.is_none(), "without the window");
+        // Not onto a node of another type.
+        let viewer = node_named(harness.state(), "Spike Viewer");
+        let graph_before = harness.state().graph.clone();
+        harness.state_mut().paste_text(&ctx, &copied, Some(viewer));
+        assert!(harness.state().graph == graph_before && harness.state().paste.is_none());
+        // Several nodes' settings, it asks.
+        let both = paste_settings::copy(&harness.state().graph, &[detector, viewer]);
+        harness.state_mut().paste_text(&ctx, &both, Some(detector));
+        assert!(harness.state().paste.is_some());
     }
 
     #[test]

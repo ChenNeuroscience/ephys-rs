@@ -1055,10 +1055,13 @@ impl Canvas {
             }
             ui.separator();
             if ui.button(if several { "Copy settings of selected" } else { "Copy settings" }).clicked() {
-                events.push(Event::CopySettings(id));
+                let mut ids: Vec<NodeId> = if several { selection.nodes.iter().copied().collect() } else { vec![id] };
+                ids.sort();
+                events.push(Event::CopySettings(ids));
             }
-            if ui.button("Paste settings…").clicked() {
-                events.push(Event::PasteSettings);
+            let tip = "Onto this node, if one node's settings were copied; otherwise choosing where each goes";
+            if ui.button("Paste settings").on_hover_text(tip).clicked() {
+                events.push(Event::PasteSettings(Some(id)));
             }
             ui.separator();
             if ui.button("Delete").clicked() {
