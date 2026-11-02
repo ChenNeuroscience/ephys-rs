@@ -295,30 +295,34 @@ impl Node<Edges> for SpikeDetector {
 impl SpikeDetector {
     /// Each channel's threshold and gain, to set by hand (they're usually set from a Spike Viewer).
     fn channels_ui(&mut self, ui: &mut egui::Ui, channels: usize) {
-        egui::CollapsingHeader::new("Each channel").id_salt("each channel").show(ui, |ui| {
-            ui.weak("Usually set from a Spike Viewer: drag a threshold, or choose them from the data.");
-            egui::Grid::new("channels").num_columns(3).striped(true).show(ui, |ui| {
-                ui.strong("Channel");
-                ui.strong("Threshold");
-                ui.strong("Gain");
-                ui.end_row();
-                for channel in 0..channels {
-                    ui.label(format!("{}", channel + 1));
-                    let mut threshold = self.thresholds.get(channel);
-                    let field = egui::DragValue::new(&mut threshold).range(0.1..=10_000.0).speed(0.5).suffix(" µV");
-                    if ui.add(field).changed() {
-                        self.thresholds.set(channel, threshold);
-                    }
-                    let mut gain = self.gains.get(channel);
-                    let range = format!(" (±{:.0} µV)", range_uv(gain));
-                    let field = egui::DragValue::new(&mut gain).range(GAINS).speed(10.0).prefix("×").suffix(range);
-                    if ui.add(field).changed() {
-                        self.gains.set(channel, gain);
-                    }
+        egui::CollapsingHeader::new("Each channel")
+            .id_salt("each channel")
+            .show(ui, |ui| {
+                ui.weak("Usually set from a Spike Viewer: drag a threshold, or choose them from the data.");
+                egui::Grid::new("channels").num_columns(3).striped(true).show(ui, |ui| {
+                    ui.strong("Channel");
+                    ui.strong("Threshold");
+                    ui.strong("Gain");
                     ui.end_row();
-                }
-            });
-        });
+                    for channel in 0..channels {
+                        ui.label(format!("{}", channel + 1));
+                        let mut threshold = self.thresholds.get(channel);
+                        let field = egui::DragValue::new(&mut threshold).range(0.1..=10_000.0).speed(0.5).suffix(" µV");
+                        if ui.add(field).changed() {
+                            self.thresholds.set(channel, threshold);
+                        }
+                        let mut gain = self.gains.get(channel);
+                        let range = format!(" (±{:.0} µV)", range_uv(gain));
+                        let field = egui::DragValue::new(&mut gain).range(GAINS).speed(10.0).prefix("×").suffix(range);
+                        if ui.add(field).changed() {
+                            self.gains.set(channel, gain);
+                        }
+                        ui.end_row();
+                    }
+                });
+            })
+            .header_response
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
     }
 }
 

@@ -119,6 +119,7 @@ pub fn show<N: NodeSet>(
                        add: &mut dyn FnMut(&mut egui::Ui, &mut DevTools)| {
         let header = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), HEADER));
         let response = ui.interact(header, ui.scope_id().with(("section", index)), egui::Sense::click());
+        let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
         let open = tools.open[index];
         let ink = if response.hovered() { colours.text_primary } else { colours.text_secondary };
         let at = egui::pos2(header.left() + 14.0, header.center().y);

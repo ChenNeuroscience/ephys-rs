@@ -601,7 +601,9 @@ fn memory<N: NodeSet>(
                     colours.text_secondary,
                 ));
             }
-        });
+        })
+        .header_response
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
 }
 
 fn legend(ui: &mut egui::Ui, colours: &Colours) {

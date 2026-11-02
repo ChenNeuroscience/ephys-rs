@@ -306,7 +306,9 @@ impl TrackerView {
         let connected = matches!(context.inputs[2], Some(DataStream::CameraStats(_)));
         egui::CollapsingHeader::new(RichText::new("Stats").strong())
             .default_open(true)
-            .show(ui, |ui| stats_ui(ui, stats, connected, declared, context.theme));
+            .show(ui, |ui| stats_ui(ui, stats, connected, declared, context.theme))
+            .header_response
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
 
         // What the camera supports, once it's running.
         let supports = stats.filter(|s| s.status.state == State::Running).map(|s| &s.status.controls);
@@ -548,7 +550,7 @@ fn led_panel(ui: &mut egui::Ui, history: &History, arrangement: Arrangement) {
         };
         panel.show(ui, |ui| {
             ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
-                if led_chart::side_toggle(ui, "LED sizes", open).clicked() {
+                if crate::standard_components::widgets::side_toggle(ui, "LED sizes", open).clicked() {
                     ui.data_mut(|d| d.insert_persisted(open_id, !open));
                 }
                 if open {
@@ -566,7 +568,7 @@ fn led_panel(ui: &mut egui::Ui, history: &History, arrangement: Arrangement) {
         ui.scope_builder(
             egui::UiBuilder::new().max_rect(chart).layout(egui::Layout::top_down(egui::Align::Max)),
             |ui| {
-                if led_chart::toggle(ui, "LED sizes", open).clicked() {
+                if crate::standard_components::widgets::toggle(ui, "LED sizes", open).clicked() {
                     ui.data_mut(|d| d.insert_persisted(open_id, !open));
                 }
                 if open {

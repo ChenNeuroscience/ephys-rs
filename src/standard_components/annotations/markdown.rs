@@ -90,25 +90,50 @@ fn cheat_sheet_state(ui: &egui::Ui) -> egui::collapsing_header::CollapsingState 
     egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), egui::Id::unique(CHEAT_SHEET), false)
 }
 
+/// The cheat sheet's table: markdown, and what it gives.
+fn cheats(ui: &mut egui::Ui) {
+    egui::Grid::new("markdown cheats").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
+        for (markdown, gives) in CHEATS {
+            ui.label(RichText::new(*markdown).monospace());
+            ui.label(RichText::new(*gives).small().weak());
+            ui.end_row();
+        }
+    });
+}
+
+/// The cheat sheet beside the text: open, a column of it, under a toggle to put it away; closed, a narrow strip to
+/// bring it out (as the tracker view's LED chart has).
+fn cheat_sheet_beside(ui: &mut egui::Ui) {
+    let mut state = cheat_sheet_state(ui);
+    let open = state.is_open();
+    let toggle = if open {
+        crate::standard_components::widgets::side_toggle(ui, CHEAT_SHEET, true)
+    } else {
+        crate::standard_components::widgets::side_toggle(ui, "Cheat sheet", false)
+    };
+    if toggle.clicked() {
+        state.toggle(ui);
+        state.store(ui.ctx());
+    }
+    if open {
+        ui.add_space(4.0);
+        cheats(ui);
+    }
+}
+
 /// Markdown, briefly, under a header to open it (clicking its triangle or its title).
 fn cheat_sheet(ui: &mut egui::Ui) {
     let mut state = cheat_sheet_state(ui);
     let header = ui.horizontal(|ui| {
-        state.show_toggle_button(ui, egui::collapsing_header::paint_default_icon);
-        ui.add(egui::Label::new(CHEAT_SHEET).sense(egui::Sense::click()))
+        let triangle = state.show_toggle_button(ui, egui::collapsing_header::paint_default_icon);
+        triangle.on_hover_cursor(egui::CursorIcon::PointingHand);
+        let title = ui.add(egui::Label::new(CHEAT_SHEET).sense(egui::Sense::click()));
+        title.on_hover_cursor(egui::CursorIcon::PointingHand)
     });
     if header.inner.clicked() {
         state.toggle(ui);
     }
-    state.show_body_unindented(ui, |ui| {
-        egui::Grid::new("markdown cheats").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
-            for (markdown, gives) in CHEATS {
-                ui.label(RichText::new(*markdown).monospace());
-                ui.label(RichText::new(*gives).small().weak());
-                ui.end_row();
-            }
-        });
-    });
+    state.show_body_unindented(ui, cheats);
 }
 
 impl Markdown {
@@ -215,15 +240,18 @@ impl AnnotationType for Markdown {
         let size = ui.available_size();
         let wide = size.x > 1.3 * size.y && size.x > 560.0;
         if wide {
-            let side = 260.0;
+            // The cheat sheet's column, narrow while it's closed; the images under the text.
+            let side = if cheat_sheet_state(ui).is_open() { 290.0 } else { 22.0 };
+            let images = if self.attachments.is_empty() { 0.0 } else { 26.0 + 24.0 * self.attachments.len() as f32 };
             ui.horizontal_top(|ui| {
-                let editor = egui::vec2(ui.available_width() - side - 12.0, ui.available_height());
-                ui.vertical(|ui| self.editor(ui, editor));
+                let editor = egui::vec2(ui.available_width() - side - 12.0, ui.available_height() - images);
+                ui.vertical(|ui| {
+                    self.editor(ui, editor);
+                    self.images_ui(ui);
+                });
                 ui.vertical(|ui| {
                     ui.set_width(side);
-                    self.images_ui(ui);
-                    ui.add_space(6.0);
-                    cheat_sheet(ui);
+                    cheat_sheet_beside(ui);
                 });
             });
         } else {
