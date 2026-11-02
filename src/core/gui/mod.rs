@@ -39,7 +39,13 @@ use docking::{Layout, Mode, Pane, Panes};
 /// Runs the app built from `C`'s components, opening the file at `path` (or an empty graph).
 pub fn run<C: Components>(path: Option<PathBuf>) -> eframe::Result {
     crate::core::console::init(true);
-    let app = App::<C::Nodes, C::Annotations>::open(path, C::THEMES).with_quick_actions(C::QUICK_ACTIONS);
+    crate::core::crash::install();
+    crate::core::crash::test_if_asked();
+    let mut app = App::<C::Nodes, C::Annotations>::open(path, C::THEMES).with_quick_actions(C::QUICK_ACTIONS);
+    app.last_crash = crate::core::crash::take_latest();
+    if let Some(report) = &app.last_crash {
+        log::warn!("The last time ephys-rs ran, it crashed: a report is in {}", report.display());
+    }
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../../../assets/icon.png")).expect("valid icon");
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -192,6 +198,8 @@ pub struct App<N: NodeSet, A: AnnotationSet> {
     last_cpu: Option<f32>,
     /// The snapshot the run last took, to mark what changes on the dev tools' chart.
     ran: Option<engine::Snapshot<N>>,
+    /// The report of a crash the last time the program ran, until it's been said where it is.
+    last_crash: Option<PathBuf>,
 }
 
 impl<N: NodeSet, A: AnnotationSet> App<N, A> {
@@ -226,6 +234,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             frame_times: Default::default(),
             last_cpu: None,
             ran: None,
+            last_crash: None,
             quick_actions: &[],
             home_mode: Mode::Basic,
         };
@@ -576,6 +585,33 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         let left_out = if skipped.is_empty() { String::new() } else { format!(", leaving out {}", skipped.len()) };
         let plural = if count == 1 { "" } else { "s" };
         self.set_done(ctx, format!("Pasted settings onto {count} node{plural}{left_out} (see the console)"));
+    }
+
+    /// Says where the report of the last time's crash is, until it's dismissed.
+    fn crash_window(&mut self, ctx: &egui::Context) {
+        let Some(report) = &self.last_crash else { return };
+        let mut close = false;
+        let modal = egui::Modal::new(egui::Id::unique("last crash")).show(ctx, |ui| {
+            ui.set_max_width(560.0);
+            ui.heading("ephys-rs crashed last time");
+            ui.label("A report of what happened, to send to whoever looks after it, is in:");
+            ui.add(egui::Label::new(egui::RichText::new(report.display().to_string()).monospace()).selectable(true));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button("Show the report").clicked() {
+                    ctx.open_url(egui::OpenUrl::new_tab(crate::core::crash::file_url(report)));
+                }
+                if ui.button("Copy where it is").clicked() {
+                    ctx.copy_text(report.display().to_string());
+                }
+                if ui.button("OK").clicked() {
+                    close = true;
+                }
+            });
+        });
+        if close || modal.should_close() {
+            self.last_crash = None;
+        }
     }
 
     /// The window for pasting settings, while it's open; pasting them when it says to.
@@ -1121,6 +1157,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         }
         self.create_menu(&ctx, &resolved);
         self.paste_window(&ctx);
+        self.crash_window(&ctx);
         self.lock(&ctx);
         self.history.record(&self.graph, &self.annotations, &ctx);
         self.keep_running(&ctx);
@@ -1697,6 +1734,22 @@ mod tests {
         harness.state_mut().selection.clear();
         harness.run_steps(3);
         assert!(!harness.state().layout.is_shown(Pane::Annotation));
+    }
+
+    #[test]
+    fn says_where_the_last_crash_report_is() {
+        let mut app = TestApp::open(None, THEMES);
+        app.last_crash = Some(PathBuf::from("/reports/crash-2026-11-02-210040.txt"));
+        let mut harness = Harness::builder()
+            .with_size([1000.0, 600.0])
+            .wgpu()
+            .build_ui_state(|ui, app: &mut TestApp| app.show(ui), app);
+        harness.run_steps(2);
+        assert!(harness.query_by_label_contains("crash-2026-11-02-210040.txt").is_some(), "where it is");
+        harness.snapshot("last_crash");
+        harness.get_by_label("OK").click();
+        harness.run_steps(2);
+        assert!(harness.state().last_crash.is_none(), "said once");
     }
 
     #[test]

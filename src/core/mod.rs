@@ -7,6 +7,7 @@
 pub mod annotation;
 pub mod background;
 pub mod console;
+pub mod crash;
 pub mod engine;
 pub mod exchange;
 pub mod gui;

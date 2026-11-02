@@ -69,6 +69,9 @@ def package(exe, output, platform):
         macos_app(exe, output / "ephys-rs.app")
     else:
         shutil.copy2(exe, output / "ephys-rs.exe")
+        # Its symbols, so crash reports' backtraces name functions and lines.
+        # (Keeping its name: the executable says to look for that.)
+        shutil.copy2(exe.with_name("ephys_rs.pdb"), output / "ephys_rs.pdb")
     for name in ("README.md", "LICENSE"):
         shutil.copy2(name, output / name)
     commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()

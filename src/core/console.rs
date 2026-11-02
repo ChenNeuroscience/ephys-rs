@@ -53,6 +53,8 @@ pub struct PassId {
     pub epoch: u64,
     pub sequence: u64,
     pub node: Option<NodeId>,
+    /// The node's type, e.g. "Spike Detector".
+    pub node_type: Option<&'static str>,
 }
 
 thread_local! {
@@ -70,6 +72,11 @@ pub fn in_pass<R>(pass: PassId, f: impl FnOnce() -> R) -> R {
     }
     let _restore = Restore(PASS.replace(Some(pass)));
     f()
+}
+
+/// The pass this thread's running, if it's a worker running one (for a crash report).
+pub fn current_pass() -> Option<PassId> {
+    PASS.get()
 }
 
 /// A message as logged, waiting on the queue.
@@ -199,6 +206,20 @@ pub fn with_lines<R>(f: impl FnOnce(&VecDeque<Line>, u64) -> R) -> R {
     }
 }
 
+/// The last `count` lines logged, as text, without waiting for the log (for a crash report: none, if it's in use).
+pub fn recent(count: usize) -> Vec<String> {
+    let Some(logger) = LOGGER.get() else { return Vec::new() };
+    let Ok(kept) = logger.kept.try_lock() else { return Vec::new() };
+    let line = |time: f64, level: Level, thread: &Thread, text: &str| {
+        format!("{time:9.3} {level:5} [{}] {text}", thread.name().unwrap_or("?"))
+    };
+    let mut lines: Vec<String> = kept.lines.iter().map(|l| line(l.time, l.level, &l.thread, &l.text)).collect();
+    lines.extend(logger.incoming.try_iter().map(|m| line(m.time, m.level, &m.thread, &m.text)));
+    let excess = lines.len().saturating_sub(count);
+    lines.drain(..excess);
+    lines
+}
+
 /// Messages dropped because the queue was full.
 pub fn dropped() -> u64 {
     LOGGER.get().map_or(0, |l| l.dropped.load(Ordering::Relaxed))
@@ -235,7 +256,7 @@ mod tests {
     #[test]
     fn says_which_thread_and_pass() {
         init(false);
-        let pass = PassId { epoch: 2, sequence: 40, node: Some(NodeId(7)) };
+        let pass = PassId { epoch: 2, sequence: 40, node: Some(NodeId(7)), node_type: Some("Spike Detector") };
         std::thread::Builder::new()
             .name("pass worker 9".into())
             .spawn(move || in_pass(pass, || log::info!("from a pass")))

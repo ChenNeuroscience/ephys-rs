@@ -39,6 +39,8 @@ opt-level = 2
 [profile.release]
 lto = "thin"
 codegen-units = 1
+# Which line each function's at, for crash reports' backtraces (see core::crash): no slower.
+debug = "line-tables-only"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 muda = "0.21"

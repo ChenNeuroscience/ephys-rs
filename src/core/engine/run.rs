@@ -288,8 +288,8 @@ impl<N: NodeSet> Plan<N> {
         let Workspace { buffers: workspace, memory } = workspace;
         let sequence = pass.sequence;
         for step in &self.steps {
-            let pass = PassId { node: Some(step.id), ..pass };
             let Some(node) = snapshot.graph.get(step.id).map(|e| &e.node) else { continue };
+            let pass = PassId { node: Some(step.id), node_type: Some(node.info().name), ..pass };
             let controls = snapshot.controls.get(&step.id).map_or(&[][..], Vec::as_slice);
             // Take the outputs out of the pool, so the rest of it can be read as inputs.
             let mut outputs: Vec<Buffer<N::Edges>> =
@@ -800,7 +800,7 @@ fn work<N: NodeSet>(epochs: &Epochs<N>, shared: &Shared, index: usize) {
                 slot.pass.store(job.sequence, Ordering::Relaxed);
                 let start = Instant::now();
                 let snapshot = epoch.snapshot.lock().unwrap().clone();
-                let pass = PassId { epoch: epoch.number, sequence: job.sequence, node: None };
+                let pass = PassId { epoch: epoch.number, sequence: job.sequence, node: None, node_type: None };
                 epoch.plan.run(&snapshot, pass, workspace, &epoch.slots);
                 let finished = Instant::now();
                 slot.pass.store(IDLE, Ordering::Relaxed);
@@ -1033,7 +1033,7 @@ pub mod tests {
         let detector_output = plan.steps.iter().find(|s| s.id == detector).unwrap().outputs[0];
         let deadline = Instant::now() + Duration::from_secs(5);
         for sequence in 0.. {
-            plan.run(&snapshot, PassId { epoch: 1, sequence, node: None }, &mut workspace, &slots);
+            plan.run(&snapshot, PassId { epoch: 1, sequence, node: None, node_type: None }, &mut workspace, &slots);
             let Some(Buffer::Spikes(output)) = &workspace.buffers[detector_output] else { panic!("spikes buffer") };
             spikes += output.spikes.len();
             let Some(Buffer::Continuous(filtered)) = &workspace.buffers[filter_output] else { panic!("continuous") };
