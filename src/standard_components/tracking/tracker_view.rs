@@ -292,7 +292,7 @@ impl TrackerView {
             };
             path_ui(ui, rect, xf, path, calibration, context.theme);
         }
-        ui.ctx().request_repaint();
+        preview::repaint_with_data(ui);
     }
 
     /// The camera's and the detector's settings (through the controls), in sections whose headers say what's

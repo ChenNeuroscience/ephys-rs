@@ -27,7 +27,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             Action::Delete => (selected || self.selection.edge.is_some()) && (!locked || only_annotations),
             Action::AddNode => !locked,
             Action::Arrange => self.graph.iter().count() > 1,
-            Action::CloseMain => self.layout.is_shown(Pane::Main),
+            Action::CloseHome => self.layout.is_shown(Pane::Home),
             _ => true,
         }
     }
@@ -44,8 +44,8 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         match action {
             Action::DrawTool(index) => Some(self.canvas.tool == Tool::Draw(index)),
             Action::ToggleDevTools => Some(self.layout.is_shown(Pane::DevTools)),
-            Action::ShowBasic => Some(self.home == Mode::Basic),
-            Action::ShowGraph => Some(self.home == Mode::Graph),
+            Action::ShowBasic => Some(self.home_mode == Mode::Basic),
+            Action::ShowGraph => Some(self.home_mode == Mode::Graph),
             Action::Theme(index) => Some(self.theme == index),
             Action::Play => Some(self.runner.is_some()),
             Action::Record => Some(self.history.current.snapshot.recording.is_some() || self.preparing.is_some()),
@@ -123,10 +123,10 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                 ui.separator();
             }
 
-            // Home: the main pane, in the basic view or the graph, as chosen from its menu.
-            let tip = format!("Home: the {}", if self.home == Mode::Basic { "basic view" } else { "graph" });
+            // Home: the home pane, in the basic view or the graph, as chosen from its menu.
+            let tip = format!("Home: the {}", if self.home_mode == Mode::Basic { "basic view" } else { "graph" });
             let tip = self.tooltip(&ctx, Action::Home, &tip);
-            let home_showing = self.layout.is_shown(Pane::Main) && self.layout.mode == self.home;
+            let home_showing = self.layout.is_shown(Pane::Home) && self.layout.mode == self.home_mode;
             if tool_button(ui, Icon::Home, &tip, true, home_showing).clicked() {
                 chosen = Some(Action::Home);
             }
@@ -137,14 +137,14 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                     (Action::ShowGraph, Mode::Graph, "Graph: every node, to build and change it"),
                 ] {
                     let shortcut = action.shortcut().map(|s| ctx.format_shortcut(&s)).unwrap_or_default();
-                    let button = egui::Button::new((check(self.home == mode), text)).shortcut_text(shortcut);
+                    let button = egui::Button::new((check(self.home_mode == mode), text)).shortcut_text(shortcut);
                     if ui.add(button).clicked() {
                         chosen = Some(action);
                     }
                 }
                 ui.separator();
-                if ui.add_enabled(self.enabled(Action::CloseMain), egui::Button::new("Close")).clicked() {
-                    chosen = Some(Action::CloseMain);
+                if ui.add_enabled(self.enabled(Action::CloseHome), egui::Button::new("Close")).clicked() {
+                    chosen = Some(Action::CloseHome);
                 }
             });
             ui.separator();

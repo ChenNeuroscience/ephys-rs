@@ -28,7 +28,7 @@ pub enum Icon {
     Dock,
     /// Choose the light or dark look.
     Theme,
-    /// Go home: the main pane, basic or graph. A house.
+    /// Go home: the home pane, basic or graph. A house.
     Home,
     /// Start running the graph.
     Play,

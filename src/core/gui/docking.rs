@@ -1,5 +1,5 @@
-//! The dockable layout, like an IDE's: the main pane, the dev tools and node windows are panes that can be
-//! dragged by their tabs to sit beside, above or below each other, or together as tabs. The main pane is in one of
+//! The dockable layout, like an IDE's: the home pane, the dev tools and node windows are panes that can be
+//! dragged by their tabs to sit beside, above or below each other, or together as tabs. The home pane is in one of
 //! two modes: the basic view (the viewers, and quick actions), or the graph.
 //!
 //! A node's window opens docked. In the graph mode, it goes alongside the largest group of node windows, or failing
@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use super::canvas::{Canvas, Selection};
 use super::dev_tools::{self, DevTools};
+use super::frame_times::FrameTimes;
 use super::icons::Icon;
 use super::style;
 use super::{Event, basic, node_window, toolbar};
@@ -25,9 +26,9 @@ use crate::core::theme::Colours;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub enum Pane {
-    /// The basic view, or the graph (see `Mode`).
-    #[serde(alias = "Canvas")]
-    Main,
+    /// Home: the basic view, or the graph (see `Mode`).
+    #[serde(alias = "Main", alias = "Canvas")]
+    Home,
     DevTools,
     /// The selected annotation's settings: there while an annotation's selected.
     Annotation,
@@ -35,7 +36,7 @@ pub enum Pane {
     Node(NodeId),
 }
 
-/// What the main pane shows.
+/// What the home pane shows.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 pub enum Mode {
     /// The viewers, large, and quick actions: for most people, most of the time.
@@ -73,7 +74,7 @@ pub enum WindowState {
 pub struct Layout {
     tree: Tree<Pane>,
     floating: BTreeSet<NodeId>,
-    /// Not kept with the file: the main pane opens at home (see `App::home`).
+    /// Not kept with the file: the home pane opens at home (see `App::home`).
     #[serde(skip)]
     pub mode: Mode,
 }
@@ -81,7 +82,7 @@ pub struct Layout {
 impl Default for Layout {
     fn default() -> Self {
         let mut tiles = Tiles::default();
-        let main = tiles.insert_pane(Pane::Main);
+        let main = tiles.insert_pane(Pane::Home);
         let root = tiles.insert_tab_tile(vec![main]);
         Layout { tree: Tree::new(egui::Id::unique("dock"), root, tiles), floating: BTreeSet::new(), mode: Mode::Basic }
     }
@@ -142,11 +143,11 @@ impl Layout {
     }
 
     /// Shows or hides a pane: the first time, a pane not in the default layout (the dev tools) goes below the
-    /// main pane, where browsers put theirs.
+    /// home pane, where browsers put theirs.
     pub fn toggle_pane(&mut self, pane: Pane) {
         if self.tile(pane).is_none() {
             let tile = self.tree.tiles.insert_pane(pane);
-            self.below_main(tile, 0.5);
+            self.below_home(tile, 0.5);
             return self.show(pane);
         }
         if self.is_shown(pane) { self.hide(pane) } else { self.show(pane) }
@@ -175,7 +176,7 @@ impl Layout {
 
     /// Puts a node's window in the layout: back where it was if it's been docked before; otherwise, in the graph
     /// mode, as a tab in the largest group of node windows showing, or failing that in a new panel below the graph;
-    /// in the basic mode, beside the basic view (see `beside_main`).
+    /// in the basic mode, beside the basic view (see `beside_home`).
     pub fn dock(&mut self, id: NodeId) {
         self.floating.remove(&id);
         let pane = Pane::Node(id);
@@ -183,11 +184,11 @@ impl Layout {
             let target = self.largest_window_tabs();
             let new = self.tree.tiles.insert_pane(pane);
             if self.mode == Mode::Basic {
-                self.beside_main(new);
+                self.beside_home(new);
             } else {
                 match target.and_then(|tabs| self.tree.tiles.get_mut(tabs)) {
                     Some(Tile::Container(container)) => container.add_child(new),
-                    _ => self.below_main(new, 0.65),
+                    _ => self.below_home(new, 0.65),
                 }
             }
         }
@@ -197,13 +198,13 @@ impl Layout {
     /// Puts a new window beside the basic view, so the windows share the space at its right: the first in a
     /// panel there (the basic view narrowing to `BASIC_WIDTH`); the second below it; the third in a column of its own
     /// beside them; and after that, as a tab in the biggest group.
-    fn beside_main(&mut self, pane: TileId) {
+    fn beside_home(&mut self, pane: TileId) {
         let mut groups = self.window_tab_groups();
         // The same one every time, when two are as big.
         groups.sort_by_key(|tile| std::cmp::Reverse(tile.0));
         let biggest = groups.iter().copied().max_by(|a, b| self.area(*a).total_cmp(&self.area(*b)));
         let tiles = &mut self.tree.tiles;
-        let Some(main) = tiles.find_pane(&Pane::Main) else { return };
+        let Some(main) = tiles.find_pane(&Pane::Home) else { return };
         let left = tiles.parent_of(main).unwrap_or(main);
         let new = tiles.insert_tab_tile(vec![pane]);
         // Puts `container` where `old` was, in `parent`: looked up before `container` took `old` in (which then
@@ -258,7 +259,7 @@ impl Layout {
         }
     }
 
-    /// The groups of tabs showing that hold node windows (and not the main pane).
+    /// The groups of tabs showing that hold node windows (and not the home pane).
     fn window_tab_groups(&self) -> Vec<TileId> {
         let tiles = &self.tree.tiles;
         tiles
@@ -268,7 +269,7 @@ impl Layout {
                     let panes = || tabs.children.iter().filter_map(|c| tiles.get_pane(c));
                     tiles.is_visible(**tile)
                         && panes().any(|p| matches!(p, Pane::Node(_)))
-                        && !panes().any(|p| *p == Pane::Main)
+                        && !panes().any(|p| *p == Pane::Home)
                 }
                 _ => false,
             })
@@ -297,10 +298,10 @@ impl Layout {
             .max_by(|a, b| area(*a).total_cmp(&area(*b)))
     }
 
-    /// Puts `pane` below the main pane, which keeps `share` of the height.
-    fn below_main(&mut self, pane: TileId, share: f32) {
+    /// Puts `pane` below the home pane, which keeps `share` of the height.
+    fn below_home(&mut self, pane: TileId, share: f32) {
         let tiles = &mut self.tree.tiles;
-        let Some(main) = tiles.find_pane(&Pane::Main) else { return };
+        let Some(main) = tiles.find_pane(&Pane::Home) else { return };
         let above = tiles.parent_of(main).unwrap_or(main);
         let parent = tiles.parent_of(above);
         let below = tiles.insert_tab_tile(vec![pane]);
@@ -386,7 +387,7 @@ pub struct Panes<'a, N: NodeSet, A: AnnotationSet> {
     pub runner: Option<&'a Runner<N>>,
     /// The latest snapshot of the graph.
     pub snapshot: &'a Snapshot<N>,
-    /// What the main pane shows, and the quick actions the basic view offers.
+    /// What the home pane shows, and the quick actions the basic view offers.
     pub mode: Mode,
     pub quick_actions: &'a [QuickAction<N>],
     /// How many workers runs start with.
@@ -398,6 +399,9 @@ pub struct Panes<'a, N: NodeSet, A: AnnotationSet> {
     pub selection: &'a mut Selection,
     pub open_windows: &'a HashSet<NodeId>,
     pub events: &'a mut Vec<Event>,
+    /// For the dev tools' chart; and each pane's time this frame, as it's drawn.
+    pub frame_times: &'a FrameTimes,
+    pub timings: &'a mut Vec<(String, f32)>,
 }
 
 /// A node's window content: its own view if it has one (which shows its settings as it likes), otherwise the
@@ -537,25 +541,10 @@ fn padded(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new().inner_margin(8).show(ui, add);
 }
 
-impl<N: NodeSet, A: AnnotationSet> egui_tiles::Behavior<Pane> for Panes<'_, N, A> {
-    /// Where a dragged window would go: in the accent (egui_tiles uses the selection's stroke, which is the colour
-    /// on the accent, so hard to see on a light theme).
-    fn drag_preview_stroke(&self, _visuals: &egui::Visuals) -> egui::Stroke {
-        egui::Stroke::new(2.0, self.colours.accent)
-    }
-
-    fn drag_preview_color(&self, _visuals: &egui::Visuals) -> egui::Color32 {
-        self.colours.accent.gamma_multiply(0.35)
-    }
-
-    /// No pane (or group of them) is dragged narrower or shorter than this.
-    fn min_size(&self) -> f32 {
-        MIN_PANE
-    }
-
-    fn pane_ui(&mut self, ui: &mut egui::Ui, _tile: TileId, pane: &mut Pane) -> UiResponse {
-        match *pane {
-            Pane::Main if self.mode == Mode::Basic => basic::show(
+impl<N: NodeSet, A: AnnotationSet> Panes<'_, N, A> {
+    fn pane_contents(&mut self, ui: &mut egui::Ui, pane: Pane) {
+        match pane {
+            Pane::Home if self.mode == Mode::Basic => basic::show(
                 ui,
                 self.graph,
                 self.resolved,
@@ -565,7 +554,7 @@ impl<N: NodeSet, A: AnnotationSet> egui_tiles::Behavior<Pane> for Panes<'_, N, A
                 self.locked,
                 self.events,
             ),
-            Pane::Main => self.canvas.show(
+            Pane::Home => self.canvas.show(
                 ui,
                 self.graph,
                 self.annotations,
@@ -584,6 +573,7 @@ impl<N: NodeSet, A: AnnotationSet> egui_tiles::Behavior<Pane> for Panes<'_, N, A
                 self.runner,
                 self.snapshot,
                 self.workers,
+                self.frame_times,
             ),
             Pane::Node(id) => {
                 let (graph, resolved, colours, runner, locked) =
@@ -591,12 +581,41 @@ impl<N: NodeSet, A: AnnotationSet> egui_tiles::Behavior<Pane> for Panes<'_, N, A
                 padded(ui, |ui| node_ui(ui, graph, resolved, colours, runner, locked, id, self.events))
             }
         }
+    }
+}
+
+impl<N: NodeSet, A: AnnotationSet> egui_tiles::Behavior<Pane> for Panes<'_, N, A> {
+    /// Where a dragged window would go: in the accent (egui_tiles uses the selection's stroke, which is the colour
+    /// on the accent, so hard to see on a light theme).
+    fn drag_preview_stroke(&self, _visuals: &egui::Visuals) -> egui::Stroke {
+        egui::Stroke::new(2.0, self.colours.accent)
+    }
+
+    fn drag_preview_color(&self, _visuals: &egui::Visuals) -> egui::Color32 {
+        self.colours.accent.gamma_multiply(0.35)
+    }
+
+    /// No pane (or group of them) is dragged narrower or shorter than this.
+    fn min_size(&self) -> f32 {
+        MIN_PANE
+    }
+
+    fn pane_ui(&mut self, ui: &mut egui::Ui, _tile: TileId, pane: &mut Pane) -> UiResponse {
+        let started = std::time::Instant::now();
+        self.pane_contents(ui, *pane);
+        let name = match *pane {
+            Pane::Home => format!("Home ({})", self.mode.name()),
+            Pane::DevTools => "Developer Tools".into(),
+            Pane::Annotation => "Annotation".into(),
+            Pane::Node(id) => self.graph.get(id).map_or("?".into(), |e| e.label.clone()),
+        };
+        self.timings.push((name, started.elapsed().as_secs_f32() * 1000.0));
         UiResponse::None
     }
 
     fn tab_title_for_pane(&mut self, pane: &Pane) -> egui::WidgetText {
         match pane {
-            Pane::Main => self.mode.name().into(),
+            Pane::Home => "Home".into(),
             Pane::DevTools => "Developer Tools".into(),
             Pane::Annotation => "Annotation".into(),
             Pane::Node(id) => match self.graph.get(*id) {
@@ -606,7 +625,7 @@ impl<N: NodeSet, A: AnnotationSet> egui_tiles::Behavior<Pane> for Panes<'_, N, A
         }
     }
 
-    /// The annotation pane comes and goes with the selection, so isn't closed by hand. (The main pane can be: the
+    /// The annotation pane comes and goes with the selection, so isn't closed by hand. (The home pane can be: the
     /// toolbar's Basic | Graph brings it back.)
     fn is_tab_closable(&self, tiles: &Tiles<Pane>, tile: TileId) -> bool {
         !matches!(tiles.get_pane(&tile), Some(Pane::Annotation))

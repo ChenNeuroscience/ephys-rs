@@ -30,6 +30,11 @@ dugong = "0.9.3"
 [dev-dependencies]
 egui_kittest = { version = "0.37", features = ["wgpu", "snapshot"] }
 
+# Debug builds of the app, but optimised builds of its dependencies (egui and the rest), which are otherwise many
+# times slower: only the first build takes longer.
+[profile.dev.package."*"]
+opt-level = 2
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

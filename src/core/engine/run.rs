@@ -518,8 +518,6 @@ pub struct RunInfo<N: NodeSet> {
     /// How many passes can wait for a worker before they're dropped.
     pub queue_capacity: usize,
     pub stats: Stats,
-    /// Recent passes' times (see `Runner::pass_times`).
-    pub pass_times: Vec<[f64; 2]>,
 }
 
 struct Job {
@@ -709,7 +707,6 @@ impl<N: NodeSet> Runner<N> {
             next_pass: self.shared.next_pass.load(Ordering::Relaxed),
             queue_capacity: queue_capacity(self.workers),
             stats: self.stats(),
-            pass_times: self.pass_times(),
         }
     }
 

@@ -1,4 +1,4 @@
-//! The basic view, the main pane's first mode, for people who'd rather not work with the graph: the nodes shown in
+//! The basic view, the home pane's first mode, for people who'd rather not work with the graph: the nodes shown in
 //! it (viewers, unless set otherwise: see `NodeEntry::in_basic`), large, to open their windows (beside it); and the
 //! quick actions that apply to the graph, to build it a step at a time. The graph's a click away (or the toolbar's
 //! Basic | Graph).

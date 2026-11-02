@@ -315,7 +315,7 @@ impl Node<Edges> for SpikeViewer {
             context.controls[1] = Some(Setting::Gains(gains));
         }
         if context.running {
-            ui.ctx().request_repaint();
+            preview::repaint_with_data(ui);
         }
     }
 }

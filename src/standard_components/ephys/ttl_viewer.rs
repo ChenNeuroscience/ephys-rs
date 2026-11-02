@@ -244,7 +244,7 @@ impl Node<Edges> for TtlViewer {
         }
         let hover = ui.interact(rect, ui.scope_id().with("ttl rows"), egui::Sense::hover());
         hover.on_hover_text("Each line's level; and how many times it's gone up since acquisition started, and since recording last started");
-        ui.ctx().request_repaint();
+        preview::repaint_with_data(ui);
     }
 }
 

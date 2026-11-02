@@ -24,14 +24,14 @@ pub enum Action {
     AddNode,
     /// Picks the tool for drawing annotations of a type (by index) on the graph.
     DrawTool(usize),
-    /// Shows the main pane in the home mode (the user's choice of basic or graph).
+    /// Shows the home pane in the home mode (the user's choice of basic or graph).
     Home,
-    /// Shows the basic view in the main pane, and makes it home.
+    /// Shows the basic view in the home pane, and makes it home.
     ShowBasic,
-    /// Shows the graph in the main pane, and makes it home.
+    /// Shows the graph in the home pane, and makes it home.
     ShowGraph,
-    /// Closes the main pane (Home brings it back).
-    CloseMain,
+    /// Closes the home pane (Home brings it back).
+    CloseHome,
     FrameAll,
     ActualSize,
     ResetLayout,
@@ -91,7 +91,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Item(Action::Home),
             Item(Action::ShowBasic),
             Item(Action::ShowGraph),
-            Item(Action::CloseMain),
+            Item(Action::CloseHome),
             Separator,
             Item(Action::FrameAll),
             Item(Action::ActualSize),
@@ -150,7 +150,7 @@ impl Action {
             Action::Home => "Home",
             Action::ShowBasic => "Basic View",
             Action::ShowGraph => "Graph View",
-            Action::CloseMain => "Close Home",
+            Action::CloseHome => "Close Home",
             Action::FrameAll => "Frame All",
             Action::ActualSize => "Actual Size",
             Action::ResetLayout => "Reset Layout",

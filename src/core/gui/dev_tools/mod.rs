@@ -1,25 +1,29 @@
 //! Developer tools, as browsers have: a picture of the threads running the graph, with the plan each pass runs
-//! and the memory it takes (`threads`), above the program's log (`console`).
+//! and the memory it takes (`threads`); how long passes and the GUI's frames take (`performance`); and the
+//! program's log (`console`).
 
 mod ansi;
 mod console;
+mod performance;
 mod threads;
 
 use eframe::egui;
 
+use super::frame_times::FrameTimes;
 use crate::core::engine::{Graph, NodeSet, Resolved, Runner, Snapshot};
 use crate::core::theme::Colours;
 
 /// What the dev tools remember between frames.
 pub struct DevTools {
     console: console::ConsoleView,
+    performance: performance::Performance,
     /// The share of the height the console takes.
     console_share: f32,
 }
 
 impl Default for DevTools {
     fn default() -> Self {
-        DevTools { console: console::ConsoleView::default(), console_share: 0.35 }
+        DevTools { console: console::ConsoleView::default(), performance: Default::default(), console_share: 0.5 }
     }
 }
 
@@ -31,8 +35,8 @@ impl DevTools {
     }
 }
 
-/// The threads and the console, with a bar between them to drag: the console below, or beside the threads if
-/// the pane is much wider than it's tall.
+/// The threads, then the performance and the console, with a bar between to drag: the performance and console
+/// below the threads, or beside them if the pane is much wider than it's tall.
 #[allow(clippy::too_many_arguments)]
 pub fn show<N: NodeSet>(
     ui: &mut egui::Ui,
@@ -43,6 +47,7 @@ pub fn show<N: NodeSet>(
     runner: Option<&Runner<N>>,
     snapshot: &Snapshot<N>,
     workers: usize,
+    frame_times: &FrameTimes,
 ) {
     let area = ui.available_rect_before_wrap();
     let beside = area.width() > 2.5 * area.height() && area.width() > 900.0;
@@ -85,6 +90,11 @@ pub fn show<N: NodeSet>(
         threads::show(ui, graph, resolved, colours, runner, snapshot, workers);
     });
     section(ui, cross(egui::Rangef::new(split + 3.0, start + length)), &mut |ui| {
+        let passes = runner.map(|r| r.pass_times());
+        ui.allocate_ui(egui::vec2(ui.available_width(), performance::HEIGHT), |ui| {
+            performance::show(ui, &mut tools.performance, colours, frame_times, passes.as_deref())
+        });
+        ui.separator();
         console::show(ui, &mut tools.console, graph, colours)
     });
     ui.advance_cursor_after_rect(area);

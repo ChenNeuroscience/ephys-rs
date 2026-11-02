@@ -360,7 +360,7 @@ impl Node<Edges> for LfpViewer {
         if let Some(selection) = selection {
             context.controls[1] = Some(Setting::ChannelSelection(selection));
         }
-        ui.ctx().request_repaint();
+        preview::repaint_with_data(ui);
     }
 }
 

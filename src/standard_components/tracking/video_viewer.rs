@@ -84,6 +84,6 @@ impl Node<Edges> for VideoViewer {
             FontId::proportional(11.0),
             Color32::WHITE,
         );
-        ui.ctx().request_repaint();
+        preview::repaint_with_data(ui);
     }
 }

@@ -2,7 +2,7 @@
 //! node by node ("add spike tracking", say). Each is a pure function: given the graph (with all its settings) and
 //! which node windows are open, it gives the graph to change to and the windows to open; or nothing, if it doesn't
 //! apply to this graph (it's already doing it, say), when it isn't offered. Windows it opens are put somewhere
-//! sensible by the layout, beside the main pane. The program supplies its quick actions (see main.rs), through
+//! sensible by the layout, beside the home pane. The program supplies its quick actions (see main.rs), through
 //! `Components`.
 
 use std::collections::HashSet;

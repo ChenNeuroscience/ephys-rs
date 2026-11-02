@@ -9,6 +9,7 @@ mod canvas;
 mod create_menu;
 mod dev_tools;
 mod docking;
+mod frame_times;
 mod icons;
 #[cfg(target_os = "macos")]
 mod mac_menu;
@@ -19,6 +20,7 @@ mod toolbar;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 
 use eframe::egui::{self, Id, Key, Modifiers, Pos2, RichText, ViewportCommand};
 use serde::{Deserialize, Serialize};
@@ -55,7 +57,7 @@ pub fn run<C: Components>(path: Option<PathBuf>) -> eframe::Result {
             }
             app.themes[app.theme].apply(&cc.egui_ctx);
             if let Some(home) = cc.storage.and_then(|s| eframe::get_value::<Mode>(s, HOME_KEY)) {
-                app.home = home;
+                app.home_mode = home;
                 app.layout.mode = home;
             }
             // For images in annotations.
@@ -96,7 +98,7 @@ pub enum Event {
     Status(String),
     /// Do the quick action of this index.
     QuickAction(usize),
-    /// Show the graph in the main pane.
+    /// Show the graph in the home pane.
     ShowGraph,
     /// List a node in the basic view, or not.
     InBasic(NodeId, bool),
@@ -163,13 +165,16 @@ pub struct App<N: NodeSet, A: AnnotationSet> {
     /// While the nodes prepare to record, where the recording comes from when they're ready.
     preparing: Option<std::sync::mpsc::Receiver<engine::Recording>>,
     dev_tools: dev_tools::DevTools,
-    /// What the main pane shows at home: when the app starts, a file's opened, or Home's pressed. The user's, kept
+    /// What the home pane shows at home: when the app starts, a file's opened, or Home's pressed. The user's, kept
     /// across files (as the theme is).
-    home: Mode,
+    home_mode: Mode,
     /// Offered in the basic view.
     quick_actions: &'static [crate::core::quick_action::QuickAction<N>],
     /// How many workers runs start with.
     workers: usize,
+    /// How long each part of the GUI's taking, frame by frame, for the dev tools; and the last frame's CPU time.
+    frame_times: frame_times::FrameTimes,
+    last_cpu: Option<f32>,
 }
 
 impl<N: NodeSet, A: AnnotationSet> App<N, A> {
@@ -200,8 +205,10 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             preparing: None,
             dev_tools: dev_tools::DevTools::default(),
             workers: engine::default_workers(),
+            frame_times: Default::default(),
+            last_cpu: None,
             quick_actions: &[],
-            home: Mode::Basic,
+            home_mode: Mode::Basic,
         };
         if let Some(path) = path {
             if path.exists() {
@@ -263,7 +270,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         let json = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
         let file: SaveFile<N, A> = serde_json::from_str(&json).map_err(|e| e.to_string())?;
         self.layout = file.layout.and_then(|l| serde_json::from_value(l).ok()).unwrap_or_default();
-        self.layout.mode = self.home;
+        self.layout.mode = self.home_mode;
         self.history = History::new(&file.graph, &file.annotations);
         self.graph = file.graph;
         self.annotations = file.annotations;
@@ -380,6 +387,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
     fn play(&mut self) {
         self.history.commit(&self.graph, &self.annotations);
         self.runner = Some(Runner::start(&self.history.current.snapshot, self.workers));
+        self.frame_times.run_started = Some(self.frame_times.now());
     }
 
     /// Has the nodes prepare to record (see `Node::prepare_to_record`), on a thread of their own: once they're
@@ -486,10 +494,10 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         self
     }
 
-    /// Shows the basic view or the graph in the main pane, bringing it to the front.
+    /// Shows the basic view or the graph in the home pane, bringing it to the front.
     fn show_mode(&mut self, mode: Mode) {
         self.layout.mode = mode;
-        self.layout.show(Pane::Main);
+        self.layout.show(Pane::Home);
     }
 
     /// Does a quick action: changes the graph, and opens windows, as it says (unless it no longer applies).
@@ -530,16 +538,16 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             Action::Duplicate => self.duplicate_selection(),
             Action::Delete => self.delete_selection(),
             Action::SelectAll => self.select_all(),
-            Action::Home => self.show_mode(self.home),
+            Action::Home => self.show_mode(self.home_mode),
             Action::ShowBasic => {
-                self.home = Mode::Basic;
+                self.home_mode = Mode::Basic;
                 self.show_mode(Mode::Basic);
             }
             Action::ShowGraph => {
-                self.home = Mode::Graph;
+                self.home_mode = Mode::Graph;
                 self.show_mode(Mode::Graph);
             }
-            Action::CloseMain => self.layout.hide(Pane::Main),
+            Action::CloseHome => self.layout.hide(Pane::Home),
             Action::Arrange => {
                 for (id, pos) in arrange::arrange(&self.graph) {
                     if let Some(entry) = self.graph.get_mut(id) {
@@ -552,7 +560,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             Action::ActualSize => self.canvas.reset_zoom(),
             Action::ResetLayout => {
                 self.layout = Layout::default();
-                self.layout.mode = self.home;
+                self.layout.mode = self.home_mode;
             }
             // Goes through `confirm_close`, like closing the window.
             Action::Quit => ctx.send_viewport_cmd(ViewportCommand::Close),
@@ -658,7 +666,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                     ui.label(RichText::new(&status.message).color(colour))
                 }
                 (_, Some(hint)) if self.layout.mode == Mode::Graph => ui.label(hint),
-                _ if !self.layout.is_shown(Pane::Main) => {
+                _ if !self.layout.is_shown(Pane::Home) => {
                     ui.weak("Home, at the left of the toolbar, brings back the basic view or the graph")
                 }
                 _ if self.layout.mode == Mode::Basic => {
@@ -853,6 +861,8 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui) {
+        self.frame_times.begin(self.last_cpu.take());
+        let started = Instant::now();
         let ctx = ui.ctx().clone();
         // Keep (and echo) what's been logged, so the log's queue doesn't fill.
         crate::core::console::drain();
@@ -872,7 +882,9 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         let resolved = self.graph.resolve();
         let open_windows = self.layout.open_windows();
         self.canvas.colours = self.colours();
+        self.frame_times.add("Upkeep", ms_since(started));
 
+        let started = Instant::now();
         self.window_title(&ctx);
         self.confirm_close(&ctx);
         let mut chosen = None;
@@ -883,7 +895,10 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         if let Some(action) = chosen {
             self.perform(&ctx, action);
         }
+        self.frame_times.add("Menus and toolbar", ms_since(started));
+        let started = Instant::now();
         let stats_clicked = egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui)).inner;
+        self.frame_times.add("Status bar", ms_since(started));
         if stats_clicked && !self.layout.is_shown(Pane::DevTools) {
             self.layout.toggle_pane(Pane::DevTools);
         }
@@ -892,6 +907,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         let colours = self.colours();
         let background = egui::Frame::NONE.fill(colours.surface);
         let locked = self.locked();
+        let mut timings = Vec::new();
         egui::CentralPanel::default().frame(background).show(ui, |ui| {
             let mut panes = Panes {
                 graph: &mut self.graph,
@@ -909,10 +925,18 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                 selection: &mut self.selection,
                 open_windows: &open_windows,
                 events: &mut events,
+                frame_times: &self.frame_times,
+                timings: &mut timings,
             };
             self.layout.ui(ui, &mut panes);
         });
+        for (part, ms) in timings {
+            self.frame_times.add(&part, ms);
+        }
+        let started = Instant::now();
         self.floating_windows(&ctx, &resolved, &mut events);
+        self.frame_times.add("Floating windows", ms_since(started));
+        let started = Instant::now();
         for event in events {
             self.handle(&ctx, event);
         }
@@ -920,11 +944,18 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         self.lock(&ctx);
         self.history.record(&self.graph, &self.annotations, &ctx);
         self.keep_running(&ctx);
+        self.frame_times.add("Upkeep", ms_since(started));
     }
 }
 
+/// Milliseconds since `start`.
+fn ms_since(start: Instant) -> f32 {
+    start.elapsed().as_secs_f32() * 1000.0
+}
+
 impl<N: NodeSet, A: AnnotationSet> eframe::App for App<N, A> {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        self.last_cpu = frame.info().cpu_usage;
         self.show(ui);
     }
 
@@ -935,7 +966,7 @@ impl<N: NodeSet, A: AnnotationSet> eframe::App for App<N, A> {
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, THEME_KEY, &self.themes[self.theme].name);
-        eframe::set_value(storage, HOME_KEY, &self.home);
+        eframe::set_value(storage, HOME_KEY, &self.home_mode);
     }
 }
 
@@ -1299,6 +1330,8 @@ mod tests {
         let mut harness = harness();
         // However many cores the machine has.
         harness.state_mut().workers = 4;
+        // However fast it runs.
+        harness.state_mut().frame_times.pause();
         harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::ALT, Key::I);
         // Other tests log at the same time, so the console's filtered to nothing, to look the same every time.
         harness.state_mut().dev_tools.hide_console_lines();
@@ -1449,7 +1482,7 @@ mod tests {
             harness.run_steps(3);
             let id = node_named(harness.state(), viewer);
             assert_eq!(harness.state().layout.window(id), WindowState::Docked, "{action} opens the {viewer}");
-            assert!(harness.state().layout.is_shown(Pane::Main), "the basic view stays");
+            assert!(harness.state().layout.is_shown(Pane::Home), "the basic view stays");
             let offered = harness.query_by_role_and_label(egui::accesskit::Role::Button, action).is_some();
             assert!(!offered, "{action} isn't offered once done");
         }
@@ -1480,20 +1513,20 @@ mod tests {
 
         // Closed, Home brings it back, in the home mode: the graph, once chosen from Home's menu.
         let ctx = harness.ctx.clone();
-        harness.state_mut().perform(&ctx, Action::CloseMain);
+        harness.state_mut().perform(&ctx, Action::CloseHome);
         harness.run_steps(2);
-        assert!(!harness.state().layout.is_shown(Pane::Main));
+        assert!(!harness.state().layout.is_shown(Pane::Home));
         harness.get_by_label("Home menu").click();
         harness.run_steps(2);
         harness.get_by_label_contains("Graph: every node").click();
         harness.run_steps(2);
-        assert_eq!((harness.state().home, harness.state().layout.mode), (Mode::Graph, Mode::Graph));
+        assert_eq!((harness.state().home_mode, harness.state().layout.mode), (Mode::Graph, Mode::Graph));
         let ctx = harness.ctx.clone();
-        harness.state_mut().perform(&ctx, Action::CloseMain);
+        harness.state_mut().perform(&ctx, Action::CloseHome);
         harness.run_steps(2);
         harness.get_by_label_contains("Home: the graph").click();
         harness.run_steps(2);
-        assert!(harness.state().layout.is_shown(Pane::Main) && harness.state().layout.mode == Mode::Graph);
+        assert!(harness.state().layout.is_shown(Pane::Home) && harness.state().layout.mode == Mode::Graph);
     }
 
     #[test]
