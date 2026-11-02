@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::Buffer;
 use crate::core::engine::{Category, Context, Input, Node, NodeInfo, Output, Pass};
+use crate::standard_components::ephys::ContinuousBuffer;
 use crate::standard_components::widgets::format_rate;
 use crate::standard_components::widgets::{input_summary, require_input, setting, settings_grid};
 use crate::{DataStream, Edges, Kind};
@@ -62,7 +63,7 @@ impl Node<Edges> for BandPassFilter {
             let rate = filters.rate;
             filters.tune(self, rate);
         }
-        output.transform(input, |channel, x| sosfilt_item(x as f64, &mut filters.channels[channel]) as f32);
+        filters.run(output, input);
     }
 
     fn inputs(&self) -> Vec<Input<Edges>> {
@@ -117,7 +118,27 @@ impl crate::core::engine::PassState for Filters {
                                join.";
 }
 
+/// Channels filtered together: each's sections wait on each other, sample by sample, but different channels' don't,
+/// so the processor works on several at once rather than waiting.
+const LANES: usize = 8;
+
 impl Filters {
+    /// Filters `input` into `output`, or (when it's made in place, and `input` is `None`) `output` itself.
+    fn run(&mut self, output: &mut ContinuousBuffer, input: Option<&ContinuousBuffer>) {
+        if input.is_some() {
+            output.transform(input, |_, x| x);
+        }
+        let (len, capacity) = (output.len, output.capacity);
+        for (data, sections) in output.data.chunks_mut(LANES * capacity).zip(self.channels.chunks_mut(LANES)) {
+            for t in 0..len {
+                for (lane, sections) in sections.iter_mut().enumerate() {
+                    let x = &mut data[lane * capacity + t];
+                    *x = sosfilt_item(*x as f64, sections) as f32;
+                }
+            }
+        }
+    }
+
     /// Designs the filter for `settings` at `rate`. Every channel takes the new coefficients, keeping its
     /// history if it has as many sections as before.
     fn tune(&mut self, settings: &BandPassFilter, rate: f32) {
@@ -165,6 +186,66 @@ mod tests {
             }
         }
         peak
+    }
+
+    /// A pass's worth of 64 channels, several ways, for timing: `cargo test --release filtering_speed -- --ignored
+    /// --nocapture`.
+    #[test]
+    #[ignore]
+    fn filtering_speed() {
+        let (channels, len) = (64, 600);
+        let settings = BandPassFilter::default();
+        let mut filters = Filters { channels: vec![Vec::new(); channels], ..Default::default() };
+        filters.tune(&settings, 30000.0);
+        let input = ContinuousBuffer {
+            channels,
+            capacity: 750,
+            len,
+            data: (0..channels * 750).map(|i| (i as f32 * 0.37).sin() * 100.0).collect(),
+        };
+        let mut output = ContinuousBuffer { channels, capacity: 750, len: 0, data: vec![0.0; channels * 750] };
+        let passes = 500;
+        let start = std::time::Instant::now();
+        for _ in 0..passes {
+            output.transform(Some(&input), |c, x| sosfilt_item(x as f64, &mut filters.channels[c]) as f32);
+        }
+        let one_by_one = start.elapsed().as_secs_f64() / passes as f64 * 1e6;
+        let start = std::time::Instant::now();
+        for _ in 0..passes {
+            filters.run(&mut output, Some(&input));
+        }
+        let together = start.elapsed().as_secs_f64() / passes as f64 * 1e6;
+        eprintln!("a channel at a time {one_by_one:.0} us a pass; {LANES} at a time {together:.0} us");
+    }
+
+    #[test]
+    fn filters_channels_together_as_one_by_one() {
+        let (channels, len) = (7, 300);
+        let settings = BandPassFilter::default();
+        let mut one = Filters { channels: vec![Vec::new(); channels], ..Default::default() };
+        one.tune(&settings, 30000.0);
+        let mut together = Filters { channels: vec![Vec::new(); channels], ..Default::default() };
+        together.tune(&settings, 30000.0);
+        let input = ContinuousBuffer {
+            channels,
+            capacity: 400,
+            len,
+            data: (0..channels * 400).map(|i| (i as f32 * 0.37).sin() * 100.0).collect(),
+        };
+        let mut expected = ContinuousBuffer { channels, capacity: 400, len: 0, data: vec![0.0; channels * 400] };
+        let mut got = ContinuousBuffer { channels, capacity: 400, len: 0, data: vec![0.0; channels * 400] };
+        for _ in 0..3 {
+            expected.transform(Some(&input), |c, x| sosfilt_item(x as f64, &mut one.channels[c]) as f32);
+            together.run(&mut got, Some(&input));
+            for c in 0..channels {
+                assert_eq!(expected.channel(c), got.channel(c), "channel {c}");
+            }
+        }
+        // In place, too.
+        let mut in_place = ContinuousBuffer { channels, capacity: 400, len, data: input.data.clone() };
+        together.run(&mut in_place, None);
+        expected.transform(Some(&input), |c, x| sosfilt_item(x as f64, &mut one.channels[c]) as f32);
+        assert_eq!(expected.channel(3), in_place.channel(3));
     }
 
     #[test]

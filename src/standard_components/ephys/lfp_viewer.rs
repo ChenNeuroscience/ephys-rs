@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use crate::core::engine::{Category, Context, Control, CopyTo, EdgeType, Input, Node, NodeInfo, Output, Pass};
 use crate::core::exchange::Latest;
 use crate::standard_components::ephys::reference::{format_channels, parse_channels};
-use crate::standard_components::ephys::{ChannelSelection, Continuous};
+use crate::standard_components::ephys::{ChannelSelection, Continuous, ContinuousBuffer};
 use crate::standard_components::preview;
 use crate::standard_components::widgets::{require_input, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
@@ -85,6 +85,33 @@ impl crate::core::engine::PassState for Traces {
 }
 
 impl Traces {
+    /// Adds a pass's samples of the channels shown (from `first`) to their columns: a run of samples at a time, up to
+    /// where a column's full, channel by channel (as they're laid out).
+    fn add(&mut self, input: &ContinuousBuffer, first: usize) {
+        let (_, shown, per_column) = self.shape;
+        let mut t = 0;
+        while t < input.len {
+            let run = (per_column - self.filled).min(input.len - t);
+            for i in 0..shown {
+                let samples = &input.channel(first + i)[t..t + run];
+                let low = samples.iter().copied().fold(f32::INFINITY, f32::min);
+                let high = samples.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                let at = i * COLUMNS + self.head;
+                if self.filled == 0 {
+                    (self.lows[at], self.highs[at]) = (low, high);
+                } else {
+                    self.lows[at] = self.lows[at].min(low);
+                    self.highs[at] = self.highs[at].max(high);
+                }
+            }
+            (t, self.filled) = (t + run, self.filled + run);
+            if self.filled == per_column {
+                (self.head, self.filled) = ((self.head + 1) % COLUMNS, 0);
+                self.columns = (self.columns + 1).min(COLUMNS);
+            }
+        }
+    }
+
     fn reshape(&mut self, shape: (usize, usize, usize)) {
         if self.shape != shape {
             let (_, shown, _) = shape;
@@ -170,14 +197,17 @@ impl Spectra {
     }
 
     /// Keeps a pass's samples of the channels shown (from `first`).
-    fn add(&mut self, input: &crate::standard_components::ephys::ContinuousBuffer, first: usize) {
+    /// A run of samples at a time, up to where the next is kept, channel by channel (as they're laid out).
+    fn add(&mut self, input: &ContinuousBuffer, first: usize) {
         let (channels, factor, _) = self.shape.clone();
         let n = SPECTRUM_SAMPLES;
-        for t in 0..input.len {
+        let mut t = 0;
+        while t < input.len {
+            let run = (factor - self.summed).min(input.len - t);
             for (c, sum) in self.sums.iter_mut().enumerate().take(channels) {
-                *sum += input.channel(first + c)[t];
+                *sum += input.channel(first + c)[t..t + run].iter().sum::<f32>();
             }
-            self.summed += 1;
+            (t, self.summed) = (t + run, self.summed + run);
             if self.summed == factor {
                 for (c, sum) in self.sums.iter_mut().enumerate() {
                     self.kept[c * n + self.head] = *sum / factor as f32;
@@ -276,23 +306,7 @@ impl Node<Edges> for LfpViewer {
         let (first, shown) = (0, input.channels.max(1));
         let per_column = ((self.span as f64 * rate as f64) / COLUMNS as f64).round().max(1.0) as usize;
         traces.reshape((first, shown, per_column));
-        for t in 0..input.len {
-            for i in 0..shown {
-                let x = input.channel(first + i)[t];
-                let at = i * COLUMNS + traces.head;
-                if traces.filled == 0 {
-                    (traces.lows[at], traces.highs[at]) = (x, x);
-                } else {
-                    traces.lows[at] = traces.lows[at].min(x);
-                    traces.highs[at] = traces.highs[at].max(x);
-                }
-            }
-            traces.filled += 1;
-            if traces.filled == per_column {
-                (traces.head, traces.filled) = ((traces.head + 1) % COLUMNS, 0);
-                traces.columns = (traces.columns + 1).min(COLUMNS);
-            }
-        }
+        traces.add(input, first);
         let spectra = &mut traces.spectra;
         if self.spectrum {
             spectra.reshape(shown, rate, self.band);
@@ -626,6 +640,35 @@ fn selection_ui(ui: &mut egui::Ui, selection: &mut ChannelSelection, channels: u
 mod tests {
     use super::*;
     use crate::core::engine::{DataStreamType, PASS_DURATION};
+
+    #[test]
+    fn columns_hold_each_runs_lowest_and_highest() {
+        // Passes of uneven lengths, so columns fill across them.
+        let (channels, per_column) = (3, 7);
+        let mut traces = Traces::default();
+        traces.reshape((0, channels, per_column));
+        let value = |c: usize, t: usize| ((t * 37 + c * 11) % 23) as f32 - (c * t % 5) as f32;
+        let mut t0 = 0;
+        for len in [5, 9, 1, 20, 3, 13] {
+            let mut data = vec![0.0; channels * 32];
+            for c in 0..channels {
+                for t in 0..len {
+                    data[c * 32 + t] = value(c, t0 + t);
+                }
+            }
+            traces.add(&ContinuousBuffer { channels, capacity: 32, len, data }, 0);
+            t0 += len;
+        }
+        assert_eq!(traces.columns, t0 / per_column);
+        for c in 0..channels {
+            for column in 0..t0 / per_column {
+                let run: Vec<f32> = (column * per_column..(column + 1) * per_column).map(|t| value(c, t)).collect();
+                let low = run.iter().copied().fold(f32::INFINITY, f32::min);
+                let high = run.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                assert_eq!((traces.lows[c * COLUMNS + column], traces.highs[c * COLUMNS + column]), (low, high));
+            }
+        }
+    }
 
     #[test]
     fn the_spectrum_peaks_at_the_rhythm() {
