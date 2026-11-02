@@ -26,6 +26,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 base64 = "0.23"
 rustfft = "6.4.1"
 dugong = "0.9.3"
+arboard = { version = "3.7", default-features = false }
 
 [dev-dependencies]
 egui_kittest = { version = "0.37", features = ["wgpu", "snapshot"] }

@@ -14,6 +14,7 @@ mod icons;
 #[cfg(target_os = "macos")]
 mod mac_menu;
 mod node_window;
+mod paste_settings;
 mod style;
 mod toolbar;
 
@@ -102,6 +103,14 @@ pub enum Event {
     ShowGraph,
     /// List a node in the basic view, or not.
     InBasic(NodeId, bool),
+    /// Disable a node (or enable it), and the rest of the selection if it's in it.
+    SetDisabled(NodeId, bool),
+    SetEdgeDisabled(engine::Edge, bool),
+    DeleteEdge(engine::Edge),
+    /// Copy a node's settings (and the rest of the selection's, if it's in it).
+    CopySettings(NodeId),
+    /// Open the window for pasting settings from the clipboard.
+    PasteSettings,
 }
 
 /// The file: the graph, its annotations, and the window layout.
@@ -155,6 +164,8 @@ pub struct App<N: NodeSet, A: AnnotationSet> {
     canvas: Canvas,
     selection: Selection,
     menu: Option<CreateMenu>,
+    /// The window for pasting settings, while it's open.
+    paste: Option<paste_settings::PasteSettings<N>>,
     /// Shown in the status bar until the given time (egui seconds).
     status: Option<Status>,
     history: History<N, A>,
@@ -201,6 +212,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             canvas: Canvas::new(&themes[0].colours),
             selection: Selection::default(),
             menu: None,
+            paste: None,
             status: None,
             runner: None,
             recording_since: 0.0,
@@ -498,6 +510,59 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         self
     }
 
+    /// `id` and the rest of the selection, if it's in it; otherwise just `id`.
+    fn selected_or(&self, id: NodeId) -> Vec<NodeId> {
+        if self.selection.nodes.contains(&id) {
+            let mut ids: Vec<NodeId> = self.selection.nodes.iter().copied().collect();
+            ids.sort();
+            ids
+        } else {
+            vec![id]
+        }
+    }
+
+    /// Copies nodes' settings to the clipboard.
+    fn copy_settings(&mut self, ctx: &egui::Context, ids: &[NodeId]) {
+        if ids.is_empty() {
+            return;
+        }
+        ctx.copy_text(paste_settings::copy(&self.graph, ids));
+        let what = match ids {
+            [id] => self.graph.get(*id).map_or("a node".into(), |e| e.label.clone()),
+            _ => format!("{} nodes", ids.len()),
+        };
+        self.set_done(ctx, format!("Copied the settings of {what}"));
+    }
+
+    /// Opens the window for pasting settings from the clipboard, if there are some there.
+    fn open_paste(&mut self, ctx: &egui::Context) {
+        let text = arboard::Clipboard::new().and_then(|mut c| c.get_text()).unwrap_or_default();
+        match paste_settings::PasteSettings::new(&text, &self.graph) {
+            Ok(paste) => self.paste = Some(paste),
+            Err(problem) => self.set_status(ctx, problem),
+        }
+    }
+
+    /// The window for pasting settings, while it's open; pasting them when it says to.
+    fn paste_window(&mut self, ctx: &egui::Context) {
+        let (colours, locked) = (self.colours(), self.locked());
+        let Some(paste) = &mut self.paste else { return };
+        match paste.show(ctx, &self.graph, colours, locked) {
+            paste_settings::Outcome::Open => {}
+            paste_settings::Outcome::Cancelled => self.paste = None,
+            paste_settings::Outcome::Paste(nodes) => {
+                let count = nodes.len();
+                for (id, node) in nodes {
+                    if let Some(entry) = self.graph.get_mut(id) {
+                        entry.node = node;
+                    }
+                }
+                self.paste = None;
+                self.set_done(ctx, format!("Pasted settings to {count} node{}", if count == 1 { "" } else { "s" }));
+            }
+        }
+    }
+
     /// Shows the basic view or the graph in the home pane, bringing it to the front.
     fn show_mode(&mut self, mode: Mode) {
         self.layout.mode = mode;
@@ -542,6 +607,24 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             Action::Duplicate => self.duplicate_selection(),
             Action::Delete => self.delete_selection(),
             Action::SelectAll => self.select_all(),
+            Action::CopySettings => {
+                let mut ids: Vec<NodeId> = self.selection.nodes.iter().copied().collect();
+                ids.sort();
+                self.copy_settings(ctx, &ids);
+            }
+            Action::PasteSettings => self.open_paste(ctx),
+            Action::ToggleDisabled => {
+                let all = self.selection.nodes.iter().all(|id| self.graph.get(*id).is_some_and(|e| e.disabled));
+                for id in self.selection.nodes.clone() {
+                    if let Some(entry) = self.graph.get_mut(id) {
+                        entry.disabled = !all;
+                    }
+                }
+                if let Some(edge) = self.selection.edge {
+                    let disabled = self.graph.is_edge_disabled(&edge);
+                    self.graph.set_edge_disabled(edge, !disabled);
+                }
+            }
             Action::Home => self.show_mode(self.home_mode),
             Action::ShowBasic => {
                 self.home_mode = Mode::Basic;
@@ -816,6 +899,20 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             Event::Status(message) => self.set_status(ctx, message),
             Event::QuickAction(index) => self.quick_action(index),
             Event::ShowGraph => self.show_mode(Mode::Graph),
+            Event::SetDisabled(id, disabled) => {
+                for id in self.selected_or(id) {
+                    if let Some(entry) = self.graph.get_mut(id) {
+                        entry.disabled = disabled;
+                    }
+                }
+            }
+            Event::SetEdgeDisabled(edge, disabled) => self.graph.set_edge_disabled(edge, disabled),
+            Event::DeleteEdge(edge) => self.graph.disconnect(edge),
+            Event::CopySettings(id) => {
+                let ids = self.selected_or(id);
+                self.copy_settings(ctx, &ids);
+            }
+            Event::PasteSettings => self.open_paste(ctx),
             Event::InBasic(id, shown) => {
                 if let Some(entry) = self.graph.get_mut(id) {
                     entry.basic = Some(shown);
@@ -967,6 +1064,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             self.handle(&ctx, event);
         }
         self.create_menu(&ctx, &resolved);
+        self.paste_window(&ctx);
         self.lock(&ctx);
         self.history.record(&self.graph, &self.annotations, &ctx);
         self.keep_running(&ctx);
@@ -1627,6 +1725,59 @@ mod tests {
         assert!(marks.iter().any(|m| m.contains("Recording started")), "{marks:?}");
         harness.state_mut().set_recording(None);
         harness.state_mut().perform(&ctx, Action::Play);
+    }
+
+    #[test]
+    fn nodes_are_disabled_from_their_menu() {
+        let mut harness = harness();
+        let detector = node_named(harness.state(), "Spike Detector");
+        let at = on_node(&harness, "Spike Detector", [60.0, 40.0]);
+        harness.event(egui::Event::PointerMoved(at));
+        let button = egui::PointerButton::Secondary;
+        let modifiers = Modifiers::NONE;
+        harness.event(egui::Event::PointerButton { pos: at, button, pressed: true, modifiers });
+        harness.event(egui::Event::PointerButton { pos: at, button, pressed: false, modifiers });
+        harness.run_steps(2);
+        harness.get_by_label("Disable").click();
+        harness.run_steps(2);
+        assert!(harness.state().graph.get(detector).unwrap().disabled);
+        let viewer = node_named(harness.state(), "Spike Viewer");
+        assert!(harness.state().graph.resolve()[&viewer].input_streams[0].is_none(), "nothing comes from it");
+        harness.snapshot("graph_disabled_node");
+
+        // A selected edge, from the Edit menu's Disable or Enable.
+        let edge = harness.state().graph.edges()[0];
+        harness.state_mut().selection.clear();
+        harness.state_mut().selection.edge = Some(edge);
+        let ctx = harness.ctx.clone();
+        harness.state_mut().perform(&ctx, Action::ToggleDisabled);
+        assert!(harness.state().graph.is_edge_disabled(&edge));
+        harness.state_mut().perform(&ctx, Action::ToggleDisabled);
+        assert!(!harness.state().graph.is_edge_disabled(&edge));
+    }
+
+    #[test]
+    fn settings_are_copied_and_pasted_after_review() {
+        let mut harness = harness();
+        let detector = node_named(harness.state(), "Spike Detector");
+        let copied = paste_settings::copy(&harness.state().graph, &[detector]);
+        let threshold = |h: &Harness<TestApp>| match h.state().graph.get(detector).map(|e| &e.node) {
+            Some(Nodes::SpikeDetector(d)) => d.thresholds.get(0),
+            _ => unreachable!(),
+        };
+        let before = threshold(&harness);
+        if let Some(Nodes::SpikeDetector(d)) = harness.state_mut().graph.get_mut(detector).map(|e| &mut e.node) {
+            d.thresholds.set(0, before + 20.0);
+        }
+        let paste = paste_settings::PasteSettings::new(&copied, &harness.state().graph).unwrap();
+        harness.state_mut().paste = Some(paste);
+        harness.run_steps(2);
+        assert!(harness.query_by_label("thresholds").is_some(), "says what changes");
+        harness.snapshot("paste_settings");
+        harness.get_by_label("Paste to 1 node").click();
+        harness.run_steps(2);
+        assert_eq!(threshold(&harness), before, "pasted back");
+        assert!(harness.state().paste.is_none());
     }
 
     #[test]

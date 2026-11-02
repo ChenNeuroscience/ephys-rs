@@ -28,6 +28,8 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             Action::AddNode => !locked,
             Action::Arrange => self.graph.iter().count() > 1,
             Action::CloseHome => self.layout.is_shown(Pane::Home),
+            Action::CopySettings => !self.selection.nodes.is_empty(),
+            Action::ToggleDisabled => !self.selection.nodes.is_empty() || self.selection.edge.is_some(),
             _ => true,
         }
     }

@@ -978,6 +978,7 @@ checksum = "cfc1cc505827f4c23eedc297975a0fd038268d41293f389dd8ff3b574aefab19"
 name = "ephys-rs"
 version = "0.1.0"
 dependencies = [
+ "arboard",
  "base64",
  "cansi",
  "chrono",

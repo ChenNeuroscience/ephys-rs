@@ -109,6 +109,9 @@ pub struct NodeEntry<N> {
     /// Whether it's listed in the basic view, if set; otherwise, whether it's a visualisation (see `in_basic`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub basic: Option<bool>,
+    /// Whether it's disabled: kept, but run as if it weren't there (see `Graph::is_live`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disabled: bool,
 }
 
 impl<N: NodeSet> NodeEntry<N> {
@@ -250,11 +253,14 @@ pub struct Graph<N> {
     next_id: u64,
     nodes: BTreeMap<NodeId, NodeEntry<N>>,
     edges: Vec<Edge>,
+    /// Edges that are disabled: kept, but run as if they weren't there.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    disabled_edges: Vec<Edge>,
 }
 
 impl<N> Default for Graph<N> {
     fn default() -> Self {
-        Graph { next_id: 1, nodes: BTreeMap::new(), edges: Vec::new() }
+        Graph { next_id: 1, nodes: BTreeMap::new(), edges: Vec::new(), disabled_edges: Vec::new() }
     }
 }
 
@@ -266,7 +272,7 @@ impl<N: NodeSet> Graph<N> {
         let id = NodeId(self.next_id);
         self.next_id += 1;
         let label = self.unique_label(node.info().name);
-        self.nodes.insert(id, NodeEntry { node, label, pos, basic: None });
+        self.nodes.insert(id, NodeEntry { node, label, pos, basic: None, disabled: false });
         id
     }
 
@@ -282,6 +288,7 @@ impl<N: NodeSet> Graph<N> {
     pub fn remove(&mut self, id: NodeId) {
         self.nodes.remove(&id);
         self.edges.retain(|e| e.from.node != id && e.to.node != id);
+        self.disabled_edges.retain(|e| self.edges.contains(e));
     }
 
     pub fn get(&self, id: NodeId) -> Option<&NodeEntry<N>> {
@@ -312,14 +319,43 @@ impl<N: NodeSet> Graph<N> {
         self.edges.iter().filter(|e| e.dimension == Dimension::Data)
     }
 
-    /// The edge into an input or setting, if any.
+    /// The edge into an input or setting, if any (enabled or not).
     pub fn edge_into(&self, port: Port) -> Option<Edge> {
         self.edges.iter().find(|e| e.target() == port).copied()
     }
 
-    /// The edges out of an output or control.
+    /// The edges out of an output or control (enabled or not).
     pub fn edges_from(&self, port: Port) -> impl Iterator<Item = Edge> + '_ {
         self.edges.iter().filter(move |e| e.source() == port).copied()
+    }
+
+    /// Whether an edge counts, as the graph runs: neither it nor the nodes at its ends disabled.
+    pub fn is_live(&self, edge: &Edge) -> bool {
+        let enabled = |id: NodeId| self.nodes.get(&id).is_some_and(|e| !e.disabled);
+        !self.disabled_edges.contains(edge) && enabled(edge.from.node) && enabled(edge.to.node)
+    }
+
+    /// Whether an edge itself is disabled.
+    pub fn is_edge_disabled(&self, edge: &Edge) -> bool {
+        self.disabled_edges.contains(edge)
+    }
+
+    /// Disables an edge, or enables it.
+    pub fn set_edge_disabled(&mut self, edge: Edge, disabled: bool) {
+        self.disabled_edges.retain(|e| *e != edge);
+        if disabled && self.edges.contains(&edge) {
+            self.disabled_edges.push(edge);
+        }
+    }
+
+    /// The live edge into an input or setting, if any (see `is_live`).
+    pub fn live_edge_into(&self, port: Port) -> Option<Edge> {
+        self.edges.iter().find(|e| e.target() == port && self.is_live(e)).copied()
+    }
+
+    /// The live edges out of an output or control.
+    pub fn live_edges_from(&self, port: Port) -> impl Iterator<Item = Edge> + '_ {
+        self.edges.iter().filter(move |e| e.source() == port && self.is_live(e)).copied()
     }
 
     fn kind(&self, port: Port) -> Option<KindKey> {
@@ -364,12 +400,15 @@ impl<N: NodeSet> Graph<N> {
             Dimension::Data => e.target() != edge.target(),
             Dimension::Settings => e.source() != edge.source(),
         });
+        let edges = &self.edges;
+        self.disabled_edges.retain(|e| edges.contains(e));
         self.edges.push(edge);
         Ok(edge)
     }
 
     pub fn disconnect(&mut self, edge: Edge) {
         self.edges.retain(|e| *e != edge);
+        self.disabled_edges.retain(|e| *e != edge);
     }
 
     /// The ports, on every node, that `port` could connect to.
@@ -412,6 +451,8 @@ impl<N: NodeSet> Graph<N> {
             .collect();
         let mut valid = valid.into_iter();
         self.edges.retain(|_| valid.next().unwrap());
+        let edges = &self.edges;
+        self.disabled_edges.retain(|e| edges.contains(e));
     }
 
     /// Nodes ordered so that each comes after everything feeding it data. Nodes in a loop (only possible in
@@ -441,16 +482,25 @@ impl<N: NodeSet> Graph<N> {
     pub fn resolve(&self) -> Resolved<N::Edges> {
         let mut resolved: Resolved<N::Edges> = Resolved::new();
         for id in self.topological_order() {
-            let node = &self.nodes[&id].node;
+            let entry = &self.nodes[&id];
+            let node = &entry.node;
             let inputs = node.inputs();
             let input_streams: Vec<Option<DataStream<N>>> = (0..inputs.len())
                 .map(|index| {
-                    let edge = self.edge_into(Port { node: id, role: Role::Input, index })?;
+                    let edge = self.live_edge_into(Port { node: id, role: Role::Input, index })?;
                     let stream = resolved.get(&edge.from.node)?.outputs.get(edge.from.port)?.stream?;
                     (stream.kind() == inputs[index].kind).then_some(stream)
                 })
                 .collect();
-            resolved.insert(id, NodeState::new(node, input_streams));
+            let mut state = NodeState::new(node, input_streams);
+            // A disabled node makes nothing, and has nothing to warn about.
+            if entry.disabled {
+                for output in &mut state.outputs {
+                    output.stream = None;
+                }
+                state.warnings.clear();
+            }
+            resolved.insert(id, state);
         }
         resolved
     }
@@ -460,7 +510,7 @@ impl<N: NodeSet> Graph<N> {
         let Some(entry) = self.nodes.get(&id) else { return Vec::new() };
         (0..entry.node.controls().len())
             .map(|index| {
-                let edge = self.edges_from(Port { node: id, role: Role::Control, index }).next()?;
+                let edge = self.live_edges_from(Port { node: id, role: Role::Control, index }).next()?;
                 self.nodes.get(&edge.to.node)?.node.settings().into_iter().nth(edge.to.port).map(|s| s.value)
             })
             .collect()
@@ -491,7 +541,7 @@ impl<N: NodeSet> Graph<N> {
             }
             let Some(new) = new.filter(|new| Some(new) != old.as_ref()) else { continue };
             let targets: Vec<PortRef> =
-                self.edges_from(Port { node: id, role: Role::Control, index }).map(|e| e.to).collect();
+                self.live_edges_from(Port { node: id, role: Role::Control, index }).map(|e| e.to).collect();
             for target in targets {
                 let Some(entry) = self.nodes.get_mut(&target.node) else { continue };
                 if entry.node.settings().get(target.port).is_some_and(|s| s.value.kind() == new.kind()) {
@@ -693,6 +743,40 @@ mod tests {
             graph.edges().iter().filter(|e| e.target() == port(detector, Role::Setting, 1)).count()
         };
         assert_eq!(into_gains(&graph), 2);
+    }
+
+    #[test]
+    fn disabled_nodes_and_edges_run_as_if_they_were_not_there() {
+        let mut graph = Graph::default();
+        let board = graph.add(create("Acquisition Board"), [0.0, 0.0]);
+        let detector = graph.add(create("Spike Detector"), [0.0, 0.0]);
+        let viewer = graph.add(create("Spike Viewer"), [0.0, 0.0]);
+        let feed = graph.connect(port(board, Role::Output, 0), port(detector, Role::Input, 0)).unwrap();
+        graph.connect(port(detector, Role::Output, 0), port(viewer, Role::Input, 0)).unwrap();
+        let control = graph.connect(port(viewer, Role::Control, 0), port(detector, Role::Setting, 0)).unwrap();
+        let streams = |graph: &Graph<Nodes>, id| graph.resolve()[&id].input_streams[0].is_some();
+        let planned = |graph: &Graph<Nodes>, id| super::super::Plan::new(graph).steps().iter().any(|s| s.id == id);
+        assert!(streams(&graph, viewer) && planned(&graph, detector));
+
+        // A disabled node makes nothing, and doesn't run.
+        graph.get_mut(detector).unwrap().disabled = true;
+        assert!(!streams(&graph, viewer), "nothing downstream of it");
+        assert!(!planned(&graph, detector));
+        assert_eq!(graph.control_values(viewer)[0], None, "its settings can't be edited through it");
+        graph.get_mut(detector).unwrap().disabled = false;
+
+        // A disabled edge is as if it weren't connected, but is kept.
+        graph.set_edge_disabled(feed, true);
+        assert!(!streams(&graph, detector) && !streams(&graph, viewer));
+        assert!(graph.edges().contains(&feed));
+        graph.set_edge_disabled(feed, false);
+        assert!(streams(&graph, viewer));
+        graph.set_edge_disabled(control, true);
+        assert_eq!(graph.control_values(viewer)[0], None);
+        // And it changes how the graph runs.
+        let before = graph.clone();
+        graph.set_edge_disabled(control, false);
+        assert!(!crate::core::engine::same_processing(&before, &graph));
     }
 
     #[test]

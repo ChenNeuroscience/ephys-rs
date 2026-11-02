@@ -20,6 +20,12 @@ pub enum Action {
     SelectAll,
     /// Lays the nodes out in columns, left to right the way data flows.
     Arrange,
+    /// Copies the selected nodes' settings to the clipboard.
+    CopySettings,
+    /// Opens the window to paste settings from the clipboard onto nodes.
+    PasteSettings,
+    /// Disables the selected nodes (or edge), or enables them if they're all disabled.
+    ToggleDisabled,
     /// Opens the menu of node types.
     AddNode,
     /// Picks the tool for drawing annotations of a type (by index) on the graph.
@@ -80,6 +86,10 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Item(Action::Delete),
             Item(Action::SelectAll),
             Separator,
+            Item(Action::ToggleDisabled),
+            Item(Action::CopySettings),
+            Item(Action::PasteSettings),
+            Separator,
             Item(Action::Arrange),
         ],
     ),
@@ -105,7 +115,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
 ];
 
 /// Checked in this order, so that e.g. shift-ctrl-Z (redo) is seen before ctrl-Z (undo).
-const SHORTCUT_ORDER: [Action; 16] = [
+const SHORTCUT_ORDER: [Action; 19] = [
     Action::Redo,
     Action::Undo,
     Action::SaveAs,
@@ -119,6 +129,9 @@ const SHORTCUT_ORDER: [Action; 16] = [
     Action::Play,
     Action::Record,
     Action::ToggleDevTools,
+    Action::CopySettings,
+    Action::PasteSettings,
+    Action::ToggleDisabled,
     Action::Home,
     Action::ShowBasic,
     Action::ShowGraph,
@@ -145,6 +158,9 @@ impl Action {
             Action::Delete => "Delete",
             Action::SelectAll => "Select All",
             Action::Arrange => "Arrange Nodes",
+            Action::CopySettings => "Copy Settings",
+            Action::PasteSettings => "Paste Settings…",
+            Action::ToggleDisabled => "Disable or Enable",
             Action::AddNode => "Node…",
             Action::DrawTool(index) => annotations.get(index).map_or("?", |a| a.name),
             Action::Home => "Home",
@@ -176,6 +192,9 @@ impl Action {
             Action::FrameAll => Some(KeyboardShortcut::new(Modifiers::NONE, Key::F)),
             Action::Play => Some(KeyboardShortcut::new(Modifiers::NONE, Key::Space)),
             Action::Record => command(Key::R),
+            Action::CopySettings => Some(KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::ALT, Key::C)),
+            Action::PasteSettings => Some(KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::ALT, Key::V)),
+            Action::ToggleDisabled => command(Key::E),
             Action::Home => command(Key::Num0),
             Action::ShowBasic => command(Key::Num1),
             Action::ShowGraph => command(Key::Num2),

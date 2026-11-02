@@ -144,13 +144,17 @@ impl<N: NodeSet> Plan<N> {
         let runs: Vec<NodeId> = graph
             .topological_order()
             .into_iter()
+            .filter(|id| graph.get(*id).is_some_and(|e| !e.disabled))
             .filter(|id| resolved.get(id).is_some_and(|s| s.outputs.iter().all(|o| o.stream.is_some())))
             .collect();
         let data_edges: Vec<_> = graph
             .edges()
             .iter()
             .filter(|e| {
-                e.dimension == super::Dimension::Data && runs.contains(&e.from.node) && runs.contains(&e.to.node)
+                e.dimension == super::Dimension::Data
+                    && graph.is_live(e)
+                    && runs.contains(&e.from.node)
+                    && runs.contains(&e.to.node)
             })
             .collect();
         // Which nodes must run before which: those feeding them, and those reading data another edits in place.
@@ -198,7 +202,7 @@ impl<N: NodeSet> Plan<N> {
             let (Some(entry), Some(state)) = (graph.get(id), resolved.get(&id)) else { continue };
             let mut inputs: Vec<Option<usize>> = (0..state.inputs.len())
                 .map(|index| {
-                    let edge = graph.edge_into(Port { node: id, role: Role::Input, index })?;
+                    let edge = graph.live_edge_into(Port { node: id, role: Role::Input, index })?;
                     buffer_of.get(&(edge.from.node, edge.from.port)).copied()
                 })
                 .collect();
@@ -905,8 +909,9 @@ pub fn default_workers() -> usize {
 /// positions and labels.
 pub fn same_processing<N: NodeSet>(a: &Graph<N>, b: &Graph<N>) -> bool {
     a.edges() == b.edges()
+        && a.edges().iter().all(|e| a.is_edge_disabled(e) == b.is_edge_disabled(e))
         && a.iter().count() == b.iter().count()
-        && a.iter().zip(b.iter()).all(|((x, xe), (y, ye))| x == y && xe.node == ye.node)
+        && a.iter().zip(b.iter()).all(|((x, xe), (y, ye))| x == y && xe.node == ye.node && xe.disabled == ye.disabled)
 }
 
 #[cfg(test)]

@@ -325,6 +325,8 @@ pub struct Canvas {
     /// Where a selection rectangle started, in scene coordinates.
     marquee: Option<Pos2>,
     hovered_edge: Option<Edge>,
+    /// The edge whose menu is open (from right-clicking it).
+    menu_edge: Option<Edge>,
     /// The annotation whose text is being edited.
     editing: Option<AnnotationId>,
     pub colours: &'static Colours,
@@ -345,6 +347,7 @@ impl Canvas {
             wire: None,
             marquee: None,
             hovered_edge: None,
+            menu_edge: None,
             editing: None,
             colours,
             tool: Tool::default(),
@@ -542,6 +545,24 @@ impl Canvas {
                 selection.clear();
             }
         }
+        // An edge's menu, from right-clicking it.
+        if background.secondary_clicked() {
+            self.menu_edge = self.hovered_edge;
+        }
+        if let Some(edge) = self.menu_edge {
+            let menu = background.context_menu(|ui| {
+                let disabled = graph.is_edge_disabled(&edge);
+                if ui.button(if disabled { "Enable connection" } else { "Disable connection" }).clicked() {
+                    events.push(Event::SetEdgeDisabled(edge, !disabled));
+                }
+                if ui.button("Delete connection").clicked() {
+                    events.push(Event::DeleteEdge(edge));
+                }
+            });
+            if menu.is_none() {
+                self.menu_edge = None;
+            }
+        }
 
         self.paint_edges(&painter, graph, resolved, &layouts, selection);
         if let (Some(port), Some(p)) = (self.wire, pointer)
@@ -570,7 +591,7 @@ impl Canvas {
             let has_target = targets.iter().any(|t| t.node == id);
             let dim = self.wire.is_some_and(|w| w.node != id) && !has_target;
             let ports = PortPaint { connected: &connected, targets: &targets, target, pointer, colours: self.colours };
-            paint_node(&painter, id, layout, entry, state, selected, dim, &ports);
+            paint_node(&painter, id, layout, entry, state, selected, dim || entry.disabled, &ports);
         }
         // Those above the graph (images), over the nodes, and grabbed before them.
         self.annotations(ui, &painter, graph, annotations, selection, events, true);
@@ -744,7 +765,9 @@ impl Canvas {
     /// Clicks and drags on empty canvas (middle and right drags pan, in `pan_and_zoom`).
     fn background(&mut self, ui: &egui::Ui, response: &Response, selection: &mut Selection, events: &mut Vec<Event>) {
         let pointer = ui.input(|i| i.pointer.latest_pos());
-        if (response.double_clicked() || response.secondary_clicked())
+        // (Right-clicking an edge opens its own menu.)
+        let on_edge = self.hovered_edge.is_some();
+        if (response.double_clicked() || (response.secondary_clicked() && !on_edge))
             && let Some(screen) = pointer
         {
             events.push(Event::OpenMenu { screen, scene: self.to_screen.inverse() * screen, from: None });
@@ -1018,6 +1041,25 @@ impl Canvas {
             if ui.button("Disconnect").clicked() {
                 events.push(Event::Disconnect(id));
             }
+            // Disabling, and copying settings, are of all the nodes selected, if this is one of them.
+            let several = selection.nodes.contains(&id) && selection.nodes.len() > 1;
+            let disabled = graph.get(id).is_some_and(|e| e.disabled);
+            let text = match (disabled, several) {
+                (false, false) => "Disable",
+                (true, false) => "Enable",
+                (false, true) => "Disable selected",
+                (true, true) => "Enable selected",
+            };
+            if ui.button(text).on_hover_text("Run the graph as if it weren't there, keeping it").clicked() {
+                events.push(Event::SetDisabled(id, !disabled));
+            }
+            ui.separator();
+            if ui.button(if several { "Copy settings of selected" } else { "Copy settings" }).clicked() {
+                events.push(Event::CopySettings(id));
+            }
+            if ui.button("Paste settings…").clicked() {
+                events.push(Event::PasteSettings);
+            }
             ui.separator();
             if ui.button("Delete").clicked() {
                 events.push(Event::Delete(id));
@@ -1148,6 +1190,11 @@ impl Canvas {
             if unknown || self.wire.is_some() {
                 colour = colour.gamma_multiply(0.4);
             }
+            // Not counting, as the graph runs: disabled, or to or from a disabled node.
+            let live = graph.is_live(edge);
+            if !live {
+                colour = colour.gamma_multiply(0.3);
+            }
             let selected = selection.edge == Some(*edge);
             let w = if selected {
                 width * 2.0
@@ -1162,6 +1209,20 @@ impl Canvas {
             }
             let read_only = read_only(resolved, source);
             paint_wire(painter, points, edge.dimension, read_only, Stroke::new(w, colour), zoom, &covers);
+            // A disabled edge is broken in the middle.
+            if graph.is_edge_disabled(edge) {
+                let [a, b, c, d] = points.map(|p| p.to_vec2());
+                let middle = ((a + 3.0 * b + 3.0 * c + d) / 8.0).to_pos2();
+                let along = (0.75 * ((b - a) + 2.0 * (c - b) + (d - c))).normalized();
+                let across = egui::vec2(-along.y, along.x) * 6.0 * zoom.sqrt();
+                let gap = along * 3.0 * zoom.sqrt();
+                painter.circle_filled(middle, 7.0 * zoom.sqrt(), self.colours.surface);
+                let mark = Stroke::new(1.5 * zoom.sqrt(), self.colours.text_secondary);
+                for side in [-1.0, 1.0] {
+                    let at = middle + gap * side;
+                    painter.line_segment([at - across, at + across], mark);
+                }
+            }
         }
     }
 }
@@ -1275,7 +1336,8 @@ fn paint_node<N: NodeSet>(
     }
 
     let font = |size: f32| FontId::proportional(size * z);
-    let title_right = if state.warnings.is_empty() { layout.header.right() } else { layout.badge.left() };
+    let title_right =
+        if state.warnings.is_empty() && !entry.disabled { layout.header.right() } else { layout.badge.left() };
     let title_clip = Rect::from_min_max(layout.header.min, egui::pos2(title_right - 4.0 * z, layout.header.bottom()));
     painter.with_clip_rect(title_clip.intersect(painter.clip_rect())).text(
         egui::pos2(layout.header.left() + 9.0 * z, layout.header.center().y),
@@ -1285,7 +1347,10 @@ fn paint_node<N: NodeSet>(
         fade(Color32::from_gray(240)),
     );
 
-    if !state.warnings.is_empty() {
+    if entry.disabled {
+        let at = egui::pos2(layout.header.right() - 8.0 * z, layout.header.center().y);
+        painter.text(at, Align2::RIGHT_CENTER, "disabled", font(10.0), Color32::from_gray(230));
+    } else if !state.warnings.is_empty() {
         let b = layout.badge;
         let triangle = vec![
             egui::pos2(b.center().x, b.top() - z),
