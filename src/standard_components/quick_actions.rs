@@ -117,7 +117,7 @@ impl Change {
     /// does it all).
     fn finish(self, state: &QuickState<Nodes>, windows: &[NodeId]) -> Option<QuickChange<Nodes>> {
         let open = windows.iter().copied().filter(|w| !state.open_windows.contains(w)).collect();
-        self.changed.then_some(QuickChange { graph: self.graph, open, arrange: false, panes: None })
+        self.changed.then_some(QuickChange { graph: self.graph, open, arrange: false, panes: None, close: Vec::new() })
     }
 }
 
@@ -249,16 +249,14 @@ fn set_positions_disabled(state: &QuickState<Nodes>, disabled: bool) -> Option<Q
             entry.disabled = disabled;
         }
     }
-    // Enabled, the tracker view's worth seeing.
-    let open = if disabled {
-        Vec::new()
-    } else {
-        ids.iter()
-            .copied()
-            .filter(|id| matches!(graph.get(*id).map(|e| &e.node), Some(Nodes::TrackerView(_))))
-            .collect()
-    };
-    Some(QuickChange { graph, open, arrange: false, panes: None })
+    // Enabled, the tracker view's worth seeing; disabled, it isn't.
+    let trackers: Vec<NodeId> = ids
+        .iter()
+        .copied()
+        .filter(|id| matches!(graph.get(*id).map(|e| &e.node), Some(Nodes::TrackerView(_))))
+        .collect();
+    let (open, close) = if disabled { (Vec::new(), trackers) } else { (trackers, Vec::new()) };
+    Some(QuickChange { graph, open, close, arrange: false, panes: None })
 }
 
 fn disable_positions(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
@@ -287,7 +285,7 @@ fn set_synthetic(state: &QuickState<Nodes>, synthetic: bool) -> Option<QuickChan
             _ => {}
         }
     }
-    changed.then_some(QuickChange { graph, open: Vec::new(), arrange: false, panes: None })
+    changed.then_some(QuickChange { graph, open: Vec::new(), arrange: false, panes: None, close: Vec::new() })
 }
 
 fn synthetic(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {

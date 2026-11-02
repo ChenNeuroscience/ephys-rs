@@ -1,6 +1,6 @@
 //! Quick actions: ready-made changes to the graph, offered in the basic view to people who'd rather not build it
 //! node by node ("add spike tracking", say). Each is a pure function: given the graph (with all its settings) and
-//! which node windows are open, it gives the graph to change to and the windows to open; or nothing, if it doesn't
+//! which node windows are open, it gives the graph to change to and the windows to open and close; or nothing, if it doesn't
 //! apply to this graph (it's already doing it, say), when it isn't offered. Windows it opens are put somewhere
 //! sensible by the layout, beside the home pane; or it can arrange the panes itself (see `Arrangement`). The program supplies its quick actions (see main.rs), through
 //! `Components`.
@@ -27,6 +27,8 @@ pub struct QuickChange<N: NodeSet> {
     pub graph: Graph<N>,
     /// Node windows to open, in order.
     pub open: Vec<NodeId>,
+    /// Node windows to close, if they're open.
+    pub close: Vec<NodeId>,
     /// Whether to lay the graph out afresh (see the toolbar's Arrange), as after building it from nothing.
     pub arrange: bool,
     /// Where to put the panes, if it says: replacing the layout, the windows in it opened (and docked).

@@ -1,7 +1,7 @@
 //! The basic view, the home pane's first mode, for people who'd rather not work with the graph: the components shown
 //! in it (viewers, unless set otherwise: see `NodeEntry::in_basic`), large, to open their windows (beside it); and the
-//! quick actions that apply to the graph, in grey (blue is for processing). The graph's a click away (or in Home's
-//! menu).
+//! quick actions that apply to the graph, in grey (blue is for processing). Disabled components are faded, as on the
+//! graph. The graph's a click away ("Switch to graph", along the top, or in Home's menu).
 
 use std::collections::HashSet;
 
@@ -15,6 +15,8 @@ use crate::core::theme::Colours;
 
 /// The cards' widest.
 const WIDTH: f32 = 560.0;
+/// How opaque a disabled component's card is: as faded as a disabled node on the graph.
+const DISABLED_OPACITY: f32 = 0.35;
 
 #[allow(clippy::too_many_arguments)]
 pub fn show<N: NodeSet>(
@@ -28,19 +30,9 @@ pub fn show<N: NodeSet>(
     events: &mut Vec<Event>,
 ) {
     egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-        egui::Frame::new().inner_margin(egui::Margin::symmetric(20, 16)).show(ui, |ui| {
+        egui::Frame::new().inner_margin(egui::Margin { left: 20, right: 20, top: 6, bottom: 16 }).show(ui, |ui| {
             ui.set_max_width(WIDTH.min(ui.available_width()));
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Components").size(22.0).color(colours.text_primary));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let graph_button = ui.button("Open the graph").on_hover_text(
-                        "The graph: every node, and how data flows between them, to build and change it node by node",
-                    );
-                    if graph_button.clicked() {
-                        events.push(Event::ShowGraph);
-                    }
-                });
-            });
+            ui.label(RichText::new("Components").size(22.0).color(colours.text_primary));
             ui.add_space(8.0);
             let mut views: Vec<(NodeId, &str, Category)> = graph
                 .iter()
@@ -69,12 +61,22 @@ pub fn show<N: NodeSet>(
                         .collect();
                     if connected.is_empty() { None } else { Some(connected.join(" · ")) }
                 });
+                let disabled = graph.get(id).is_some_and(|e| e.disabled);
                 let (detail, detail_colour) = match detail.flatten() {
+                    _ if disabled => ("Disabled".to_owned(), colours.text_secondary),
                     Some(detail) => (detail, colours.text_secondary),
                     None => ("Nothing connected yet".to_owned(), colours.warning),
                 };
                 let colour = style::category_colour(category);
-                let card = card(ui, colours, colour, label, &detail, detail_colour, None);
+                // Faded, as on the graph.
+                let card = ui
+                    .scope(|ui| {
+                        if disabled {
+                            ui.multiply_opacity(DISABLED_OPACITY);
+                        }
+                        card(ui, colours, colour, label, &detail, detail_colour, None)
+                    })
+                    .inner;
                 let tip = if open { "Its window's open" } else { "Open its window beside this view" };
                 let card = card.on_hover_text(format!("{tip} (right-click to hide it from here)"));
                 if card.clicked() {

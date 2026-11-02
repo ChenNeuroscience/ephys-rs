@@ -35,9 +35,8 @@ pub struct GraphTools {
 /// arranging and framing it; and, at the right, back to the basic view.
 pub fn graph_toolbar<A: AnnotationSet>(ui: &mut egui::Ui, tools: GraphTools, tool: Tool, events: &mut Vec<Event>) {
     let ctx = ui.ctx().clone();
-    let mut perform = |action, anchor| events.push(Event::Perform(action, anchor));
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 2.0;
+    home_strip(ui, Mode::Basic, events, |ui, events| {
+        let mut perform = |action, anchor| events.push(Event::Perform(action, anchor));
         let add =
             dropdown_button(ui, Icon::AddNode, "Add node").on_hover_text("Add a node (or press Tab over the graph)");
         if add.clicked() && tools.add {
@@ -76,12 +75,39 @@ pub fn graph_toolbar<A: AnnotationSet>(ui: &mut egui::Ui, tools: GraphTools, too
                 perform(action, None);
             }
         }
-        // Back to the basic view, at the right (as the basic view has the graph at its right).
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let basic = egui::Button::new("Basic view").small();
-            if ui.add(basic).on_hover_text("Show the basic view here: the components, and quick actions").clicked() {
-                perform(Action::ShowBasic, None);
-            }
+    });
+}
+
+/// The strip along the top of the home pane: `left` (the graph's tools, or nothing, in the basic view), and at its
+/// right a button to switch to `other`, the other mode, in the same place in either.
+pub fn home_strip(
+    ui: &mut egui::Ui,
+    other: Mode,
+    events: &mut Vec<Event>,
+    left: impl FnOnce(&mut egui::Ui, &mut Vec<Event>),
+) {
+    egui::Frame::new().inner_margin(egui::Margin { left: 6, right: 14, top: 4, bottom: 4 }).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.set_min_height(BUTTON.y);
+            ui.spacing_mut().item_spacing.x = 2.0;
+            left(ui, events);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let (text, tip, event) = match other {
+                    Mode::Basic => (
+                        "Switch to basic",
+                        "The basic view: the components, and quick actions",
+                        Event::Perform(Action::ShowBasic, None),
+                    ),
+                    Mode::Graph => (
+                        "Switch to graph",
+                        "The graph: every node, and how data flows between them, to build and change it node by node",
+                        Event::ShowGraph,
+                    ),
+                };
+                if ui.add(egui::Button::new(text).min_size(egui::vec2(0.0, BUTTON.y))).on_hover_text(tip).clicked() {
+                    events.push(event);
+                }
+            });
         });
     });
 }

@@ -139,6 +139,17 @@ impl Layout {
         }
     }
 
+    /// Closes a node's window, if it's open (keeping its place, if it's docked).
+    pub fn close(&mut self, id: NodeId) {
+        match self.window(id) {
+            WindowState::Floating => {
+                self.floating.remove(&id);
+            }
+            WindowState::Docked => self.hide(Pane::Node(id)),
+            WindowState::Closed | WindowState::Hidden => {}
+        }
+    }
+
     pub fn is_shown(&self, pane: Pane) -> bool {
         self.tile(pane).is_some_and(|t| self.tree.tiles.is_visible(t))
     }
@@ -666,20 +677,21 @@ fn padded(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
 impl<N: NodeSet, A: AnnotationSet> Panes<'_, N, A> {
     fn pane_contents(&mut self, ui: &mut egui::Ui, pane: Pane) {
         match pane {
-            Pane::Home if self.mode == Mode::Basic => basic::show(
-                ui,
-                self.graph,
-                self.resolved,
-                self.colours,
-                self.quick_actions,
-                self.open_windows,
-                self.locked,
-                self.events,
-            ),
+            Pane::Home if self.mode == Mode::Basic => {
+                toolbar::home_strip(ui, Mode::Graph, self.events, |_, _| {});
+                basic::show(
+                    ui,
+                    self.graph,
+                    self.resolved,
+                    self.colours,
+                    self.quick_actions,
+                    self.open_windows,
+                    self.locked,
+                    self.events,
+                )
+            }
             Pane::Home => {
-                egui::Frame::new()
-                    .inner_margin(egui::Margin::symmetric(6, 3))
-                    .show(ui, |ui| toolbar::graph_toolbar::<A>(ui, self.graph_tools, self.canvas.tool, self.events));
+                toolbar::graph_toolbar::<A>(ui, self.graph_tools, self.canvas.tool, self.events);
                 ui.separator();
                 self.canvas.show(
                     ui,

@@ -660,6 +660,9 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                 }
             }
         }
+        for id in change.close {
+            self.layout.close(id);
+        }
         log::info!("{}", action.name);
     }
 
@@ -1796,12 +1799,15 @@ mod tests {
         harness.get_by_role_and_label(button, "Disable position tracking").click();
         harness.run_steps(2);
         assert!(offered(&harness, "Enable position tracking") && !offered(&harness, "Disable position tracking"));
+        let tracker = node_named(harness.state(), "Tracker View");
+        assert_eq!(harness.state().layout.window(tracker), WindowState::Hidden, "the tracker's window closes");
+        harness.snapshot("basic_positions_disabled");
         // Undone in one step.
         harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
         harness.run_steps(2);
         assert!(offered(&harness, "Disable position tracking"));
         // To the graph, and back.
-        harness.get_by_label("Open the graph").click();
+        harness.get_by_label("Switch to graph").click();
         harness.run_steps(2);
         assert_eq!(harness.state().layout.mode, Mode::Graph);
         harness.key_press_modifiers(Modifiers::COMMAND, Key::Num1);
@@ -1945,7 +1951,7 @@ mod tests {
     fn the_graphs_toolbar_switches_to_the_basic_view() {
         let mut harness = harness();
         harness.state_mut().home_mode = Mode::Graph;
-        harness.get_by_label("Basic view").click();
+        harness.get_by_label("Switch to basic").click();
         harness.run_steps(2);
         assert_eq!(harness.state().layout.mode, Mode::Basic);
         assert_eq!(harness.state().home_mode, Mode::Graph, "home's unchanged");
