@@ -27,4 +27,6 @@ pub struct QuickChange<N: NodeSet> {
     pub graph: Graph<N>,
     /// Node windows to open, in order.
     pub open: Vec<NodeId>,
+    /// Whether to lay the graph out afresh (see the toolbar's Arrange), as after building it from nothing.
+    pub arrange: bool,
 }

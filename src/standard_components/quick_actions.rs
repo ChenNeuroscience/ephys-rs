@@ -1,27 +1,47 @@
-//! The quick actions offered in the basic view: adding spike, EEG or position tracking, each with the nodes it
-//! needs, recorded by Write LTX. Each reuses what the graph already has (an acquisition board, a spike detector, a
-//! Write LTX...), adding only what's missing, and connecting only ports that are free; it's not offered once the
-//! graph does all it would. Each opens its viewer.
+//! The quick actions offered in the basic view:
+//!
+//! - The standard LTX graph (v0.5): an Open Ephys acquisition board (generation 1 or 2) giving spikes, EEG and digital
+//!   inputs, and a FLIR camera giving positions, all viewed, and recorded by Write LTX. It reuses what the graph
+//!   already has, adding only what's missing (and connecting only ports that are free), so it's offered until the
+//!   graph has it all.
+//! - Disabling position tracking (the camera, position detector and tracker view), while it's all enabled; and
+//!   enabling it, while any of it isn't.
+//! - Using synthetic data (the fake board and camera in `synthetic_streams`), while any board or camera is real; and
+//!   real devices, while any is synthetic.
 
 use crate::Nodes;
 use crate::core::engine::{Graph, NodeId, NodeSet, Port, Role};
 use crate::core::quick_action::{QuickAction, QuickChange, QuickState};
+use crate::standard_components::ephys::band_pass::BandPassFilter;
+use crate::standard_components::ephys::board::{self, node::AcquisitionBoard, opal_kelly::OpalKellyKind};
+use crate::standard_components::tracking::camera::{self, node::Camera};
 
 pub const QUICK_ACTIONS: &[QuickAction<Nodes>] = &[
     QuickAction {
-        name: "Add spike tracking",
-        description: "Spikes from the acquisition board's tetrodes, re-referenced and filtered, viewed and recorded",
-        run: spikes,
+        name: "Standard LTX graph v0.5",
+        description: "An Open Ephys acquisition board (gen 1/2) and a FLIR camera: spikes, EEG, digital inputs and \
+                      positions, viewed and recorded by Write LTX",
+        run: standard,
     },
     QuickAction {
-        name: "Add EEG tracking",
-        description: "The acquisition board's channels as LFP (1–300 Hz), viewed with their spectra and recorded",
-        run: eeg,
+        name: "Disable position tracking",
+        description: "Run without the camera, position detector and tracker view, keeping them",
+        run: disable_positions,
     },
     QuickAction {
-        name: "Add position tracking",
-        description: "The camera's LEDs, tracked, viewed and recorded",
-        run: positions,
+        name: "Enable position tracking",
+        description: "Run with the camera, position detector and tracker view again",
+        run: enable_positions,
+    },
+    QuickAction {
+        name: "Use synthetic data",
+        description: "The fake acquisition board and camera (run synthetic_streams' scripts), instead of real devices",
+        run: synthetic,
+    },
+    QuickAction {
+        name: "Use real devices",
+        description: "An Open Ephys acquisition board (gen 1/2) and a FLIR camera, instead of the synthetic data",
+        run: real,
     },
 ];
 
@@ -91,11 +111,11 @@ impl Change {
         }
     }
 
-    /// The change, opening `window` (unless it's open already); nothing if nothing's changed (the graph already does
-    /// it all).
-    fn finish(self, state: &QuickState<Nodes>, window: NodeId) -> Option<QuickChange<Nodes>> {
-        let open = if state.open_windows.contains(&window) { vec![] } else { vec![window] };
-        self.changed.then_some(QuickChange { graph: self.graph, open })
+    /// The change, opening `windows` (those not open already); nothing if nothing's changed (the graph already
+    /// does it all).
+    fn finish(self, state: &QuickState<Nodes>, windows: &[NodeId]) -> Option<QuickChange<Nodes>> {
+        let open = windows.iter().copied().filter(|w| !state.open_windows.contains(w)).collect();
+        self.changed.then_some(QuickChange { graph: self.graph, open, arrange: false })
     }
 }
 
@@ -105,22 +125,36 @@ fn port((node, role, index): (NodeId, Role, usize)) -> Port {
 
 use Role::{Control, Input, Output, Setting};
 
-/// Write LTX, recording the board's digital inputs too.
-fn write_ltx(change: &mut Change, board: Option<NodeId>, after: NodeId) -> NodeId {
-    let ltx = change.upsert("Write LTX", Some(after));
-    if let Some(board) = board {
-        change.link((board, Output, 1), (ltx, Input, 3));
-    }
-    ltx
+/// A real board: the Open Ephys acquisition board, generation 1 or 2.
+fn real_board() -> board::Source {
+    board::Source::OpalKelly { board: OpalKellyKind::OpenEphys, bitfile: String::new(), library: String::new() }
 }
 
-/// Board → Reference → Band-pass (spikes' band) → Spike Detector → Spike Viewer (setting the detector's thresholds
-/// and gains), with Write LTX recording the spikes at the detector's gains.
-fn spikes(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
+/// A real camera: the first FLIR camera found.
+fn real_camera() -> camera::Source {
+    camera::Source::Spinnaker { serial: String::new(), library: String::new() }
+}
+
+/// Board → Channel Selector → Reference → Band-pass (spikes' band) → Spike Detector → Spike Viewer (setting the
+/// detector's thresholds and gains); the selector → Band-pass (LFP's band) → LFP Viewer (choosing the selector's
+/// channels); the board's digital inputs → TTL Viewer; Camera → Position Detector → Tracker View (setting the
+/// camera's and detector's settings). Write LTX records the spikes (at the detector's gains), the referenced data as
+/// EEG, the positions (with the detector's settings) and the digital inputs. New boards and cameras are real.
+fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
     let mut change = Change::new(state.graph);
-    let board = change.upsert("Acquisition Board", None);
-    let reference = change.upsert("Reference", Some(board));
-    change.link((board, Output, 0), (reference, Input, 0));
+    let empty = state.graph.iter().next().is_none();
+    let board = match change.find(|n| matches!(n, Nodes::AcquisitionBoard(_))) {
+        Some(board) => board,
+        None => {
+            change.add(Nodes::AcquisitionBoard(AcquisitionBoard { source: real_board(), ..Default::default() }), None)
+        }
+    };
+    let selector = change.upsert("Channel Selector", Some(board));
+    change.link((board, Output, 0), (selector, Input, 0));
+    let reference = change.upsert("Reference", Some(selector));
+    change.link((selector, Output, 0), (reference, Input, 0));
+
+    // Spikes.
     let band = match change.find(|n| matches!(n, Nodes::BandPassFilter(f) if f.low_hz >= 100.0)) {
         Some(band) => band,
         None => change.add(Nodes::BandPassFilter(Default::default()), Some(reference)),
@@ -128,62 +162,127 @@ fn spikes(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
     change.link((reference, Output, 0), (band, Input, 0));
     let detector = change.upsert("Spike Detector", Some(band));
     change.link((band, Output, 0), (detector, Input, 0));
-    let viewer = change.upsert("Spike Viewer", Some(detector));
-    change.link((detector, Output, 0), (viewer, Input, 0));
-    change.link((viewer, Control, 0), (detector, Setting, 0));
-    change.link((viewer, Control, 1), (detector, Setting, 1));
-    let ltx = write_ltx(&mut change, Some(board), detector);
-    change.link((detector, Output, 0), (ltx, Input, 0));
-    change.link((ltx, Control, 1), (detector, Setting, 1));
-    change.finish(state, viewer)
-}
+    let spike_viewer = change.upsert("Spike Viewer", Some(detector));
+    change.link((detector, Output, 0), (spike_viewer, Input, 0));
+    change.link((spike_viewer, Control, 0), (detector, Setting, 0));
+    change.link((spike_viewer, Control, 1), (detector, Setting, 1));
 
-/// Board → Channel Selector → Band-pass (LFP's band, 1–300 Hz) → LFP Viewer (choosing the selector's channels), with
-/// Write LTX recording the LFP as EEG.
-fn eeg(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
-    let mut change = Change::new(state.graph);
-    let board = change.upsert("Acquisition Board", None);
-    let selector = change.upsert("Channel Selector", Some(board));
-    change.link((board, Output, 0), (selector, Input, 0));
-    let lfp = |n: &Nodes| matches!(n, Nodes::BandPassFilter(f) if f.high_hz <= 500.0);
-    let band = match change.find(lfp) {
-        Some(band) => band,
+    // EEG.
+    let lfp = match change.find(|n| matches!(n, Nodes::BandPassFilter(f) if f.high_hz <= 500.0)) {
+        Some(lfp) => lfp,
         None => {
-            let filter = crate::standard_components::ephys::band_pass::BandPassFilter {
-                low_hz: 1.0,
-                high_hz: 300.0,
-                ..Default::default()
-            };
+            let filter = BandPassFilter { low_hz: 1.0, high_hz: 300.0, ..Default::default() };
             change.add(Nodes::BandPassFilter(filter), Some(selector))
         }
     };
-    change.link((selector, Output, 0), (band, Input, 0));
-    let viewer = change.upsert("LFP Viewer", Some(band));
-    change.link((band, Output, 0), (viewer, Input, 0));
-    change.link((viewer, Control, 1), (selector, Setting, 0));
-    let ltx = write_ltx(&mut change, Some(board), band);
-    change.link((band, Output, 0), (ltx, Input, 1));
-    change.finish(state, viewer)
+    change.link((selector, Output, 0), (lfp, Input, 0));
+    let lfp_viewer = change.upsert("LFP Viewer", Some(lfp));
+    change.link((lfp, Output, 0), (lfp_viewer, Input, 0));
+    change.link((lfp_viewer, Control, 1), (selector, Setting, 0));
+
+    // Digital inputs.
+    let ttl_viewer = change.upsert("TTL Viewer", Some(board));
+    change.link((board, Output, 1), (ttl_viewer, Input, 0));
+
+    // Positions.
+    let camera = match change.find(|n| matches!(n, Nodes::Camera(_))) {
+        Some(camera) => camera,
+        None => change.add(Nodes::Camera(Camera { source: real_camera(), ..Default::default() }), None),
+    };
+    let positions = change.upsert("Position Detector", Some(camera));
+    change.link((camera, Output, 0), (positions, Input, 0));
+    let tracker = change.upsert("Tracker View", Some(positions));
+    change.link((camera, Output, 0), (tracker, Input, 0));
+    change.link((positions, Output, 0), (tracker, Input, 1));
+    change.link((camera, Output, 1), (tracker, Input, 2));
+    change.link((tracker, Control, 0), (camera, Setting, 0));
+    change.link((tracker, Control, 1), (positions, Setting, 0));
+
+    // Recording it all.
+    let ltx = change.upsert("Write LTX", Some(detector));
+    change.link((detector, Output, 0), (ltx, Input, 0));
+    change.link((reference, Output, 0), (ltx, Input, 1));
+    change.link((positions, Output, 0), (ltx, Input, 2));
+    change.link((board, Output, 1), (ltx, Input, 3));
+    change.link((ltx, Control, 0), (positions, Setting, 0));
+    change.link((ltx, Control, 1), (detector, Setting, 1));
+
+    let mut result = change.finish(state, &[spike_viewer, lfp_viewer, ttl_viewer, tracker])?;
+    // A new graph, laid out tidily.
+    result.arrange = empty;
+    Some(result)
 }
 
-/// Camera → Position Detector → Tracker View (setting the camera's and detector's settings), with Write LTX
-/// recording the positions, and the detector's settings with them.
-fn positions(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
-    let mut change = Change::new(state.graph);
-    let camera = change.upsert("Camera", None);
-    let detector = change.upsert("Position Detector", Some(camera));
-    change.link((camera, Output, 0), (detector, Input, 0));
-    let view = change.upsert("Tracker View", Some(detector));
-    change.link((camera, Output, 0), (view, Input, 0));
-    change.link((detector, Output, 0), (view, Input, 1));
-    change.link((camera, Output, 1), (view, Input, 2));
-    change.link((view, Control, 0), (camera, Setting, 0));
-    change.link((view, Control, 1), (detector, Setting, 0));
-    let board = change.find(|n| matches!(n, Nodes::AcquisitionBoard(_)));
-    let ltx = write_ltx(&mut change, board, detector);
-    change.link((detector, Output, 0), (ltx, Input, 2));
-    change.link((ltx, Control, 0), (detector, Setting, 0));
-    change.finish(state, view)
+/// The position tracking nodes: cameras, position detectors and tracker views.
+fn position_nodes(graph: &Graph<Nodes>) -> Vec<NodeId> {
+    graph
+        .iter()
+        .filter(|(_, e)| matches!(e.node, Nodes::Camera(_) | Nodes::PositionDetector(_) | Nodes::TrackerView(_)))
+        .map(|(id, _)| id)
+        .collect()
+}
+
+/// Sets whether the position tracking nodes are disabled, if it's offered: disabling while they're all enabled,
+/// enabling while any isn't.
+fn set_positions_disabled(state: &QuickState<Nodes>, disabled: bool) -> Option<QuickChange<Nodes>> {
+    let ids = position_nodes(state.graph);
+    let any_disabled = ids.iter().any(|id| state.graph.get(*id).is_some_and(|e| e.disabled));
+    if ids.is_empty() || any_disabled == disabled {
+        return None;
+    }
+    let mut graph = state.graph.clone();
+    for id in &ids {
+        if let Some(entry) = graph.get_mut(*id) {
+            entry.disabled = disabled;
+        }
+    }
+    // Enabled, the tracker view's worth seeing.
+    let open = if disabled {
+        Vec::new()
+    } else {
+        ids.iter()
+            .copied()
+            .filter(|id| matches!(graph.get(*id).map(|e| &e.node), Some(Nodes::TrackerView(_))))
+            .collect()
+    };
+    Some(QuickChange { graph, open, arrange: false })
+}
+
+fn disable_positions(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
+    set_positions_disabled(state, true)
+}
+
+fn enable_positions(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
+    set_positions_disabled(state, false)
+}
+
+/// Sets every board and camera to the synthetic data or to real devices, if any isn't already.
+fn set_synthetic(state: &QuickState<Nodes>, synthetic: bool) -> Option<QuickChange<Nodes>> {
+    let mut graph = state.graph.clone();
+    let mut changed = false;
+    for id in graph.ids().collect::<Vec<_>>() {
+        let Some(entry) = graph.get_mut(id) else { continue };
+        match &mut entry.node {
+            Nodes::AcquisitionBoard(b) if matches!(b.source, board::Source::Fake { .. }) != synthetic => {
+                b.source = if synthetic { board::Source::default() } else { real_board() };
+                changed = true;
+            }
+            Nodes::Camera(c) if matches!(c.source, camera::Source::Fake { .. }) != synthetic => {
+                c.source = if synthetic { camera::Source::default() } else { real_camera() };
+                changed = true;
+            }
+            _ => {}
+        }
+    }
+    changed.then_some(QuickChange { graph, open: Vec::new(), arrange: false })
+}
+
+fn synthetic(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
+    set_synthetic(state, true)
+}
+
+fn real(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
+    set_synthetic(state, false)
 }
 
 #[cfg(test)]
@@ -192,40 +291,69 @@ mod tests {
 
     use super::*;
 
-    fn run(action: usize, graph: &Graph<Nodes>) -> Option<QuickChange<Nodes>> {
-        (QUICK_ACTIONS[action].run)(&QuickState { graph, open_windows: &HashSet::new() })
+    fn run(name: &str, graph: &Graph<Nodes>) -> Option<QuickChange<Nodes>> {
+        let action = QUICK_ACTIONS.iter().find(|a| a.name == name).expect("action");
+        (action.run)(&QuickState { graph, open_windows: &HashSet::new() })
     }
 
-    fn count(graph: &Graph<Nodes>, name: &str) -> usize {
-        graph.iter().filter(|(_, e)| e.node.info().name == name).count()
+    fn offered(graph: &Graph<Nodes>) -> Vec<&'static str> {
+        QUICK_ACTIONS.iter().filter(|a| run(a.name, graph).is_some()).map(|a| a.name).collect()
     }
 
     #[test]
-    fn each_adds_what_it_needs_once_and_shares_the_rest() {
-        let mut graph = Graph::default();
-        for action in 0..3 {
-            let change = run(action, &graph).expect("offered on a graph without it");
-            assert_eq!(change.open.len(), 1);
-            assert!(change.graph.get(change.open[0]).unwrap().node.has_view(), "opens a viewer");
-            graph = change.graph;
-            assert!(run(action, &graph).is_none(), "not offered again once done");
-        }
-        for (name, n) in [("Acquisition Board", 1), ("Write LTX", 1), ("Band-pass Filter", 2), ("Camera", 1)] {
-            assert_eq!(count(&graph, name), n, "{name}");
-        }
+    fn the_standard_graph_records_it_all_from_real_devices() {
+        let empty = Graph::default();
+        assert_eq!(offered(&empty), vec!["Standard LTX graph v0.5"]);
+        let change = run("Standard LTX graph v0.5", &empty).unwrap();
+        assert!(change.arrange, "a new graph is laid out");
+        assert_eq!(change.open.len(), 4, "the four viewers");
+        let graph = change.graph;
         let resolved = graph.resolve();
         assert!(graph.iter().all(|(id, e)| e.node.warnings(&resolved[&id].input_streams).is_empty()), "all connected");
-        // Write LTX records all four, and the board's digital inputs.
         let ltx = graph.iter().find(|(_, e)| e.node.info().name == "Write LTX").unwrap().0;
-        let inputs = (0..4).filter(|&i| graph.edges().iter().any(|e| e.target() == port((ltx, Input, i)))).count();
-        assert_eq!(inputs, 4);
+        let into = |i| graph.edges().iter().any(|e| e.target() == Port { node: ltx, role: Input, index: i });
+        assert!((0..4).all(into), "Write LTX records spikes, EEG, positions and digital inputs");
+        assert!(graph.iter().any(|(_, e)| matches!(&e.node, Nodes::AcquisitionBoard(b)
+            if b.source == real_board())));
+        // Then: disabling positions, and using synthetic data, are offered.
+        assert_eq!(offered(&graph), vec!["Disable position tracking", "Use synthetic data"]);
     }
 
     #[test]
-    fn the_example_already_does_them_all() {
-        let graph = crate::example_graph();
-        for (index, action) in QUICK_ACTIONS.iter().enumerate() {
-            assert!(run(index, &graph).is_none(), "{}", action.name);
-        }
+    fn positions_are_disabled_and_enabled() {
+        let graph = run("Standard LTX graph v0.5", &Graph::default()).unwrap().graph;
+        let disabled = run("Disable position tracking", &graph).unwrap().graph;
+        assert_eq!(position_nodes(&disabled).len(), 3);
+        assert!(position_nodes(&disabled).iter().all(|id| disabled.get(*id).unwrap().disabled));
+        assert!(run("Disable position tracking", &disabled).is_none());
+        // Any of it disabled, enabling's offered (and disabling isn't).
+        let mut partly = graph.clone();
+        partly.get_mut(position_nodes(&graph)[0]).unwrap().disabled = true;
+        assert!(
+            run("Enable position tracking", &partly).is_some() && run("Disable position tracking", &partly).is_none()
+        );
+        let enabled = run("Enable position tracking", &disabled).unwrap().graph;
+        assert!(position_nodes(&enabled).iter().all(|id| !enabled.get(*id).unwrap().disabled));
+    }
+
+    #[test]
+    fn synthetic_and_real_data_swap() {
+        let example = crate::example_graph();
+        // The example has all the standard graph has (and more), from the synthetic data.
+        assert_eq!(offered(&example), vec!["Disable position tracking", "Use real devices"]);
+        let real = run("Use real devices", &example).unwrap().graph;
+        assert!(run("Use real devices", &real).is_none());
+        let synthetic = run("Use synthetic data", &real).unwrap().graph;
+        let sources = |graph: &Graph<Nodes>| {
+            graph
+                .iter()
+                .filter_map(|(_, e)| match &e.node {
+                    Nodes::AcquisitionBoard(b) => Some(format!("{:?}", b.source)),
+                    Nodes::Camera(c) => Some(format!("{:?}", c.source)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert!(sources(&synthetic).iter().all(|s| s.starts_with("Fake")), "{:?}", sources(&synthetic));
     }
 }

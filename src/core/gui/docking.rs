@@ -314,7 +314,7 @@ impl Layout {
         }
     }
 
-    /// Shows or hides the annotation pane: the first time, at the right of everything, where it then stays.
+    /// Shows or hides the annotation pane: the first time, beside home (where the graph is), where it then stays.
     pub fn show_annotation_pane(&mut self, show: bool) {
         if self.is_shown(Pane::Annotation) == show {
             return;
@@ -323,15 +323,29 @@ impl Layout {
             return self.hide(Pane::Annotation);
         }
         if self.tile(Pane::Annotation).is_none() {
+            // Beside home (where the graph is), in a row with it.
             let tiles = &mut self.tree.tiles;
             let pane = tiles.insert_pane(Pane::Annotation);
             let right = tiles.insert_tab_tile(vec![pane]);
-            match self.tree.root {
-                Some(root) => {
-                    let row = Linear::new_binary(LinearDir::Horizontal, [root, right], 0.78);
-                    self.tree.root = Some(self.tree.tiles.insert_container(row));
+            match tiles.find_pane(&Pane::Home) {
+                Some(home) => {
+                    let left = tiles.parent_of(home).unwrap_or(home);
+                    let parent = tiles.parent_of(left);
+                    let row = tiles.insert_container(Linear::new_binary(LinearDir::Horizontal, [left, right], 0.75));
+                    match parent.and_then(|p| tiles.get_mut(p)) {
+                        Some(Tile::Container(container)) => {
+                            let _ = container.replace_child(left, row);
+                        }
+                        _ => self.tree.root = Some(row),
+                    }
                 }
-                None => self.tree.root = Some(right),
+                None => match self.tree.root {
+                    Some(root) => {
+                        let row = Linear::new_binary(LinearDir::Horizontal, [root, right], 0.78);
+                        self.tree.root = Some(self.tree.tiles.insert_container(row));
+                    }
+                    None => self.tree.root = Some(right),
+                },
             }
         }
         self.show(Pane::Annotation);

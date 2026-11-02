@@ -107,7 +107,7 @@ pub fn show<N: NodeSet>(
                         action.name,
                         action.description,
                         colours.text_secondary,
-                        "Add",
+                        "Apply",
                     );
                     if card.on_disabled_hover_text("Not while recording").clicked() {
                         events.push(Event::QuickAction(index));

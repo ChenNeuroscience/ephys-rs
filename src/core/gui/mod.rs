@@ -605,6 +605,14 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         let state = crate::core::quick_action::QuickState { graph: &self.graph, open_windows: &open_windows };
         let Some(change) = (action.run)(&state) else { return };
         self.graph = change.graph;
+        if change.arrange {
+            for (id, pos) in arrange::arrange(&self.graph) {
+                if let Some(entry) = self.graph.get_mut(id) {
+                    entry.pos = pos;
+                }
+            }
+            self.canvas.frame_all();
+        }
         for id in change.open {
             self.layout.open(id);
         }
@@ -1684,24 +1692,25 @@ mod tests {
         harness.run_steps(3);
         assert_eq!(harness.state().layout.mode, Mode::Basic, "it starts in the basic view");
         harness.snapshot("basic_empty");
-        for (action, viewer) in [
-            ("Add spike tracking", "Spike Viewer"),
-            ("Add EEG tracking", "LFP Viewer"),
-            ("Add position tracking", "Tracker View"),
-        ] {
-            harness.get_by_role_and_label(egui::accesskit::Role::Button, action).click();
-            harness.run_steps(3);
+        let button = egui::accesskit::Role::Button;
+        let offered = |h: &Harness<TestApp>, action: &str| h.query_by_role_and_label(button, action).is_some();
+        harness.get_by_role_and_label(button, "Standard LTX graph v0.5").click();
+        harness.run_steps(3);
+        for viewer in ["Spike Viewer", "LFP Viewer", "TTL Viewer", "Tracker View"] {
             let id = node_named(harness.state(), viewer);
-            assert_eq!(harness.state().layout.window(id), WindowState::Docked, "{action} opens the {viewer}");
-            assert!(harness.state().layout.is_shown(Pane::Home), "the basic view stays");
-            let offered = harness.query_by_role_and_label(egui::accesskit::Role::Button, action).is_some();
-            assert!(!offered, "{action} isn't offered once done");
+            assert_eq!(harness.state().layout.window(id), WindowState::Docked, "the {viewer} opens");
         }
+        assert!(harness.state().layout.is_shown(Pane::Home), "the basic view stays");
+        assert!(!offered(&harness, "Standard LTX graph v0.5"), "not offered once done");
+        assert!(offered(&harness, "Disable position tracking") && offered(&harness, "Use synthetic data"));
         harness.snapshot("basic_after_quick_actions");
-        // Undone in one step each.
+        harness.get_by_role_and_label(button, "Disable position tracking").click();
+        harness.run_steps(2);
+        assert!(offered(&harness, "Enable position tracking") && !offered(&harness, "Disable position tracking"));
+        // Undone in one step.
         harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
         harness.run_steps(2);
-        assert!(harness.query_by_role_and_label(egui::accesskit::Role::Button, "Add position tracking").is_some());
+        assert!(offered(&harness, "Disable position tracking"));
         // To the graph, and back.
         harness.get_by_label("Open the graph").click();
         harness.run_steps(2);
