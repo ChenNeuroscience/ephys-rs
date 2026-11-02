@@ -22,7 +22,7 @@ use super::style;
 use super::{Event, basic, node_window, toolbar};
 use crate::core::annotation::{AnnotationSet, Annotations};
 use crate::core::engine::{Graph, NodeId, NodeSet, Resolved, Runner, Snapshot};
-use crate::core::quick_action::QuickAction;
+use crate::core::quick_action::{Arrangement, QuickAction, Tab};
 use crate::core::theme::Colours;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
@@ -352,6 +352,57 @@ impl Layout {
         self.show(Pane::Annotation);
     }
 
+    /// Replaces the layout with `arrangement`, its windows docked and shown (those floating docked), and the
+    /// panes docked before that it doesn't place where it says (see `Tab::Others`).
+    pub fn arrange(&mut self, arrangement: &Arrangement) {
+        let placed = |pane: Pane| match pane {
+            Pane::Home => arrangement.places(Tab::Home),
+            Pane::Node(id) => arrangement.places(Tab::Window(id)),
+            _ => false,
+        };
+        let others: Vec<(Pane, bool)> = self.panes_in_order().into_iter().filter(|(pane, _)| !placed(*pane)).collect();
+        let mut tiles = Tiles::default();
+        let root = build(&mut tiles, arrangement, &others);
+        self.tree = Tree::new(self.tree.id(), root, tiles);
+        for (pane, shown) in others {
+            if !shown && let Some(tile) = self.tile(pane) {
+                self.tree.tiles.set_visible(tile, false);
+            }
+        }
+        self.floating.retain(|id| !arrangement.places(Tab::Window(*id)));
+    }
+
+    /// The docked panes, in the order they're laid out (left to right, top to bottom, tab by tab), and whether each
+    /// is shown.
+    fn panes_in_order(&self) -> Vec<(Pane, bool)> {
+        let tiles = &self.tree.tiles;
+        let mut panes = Vec::new();
+        let mut stack: Vec<(TileId, bool)> = self.tree.root.map(|r| (r, true)).into_iter().collect();
+        while let Some((tile, shown)) = stack.pop() {
+            let shown = shown && tiles.is_visible(tile);
+            match tiles.get(tile) {
+                Some(Tile::Pane(pane)) => panes.push((*pane, shown)),
+                Some(Tile::Container(container)) => {
+                    let children: Vec<TileId> = container.children().copied().collect();
+                    stack.extend(children.into_iter().rev().map(|c| (c, shown)));
+                }
+                None => {}
+            }
+        }
+        panes
+    }
+
+    /// The tab group a docked pane's in, and whether it's the tab in front.
+    #[cfg(test)]
+    pub fn tab_group(&self, pane: Pane) -> Option<(TileId, bool)> {
+        let tile = self.tile(pane)?;
+        let group = self.tree.tiles.parent_of(tile)?;
+        match self.tree.tiles.get(group) {
+            Some(Tile::Container(Container::Tabs(tabs))) => Some((group, tabs.active == Some(tile))),
+            _ => None,
+        }
+    }
+
     /// Takes a docked window out of the layout, to float.
     pub fn float(&mut self, id: NodeId) {
         if let Some(tile) = self.tile(Pane::Node(id)) {
@@ -379,6 +430,46 @@ impl Layout {
 
     pub fn ui<N: NodeSet, A: AnnotationSet>(&mut self, ui: &mut egui::Ui, panes: &mut Panes<N, A>) {
         self.tree.ui(panes, ui);
+    }
+}
+
+/// Puts `arrangement` in `tiles`, returning its top tile; `others` go where it says.
+fn build(tiles: &mut Tiles<Pane>, arrangement: &Arrangement, others: &[(Pane, bool)]) -> TileId {
+    match arrangement {
+        Arrangement::Row(parts) | Arrangement::Column(parts) => {
+            let dir =
+                if matches!(arrangement, Arrangement::Row(_)) { LinearDir::Horizontal } else { LinearDir::Vertical };
+            let children: Vec<(TileId, f32)> =
+                parts.iter().map(|(share, part)| (build(tiles, part, others), *share)).collect();
+            let mut linear = Linear::new(dir, children.iter().map(|c| c.0).collect());
+            for (child, share) in children {
+                linear.shares.set_share(child, share);
+            }
+            tiles.insert_container(linear)
+        }
+        Arrangement::Tabs { tabs, active } => {
+            let mut children = Vec::new();
+            let mut front = None;
+            for (index, tab) in tabs.iter().enumerate() {
+                let panes: Vec<Pane> = match tab {
+                    Tab::Home => vec![Pane::Home],
+                    Tab::Window(id) => vec![Pane::Node(*id)],
+                    Tab::Others => others.iter().map(|o| o.0).collect(),
+                };
+                for pane in panes {
+                    let tile = tiles.insert_pane(pane);
+                    if index == *active && front.is_none() {
+                        front = Some(tile);
+                    }
+                    children.push(tile);
+                }
+            }
+            let mut container = egui_tiles::Tabs::new(children);
+            if let Some(front) = front {
+                container.set_active(front);
+            }
+            tiles.insert_container(container)
+        }
     }
 }
 

@@ -3,7 +3,9 @@
 //! - The standard LTX graph (v0.5): an Open Ephys acquisition board (generation 1 or 2) giving spikes, EEG and digital
 //!   inputs, and a FLIR camera giving positions, all viewed, and recorded by Write LTX. It reuses what the graph
 //!   already has, adding only what's missing (and connecting only ports that are free), so it's offered until the
-//!   graph has it all.
+//!   graph has it all. It arranges the panes: the tracker view in a column at the left (with home as a tab behind
+//!   it); the spike viewer filling the rest above (with any panes open before as tabs behind it), and the LFP viewer
+//!   below that (with the TTL viewer as a tab behind it).
 //! - Disabling position tracking (the camera, position detector and tracker view), while it's all enabled; and
 //!   enabling it, while any of it isn't.
 //! - Using synthetic data (the fake board and camera in `synthetic_streams`), while any board or camera is real; and
@@ -11,7 +13,7 @@
 
 use crate::Nodes;
 use crate::core::engine::{Graph, NodeId, NodeSet, Port, Role};
-use crate::core::quick_action::{QuickAction, QuickChange, QuickState};
+use crate::core::quick_action::{Arrangement, QuickAction, QuickChange, QuickState, Tab};
 use crate::standard_components::ephys::band_pass::BandPassFilter;
 use crate::standard_components::ephys::board::{self, node::AcquisitionBoard, opal_kelly::OpalKellyKind};
 use crate::standard_components::tracking::camera::{self, node::Camera};
@@ -115,7 +117,7 @@ impl Change {
     /// does it all).
     fn finish(self, state: &QuickState<Nodes>, windows: &[NodeId]) -> Option<QuickChange<Nodes>> {
         let open = windows.iter().copied().filter(|w| !state.open_windows.contains(w)).collect();
-        self.changed.then_some(QuickChange { graph: self.graph, open, arrange: false })
+        self.changed.then_some(QuickChange { graph: self.graph, open, arrange: false, panes: None })
     }
 }
 
@@ -210,6 +212,17 @@ fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
     let mut result = change.finish(state, &[spike_viewer, lfp_viewer, ttl_viewer, tracker])?;
     // A new graph, laid out tidily.
     result.arrange = empty;
+    let tabs = |tabs: Vec<Tab>| Arrangement::Tabs { tabs, active: 0 };
+    result.panes = Some(Arrangement::Row(vec![
+        (0.3, Arrangement::Tabs { tabs: vec![Tab::Home, Tab::Window(tracker)], active: 1 }),
+        (
+            0.7,
+            Arrangement::Column(vec![
+                (0.7, tabs(vec![Tab::Window(spike_viewer), Tab::Others])),
+                (0.3, tabs(vec![Tab::Window(lfp_viewer), Tab::Window(ttl_viewer)])),
+            ]),
+        ),
+    ]));
     Some(result)
 }
 
@@ -245,7 +258,7 @@ fn set_positions_disabled(state: &QuickState<Nodes>, disabled: bool) -> Option<Q
             .filter(|id| matches!(graph.get(*id).map(|e| &e.node), Some(Nodes::TrackerView(_))))
             .collect()
     };
-    Some(QuickChange { graph, open, arrange: false })
+    Some(QuickChange { graph, open, arrange: false, panes: None })
 }
 
 fn disable_positions(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
@@ -274,7 +287,7 @@ fn set_synthetic(state: &QuickState<Nodes>, synthetic: bool) -> Option<QuickChan
             _ => {}
         }
     }
-    changed.then_some(QuickChange { graph, open: Vec::new(), arrange: false })
+    changed.then_some(QuickChange { graph, open: Vec::new(), arrange: false, panes: None })
 }
 
 fn synthetic(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {

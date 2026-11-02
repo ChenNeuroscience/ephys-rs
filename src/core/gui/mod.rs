@@ -616,8 +616,13 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             }
             self.canvas.frame_all();
         }
-        for id in change.open {
-            self.layout.open(id);
+        match &change.panes {
+            Some(panes) => self.layout.arrange(panes),
+            None => {
+                for id in change.open {
+                    self.layout.open(id);
+                }
+            }
         }
         log::info!("{}", action.name);
     }
@@ -1707,12 +1712,30 @@ mod tests {
         harness.snapshot("basic_empty");
         let button = egui::accesskit::Role::Button;
         let offered = |h: &Harness<TestApp>, action: &str| h.query_by_role_and_label(button, action).is_some();
+        // A pane open before goes behind the spike viewer.
+        harness.state_mut().layout.toggle_pane(Pane::DevTools);
+        harness.run_steps(2);
         harness.get_by_role_and_label(button, "Standard LTX graph v0.5").click();
         harness.run_steps(3);
         for viewer in ["Spike Viewer", "LFP Viewer", "TTL Viewer", "Tracker View"] {
             let id = node_named(harness.state(), viewer);
             assert_eq!(harness.state().layout.window(id), WindowState::Docked, "the {viewer} opens");
         }
+        let group = |h: &Harness<TestApp>, viewer: &str| {
+            let id = node_named(h.state(), viewer);
+            h.state().layout.tab_group(Pane::Node(id)).unwrap()
+        };
+        let layout = &harness.state().layout;
+        let (tracker, spikes, eeg) =
+            (group(&harness, "Tracker View"), group(&harness, "Spike Viewer"), group(&harness, "LFP Viewer"));
+        assert!(tracker.1 && spikes.1 && eeg.1, "the viewers in front");
+        assert_eq!(layout.tab_group(Pane::Home), Some((tracker.0, false)), "home behind the tracker");
+        assert_eq!(layout.tab_group(Pane::DevTools), Some((spikes.0, false)), "the dev tools behind the spikes");
+        assert_eq!(group(&harness, "TTL Viewer"), (eeg.0, false), "the TTLs behind the EEG");
+        harness.snapshot("standard_ltx_layout");
+        harness.state_mut().layout.toggle_pane(Pane::DevTools);
+        harness.state_mut().layout.show(Pane::Home);
+        harness.run_steps(2);
         assert!(harness.state().layout.is_shown(Pane::Home), "the basic view stays");
         assert!(!offered(&harness, "Standard LTX graph v0.5"), "not offered once done");
         assert!(offered(&harness, "Disable position tracking") && offered(&harness, "Use synthetic data"));

@@ -118,8 +118,13 @@ pub trait NodeToolbar {
     fn delete_button(&mut self, ui: &mut egui::Ui) -> egui::Response;
 
     /// All of them, in a row, laid out right to left (for the right of a toolbar): copy and paste; shown in the
-    /// basic view, and enabled; delete.
+    /// basic view, and enabled; delete. In a wrapping toolbar, on a row of their own if there isn't room left.
     fn toolbar(&mut self, ui: &mut egui::Ui) {
+        let width_id = ui.scope_id().with("node toolbar width");
+        let width: f32 = ui.data(|d| d.get_temp(width_id)).unwrap_or(0.0);
+        if ui.available_size_before_wrap().x < width {
+            ui.end_row();
+        }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             self.delete_button(ui);
@@ -129,6 +134,8 @@ pub trait NodeToolbar {
             ui.separator();
             self.paste_button(ui);
             self.copy_button(ui);
+            let width = ui.min_rect().width();
+            ui.data_mut(|d| d.insert_temp(width_id, width));
         });
     }
 }
