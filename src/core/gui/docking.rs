@@ -520,15 +520,18 @@ fn annotation_ui<A: AnnotationSet>(
         None => {}
         Some(id) if count == 1 => {
             let Some(annotation) = annotations.get_mut(*id) else { return };
-            ui.heading(annotation.kind.info().name);
-            ui.add_space(4.0);
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                annotation.kind.settings_ui(ui);
-                ui.add_space(8.0);
-                if ui.button("Delete").clicked() {
-                    events.push(Event::DeleteAnnotation(*id));
-                }
+            ui.horizontal(|ui| {
+                ui.heading(annotation.kind.info().name);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let delete = toolbar::small_icon_button(ui, Icon::Delete, "Delete", "Delete this annotation");
+                    if delete.clicked() {
+                        events.push(Event::DeleteAnnotation(*id));
+                    }
+                });
             });
+            ui.add_space(4.0);
+            // Its settings have all the room there is (a markdown note's text fills it).
+            annotation.kind.settings_ui(ui);
         }
         Some(_) => {
             ui.heading(format!("{count} annotations"));

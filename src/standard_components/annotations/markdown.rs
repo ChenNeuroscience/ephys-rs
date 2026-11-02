@@ -69,6 +69,76 @@ impl Markdown {
     }
 }
 
+/// The cheat sheet's name, and what it says: markdown, and what it gives.
+const CHEAT_SHEET: &str = "Markdown cheat sheet";
+const CHEATS: &[(&str, &str)] = &[
+    ("# Heading", "a heading (## and ### smaller)"),
+    ("**bold**", "bold"),
+    ("*italic*", "italic"),
+    ("`code`", "code"),
+    ("- item", "a list"),
+    ("1. item", "a numbered list"),
+    ("[text](https://…)", "a link"),
+    ("![name](address)", "an image"),
+    ("> quote", "a quote"),
+    ("```", "a block of code, between two"),
+    ("---", "a line across"),
+];
+
+/// Markdown, briefly, under a header to open it.
+fn cheat_sheet(ui: &mut egui::Ui) {
+    egui::CollapsingHeader::new(CHEAT_SHEET).id_salt(CHEAT_SHEET).show(ui, |ui| {
+        egui::Grid::new("markdown cheats").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
+            for (markdown, gives) in CHEATS {
+                ui.label(RichText::new(*markdown).monospace());
+                ui.label(RichText::new(*gives).small().weak());
+                ui.end_row();
+            }
+        });
+    });
+}
+
+impl Markdown {
+    /// The text, to edit, in `size`.
+    fn editor(&mut self, ui: &mut egui::Ui, size: egui::Vec2) {
+        let label = ui.label(RichText::new("Markdown").small().weak());
+        egui::ScrollArea::vertical().id_salt("markdown text").max_height(size.y - 20.0).show(ui, |ui| {
+            let edit = egui::TextEdit::multiline(&mut self.text)
+                .code_editor()
+                .desired_width(size.x)
+                .min_size(egui::vec2(size.x, size.y - 24.0));
+            ui.add(edit).labelled_by(label.id);
+        });
+    }
+
+    /// Its images: each, to remove, and a button to add one from a file.
+    fn images_ui(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Images").small().weak());
+            let tip = "Add an image from a file (or paste one in while editing the note)";
+            if super::icon_button(ui, "Add an image", tip, |p, r| super::image::Image::paint_icon(p, r)).clicked() {
+                self.add_image_file();
+            }
+        });
+        if self.attachments.is_empty() {
+            ui.label(RichText::new("None yet: paste one in while editing the note, or add one").small().weak());
+        }
+        let mut remove = None;
+        for (name, base64) in &self.attachments {
+            ui.horizontal(|ui| {
+                let tip = format!("Remove {name}");
+                if super::icon_button(ui, &tip, &tip, super::paint_cross).clicked() {
+                    remove = Some(name.clone());
+                }
+                ui.label(RichText::new(format!("{name} ({:.0} kB)", base64.len() as f64 * 0.75 / 1e3)).small());
+            });
+        }
+        if let Some(name) = remove {
+            self.attachments.remove(&name);
+        }
+    }
+}
+
 impl AnnotationType for Markdown {
     const INFO: AnnotationInfo = AnnotationInfo {
         name: "Markdown",
@@ -125,31 +195,35 @@ impl AnnotationType for Markdown {
         }
     }
 
+    /// The text, filling most of the pane; its images (to add from a file, or remove); and a cheat sheet. Side by
+    /// side if the pane is wide, otherwise one above another.
     fn settings_ui(&mut self, ui: &mut egui::Ui) {
-        let label = ui.label(RichText::new("Markdown").small().weak());
-        ui.add(egui::TextEdit::multiline(&mut self.text).code_editor().desired_rows(12).desired_width(f32::INFINITY))
-            .labelled_by(label.id);
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("Images").small().weak());
-            if ui.small_button("Add from file…").clicked() {
-                self.add_image_file();
-            }
-        });
-        if self.attachments.is_empty() {
-            ui.weak("Paste an image while editing the note to attach it.");
-        }
-        let mut remove = None;
-        for (name, base64) in &self.attachments {
-            ui.horizontal(|ui| {
-                ui.label(format!("{name} ({:.0} kB)", base64.len() as f64 * 0.75 / 1e3));
-                if ui.small_button("Remove").clicked() {
-                    remove = Some(name.clone());
-                }
+        let size = ui.available_size();
+        let wide = size.x > 1.3 * size.y && size.x > 560.0;
+        if wide {
+            let side = 260.0;
+            ui.horizontal_top(|ui| {
+                let editor = egui::vec2(ui.available_width() - side - 12.0, ui.available_height());
+                ui.vertical(|ui| self.editor(ui, editor));
+                ui.vertical(|ui| {
+                    ui.set_width(side);
+                    self.images_ui(ui);
+                    ui.add_space(6.0);
+                    cheat_sheet(ui);
+                });
             });
-        }
-        if let Some(name) = remove {
-            self.attachments.remove(&name);
+        } else {
+            // Room below the text for the images (and the cheat sheet, if it's open).
+            let cheat_open =
+                egui::collapsing_header::CollapsingState::load(ui.ctx(), ui.make_persistent_id(CHEAT_SHEET))
+                    .is_some_and(|s| s.is_open());
+            let below = 70.0 + 22.0 * self.attachments.len() as f32 + if cheat_open { 250.0 } else { 0.0 };
+            let editor = egui::vec2(ui.available_width(), (size.y - below).max(120.0));
+            self.editor(ui, editor);
+            ui.add_space(6.0);
+            self.images_ui(ui);
+            ui.add_space(4.0);
+            cheat_sheet(ui);
         }
     }
 

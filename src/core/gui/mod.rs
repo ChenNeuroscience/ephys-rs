@@ -1630,6 +1630,10 @@ mod tests {
         assert!(harness.state().layout.is_shown(Pane::Annotation));
         assert!(harness.query_all_by_label("Markdown").next().is_some(), "the note's settings");
         harness.snapshot("annotation_pane");
+        assert!(harness.query_by_label("Add an image").is_some());
+        harness.get_by_label("Markdown cheat sheet").click();
+        harness.run_steps(2);
+        assert!(harness.query_by_label("a numbered list").is_some(), "the cheat sheet opens");
         harness.state_mut().selection.clear();
         harness.run_steps(3);
         assert!(!harness.state().layout.is_shown(Pane::Annotation));
