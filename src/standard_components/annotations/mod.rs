@@ -129,6 +129,32 @@ pub fn image_uri(ctx: &egui::Context, base64: &str) -> String {
     uri
 }
 
+/// A small, flat button showing an icon (painted by `paint` into a 16-point square), named `label` for screen
+/// readers, with `tooltip` on hover.
+pub fn icon_button(
+    ui: &mut egui::Ui,
+    label: &str,
+    tooltip: &str,
+    paint: impl Fn(&egui::Painter, egui::Rect),
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::click());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label));
+    if response.hovered() {
+        ui.painter().rect_filled(rect, 3.0, ui.visuals().widgets.hovered.weak_bg_fill);
+    }
+    paint(ui.painter(), egui::Rect::from_center_size(rect.center(), egui::vec2(16.0, 16.0)));
+    response.on_hover_text(tooltip)
+}
+
+/// A red cross, for removing something.
+pub fn paint_cross(painter: &egui::Painter, rect: egui::Rect) {
+    let s = rect.width() / 16.0;
+    let p = |x: f32, y: f32| rect.min + egui::vec2(x, y) * s;
+    let stroke = egui::Stroke::new(1.8 * s, egui::Color32::from_rgb(214, 72, 64));
+    painter.line_segment([p(4.0, 4.0), p(12.0, 12.0)], stroke);
+    painter.line_segment([p(12.0, 4.0), p(4.0, 12.0)], stroke);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,30 +184,4 @@ mod tests {
         let shown = note.shown(&ctx);
         assert!(shown.starts_with("![image1.png](bytes://ephys-rs-image-"), "{shown}");
     }
-}
-
-/// A small, flat button showing an icon (painted by `paint` into a 16-point square), named `label` for screen
-/// readers, with `tooltip` on hover.
-pub fn icon_button(
-    ui: &mut egui::Ui,
-    label: &str,
-    tooltip: &str,
-    paint: impl Fn(&egui::Painter, egui::Rect),
-) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::click());
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label));
-    if response.hovered() {
-        ui.painter().rect_filled(rect, 3.0, ui.visuals().widgets.hovered.weak_bg_fill);
-    }
-    paint(ui.painter(), egui::Rect::from_center_size(rect.center(), egui::vec2(16.0, 16.0)));
-    response.on_hover_text(tooltip)
-}
-
-/// A red cross, for removing something.
-pub fn paint_cross(painter: &egui::Painter, rect: egui::Rect) {
-    let s = rect.width() / 16.0;
-    let p = |x: f32, y: f32| rect.min + egui::vec2(x, y) * s;
-    let stroke = egui::Stroke::new(1.8 * s, egui::Color32::from_rgb(214, 72, 64));
-    painter.line_segment([p(4.0, 4.0), p(12.0, 12.0)], stroke);
-    painter.line_segment([p(12.0, 4.0), p(4.0, 12.0)], stroke);
 }

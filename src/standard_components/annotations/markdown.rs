@@ -116,7 +116,7 @@ impl Markdown {
         ui.horizontal(|ui| {
             ui.label(RichText::new("Images").small().weak());
             let tip = "Add an image from a file (or paste one in while editing the note)";
-            if super::icon_button(ui, "Add an image", tip, |p, r| super::image::Image::paint_icon(p, r)).clicked() {
+            if super::icon_button(ui, "Add an image", tip, super::image::Image::paint_icon).clicked() {
                 self.add_image_file();
             }
         });
