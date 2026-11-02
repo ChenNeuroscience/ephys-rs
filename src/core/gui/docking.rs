@@ -54,6 +54,9 @@ impl Mode {
     }
 }
 
+/// The narrowest and shortest a pane can be dragged to.
+const MIN_PANE: f32 = 300.0;
+
 /// How wide the basic view is left, beside the first window opened from it.
 const BASIC_WIDTH: f32 = 360.0;
 
@@ -543,6 +546,11 @@ impl<N: NodeSet, A: AnnotationSet> egui_tiles::Behavior<Pane> for Panes<'_, N, A
 
     fn drag_preview_color(&self, _visuals: &egui::Visuals) -> egui::Color32 {
         self.colours.accent.gamma_multiply(0.35)
+    }
+
+    /// No pane (or group of them) is dragged narrower or shorter than this.
+    fn min_size(&self) -> f32 {
+        MIN_PANE
     }
 
     fn pane_ui(&mut self, ui: &mut egui::Ui, _tile: TileId, pane: &mut Pane) -> UiResponse {

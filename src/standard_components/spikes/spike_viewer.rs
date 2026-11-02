@@ -445,8 +445,16 @@ impl SpikeViewer {
         let (k, samples) = (stream.group_size.max(1) as usize, stream.waveform_samples() as usize);
         let height = self.plot_height.clamp(40.0, 600.0);
         let plot = egui::vec2(height * ASPECT, height);
-        let (header, gap) = (16.0, 8.0);
-        let tile = egui::vec2(plot.x * k as f32, header + plot.y);
+        // Each group on a card of its own: a title, then its plots, with room around them.
+        let (header, pad, gap) = (22.0, 6.0, 16.0);
+        let tile = egui::vec2(plot.x * k as f32 + 2.0 * pad, header + plot.y + pad);
+        let kind = match k {
+            1 => "Channel",
+            2 => "Stereotrode",
+            4 => "Tetrode",
+            8 => "Octrode",
+            _ => "Group",
+        };
         let typing_id = ui.scope_id().with("typing");
         let mut typing: Option<Typing> = ui.data(|d| d.get_temp(typing_id));
 
@@ -466,14 +474,21 @@ impl SpikeViewer {
                     + egui::vec2((i % columns) as f32, (i / columns) as f32) * (tile + egui::vec2(gap, gap));
                 let count = display.map_or(0, |d| d.count[i]);
                 let total = display.map(|d| d.total[i]);
-                let label = match total {
-                    Some(total) => format!("{} · {total} spikes", group + 1),
-                    None => format!("{}", group + 1),
-                };
-                painter.text(min, Align2::LEFT_TOP, label, FontId::monospace(10.0), theme.text_secondary);
+                let card = Rect::from_min_size(min, tile);
+                painter.rect(card, 6.0, theme.surface_raised, Stroke::new(1.0, theme.border), egui::StrokeKind::Inside);
+                let title_y = min.y + header / 2.0;
+                let title = format!("{kind} {}", group + 1);
+                let left = egui::pos2(min.x + pad + 2.0, title_y);
+                painter.text(left, Align2::LEFT_CENTER, title, FontId::proportional(13.0), theme.text_primary);
+                if let Some(total) = total {
+                    let right = egui::pos2(card.right() - pad - 2.0, title_y);
+                    let spikes = format!("{total} spikes");
+                    painter.text(right, Align2::RIGHT_CENTER, spikes, FontId::monospace(10.0), theme.text_secondary);
+                }
                 for (c, channel) in stream.group_channels(group as u32).enumerate() {
                     let channel = channel as usize;
-                    let rect = Rect::from_min_size(min + egui::vec2(c as f32 * plot.x, header), plot);
+                    let rect = Rect::from_min_size(min + egui::vec2(pad + c as f32 * plot.x, header), plot);
+                    painter.rect_filled(rect, 0.0, theme.surface_sunken);
                     let waveforms = display.map(|d| {
                         let size = k * samples;
                         (0..count).map(move |age| &d.waveforms[offset + age * size + c * samples..][..samples])
