@@ -155,6 +155,15 @@ pub struct NodeThread {
     pub name: &'static str,
     /// How the thread and the node's passes hand data to each other, e.g. "block queue".
     pub link: &'static str,
+    /// Which way the data goes: to the passes (from a board, say) or from them (to disk).
+    pub flow: Flow,
+}
+
+/// Which way data goes between a node's thread and its passes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Flow {
+    ToPasses,
+    FromPasses,
 }
 
 /// What a node's drawing of one of its threads (in the dev tools) gets to work with.

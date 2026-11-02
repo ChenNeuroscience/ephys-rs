@@ -8,7 +8,7 @@ use super::capture::{self, Capture, State, Status};
 use super::{
     AUX_PER_HEADSTAGE, Bandwidth, Block, BoardInfo, Config, Headstage, OpalKellyKind, PORTS, SAMPLE_RATES, Source,
 };
-use crate::core::engine::{Category, Context, Node, NodeInfo, NodeThread, Output, Pass, ThreadContext};
+use crate::core::engine::{Category, Context, Flow, Node, NodeInfo, NodeThread, Output, Pass, ThreadContext};
 use crate::core::exchange::Latest;
 use crate::standard_components::ephys::{Continuous, Event, Events};
 use crate::standard_components::widgets::{named_settings_grid, queue_ui, setting, settings_grid};
@@ -141,7 +141,7 @@ impl Node<Edges> for AcquisitionBoard {
     }
 
     fn threads(&self) -> Vec<NodeThread> {
-        vec![NodeThread { name: "Board capture", link: "block queue" }]
+        vec![NodeThread { name: "Board capture", link: "block queue", flow: Flow::ToPasses }]
     }
 
     fn thread_ui(&self, _thread: usize, ui: &mut egui::Ui, context: &ThreadContext) {

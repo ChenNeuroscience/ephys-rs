@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use super::npy::Npy;
 use super::{Files, Status, Writing, path_in, session_name, status_ui};
 use crate::core::engine::{
-    Category, Context, CopyTo, EdgeSet, Input, Node, NodeInfo, NodeThread, Output, Pass, ThreadContext,
+    Category, Context, CopyTo, EdgeSet, Flow, Input, Node, NodeInfo, NodeThread, Output, Pass, ThreadContext,
 };
 use crate::core::exchange::Latest;
 use crate::standard_components::ephys::board::EPHYS_MICROVOLTS_PER_BIT;
@@ -99,7 +99,7 @@ impl Node<Edges> for WriteRaw {
     }
 
     fn threads(&self) -> Vec<NodeThread> {
-        vec![NodeThread { name: "Raw writer", link: "chunk queue" }]
+        vec![NodeThread { name: "Raw writer", link: "chunk queue", flow: Flow::FromPasses }]
     }
 
     fn thread_ui(&self, _thread: usize, ui: &mut egui::Ui, context: &ThreadContext) {

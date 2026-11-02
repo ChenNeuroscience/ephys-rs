@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 
 use super::capture::{self, Capture, State};
 use super::{CameraControls, CameraSettings, CameraStats, CaptureStats, Control, Range, Source};
-use crate::core::engine::{Category, Context, Node, NodeInfo, NodeThread, Output, Pass, SettingPort, ThreadContext};
+use crate::core::engine::{
+    Category, Context, Flow, Node, NodeInfo, NodeThread, Output, Pass, SettingPort, ThreadContext,
+};
 use crate::core::exchange::Latest;
 use crate::standard_components::tracking::Video;
 use crate::standard_components::widgets::{queue_ui, setting, settings_grid};
@@ -73,7 +75,7 @@ impl Node<Edges> for Camera {
     }
 
     fn threads(&self) -> Vec<NodeThread> {
-        vec![NodeThread { name: "Camera capture", link: "frame queue" }]
+        vec![NodeThread { name: "Camera capture", link: "frame queue", flow: Flow::ToPasses }]
     }
 
     fn thread_ui(&self, _thread: usize, ui: &mut egui::Ui, context: &ThreadContext) {

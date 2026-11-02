@@ -19,8 +19,8 @@ use std::sync::Arc;
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Shape, Stroke, Vec2, vec2};
 
 use crate::core::engine::{
-    CopyTo, EdgeSet, Edges, Graph, NodeId, NodeSet, PASS_DURATION, Plan, Resolved, RunInfo, Runner, Snapshot, Step,
-    ThreadContext,
+    CopyTo, EdgeSet, Edges, Flow, Graph, NodeId, NodeSet, PASS_DURATION, Plan, Resolved, RunInfo, Runner, Snapshot,
+    Step, ThreadContext,
 };
 use crate::core::gui::style;
 use crate::core::theme::Colours;
@@ -45,7 +45,7 @@ struct Anchors {
     /// Nodes' displays, in the GUI's container.
     displays: Vec<(NodeId, Rect)>,
     /// Nodes' threads, and how each hands data to the node's passes.
-    node_threads: Vec<(NodeId, Rect, &'static str)>,
+    node_threads: Vec<(NodeId, Rect, &'static str, Flow)>,
 }
 
 pub fn show<N: NodeSet>(
@@ -641,7 +641,7 @@ fn node_threads<N: NodeSet>(
                     ui.add_space(2.0);
                     entry.node.thread_ui(index, ui, &ThreadContext { theme: colours, display });
                 });
-                anchors.node_threads.push((step.id, rect, thread.link));
+                anchors.node_threads.push((step.id, rect, thread.link, thread.flow));
                 ui.add_space(12.0);
             };
             let shown = runner.and_then(|r| r.exchange().with_latest(step.id, |d| draw(ui, Some(d))));
@@ -718,14 +718,25 @@ fn links(ui: &egui::Ui, colours: &Colours, anchors: &Anchors, wide: bool) {
             round(ends(*step).0, ends(*display).0, deeper());
         }
     }
-    for (id, thread, how) in &anchors.node_threads {
+    // Pointing the way the data goes: to the passes from a board, say, or from them to a writer.
+    for (id, thread, how, flow) in &anchors.node_threads {
         let Some(step) = anchors.steps.get(id) else { continue };
+        let to_passes = *flow == Flow::ToPasses;
         if wide {
-            let from = thread.left_center();
-            across(from, ends(*step).1);
-            label(from + vec2(-6.0, -4.0), Align2::RIGHT_BOTTOM, how);
+            let (at_thread, at_step) = (thread.left_center(), ends(*step).1);
+            if to_passes {
+                across(at_thread, at_step)
+            } else {
+                across(at_step, at_thread)
+            }
+            label(at_thread + vec2(-6.0, -4.0), Align2::RIGHT_BOTTOM, how);
         } else {
-            round(thread.left_center(), ends(*step).0, deeper());
+            let (at_thread, at_step, depth) = (thread.left_center(), ends(*step).0, deeper());
+            if to_passes {
+                round(at_thread, at_step, depth)
+            } else {
+                round(at_step, at_thread, depth)
+            }
             label(thread.left_top() + vec2(10.0, -2.0), Align2::LEFT_BOTTOM, how);
         }
     }
