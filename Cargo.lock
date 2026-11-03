@@ -976,7 +976,7 @@ checksum = "cfc1cc505827f4c23eedc297975a0fd038268d41293f389dd8ff3b574aefab19"
 
 [[package]]
 name = "ephys-rs"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "arboard",
  "base64",

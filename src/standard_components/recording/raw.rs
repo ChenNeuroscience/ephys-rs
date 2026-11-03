@@ -133,7 +133,13 @@ impl Node<Edges> for WriteRaw {
     }
 
     fn threads(&self) -> Vec<NodeThread> {
-        vec![NodeThread { name: "Raw writer", link: "buffer pool", flow: Flow::FromPasses, why: super::WHY_A_THREAD }]
+        vec![NodeThread {
+            name: "Raw writer",
+            link: "buffer pool",
+            flow: Flow::FromPasses,
+            why: super::WHY_A_THREAD,
+            swaps: true,
+        }]
     }
 
     /// Its buffers are its own to take, if nothing else needs them after it: it swaps them into the chunk for its

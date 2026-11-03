@@ -29,7 +29,7 @@ use crate::core::theme::Colours;
 type DataStream<N> = <<N as NodeSet>::Edges as Edges>::DataStream;
 
 /// Room between the columns of threads, for the links between them.
-const GAP: f32 = 96.0;
+const GAP: f32 = 150.0;
 /// Room to the left of the threads, one above another, for the links between them.
 const GUTTER: f32 = 60.0;
 /// The width it takes to show the threads side by side.
@@ -50,6 +50,8 @@ struct NodeThreadAnchor {
 #[derive(Default)]
 struct Anchors {
     dispatcher: Option<Rect>,
+    /// Passes waiting on the queue, and how many can.
+    queue_status: Option<(usize, usize)>,
     /// The workers' first step, taking a pass off the queue.
     queue: Option<Rect>,
     steps: HashMap<NodeId, Rect>,
@@ -217,6 +219,8 @@ enum Glyph {
     InPlace,
     /// A queue between threads.
     Queue,
+    /// Buffers swapped with another thread's, rather than copied.
+    Swap,
 }
 
 fn glyph(painter: &egui::Painter, rect: Rect, glyph: Glyph, colour: Color32) {
@@ -255,6 +259,13 @@ fn glyph(painter: &egui::Painter, rect: Rect, glyph: Glyph, colour: Color32) {
             for x in [1.0, 4.5, 8.0] {
                 painter.rect_filled(Rect::from_min_max(p(x, 3.0), p(x + 2.5, 9.0)), 0.5, colour);
             }
+        }
+        Glyph::Swap => {
+            // Two arrows, each way.
+            painter.line_segment([p(1.0, 4.0), p(10.0, 4.0)], line);
+            painter.add(Shape::convex_polygon(vec![p(11.5, 4.0), p(8.5, 1.8), p(8.5, 6.2)], colour, Stroke::NONE));
+            painter.line_segment([p(11.0, 8.5), p(2.0, 8.5)], line);
+            painter.add(Shape::convex_polygon(vec![p(0.5, 8.5), p(3.5, 6.3), p(3.5, 10.7)], colour, Stroke::NONE));
         }
     }
 }
@@ -322,23 +333,12 @@ fn dispatcher<N: NodeSet>(ui: &mut egui::Ui, colours: &Colours, info: Option<&Ru
             return;
         };
         ui.label(small(format!("Next pass p{}", info.next_pass), colours.text_primary));
-        let queued = info.running.as_ref().map_or(0, |e| e.queued);
-        ui.horizontal(|ui| {
-            ui.add(
-                egui::Label::new(small(format!("Queued {queued} of {}", info.queue_capacity), colours.text_secondary))
-                    .extend(),
-            );
-            let (bar, _) = ui.allocate_exact_size(vec2(60.0, 6.0), Sense::hover());
-            ui.painter().rect_filled(bar, 2.0, colours.surface_sunken);
-            let filled = queued as f32 / info.queue_capacity.max(1) as f32;
-            let fill = if filled >= 1.0 { colours.warning } else { colours.accent };
-            ui.painter().rect_filled(bar.with_max_x(bar.left() + bar.width() * filled.min(1.0)), 2.0, fill);
-        });
         let dropped = info.stats.dropped;
         let colour = if dropped > 0 { colours.warning } else { colours.text_secondary };
         ui.label(small(format!("{dropped} dropped (queue full)"), colour));
     });
     anchors.dispatcher = Some(rect);
+    anchors.queue_status = info.map(|i| (i.running.as_ref().map_or(0, |e| e.queued), i.queue_capacity));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -526,8 +526,32 @@ fn step_row<N: NodeSet>(
             }
         }
     }
+    // A node whose thread swaps buffers with the passes: a source's passes take what it's filled; a writer's hand it
+    // what they're given (if they can take it all: otherwise they copy).
+    let threads = graph.get(step.id).map(|e| e.node.threads()).unwrap_or_default();
+    let swaps_in = threads.iter().any(|t| t.swaps && t.flow == Flow::ToPasses);
+    let taken_all = step.inputs.iter().zip(&step.takes).all(|(input, &takes)| input.is_none() || takes);
+    let swaps_out = threads.iter().any(|t| t.swaps && t.flow == Flow::FromPasses) && taken_all;
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        if swaps_in {
+            badge(
+                ui,
+                Glyph::Swap,
+                colours.success,
+                "Swap point: takes the buffers its thread filled, from their pool, swapping them for the pass's own \
+                 (which go back to the pool, freed, to be filled again). Nothing's copied",
+            );
+        }
         match step.copies {
+            Some(CopyTo::Thread) if swaps_out => {
+                badge(
+                    ui,
+                    Glyph::Swap,
+                    colours.success,
+                    "Swap point: swaps the buffers it takes into its thread's, from their pool, for it to write (and \
+                     free, back to the pool, once written). Nothing's copied",
+                );
+            }
             Some(CopyTo::Window) => {
                 badge(
                     ui,
@@ -665,7 +689,14 @@ fn pos2_between(a: Pos2, b: Pos2) -> Pos2 {
 /// streams (dots in their colours, as the workers' buffers are shown), its size and how many; then a square for each
 /// buffer, full ones first, then the one being filled (or written), then the empty ones (the rest being the
 /// workers', for now). Hover for the counts.
-fn pool_ui(ui: &egui::Ui, colours: &Colours, pool: PoolStatus, dots: &[Color32], at: (Pos2, Align2), id: egui::Id) {
+fn pool_ui(
+    ui: &egui::Ui,
+    colours: &Colours,
+    pool: PoolStatus,
+    dots: &[Color32],
+    at: (Pos2, Align2),
+    id: egui::Id,
+) -> Rect {
     const ACROSS: usize = 10;
     const SQUARE: f32 = 5.0;
     const STEP: f32 = 6.0;
@@ -711,6 +742,35 @@ fn pool_ui(ui: &egui::Ui, colours: &Colours, pool: PoolStatus, dots: &[Color32],
         painter.rect_stroke(rect, 4.0, Stroke::new(1.5, colours.error), egui::StrokeKind::Inside);
     }
     let _ = ui.interact(rect, id, Sense::hover()).on_hover_text(tip);
+    rect
+}
+
+/// The pass queue, between the dispatcher and the workers, as a box at `at`: a square for each place in it, filled for
+/// each pass waiting.
+fn queue_ui(ui: &egui::Ui, colours: &Colours, queued: usize, capacity: usize, at: Pos2) {
+    const STEP: f32 = 7.0;
+    let painter = ui.painter();
+    let galley =
+        painter.layout_no_wrap(format!("{queued} of {capacity}"), FontId::monospace(9.5), colours.text_secondary);
+    let squares = vec2(capacity.max(1) as f32 * STEP - 1.0, 6.0);
+    let inner = vec2(galley.size().x.max(squares.x), galley.size().y + 4.0 + squares.y);
+    let rect = Rect::from_center_size(at, inner + vec2(10.0, 10.0));
+    painter.rect(rect, 4.0, colours.surface_raised, Stroke::new(1.0, colours.border), egui::StrokeKind::Inside);
+    painter.galley(rect.min + vec2(5.0, 5.0), galley.clone(), colours.text_secondary);
+    let top = rect.min + vec2(5.0, 5.0 + galley.size().y + 4.0);
+    for i in 0..capacity {
+        let square = Rect::from_min_size(top + vec2(i as f32 * STEP, 0.0), Vec2::splat(STEP - 1.0));
+        if i < queued {
+            painter.rect_filled(square, 1.0, colours.accent);
+        } else {
+            painter.rect_stroke(square, 1.0, Stroke::new(1.0, colours.text_disabled), egui::StrokeKind::Inside);
+        }
+    }
+    let tip = format!(
+        "The pass queue: the dispatcher puts each pass on it when its time's up, and a free worker takes it off. {queued} \
+         waiting, of the {capacity} that can: beyond that, passes are dropped. Each epoch has its own."
+    );
+    let _ = ui.interact(rect, ui.scope_id().with("pass queue box"), Sense::hover()).on_hover_text(tip);
 }
 
 fn legend(ui: &mut egui::Ui, colours: &Colours) {
@@ -720,6 +780,7 @@ fn legend(ui: &mut egui::Ui, colours: &Colours) {
             (Glyph::Sync, colours.warning, "sync point"),
             (Glyph::Copy, colours.accent, "copy point"),
             (Glyph::InPlace, colours.success, "made in place"),
+            (Glyph::Swap, colours.success, "swapped, not copied"),
             (Glyph::Queue, colours.text_secondary, "queue"),
         ] {
             badge(ui, which, colour, text);
@@ -822,6 +883,7 @@ fn links(ui: &egui::Ui, colours: &Colours, anchors: &Anchors, wide: bool) {
         depth = if depth >= GUTTER - 8.0 { 14.0 } else { depth + 9.0 };
         depth
     };
+    let mut queue_box = None;
     if let (Some(dispatcher), Some(queue)) = (anchors.dispatcher, anchors.queue) {
         let (from, to) =
             if wide { (dispatcher.right_center(), ends(queue).0) } else { (dispatcher.left_center(), ends(queue).0) };
@@ -832,6 +894,8 @@ fn links(ui: &egui::Ui, colours: &Colours, anchors: &Anchors, wide: bool) {
             round(from, to, deeper());
             label(from - vec2(6.0, 10.0), Align2::RIGHT_CENTER, "pass queue");
         }
+        // Belonging to neither thread, but between them (drawn last, over the other links).
+        queue_box = anchors.queue_status.filter(|_| wide).map(|status| (status, pos2_between(from, to)));
     }
     for (index, (id, display)) in anchors.displays.iter().enumerate() {
         let Some(step) = anchors.steps.get(id) else { continue };
@@ -872,7 +936,33 @@ fn links(ui: &egui::Ui, colours: &Colours, anchors: &Anchors, wide: bool) {
             (thread.right_top() + vec2(-10.0, 10.0), Align2::RIGHT_TOP)
         };
         if let Some((pool, dots)) = pool {
-            pool_ui(ui, colours, *pool, dots, pool_at, ui.scope_id().with(("pool", index)));
+            let rect = pool_ui(ui, colours, *pool, dots, pool_at, ui.scope_id().with(("pool", index)));
+            // Buffers freed back to the pool, by whoever's done with them: the passes give back their own old ones
+            // as they swap in a source's; a writer's thread, those it's written.
+            let giver = if to_passes { ends(*step).1 } else { thread.left_center() };
+            let giver = if wide { giver + vec2(0.0, 10.0) } else { thread.left_center() + vec2(0.0, 10.0) };
+            let to = if giver.x < rect.center().x {
+                rect.left_bottom() + vec2(6.0, 0.0)
+            } else {
+                rect.right_bottom() - vec2(6.0, 0.0)
+            };
+            let bend = vec2(0.0, 18.0);
+            let curve = egui::epaint::CubicBezierShape::from_points_stroke(
+                [giver, giver + bend, to + bend, to],
+                false,
+                Color32::TRANSPARENT,
+                Stroke::NONE,
+            );
+            let points = curve.flatten(Some(0.5));
+            let dashed = Shape::dashed_line(&points, Stroke::new(1.0, colour), 3.0, 3.0);
+            painter.extend(dashed);
+            let tip = vec![to, to + vec2(-3.5, 6.0), to + vec2(3.5, 6.0)];
+            painter.add(Shape::convex_polygon(tip, colour, Stroke::NONE));
+            let middle = pos2_between(giver, to) + vec2(0.0, 14.0);
+            label(middle, Align2::CENTER_CENTER, "freed");
         }
+    }
+    if let Some(((queued, capacity), at)) = queue_box {
+        queue_ui(ui, colours, queued, capacity, at);
     }
 }

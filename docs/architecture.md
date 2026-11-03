@@ -73,7 +73,9 @@ Between such a thread and the passes is a **pool** of buffers shaped like the pa
 straight into a pass's buffers, and each pass swaps whatever's arrived for its own (giving the old one back to
 fill). A writer's pass swaps the data it's given into a chunk from its pool (taking its input, where it can), and
 its thread gives the chunk back once written. Pools hold about a second, so a slow pass or a stalling disk is
-absorbed. The dev tools show each pool on its thread's link: its buffers' streams and sizes, and where each is.
+absorbed. The dev tools show each pool on its thread's link: its buffers' streams and sizes, and where each is,
+with a dashed arrow back to it from whoever frees buffers into it; steps that swap rather than copy show a swap icon.
+The pass queue is shown the same way, on the link between the dispatcher and the workers, which it's between.
 
 ## Between the GUI and the passes
 

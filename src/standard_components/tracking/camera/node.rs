@@ -77,6 +77,7 @@ impl Node<Edges> for Camera {
             flow: Flow::ToPasses,
             why: "On a thread of its own so frames are taken from the camera as they come, whatever the passes \
                   are doing.",
+            swaps: true,
         }]
     }
 

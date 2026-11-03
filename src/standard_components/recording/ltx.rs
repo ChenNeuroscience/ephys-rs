@@ -199,7 +199,13 @@ impl Node<Edges> for WriteLtx {
     }
 
     fn threads(&self) -> Vec<NodeThread> {
-        vec![NodeThread { name: "LTX writer", link: "buffer pool", flow: Flow::FromPasses, why: super::WHY_A_THREAD }]
+        vec![NodeThread {
+            name: "LTX writer",
+            link: "buffer pool",
+            flow: Flow::FromPasses,
+            why: super::WHY_A_THREAD,
+            swaps: false,
+        }]
     }
 
     fn thread_pool(&self, _thread: usize, context: &ThreadContext) -> Option<PoolStatus> {

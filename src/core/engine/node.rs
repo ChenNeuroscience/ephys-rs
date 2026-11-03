@@ -217,6 +217,9 @@ pub struct NodeThread {
     pub flow: Flow,
     /// Why it's a thread of its own, rather than done in the passes.
     pub why: &'static str,
+    /// Whether the data's buffers are swapped with the passes' own (through a pool: see `Node::thread_pool`), rather
+    /// than copied.
+    pub swaps: bool,
 }
 
 /// Where the buffers are that a node's thread swaps with its passes, rather than copying (see `Node::thread_pool`):
