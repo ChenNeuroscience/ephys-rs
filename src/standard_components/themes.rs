@@ -4,9 +4,12 @@ use eframe::egui::Color32;
 
 use crate::core::theme::{Colours, Theme};
 
-pub const THEMES: &[Theme] = &[Theme { name: "Dark", colours: DARK }, Theme { name: "Light", colours: LIGHT }];
+pub const THEMES: &[Theme] = &[DARK, LIGHT];
 
-const DARK: Colours = Colours {
+pub const DARK: Theme = Theme { name: "Dark", colours: DARK_COLOURS };
+pub const LIGHT: Theme = Theme { name: "Light", colours: LIGHT_COLOURS };
+
+const DARK_COLOURS: Colours = Colours {
     dark: true,
     background: Color32::from_gray(22),
     surface_sunken: Color32::from_gray(12),
@@ -29,7 +32,7 @@ const DARK: Colours = Colours {
     shadow: Color32::from_black_alpha(90),
 };
 
-const LIGHT: Colours = Colours {
+const LIGHT_COLOURS: Colours = Colours {
     dark: false,
     background: Color32::from_gray(236),
     surface_sunken: Color32::from_gray(255),

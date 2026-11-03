@@ -1,5 +1,6 @@
 //! What the example's made of: the standard components, its quick actions and its base directory.
 
+pub mod china;
 pub mod quick_actions;
 pub mod trials;
 
@@ -14,7 +15,7 @@ use ephys_rs::standard_components::ephys::{
 };
 use ephys_rs::standard_components::recording::{ltx, raw};
 use ephys_rs::standard_components::spikes::{spike_detector, spike_gain, spike_viewer};
-use ephys_rs::standard_components::themes::THEMES;
+use ephys_rs::standard_components::themes::{DARK, LIGHT};
 use ephys_rs::standard_components::tracking::{camera, position_detector, tracker_view, video_viewer};
 use ephys_rs::{Edges, annotation_set, node_set};
 
@@ -52,6 +53,9 @@ annotation_set! {
         Arrow(arrow::Arrow),
     }
 }
+
+/// The first is the default.
+pub const THEMES: &[Theme] = &[DARK, LIGHT, china::CHINA];
 
 /// In the order they're offered: the first is the default.
 pub const BASE_DIRECTORIES: &[BaseDirectoryType] = &[A_DIRECTORY, trials::TRIALS];
