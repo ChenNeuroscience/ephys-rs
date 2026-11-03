@@ -33,7 +33,7 @@ Python ones, and tests that record remove the writers first, or write to a tempo
 
 CI ([`.github/workflows/build.yml`](../.github/workflows/build.yml)) checks formatting and clippy (warnings are
 errors), runs the tests on Windows and macOS, and builds release packages. Each push to `main` publishes a release,
-named after the commit.
+named after the version (`v0.x`, below).
 
 ## Versions
 

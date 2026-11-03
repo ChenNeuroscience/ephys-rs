@@ -82,10 +82,19 @@ jobs:
           pattern: ephys-rs-*
           path: release
           merge-multiple: true
-      - name: Select commit tag
+      - name: Select version tag
         id: package
         run: |
-          echo "tag=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          # The version the app shows, v0.x: Cargo.toml's minor version, counted up by the pre-commit hook.
+          minor=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"].split(".")[1])')
+          tag="v0.$minor"
+          # Each version is one commit: a commit made without the hook would otherwise replace its release.
+          tagged=$(git ls-remote --tags origin "refs/tags/$tag" | cut -f1)
+          if [ -n "$tagged" ] && [ "$tagged" != "$GITHUB_SHA" ]; then
+            echo "::error::$tag is already released from $tagged: commit with the pre-commit hook on, so the version's counted up"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
           test "$(ls release/*.zip | wc -l)" -eq 2
       - name: Publish GitHub release
         uses: ncipollo/release-action@v1
@@ -94,7 +103,7 @@ jobs:
           commit: ${{ github.sha }}
           name: ephys-rs ${{ steps.package.outputs.tag }}
           body: |
-            Built and tested from commit ${{ github.sha }}. An early development build: the graph editor only, with simulated data.
+            Version ${{ steps.package.outputs.tag }}, built and tested from commit ${{ github.sha }}. An early development build: the graph editor only, with simulated data.
 
             Windows: download the windows zip, extract it, and run ephys-rs.exe.
             macOS (Apple silicon): download the macos zip and move ephys-rs.app to Applications. It isn't notarised, so the first time, right-click it and choose Open.
