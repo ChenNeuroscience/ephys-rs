@@ -161,8 +161,9 @@ fn real_camera() -> camera::Source {
 /// detector's thresholds and the gain's gains); Board → Channel Selector → Band-pass (LFP's band) → LFP Viewer
 /// (choosing the selector's channels, which only the LFP branch is), with a Spectrum of it too; the board's digital
 /// inputs → TTL Viewer; Camera → Position Detector → Tracker View (setting the camera's and detector's settings).
-/// Write LTX records the spikes (at their gains), the referenced data as EEG (through an EEG Gain), the positions
-/// (with the detector's settings) and the digital inputs. New boards and cameras are real.
+/// Write LTX records the spikes (at their gains), the LFP branch's data as EEG (the channels selected, band-passed,
+/// through an EEG Gain), the positions (with the detector's settings) and the digital inputs. New boards and cameras
+/// are real.
 fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
     let mut change = Change::new(state.graph);
     let empty = state.graph.iter().next().is_none();
@@ -229,8 +230,8 @@ fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
     // Recording it all.
     let ltx = change.upsert("Write LTX", Some(gain));
     change.link((gain, Output, 0), (ltx, Input, 0));
-    let eeg_gain = change.upsert("EEG Gain", Some(reference));
-    change.link((reference, Output, 0), (eeg_gain, Input, 0));
+    let eeg_gain = change.upsert("EEG Gain", Some(lfp));
+    change.link((lfp, Output, 0), (eeg_gain, Input, 0));
     change.link((eeg_gain, Output, 0), (ltx, Input, 1));
     change.link((positions, Output, 0), (ltx, Input, 2));
     change.link((board, Output, 1), (ltx, Input, 3));
@@ -376,6 +377,7 @@ mod tests {
         let lfp =
             graph.iter().find(|(_, e)| matches!(&e.node, Nodes::BandPassFilter(f) if f.high_hz <= 500.0)).unwrap().0;
         assert_eq!(fed, vec![lfp], "only the LFP branch");
+        assert_eq!(feeding(named("EEG Gain")), lfp, "the EEG written is the LFP branch's, after the selection");
         let ltx = graph.iter().find(|(_, e)| e.node.info().name == "Write LTX").unwrap().0;
         let into = |i| graph.edges().iter().any(|e| e.target() == Port { node: ltx, role: Input, index: i });
         assert!((0..4).all(into), "Write LTX records spikes, EEG, positions and digital inputs");
