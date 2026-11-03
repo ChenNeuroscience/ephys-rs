@@ -8,6 +8,12 @@ saved before files kept this leaves things as they are), and changing it counts 
 
 ![The subject, date and trial base directory, being chosen](../tests/snapshots/toolbar_base_directory.png)
 
+Beside it, the toolbar shows how full the disk it's on is: a bar, and what's free, amber from 90% full and red from
+97%, with the size in its tooltip. That's whichever base directory's in use, and needs nothing from it: only
+`place`. (A writer with a directory of its own could be on another disk, which this doesn't show.) It's looked at
+once a minute and when the directory changes, on a thread of its own, as a disk asleep or on the network can take a
+while to answer ([`disk_space.rs`](../src/core/gui/disk_space.rs)).
+
 ## Writing one
 
 A kind of base directory is a [`BaseDirectoryType`](../src/core/base_directory.rs): a name, a description, and

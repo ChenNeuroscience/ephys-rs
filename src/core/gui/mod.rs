@@ -8,6 +8,7 @@ mod basic;
 mod canvas;
 mod create_menu;
 mod dev_tools;
+mod disk_space;
 mod docking;
 mod frame_times;
 mod icons;
@@ -230,6 +231,8 @@ pub struct App<N: NodeSet, A: AnnotationSet> {
     quick_actions: &'static [crate::core::quick_action::QuickAction<N>],
     /// Where recordings go: the one in use, in a section of the toolbar.
     base_directories: BaseDirectories,
+    /// How full the disk the base directory is on is.
+    disk_space: disk_space::DiskSpace,
     /// How many workers runs start with.
     workers: usize,
     /// How long each part of the GUI's taking, frame by frame, for the dev tools; and the last frame's CPU time.
@@ -277,6 +280,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             last_crash: None,
             quick_actions: &[],
             base_directories: BaseDirectories::new(&[], None),
+            disk_space: Default::default(),
         };
         if let Some(path) = path {
             app.open_path(path);
@@ -1780,6 +1784,7 @@ mod tests {
             "/nowhere/recordings/r2405/2026-01-01/2026-01-01 a",
             "the subject's, named the day's first"
         );
+        harness.get_by_label("512 GB free");
         harness.get_by_label("Where recordings go").click();
         harness.run_steps(2);
         harness.snapshot("toolbar_base_directory");

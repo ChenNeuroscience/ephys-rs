@@ -243,6 +243,10 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             ui.separator();
             if self.base_directory_ui(ui) {
                 ui.separator();
+                if let Some(place) = self.base_directories.place() {
+                    self.disk_space.ui(ui, &place.directory, self.colours());
+                    ui.separator();
+                }
             }
             let tip = self.tooltip(&ctx, Action::ToggleDevTools, "Developer tools");
             if tool_button(ui, Icon::DevTools, &tip, true, self.layout.is_shown(Pane::DevTools)).clicked() {
