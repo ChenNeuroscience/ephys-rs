@@ -1782,8 +1782,8 @@ mod tests {
         harness.run_steps(2);
         let place = harness.state().base_directories.place().unwrap();
         assert_eq!(
-            place.to_string(),
-            "/nowhere/recordings/r2405/2026-01-01/2026-01-01 a",
+            place.path(),
+            Path::new("/nowhere/recordings/r2405/2026-01-01/2026-01-01 a"),
             "the subject's, named the day's first"
         );
         harness.get_by_label("512 GB free");
