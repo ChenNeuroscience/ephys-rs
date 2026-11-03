@@ -6,8 +6,8 @@
 //! editing and deleting them, which goes in front of which, and making them (drawn out, chosen, or pasted). Each draws
 //! itself, and takes what interaction of its own it likes (resizing, dragging an arrow's ends), in `canvas_ui`, with
 //! the helpers in `AnnotationUi` for what they share: a card's background, a resizing corner, ends to drag, content
-//! scaled to the zoom. An image pasted onto the canvas becomes an annotation of the first type that takes one (see
-//! `AnnotationType::pasted_image`).
+//! scaled to the zoom. What's pasted onto the canvas (an image, or text) becomes an annotation of whichever type
+//! suits it best (see `AnnotationType::pasted`).
 
 use std::collections::BTreeMap;
 
@@ -20,6 +20,25 @@ use super::theme::Colours;
 
 /// The smallest an annotation can be made, in canvas units, unless its type says otherwise.
 pub const MIN_SIZE: [f32; 2] = [80.0, 50.0];
+
+/// Something pasted onto the canvas.
+#[derive(Clone, Copy, Debug)]
+pub enum Pasted<'a> {
+    Image(&'a ColorImage),
+    /// Text, trimmed (and not empty).
+    Text(&'a str),
+}
+
+/// How well an annotation type suits something pasted (see `AnnotationType::pasted`), worst first.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum Fit {
+    /// It can show it, if nothing's better.
+    Possible,
+    /// It shows it well.
+    Good,
+    /// It's what it's for.
+    Best,
+}
 
 /// Static facts about an annotation type.
 pub struct AnnotationInfo {
@@ -78,9 +97,10 @@ pub trait AnnotationType: Default + Clone + PartialEq + Serialize + DeserializeO
         true
     }
 
-    /// One showing an image pasted onto the canvas, if this type shows images; with its natural size (which the
-    /// canvas scales down to fit the view).
-    fn pasted_image(_image: &ColorImage) -> Option<(Self, [f32; 2])> {
+    /// One showing what's been pasted onto the canvas, if this type can: how well it suits it, the annotation, and
+    /// its natural size (which the canvas scales down to fit the view). Of the types that can, the one that suits it
+    /// best makes it (of two as good, the first in `annotation_set!`).
+    fn pasted(_pasted: &Pasted) -> Option<(Fit, Self, [f32; 2])> {
         None
     }
 
@@ -126,8 +146,8 @@ pub trait AnnotationSet: Clone + PartialEq + Serialize + DeserializeOwned + 'sta
     fn above_graph(&self) -> bool;
     fn type_index(&self) -> usize;
     fn fill(&self, theme: &Colours) -> Color32;
-    /// An annotation of the first type that shows pasted images, and its size.
-    fn pasted_image(image: &ColorImage) -> Option<(Self, [f32; 2])>;
+    /// An annotation of the type that best suits what's pasted (see `AnnotationType::pasted`), and its size.
+    fn pasted(pasted: &Pasted) -> Option<(Self, [f32; 2])>;
     fn settings_ui(&mut self, ui: &mut egui::Ui);
     fn toolbar_ui(&mut self, ui: &mut egui::Ui);
     fn paint_icon(type_index: usize, painter: &Painter, rect: Rect);
@@ -254,15 +274,17 @@ macro_rules! annotation_set {
                 match self { $($name::$variant(a) => $crate::core::annotation::AnnotationType::fill(a, theme)),+ }
             }
 
-            fn pasted_image(image: &eframe::egui::ColorImage) -> Option<(Self, [f32; 2])> {
+            fn pasted(pasted: &$crate::core::annotation::Pasted) -> Option<(Self, [f32; 2])> {
+                let mut best: Option<($crate::core::annotation::Fit, Self, [f32; 2])> = None;
                 $(
-                    if let Some((a, size)) = <$ty as $crate::core::annotation::AnnotationType>::pasted_image(image) {
-                        return Some(($name::$variant(a), size));
+                    if let Some((fit, a, size)) = <$ty as $crate::core::annotation::AnnotationType>::pasted(pasted)
+                        && best.as_ref().is_none_or(|(b, _, _)| fit > *b)
+                    {
+                        best = Some((fit, $name::$variant(a), size));
                     }
                 )+
-                None
+                best.map(|(_, a, size)| (a, size))
             }
-
 
             fn settings_ui(&mut self, ui: &mut eframe::egui::Ui) {
                 match self { $($name::$variant(a) => $crate::core::annotation::AnnotationType::settings_ui(a, ui)),+ }

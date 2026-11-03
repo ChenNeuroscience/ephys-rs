@@ -22,7 +22,7 @@ use eframe::egui::{
 
 use super::Event;
 use super::style;
-use crate::core::annotation::{Annotation, AnnotationId, AnnotationSet, AnnotationUi, Annotations};
+use crate::core::annotation::{Annotation, AnnotationId, AnnotationSet, AnnotationUi, Annotations, Pasted};
 use crate::core::engine::{
     Dimension, Edge, EdgeInfo, EdgeSet, Edges, Graph, KindKey, NodeEntry, NodeId, NodeSet, NodeState, Port, Resolved,
     Role,
@@ -475,7 +475,7 @@ impl Canvas {
         let shift = ui.input(|i| i.modifiers.shift);
 
         self.annotations(ui, &painter, graph, annotations, selection, events, false);
-        self.paste_image(ui, annotations, selection, pointer.filter(|p| rect.contains(*p)));
+        self.paste(ui, annotations, selection, pointer.filter(|p| rect.contains(*p)));
 
         // Selected nodes are drawn last, so on top.
         let mut order: Vec<NodeId> = graph.ids().filter(|id| !selection.nodes.contains(id)).collect();
@@ -778,9 +778,9 @@ impl Canvas {
         }
     }
 
-    /// An image pasted over the canvas (while nothing's being typed in) becomes an annotation there, if there's
-    /// an annotation type that shows images.
-    fn paste_image<A: AnnotationSet>(
+    /// What's pasted over the canvas (an image, or text; while nothing's being typed in) becomes an annotation
+    /// there, of the type that suits it best (see `AnnotationType::pasted`), if any can show it.
+    fn paste<A: AnnotationSet>(
         &mut self,
         ui: &egui::Ui,
         annotations: &mut Annotations<A>,
@@ -790,13 +790,14 @@ impl Canvas {
         if self.editing.is_some() || ui.ctx().egui_wants_keyboard_input() {
             return;
         }
-        let pasted = ui.input(|i| {
+        let made = ui.input(|i| {
             i.events.iter().find_map(|e| match e {
-                egui::Event::PasteImage(image) => Some(image.clone()),
+                egui::Event::PasteImage(image) => A::pasted(&Pasted::Image(image)),
+                egui::Event::Paste(text) if !text.trim().is_empty() => A::pasted(&Pasted::Text(text.trim())),
                 _ => None,
             })
         });
-        let Some((kind, size)) = pasted.and_then(|image| A::pasted_image(&image)) else { return };
+        let Some((kind, size)) = made else { return };
         // Centred on the pointer, or the middle of the view.
         let centre = pointer.map_or_else(|| self.view_centre(), |p| self.to_screen.inverse() * p);
         self.place(annotations, selection, kind, size, centre);

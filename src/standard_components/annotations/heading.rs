@@ -3,7 +3,7 @@
 use eframe::egui::{self, Color32, FontId, Painter, Rect, RichText, Stroke};
 use serde::{Deserialize, Serialize};
 
-use crate::core::annotation::{AnnotationInfo, AnnotationType};
+use crate::core::annotation::{AnnotationInfo, AnnotationType, Fit, Pasted};
 use crate::core::theme::Colours;
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -58,6 +58,13 @@ impl AnnotationType for Heading {
     /// Drawn out, it starts empty, to type straight into.
     fn drawn(_flipped: [bool; 2]) -> Self {
         Heading { text: String::new(), ..Default::default() }
+    }
+
+    /// Text pasted, if it's a single short line: what it's for.
+    fn pasted(pasted: &Pasted) -> Option<(Fit, Self, [f32; 2])> {
+        let Pasted::Text(text) = pasted else { return None };
+        (!text.contains('\n') && text.chars().count() <= 40)
+            .then(|| (Fit::Best, Heading { text: (*text).into(), ..Default::default() }, Self::INFO.default_size))
     }
 
     fn fill(&self, _theme: &Colours) -> Color32 {

@@ -10,8 +10,16 @@ use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 use serde::{Deserialize, Serialize};
 
 use super::{encode, encode_pasted, image_size, image_uri};
-use crate::core::annotation::{AnnotationInfo, AnnotationType};
+use crate::core::annotation::{AnnotationInfo, AnnotationType, Fit, Pasted};
 use crate::core::theme::Colours;
+
+/// Whether `text` is written in markdown: with headings, lists, quotes or code blocks, or emphasis, links or code.
+fn looks_like_markdown(text: &str) -> bool {
+    let line_starts = ["#", "- ", "* ", "+ ", "> ", "```", "1. "];
+    let within = ["**", "__", "](", "`"];
+    text.lines().any(|line| line_starts.iter().any(|s| line.trim_start().starts_with(s)))
+        || within.iter().any(|s| text.contains(s))
+}
 
 /// How the text refers to an attachment.
 const SCHEME: &str = "attachment:";
@@ -180,6 +188,14 @@ impl AnnotationType for Markdown {
     /// Drawn out, it starts empty, to type straight into.
     fn drawn(_flipped: [bool; 2]) -> Self {
         Markdown { text: String::new(), ..Default::default() }
+    }
+
+    /// Text pasted: what it's for, if it's written in markdown (headings, lists, emphasis, links, code); otherwise it
+    /// can show it.
+    fn pasted(pasted: &Pasted) -> Option<(Fit, Self, [f32; 2])> {
+        let Pasted::Text(text) = pasted else { return None };
+        let fit = if looks_like_markdown(text) { Fit::Best } else { Fit::Possible };
+        Some((fit, Markdown { text: (*text).into(), ..Default::default() }, Self::INFO.default_size))
     }
 
     fn fill(&self, theme: &Colours) -> Color32 {

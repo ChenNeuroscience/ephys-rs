@@ -1,11 +1,11 @@
 //! An image on the canvas: chosen from a file, or pasted onto the canvas (Ctrl/⌘ V). It's just the image, at its
 //! own shape, which it keeps when resized. Kept with the graph, as base64.
 
-use eframe::egui::{self, Color32, ColorImage, Painter, Rect, Shape, Stroke};
+use eframe::egui::{self, Color32, Painter, Rect, Shape, Stroke};
 use serde::{Deserialize, Serialize};
 
 use super::{encode, encode_pasted, image_size, image_uri};
-use crate::core::annotation::{AnnotationInfo, AnnotationType, AnnotationUi};
+use crate::core::annotation::{AnnotationInfo, AnnotationType, AnnotationUi, Fit, Pasted};
 use crate::core::theme::Colours;
 
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -62,11 +62,13 @@ impl AnnotationType for Image {
         Some((image, size))
     }
 
-    fn pasted_image(image: &ColorImage) -> Option<(Self, [f32; 2])> {
+    /// An image pasted: what it's for.
+    fn pasted(pasted: &Pasted) -> Option<(Fit, Self, [f32; 2])> {
+        let Pasted::Image(image) = pasted else { return None };
         let (data, pixels) = encode_pasted(image)?;
         let image = Image { data, pixels };
         let size = image.natural_size();
-        Some((image, size))
+        Some((Fit::Best, image, size))
     }
 
     /// Resized by its corner, keeping its shape; the image, filling it.

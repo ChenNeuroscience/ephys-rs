@@ -1818,6 +1818,19 @@ mod tests {
     }
 
     #[test]
+    fn text_pasted_on_the_canvas_becomes_an_annotation() {
+        let mut harness = harness();
+        let before = harness.state().annotations.ids().count();
+        harness.event(egui::Event::Paste("  # Protocol\n- check impedances  ".into()));
+        harness.run_steps(2);
+        let app = harness.state();
+        assert_eq!(app.annotations.ids().count(), before + 1);
+        let &id = app.selection.annotations.iter().next().expect("selected");
+        let AnnotationTypes::Markdown(note) = &app.annotations.get(id).unwrap().kind else { panic!("markdown") };
+        assert_eq!(note.text, "# Protocol\n- check impedances", "trimmed");
+    }
+
+    #[test]
     fn an_arrows_ends_are_dragged_one_at_a_time() {
         let mut harness = harness();
         let id =
@@ -1847,7 +1860,7 @@ mod tests {
         let detector = node_named(harness.state(), "Spike Detector");
         let over = harness.state().graph.get(detector).unwrap().pos;
         let pixels = egui::ColorImage::new([40, 30], vec![egui::Color32::RED; 1200]);
-        let (image, _) = Image::pasted_image(&pixels).unwrap();
+        let (_, image, _) = Image::pasted(&crate::core::annotation::Pasted::Image(&pixels)).unwrap();
         let annotation = Annotation { pos: over, size: [80.0, 60.0], kind: AnnotationTypes::Image(image) };
         let id = harness.state_mut().annotations.add(annotation);
         harness.run_steps(2);

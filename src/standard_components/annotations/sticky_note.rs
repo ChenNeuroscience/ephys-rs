@@ -3,7 +3,7 @@
 use eframe::egui::{self, Color32, Painter, Rect, RichText, Shape, Stroke};
 use serde::{Deserialize, Serialize};
 
-use crate::core::annotation::{AnnotationInfo, AnnotationType};
+use crate::core::annotation::{AnnotationInfo, AnnotationType, Fit, Pasted};
 use crate::core::theme::Colours;
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -62,6 +62,13 @@ impl AnnotationType for StickyNote {
     /// Drawn out, it starts empty, to type straight into.
     fn drawn(_flipped: [bool; 2]) -> Self {
         StickyNote { text: String::new(), ..Default::default() }
+    }
+
+    /// Text pasted: a short note shows it well; a longer one can (markdown, perhaps, better).
+    fn pasted(pasted: &Pasted) -> Option<(Fit, Self, [f32; 2])> {
+        let Pasted::Text(text) = pasted else { return None };
+        let fit = if text.chars().count() <= 300 { Fit::Good } else { Fit::Possible };
+        Some((fit, StickyNote { text: (*text).into(), ..Default::default() }, Self::INFO.default_size))
     }
 
     fn fill(&self, _theme: &Colours) -> Color32 {
