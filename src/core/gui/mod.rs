@@ -1819,13 +1819,14 @@ mod tests {
 
     #[test]
     fn an_arrows_ends_are_dragged_one_at_a_time() {
-        use crate::core::annotation::AnnotationSet as _;
         let mut harness = harness();
         let id =
             with_annotation(&mut harness, AnnotationTypes::Arrow(Default::default()), [0.0, 900.0], [300.0, 150.0]);
         let points = |h: &Harness<TestApp>| {
             let annotation = h.state().annotations.get(id).unwrap();
-            annotation.kind.points(annotation.rect()).unwrap()
+            let AnnotationTypes::Arrow(arrow) = &annotation.kind else { unreachable!() };
+            let (start, end) = arrow.ends(annotation.rect());
+            [start, end]
         };
         let [start, end] = points(&harness);
         let at = harness.state().canvas.to_screen(end);

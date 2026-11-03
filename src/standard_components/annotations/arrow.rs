@@ -6,7 +6,7 @@ use eframe::egui::{self, Color32, Painter, Pos2, Rect, Shape, Stroke, Vec2};
 use serde::{Deserialize, Serialize};
 
 use super::Hue;
-use crate::core::annotation::{AnnotationInfo, AnnotationType};
+use crate::core::annotation::{AnnotationInfo, AnnotationType, AnnotationUi};
 use crate::core::theme::Colours;
 
 /// How near its line, on screen, an arrow can be grabbed.
@@ -27,12 +27,18 @@ impl Default for Arrow {
 }
 
 impl Arrow {
-    /// Where it starts and ends, within `rect` (on screen).
-    fn ends(&self, rect: Rect) -> (Pos2, Pos2) {
+    /// Where it starts and ends, within `rect`.
+    pub fn ends(&self, rect: Rect) -> (Pos2, Pos2) {
         let [left, up] = self.flipped;
         let x = |towards: bool| if towards { rect.left() } else { rect.right() };
         let y = |towards: bool| if towards { rect.top() } else { rect.bottom() };
         (Pos2::new(x(!left), y(!up)), Pos2::new(x(left), y(up)))
+    }
+
+    /// Makes it run from `start` to `end`, returning the rect that then holds it.
+    fn set_ends(&mut self, [start, end]: [Pos2; 2]) -> Rect {
+        self.flipped = [end.x < start.x, end.y < start.y];
+        Rect::from_two_pos(start, end)
     }
 }
 
@@ -68,14 +74,18 @@ impl AnnotationType for Arrow {
         painter.add(Shape::convex_polygon(vec![end, base + side, base - side], colour, Stroke::NONE));
     }
 
-    fn points(&self, rect: Rect) -> Option<[Pos2; 2]> {
-        let (start, end) = self.ends(rect);
-        Some([start, end])
-    }
-
-    fn set_points(&mut self, [start, end]: [Pos2; 2]) -> Rect {
-        self.flipped = [end.x < start.x, end.y < start.y];
-        Rect::from_two_pos(start, end)
+    /// Between its ends, each of which can be dragged (rather than resized by a corner).
+    fn canvas_ui(&mut self, cx: &mut AnnotationUi) -> bool {
+        let (start, end) = self.ends(cx.canvas_rect());
+        let moved = cx.drag_ends([start, end]);
+        if moved != [start, end] {
+            let rect = self.set_ends(moved);
+            cx.set_canvas_rect(rect);
+        }
+        self.paint(cx.painter, cx.rect(), cx.zoom(), cx.theme);
+        let (start, end) = self.ends(cx.canvas_rect());
+        cx.mark_ends(&[start, end]);
+        false
     }
 
     fn hit(&self, rect: Rect, at: Pos2, _zoom: f32) -> bool {
@@ -83,10 +93,6 @@ impl AnnotationType for Arrow {
         let along: Vec2 = end - start;
         let t = ((at - start).dot(along) / along.length_sq().max(1e-6)).clamp(0.0, 1.0);
         (start + along * t).distance(at) <= GRAB
-    }
-
-    fn content_ui(&mut self, _ui: &mut egui::Ui, _editing: bool) -> bool {
-        false
     }
 
     fn settings_ui(&mut self, ui: &mut egui::Ui) {
@@ -120,8 +126,8 @@ mod tests {
         assert!(!up_left.hit(rect, egui::pos2(90.0, 5.0), 1.0), "in its box, but away from the line");
         // Dragging its start past its end turns it round.
         let mut arrow = up_left;
-        let moved = arrow.set_points([egui::pos2(0.0, 0.0), egui::pos2(60.0, 40.0)]);
+        let moved = arrow.set_ends([egui::pos2(0.0, 0.0), egui::pos2(60.0, 40.0)]);
         assert_eq!(arrow.flipped, [false, false]);
-        assert_eq!(arrow.points(moved), Some([egui::pos2(0.0, 0.0), egui::pos2(60.0, 40.0)]));
+        assert_eq!(arrow.ends(moved), (egui::pos2(0.0, 0.0), egui::pos2(60.0, 40.0)));
     }
 }

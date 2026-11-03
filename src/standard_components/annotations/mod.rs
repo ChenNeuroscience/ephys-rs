@@ -169,7 +169,7 @@ mod tests {
         let (image, size) = image::Image::pasted_image(&red_square()).expect("images take pasted images");
         assert_eq!(image.pixels, [4, 3]);
         assert_eq!(size, [4.0, 3.0], "its natural size, for the canvas to fit to the view");
-        assert_eq!(image.aspect(), Some(4.0 / 3.0), "and it keeps its shape");
+        assert_eq!(image.aspect(), 4.0 / 3.0, "and it keeps its shape");
         let png = STANDARD.decode(&image.data).unwrap();
         assert_eq!(image_size(&png), Some([4, 3]));
     }

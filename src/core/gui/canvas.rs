@@ -22,7 +22,7 @@ use eframe::egui::{
 
 use super::Event;
 use super::style;
-use crate::core::annotation::{Annotation, AnnotationId, AnnotationSet, Annotations};
+use crate::core::annotation::{Annotation, AnnotationId, AnnotationSet, AnnotationUi, Annotations};
 use crate::core::engine::{
     Dimension, Edge, EdgeInfo, EdgeSet, Edges, Graph, KindKey, NodeEntry, NodeId, NodeSet, NodeState, Port, Resolved,
     Role,
@@ -309,9 +309,6 @@ fn arrowhead(painter: &Painter, at: Pos2, direction: Vec2, size: f32, colour: Co
     let back = at - forward * size * 0.4;
     painter.add(Shape::convex_polygon(vec![tip, back + side, back - side], colour, Stroke::NONE));
 }
-
-/// How far either side of a line annotation, and around its ends' handles, it can be grabbed, on screen.
-const HANDLE: f32 = 8.0;
 
 pub struct Canvas {
     /// Scene to canvas coordinates, relative to the canvas's top-left corner.
@@ -860,9 +857,9 @@ impl Canvas {
         for id in ids {
             let Some(annotation) = annotations.get(id) else { continue };
             let rect = self.to_screen * annotation.rect();
-            // A line between two points can be grabbed a little either side of it, even where its rect is thin.
-            let line = annotation.kind.points(annotation.rect()).is_some();
-            let reach = if line { rect.expand(HANDLE) } else { rect };
+            // A little all round, so a thin one (a line) can be grabbed, and the handles at its ends; its type says
+            // where in that it can be (see `AnnotationType::hit`).
+            let reach = rect.expand(AnnotationUi::REACH);
             // Only where it can be grabbed (or while it's being dragged), so clicks elsewhere in it reach what's
             // beneath: a box's inside, say.
             let body_id = Id::unique(("annotation", id));
@@ -899,87 +896,25 @@ impl Canvas {
                 }
             });
 
+            // The rest, its type's: drawing it, and any interaction of its own (resizing, say).
             let Some(annotation) = annotations.get_mut(id) else { continue };
-            let selected = selection.annotations.contains(&id);
-            if let Some(points) = annotation.kind.points(annotation.rect()) {
-                self.line_annotation(ui, painter, id, annotation, points, selected || body.hovered());
-                continue;
-            }
-            let handle = Rect::from_min_max(rect.max - Vec2::splat(12.0 * zoom), rect.max);
-            let resize = ui.interact(handle, Id::unique(("annotation-resize", id)), Sense::drag());
-            if resize.dragged() {
-                let mut size = (Vec2::from(annotation.size) + resize.drag_delta() / zoom)
-                    .max(A::min_size(annotation.kind.type_index()).into());
-                // Keeping its shape, if it keeps one: by whichever side was dragged further.
-                if let Some(aspect) = annotation.kind.aspect().filter(|a| a.is_finite() && *a > 0.0) {
-                    let old = Vec2::from(annotation.size);
-                    if (size.x - old.x).abs() / aspect >= (size.y - old.y).abs() {
-                        size.y = size.x / aspect;
-                    } else {
-                        size.x = size.y * aspect;
-                    }
-                }
-                annotation.size = size.into();
-            }
-            resize.on_hover_cursor(egui::CursorIcon::ResizeNwSe);
-
-            let rect = self.to_screen * annotation.rect();
-            let fill = annotation.kind.fill(self.colours);
-            let opaque = fill.a() == 255;
-            if opaque {
-                painter.rect_filled(rect.translate(egui::vec2(0.0, 3.0 * zoom)), 4.0 * zoom, self.colours.shadow);
-            }
-            painter.rect_filled(rect, 4.0 * zoom, fill);
-            annotation.kind.paint(painter, rect, zoom, self.colours);
-            if selected {
-                let stroke = Stroke::new(2.0, self.colours.accent);
-                painter.rect_stroke(rect, 4.0 * zoom, stroke, StrokeKind::Outside);
-            }
-            // Grip lines in the resize corner (only once selected, for one that's see-through).
-            let grip = if opaque { Color32::from_black_alpha(70) } else { self.colours.text_secondary };
-            for i in (1..=3).filter(|_| opaque || selected) {
-                let d = i as f32 * 3.0 * zoom;
-                let corner = rect.max - Vec2::splat(2.0 * zoom);
-                let stroke = Stroke::new(1.0, grip);
-                painter.line_segment([corner - egui::vec2(d, 0.0), corner - egui::vec2(0.0, d)], stroke);
-            }
             let editing = self.editing == Some(id);
-            let still_editing = annotation.content_ui(ui, rect, zoom, editing);
+            let mut cx = AnnotationUi {
+                ui,
+                painter,
+                theme: self.colours,
+                id,
+                min_size: A::min_size(annotation.kind.type_index()),
+                pos: &mut annotation.pos,
+                size: &mut annotation.size,
+                selected: selection.annotations.contains(&id),
+                hovered: body.hovered(),
+                editing,
+                to_screen: self.to_screen,
+            };
+            let still_editing = annotation.kind.canvas_ui(&mut cx);
             if editing && !still_editing {
                 self.editing = None;
-            }
-        }
-    }
-
-    /// An annotation that's a line between two points (an arrow, say): drawn, with a handle at each end (shown
-    /// once it's selected or hovered) to drag that end.
-    fn line_annotation<A: AnnotationSet>(
-        &self,
-        ui: &mut egui::Ui,
-        painter: &Painter,
-        id: AnnotationId,
-        annotation: &mut Annotation<A>,
-        mut points: [Pos2; 2],
-        show_handles: bool,
-    ) {
-        let zoom = self.to_screen.scaling;
-        for (end, point) in points.into_iter().enumerate() {
-            let at = self.to_screen * point;
-            let handle = Rect::from_center_size(at, Vec2::splat(2.0 * HANDLE));
-            let response = ui.interact(handle, Id::unique(("annotation-end", id, end)), Sense::drag());
-            if response.dragged() {
-                points[end] = point + response.drag_delta() / zoom;
-                let rect = annotation.kind.set_points(points);
-                (annotation.pos, annotation.size) = (rect.min.into(), rect.size().into());
-            }
-            response.on_hover_cursor(egui::CursorIcon::Crosshair);
-        }
-        let rect = self.to_screen * annotation.rect();
-        annotation.kind.paint(painter, rect, zoom, self.colours);
-        if show_handles {
-            for point in annotation.kind.points(annotation.rect()).into_iter().flatten() {
-                let at = self.to_screen * point;
-                painter.circle(at, 4.5, self.colours.surface, Stroke::new(2.0, self.colours.accent));
             }
         }
     }

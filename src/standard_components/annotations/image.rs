@@ -5,7 +5,7 @@ use eframe::egui::{self, Color32, ColorImage, Painter, Rect, Shape, Stroke};
 use serde::{Deserialize, Serialize};
 
 use super::{encode, encode_pasted, image_size, image_uri};
-use crate::core::annotation::{AnnotationInfo, AnnotationType};
+use crate::core::annotation::{AnnotationInfo, AnnotationType, AnnotationUi};
 use crate::core::theme::Colours;
 
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -39,6 +39,12 @@ impl Image {
     fn natural_size(&self) -> [f32; 2] {
         self.pixels.map(|n| n.max(1) as f32)
     }
+
+    /// Its width over its height, which it keeps.
+    pub fn aspect(&self) -> f32 {
+        let [w, h] = self.natural_size();
+        w / h
+    }
 }
 
 impl AnnotationType for Image {
@@ -63,9 +69,12 @@ impl AnnotationType for Image {
         Some((image, size))
     }
 
-    fn aspect(&self) -> Option<f32> {
-        let [w, h] = self.natural_size();
-        Some(w / h)
+    /// Resized by its corner, keeping its shape; the image, filling it.
+    fn canvas_ui(&mut self, cx: &mut AnnotationUi) -> bool {
+        cx.resize_corner(Some(self.aspect()));
+        cx.card(Color32::TRANSPARENT);
+        self.paint(cx.painter, cx.rect(), cx.zoom(), cx.theme);
+        false
     }
 
     fn fill(&self, _theme: &Colours) -> Color32 {
@@ -89,10 +98,6 @@ impl AnnotationType for Image {
                 painter.ctx().request_repaint();
             }
         }
-    }
-
-    fn content_ui(&mut self, _ui: &mut egui::Ui, _editing: bool) -> bool {
-        false
     }
 
     fn settings_ui(&mut self, ui: &mut egui::Ui) {
