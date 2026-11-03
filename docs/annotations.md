@@ -6,7 +6,7 @@ and arrows. They're saved with the graph and undone with it, but take no part in
 ![Drawing a note](../tests/snapshots/graph_drawing_note.png)
 
 An annotation type is a struct implementing [`AnnotationType`](../src/core/annotation.rs), listed in
-`annotation_set!` in [`main.rs`](../src/main.rs); the standard ones are in
+`annotation_set!` in a program's components (the [example's](../example/src/components/mod.rs), say); the standard ones are in
 [`annotations`](../src/standard_components/annotations/mod.rs). The simplest is the
 [sticky note](../src/standard_components/annotations/sticky_note.rs).
 

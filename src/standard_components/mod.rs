@@ -1,8 +1,7 @@
 //! The standard components, grouped by what they're for: electrophysiology (`ephys`), spikes (`spikes`) and
 //! video tracking (`tracking`), each with its edge types and node types; writers, which record them (`recording`);
-//! annotation types (`annotations`); and themes (`themes`). main.rs declares which of them the program is
-//! built with, and the names it gives the edge enums (`crate::DataStream`, `crate::Setting`...) are the names the
-//! node types use.
+//! annotation types (`annotations`); and themes (`themes`). A program declares which of them it's built with; the
+//! edge enums they use (`crate::DataStream`, `crate::Setting`...) are in lib.rs.
 
 pub mod annotations;
 pub mod auto_detect;
@@ -10,7 +9,6 @@ pub mod base_directories;
 pub mod ephys;
 pub mod pool;
 mod preview;
-pub mod quick_actions;
 pub mod recording;
 pub mod spikes;
 pub mod themes;

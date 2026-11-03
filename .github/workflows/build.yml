@@ -45,7 +45,7 @@ jobs:
           cache-on-failure: true
       - name: Format and lint
         run: |
-          cargo fmt --check
+          cargo fmt --all --check
           cargo clippy --all-targets --locked -- -D warnings
       - name: Test (engine, and the GUI rendered headless)
         run: cargo test --locked

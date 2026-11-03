@@ -18,7 +18,7 @@ while to answer ([`disk_space.rs`](../src/core/gui/disk_space.rs)).
 
 A kind of base directory is a [`BaseDirectoryType`](../src/core/base_directory.rs): a name, a description, and
 `make`, which makes a `BaseDirectory` from whatever it saved last time (or nothing). The program lists them in
-`Components::BASE_DIRECTORIES` ([`main.rs`](../src/main.rs)). A `BaseDirectory`:
+`Components::BASE_DIRECTORIES` (the [example's](../example/src/components/mod.rs), say). A `BaseDirectory`:
 
 - `toolbar_ui`: draws its section of the main toolbar, as wide as it likes. `BaseDirectoryContext::recording` says
   whether it's recording, when what decides where a recording goes shouldn't change. To match the toolbar's
@@ -30,16 +30,18 @@ A kind of base directory is a [`BaseDirectoryType`](../src/core/base_directory.r
 - `save`: what it keeps, between runs of the program and in saved files, as JSON. Only what's chosen: a saved file
   counts as changed when this does, so a count of recordings, say, would mark it changed after each one.
 
-The standard ones are in [`base_directories.rs`](../src/standard_components/base_directories.rs):
+The standard one, in [`base_directories.rs`](../src/standard_components/base_directories.rs), is **A directory**: a
+button to choose a directory, and the directory. `directory_ui` there draws that, for others to use.
 
-- **A directory**: a button to choose a directory, and the directory.
+The example adds another, in [`trials.rs`](../example/src/components/trials.rs):
+
 - **Subject, date and trial**: a directory to keep them in, the subject (an animal's id, say), the day and the
   trial, shown as a path: `~/recordings / r2405 / 2026-11-03 / 2026-11-03 a`. The subject and the day are
   directories; the day and trial, again, are the recording's name, which writers name what they write after: Write
   LTX its files (`2026-11-03 a.set`...), Write Raw its folder. Trials are lettered a to z, then 1a to 1z, 2a, and so
   on. The next is the one after the last on disk in the day's directory, so an empty directory, or a new day, starts
-  at a, gaps aren't filled, and trials stay in the order they were made. Nothing's counted or stored: what's on disk is looked at once a second at most,
-  and after each recording. Before a recording the trial is the next one, which you can change for that recording;
+  at a, gaps aren't filled, and trials stay in the order they were made. Nothing's counted or stored: what's on disk
+  is looked at once a second at most, and after each recording. Before a recording the trial is the next one, which you can change for that recording;
   during one, it's the current one, in red.
 
 ## Writers

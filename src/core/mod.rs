@@ -2,7 +2,7 @@
 //! handing things from passes to windows (`exchange`), threads finishing in the background (`background`), how plots
 //! over time lay out time (`time_axis`), quick actions (`quick_action`), and the GUI (`gui`).
 //! None of it knows about particular node, edge or annotation types, or themes: the program supplies those
-//! (see main.rs), declared with `edge_types!`, `node_set!` and `annotation_set!`, through `Components`.
+//! (see `example/`), declared with `edge_types!`, `node_set!` and `annotation_set!`, through `Components`.
 
 pub mod annotation;
 pub mod background;

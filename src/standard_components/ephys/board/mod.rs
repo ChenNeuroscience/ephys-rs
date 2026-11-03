@@ -135,6 +135,11 @@ impl Samples {
         self.ephys.len
     }
 
+    /// Whether there are no samples yet.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Samples there's room for.
     pub fn room(&self) -> usize {
         self.ephys.capacity - self.ephys.len

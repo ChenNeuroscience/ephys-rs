@@ -177,7 +177,7 @@ impl Node<Edges> for AcquisitionBoard {
         let Some(capture) = &acquiring.capture else { return };
         // The headstages', auxiliary and analogue inputs' outputs, if they're on.
         let outputs = [Some(0), self.aux_output(), self.adc_output()];
-        match capture.pool().take(|samples| samples.len() == 0) {
+        match capture.pool().take(|samples| samples.is_empty()) {
             Some(mut samples) => {
                 let buffers = [&mut samples.ephys, &mut samples.aux, &mut samples.adc];
                 for (buffer, output) in buffers.into_iter().zip(outputs) {

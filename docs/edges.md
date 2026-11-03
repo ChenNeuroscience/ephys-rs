@@ -1,7 +1,7 @@
 # Edges
 
 What can flow along an edge is declared like node types are: each edge type is a small struct, gathered by
-`edge_types!` in [`main.rs`](../src/main.rs). The traits are in [`edge.rs`](../src/core/engine/edge.rs).
+`edge_types!` in [`lib.rs`](../src/lib.rs), with the kinds the standard components are written against. The traits are in [`edge.rs`](../src/core/engine/edge.rs).
 
 ```rust
 edge_types! {

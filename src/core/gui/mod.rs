@@ -1531,13 +1531,13 @@ mod tests {
     mod tour;
 
     fn example() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/rig.json")
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/rig.json")
     }
 
     fn harness() -> Harness<'static, TestApp> {
         let mut app = TestApp::open(Some(example()), THEMES)
-            .with_quick_actions(crate::standard_components::quick_actions::QUICK_ACTIONS)
-            .with_base_directories(crate::standard_components::base_directories::BASE_DIRECTORIES);
+            .with_quick_actions(crate::components::quick_actions::QUICK_ACTIONS)
+            .with_base_directories(crate::components::BASE_DIRECTORIES);
         // Most tests work on the graph.
         app.layout.mode = Mode::Advanced;
         assert!(app.status.is_none(), "the example opens");
@@ -2063,12 +2063,11 @@ mod tests {
 
     #[test]
     fn quick_actions_build_the_graph_from_the_basic_view() {
-        let mut app =
-            TestApp::open(None, THEMES).with_quick_actions(crate::standard_components::quick_actions::QUICK_ACTIONS);
+        let mut app = TestApp::open(None, THEMES).with_quick_actions(crate::components::quick_actions::QUICK_ACTIONS);
         // Trials, when they're chosen, in a directory that isn't there (so they start from the first).
         let saved =
             serde_json::json!({ "types": { "Subject, date and trial": { "directory": "/nowhere/recordings" } } });
-        let types = crate::standard_components::base_directories::BASE_DIRECTORIES;
+        let types = crate::components::BASE_DIRECTORIES;
         app.base_directories = BaseDirectories::new(types, Some(&saved));
         let mut harness = Harness::builder()
             .with_size([1400.0, 850.0])

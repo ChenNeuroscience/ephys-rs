@@ -3,7 +3,7 @@
 //! the layout of panes, it gives the graph and the layout to change to (a changed copy of the one it was given, made
 //! with `Layout`'s helpers: opening windows where they'd go, say, or arranging them all); or nothing, if it doesn't
 //! apply (it's already been done, say), when it isn't offered. It says what it did (`QuickChange::summary`), which
-//! is logged. The program supplies its quick actions (see main.rs), through `Components`.
+//! is logged. The program supplies its quick actions (see `Components`), through `Components`.
 
 use super::engine::{Graph, NodeSet};
 pub use super::layout::{Arrangement, Layout, Tab};

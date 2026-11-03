@@ -3,8 +3,8 @@
 ## Building and running
 
 ```bash
-cargo run --release                            # an empty graph
-cargo run --release -- examples/rig.json       # the example graph
+cargo run --release                            # the example program, with an empty graph
+cargo run --release -- my-graph.json           # opening a graph file
 ```
 
 Debug builds compile the app without optimisation but its dependencies with it (egui and the rest are many times

@@ -5,7 +5,7 @@
 
 use eframe::egui::{self, Color32, Shadow, Stroke};
 
-/// A theme the user can choose: its name, and its colours. The program supplies its themes (see main.rs).
+/// A theme the user can choose: its name, and its colours. The program supplies its themes (see `Components`).
 pub struct Theme {
     pub name: &'static str,
     pub colours: Colours,

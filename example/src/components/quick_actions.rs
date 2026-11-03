@@ -1,4 +1,4 @@
-//! The quick actions offered in the basic view:
+//! The example's quick actions, offered in the basic view:
 //!
 //! - The standard LTX graph (v0.5): an Open Ephys acquisition board (generation 1 or 2) giving spikes, EEG and digital
 //!   inputs, and a FLIR camera giving positions, all viewed, and recorded by Write LTX. It reuses what the graph
@@ -11,12 +11,12 @@
 //! - Using synthetic data (the fake board and camera in `synthetic_streams`), while any board or camera is real; and
 //!   real devices, while any is synthetic.
 
-use crate::Nodes;
-use crate::core::engine::{Graph, NodeId, NodeSet, Port, Role};
-use crate::core::quick_action::{Arrangement, QuickAction, QuickChange, QuickState, Tab};
-use crate::standard_components::ephys::band_pass::BandPassFilter;
-use crate::standard_components::ephys::board::{self, node::AcquisitionBoard, opal_kelly::OpalKellyKind};
-use crate::standard_components::tracking::camera::{self, node::Camera};
+use super::Nodes;
+use ephys_rs::core::engine::{Graph, NodeId, NodeSet, Port, Role};
+use ephys_rs::core::quick_action::{Arrangement, QuickAction, QuickChange, QuickState, Tab};
+use ephys_rs::standard_components::ephys::band_pass::BandPassFilter;
+use ephys_rs::standard_components::ephys::board::{self, node::AcquisitionBoard, opal_kelly::OpalKellyKind};
+use ephys_rs::standard_components::tracking::camera::{self, node::Camera};
 
 pub const QUICK_ACTIONS: &[QuickAction<Nodes>] = &[
     QuickAction {
@@ -340,7 +340,7 @@ fn real(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::quick_action::Layout;
+    use ephys_rs::core::quick_action::Layout;
 
     fn run(name: &str, graph: &Graph<Nodes>) -> Option<QuickChange<Nodes>> {
         let action = QUICK_ACTIONS.iter().find(|a| a.name == name).expect("action");
@@ -373,7 +373,7 @@ mod tests {
         let fed: Vec<NodeId> = graph
             .edges()
             .iter()
-            .filter(|e| e.from.node == selector && e.dimension == crate::core::engine::Dimension::Data)
+            .filter(|e| e.from.node == selector && e.dimension == ephys_rs::core::engine::Dimension::Data)
             .map(|e| e.to.node)
             .collect();
         let lfp =
@@ -383,8 +383,8 @@ mod tests {
         // The LFP Viewer sets the EEG's gains, the selection and the spikes' reference.
         let lfp_viewer = named("LFP Viewer");
         let controls = |port| {
-            let from = crate::core::engine::PortRef { node: lfp_viewer, port };
-            let settings = graph.edges().iter().filter(|e| e.dimension == crate::core::engine::Dimension::Settings);
+            let from = ephys_rs::core::engine::PortRef { node: lfp_viewer, port };
+            let settings = graph.edges().iter().filter(|e| e.dimension == ephys_rs::core::engine::Dimension::Settings);
             settings.into_iter().find(|e| e.from == from).map(|e| e.to.node)
         };
         assert_eq!(controls(0), Some(named("Continuous Gain")));
@@ -397,8 +397,8 @@ mod tests {
         assert!((0..4).all(into), "Write LTX records spikes, EEG, positions and digital inputs");
         // With the EEG's selection and gains.
         let ltx_controls = |port| {
-            let from = crate::core::engine::PortRef { node: ltx, port };
-            graph.edges().iter().find(|e| e.dimension == crate::core::engine::Dimension::Settings && e.from == from)
+            let from = ephys_rs::core::engine::PortRef { node: ltx, port };
+            graph.edges().iter().find(|e| e.dimension == ephys_rs::core::engine::Dimension::Settings && e.from == from)
         };
         assert_eq!(ltx_controls(2).map(|e| e.to.node), Some(selector));
         assert_eq!(ltx_controls(3).map(|e| e.to.node), Some(named("Continuous Gain")));
@@ -427,7 +427,7 @@ mod tests {
 
     #[test]
     fn synthetic_and_real_data_swap() {
-        let example = crate::example_graph();
+        let example = super::super::example_graph();
         // The example has all the standard graph has (and more), from the synthetic data.
         assert_eq!(offered(&example), vec!["Disable position tracking", "Use real devices"]);
         let real = run("Use real devices", &example).unwrap().graph;

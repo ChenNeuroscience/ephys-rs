@@ -301,7 +301,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
             // All that's waiting, as passes catching up would (a sleep can take longer than a buffer holds, on a busy
             // machine).
-            while let Some(taken) = capture.pool().take(|s| s.len() == 0) {
+            while let Some(taken) = capture.pool().take(|s| s.is_empty()) {
                 samples += taken.len();
                 layout = Some(taken.layout());
                 changes += taken.events.events.len();
