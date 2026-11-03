@@ -937,29 +937,25 @@ fn links(ui: &egui::Ui, colours: &Colours, anchors: &Anchors, wide: bool) {
         };
         if let Some((pool, dots)) = pool {
             let rect = pool_ui(ui, colours, *pool, dots, pool_at, ui.scope_id().with(("pool", index)));
-            // Buffers freed back to the pool, by whoever's done with them: the passes give back their own old ones
-            // as they swap in a source's; a writer's thread, those it's written.
-            let giver = if to_passes { ends(*step).1 } else { thread.left_center() };
-            let giver = if wide { giver + vec2(0.0, 10.0) } else { thread.left_center() + vec2(0.0, 10.0) };
-            let to = if giver.x < rect.center().x {
-                rect.left_bottom() + vec2(6.0, 0.0)
-            } else {
-                rect.right_bottom() - vec2(6.0, 0.0)
-            };
-            let bend = vec2(0.0, 18.0);
-            let curve = egui::epaint::CubicBezierShape::from_points_stroke(
-                [giver, giver + bend, to + bend, to],
-                false,
-                Color32::TRANSPARENT,
-                Stroke::NONE,
-            );
-            let points = curve.flatten(Some(0.5));
-            let dashed = Shape::dashed_line(&points, Stroke::new(1.0, colour), 3.0, 3.0);
-            painter.extend(dashed);
-            let tip = vec![to, to + vec2(-3.5, 6.0), to + vec2(3.5, 6.0)];
-            painter.add(Shape::convex_polygon(tip, colour, Stroke::NONE));
-            let middle = pos2_between(giver, to) + vec2(0.0, 14.0);
-            label(middle, Align2::CENTER_CENTER, "freed");
+            // Buffers freed back to the pool, by whoever's done with them (the passes give back their own old ones as
+            // they swap in a source's; a writer's thread, those it's written): dashed, alongside the link.
+            if wide {
+                let giver = if to_passes { ends(*step).1 } else { thread.left_center() };
+                let offset = vec2(0.0, 7.0);
+                let rightwards = giver.x < rect.center().x;
+                let to = if rightwards { rect.left_center() } else { rect.right_center() } + offset;
+                let from = giver + offset;
+                let bend = ((to.x - from.x).abs() * 0.5).max(10.0) * if rightwards { 1.0 } else { -1.0 };
+                let curve = egui::epaint::CubicBezierShape::from_points_stroke(
+                    [from, from + vec2(bend, 0.0), to - vec2(bend, 0.0), to],
+                    false,
+                    Color32::TRANSPARENT,
+                    Stroke::NONE,
+                );
+                let points = curve.flatten(Some(0.5));
+                painter.extend(Shape::dashed_line(&points, Stroke::new(1.0, colour), 3.0, 3.0));
+                arrow(to, rightwards);
+            }
         }
     }
     if let Some(((queued, capacity), at)) = queue_box {

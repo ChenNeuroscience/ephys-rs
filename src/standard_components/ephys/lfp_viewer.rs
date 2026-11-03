@@ -283,7 +283,19 @@ impl Node<Edges> for LfpViewer {
             (Some(buffer), Some(DataStream::Spectra(stream))) => Some((buffer, stream)),
             _ => None,
         };
-        self.rows_ui(ui, context.theme, display, stream, spectra, selection.as_mut(), locked);
+        let reference = self.rows_ui(ui, context.theme, display, stream, spectra, selection.as_mut(), locked);
+        if let Some(channel) = reference {
+            let mut channels = parse_channels(&self.reference, stream.channels).unwrap_or_default();
+            match channels.iter().position(|&c| c == channel) {
+                Some(at) => {
+                    channels.remove(at);
+                }
+                None => channels.push(channel),
+            }
+            channels.sort_unstable();
+            self.reference =
+                if channels.is_empty() { String::new() } else { format_channels(&channels, stream.channels) };
+        }
         if let Some(selection) = selection {
             context.controls[1] = Some(Setting::ChannelSelection(selection));
         }
@@ -347,6 +359,7 @@ impl LfpViewer {
     /// A row for each channel shown, at the row height: its trace, and its spectrum, with a tick to select it if
     /// there's a selection to make.
     #[allow(clippy::too_many_arguments)]
+    /// Returns the channel whose R was clicked, if one was: to put in the reference, or take out.
     fn rows_ui(
         &self,
         ui: &mut egui::Ui,
@@ -356,7 +369,7 @@ impl LfpViewer {
         spectra: Option<(&SpectraBuffer, Spectra)>,
         selection: Option<&mut ChannelSelection>,
         locked: bool,
-    ) {
+    ) -> Option<u32> {
         let area = ui.available_rect_before_wrap();
         ui.painter().rect_filled(area, 2.0, theme.surface_sunken);
         let height = self.row_height.clamp(12.0, 400.0);
@@ -365,12 +378,14 @@ impl LfpViewer {
         let ticked: Option<Vec<u32>> = selection.as_deref().map(|s| ticked(s, stream.channels));
         let referenced = parse_channels(&self.reference, stream.channels).unwrap_or_default();
         let mut toggled = None;
+        let mut reference_toggled = None;
+        let selection_applied = selection.as_deref().map(|s| s.apply);
         // The reference first, if there is one: it's the last of the display's rows.
         let rows_shown = display.shown + display.reference_row as usize;
         let data_row = |r: usize| if display.reference_row { if r == 0 { display.shown } else { r - 1 } } else { r };
         egui::ScrollArea::vertical().auto_shrink(false).show_rows(ui, height, rows_shown, |ui, rows| {
             let width = ui.available_width();
-            let label = 44.0;
+            let label = 64.0;
             let spectra = spectra.filter(|_| self.spectrum && width > SPECTRUM_WIDTH * 2.0);
             let spectrum = if spectra.is_some() { SPECTRUM_WIDTH } else { 0.0 };
             let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height * rows.len() as f32), Sense::hover());
@@ -392,7 +407,7 @@ impl LfpViewer {
                 let number = numbers.as_ref().and_then(|n| n.get(channel).copied()).unwrap_or(channel as u32);
                 let text_y = top + (height * 0.5).min(9.0);
                 let (name, ink) = if is_reference {
-                    ("ref".to_owned(), theme.accent)
+                    ("ref".to_owned(), theme.text_primary)
                 } else {
                     ((number + 1).to_string(), theme.text_secondary)
                 };
@@ -403,21 +418,36 @@ impl LfpViewer {
                     FontId::monospace(10.0),
                     ink,
                 );
-                // A channel in the reference is marked.
-                if !is_reference && referenced.contains(&(channel as u32)) {
-                    painter.circle_filled(egui::pos2(rect.left() + 22.0, text_y), 2.5, theme.accent);
-                }
                 if is_reference {
                     let hover = Rect::from_min_size(row.min, egui::vec2(label, height));
-                    let tip =
-                        format!("The reference: the average of channels {}, taken from each trace", self.reference);
+                    let tip = format!(
+                        "The reference: the average of channels {}, taken from each trace (R on a row puts its channel \
+                         in it, or takes it out)",
+                        self.reference
+                    );
                     let _ = ui.interact(hover, ui.scope_id().with("reference row"), Sense::hover()).on_hover_text(tip);
-                } else if let Some(ticked) = &ticked {
-                    let mut on = ticked.contains(&number);
-                    let tick = Rect::from_center_size(egui::pos2(rect.left() + 32.0, text_y), egui::vec2(16.0, 16.0));
-                    let response = ui.put(tick, egui::Checkbox::without_text(&mut on));
-                    if response.on_hover_text(format!("Select channel {}", number + 1)).changed() && !locked {
-                        toggled = Some(number);
+                } else {
+                    // Whether it's selected (to pass on, from a Channel Selector upstream), and in the reference.
+                    if let Some(ticked) = &ticked {
+                        let mut on = ticked.contains(&number);
+                        let tick =
+                            Rect::from_center_size(egui::pos2(rect.left() + 32.0, text_y), egui::vec2(16.0, 16.0));
+                        let tip = format!("Select channel {}, to pass on (once the selection's applied)", number + 1);
+                        if ui.put(tick, egui::Checkbox::without_text(&mut on)).on_hover_text(tip).changed() && !locked {
+                            toggled = Some(number);
+                        }
+                    }
+                    let on = referenced.contains(&(channel as u32));
+                    let place = Rect::from_center_size(egui::pos2(rect.left() + 52.0, text_y), egui::vec2(18.0, 16.0));
+                    let tip = if on {
+                        format!("Channel {} is in the reference: click to take it out", number + 1)
+                    } else {
+                        format!("Put channel {} in the reference (their average is taken from every trace)", number + 1)
+                    };
+                    let button =
+                        egui::Button::selectable(on, egui::RichText::new("R").size(10.0)).min_size(place.size());
+                    if ui.put(place, button).on_hover_text(tip).clicked() && !locked {
+                        reference_toggled = Some(channel as u32);
                     }
                 }
 
@@ -434,7 +464,17 @@ impl LfpViewer {
                         [egui::pos2(x, y(a)), egui::pos2(x, y(b))]
                     })
                     .collect();
-                let colour = if is_reference { theme.text_secondary } else { Continuous::INFO.colour };
+                // Not selected (with a selection to apply), dimmed: it won't be passed on.
+                let unselected = !is_reference
+                    && selection_applied == Some(false)
+                    && ticked.as_ref().is_some_and(|t| !t.contains(&number));
+                let colour = if is_reference {
+                    theme.text_secondary
+                } else if unselected {
+                    Continuous::INFO.colour.gamma_multiply(0.3)
+                } else {
+                    Continuous::INFO.colour
+                };
                 painter.add(Shape::line(points, Stroke::new(1.0, colour)));
 
                 if let (Some((buffer, stream)), false) = (spectra, is_reference) {
@@ -452,6 +492,7 @@ impl LfpViewer {
             }
             set_ticked(selection, &ticked, stream.channels);
         }
+        reference_toggled
     }
 }
 
@@ -500,50 +541,21 @@ fn spectrum_ui(
     }
 }
 
-/// The reference, compactly: a button saying which channels it is ("Ref: 1-4"), opening a menu to tick them (all,
-/// or none, at once).
+/// The reference, compactly: which channels it is ("Ref: 1-4"), each chosen on its row (R), and clearing it.
 fn reference_ui(ui: &mut egui::Ui, reference: &mut String, channels: u32) {
     let ticked = parse_channels(reference, channels).unwrap_or_default();
-    let text =
-        if ticked.is_empty() { "Ref: none".to_owned() } else { format!("Ref: {}", format_channels(&ticked, channels)) };
-    let button = ui.add(egui::Button::new(text).small()).on_hover_text(
-        "Reference the traces to the average of some channels (in this view only): it's shown in a row of its own",
-    );
-    egui::Popup::menu(&button).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
-        ui.horizontal(|ui| {
-            ui.label("Reference to the average of");
-            if ui.small_button("All").clicked() {
-                *reference = format_channels(&(0..channels).collect::<Vec<_>>(), channels);
-            }
-            if ui.small_button("None").clicked() {
-                reference.clear();
-            }
-        });
-        let mut ticked = parse_channels(reference, channels).unwrap_or_default();
-        let mut changed = false;
-        egui::Grid::new("reference channels").spacing(egui::vec2(2.0, 2.0)).show(ui, |ui| {
-            for channel in 0..channels {
-                let on = ticked.contains(&channel);
-                let button =
-                    egui::Button::selectable(on, format!("{:>2}", channel + 1)).min_size(egui::vec2(28.0, 0.0));
-                if ui.add(button).clicked() {
-                    if on {
-                        ticked.retain(|&c| c != channel);
-                    } else {
-                        ticked.push(channel);
-                    }
-                    changed = true;
-                }
-                if (channel + 1) % 8 == 0 {
-                    ui.end_row();
-                }
-            }
-        });
-        if changed {
-            ticked.sort_unstable();
-            *reference = if ticked.is_empty() { String::new() } else { format_channels(&ticked, channels) };
-        }
-    });
+    if ticked.is_empty() {
+        ui.weak("Ref: none").on_hover_text(
+            "Reference the traces to the average of some channels (in this view only): R on a row puts its channel \
+             in the reference",
+        );
+        return;
+    }
+    ui.label(format!("Ref: {}", format_channels(&ticked, channels)))
+        .on_hover_text("The traces are referenced to these channels' average, shown in its own row at the top");
+    if ui.small_button("Clear").on_hover_text("No reference").clicked() {
+        reference.clear();
+    }
 }
 
 /// Whether a selection's channels are "all".
