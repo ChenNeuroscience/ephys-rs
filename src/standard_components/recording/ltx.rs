@@ -32,7 +32,7 @@ use crate::core::engine::{
 };
 use crate::core::exchange::Latest;
 use crate::standard_components::ephys::{Continuous, Event, Events};
-use crate::standard_components::spikes::{FULL_SCALE_UV, Gains, Spikes, range_uv};
+use crate::standard_components::spikes::{Gains, Spikes};
 use crate::standard_components::tracking::{Crop, Detection, PositionSample, Positions};
 use crate::standard_components::widgets::{require_input, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
@@ -360,6 +360,10 @@ fn copy(pass: &Pass<Edges>, chunk: &mut Chunk, step: Option<usize>, continuous_s
     }
 }
 
+/// The Axona format's full scale for a gain of 1, in µV: its `.set` files give each channel's gain `g` for spikes
+/// recorded over ±`FULL_SCALE_UV / g` (as 8-bit samples), and the full scale as `ADC_fullscale_mv`.
+pub const FULL_SCALE_UV: f32 = 1_500_000.0;
+
 /// How many samples to step for each 5 kHz sample, if the rate's a multiple of 5 kHz.
 /// The first of the next samples to keep, keeping every `step`th, with `so_far` before them.
 fn keeping_from(so_far: u64, step: usize) -> usize {
@@ -523,7 +527,9 @@ impl LtxFiles {
         if let Some(spikes) = streams.spikes {
             set.header("ADC_fullscale_mv", FULL_SCALE_UV / 1000.0)?;
             for channel in 0..spikes.channels as usize {
-                set.header(&format!("gain_ch_{channel}"), recorded.gains.get(channel))?;
+                // In the Axona format's terms: the gain giving the channel's range.
+                let gain = FULL_SCALE_UV / recorded.gains.range_uv(channel);
+                set.header(&format!("gain_ch_{channel}"), (gain * 10.0).round() / 10.0)?;
             }
             for group in 0..spikes.groups() {
                 let mut f = file(&format!(".{}", group + 1))?;
@@ -638,7 +644,8 @@ impl Files<Chunk> for LtxFiles {
                 for channel in 0..SPIKE_CHANNELS {
                     self.record.extend_from_slice(&ticks(seconds));
                     let values = waveform.get(channel * samples..(channel + 1) * samples).unwrap_or(&[]);
-                    let steps = 128.0 / range_uv(self.gains.get(first + channel));
+                    // The channel's range, over the 8-bit samples' ±128 steps (whatever its gains map to).
+                    let steps = 128.0 / self.gains.range_uv(first + channel);
                     let start = self.record.len();
                     self.record.extend(values.iter().take(SPIKE_SAMPLES).map(|v| to_i8(v * steps)));
                     self.record.resize(start + SPIKE_SAMPLES, 0);
@@ -770,7 +777,9 @@ mod tests {
             events: None,
         };
         // A µV a step on the first channel, half a µV on the second.
-        let gains = Gains(vec![FULL_SCALE_UV / 128.0, FULL_SCALE_UV / 64.0]);
+        let mut gains = Gains::default();
+        gains.set_range(0, 128.0);
+        gains.set_range(1, 64.0);
         let recorded = Recorded { detection: None, gains };
         let mut files = Box::new(LtxFiles::open(&base, Local::now(), streams, recorded).unwrap());
 

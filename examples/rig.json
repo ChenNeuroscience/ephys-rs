@@ -448,7 +448,10 @@
         "label": "Spike Gain",
         "node": {
           "settings": {
-            "gains": [],
+            "gains": {
+              "magnitude": 128.0,
+              "gains": []
+            },
             "sampling": 10.0,
             "target": 95.0
           },

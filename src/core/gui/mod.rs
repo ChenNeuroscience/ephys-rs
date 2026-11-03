@@ -2035,7 +2035,7 @@ mod tests {
             "the Spike Gain's auto detect, fired"
         );
         // What the passes propose is applied, as an edit.
-        let gains = crate::standard_components::spikes::Gains(vec![1234.0]);
+        let gains = crate::standard_components::spikes::Gains { magnitude: 128.0, gains: vec![0.25] };
         harness.state().runner.as_ref().unwrap().exchange().propose(
             gain,
             0,

@@ -104,9 +104,11 @@ pub struct SpikesBuffer {
     pub waveforms: Vec<f32>,
     pub group_size: usize,
     pub samples: usize,
-    /// Each channel's threshold, gain and noise (a standard deviation, µV) as the pass ended.
+    /// Each channel's threshold, gain and noise (a standard deviation, µV) as the pass ended, and what the gains map
+    /// to (see `Gains`).
     pub thresholds: Vec<f32>,
     pub gains: Vec<f32>,
+    pub magnitude: f32,
     pub noise: Vec<f32>,
     /// How many samples of continuous data the pass covers (for timing spikes across passes).
     pub pass_samples: usize,
@@ -154,7 +156,8 @@ impl DataStreamType for Spikes {
             group_size,
             samples: waveform,
             thresholds: vec![0.0; self.channels as usize],
-            gains: vec![DEFAULT_GAIN; self.channels as usize],
+            gains: vec![DEFAULT_MAGNITUDE / DEFAULT_RANGE_UV; self.channels as usize],
+            magnitude: DEFAULT_MAGNITUDE,
             noise: vec![0.0; self.channels as usize],
             pass_samples: 0,
         }
@@ -165,32 +168,25 @@ impl DataStreamType for Spikes {
     }
 }
 
-/// The full scale of a gain of 1, in µV: at gain `g`, spikes' waveforms are recorded (in the LTX format, as 8-bit
-/// samples) and viewed over ±`FULL_SCALE_UV / g`. (As in the Axona format the LTX format comes from, whose `.set`
-/// files give each channel's gain, and the full scale as `ADC_fullscale_mv`.)
-pub const FULL_SCALE_UV: f32 = 1_500_000.0;
-/// A channel's gain until it's set: ±250 µV.
-pub const DEFAULT_GAIN: f32 = 6000.0;
+/// What gains map to until it's set: Write LTX's 8-bit samples, ±128 steps.
+pub const DEFAULT_MAGNITUDE: f32 = 128.0;
+/// A channel's range until it's set: µV either side of zero.
+pub const DEFAULT_RANGE_UV: f32 = 250.0;
 /// A channel's threshold until it's set, in µV.
 pub const DEFAULT_THRESHOLD_UV: f32 = 50.0;
-/// The gains that can be set.
-pub const GAINS: std::ops::RangeInclusive<f32> = 50.0..=100_000.0;
+/// The ranges gains can give, in µV either side of zero.
+pub const RANGES_UV: std::ops::RangeInclusive<f32> = 10.0..=30_000.0;
 
-/// The µV either side of zero a gain shows (and records).
-pub fn range_uv(gain: f32) -> f32 {
-    FULL_SCALE_UV / gain.max(1.0)
-}
-
-/// The next gain up or down from `gain` in steps of 1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8 (×10ⁿ).
-pub fn gain_step(gain: f32, up: bool) -> f32 {
+/// The next range down (`smaller`) or up from `range_uv`, in steps of 1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8 (×10ⁿ).
+pub fn range_step(range_uv: f32, smaller: bool) -> f32 {
     const STEPS: [f32; 10] = [1.0, 1.2, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0];
-    let steps = (1..=5).flat_map(|n| STEPS.map(|s| s * 10f32.powi(n)));
-    let next = if up {
-        steps.filter(|&s| s > gain * 1.001).reduce(f32::min)
+    let steps = (0..=5).flat_map(|n| STEPS.map(|s| s * 10f32.powi(n)));
+    let next = if smaller {
+        steps.filter(|&s| s < range_uv / 1.001).reduce(f32::max)
     } else {
-        steps.filter(|&s| s < gain / 1.001).reduce(f32::max)
+        steps.filter(|&s| s > range_uv * 1.001).reduce(f32::min)
     };
-    next.unwrap_or(gain).clamp(*GAINS.start(), *GAINS.end())
+    next.unwrap_or(range_uv).clamp(*RANGES_UV.start(), *RANGES_UV.end())
 }
 
 /// A value for each channel; channels past the end have the default.
@@ -242,18 +238,54 @@ impl EdgeType for Thresholds {
     }
 }
 
-/// Each channel's gain for spikes: their waveforms are recorded, and viewed, over ±`range_uv(gain)`.
-#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct Gains(pub Vec<f32>);
+/// Each channel's gain for spikes: a waveform's values times its channel's gain are in the units of what takes them
+/// (a writer's samples, say), up to ±`magnitude` (the range of those units). So a channel's waveforms fit within
+/// ±`magnitude / gain` µV (its range), which is what the Spike Viewer's plots show, and beyond which a recording's
+/// values clip. Write LTX's 8-bit samples take ±128 steps; floats might take ±1.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Gains {
+    pub magnitude: f32,
+    /// Each channel's gain (channels past the end have the default range's).
+    pub gains: Vec<f32>,
+}
+
+impl Default for Gains {
+    fn default() -> Self {
+        Gains { magnitude: DEFAULT_MAGNITUDE, gains: Vec::new() }
+    }
+}
 
 impl Gains {
     pub fn get(&self, channel: usize) -> f32 {
-        per_channel(&self.0, channel, DEFAULT_GAIN)
+        per_channel(&self.gains, channel, self.magnitude / DEFAULT_RANGE_UV)
     }
 
+    /// A channel's range: µV either side of zero that its gain fits within the magnitude.
+    pub fn range_uv(&self, channel: usize) -> f32 {
+        match self.gains.get(channel) {
+            Some(gain) => self.magnitude / gain.max(f32::MIN_POSITIVE),
+            None => DEFAULT_RANGE_UV,
+        }
+    }
+
+    /// Sets a channel's gain (within what gives a range in `RANGES_UV`).
     pub fn set(&mut self, channel: usize, gain: f32) {
-        set_per_channel(&mut self.0, channel, gain.clamp(*GAINS.start(), *GAINS.end()), DEFAULT_GAIN);
+        let (low, high) = (self.magnitude / RANGES_UV.end(), self.magnitude / RANGES_UV.start());
+        set_per_channel(&mut self.gains, channel, gain.clamp(low, high), self.magnitude / DEFAULT_RANGE_UV);
+    }
+
+    /// Sets a channel's gain to give a range of `range_uv`.
+    pub fn set_range(&mut self, channel: usize, range_uv: f32) {
+        self.set(channel, self.magnitude / range_uv.clamp(*RANGES_UV.start(), *RANGES_UV.end()));
+    }
+
+    /// Changes what the gains map to, keeping each channel's range.
+    pub fn set_magnitude(&mut self, magnitude: f32) {
+        let magnitude = magnitude.max(f32::MIN_POSITIVE);
+        let scale = magnitude / self.magnitude;
+        self.gains.iter_mut().for_each(|g| *g *= scale);
+        self.magnitude = magnitude;
     }
 }
 
@@ -261,12 +293,14 @@ impl EdgeType for Gains {
     const INFO: EdgeInfo = EdgeInfo {
         name: "gains",
         colour: Color32::from_rgb(110, 215, 150),
-        description: "Each channel's gain for spikes, as in the LTX format: the range their waveforms are recorded, \
-                      and viewed, over.",
+        description: "Each channel's gain for spikes: what their waveforms' values are multiplied by, for what takes \
+                      them (up to a magnitude: ±128 for Write LTX's 8-bit samples), so the range they fit within.",
     };
 
+    /// The channels' ranges, which is what the gains mean to people.
     fn summary(&self) -> String {
-        spread(&self.0, DEFAULT_GAIN, |g| format!("×{g:.0}"))
+        let ranges: Vec<f32> = (0..self.gains.len()).map(|c| self.range_uv(c)).collect();
+        spread(&ranges, DEFAULT_RANGE_UV, |r| format!("±{r:.0} µV"))
     }
 }
 
@@ -290,15 +324,17 @@ mod tests {
     }
 
     #[test]
-    fn gains_step_and_default() {
-        assert_eq!(gain_step(6000.0, true), 8000.0);
-        assert_eq!(gain_step(6000.0, false), 5000.0);
-        assert_eq!(gain_step(7000.0, false), 6000.0, "from between steps, to the next");
-        assert_eq!(range_uv(DEFAULT_GAIN), 250.0);
+    fn gains_mean_ranges_whatever_they_map_to() {
+        assert_eq!(range_step(250.0, true), 200.0);
+        assert_eq!(range_step(250.0, false), 300.0);
+        assert_eq!(range_step(220.0, true), 200.0, "from between steps, to the next");
         let mut gains = Gains::default();
-        gains.set(2, 3000.0);
-        assert_eq!(gains.0, vec![DEFAULT_GAIN, DEFAULT_GAIN, 3000.0]);
-        assert_eq!((gains.get(2), gains.get(9)), (3000.0, DEFAULT_GAIN));
-        assert_eq!(gains.summary(), "×3000–×6000");
+        assert_eq!(gains.range_uv(0), DEFAULT_RANGE_UV);
+        gains.set_range(2, 500.0);
+        assert_eq!(gains.gains, vec![128.0 / 250.0, 128.0 / 250.0, 128.0 / 500.0]);
+        assert_eq!(gains.summary(), "±250 µV–±500 µV");
+        // Mapped to ±1 (floats, say), the ranges stay.
+        gains.set_magnitude(1.0);
+        assert_eq!((gains.get(2), gains.range_uv(2), gains.range_uv(9)), (1.0 / 500.0, 500.0, DEFAULT_RANGE_UV));
     }
 }
