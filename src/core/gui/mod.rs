@@ -712,6 +712,13 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         for id in change.close {
             self.layout.close(id);
         }
+        let recording = self.history.current.snapshot.recording.is_some() || self.preparing.is_some();
+        let types = self.base_directories.types();
+        if let (Some(name), false) = (change.base_directory, recording)
+            && let Some(index) = types.iter().position(|t| t.name == name)
+        {
+            self.base_directories.choose(index);
+        }
         log::info!("Quick action \"{}\": {}", action.name, change.summary);
     }
 
@@ -1855,8 +1862,13 @@ mod tests {
 
     #[test]
     fn quick_actions_build_the_graph_from_the_basic_view() {
-        let app =
+        let mut app =
             TestApp::open(None, THEMES).with_quick_actions(crate::standard_components::quick_actions::QUICK_ACTIONS);
+        // Trials, when they're chosen, in a directory that isn't there (so they start from the first).
+        let saved =
+            serde_json::json!({ "types": { "Subject, date and trial": { "directory": "/nowhere/recordings" } } });
+        let types = crate::standard_components::base_directories::BASE_DIRECTORIES;
+        app.base_directories = BaseDirectories::new(types, Some(&saved));
         let mut harness = Harness::builder()
             .with_size([1400.0, 850.0])
             .wgpu()
@@ -1869,8 +1881,11 @@ mod tests {
         // A pane open before goes behind the spike viewer.
         harness.state_mut().layout.toggle_pane(Pane::DevTools);
         harness.run_steps(2);
+        assert_eq!(harness.state().base_directories.chosen(), Some(0));
         harness.get_by_role_and_label(button, "Standard LTX graph v0.5").click();
         harness.run_steps(3);
+        let chosen = harness.state().base_directories.chosen().map(|i| types[i].name);
+        assert_eq!(chosen, Some("Subject, date and trial"), "recording subjects' trials");
         for viewer in ["Spike Viewer", "LFP Viewer", "TTL Viewer", "Tracker View"] {
             let id = node_named(harness.state(), viewer);
             assert_eq!(harness.state().layout.window(id), WindowState::Docked, "the {viewer} opens");

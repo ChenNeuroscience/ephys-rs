@@ -17,6 +17,8 @@ A `QuickChange` is:
 - `panes`: or where to put the panes, replacing the layout (an `Arrangement` of rows, columns and tabs), as the
   standard LTX graph does.
 - `arrange`: whether to lay the graph out afresh, as after building it from nothing.
+- `base_directory`: the [base directory](base-directories.md) to use, by its type's name, if it says (not while
+  recording), as the standard LTX graph chooses subject, date and trial.
 - `summary`: what it did, in a line, which is logged. By convention it says what was added, connected, or changed.
 
 The standard actions are in [`quick_actions.rs`](../src/standard_components/quick_actions.rs), listed in

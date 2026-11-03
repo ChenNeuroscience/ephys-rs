@@ -137,6 +137,7 @@ impl Change {
             panes: None,
             close: Vec::new(),
             summary,
+            base_directory: None,
         })
     }
 }
@@ -163,8 +164,8 @@ fn real_camera() -> camera::Source {
 /// reference channels, and showing the reference), with a Spectrum of it too; the board's digital
 /// inputs → TTL Viewer; Camera → Position Detector → Tracker View (setting the camera's and detector's settings).
 /// Write LTX records the spikes (at their gains), the LFP branch's data as EEG (the channels selected, band-passed,
-/// through an Continuous Gain), the positions (with the detector's settings) and the digital inputs. New boards and cameras
-/// are real.
+/// through a Continuous Gain), the positions (with the detector's settings) and the digital inputs. New boards and cameras
+/// are real. Recordings go in a directory for each subject, day and trial.
 fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
     let mut change = Change::new(state.graph);
     let empty = state.graph.iter().next().is_none();
@@ -245,8 +246,9 @@ fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
     change.link((ltx, Control, 3), (continuous_gain, Setting, 0));
 
     let mut result = change.finish(state, &[spike_viewer, lfp_viewer, ttl_viewer, tracker])?;
-    // A new graph, laid out tidily.
+    // A new graph, laid out tidily; recording each subject's trials.
     result.arrange = empty;
+    result.base_directory = Some("Subject, date and trial");
     let tabs = |tabs: Vec<Tab>| Arrangement::Tabs { tabs, active: 0 };
     result.panes = Some(Arrangement::Row(vec![
         (0.3, Arrangement::Tabs { tabs: vec![Tab::Home, Tab::Window(tracker)], active: 1 }),
@@ -293,7 +295,7 @@ fn set_positions_disabled(state: &QuickState<Nodes>, disabled: bool) -> Option<Q
     let (open, close) = if disabled { (Vec::new(), trackers) } else { (trackers, Vec::new()) };
     let names: Vec<String> = ids.iter().filter_map(|id| graph.get(*id).map(|e| e.label.clone())).collect();
     let summary = format!("{} {}", if disabled { "disabled" } else { "enabled" }, names.join(", "));
-    Some(QuickChange { graph, open, close, arrange: false, panes: None, summary })
+    Some(QuickChange { graph, open, close, arrange: false, panes: None, summary, base_directory: None })
 }
 
 fn disable_positions(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
@@ -330,6 +332,7 @@ fn set_synthetic(state: &QuickState<Nodes>, synthetic: bool) -> Option<QuickChan
         panes: None,
         close: Vec::new(),
         summary,
+        base_directory: None,
     })
 }
 
@@ -362,6 +365,7 @@ mod tests {
         assert_eq!(offered(&empty), vec!["Standard LTX graph v0.5"]);
         let change = run("Standard LTX graph v0.5", &empty).unwrap();
         assert!(change.arrange, "a new graph is laid out");
+        assert_eq!(change.base_directory, Some("Subject, date and trial"));
         assert!(change.summary.starts_with("added Acquisition Board, "), "{}", change.summary);
         assert_eq!(change.open.len(), 4, "the four viewers");
         let graph = change.graph;

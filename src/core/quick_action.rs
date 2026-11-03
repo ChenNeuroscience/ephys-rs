@@ -36,6 +36,8 @@ pub struct QuickChange<N: NodeSet> {
     pub panes: Option<Arrangement>,
     /// What it did, in a line, for the log: "added Spike Detector, Spike Viewer; connected 3", say.
     pub summary: String,
+    /// The base directory to use (see `crate::core::base_directory`), by its type's name, if it says.
+    pub base_directory: Option<&'static str>,
 }
 
 /// An arrangement of the panes: rows and columns of groups of tabs.
