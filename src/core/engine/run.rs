@@ -97,6 +97,12 @@ impl<'a, E: Edges> Pass<'a, E> {
         self.exchange.take_trigger(self.node, name)
     }
 
+    /// Whether the node's trigger `name`, taken, has been stopped since: the node should abandon what it's doing
+    /// for it (it's then done).
+    pub fn trigger_cancelled(&self, name: &'static str) -> bool {
+        self.exchange.take_cancel(self.node, name)
+    }
+
     /// How far along the node's trigger `name` is, from 0 to 1, for the GUI to show.
     pub fn trigger_progress(&self, name: &'static str, progress: f32) {
         self.exchange.set_trigger_progress(self.node, name, Some(progress.clamp(0.0, 1.0)));

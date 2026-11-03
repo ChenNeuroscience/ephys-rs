@@ -2035,11 +2035,14 @@ mod tests {
         // Not the Run menu's: the viewer's, drawn after it.
         harness.get_all_by_label("Run").last().expect("the viewer's Run").click();
         harness.run_steps(2);
-        let exchange = || harness.state().runner.as_ref().unwrap().exchange();
-        assert!(
-            exchange().trigger_progress(gain, crate::standard_components::spikes::spike_gain::AUTO_DETECT).is_some(),
-            "the Spike Gain's auto detect, fired"
-        );
+        use crate::standard_components::spikes::spike_gain::AUTO_DETECT;
+        let progress =
+            |h: &Harness<TestApp>| h.state().runner.as_ref().unwrap().exchange().trigger_progress(gain, AUTO_DETECT);
+        assert!(progress(&harness).is_some(), "the Spike Gain's auto detect, fired");
+        // While it's going, it can be stopped.
+        harness.get_by_label("Stop").click();
+        harness.run_steps(2);
+        assert_eq!(progress(&harness), None, "stopped");
         // What the passes propose is applied, as an edit.
         let gains = crate::standard_components::spikes::Gains { gains: vec![0.25], ..Default::default() };
         harness.state().runner.as_ref().unwrap().exchange().propose(

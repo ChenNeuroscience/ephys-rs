@@ -15,9 +15,11 @@ use serde::{Deserialize, Serialize};
 use crate::core::engine::EdgeType;
 use crate::core::engine::{Category, Context, Input, Node, NodeInfo, Output, PASS_DURATION, Pass, SettingPort};
 use crate::core::exchange::Latest;
-use crate::standard_components::spikes::spike_gain::{AUTO_DETECT, SAMPLING, auto_detect_ui};
+use crate::standard_components::spikes::spike_gain::{AUTO_DETECT, SAMPLING, auto_detect_ui, detecting};
 use crate::standard_components::spikes::{Polarity, Spike, Spikes, Thresholds};
-use crate::standard_components::widgets::{combo, input_summary, require_input, setting, settings_grid};
+use crate::standard_components::widgets::{
+    combo, input_summary, named_settings_grid, require_input, setting, settings_grid,
+};
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -293,13 +295,20 @@ impl Node<Edges> for SpikeDetector {
             setting(ui, "Before peak", |ui| ui.add(egui::DragValue::new(&mut self.pre).range(1..=64).suffix(pre)));
             setting(ui, "After peak", |ui| ui.add(egui::DragValue::new(&mut self.post).range(1..=128).suffix(post)));
             setting(ui, "Thresholds", |ui| ui.label(self.thresholds.summary()));
-            setting(ui, "Auto detect at", |ui| {
-                ui.add(egui::DragValue::new(&mut self.threshold_sd).range(1.0..=20.0).speed(0.05).suffix(" SD"))
-                    .on_hover_text("Thresholds chosen from the data are this many standard deviations of the noise")
-            });
-            setting(ui, "over", |ui| {
-                ui.add(egui::DragValue::new(&mut self.sampling).range(SAMPLING).speed(0.2).suffix(" s"))
-                    .on_hover_text("How long to sample the noise for")
+        });
+        // Choosing the thresholds from the data (not while it's going).
+        ui.add_space(8.0);
+        ui.strong("Auto detect");
+        ui.add_enabled_ui(!detecting(context), |ui| {
+            named_settings_grid(ui, "auto detect", |ui| {
+                setting(ui, "At", |ui| {
+                    ui.add(egui::DragValue::new(&mut self.threshold_sd).range(1.0..=20.0).speed(0.05).suffix(" SD"))
+                        .on_hover_text("Thresholds chosen from the data are this many standard deviations of the noise")
+                });
+                setting(ui, "Sampling for", |ui| {
+                    ui.add(egui::DragValue::new(&mut self.sampling).range(SAMPLING).speed(0.2).suffix(" s"))
+                        .on_hover_text("How long to sample the noise for")
+                });
             });
         });
         let tip = format!(
@@ -321,6 +330,9 @@ impl SpikeDetector {
         if pass.triggered(AUTO_DETECT) {
             let seconds = self.sampling.clamp(*SAMPLING.start(), *SAMPLING.end()) as f64;
             detector.sampling = Some((0.0, seconds, vec![0.0; channels], 0));
+        }
+        if detector.sampling.is_some() && pass.trigger_cancelled(AUTO_DETECT) {
+            detector.sampling = None;
         }
         if let Some((elapsed, seconds, sums, passes)) = &mut detector.sampling {
             for (sum, noise) in sums.iter_mut().zip(&detector.noise) {

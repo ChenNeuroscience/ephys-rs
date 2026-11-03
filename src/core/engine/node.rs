@@ -127,6 +127,13 @@ impl<E: Edges> Context<'_, E> {
         self.tools.as_ref().and_then(|t| t.trigger_progress(control, name))
     }
 
+    /// Stops the trigger, if it's been fired and isn't done: the node abandons what it was doing for it.
+    pub fn cancel_trigger(&mut self, control: Option<usize>, name: &'static str) {
+        if let Some(tools) = &mut self.tools {
+            tools.cancel_trigger(control, name);
+        }
+    }
+
     /// Opens the window of the node control `control` connects to (to change its settings there, say).
     pub fn open_control_target(&mut self, control: usize) {
         if let Some(tools) = &mut self.tools {
@@ -156,6 +163,8 @@ pub trait NodeToolbar {
     fn trigger(&mut self, control: Option<usize>, name: &'static str);
     fn can_trigger(&self, control: Option<usize>, name: &'static str) -> bool;
     fn trigger_progress(&self, control: Option<usize>, name: &'static str) -> Option<f32>;
+    /// Stops a trigger fired (see `Context::cancel_trigger`).
+    fn cancel_trigger(&mut self, control: Option<usize>, name: &'static str);
     fn open_control_target(&mut self, control: usize);
 
     /// Whether the app's in advanced mode.

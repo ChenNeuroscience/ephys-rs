@@ -63,7 +63,8 @@ are full examples.
 
 A setting can offer **triggers** (`triggers(setting)`), as well as be set: "auto detect", say. A control connected to
 it fires one (`Context::trigger(Some(control), name)`), as can the node's own window (`None`); the node's next pass
-takes it (`Pass::triggered`), reports progress (`Pass::trigger_progress`), and finishes (`Pass::trigger_done`). Since
+takes it (`Pass::triggered`), reports progress (`Pass::trigger_progress`), and finishes (`Pass::trigger_done`).
+Meanwhile it can be stopped (`Context::cancel_trigger`): the passes then see `Pass::trigger_cancelled`, and abandon it. Since
 passes can't change the graph, what it finds it proposes (`Pass::propose(setting, value)`), and the GUI applies it as
 an edit. The [Spike Gain](../src/standard_components/spikes/spike_gain.rs) and
 [Spike Detector](../src/standard_components/spikes/spike_detector.rs) work this way, triggered from the Spike Viewer.

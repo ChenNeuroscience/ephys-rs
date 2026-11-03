@@ -77,6 +77,12 @@ impl NodeToolbar for NodeTools<'_> {
         self.exchange?.trigger_progress(self.trigger_node(control, name)?, name)
     }
 
+    fn cancel_trigger(&mut self, control: Option<usize>, name: &'static str) {
+        if let (Some(node), Some(exchange)) = (self.trigger_node(control, name), self.exchange) {
+            exchange.cancel(node, name);
+        }
+    }
+
     fn open_control_target(&mut self, control: usize) {
         if let Some((node, _)) = self.controls.get(control).copied().flatten() {
             self.events.push(Event::OpenWindow(node));

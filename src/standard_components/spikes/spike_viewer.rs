@@ -302,7 +302,12 @@ impl SpikeViewer {
             ui.separator();
             // Auto detect: what, then run (each by its node, as it says: see their settings).
             let label = ui.strong("Auto detect");
-            ui.add_enabled_ui(!context.locked, |ui| {
+            // What it's detecting, while it is.
+            let running: Vec<(usize, f32)> = [GAINS_CONTROL, THRESHOLDS]
+                .into_iter()
+                .filter_map(|c| context.trigger_progress(Some(c), AUTO_DETECT).map(|p| (c, p)))
+                .collect();
+            ui.add_enabled_ui(!context.locked && running.is_empty(), |ui| {
                 egui::ComboBox::from_id_salt("detect")
                     .selected_text(self.detect.name())
                     .width(150.0)
@@ -315,45 +320,43 @@ impl SpikeViewer {
                     .labelled_by(label.id)
                     .on_hover_text("What to detect from the data");
             });
-            let controls = self.detect.controls();
-            let progress: Vec<f32> =
-                controls.iter().filter_map(|&(c, _, _)| context.trigger_progress(Some(c), AUTO_DETECT)).collect();
-            let missing: Vec<String> = controls
-                .iter()
-                .filter(|&&(c, _, _)| !context.control_connected(c))
-                .map(|&(_, what, by)| format!("connect its {what} to a {by}"))
-                .collect();
-            let can = missing.is_empty()
-                && progress.is_empty()
-                && !context.locked
-                && controls.iter().all(|&(c, _, _)| context.can_trigger(Some(c), AUTO_DETECT));
-            let why = if !missing.is_empty() {
-                format!("To detect them, {}", missing.join(", and "))
-            } else if context.locked {
-                "Not while recording".into()
-            } else if !context.running {
-                "Only while acquiring: it needs data".into()
-            } else {
-                "Detecting…".into()
-            };
-            let tip = format!(
-                "Sample the data for a while, then set the {} (as the {} says)",
-                controls.iter().map(|c| c.1).collect::<Vec<_>>().join(" and "),
-                controls.iter().map(|c| c.2).collect::<Vec<_>>().join(" and ")
-            );
-            if ui
-                .add_enabled(can, egui::Button::new("Run").small())
-                .on_hover_text(tip)
-                .on_disabled_hover_text(why)
-                .clicked()
-            {
-                for &(control, _, _) in controls {
-                    context.trigger(Some(control), AUTO_DETECT);
+            if !running.is_empty() {
+                let stop = ui.add(egui::Button::new("Stop").small());
+                if stop.on_hover_text("Stop detecting, leaving things as they were").clicked() {
+                    for &(control, _) in &running {
+                        context.cancel_trigger(Some(control), AUTO_DETECT);
+                    }
                 }
-            }
-            if !progress.is_empty() {
-                let least = progress.iter().copied().fold(1.0, f32::min);
+                let least = running.iter().map(|r| r.1).fold(1.0, f32::min);
                 ui.add(egui::ProgressBar::new(least).desired_width(60.0).show_percentage());
+            } else {
+                let controls = self.detect.controls();
+                let missing: Vec<String> = controls
+                    .iter()
+                    .filter(|&&(c, _, _)| !context.control_connected(c))
+                    .map(|&(_, what, by)| format!("connect its {what} to a {by}"))
+                    .collect();
+                let can = missing.is_empty()
+                    && !context.locked
+                    && controls.iter().all(|&(c, _, _)| context.can_trigger(Some(c), AUTO_DETECT));
+                let why = if !missing.is_empty() {
+                    format!("To detect them, {}", missing.join(", and "))
+                } else if context.locked {
+                    "Not while recording".into()
+                } else {
+                    "Only while acquiring: it needs data".into()
+                };
+                let tip = format!(
+                    "Sample the data for a while, then set the {} (as the {} says)",
+                    controls.iter().map(|c| c.1).collect::<Vec<_>>().join(" and "),
+                    controls.iter().map(|c| c.2).collect::<Vec<_>>().join(" and ")
+                );
+                let run = ui.add_enabled(can, egui::Button::new("Run").small());
+                if run.on_hover_text(tip).on_disabled_hover_text(why).clicked() {
+                    for &(control, _, _) in controls {
+                        context.trigger(Some(control), AUTO_DETECT);
+                    }
+                }
             }
             if context.advanced() {
                 ui.separator();

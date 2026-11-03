@@ -117,6 +117,9 @@ impl Node<Edges> for SpikeGain {
                 peaks: (0..channels).map(|_| Vec::with_capacity(SAMPLED_SPIKES)).collect(),
             });
         }
+        if gaining.sampling.is_some() && pass.trigger_cancelled(AUTO_DETECT) {
+            gaining.sampling = None;
+        }
         if let Some(sampling) = &mut gaining.sampling {
             sampling.add(spikes, pass.duration);
             pass.trigger_progress(AUTO_DETECT, (sampling.elapsed / sampling.seconds) as f32);
@@ -209,22 +212,25 @@ impl Node<Edges> for SpikeGain {
         // Choosing them from the data.
         ui.add_space(8.0);
         ui.strong("Auto detect");
-        named_settings_grid(ui, "auto detect", |ui| {
-            setting(ui, "Fit to", |ui| {
-                let mut output_range = self.gains.output_range;
-                let field = egui::DragValue::new(&mut output_range).range(1e-6..=1e9).speed(1.0).prefix("±");
-                let response = ui.add(field).on_hover_text(
-                    "Gains chosen from the data have each channel's bigger spikes (the 98th percentile's biggest \
+        let detecting = detecting(context);
+        ui.add_enabled_ui(!detecting, |ui| {
+            named_settings_grid(ui, "auto detect", |ui| {
+                setting(ui, "Fit to", |ui| {
+                    let mut output_range = self.gains.output_range;
+                    let field = egui::DragValue::new(&mut output_range).range(1e-6..=1e9).speed(1.0).prefix("±");
+                    let response = ui.add(field).on_hover_text(
+                        "Gains chosen from the data have each channel's bigger spikes (the 98th percentile's biggest \
                      excursion) reach this, in the units of what takes them: ±128 for Write LTX's int8 values, say \
                      (or less, for room above them), ±32768 for int16, ±1 for floats",
-                );
-                self.gains.output_range = output_range;
-                response
-            });
-            setting(ui, "Sampling for", |ui| {
-                ui.add(egui::DragValue::new(&mut self.sampling).range(SAMPLING).speed(0.2).suffix(" s"))
-                    .on_hover_text("How long to sample the spikes for")
-            });
+                    );
+                    self.gains.output_range = output_range;
+                    response
+                });
+                setting(ui, "Sampling for", |ui| {
+                    ui.add(egui::DragValue::new(&mut self.sampling).range(SAMPLING).speed(0.2).suffix(" s"))
+                        .on_hover_text("How long to sample the spikes for")
+                });
+            })
         });
         let tip = format!(
             "Sample the spikes, then set the gains so the bigger ones reach ±{}, sharing them out as above",
@@ -240,15 +246,16 @@ impl Node<Edges> for SpikeGain {
 /// and how it's going: for this node's window, and a viewer's.
 pub fn auto_detect_ui(ui: &mut egui::Ui, context: &mut Context<Edges>, control: Option<usize>, tip: &str) {
     ui.horizontal(|ui| {
-        let progress = context.trigger_progress(control, AUTO_DETECT);
-        let can = context.can_trigger(control, AUTO_DETECT) && progress.is_none() && !context.locked;
-        let why = if context.locked {
-            "Not while recording"
-        } else if !context.running {
-            "Only while acquiring: it needs data"
-        } else {
-            "Detecting…"
-        };
+        // While detecting, it can be stopped.
+        if let Some(progress) = context.trigger_progress(control, AUTO_DETECT) {
+            if ui.button("Stop").on_hover_text("Stop detecting, leaving things as they were").clicked() {
+                context.cancel_trigger(control, AUTO_DETECT);
+            }
+            ui.add(egui::ProgressBar::new(progress).desired_width(80.0).show_percentage());
+            return;
+        }
+        let can = context.can_trigger(control, AUTO_DETECT) && !context.locked;
+        let why = if context.locked { "Not while recording" } else { "Only while acquiring: it needs data" };
         if ui
             .add_enabled(can, egui::Button::new("Auto detect"))
             .on_hover_text(tip)
@@ -257,10 +264,12 @@ pub fn auto_detect_ui(ui: &mut egui::Ui, context: &mut Context<Edges>, control: 
         {
             context.trigger(control, AUTO_DETECT);
         }
-        if let Some(progress) = progress {
-            ui.add(egui::ProgressBar::new(progress).desired_width(80.0).show_percentage());
-        }
     });
+}
+
+/// Whether the node's auto-detect is going (its settings for it can't change meanwhile).
+pub fn detecting(context: &Context<Edges>) -> bool {
+    context.trigger_progress(None, AUTO_DETECT).is_some()
 }
 
 impl Sampling {
@@ -364,6 +373,38 @@ mod tests {
         assert!(close(gains.range_uv(2), 120.0), "spikes no bigger than 0: room for its threshold");
         assert!(close(gains.range_uv(3), 75.0), "and for the default threshold, with no noise");
         assert_eq!(gains.output_range, 128.0, "for 8-bit samples, to begin with");
+    }
+
+    #[test]
+    fn stopping_auto_detect_abandons_it() {
+        let gain = SpikeGain::default();
+        let stream = crate::standard_components::spikes::Spikes {
+            channels: 4,
+            sample_rate: 30000.0,
+            group_size: 4,
+            pre: 8,
+            post: 32,
+            polarity: Default::default(),
+        };
+        let mut state = gain.initial_state(&[Some(DataStream::Spikes(stream))]);
+        let mut outputs = [Buffer::Spikes(stream.buffer(PASS_DURATION))];
+        let exchange = Pass::<Edges>::new(0, PASS_DURATION, &[], &mut []).exchange;
+        exchange.fire(NodeId(0), AUTO_DETECT);
+        let mut run = |sequence| {
+            let mut pass = Pass::new(sequence, PASS_DURATION, &[], &mut outputs);
+            pass.exchange = exchange;
+            gain.process(&mut pass, &mut state);
+        };
+        run(0);
+        run(1);
+        assert!(exchange.trigger_progress(NodeId(0), AUTO_DETECT).is_some(), "sampling");
+        exchange.cancel(NodeId(0), AUTO_DETECT);
+        assert_eq!(exchange.trigger_progress(NodeId(0), AUTO_DETECT), None, "stopped, as far as the GUI's concerned");
+        for sequence in 2..600 {
+            run(sequence);
+        }
+        assert!(exchange.take_proposals().is_empty(), "nothing chosen");
+        assert_eq!(exchange.trigger_progress(NodeId(0), AUTO_DETECT), None);
     }
 
     /// Its window, a gain for each tetrode. See tests/snapshots/.

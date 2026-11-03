@@ -256,7 +256,7 @@ mod tests {
         let frames = take_like_passes(&capture, 25, 10);
         let mut status = Status::default();
         capture.status_into(&mut status);
-        assert_eq!(frames.len(), 25, "status {status:?}");
+        assert!(frames.len() >= 25, "a pass can take two at once; status {status:?}");
         assert!(frames.windows(2).all(|w| w[1].2 > w[0].2), "in order");
         assert_eq!((status.not_taken, status.wrong_size), (0, 0));
         // Frames of another size are skipped.

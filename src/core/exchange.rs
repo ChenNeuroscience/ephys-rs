@@ -65,6 +65,8 @@ pub type Proposal = (NodeId, usize, Box<dyn Any + Send>);
 enum Trigger {
     Fired,
     Running(f32),
+    /// Stopped by the GUI, until a pass sees it has been.
+    Cancelled,
 }
 
 impl Exchange {
@@ -73,12 +75,38 @@ impl Exchange {
         self.triggers.lock().unwrap().insert((node, name), Trigger::Fired);
     }
 
-    /// How far along node `node`'s trigger `name` is (0 to 1), if it's been fired and isn't done.
+    /// How far along node `node`'s trigger `name` is (0 to 1), if it's been fired and isn't done (or stopped).
     pub fn trigger_progress(&self, node: NodeId, name: &'static str) -> Option<f32> {
-        self.triggers.lock().unwrap().get(&(node, name)).map(|t| match t {
-            Trigger::Fired => 0.0,
-            Trigger::Running(progress) => *progress,
+        self.triggers.lock().unwrap().get(&(node, name)).and_then(|t| match t {
+            Trigger::Fired => Some(0.0),
+            Trigger::Running(progress) => Some(*progress),
+            Trigger::Cancelled => None,
         })
+    }
+
+    /// Stops node `node`'s trigger `name`, if it's been fired: its passes abandon what they were doing.
+    pub fn cancel(&self, node: NodeId, name: &'static str) {
+        let mut triggers = self.triggers.lock().unwrap();
+        match triggers.get(&(node, name)) {
+            // Not taken yet: as if it hadn't been fired.
+            Some(Trigger::Fired) => {
+                triggers.remove(&(node, name));
+            }
+            Some(Trigger::Running(_)) => {
+                triggers.insert((node, name), Trigger::Cancelled);
+            }
+            _ => {}
+        }
+    }
+
+    /// For `Pass`: whether node `node`'s trigger `name` has been stopped, forgetting it if so.
+    pub(crate) fn take_cancel(&self, node: NodeId, name: &'static str) -> bool {
+        let mut triggers = self.triggers.lock().unwrap();
+        let cancelled = triggers.get(&(node, name)) == Some(&Trigger::Cancelled);
+        if cancelled {
+            triggers.remove(&(node, name));
+        }
+        cancelled
     }
 
     /// The settings' values passes have proposed since last time: the node, which setting, and the value.
@@ -102,6 +130,8 @@ impl Exchange {
     pub(crate) fn set_trigger_progress(&self, node: NodeId, name: &'static str, progress: Option<f32>) {
         let mut triggers = self.triggers.lock().unwrap();
         match progress {
+            // Not over a stop the pass hasn't seen yet.
+            Some(_) if triggers.get(&(node, name)) == Some(&Trigger::Cancelled) => {}
             Some(progress) => {
                 triggers.insert((node, name), Trigger::Running(progress));
             }
