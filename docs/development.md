@@ -57,6 +57,14 @@ recording) twice: a dashed line when the change was asked for, and a solid one a
 settings, longer for a new epoch, as passes carry on with the old one until a worker's ready for it.
 Release builds keep line tables, so profilers and crash backtraces name lines.
 
+## The README's tour
+
+`scripts/make_tour.sh` remakes `assets/tour.gif`: the real app, driven on synthetic data, a frame for each feature with
+a caption. To change what's in it, edit [`tour.rs`](../src/core/gui/tests/tour.rs): each `shot` is a frame. It's an
+ignored test only because the test harness is what draws the app without a window. It starts its own fake board and
+camera, on ports of their own, and writes nothing but the GIF, and the frames in `target/tour`. As in tests, the date,
+the version and the disk's free space are fixed.
+
 ## Crash reports
 
 A crash (a panic anywhere, or on Windows a crash in native code, such as a device's library) writes a report beside

@@ -1528,6 +1528,8 @@ mod tests {
     /// tests/snapshots/.
     type TestApp = App<Nodes, AnnotationTypes>;
 
+    mod tour;
+
     fn example() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/rig.json")
     }

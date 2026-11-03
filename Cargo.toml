@@ -1,6 +1,6 @@
 [package]
 name = "ephys-rs"
-version = "0.46.0"
+version = "0.47.0"
 edition = "2024"
 description = "Electrophysiology acquisition, processing and recording, built around a node graph"
 publish = false
@@ -31,6 +31,8 @@ fs4 = { version = "1.1.0", default-features = false, features = ["sync"] }
 
 [dev-dependencies]
 egui_kittest = { version = "0.37", features = ["wgpu", "snapshot"] }
+# For making the README's tour (see scripts/make_tour.sh).
+image = { version = "0.25", default-features = false, features = ["gif"] }
 
 # Debug builds of the app, but optimised builds of its dependencies (egui and the rest), which are otherwise many
 # times slower: only the first build takes longer.

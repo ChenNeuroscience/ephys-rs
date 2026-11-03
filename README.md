@@ -9,20 +9,9 @@ Electrophysiology software derived from [Open Ephys](https://github.com/open-eph
 
 ## What's there
 
-It opens in **basic mode**: the graph's components (its viewers, to begin with), large, to open beside them, and **quick actions**: building the standard LTX graph (spikes, EEG, digital inputs and positions, recorded by Write LTX), turning position tracking off or on, and switching between real devices and synthetic data. The toolbar's graph button (⌘1) turns on **advanced mode**, where the home pane is the **graph**, which you build node by node, and each window has a settings menu (whether it's listed in basic mode, and its own options). **Home** brings back the home pane, which can be closed once the windows you want are open.
+![A tour of ephys-rs: live spikes, LFP and tracking, recording, the graph, and the developer tools](assets/tour.gif)
 
-You build a graph of nodes, and press Play to run it:
-
-- **Sources**: the Acquisition Board (Open Ephys's boards, generations 1 to 3, and Intan's RHD USB board, or the fake one below), with headstage channels, auxiliary and analogue inputs, and digital inputs as events; and the Camera (FLIR cameras through Spinnaker, or the fake one).
-- **Processing**: Channel Selector, Reference (to one channel, a common average or median, or each channel its own), Band-pass Filter, Spectrum (each channel's power over a band, theta to begin with: worked out only while something shows it), Spike Detector (in tetrodes, or groups of any size, with each channel's threshold, which it can choose from the noise), Spike Gain and Continuous Gain (multiplying spikes', or continuous data's, values into the units a writer wants, by a gain for each channel (or group, or all), which they can choose from the data), and Position Detector (LEDs in video).
-- **Viewers**: LFP (each channel's trace and spectrum, and from them, setting the EEG's gains (by hand, or detected from a few seconds of data), the channels a Channel Selector passes on, and the spikes' reference channels), spikes (setting each channel's threshold and gain: by hand, or detected from a few seconds of data), digital inputs (the TTL Viewer: each line's level, and how many times it's gone up since acquisition and recording started), video, and the Tracker View (the camera, with detection and calibration, and the path while recording).
-- **Writers**: Write LTX ([LTX format](https://github.com/ChenNeuroscience/ltx-format): tetrode spikes, 5 kHz continuous data, positions and digital inputs, for legacy tetrode analysis code) and Write Raw (Open Ephys's binary format). Press Record (or Ctrl/⌘ R): the writers open their files, then recording starts, and the acquisition clock beside Play shows how long it's been going.
-
-Nodes can also edit each other's settings, through settings edges (dashed, with arrows both ways); a node that only reads a setting, as Write LTX reads the spike gains and the position detector's crop and calibration to record them, has a dotted edge. Nodes and edges can be disabled (from their right-click menus, or Edit › Disable or Enable, ⌘E, for the selection): kept, but run as if they weren't there. A node's settings can be copied (⌘⌥C, or the button on its window) and pasted onto nodes of the same type (⌘⌥V, or the button): straight onto a node, if one node's settings were copied, or otherwise through a window to review where each goes and what changes. The console logs what each paste changed, and anything left out. While recording, settings are locked.
-
-Annotations sit on the canvas alongside the graph: sticky notes (plain text), markdown notes (with links that open in the browser, and images pasted into them), images (from a file, or pasted onto the canvas), headings, boxes to group things (behind everything, grabbed by their border or title), and arrows (thick and straight, so they aren't mistaken for edges). They're saved in the graph's file, images included.
-
-Developer Tools (View menu, or Ctrl/⌘ Alt I) show the threads running the graph, the plan each pass runs through (with each step's time) and the memory it takes, the buffer pools between nodes' threads and the passes, performance over time, and the log. If the app crashes, it writes a report, and says where the next time it starts.
+Start from a quick action, or build your own graph of sources, processing, viewers and writers, then press Play. It acquires from Open Ephys and Intan boards and FLIR cameras, and records [LTX format](https://github.com/ChenNeuroscience/ltx-format) or Open Ephys binary.
 
 ## Downloads and development
 
