@@ -10,7 +10,8 @@
 //!   auto-detect can be run from here;
 //! - a Channel Selector's selection, upstream: tick the channels to keep, while all are shown, then apply it;
 //! - a Reference's reference (the spikes' re-referencing, from the same channels): R on a row puts its channel in the
-//!   reference, or takes it out. The traces themselves aren't referenced.
+//!   reference, or takes it out. The traces themselves aren't referenced. Connected to the Reference's reference
+//!   output too, it shows the references themselves, in rows of their own at the top.
 
 use eframe::egui::{self, Align2, FontId, Pos2, Rect, Sense, Shape, Stroke};
 use serde::{Deserialize, Serialize};
@@ -60,9 +61,9 @@ impl Default for LfpViewer {
 pub struct Traces {
     /// The input's sample rate.
     rate: f32,
-    /// What it's for: the first channel, how many, and samples per column.
-    shape: (usize, usize, usize),
-    /// For each channel shown, `COLUMNS` lows then highs.
+    /// What it's for: the first channel, how many, how many references, and samples per column.
+    shape: (usize, usize, usize, usize),
+    /// For each channel shown, then each reference, `COLUMNS` lows then highs.
     lows: Vec<f32>,
     highs: Vec<f32>,
     /// The column being filled, and how many samples it has so far.
@@ -80,14 +81,23 @@ impl crate::core::engine::PassState for Traces {
 
 impl Traces {
     /// Adds a pass's samples of the channels shown (from `first`) to their columns: a run of samples at a time, up to
-    /// where a column's full, channel by channel (as they're laid out).
-    fn add(&mut self, input: &ContinuousBuffer, first: usize) {
-        let (_, shown, per_column) = self.shape;
+    /// where a column's full, channel by channel (as they're laid out); and the references', if there are any.
+    fn add(&mut self, input: &ContinuousBuffer, first: usize, references: Option<&ContinuousBuffer>) {
+        let (_, shown, count, per_column) = self.shape;
         let mut t = 0;
         while t < input.len {
             let run = (per_column - self.filled).min(input.len - t);
-            for i in 0..shown {
-                let (low, high) = extremes(input.channel(first + i)[t..t + run].iter().copied());
+            for i in 0..shown + count {
+                let samples = match references {
+                    None if i >= shown => break,
+                    Some(references) if i >= shown => {
+                        // As many as there are of the pass's (each the same length, from the same board).
+                        let row = references.channel(i - shown);
+                        &row[t.min(row.len())..(t + run).min(row.len())]
+                    }
+                    _ => &input.channel(first + i)[t..t + run],
+                };
+                let (low, high) = extremes(samples.iter().copied());
                 let at = i * COLUMNS + self.head;
                 if self.filled == 0 {
                     (self.lows[at], self.highs[at]) = (low, high);
@@ -104,14 +114,14 @@ impl Traces {
         }
     }
 
-    fn reshape(&mut self, shape: (usize, usize, usize)) {
+    fn reshape(&mut self, shape: (usize, usize, usize, usize)) {
         if self.shape != shape {
-            let (_, shown, _) = shape;
+            let (_, shown, references, _) = shape;
             *self = Traces {
                 rate: self.rate,
                 shape,
-                lows: vec![0.0; shown * COLUMNS],
-                highs: vec![0.0; shown * COLUMNS],
+                lows: vec![0.0; (shown + references) * COLUMNS],
+                highs: vec![0.0; (shown + references) * COLUMNS],
                 shown: std::mem::take(&mut self.shown),
                 ..Default::default()
             };
@@ -129,6 +139,8 @@ fn extremes(values: impl Iterator<Item = f32>) -> (f32, f32) {
 pub struct TracesDisplay {
     first: usize,
     shown: usize,
+    /// How many references there are, in rows after the channels'.
+    references: usize,
     columns: usize,
     lows: Vec<f32>,
     highs: Vec<f32>,
@@ -158,7 +170,11 @@ impl Node<Edges> for LfpViewer {
     const HAS_VIEW: bool = true;
 
     fn inputs(&self) -> Vec<Input<Edges>> {
-        vec![Input { name: "continuous", kind: Kind::Continuous }, Input { name: "spectra", kind: Kind::Spectra }]
+        vec![
+            Input { name: "continuous", kind: Kind::Continuous },
+            Input { name: "spectra", kind: Kind::Spectra },
+            Input { name: "reference", kind: Kind::Continuous },
+        ]
     }
 
     /// The spectra only while they're shown: otherwise, the Spectrum node needn't run at all.
@@ -188,18 +204,23 @@ impl Node<Edges> for LfpViewer {
         // Every channel: the view scrolls through them.
         let (first, shown) = (0, input.channels.max(1));
         let per_column = ((self.span as f64 * rate as f64) / COLUMNS as f64).round().max(1.0) as usize;
-        traces.reshape((first, shown, per_column));
-        traces.add(input, first);
+        let references = match pass.inputs.get(2) {
+            Some(Some(Buffer::Continuous(references))) => Some(references),
+            _ => None,
+        };
+        let count = references.map_or(0, |r| r.channels);
+        traces.reshape((first, shown, count, per_column));
+        traces.add(input, first, references);
         let spectra = match pass.inputs.get(1) {
             Some(Some(Buffer::Spectra(spectra))) if self.spectrum => Some(spectra),
             _ => None,
         };
         let Traces { lows, highs, head, columns, shown: sent, .. } = traces;
         sent.send_newest(pass, |display| {
-            (display.first, display.shown, display.columns) = (first, shown, *columns);
+            (display.first, display.shown, display.references, display.columns) = (first, shown, count, *columns);
             display.lows.clear();
             display.highs.clear();
-            for i in 0..shown {
+            for i in 0..shown + count {
                 // Oldest first: from the column after the one being filled, round to it.
                 let row = i * COLUMNS..(i + 1) * COLUMNS;
                 let (older, newer) = lows[row.clone()].split_at(*head);
@@ -384,7 +405,9 @@ impl LfpViewer {
         let editable = !locked && selection_applied != Some(true);
         let mut toggled = None;
         let mut reference_toggled = None;
-        egui::ScrollArea::vertical().auto_shrink(false).show_rows(ui, height, display.shown, |ui, rows| {
+        // The references first, at the top, then the channels.
+        let rows_shown = display.references + display.shown;
+        egui::ScrollArea::vertical().auto_shrink(false).show_rows(ui, height, rows_shown, |ui, rows| {
             let width = ui.available_width();
             let label = 64.0;
             let spectra = spectra.filter(|_| self.spectrum && width > SPECTRUM_WIDTH * 2.0);
@@ -396,15 +419,53 @@ impl LfpViewer {
             let column = (width - label - spectrum) / (COLUMNS as f32 * future);
             // The columns filled so far are the last of each row's.
             let start = COLUMNS - display.columns;
-            for (r, i) in rows.enumerate() {
+            for (r, shown_row) in rows.enumerate() {
                 let top = rect.top() + r as f32 * height;
                 let row = Rect::from_min_size(egui::pos2(rect.left(), top), egui::vec2(width, height));
-                if i > 0 {
+                if shown_row > 0 {
                     painter.hline(row.x_range(), top, Stroke::new(1.0, theme.divider.gamma_multiply(0.3)));
                 }
+                let centre = top + height * 0.5;
+                let y = |uv: f32| centre - (uv / self.scale_uv).clamp(-1.0, 1.0) * height * 0.5;
+                // Row `i`'s trace: down and up each column, so its whole range is drawn.
+                let trace = |i: usize, colour: egui::Color32| {
+                    let lows = &display.lows[i * COLUMNS..(i + 1) * COLUMNS];
+                    let highs = &display.highs[i * COLUMNS..(i + 1) * COLUMNS];
+                    let points: Vec<Pos2> = (start..COLUMNS)
+                        .flat_map(|c| {
+                            let x = rect.left() + label + ((c - start) as f32 + 0.5) * column;
+                            let (a, b) = if c % 2 == 0 { (lows[c], highs[c]) } else { (highs[c], lows[c]) };
+                            [egui::pos2(x, y(a)), egui::pos2(x, y(b))]
+                        })
+                        .collect();
+                    painter.add(Shape::line(points, Stroke::new(1.0, colour)));
+                };
+                let text_y = top + (height * 0.5).min(9.0);
+                if shown_row < display.references {
+                    let name = if display.references > 1 { format!("ref {}", shown_row + 1) } else { "ref".into() };
+                    painter.text(
+                        egui::pos2(rect.left() + 4.0, text_y),
+                        Align2::LEFT_CENTER,
+                        name,
+                        FontId::monospace(10.0),
+                        theme.text_primary,
+                    );
+                    let hover = Rect::from_min_size(row.min, egui::vec2(label, height));
+                    let tip = match reference {
+                        Some(reference) => {
+                            format!("The reference the spikes are referenced to: the {}", reference.summary())
+                        }
+                        None => "A reference, from the Reference".into(),
+                    };
+                    let _ = ui
+                        .interact(hover, ui.scope_id().with(("reference row", shown_row)), Sense::hover())
+                        .on_hover_text(tip);
+                    trace(display.shown + shown_row, theme.text_secondary);
+                    continue;
+                }
+                let i = shown_row - display.references;
                 let channel = display.first + i;
                 let number = numbers.as_ref().and_then(|n| n.get(channel).copied()).unwrap_or(channel as u32);
-                let text_y = top + (height * 0.5).min(9.0);
                 painter.text(
                     egui::pos2(rect.left() + 4.0, text_y),
                     Align2::LEFT_CENTER,
@@ -441,25 +502,12 @@ impl LfpViewer {
                     }
                 }
 
-                // The trace.
-                let centre = top + height * 0.5;
-                let y = |uv: f32| centre - (uv / self.scale_uv).clamp(-1.0, 1.0) * height * 0.5;
-                let lows = &display.lows[i * COLUMNS..(i + 1) * COLUMNS];
-                let highs = &display.highs[i * COLUMNS..(i + 1) * COLUMNS];
-                let points: Vec<Pos2> = (start..COLUMNS)
-                    .flat_map(|c| {
-                        let x = rect.left() + label + ((c - start) as f32 + 0.5) * column;
-                        // Down and up each column, so its whole range is drawn.
-                        let (a, b) = if c % 2 == 0 { (lows[c], highs[c]) } else { (highs[c], lows[c]) };
-                        [egui::pos2(x, y(a)), egui::pos2(x, y(b))]
-                    })
-                    .collect();
-                // Not selected (with a selection to apply), dimmed: it won't be passed on.
+                // The trace: not selected (with a selection to apply), dimmed, as it won't be passed on.
                 let unselected =
                     selection_applied == Some(false) && ticked.as_ref().is_some_and(|t| !t.contains(&number));
                 let colour =
                     if unselected { Continuous::INFO.colour.gamma_multiply(0.3) } else { Continuous::INFO.colour };
-                painter.add(Shape::line(points, Stroke::new(1.0, colour)));
+                trace(i, colour);
                 // The range its gain fits (what's recorded), if it's within the row: beyond it, it's clipped.
                 if let Some(gains) = gains {
                     let range = gains.range_uv(i);
@@ -712,7 +760,7 @@ mod tests {
         // Passes of uneven lengths, so columns fill across them.
         let (channels, per_column) = (3, 7);
         let mut traces = Traces::default();
-        traces.reshape((0, channels, per_column));
+        traces.reshape((0, channels, 0, per_column));
         let value = |c: usize, t: usize| ((t * 37 + c * 11) % 23) as f32 - (c * t % 5) as f32;
         let mut t0 = 0;
         for len in [5, 9, 1, 20, 3, 13] {
@@ -722,7 +770,7 @@ mod tests {
                     data[c * 32 + t] = value(c, t0 + t);
                 }
             }
-            traces.add(&ContinuousBuffer { channels, capacity: 32, len, data }, 0);
+            traces.add(&ContinuousBuffer { channels, capacity: 32, len, data }, 0, None);
             t0 += len;
         }
         assert_eq!(traces.columns, t0 / per_column);

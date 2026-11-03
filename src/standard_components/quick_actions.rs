@@ -160,7 +160,7 @@ fn real_camera() -> camera::Source {
 /// Board → Reference → Band-pass (spikes' band) → Spike Detector → Spike Gain → Spike Viewer (setting the
 /// detector's thresholds and the gain's gains); Board → Channel Selector → Band-pass (LFP's band) → LFP Viewer
 /// (choosing the selector's channels, which only the LFP branch is, the Continuous Gain's gains, and the spikes' Reference's
-/// reference channels), with a Spectrum of it too; the board's digital
+/// reference channels, and showing the reference), with a Spectrum of it too; the board's digital
 /// inputs → TTL Viewer; Camera → Position Detector → Tracker View (setting the camera's and detector's settings).
 /// Write LTX records the spikes (at their gains), the LFP branch's data as EEG (the channels selected, band-passed,
 /// through an Continuous Gain), the positions (with the detector's settings) and the digital inputs. New boards and cameras
@@ -236,6 +236,7 @@ fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
     change.link((continuous_gain, Output, 0), (ltx, Input, 1));
     change.link((lfp_viewer, Control, 0), (continuous_gain, Setting, 0));
     change.link((lfp_viewer, Control, 2), (reference, Setting, 0));
+    change.link((reference, Output, 1), (lfp_viewer, Input, 2));
     change.link((positions, Output, 0), (ltx, Input, 2));
     change.link((board, Output, 1), (ltx, Input, 3));
     change.link((ltx, Control, 0), (positions, Setting, 0));
@@ -391,6 +392,8 @@ mod tests {
         assert_eq!(controls(0), Some(named("Continuous Gain")));
         assert_eq!(controls(1), Some(selector));
         assert_eq!(controls(2), Some(named("Reference")));
+        let reference_shown = Port { node: lfp_viewer, role: Input, index: 2 };
+        assert_eq!(graph.edge_into(reference_shown).map(|e| (e.from.node, e.from.port)), Some((named("Reference"), 1)));
         let ltx = graph.iter().find(|(_, e)| e.node.info().name == "Write LTX").unwrap().0;
         let into = |i| graph.edges().iter().any(|e| e.target() == Port { node: ltx, role: Input, index: i });
         assert!((0..4).all(into), "Write LTX records spikes, EEG, positions and digital inputs");

@@ -6,12 +6,15 @@
 //! averages or medians taken separately within groups of channels (each shank of a probe, say).
 //!
 //! Its settings are one setting (`reference`), which another node can edit through a settings edge: the LFP Viewer
-//! chooses the reference channels on its rows.
+//! chooses the reference channels on its rows. Besides the referenced data, it outputs the references themselves (a
+//! channel each: one for an average or median of them all, one for each group's, one for a single channel), which
+//! the LFP Viewer shows.
 
 use eframe::egui::{self, Color32, RichText};
 use serde::{Deserialize, Serialize};
 
 use crate::core::engine::{Category, Context, EdgeInfo, EdgeType, Input, Node, NodeInfo, Output, Pass, SettingPort};
+use crate::standard_components::ephys::Continuous;
 use crate::standard_components::widgets::{input_summary, require_input, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
 
@@ -70,6 +73,15 @@ impl EdgeType for Reference {
             Method::Median => format!("median of {}", self.reference_channels),
             Method::PerChannel { .. } => "each its own".into(),
         }
+    }
+}
+
+impl Reference {
+    /// How many references it makes, of `channels` (at least one, for its output: of zeros, if there are none).
+    pub fn references(&self, channels: u32) -> usize {
+        let mut referencing = Referencing::default();
+        referencing.plan(self, channels as usize);
+        referencing.references.len().max(1)
     }
 }
 
@@ -252,6 +264,17 @@ impl Node<Edges> for Reference {
                 *y -= gain * reference;
             }
         }
+        // The references themselves (none: a channel of zeros).
+        if let Some(Buffer::Continuous(references)) = pass.outputs.get_mut(1) {
+            references.len = n.min(references.capacity);
+            for r in 0..references.channels {
+                let row = references.channel_mut(r);
+                match state.values.get(r * n..(r + 1) * n) {
+                    Some(values) if r < state.references.len() => row.copy_from_slice(&values[..row.len()]),
+                    _ => row.fill(0.0),
+                }
+            }
+        }
     }
 
     fn inputs(&self) -> Vec<Input<Edges>> {
@@ -259,7 +282,16 @@ impl Node<Edges> for Reference {
     }
 
     fn outputs(&self, inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {
-        vec![Output { name: "referenced", kind: Kind::Continuous, stream: inputs[0] }]
+        let references = match inputs[0] {
+            Some(DataStream::Continuous(c)) => {
+                Some(DataStream::Continuous(Continuous { channels: self.references(c.channels) as u32, ..c }))
+            }
+            _ => None,
+        };
+        vec![
+            Output { name: "referenced", kind: Kind::Continuous, stream: inputs[0] },
+            Output { name: "reference", kind: Kind::Continuous, stream: references },
+        ]
     }
 
     fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
@@ -403,6 +435,25 @@ mod tests {
         let out = run(&some, &data);
         assert_eq!(out[0], data[0], "channels not re-referenced pass through");
         assert_eq!(out[3], vec![10.0 - 0.5 * 4.75, 0.0 - 0.5 * 3.75]);
+
+        // And the references themselves: a channel each.
+        let stream = Continuous { channels: 4, sample_rate: 30000.0 };
+        assert_eq!(grouped.references(4), 2);
+        let outputs = grouped.outputs(&[Some(DataStream::Continuous(stream))]);
+        assert_eq!(outputs[1].stream, Some(DataStream::Continuous(Continuous { channels: 2, ..stream })));
+        let mut input = stream.buffer(PASS_DURATION);
+        input.len = 2;
+        for (c, samples) in data.iter().enumerate() {
+            input.channel_mut(c).copy_from_slice(samples);
+        }
+        let input = Buffer::Continuous(input);
+        let inputs = [Some(&input)];
+        let references = Continuous { channels: 2, ..stream };
+        let mut outputs =
+            [Buffer::Continuous(stream.buffer(PASS_DURATION)), Buffer::Continuous(references.buffer(PASS_DURATION))];
+        grouped.process(&mut Pass::new(0, PASS_DURATION, &inputs, &mut outputs), &mut Referencing::default());
+        let Buffer::Continuous(references) = &outputs[1] else { unreachable!() };
+        assert_eq!((references.channel(0), references.channel(1)), (&[2.0, 3.0][..], &[7.5, 4.5][..]));
 
         let own = Reference { method: Method::PerChannel { references: vec![0, 1, 1, 3] }, ..Default::default() };
         let out = run(&own, &data);

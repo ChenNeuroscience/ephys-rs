@@ -363,6 +363,17 @@
           "node": 10,
           "port": 0
         }
+      },
+      {
+        "dimension": "Data",
+        "from": {
+          "node": 10,
+          "port": 1
+        },
+        "to": {
+          "node": 5,
+          "port": 2
+        }
       }
     ],
     "next_id": 18,
