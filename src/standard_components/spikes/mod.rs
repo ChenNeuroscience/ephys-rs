@@ -201,6 +201,17 @@ pub fn range_step(range_uv: f32, smaller: bool) -> f32 {
     next.unwrap_or(range_uv).clamp(*RANGES_UV.start(), *RANGES_UV.end())
 }
 
+/// The next threshold up or down from `uv`: on to the next round number, in steps of a hundredth to a tenth of it
+/// (50 to 51, 100 to 110, 100 down to 99).
+pub fn threshold_step(uv: f32, up: bool) -> f32 {
+    // Going down from 100, it's the steps below 100 that count.
+    let from = if up { uv } else { uv * 0.999 };
+    let step = 10f32.powf(from.max(f32::MIN_POSITIVE).log10().floor() - 1.0);
+    let steps = uv / step;
+    let next = if up { (steps + 1e-3).floor() + 1.0 } else { (steps - 1e-3).ceil() - 1.0 };
+    next * step
+}
+
 /// A value for each channel; channels past the end have the default.
 fn per_channel(values: &[f32], channel: usize, default: f32) -> f32 {
     values.get(channel).copied().unwrap_or(default)
@@ -393,6 +404,16 @@ mod tests {
         };
         assert_eq!(spikes.summary(), "16 tetrodes · 30 kHz");
         assert_eq!(spikes.group_channels(15), 60..64);
+    }
+
+    #[test]
+    fn thresholds_step_to_round_numbers() {
+        let near = |a: f32, b: f32| (a - b).abs() < 1e-3;
+        let steps = [(50.0, true, 51.0), (50.0, false, 49.0), (99.0, true, 100.0), (100.0, true, 110.0)];
+        let steps = steps.into_iter().chain([(100.0, false, 99.0), (50.3, true, 51.0), (50.3, false, 50.0)]);
+        for (from, up, to) in steps.chain([(5.0, true, 5.1), (1000.0, true, 1100.0)]) {
+            assert!(near(threshold_step(from, up), to), "{from}, up {up}: {}", threshold_step(from, up));
+        }
     }
 
     #[test]

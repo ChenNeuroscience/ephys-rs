@@ -1,6 +1,7 @@
 //! The Spike Viewer: each group's (tetrode's, say) recent spikes overlaid, a plot per channel of the group, each
 //! with the channel's threshold. Connected to a Spike Detector's thresholds and a Spike Gain's gains, it sets them:
-//! drag a threshold's line, use a channel's gain buttons (shown over it), or type either (G or T over the channel).
+//! drag a threshold's line, use a channel's gain buttons (shown over it), or type either (G or T over the channel:
+//! up and down step it, Enter or clicking elsewhere applies it, Esc cancels).
 //! Or have them detected from the data, by triggering the detector's and the gain's auto-detect (see
 //! `Node::triggers`): how they do it, they say, in their own settings (a click away, in advanced mode).
 //!
@@ -16,13 +17,15 @@ use crate::standard_components::auto_detect::AUTO_DETECT;
 use crate::standard_components::pool::{Pool, SharedPool};
 use crate::standard_components::preview;
 use crate::standard_components::spikes::{
-    Channels, DEFAULT_RANGE_UV, DEFAULT_THRESHOLD_UV, Gains, Polarity, Spikes, Thresholds, range_step,
+    Channels, DEFAULT_RANGE_UV, DEFAULT_THRESHOLD_UV, Gains, Polarity, Spikes, Thresholds, range_step, threshold_step,
 };
 use crate::standard_components::widgets::require_input;
 use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
 
 /// A channel's plot's width, for its height.
 const ASPECT: f32 = 0.75;
+/// The lowest a threshold's dragged or stepped to.
+const MIN_THRESHOLD_UV: f32 = 0.5;
 /// The most recent waveforms overlaid on each group.
 const WAVEFORMS: usize = 30;
 
@@ -129,6 +132,25 @@ struct Typing {
     text: String,
     /// Whether the box has been focused yet.
     focused: bool,
+}
+
+impl Typing {
+    /// What's typed, as a value: the box's own decorations are allowed, if they're typed or pasted.
+    fn value(&self) -> Option<f32> {
+        let text = self.text.trim().trim_start_matches('±').trim_end_matches("µV").trim();
+        text.parse().ok().filter(|v: &f32| v.is_finite() && *v > 0.0)
+    }
+
+    /// Steps what's typed (or, if it isn't a value, `range` or `threshold`, as they are) up or down.
+    fn step(&mut self, up: bool, range: f32, threshold: f32) {
+        self.text = match self.what {
+            Typed::Gain => format!("{:.0}", range_step(self.value().unwrap_or(range), !up)),
+            Typed::Threshold => {
+                let next = threshold_step(self.value().unwrap_or(threshold), up);
+                format!("{:.1}", next.clamp(MIN_THRESHOLD_UV, range))
+            }
+        };
+    }
 }
 
 impl Node<Edges> for SpikeViewer {
@@ -504,7 +526,7 @@ impl SpikeViewer {
                 let response = ui.interact(grab, ui.scope_id().with(("threshold", channel, i)), Sense::drag());
                 if let Some(pointer) = response.interact_pointer_pos().filter(|_| response.dragged()) {
                     let uv = ((rect.center().y - pointer.y) / half).abs() * range;
-                    thresholds.set(channel, uv.clamp(0.5, range));
+                    thresholds.set(channel, uv.clamp(MIN_THRESHOLD_UV, range));
                 }
                 active = response.hovered() || response.dragged();
                 response
@@ -570,16 +592,29 @@ impl SpikeViewer {
                 FontId::proportional(10.0),
                 theme.text_primary,
             );
-            let edit = egui::TextEdit::singleline(&mut t.text).desired_width(size.x).align(Align2::CENTER_CENTER);
+            // Its own id, as the widgets around it come and go with the pointer: it keeps the focus till it's done.
+            let id = ui.scope_id().with(("typing", channel));
+            if ui.memory(|m| m.has_focus(id)) {
+                for (key, up) in [(Key::ArrowUp, true), (Key::ArrowDown, false)] {
+                    while ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, key)) {
+                        t.step(up, range, threshold);
+                    }
+                }
+            }
+            let edit = egui::TextEdit::singleline(&mut t.text)
+                .id(id)
+                .lock_focus(true)
+                .desired_width(size.x)
+                .align(Align2::CENTER_CENTER);
             let output = ui.put(field, edit);
             if !t.focused {
                 output.request_focus();
                 t.focused = true;
             }
+            // Enter, or a click elsewhere, applies it.
             if output.lost_focus() {
                 let cancelled = ui.input(|i| i.key_pressed(Key::Escape));
-                let value = t.text.trim().trim_start_matches('±').trim_end_matches("µV").trim().parse::<f32>().ok();
-                match (cancelled, value.filter(|v| v.is_finite() && *v > 0.0), t.what) {
+                match (cancelled, t.value(), t.what) {
                     (false, Some(v), Typed::Gain) => {
                         if let Some(gains) = plots.gains.as_deref_mut() {
                             gains.set_range(channel, v, layout)
@@ -595,5 +630,100 @@ impl SpikeViewer {
                 *typing = None;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+
+    use super::*;
+    use crate::standard_components::themes::THEMES;
+
+    const STREAM: Spikes =
+        Spikes { channels: 8, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32, polarity: Polarity::Negative };
+
+    fn harness<'a>() -> Harness<'a, (Thresholds, Gains)> {
+        Harness::builder().with_size([700.0, 400.0]).build_ui_state(
+            |ui, (thresholds, gains): &mut (Thresholds, Gains)| {
+                let plots = Plots {
+                    stream: STREAM,
+                    display: None,
+                    thresholds: Some(thresholds),
+                    gains: Some(gains),
+                    theme: &THEMES[0].colours,
+                    locked: false,
+                };
+                SpikeViewer::default().plots_ui(ui, plots);
+            },
+            Default::default(),
+        )
+    }
+
+    fn pointer_at(harness: &mut Harness<'_, (Thresholds, Gains)>, x: f32, y: f32) {
+        harness.event(egui::Event::PointerMoved(egui::pos2(x, y)));
+        harness.run_steps(2);
+    }
+
+    /// Over the first channel's plot.
+    fn type_threshold(harness: &mut Harness<'_, (Thresholds, Gains)>, key: Key) {
+        pointer_at(harness, 70.0, 80.0);
+        harness.key_press(key);
+        harness.run_steps(2);
+        assert!(typing(harness), "the box is up");
+    }
+
+    fn typing(harness: &Harness<'_, (Thresholds, Gains)>) -> bool {
+        harness.query_all_by_role(egui::accesskit::Role::TextInput).next().is_some()
+    }
+
+    fn click_elsewhere(harness: &mut Harness<'_, (Thresholds, Gains)>) {
+        pointer_at(harness, 690.0, 390.0);
+        let click = |pressed| egui::Event::PointerButton {
+            pos: egui::pos2(690.0, 390.0),
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        harness.event(click(true));
+        harness.event(click(false));
+        harness.run_steps(2);
+    }
+
+    #[test]
+    fn the_box_keeps_the_focus_until_its_done() {
+        let mut harness = harness();
+        type_threshold(&mut harness, Key::T);
+        // The pointer leaving the plot takes its gain buttons with it.
+        pointer_at(&mut harness, 690.0, 390.0);
+        pointer_at(&mut harness, 70.0, 80.0);
+        pointer_at(&mut harness, 690.0, 390.0);
+        harness.key_press(Key::ArrowUp);
+        harness.key_press(Key::ArrowUp);
+        harness.run_steps(2);
+        assert!(typing(&harness), "still there");
+        assert_eq!(harness.state().0.get(0), DEFAULT_THRESHOLD_UV, "nothing's applied yet");
+
+        harness.key_press(Key::Escape);
+        harness.run_steps(2);
+        assert!(!typing(&harness));
+        assert_eq!(harness.state().0.get(0), DEFAULT_THRESHOLD_UV, "cancelled");
+
+        type_threshold(&mut harness, Key::T);
+        harness.key_press(Key::ArrowUp);
+        harness.key_press(Key::ArrowUp);
+        harness.key_press(Key::ArrowDown);
+        harness.run_steps(2);
+        click_elsewhere(&mut harness);
+        assert!(!typing(&harness));
+        assert_eq!(harness.state().0.get(0), 51.0, "applied by clicking elsewhere");
+
+        type_threshold(&mut harness, Key::G);
+        harness.key_press(Key::ArrowDown);
+        harness.key_press(Key::Enter);
+        harness.run_steps(2);
+        assert!(!typing(&harness));
+        assert!((harness.state().1.range_uv(0) - 200.0).abs() < 1e-3, "a step down the ranges, applied by Enter");
     }
 }
