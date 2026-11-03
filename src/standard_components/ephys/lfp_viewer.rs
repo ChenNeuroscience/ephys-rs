@@ -1,6 +1,6 @@
 //! The LFP Viewer: scrolling traces of continuous data, a row per channel, each at a fixed height (scrolled
-//! through), and beside each, its spectrum over a band of interest (from a Spectrum node, which only runs while the
-//! spectrum's on: see `Node::needs`).
+//! through), each with a y axis of the scale chosen, and beside each, its spectrum over a band of interest (from a
+//! Spectrum node, which only runs while the spectrum's on: see `Node::needs`).
 //!
 //! Each pass adds its samples to a few seconds' worth for each channel shown, kept as the lowest and highest
 //! sample in each of the view's columns (so spikes show however far it's zoomed out).
@@ -33,6 +33,8 @@ use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
 const COLUMNS: usize = 1200;
 /// The spectrum's column's width.
 const SPECTRUM_WIDTH: f32 = 160.0;
+/// The width of a row's y axis's labels and ticks.
+const AXIS_WIDTH: f32 = 44.0;
 
 /// Its controls: an Continuous Gain's gains, a Channel Selector's selection and a Reference's reference.
 const GAINS: usize = 0;
@@ -411,7 +413,7 @@ impl LfpViewer {
         let rows_shown = display.references + display.shown;
         egui::ScrollArea::vertical().auto_shrink(false).show_rows(ui, height, rows_shown, |ui, rows| {
             let width = ui.available_width();
-            let label = 64.0;
+            let label = 64.0 + AXIS_WIDTH;
             let spectra = spectra.filter(|_| self.spectrum && width > SPECTRUM_WIDTH * 2.0);
             let spectrum = if spectra.is_some() { SPECTRUM_WIDTH } else { 0.0 };
             let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height * rows.len() as f32), Sense::hover());
@@ -429,6 +431,8 @@ impl LfpViewer {
                 }
                 let centre = top + height * 0.5;
                 let y = |uv: f32| centre - (uv / self.scale_uv).clamp(-1.0, 1.0) * height * 0.5;
+                let plot = egui::Rangef::new(rect.left() + label, row.right() - spectrum);
+                axis_ui(&painter, plot, top, height, self.scale_uv, theme);
                 // Row `i`'s trace: down and up each column, so its whole range is drawn.
                 let trace = |i: usize, colour: egui::Color32| {
                     let lows = &display.lows[i * COLUMNS..(i + 1) * COLUMNS];
@@ -512,11 +516,10 @@ impl LfpViewer {
                 if let Some(gains) = gains {
                     let range = gains.range_uv(i);
                     if range < self.scale_uv {
-                        let x = egui::Rangef::new(rect.left() + label, row.right() - spectrum);
                         let stroke = Stroke::new(1.0, theme.warning.gamma_multiply(0.5));
                         for level in [range, -range] {
                             let dashes = Shape::dashed_line(
-                                &[egui::pos2(x.min, y(level)), egui::pos2(x.max, y(level))],
+                                &[egui::pos2(plot.min, y(level)), egui::pos2(plot.max, y(level))],
                                 stroke,
                                 4.0,
                                 4.0,
@@ -542,6 +545,51 @@ impl LfpViewer {
             set_ticked(selection, &ticked, stream.channels);
         }
         reference_toggled
+    }
+}
+
+/// The ticks of a row's y axis, top to bottom, for a row `height` high showing ±`scale_uv`: where each is (from 1, at
+/// the top, to -1), and its label. As many as there's room for.
+fn axis_ticks(height: f32, scale_uv: f32) -> Vec<(f32, String)> {
+    let value = |at: f32| {
+        let uv = (at * scale_uv * 10.0).round() / 10.0;
+        if uv < 0.0 { format!("−{}", -uv) } else { uv.to_string() }
+    };
+    let top = format!("{} µV", value(1.0));
+    match height {
+        ..20.0 => vec![(0.0, format!("±{}", value(1.0)))],
+        ..30.0 => vec![(1.0, top), (-1.0, value(-1.0))],
+        ..100.0 => vec![(1.0, top), (0.0, value(0.0)), (-1.0, value(-1.0))],
+        _ => {
+            let middle = [0.5, 0.0, -0.5].map(|at| (at, value(at)));
+            std::iter::once((1.0, top)).chain(middle).chain([(-1.0, value(-1.0))]).collect()
+        }
+    }
+}
+
+/// A row's y axis, at the left of `plot`, and a faint line along it at zero. The row's `height` high, from `top`.
+fn axis_ui(
+    painter: &egui::Painter,
+    plot: egui::Rangef,
+    top: f32,
+    height: f32,
+    scale_uv: f32,
+    theme: &crate::core::theme::Colours,
+) {
+    let stroke = Stroke::new(1.0, theme.divider);
+    let centre = top + height * 0.5;
+    painter.hline(plot, centre, Stroke::new(1.0, theme.divider.gamma_multiply(0.4)));
+    painter.vline(plot.min, top + 1.0..=top + height - 1.0, stroke);
+    for (at, text) in axis_ticks(height, scale_uv) {
+        // The ends' labels stay within the row.
+        let (y, anchor) = match at {
+            1.0 => (top + 1.0, Align2::RIGHT_TOP),
+            -1.0 => (top + height - 1.0, Align2::RIGHT_BOTTOM),
+            _ => (centre - at * height * 0.5, Align2::RIGHT_CENTER),
+        };
+        painter.hline(plot.min - 3.0..=plot.min, y, stroke);
+        let position = egui::pos2(plot.min - 5.0, y);
+        painter.text(position, anchor, text, FontId::monospace(9.0), theme.text_secondary);
     }
 }
 
@@ -744,6 +792,43 @@ fn selection_ui(ui: &mut egui::Ui, selection: &mut ChannelSelection, channels: u
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_y_axis_has_as_many_ticks_as_there_is_room_for() {
+        let labels = |height, scale| axis_ticks(height, scale).into_iter().map(|t| t.1).collect::<Vec<_>>();
+        assert_eq!(labels(12.0, 200.0), ["±200"]);
+        assert_eq!(labels(24.0, 200.0), ["200 µV", "−200"]);
+        assert_eq!(labels(40.0, 200.0), ["200 µV", "0", "−200"]);
+        assert_eq!(labels(120.0, 25.0), ["25 µV", "12.5", "0", "−12.5", "−25"]);
+    }
+
+    /// Rows of a reference and channels, with their y axes. See tests/snapshots/.
+    #[test]
+    fn rows() {
+        use crate::standard_components::themes::THEMES;
+        let (shown, references) = (3, 1);
+        let wave = |i: usize, c: usize| 150.0 * ((c as f32 / 40.0) + i as f32).sin() / (i + 1) as f32;
+        let columns = |offset: f32| -> Vec<f32> {
+            (0..shown + references).flat_map(|i| (0..COLUMNS).map(move |c| wave(i, c) + offset)).collect()
+        };
+        let display = TracesDisplay {
+            shown,
+            references,
+            columns: COLUMNS,
+            lows: columns(-5.0),
+            highs: columns(5.0),
+            ..Default::default()
+        };
+        let stream = Continuous { channels: 3, sample_rate: 30000.0 };
+        let mut harness = egui_kittest::Harness::builder().with_size([700.0, 260.0]).wgpu().build_ui(|ui| {
+            let viewer = LfpViewer { row_height: 60.0, ..Default::default() };
+            let rows = Rows { display: &display, stream, spectra: None, gains: None, reference: None };
+            viewer.rows_ui(ui, &THEMES[0].colours, rows, None, false);
+        });
+        THEMES[0].apply(&harness.ctx);
+        harness.run_steps(3);
+        harness.snapshot("lfp_viewer_rows");
+    }
 
     #[test]
     fn columns_hold_each_runs_lowest_and_highest() {
