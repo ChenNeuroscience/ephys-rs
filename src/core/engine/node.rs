@@ -161,6 +161,27 @@ pub struct NodeThread {
     pub why: &'static str,
 }
 
+/// Where the buffers are that a node's thread swaps with its passes, rather than copying (see `Node::thread_pool`):
+/// so many in the pool, of which some are empty (ready to fill), one's maybe being filled (or, by a writer,
+/// written), and some are full (waiting to be taken by a pass, or written). Swaps move buffers between the pool
+/// and the workers', which aren't counted.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PoolStatus {
+    pub size: usize,
+    /// Each buffer's memory (for a source's, all its outputs for a pass, together).
+    pub bytes: usize,
+    /// Which of the node's ports the buffers are like, a bit each: its outputs (for a source) or inputs (for a
+    /// writer).
+    pub ports: u64,
+    pub empty: usize,
+    pub filling: bool,
+    pub full: usize,
+    /// Swaps with the passes so far.
+    pub swaps: u64,
+    /// Data lost because the pool ran out of buffers: the passes, or the disk, not keeping up.
+    pub overflows: u64,
+}
+
 /// Which way data goes between a node's thread and its passes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Flow {
@@ -252,6 +273,14 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
         None
     }
 
+    /// Whether the node would take an input's buffer, to swap it for one of its own rather than copy the data out (a
+    /// writer, handing it to its thread). The plan decides, before running, whether it can: it can if no node edits
+    /// that data in place, and every other node reading it can run first. Then the pass gives the node the buffer
+    /// (see `Pass::take_input`), to swap for another just as big; otherwise it reads it as usual, to copy.
+    fn takes(&self, _input: usize) -> bool {
+        false
+    }
+
     /// Where the node copies its inputs out to, if that's all it does with them: a viewer copying what it shows
     /// to its window, a writer handing data to its writing thread. The node makes the copy itself (for a window,
     /// see `crate::core::exchange`); this just tells the plan, which runs such nodes as early as it can, so the
@@ -284,6 +313,12 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
 
     /// Draws what one of `threads()` (by index) is up to, in the dev tools: briefly, a few lines.
     fn thread_ui(&self, _thread: usize, _ui: &mut egui::Ui, _context: &ThreadContext) {}
+
+    /// Where the buffers are that one of `threads()` (by index) swaps with the passes, if it does, for the dev tools
+    /// to show between them.
+    fn thread_pool(&self, _thread: usize, _context: &ThreadContext) -> Option<PoolStatus> {
+        None
+    }
 }
 
 /// The closed set of node types a program is built with, as an enum with one variant per type. Implemented
@@ -308,6 +343,7 @@ pub trait NodeSet: Clone + PartialEq + Serialize + DeserializeOwned + Send + Syn
     fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Self::Edges>);
     fn view_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Self::Edges>);
     fn in_place(&self, output: usize) -> Option<usize>;
+    fn takes(&self, input: usize) -> bool;
     fn copies(&self) -> Option<CopyTo>;
     /// Whether the node carries state from one pass to the next.
     fn has_state(&self) -> bool;
@@ -325,6 +361,7 @@ pub trait NodeSet: Clone + PartialEq + Serialize + DeserializeOwned + Send + Syn
     ) -> Option<Box<dyn Any + Send>>;
     fn threads(&self) -> Vec<NodeThread>;
     fn thread_ui(&self, thread: usize, ui: &mut egui::Ui, context: &ThreadContext);
+    fn thread_pool(&self, thread: usize, context: &ThreadContext) -> Option<PoolStatus>;
 
     fn info(&self) -> &'static NodeInfo {
         &Self::TYPES[self.type_index()]
@@ -433,6 +470,10 @@ macro_rules! node_set {
                 match self { $($name::$variant(n) => $crate::core::engine::Node::in_place(n, output)),+ }
             }
 
+            fn takes(&self, input: usize) -> bool {
+                match self { $($name::$variant(n) => $crate::core::engine::Node::takes(n, input)),+ }
+            }
+
             fn copies(&self) -> Option<$crate::core::engine::CopyTo> {
                 match self { $($name::$variant(n) => $crate::core::engine::Node::copies(n)),+ }
             }
@@ -503,6 +544,14 @@ macro_rules! node_set {
                 context: &$crate::core::engine::ThreadContext,
             ) {
                 match self { $($name::$variant(n) => $crate::core::engine::Node::<$edges>::thread_ui(n, thread, ui, context)),+ }
+            }
+
+            fn thread_pool(
+                &self,
+                thread: usize,
+                context: &$crate::core::engine::ThreadContext,
+            ) -> Option<$crate::core::engine::PoolStatus> {
+                match self { $($name::$variant(n) => $crate::core::engine::Node::<$edges>::thread_pool(n, thread, context)),+ }
             }
         }
     };

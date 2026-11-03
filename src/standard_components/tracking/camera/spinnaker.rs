@@ -15,7 +15,7 @@ use std::sync::OnceLock;
 
 use libloading::Library;
 
-use super::{Camera, CameraControls, Frame, Range};
+use super::{Camera, CameraControls, FrameInfo, Range};
 use super::{CameraSettings, Control};
 
 type Handle = *mut c_void;
@@ -262,6 +262,9 @@ pub struct SpinnakerCamera {
     description: String,
     /// Things that didn't go to plan when configuring the camera, for the window to show.
     warnings: Vec<String>,
+    /// The frame fetched, until it's copied out: the SDK's image, where its pixels are, and their width, height
+    /// and stride.
+    fetched: Option<(Image<'static>, *const u8, usize, usize, usize)>,
 }
 
 // The handles are only used from the thread that owns the camera.
@@ -284,6 +287,7 @@ impl SpinnakerCamera {
             frame_rate_set: false,
             description: String::new(),
             warnings: Vec::new(),
+            fetched: None,
         };
         cam.camera = cam.find(serial)?;
         cam.configure(fps)?;
@@ -386,7 +390,8 @@ impl Drop for Image<'_> {
 }
 
 impl Camera for SpinnakerCamera {
-    fn next_frame(&mut self) -> io::Result<Option<Frame>> {
+    fn fetch(&mut self) -> io::Result<Option<FrameInfo>> {
+        self.fetched = None;
         let api = self.api;
         let mut handle: Handle = std::ptr::null_mut();
         let err = unsafe { (api.spinCameraGetNextImageEx)(self.camera, GRAB_TIMEOUT_MS, &mut handle) };
@@ -423,19 +428,26 @@ impl Camera for SpinnakerCamera {
             return Err(io::Error::other(format!("unexpected frame: {bits} bits/pixel, stride {stride}")));
         }
 
-        // Copy out row by row, since rows may be padded.
-        let src = unsafe { std::slice::from_raw_parts(data as *const u8, stride * height) };
-        let mut pixels = Vec::with_capacity(width * height);
-        for row in src.chunks_exact(stride) {
-            pixels.extend_from_slice(&row[..width]);
-        }
-        Ok(Some(Frame {
+        let info = FrameInfo {
             id: frame_id,
             timestamp: timestamp_ns as f64 * 1e-9,
             width: width as u32,
             height: height as u32,
-            pixels,
-        }))
+        };
+        self.fetched = Some((image, data as *const u8, width, height, stride));
+        Ok(Some(info))
+    }
+
+    fn copy_to(&mut self, into: Option<&mut [u8]>) {
+        let Some((image, data, width, height, stride)) = self.fetched.take() else { return };
+        if let Some(into) = into {
+            // Row by row, since rows may be padded. Safety: the SDK's image is there until it's dropped, below.
+            let src = unsafe { std::slice::from_raw_parts(data, stride * height) };
+            for (row, out) in src.chunks_exact(stride).zip(into.chunks_exact_mut(width)) {
+                out.copy_from_slice(&row[..width]);
+            }
+        }
+        drop(image);
     }
 
     fn description(&self) -> String {
@@ -466,6 +478,7 @@ impl Camera for SpinnakerCamera {
 
 impl Drop for SpinnakerCamera {
     fn drop(&mut self) {
+        self.fetched = None; // the image, back to the SDK first
         let api = self.api;
         unsafe {
             if !self.camera.is_null() {

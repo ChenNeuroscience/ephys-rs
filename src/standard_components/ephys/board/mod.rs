@@ -19,6 +19,9 @@ use std::io;
 
 use serde::{Deserialize, Serialize};
 
+use crate::core::engine::{DataStreamType, PASS_DURATION};
+use crate::standard_components::ephys::{Continuous, ContinuousBuffer, Events, EventsBuffer};
+
 pub use fake::FakeBoard;
 #[cfg(test)]
 pub use fake::serve_test_board;
@@ -99,34 +102,71 @@ pub struct Config {
     pub headstages: Vec<Headstage>,
 }
 
-/// Samples from a board, channel by channel: for each kind of input, `samples` values for each channel in
-/// turn, scaled (µV for the headstages, V for the auxiliary and analogue inputs). Reused from block to block.
-#[derive(Clone, Debug, Default)]
-pub struct Block {
-    pub samples: usize,
-    pub ephys: Vec<f32>,
-    pub aux: Vec<f32>,
-    pub adc: Vec<f32>,
-    /// The digital inputs, a bit per line, for each sample.
-    pub ttl: Vec<u32>,
-    /// The board's sample number of the first sample, counting from the start.
-    pub first: u64,
+/// A pass's worth of samples from a board, in the buffers passes take them in (see `capture`): the headstages',
+/// auxiliary and analogue inputs' (µV for the headstages, V for the rest), each channel's from the start of its
+/// row, and where the digital inputs change. The capture thread fills them, a read at a time, from `len()` on.
+pub struct Samples {
+    pub ephys: ContinuousBuffer,
+    pub aux: ContinuousBuffer,
+    pub adc: ContinuousBuffer,
+    pub events: EventsBuffer,
 }
 
-impl Block {
-    /// Makes room for `samples` of each of the given channels (keeping the memory there is).
-    pub fn resize(&mut self, samples: usize, ephys: usize, aux: usize, adc: usize) {
-        self.samples = samples;
-        self.ephys.resize(samples * ephys, 0.0);
-        self.aux.resize(samples * aux, 0.0);
-        self.adc.resize(samples * adc, 0.0);
-        self.ttl.resize(samples, 0);
+impl Samples {
+    /// Empty buffers for one pass of these channels.
+    pub fn new(ephys: Continuous, aux: Continuous, adc: Continuous, events: Events) -> Self {
+        Samples {
+            ephys: ephys.buffer(PASS_DURATION),
+            aux: aux.buffer(PASS_DURATION),
+            adc: adc.buffer(PASS_DURATION),
+            events: events.buffer(PASS_DURATION),
+        }
     }
 
-    /// How many channels of a kind of input (one of the block's) it has.
-    pub fn channels(&self, values: &[f32]) -> usize {
-        values.len().checked_div(self.samples).unwrap_or(0)
+    /// The memory they take.
+    pub fn bytes(&self) -> usize {
+        let continuous = [&self.ephys, &self.aux, &self.adc].map(|b| b.data.capacity() * size_of::<f32>());
+        continuous.iter().sum::<usize>()
+            + self.events.events.capacity() * size_of::<crate::standard_components::ephys::Event>()
     }
+
+    /// Samples so far.
+    pub fn len(&self) -> usize {
+        self.ephys.len
+    }
+
+    /// Samples there's room for.
+    pub fn room(&self) -> usize {
+        self.ephys.capacity - self.ephys.len
+    }
+
+    /// Empties them, to fill again.
+    pub fn clear(&mut self) {
+        (self.ephys.len, self.aux.len, self.adc.len) = (0, 0, 0);
+        self.events.events.clear();
+        self.events.pass_samples = 0;
+    }
+
+    /// The channels of each kind: headstage, auxiliary and analogue.
+    #[cfg(test)]
+    pub fn layout(&self) -> (usize, usize, usize) {
+        (self.ephys.channels, self.aux.channels, self.adc.channels)
+    }
+
+    /// Adds `count` samples, which a board's just written after those there were.
+    fn grow(&mut self, count: usize) {
+        for buffer in [&mut self.ephys, &mut self.aux, &mut self.adc] {
+            buffer.len += count;
+        }
+        self.events.pass_samples += count;
+    }
+}
+
+/// What a board decoded: how many samples, and the board's number for the first (counting from the start).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Decoded {
+    pub samples: usize,
+    pub first: u64,
 }
 
 /// A board acquiring.
@@ -136,9 +176,17 @@ pub trait Board: Send {
     /// Starts acquiring at `config`.
     fn start(&mut self, config: &Config) -> io::Result<()>;
 
-    /// Waits briefly for samples, filling `block` with those that came. `Ok(false)` means none came yet; the
-    /// caller should check whether it has been asked to stop and then call again.
-    fn read(&mut self, block: &mut Block) -> io::Result<bool>;
+    /// The channels of each kind it's acquiring, once started: headstage, auxiliary and analogue.
+    fn layout(&self) -> (usize, usize, usize);
+
+    /// Waits briefly for samples, keeping them to decode. `Ok(false)` means none came yet; the caller should check
+    /// whether it has been asked to stop and then call again.
+    fn fetch(&mut self) -> io::Result<bool>;
+
+    /// Decodes as many of the samples fetched as there's room for in `into` (laid out as `layout` says), after
+    /// those there, with each sample's digital inputs (a bit per line) in `ttl`. Quick: it's done while a pass might
+    /// be waiting to take them. Whatever didn't fit is kept for next time.
+    fn decode(&mut self, into: &mut Samples, ttl: &mut Vec<u32>) -> io::Result<Decoded>;
 
     /// Problems setting the board up that don't stop it working.
     fn warnings(&self) -> Vec<String> {

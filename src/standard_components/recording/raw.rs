@@ -25,11 +25,12 @@ use serde::{Deserialize, Serialize};
 use super::npy::Npy;
 use super::{Files, Status, Writing, path_in, session_name, status_ui};
 use crate::core::engine::{
-    Category, Context, CopyTo, EdgeSet, Flow, Input, Node, NodeInfo, NodeThread, Output, Pass, ThreadContext,
+    Category, Context, CopyTo, DataStreamType, EdgeSet, Flow, Input, Node, NodeInfo, NodeThread, Output, PASS_DURATION,
+    Pass, PoolStatus, ThreadContext,
 };
 use crate::core::exchange::Latest;
 use crate::standard_components::ephys::board::EPHYS_MICROVOLTS_PER_BIT;
-use crate::standard_components::ephys::{Continuous, Event, Events};
+use crate::standard_components::ephys::{Continuous, ContinuousBuffer, Event, Events, EventsBuffer};
 use crate::standard_components::widgets::{require_input, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind};
 
@@ -59,18 +60,51 @@ pub struct Recorder {
 }
 
 impl crate::core::engine::PassState for Recorder {
-    const WHY: &'static str = "The writer's thread while recording, which each pass's copy goes to, in order, \
+    const WHY: &'static str = "The writer's thread while recording, which each pass's data goes to, in order, \
                                so the files are written in order.";
 }
 
-/// A pass's data, copied for the writer's thread.
-#[derive(Default)]
+/// A pass's data, for the writer's thread: in buffers like the passes' own, to swap with them.
 pub struct Chunk {
-    /// Channel after channel, `len` samples each.
-    continuous: Vec<f32>,
-    len: usize,
-    events: Vec<Event>,
-    event_pass_samples: usize,
+    continuous: ContinuousBuffer,
+    events: EventsBuffer,
+}
+
+impl Chunk {
+    /// Empty, for these inputs (nothing, for an input not connected).
+    fn new(continuous: Option<Continuous>, events: Option<Events>) -> Self {
+        let none = || Continuous { channels: 0, sample_rate: 1.0 };
+        Chunk {
+            continuous: continuous.unwrap_or_else(none).buffer(PASS_DURATION),
+            events: events.map_or(EventsBuffer { events: Vec::new(), pass_samples: 0 }, |e| e.buffer(PASS_DURATION)),
+        }
+    }
+
+    /// The memory one takes.
+    fn bytes(&self) -> usize {
+        self.continuous.data.capacity() * size_of::<f32>() + self.events.events.capacity() * size_of::<Event>()
+    }
+
+    /// The writer's thread, with a pool of chunks for these inputs.
+    fn writing(
+        folder: std::path::PathBuf,
+        continuous: Option<Continuous>,
+        events: Option<Events>,
+        opened: Option<io::Result<RawFiles>>,
+    ) -> Writing<Chunk> {
+        let (shown, bytes) = (folder.display().to_string(), Chunk::new(continuous, events).bytes());
+        let make = move || Chunk::new(continuous, events);
+        match opened {
+            Some(files) => Writing::new("Raw writer", shown, files.map(|f| Box::new(f) as Box<_>), make, bytes),
+            None => Writing::start(
+                "Raw writer",
+                shown,
+                move || RawFiles::open(&folder, continuous, events).map(|f| Box::new(f) as Box<_>),
+                make,
+                bytes,
+            ),
+        }
+    }
 }
 
 impl Node<Edges> for WriteRaw {
@@ -99,7 +133,17 @@ impl Node<Edges> for WriteRaw {
     }
 
     fn threads(&self) -> Vec<NodeThread> {
-        vec![NodeThread { name: "Raw writer", link: "chunk queue", flow: Flow::FromPasses, why: super::WHY_A_THREAD }]
+        vec![NodeThread { name: "Raw writer", link: "buffer pool", flow: Flow::FromPasses, why: super::WHY_A_THREAD }]
+    }
+
+    /// Its buffers are its own to take, if nothing else needs them after it: it swaps them into the chunk for its
+    /// thread, rather than copying.
+    fn takes(&self, _input: usize) -> bool {
+        true
+    }
+
+    fn thread_pool(&self, _thread: usize, context: &ThreadContext) -> Option<PoolStatus> {
+        context.display::<Status>().map(|s| s.pool)
     }
 
     fn thread_ui(&self, _thread: usize, ui: &mut egui::Ui, context: &ThreadContext) {
@@ -127,43 +171,42 @@ impl Node<Edges> for WriteRaw {
         let Recorder { continuous, events, .. } = self.initial_state(inputs);
         let folder = self.folder();
         let files = RawFiles::open(&folder, continuous, events);
-        let writing: Writing<Chunk> =
-            Writing::new("Raw writer", folder.display().to_string(), files.map(|f| Box::new(f) as Box<_>));
-        Some(Box::new(writing))
+        Some(Box::new(Chunk::writing(folder, continuous, events, Some(files))))
     }
 
-    /// While recording, copies the pass's data for the writer's thread.
+    /// While recording, hands the pass's data to the writer's thread: swapping the buffers it's in for a chunk's, if
+    /// they're the node's to take, or copying it.
     fn process(&self, pass: &mut Pass<Edges>, recorder: &mut Recorder) {
         match (pass.recording, &recorder.writing) {
             (true, None) => {
-                recorder.writing = pass.take_prepared::<Writing<Chunk>>().or_else(|| {
-                    // Not prepared (the graph changed while recording, say): the thread opens the files.
-                    let folder = self.folder();
-                    let (continuous, events) = (recorder.continuous, recorder.events);
-                    let shown = folder.display().to_string();
-                    Some(Writing::start("Raw writer", shown, move || {
-                        RawFiles::open(&folder, continuous, events).map(|f| Box::new(f) as Box<_>)
-                    }))
-                });
+                // Not prepared (the graph changed while recording, say): the thread opens the files.
+                let (continuous, events) = (recorder.continuous, recorder.events);
+                recorder.writing = pass
+                    .take_prepared::<Writing<Chunk>>()
+                    .or_else(|| Some(Chunk::writing(self.folder(), continuous, events, None)));
             }
             (false, Some(_)) => recorder.writing = None, // finishes the files
             _ => {}
         }
-        if let Some(writing) = &recorder.writing {
-            let mut chunk = writing.chunk();
-            chunk.continuous.clear();
-            chunk.len = 0;
-            if let Some(Some(Buffer::Continuous(continuous))) = pass.inputs.first() {
-                for channel in 0..continuous.channels {
-                    chunk.continuous.extend_from_slice(&continuous.channel(channel)[..continuous.len]);
+        if let Some(writing) = &recorder.writing
+            && let Some(mut chunk) = writing.chunk()
+        {
+            chunk.continuous.len = 0;
+            if let Some(Buffer::Continuous(taken)) = pass.take_input(0) {
+                std::mem::swap(taken, &mut chunk.continuous);
+            } else if let Some(Buffer::Continuous(continuous)) = pass.input(0) {
+                chunk.continuous.len = continuous.len;
+                for channel in 0..continuous.channels.min(chunk.continuous.channels) {
+                    chunk.continuous.channel_mut(channel).copy_from_slice(continuous.channel(channel));
                 }
-                chunk.len = continuous.len;
             }
-            chunk.events.clear();
-            chunk.event_pass_samples = 0;
-            if let Some(Some(Buffer::Events(events))) = pass.inputs.get(1) {
-                chunk.events.extend_from_slice(&events.events);
-                chunk.event_pass_samples = events.pass_samples;
+            chunk.events.events.clear();
+            chunk.events.pass_samples = 0;
+            if let Some(Buffer::Events(taken)) = pass.take_input(1) {
+                std::mem::swap(taken, &mut chunk.events);
+            } else if let Some(Buffer::Events(events)) = pass.input(1) {
+                chunk.events.events.extend_from_slice(&events.events);
+                chunk.events.pass_samples = events.pass_samples;
             }
             writing.send(chunk);
         }
@@ -331,14 +374,15 @@ impl Files<Chunk> for RawFiles {
     fn write(&mut self, chunk: &Chunk) -> io::Result<u64> {
         let mut bytes = 0;
         if let Some(samples) = &mut self.continuous
-            && chunk.len > 0
+            && chunk.continuous.len > 0
         {
             let (channels, len, rate) =
-                (samples.stream.channels as usize, chunk.len, samples.stream.sample_rate as f64);
+                (samples.stream.channels as usize, chunk.continuous.len, samples.stream.sample_rate as f64);
+            let channels = channels.min(chunk.continuous.channels);
             for t in 0..len {
                 samples.row.clear();
                 for channel in 0..channels {
-                    let value = chunk.continuous.get(channel * len + t).copied().unwrap_or(0.0);
+                    let value = chunk.continuous.channel(channel)[t];
                     let step = (value / EPHYS_MICROVOLTS_PER_BIT).round().clamp(i16::MIN as f32, i16::MAX as f32);
                     samples.row.extend_from_slice(&(step as i16).to_le_bytes());
                 }
@@ -352,7 +396,7 @@ impl Files<Chunk> for RawFiles {
         }
         if let Some(ttl) = &mut self.events {
             let rate = ttl.stream.sample_rate as f64;
-            for event in &chunk.events {
+            for event in &chunk.events.events {
                 let line = event.line as u64;
                 if event.high {
                     ttl.word |= 1 << line;
@@ -367,7 +411,7 @@ impl Files<Chunk> for RawFiles {
                 ttl.words.write(&ttl.word.to_le_bytes(), 1)?;
                 bytes += 26;
             }
-            ttl.samples += chunk.event_pass_samples as u64;
+            ttl.samples += chunk.events.pass_samples as u64;
         }
         Ok(bytes)
     }
@@ -398,13 +442,12 @@ mod tests {
         let continuous = Continuous { channels: 2, sample_rate: 1000.0 };
         let events = Events { lines: 8, sample_rate: 1000.0 };
         let mut files = Box::new(RawFiles::open(&dir, Some(continuous), Some(events)).unwrap());
-        let chunk = Chunk {
-            // Two channels of three samples: 1, 2, 3 and 10, 20, 30 steps.
-            continuous: [1.0, 2.0, 3.0, 10.0, 20.0, 30.0].map(|s| s * EPHYS_MICROVOLTS_PER_BIT).to_vec(),
-            len: 3,
-            events: vec![Event { sample: 2, line: 1, high: true }],
-            event_pass_samples: 3,
-        };
+        let mut chunk = Chunk::new(Some(continuous), Some(events));
+        // Two channels of three samples: 1, 2, 3 and 10, 20, 30 steps.
+        chunk.continuous.len = 3;
+        chunk.continuous.channel_mut(0).copy_from_slice(&[1.0, 2.0, 3.0].map(|s| s * EPHYS_MICROVOLTS_PER_BIT));
+        chunk.continuous.channel_mut(1).copy_from_slice(&[10.0, 20.0, 30.0].map(|s| s * EPHYS_MICROVOLTS_PER_BIT));
+        chunk.events = EventsBuffer { events: vec![Event { sample: 2, line: 1, high: true }], pass_samples: 3 };
         files.write(&chunk).unwrap();
         files.write(&chunk).unwrap();
         files.finish().unwrap();

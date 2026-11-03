@@ -10,7 +10,9 @@
 use std::io;
 
 use super::rhd::{self, CHIP_RHD2132, CHIP_RHD2164, CHIP_RHD2216, REGISTER_59_MISO_A, RHD2132_16CH_OFFSET, Registers};
-use super::{AUX_VOLTS_PER_BIT, Bandwidth, Block, Board, BoardInfo, Config, EPHYS_MICROVOLTS_PER_BIT, Headstage};
+use super::{
+    AUX_VOLTS_PER_BIT, Bandwidth, Board, BoardInfo, Config, Decoded, EPHYS_MICROVOLTS_PER_BIT, Headstage, Samples,
+};
 
 const HEADER_MAGIC: u64 = 0xc691_1999_2702_1942;
 /// The data sources, in the firmware's order: each port's two MISO lines.
@@ -80,6 +82,9 @@ pub struct RhythmBoard<T: Transport> {
     registers: Registers,
     sample_rate: u32,
     buf: Vec<u8>,
+    /// Samples fetched into `buf`, and how many of them are decoded.
+    fetched: usize,
+    decoded: usize,
     /// Each stream's auxiliary inputs as last sampled (each is sampled every fourth sample, then held).
     aux: Vec<[f32; 3]>,
     aux_due: Vec<[f32; 3]>,
@@ -101,6 +106,8 @@ impl<T: Transport> RhythmBoard<T> {
             registers: Registers::new(30000.0),
             sample_rate: 30000,
             buf: Vec::new(),
+            fetched: 0,
+            decoded: 0,
             aux: Vec::new(),
             aux_due: Vec::new(),
             sample: 0,
@@ -348,32 +355,44 @@ impl<T: Transport> Board for RhythmBoard<T> {
         Ok(())
     }
 
-    fn read(&mut self, block: &mut Block) -> io::Result<bool> {
-        let samples = self.transport.read(&mut self.buf)?;
-        if samples == 0 {
-            return Ok(false);
+    fn layout(&self) -> (usize, usize, usize) {
+        let ephys = self.streams.iter().map(|s| s.channels).sum();
+        let aux_streams = self.streams.iter().filter(|s| !s.second).count();
+        (ephys, 3 * aux_streams, 8)
+    }
+
+    fn fetch(&mut self) -> io::Result<bool> {
+        if self.decoded < self.fetched {
+            return Ok(true);
         }
-        let streams = &self.streams;
-        let ephys: usize = streams.iter().map(|s| s.channels).sum();
-        let aux_streams: Vec<usize> = (0..streams.len()).filter(|&s| !streams[s].second).collect();
-        block.resize(samples, ephys, 3 * aux_streams.len(), 8);
+        let samples = self.transport.read(&mut self.buf)?;
+        (self.fetched, self.decoded) = (samples, 0);
+        Ok(samples > 0)
+    }
+
+    fn decode(&mut self, into: &mut Samples, ttl: &mut Vec<u32>) -> io::Result<Decoded> {
+        let count = (self.fetched - self.decoded).min(into.room());
+        let (from, at) = (self.decoded, into.len());
         let n = self.enabled_streams as usize;
         let size = sample_bytes(self.enabled_streams);
-        for t in 0..samples {
-            let at = size * t;
-            let header = u64::from_le_bytes(self.buf[at..at + 8].try_into().unwrap());
+        let aux_streams: Vec<usize> = (0..self.streams.len()).filter(|&s| !self.streams[s].second).collect();
+        let mut first = self.sample;
+        for i in 0..count {
+            let t = from + i;
+            let start = size * t;
+            let header = u64::from_le_bytes(self.buf[start..start + 8].try_into().unwrap());
             if header != HEADER_MAGIC {
+                self.fetched = 0;
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "lost track of the board's samples"));
             }
-            if t == 0 {
+            if i == 0 {
                 // The firmware's 32-bit sample counter: carry on from where the samples so far left off.
-                let counter = u32::from_le_bytes(self.buf[at + 8..at + 12].try_into().unwrap()) as u64;
+                let counter = u32::from_le_bytes(self.buf[start + 8..start + 12].try_into().unwrap()) as u64;
                 let wraps = self.sample >> 32;
-                let mut first = (wraps << 32) | counter;
+                first = (wraps << 32) | counter;
                 if first + (1 << 31) < self.sample {
                     first += 1 << 32;
                 }
-                block.first = first;
             }
             // Headstage channels: 32 per stream, interleaved stream by stream.
             let mut channel = 0;
@@ -381,14 +400,15 @@ impl<T: Transport> Board for RhythmBoard<T> {
                 let offset = if s.chip == CHIP_RHD2132 && s.channels == 16 { RHD2132_16CH_OFFSET } else { 0 };
                 for c in 0..s.channels {
                     let raw = self.word(t, 6 + 3 * n + (offset + c) * n + stream);
-                    block.ephys[channel * samples + t] = (raw as f32 - 32768.0) * EPHYS_MICROVOLTS_PER_BIT;
+                    into.ephys.data[channel * into.ephys.capacity + at + i] =
+                        (raw as f32 - 32768.0) * EPHYS_MICROVOLTS_PER_BIT;
                     channel += 1;
                 }
             }
             // Auxiliary inputs, from the second command slot: each sampled every fourth sample (counting from the
             // start, as the command list does), and held.
-            let which = ((block.first + t as u64 + 3) % 4) as usize;
-            for (i, &stream) in aux_streams.iter().enumerate() {
+            let which = ((first + i as u64 + 3) % 4) as usize;
+            for (a, &stream) in aux_streams.iter().enumerate() {
                 if which < 3 {
                     let raw = self.word(t, self.aux_word(1, stream));
                     self.aux_due[stream][which] = (raw as f32 - 32768.0) * AUX_VOLTS_PER_BIT;
@@ -396,17 +416,21 @@ impl<T: Transport> Board for RhythmBoard<T> {
                     self.aux[stream] = self.aux_due[stream];
                 }
                 for input in 0..3 {
-                    block.aux[(3 * i + input) * samples + t] = self.aux[stream][input];
+                    into.aux.data[(3 * a + input) * into.aux.capacity + at + i] = self.aux[stream][input];
                 }
             }
             let adc = 6 + 36 * n;
             for input in 0..8 {
-                block.adc[input * samples + t] = self.transport.adc_volts(self.word(t, adc + input));
+                into.adc.data[input * into.adc.capacity + at + i] = self.transport.adc_volts(self.word(t, adc + input));
             }
-            block.ttl[t] = self.word(t, adc + 8) as u32;
+            ttl.push(self.word(t, adc + 8) as u32);
         }
-        self.sample = block.first + samples as u64;
-        Ok(true)
+        into.grow(count);
+        self.decoded += count;
+        if count > 0 {
+            self.sample = first + count as u64;
+        }
+        Ok(Decoded { samples: count, first })
     }
 
     fn warnings(&self) -> Vec<String> {

@@ -6,6 +6,7 @@
 
 pub mod annotations;
 pub mod ephys;
+mod pool;
 mod preview;
 pub mod quick_actions;
 pub mod recording;

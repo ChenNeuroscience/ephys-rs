@@ -5,7 +5,7 @@ use std::io::{self, Read};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
-use super::{Camera, Frame};
+use super::{Camera, FrameInfo};
 
 const MAGIC: &[u8; 4] = b"FRM1";
 const HEADER_LEN: usize = 28;
@@ -50,30 +50,39 @@ impl Camera for FakeCamera {
         "Fake camera (synthetic_streams/fake_camera.py)".into()
     }
 
-    fn next_frame(&mut self) -> io::Result<Option<Frame>> {
-        if self.buf.len() == HEADER_LEN {
+    fn fetch(&mut self) -> io::Result<Option<FrameInfo>> {
+        if self.buf.len() > HEADER_LEN && self.filled == self.buf.len() {
+            // A whole frame, not copied out yet.
+        } else {
+            if self.buf.len() == HEADER_LEN {
+                if !self.fill()? {
+                    return Ok(None);
+                }
+                if &self.buf[0..4] != MAGIC {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, "bad frame magic"));
+                }
+                let (w, h) = (u32_at(&self.buf, 4) as usize, u32_at(&self.buf, 8) as usize);
+                if w == 0 || h == 0 || w * h > MAX_PIXELS {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, format!("bad frame size {w}x{h}")));
+                }
+                self.buf.resize(HEADER_LEN + w * h, 0);
+            }
             if !self.fill()? {
                 return Ok(None);
             }
-            if &self.buf[0..4] != MAGIC {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "bad frame magic"));
-            }
-            let (w, h) = (u32_at(&self.buf, 4) as usize, u32_at(&self.buf, 8) as usize);
-            if w == 0 || h == 0 || w * h > MAX_PIXELS {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, format!("bad frame size {w}x{h}")));
-            }
-            self.buf.resize(HEADER_LEN + w * h, 0);
         }
-        if !self.fill()? {
-            return Ok(None);
-        }
-
-        let (w, h) = (u32_at(&self.buf, 4), u32_at(&self.buf, 8));
+        let (width, height) = (u32_at(&self.buf, 4), u32_at(&self.buf, 8));
         let id = u64::from_le_bytes(self.buf[12..20].try_into().unwrap());
         let timestamp = f64::from_le_bytes(self.buf[20..28].try_into().unwrap());
-        let pixels = self.buf.split_off(HEADER_LEN);
+        Ok(Some(FrameInfo { id, timestamp, width, height }))
+    }
+
+    fn copy_to(&mut self, into: Option<&mut [u8]>) {
+        if let Some(into) = into {
+            into.copy_from_slice(&self.buf[HEADER_LEN..]);
+        }
+        self.buf.truncate(HEADER_LEN);
         self.filled = 0;
-        Ok(Some(Frame { id, timestamp, width: w, height: h, pixels }))
     }
 }
 

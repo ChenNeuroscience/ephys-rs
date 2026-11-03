@@ -11,7 +11,7 @@ use std::io;
 use eframe::egui::Color32;
 use serde::{Deserialize, Serialize};
 
-use crate::core::engine::{DataStreamType, EdgeInfo, EdgeType};
+use crate::core::engine::{DataStreamType, EdgeInfo, EdgeType, PoolStatus};
 pub use fake::FakeCamera;
 #[cfg(test)]
 pub use fake::serve_test_scene;
@@ -37,18 +37,15 @@ impl EdgeType for CameraStats {
 #[derive(Clone, Debug, Default)]
 pub struct CaptureStats {
     pub status: capture::Status,
-    /// Frames skipped for being the wrong size, and the size of the last of them.
-    pub wrong_size: u64,
-    pub last_wrong_size: [u32; 2],
-    /// Frames skipped because more arrived in a pass than it had room for.
-    pub missed: u64,
+    /// Where the capture thread's buffers are.
+    pub pool: PoolStatus,
 }
 
 impl CaptureStats {
     /// Copies `other`, reusing this one's memory (for its text).
     pub fn copy_from(&mut self, other: &CaptureStats) {
         self.status.copy_from(&other.status);
-        (self.wrong_size, self.last_wrong_size, self.missed) = (other.wrong_size, other.last_wrong_size, other.missed);
+        self.pool = other.pool;
     }
 }
 
@@ -105,21 +102,25 @@ impl EdgeType for CameraSettings {
     }
 }
 
-pub struct Frame {
+/// A frame from a camera, fetched: its pixels are copied out with `Camera::copy_to`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FrameInfo {
     /// Frame counter as reported by the camera (gaps imply dropped frames).
     pub id: u64,
     /// Seconds, in the camera's clock.
     pub timestamp: f64,
     pub width: u32,
     pub height: u32,
-    /// `width` × `height` bytes of grey, row by row.
-    pub pixels: Vec<u8>,
 }
 
 pub trait Camera: Send {
-    /// Waits briefly for the next frame. `Ok(None)` means nothing arrived yet; the caller should check whether
-    /// it has been asked to stop and then call again.
-    fn next_frame(&mut self) -> io::Result<Option<Frame>>;
+    /// Waits briefly for the next frame, keeping it to copy out. `Ok(None)` means nothing arrived yet; the caller
+    /// should check whether it has been asked to stop and then call again.
+    fn fetch(&mut self) -> io::Result<Option<FrameInfo>>;
+
+    /// Copies the frame fetched into `into` (`width` × `height` bytes of grey, row by row), or (if `None`) lets it
+    /// go. Quick: it's done while a pass might be waiting to take it.
+    fn copy_to(&mut self, into: Option<&mut [u8]>);
 
     /// E.g. the camera model and serial number.
     fn description(&self) -> String {

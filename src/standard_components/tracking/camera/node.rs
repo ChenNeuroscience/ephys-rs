@@ -1,16 +1,17 @@
-//! Video from a camera, captured on a thread of its own (see `tracking::capture`) and taken into each pass.
+//! Video from a camera, captured on a thread of its own (see `capture`) into a pool of buffers, which each pass swaps
+//! for its own.
 
 use eframe::egui::{self, RichText};
 use serde::{Deserialize, Serialize};
 
-use super::capture::{self, Capture, State};
+use super::capture::{Capture, State};
 use super::{CameraControls, CameraSettings, CameraStats, CaptureStats, Control, Range, Source};
 use crate::core::engine::{
-    Category, Context, Flow, Node, NodeInfo, NodeThread, Output, Pass, SettingPort, ThreadContext,
+    Category, Context, Flow, Node, NodeInfo, NodeThread, Output, Pass, PoolStatus, SettingPort, ThreadContext,
 };
 use crate::core::exchange::Latest;
 use crate::standard_components::tracking::Video;
-use crate::standard_components::widgets::{queue_ui, setting, settings_grid};
+use crate::standard_components::widgets::{setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -32,17 +33,12 @@ impl Default for Camera {
 #[derive(Default)]
 pub struct Capturing {
     capture: Option<Capture>,
-    /// Frames skipped for being the wrong size, and the size of the last of them.
-    wrong_size: u64,
-    last_wrong_size: [u32; 2],
-    /// Frames skipped because more arrived in a pass than it had room for.
-    missed: u64,
     shown: Latest<CaptureStats>,
 }
 
 impl crate::core::engine::PassState for Capturing {
-    const WHY: &'static str = "The camera's capture thread and its queue of frames, which each pass takes the \
-                               next of, in order.";
+    const WHY: &'static str = "The camera's capture thread and its pool of buffers: each pass takes the frames \
+                               that have come since the last, in order.";
 }
 
 impl Node<Edges> for Camera {
@@ -77,7 +73,7 @@ impl Node<Edges> for Camera {
     fn threads(&self) -> Vec<NodeThread> {
         vec![NodeThread {
             name: "Camera capture",
-            link: "frame queue",
+            link: "buffer pool",
             flow: Flow::ToPasses,
             why: "On a thread of its own so frames are taken from the camera as they come, whatever the passes \
                   are doing.",
@@ -97,43 +93,42 @@ impl Node<Edges> for Camera {
             State::Problem(problem) => ui.label(small(problem.clone()).color(context.theme.warning)),
         };
         ui.label(small(format!("{:.1} frames/s · {} frames", status.fps, status.frames)).weak());
-        queue_ui(ui, context.theme, "frames", status.queued, capture::QUEUE_LEN);
-        if status.camera_dropped + status.queue_dropped > 0 {
+        if status.camera_dropped + status.not_taken > 0 {
             let text =
-                format!("{} dropped by the camera, {} not taken in time", status.camera_dropped, status.queue_dropped);
+                format!("{} dropped by the camera, {} not taken in time", status.camera_dropped, status.not_taken);
             ui.label(small(text).color(context.theme.warning));
         }
     }
 
-    fn initial_state(&self, _inputs: &[Option<DataStream>]) -> Capturing {
-        Capturing { capture: Some(Capture::start(self.source.clone(), self.settings)), ..Default::default() }
+    fn thread_pool(&self, _thread: usize, context: &ThreadContext) -> Option<PoolStatus> {
+        context.display::<CaptureStats>().map(|s| s.pool)
     }
 
-    /// Takes the frames that have arrived since the last pass.
+    fn initial_state(&self, _inputs: &[Option<DataStream>]) -> Capturing {
+        let [width, height] = self.size;
+        let video = Video { width, height, fps: self.settings.frame_rate as f32 };
+        Capturing { capture: Some(Capture::start(self.source.clone(), self.settings, video)), ..Default::default() }
+    }
+
+    /// Takes the frames that have arrived since the last pass, swapping the buffer they're in for the pass's own
+    /// (which goes back to the capture thread's pool to fill), so nothing's copied.
     fn process(&self, pass: &mut Pass<Edges>, capturing: &mut Capturing) {
         let Some(capture) = &capturing.capture else { return };
         capture.apply(&self.settings); // exposure and gain can change while running
         if let Some(Buffer::Video(out)) = pass.outputs.get_mut(0) {
-            out.frames = 0;
-            while let Some(frame) = capture.next() {
-                if (frame.width as usize, frame.height as usize) != (out.width, out.height) {
-                    capturing.wrong_size += 1;
-                    capturing.last_wrong_size = [frame.width, frame.height];
-                } else if out.frames == out.capacity {
-                    capturing.missed += 1;
-                } else {
-                    let index = out.frames;
-                    out.frame_mut(index).copy_from_slice(&frame.pixels);
-                    (out.ids[index], out.times[index]) = (frame.id, frame.timestamp);
-                    out.frames += 1;
+            match capture.pool().take(|video| video.frames == 0) {
+                Some(mut video) => {
+                    std::mem::swap(out, &mut video);
+                    capture.pool().give_back(video);
                 }
+                None => out.frames = 0,
             }
         }
         // The stats, on their output and in the node's window.
-        let counts = (capturing.wrong_size, capturing.last_wrong_size, capturing.missed);
         let fill = |stats: &mut CaptureStats| {
             capture.status_into(&mut stats.status);
-            (stats.wrong_size, stats.last_wrong_size, stats.missed) = counts;
+            // Of the video, not the stats.
+            stats.pool = PoolStatus { ports: 1, ..capture.pool().status() };
         };
         if let Some(Buffer::CameraStats(stats)) = pass.outputs.get_mut(1) {
             fill(stats);
@@ -186,16 +181,13 @@ impl Node<Edges> for Camera {
         }
         ui.weak(format!(
             "{:.1} fps · {} frames · {} dropped by the camera · {} not taken in time",
-            status.fps,
-            status.frames,
-            status.camera_dropped,
-            status.queue_dropped + display.missed
+            status.fps, status.frames, status.camera_dropped, status.not_taken
         ));
-        if display.wrong_size > 0 {
-            let [w, h] = display.last_wrong_size;
+        if status.wrong_size > 0 {
+            let [w, h] = status.last_wrong_size;
             let message = format!(
                 "{} frames skipped: they're {w}×{h}, not the {}×{} set. Change the frame size to match.",
-                display.wrong_size, self.size[0], self.size[1]
+                status.wrong_size, self.size[0], self.size[1]
             );
             ui.label(RichText::new(message).color(theme.warning));
         }

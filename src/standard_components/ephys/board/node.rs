@@ -1,17 +1,18 @@
 //! The Acquisition Board node: samples from a board's headstages, and its auxiliary, analogue and digital
-//! inputs, acquired on a thread of its own (see `capture`) and taken into each pass.
+//! inputs, acquired on a thread of its own (see `capture`) into a pool of buffers, which each pass swaps for its
+//! own.
 
 use eframe::egui::{self, RichText};
 use serde::{Deserialize, Serialize};
 
-use super::capture::{self, Capture, State, Status};
-use super::{
-    AUX_PER_HEADSTAGE, Bandwidth, Block, BoardInfo, Config, Headstage, OpalKellyKind, PORTS, SAMPLE_RATES, Source,
+use super::capture::{self, Capture, Shape, State, Status};
+use super::{AUX_PER_HEADSTAGE, Bandwidth, BoardInfo, Config, Headstage, OpalKellyKind, PORTS, SAMPLE_RATES, Source};
+use crate::core::engine::{
+    Category, Context, Flow, Node, NodeInfo, NodeThread, Output, Pass, PoolStatus, ThreadContext,
 };
-use crate::core::engine::{Category, Context, Flow, Node, NodeInfo, NodeThread, Output, Pass, ThreadContext};
 use crate::core::exchange::Latest;
-use crate::standard_components::ephys::{Continuous, Event, Events};
-use crate::standard_components::widgets::{named_settings_grid, queue_ui, setting, settings_grid};
+use crate::standard_components::ephys::{Continuous, Events};
+use crate::standard_components::widgets::{named_settings_grid, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind};
 
 /// The board's analogue inputs.
@@ -50,29 +51,19 @@ impl Default for AcquisitionBoard {
 #[derive(Default)]
 pub struct Acquiring {
     capture: Option<Capture>,
-    /// A block partly taken into the passes so far, and how much of it.
-    pending: Option<(Block, usize)>,
-    /// The digital inputs as of the last sample taken.
-    ttl: u32,
-    /// Samples skipped because the board's inputs aren't those expected.
-    mismatched: u64,
-    /// Digital input changes lost because a pass had no room for them.
-    lost_events: u64,
     shown: Latest<BoardDisplay>,
 }
 
 impl crate::core::engine::PassState for Acquiring {
-    const WHY: &'static str = "The board's capture thread and its queue of samples, a block the last pass only \
-                               took part of, and the digital inputs' last levels (to find where they change): \
-                               each pass takes the next samples, in order.";
+    const WHY: &'static str = "The board's capture thread and its pool of buffers: each pass takes the samples \
+                               that have come since the last, in order.";
 }
 
 /// How acquisition is going, for the node's window.
 #[derive(Default)]
 pub struct BoardDisplay {
     status: Status,
-    mismatched: u64,
-    lost_events: u64,
+    pool: PoolStatus,
 }
 
 impl AcquisitionBoard {
@@ -87,13 +78,6 @@ impl AcquisitionBoard {
 
     fn adc_output(&self) -> Option<usize> {
         self.adc.then_some(2 + self.aux as usize)
-    }
-
-    /// Whether a block has the inputs expected.
-    fn matches(&self, block: &Block) -> bool {
-        block.channels(&block.ephys) == Headstage::total(&self.headstages) as usize
-            && (!self.aux || block.channels(&block.aux) == (AUX_PER_HEADSTAGE as usize * self.headstages.len()))
-            && (!self.adc || block.channels(&block.adc) == ADC_CHANNELS as usize)
     }
 }
 
@@ -143,7 +127,7 @@ impl Node<Edges> for AcquisitionBoard {
     fn threads(&self) -> Vec<NodeThread> {
         vec![NodeThread {
             name: "Board capture",
-            link: "block queue",
+            link: "buffer pool",
             flow: Flow::ToPasses,
             why: "On a thread of its own so samples are taken from the board as they come (before its buffer \
                   overflows), whatever the passes are doing.",
@@ -163,105 +147,63 @@ impl Node<Edges> for AcquisitionBoard {
             State::Problem(problem) => ui.label(small(problem.clone()).color(context.theme.warning)),
         };
         ui.label(small(format!("{:.0} samples/s · {} samples", status.rate, status.samples)).weak());
-        queue_ui(ui, context.theme, "blocks", status.queued, capture::QUEUE_LEN);
-        if status.board_dropped + status.queue_dropped > 0 {
-            let text =
-                format!("{} dropped by the board, {} not taken in time", status.board_dropped, status.queue_dropped);
+        if status.board_dropped + status.not_taken > 0 {
+            let text = format!("{} dropped by the board, {} not taken in time", status.board_dropped, status.not_taken);
             ui.label(small(text).color(context.theme.warning));
         }
     }
 
-    fn initial_state(&self, _inputs: &[Option<DataStream>]) -> Acquiring {
-        Acquiring { capture: Some(Capture::start(self.source.clone(), self.config())), ..Default::default() }
+    fn thread_pool(&self, _thread: usize, context: &ThreadContext) -> Option<PoolStatus> {
+        context.display::<BoardDisplay>().map(|d| d.pool)
     }
 
-    /// Takes the samples that have arrived since the last pass, as many as there's room for (any more wait for
-    /// the next), and makes events of the digital inputs' changes.
+    fn initial_state(&self, _inputs: &[Option<DataStream>]) -> Acquiring {
+        let rate = self.sample_rate as f32;
+        let continuous = |channels| Continuous { channels, sample_rate: rate };
+        let shape = Shape {
+            ephys: continuous(Headstage::total(&self.headstages)),
+            aux: continuous(AUX_PER_HEADSTAGE * self.headstages.len() as u32),
+            adc: continuous(ADC_CHANNELS),
+            events: Events { lines: self.source.ttl_lines(), sample_rate: rate },
+        };
+        Acquiring { capture: Some(Capture::start(self.source.clone(), self.config(), shape)), ..Default::default() }
+    }
+
+    /// Takes the samples that have arrived since the last pass, swapping the buffers they're in for the pass's
+    /// own (which go back to the capture thread's pool to fill), so nothing's copied.
     fn process(&self, pass: &mut Pass<Edges>, acquiring: &mut Acquiring) {
         let Some(capture) = &acquiring.capture else { return };
-        let (aux_output, adc_output) = (self.aux_output(), self.adc_output());
-        let lines = self.source.ttl_lines();
-        let room = match pass.outputs.first() {
-            Some(Buffer::Continuous(out)) => out.capacity,
-            _ => return,
-        };
-        if let Some(Buffer::Events(events)) = pass.outputs.get_mut(1) {
-            events.events.clear();
-        }
-        let continuous = [Some(0), aux_output, adc_output];
-        let mut set_len = |len| {
-            for output in continuous.into_iter().flatten() {
-                if let Some(Buffer::Continuous(out)) = pass.outputs.get_mut(output) {
-                    out.len = len;
-                }
-            }
-        };
-        set_len(room); // to fill, then down to what's filled
-        let mut taken = 0;
-        while taken < room {
-            let (block, offset) = match acquiring.pending.take() {
-                Some(pending) => pending,
-                None => match capture.next() {
-                    Some(block) => (block, 0),
-                    None => break,
-                },
-            };
-            if !self.matches(&block) {
-                if acquiring.mismatched == 0 {
-                    let channels = block.channels(&block.ephys);
-                    log::warn!(
-                        "The board's sending {channels} headstage channels, not the {} set: skipping them",
-                        Headstage::total(&self.headstages)
-                    );
-                }
-                acquiring.mismatched += (block.samples - offset) as u64;
-                capture.recycle(block);
-                continue;
-            }
-            let n = (block.samples - offset).min(room - taken);
-            let mut copy = |output: Option<usize>, values: &[f32]| {
-                let Some(Buffer::Continuous(out)) = output.and_then(|o| pass.outputs.get_mut(o)) else { return };
-                for channel in 0..out.channels {
-                    let from = channel * block.samples + offset;
-                    out.channel_mut(channel)[taken..taken + n].copy_from_slice(&values[from..from + n]);
-                }
-            };
-            copy(Some(0), &block.ephys);
-            copy(aux_output, &block.aux);
-            copy(adc_output, &block.adc);
-            if let Some(Buffer::Events(events)) = pass.outputs.get_mut(1) {
-                for (i, &word) in block.ttl[offset..offset + n].iter().enumerate() {
-                    let changed = (word ^ acquiring.ttl) & ((1 << lines) - 1);
-                    for line in (0..lines).filter(|line| changed & (1 << line) != 0) {
-                        if events.events.len() < events.events.capacity() {
-                            let high = word & (1 << line) != 0;
-                            events.events.push(Event { sample: (taken + i) as u32, line: line as u8, high });
-                        } else {
-                            acquiring.lost_events += 1;
-                        }
+        // The headstages', auxiliary and analogue inputs' outputs, if they're on.
+        let outputs = [Some(0), self.aux_output(), self.adc_output()];
+        match capture.pool().take(|samples| samples.len() == 0) {
+            Some(mut samples) => {
+                let buffers = [&mut samples.ephys, &mut samples.aux, &mut samples.adc];
+                for (buffer, output) in buffers.into_iter().zip(outputs) {
+                    if let Some(Some(Buffer::Continuous(out))) = output.map(|o| pass.outputs.get_mut(o)) {
+                        std::mem::swap(out, buffer);
                     }
-                    acquiring.ttl = word;
+                }
+                if let Some(Buffer::Events(out)) = pass.outputs.get_mut(1) {
+                    std::mem::swap(out, &mut samples.events);
+                }
+                capture.pool().give_back(samples);
+            }
+            // Nothing's come since the last pass.
+            None => {
+                for output in outputs.into_iter().flatten() {
+                    if let Some(Buffer::Continuous(out)) = pass.outputs.get_mut(output) {
+                        out.len = 0;
+                    }
+                }
+                if let Some(Buffer::Events(out)) = pass.outputs.get_mut(1) {
+                    out.events.clear();
+                    out.pass_samples = 0;
                 }
             }
-            taken += n;
-            if offset + n < block.samples {
-                acquiring.pending = Some((block, offset + n));
-            } else {
-                capture.recycle(block);
-            }
         }
-        for output in continuous.into_iter().flatten() {
-            if let Some(Buffer::Continuous(out)) = pass.outputs.get_mut(output) {
-                out.len = taken;
-            }
-        }
-        if let Some(Buffer::Events(events)) = pass.outputs.get_mut(1) {
-            events.pass_samples = taken;
-        }
-        let (mismatched, lost_events) = (acquiring.mismatched, acquiring.lost_events);
         acquiring.shown.send(pass, |display| {
             capture.status_into(&mut display.status);
-            (display.mismatched, display.lost_events) = (mismatched, lost_events);
+            display.pool = capture.pool().status();
         });
     }
 
@@ -356,14 +298,14 @@ impl Node<Edges> for AcquisitionBoard {
         }
         ui.weak(format!(
             "{:.0} samples/s · {} samples · {} dropped by the board · {} not taken in time",
-            status.rate, status.samples, status.board_dropped, status.queue_dropped
+            status.rate, status.samples, status.board_dropped, status.not_taken
         ));
-        if display.mismatched > 0
+        if status.mismatched > 0
             && let Some(info) = &status.info
         {
             let message = format!(
                 "{} samples skipped: the board has headstages {}, not the {} set.",
-                display.mismatched,
+                status.mismatched,
                 Headstage::describe(&info.headstages),
                 Headstage::describe(&self.headstages)
             );
@@ -372,8 +314,8 @@ impl Node<Edges> for AcquisitionBoard {
                 self.headstages = info.headstages.clone();
             }
         }
-        if display.lost_events > 0 {
-            let message = format!("{} digital input changes lost (too many in a pass)", display.lost_events);
+        if status.lost_events > 0 {
+            let message = format!("{} digital input changes lost (too many in a pass)", status.lost_events);
             ui.label(RichText::new(message).color(theme.warning));
         }
         for warning in &status.warnings {
@@ -510,9 +452,15 @@ mod tests {
             adc_channels: 8,
             ttl_lines: 8,
         };
-        let status =
-            Status { state: State::Running, info: Some(info), samples: 912_000, rate: 30000.0, ..Default::default() };
-        let display = BoardDisplay { status, mismatched: 912_000, lost_events: 0 };
+        let status = Status {
+            state: State::Running,
+            info: Some(info),
+            samples: 912_000,
+            mismatched: 912_000,
+            rate: 30000.0,
+            ..Default::default()
+        };
+        let display = BoardDisplay { status, pool: PoolStatus::default() };
         let mut harness = egui_kittest::Harness::builder().with_size([420.0, 560.0]).wgpu().build_ui_state(
             |ui, graph: &mut Graph<Nodes>| {
                 let display: &(dyn std::any::Any + Send) = &display;

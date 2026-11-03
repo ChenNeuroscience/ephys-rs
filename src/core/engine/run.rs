@@ -25,7 +25,8 @@
 //! until then, passes carry on with the old one. So a worker is never handed a pass it isn't ready to run.
 //!
 //! A node that only copies its inputs out to another thread (to show in its window, say, or to write to disk) says
-//! so (see `Node::copies`), and the plan runs it as early as it can; it makes the copy itself. Each run has an
+//! so (see `Node::copies`), and the plan runs it as early as it can; it makes the copy itself. A node can instead
+//! take an input's buffer (see `Node::takes`), swapping it for one of its own, if it can be the last to read it. Each run has an
 //! `Exchange` where nodes can leave things for their windows (see `crate::core::exchange`).
 
 use std::any::Any;
@@ -58,8 +59,10 @@ pub struct Pass<'a, E: Edges> {
     pub duration: f64,
     /// The node being run.
     pub node: NodeId,
-    /// For each input, this pass's data on it, if it's connected.
+    /// For each input, this pass's data on it, if it's connected (and not taken: see `take_input`).
     pub inputs: &'a [Option<&'a Buffer<E>>],
+    /// For each input, its buffer, if the node's taking it (see `Node::takes`).
+    taken: &'a mut [Option<Buffer<E>>],
     /// For each output, a buffer to fill.
     pub outputs: &'a mut [Buffer<E>],
     /// For each of the node's controls, the value of the setting it's connected to, if it is (for a writer to
@@ -84,7 +87,22 @@ impl<'a, E: Edges> Pass<'a, E> {
     ) -> Self {
         let exchange: &'static Exchange = Box::leak(Box::default());
         let (node, controls, recording, prepared) = (NodeId(0), &[], false, None);
-        Pass { sequence, duration, node, inputs, outputs, controls, recording, prepared, exchange }
+        let taken = Box::leak(Box::new([]));
+        Pass { sequence, duration, node, inputs, taken, outputs, controls, recording, prepared, exchange }
+    }
+
+    /// An input's data, taken (see `take_input`) or not.
+    pub fn input(&self, index: usize) -> Option<&Buffer<E>> {
+        match self.taken.get(index) {
+            Some(Some(buffer)) => Some(buffer),
+            _ => self.inputs.get(index).copied().flatten(),
+        }
+    }
+
+    /// An input's buffer, if the plan's given it to the node to take (see `Node::takes`): to swap for another just
+    /// as big (of the same data stream), which the pass carries on with.
+    pub fn take_input(&mut self, index: usize) -> Option<&mut Buffer<E>> {
+        self.taken.get_mut(index)?.as_mut()
     }
 
     /// What the node prepared to record (see `Node::prepare_to_record`), if it did and it's of type `T`: given once,
@@ -105,6 +123,8 @@ pub struct Step {
     pub outputs: Vec<usize>,
     /// For each output, the input it's made from in place (taking over its buffer), if it is.
     pub in_place: Vec<Option<usize>>,
+    /// For each input, whether the node takes its buffer, being the last to read it (see `Node::takes`).
+    pub takes: Vec<bool>,
     /// The node's state, if it carries any over: an index into the run's state slots. Each pass waits here for
     /// the pass before to hand the state over.
     pub state: Option<usize>,
@@ -192,6 +212,32 @@ impl<N: NodeSet> Plan<N> {
             }
         }
 
+        // Pick the inputs taken: those whose data no one edits in place, whose other readers can run first.
+        let mut taken: Vec<(NodeId, usize)> = Vec::new();
+        for &id in &runs {
+            let (Some(entry), Some(state)) = (graph.get(id), resolved.get(&id)) else { continue };
+            for input in (0..state.inputs.len()).filter(|&i| entry.node.takes(i)) {
+                let Some(edge) = data_edges.iter().find(|e| e.to.node == id && e.to.port == input) else { continue };
+                let source = (edge.from.node, edge.from.port);
+                if claimed.contains(&source) {
+                    continue;
+                }
+                let others: Vec<NodeId> = data_edges
+                    .iter()
+                    .filter(|e| (e.from.node, e.from.port) == source && e.to.node != id)
+                    .map(|e| e.to.node)
+                    .collect();
+                if others.iter().any(|&other| reaches(&before, id, other)) {
+                    continue;
+                }
+                for other in others {
+                    before.entry(other).or_default().push(id);
+                }
+                claimed.push(source);
+                taken.push((id, input));
+            }
+        }
+
         let copying: Vec<NodeId> =
             runs.iter().copied().filter(|id| graph.get(*id).is_some_and(|e| e.node.copies().is_some())).collect();
         let (mut steps, mut buffers, mut state_inputs, mut memory_inputs) =
@@ -233,7 +279,8 @@ impl<N: NodeSet> Plan<N> {
                 memory_inputs.len() - 1
             });
             let copies = entry.node.copies();
-            steps.push(Step { id, inputs, outputs, in_place: made_in_place, state: node_state, memory, copies });
+            let takes = (0..inputs.len()).map(|i| inputs[i].is_some() && taken.contains(&(id, i))).collect();
+            steps.push(Step { id, inputs, outputs, in_place: made_in_place, takes, state: node_state, memory, copies });
         }
         Plan { steps, buffers, state_inputs, memory_inputs, bytes: OnceLock::new() }
     }
@@ -294,6 +341,13 @@ impl<N: NodeSet> Plan<N> {
             // Take the outputs out of the pool, so the rest of it can be read as inputs.
             let mut outputs: Vec<Buffer<N::Edges>> =
                 step.outputs.iter().map(|&b| workspace[b].take().expect("buffer in pool")).collect();
+            // And the inputs it takes.
+            let mut taken: Vec<Option<Buffer<N::Edges>>> = step
+                .inputs
+                .iter()
+                .zip(&step.takes)
+                .map(|(b, &takes)| if takes { b.and_then(|b| workspace[b].take()) } else { None })
+                .collect();
             {
                 let inputs: Vec<Option<&Buffer<N::Edges>>> =
                     step.inputs.iter().map(|b| b.and_then(|b| workspace[b].as_ref())).collect();
@@ -302,6 +356,7 @@ impl<N: NodeSet> Plan<N> {
                     duration: PASS_DURATION,
                     node: step.id,
                     inputs: &inputs,
+                    taken: &mut taken,
                     outputs: &mut outputs,
                     controls,
                     recording: snapshot.recording.is_some(),
@@ -326,6 +381,11 @@ impl<N: NodeSet> Plan<N> {
             }
             for (&b, buffer) in step.outputs.iter().zip(outputs) {
                 workspace[b] = Some(buffer);
+            }
+            for (b, buffer) in step.inputs.iter().zip(taken) {
+                if let (Some(b), Some(buffer)) = (b, buffer) {
+                    workspace[*b] = Some(buffer);
+                }
             }
         }
     }
@@ -1033,6 +1093,29 @@ pub mod tests {
         let plan = Plan::new(&graph);
         assert_eq!(plan.buffers.len(), 3);
         assert!(position(&plan, second_gain) < position(&plan, gain));
+    }
+
+    #[test]
+    fn writers_take_buffers_no_one_else_needs_after_them() {
+        let mut graph = Graph::default();
+        let board = add(&mut graph, "Acquisition Board");
+        let writer = add(&mut graph, "Write Raw");
+        let viewer = add(&mut graph, "LFP Viewer");
+        link(&mut graph, board, 0, writer, 0);
+        link(&mut graph, board, 1, writer, 1);
+        link(&mut graph, board, 0, viewer, 0);
+        // The writer takes both the board's buffers, after the viewer's read the continuous one.
+        let plan = Plan::new(&graph);
+        let step = |plan: &Plan<Nodes>, id| plan.steps.iter().find(|s| s.id == id).unwrap().takes.clone();
+        assert_eq!(step(&plan, writer), vec![true, true]);
+        assert!(position(&plan, viewer) < position(&plan, writer));
+
+        // A filter editing the board's data in place needs it after the writer: the writer copies it instead.
+        let filter = add(&mut graph, "Band-pass Filter");
+        link(&mut graph, board, 0, filter, 0);
+        let plan = Plan::new(&graph);
+        assert_eq!(step(&plan, writer), vec![false, true]);
+        assert!(position(&plan, writer) < position(&plan, filter));
     }
 
     #[test]

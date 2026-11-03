@@ -1,6 +1,8 @@
 //! Capturing from a camera on a thread of its own, so frames are collected as they arrive whatever the
-//! passes are doing. Frames queue for the Camera node's next pass, and the thread's status (what it's doing,
-//! the frame rate, drops) is shared for display. If the camera can't be opened, or fails, it keeps trying.
+//! passes are doing. Each frame's copied from the camera straight into a pool of a pass's video buffers, which the
+//! Camera node's passes swap for the workers' own (see `crate::standard_components::pool`): each pass takes the
+//! frames that have come since the last, and nothing more's copied. The thread's status (what it's doing, the frame
+//! rate, drops) is shared for display. If the camera can't be opened, or fails, it keeps trying.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -8,12 +10,13 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::{Receiver, Sender, TrySendError};
+use super::{self as camera, CameraControls, CameraSettings, Source};
+use crate::core::engine::{DataStreamType, PASS_DURATION};
+use crate::standard_components::pool::{Pool, SLACK_PASSES};
+use crate::standard_components::tracking::{Video, VideoBuffer};
 
-use super::{self as camera, CameraControls, CameraSettings, Frame, Source};
-
-/// Frames that can wait for the next pass; enough for a second or more at most frame rates.
-pub const QUEUE_LEN: usize = 64;
+/// About the most memory a camera's pool takes (it's at least a few passes' buffers, though).
+const POOL_BYTES: usize = 32 << 20;
 /// Seconds of frames the measured frame rate is over.
 const RATE_WINDOW: f64 = 2.0;
 
@@ -40,12 +43,13 @@ pub struct Status {
     pub frames: u64,
     /// Inferred from gaps in the camera's frame ids.
     pub camera_dropped: u64,
-    /// Frames discarded because they weren't taken from the queue in time.
-    pub queue_dropped: u64,
+    /// Frames lost because the passes were so far behind there was no buffer to put them in.
+    pub not_taken: u64,
+    /// Frames skipped for not being the size the passes expect, and the size of the last of them.
+    pub wrong_size: u64,
+    pub last_wrong_size: [u32; 2],
     /// Frames per second, from the camera's timestamps over the last couple of seconds.
     pub fps: f64,
-    /// Frames waiting for the node's next pass (of `QUEUE_LEN`).
-    pub queued: usize,
 }
 
 impl Status {
@@ -54,8 +58,9 @@ impl Status {
         self.state.clone_from(&other.state);
         self.description.clone_from(&other.description);
         self.warnings.clone_from(&other.warnings);
-        (self.controls, self.frames, self.camera_dropped, self.queue_dropped, self.fps, self.queued) =
-            (other.controls, other.frames, other.camera_dropped, other.queue_dropped, other.fps, other.queued);
+        (self.controls, self.frames, self.camera_dropped, self.not_taken, self.fps) =
+            (other.controls, other.frames, other.camera_dropped, other.not_taken, other.fps);
+        (self.wrong_size, self.last_wrong_size) = (other.wrong_size, other.last_wrong_size);
     }
 }
 
@@ -69,25 +74,27 @@ struct Shared {
 /// A camera capturing on its own thread, until dropped.
 pub struct Capture {
     shared: Arc<Shared>,
-    frames: Receiver<Frame>,
+    pool: Pool<VideoBuffer>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl Capture {
-    /// Starts opening `source` at `settings` (its frame rate fixed from now on).
-    pub fn start(source: Source, settings: CameraSettings) -> Self {
+    /// Starts opening `source` at `settings` (its frame rate fixed from now on), for passes' `video`.
+    pub fn start(source: Source, settings: CameraSettings, video: Video) -> Self {
         let shared = Arc::new(Shared {
             stop: AtomicBool::new(false),
             settings: Mutex::new(settings),
             status: Mutex::new(Status::default()),
         });
-        let (sender, frames) = crossbeam_channel::bounded(QUEUE_LEN);
-        let thread_shared = shared.clone();
+        let bytes = video.buffer(PASS_DURATION).pixels.len();
+        let size = (POOL_BYTES / bytes.max(1)).clamp(4, SLACK_PASSES);
+        let pool = Pool::new((0..size).map(|_| video.buffer(PASS_DURATION)), bytes);
+        let (thread_shared, thread_pool) = (shared.clone(), pool.clone());
         let thread = std::thread::Builder::new()
             .name("camera capture".into())
-            .spawn(move || capture(&thread_shared, &source, &sender))
+            .spawn(move || capture(&thread_shared, &source, &thread_pool))
             .expect("capture thread");
-        Capture { shared, frames, thread: Some(thread) }
+        Capture { shared, pool, thread: Some(thread) }
     }
 
     /// Changes the exposure and gain (the frame rate only takes effect on restarting).
@@ -95,15 +102,14 @@ impl Capture {
         *self.shared.settings.lock().unwrap() = *settings;
     }
 
-    /// The next frame waiting, if there is one.
-    pub fn next(&self) -> Option<Frame> {
-        self.frames.try_recv().ok()
+    /// The buffers the passes swap with.
+    pub fn pool(&self) -> &Pool<VideoBuffer> {
+        &self.pool
     }
 
     /// Copies the status into `status`, reusing its memory.
     pub fn status_into(&self, status: &mut Status) {
         status.copy_from(&self.shared.status.lock().unwrap());
-        status.queued = self.frames.len();
     }
 }
 
@@ -116,7 +122,7 @@ impl Drop for Capture {
     }
 }
 
-fn capture(shared: &Shared, source: &Source, sender: &Sender<Frame>) {
+fn capture(shared: &Shared, source: &Source, pool: &Pool<VideoBuffer>) {
     let stopping = || shared.stop.load(Ordering::Relaxed);
     let set_state = |state: State| {
         let mut status = shared.status.lock().unwrap();
@@ -159,7 +165,7 @@ fn capture(shared: &Shared, source: &Source, sender: &Sender<Frame>) {
                 status.controls = camera.controls();
                 applied = Some(settings);
             }
-            let frame = match camera.next_frame() {
+            let frame = match camera.fetch() {
                 Ok(Some(frame)) => frame,
                 Ok(None) => continue,
                 Err(e) => {
@@ -168,14 +174,44 @@ fn capture(shared: &Shared, source: &Source, sender: &Sender<Frame>) {
                 }
             };
             let (id, timestamp) = (frame.id, frame.timestamp);
-            let queue_full = match sender.try_send(frame) {
-                Ok(()) => false,
-                Err(TrySendError::Full(_)) => true,
-                Err(TrySendError::Disconnected(_)) => return,
-            };
+            // Into the next slot of the buffer being filled, if it's the size the passes expect.
+            let into_pool = pool.fill(
+                |video| video.frames = 0,
+                |video| {
+                    if (frame.width as usize, frame.height as usize) != (video.width, video.height) {
+                        return None;
+                    }
+                    let index = video.frames;
+                    camera.copy_to(Some(video.frame_mut(index)));
+                    (video.ids[index], video.times[index]) = (id, timestamp);
+                    video.frames += 1;
+                    Some(video.frames == video.capacity)
+                },
+            );
+            match into_pool {
+                Some(Some(full)) => {
+                    if full {
+                        pool.filled();
+                    }
+                }
+                _ => camera.copy_to(None),
+            }
             let mut status = shared.status.lock().unwrap();
             status.frames += 1;
-            status.queue_dropped += queue_full as u64;
+            match into_pool {
+                Some(None) => {
+                    status.wrong_size += 1;
+                    status.last_wrong_size = [frame.width, frame.height];
+                }
+                None => {
+                    pool.overflowed();
+                    if status.not_taken == 0 {
+                        log::error!("The passes aren't keeping up with the camera: frames are being lost");
+                    }
+                    status.not_taken += 1;
+                }
+                Some(Some(_)) => {}
+            }
             if let Some(last) = last {
                 status.camera_dropped += id.saturating_sub(last + 1);
             }
@@ -199,6 +235,39 @@ mod tests {
     use super::*;
 
     /// End to end with synthetic_streams/fake_camera.py, so needs python3: `cargo test -- --ignored`.
+    /// Takes from `capture`'s pool as passes do, until `wanted` frames or `seconds`: each frame's size and time.
+    fn take_like_passes(capture: &Capture, wanted: usize, seconds: u64) -> Vec<(usize, usize, f64)> {
+        let mut frames = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(seconds);
+        while frames.len() < wanted && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+            let Some(video) = capture.pool().take(|v| v.frames == 0) else { continue };
+            frames.extend((0..video.frames).map(|i| (video.width, video.height, video.times[i])));
+            capture.pool().give_back(video);
+        }
+        frames
+    }
+
+    #[test]
+    fn passes_take_frames_as_they_come() {
+        let source = Source::Fake { address: camera::serve_test_scene(320, 240) };
+        let video = Video { width: 320, height: 240, fps: 50.0 };
+        let capture = Capture::start(source, CameraSettings::default(), video);
+        let frames = take_like_passes(&capture, 25, 10);
+        let mut status = Status::default();
+        capture.status_into(&mut status);
+        assert_eq!(frames.len(), 25, "status {status:?}");
+        assert!(frames.windows(2).all(|w| w[1].2 > w[0].2), "in order");
+        assert_eq!((status.not_taken, status.wrong_size), (0, 0));
+        // Frames of another size are skipped.
+        let source = Source::Fake { address: camera::serve_test_scene(320, 240) };
+        let capture = Capture::start(source, CameraSettings::default(), Video { width: 640, ..video });
+        assert!(take_like_passes(&capture, 1, 1).is_empty());
+        capture.status_into(&mut status);
+        assert_eq!(status.last_wrong_size, [320, 240]);
+    }
+
+    /// End to end with synthetic_streams/fake_camera.py, so needs python3: `cargo test -- --ignored`.
     #[test]
     #[ignore]
     fn captures_from_the_fake_camera() {
@@ -210,22 +279,15 @@ mod tests {
             .spawn()
             .expect("run python3");
         let source = Source::Fake { address: format!("127.0.0.1:{port}") };
-        let capture = Capture::start(source, CameraSettings::default());
-        let mut frames = Vec::new();
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while frames.len() < 50 && Instant::now() < deadline {
-            match capture.next() {
-                Some(frame) => frames.push((frame.width, frame.height, frame.timestamp)),
-                None => std::thread::sleep(Duration::from_millis(10)),
-            }
-        }
+        let video = Video { width: 640, height: 480, fps: 50.0 };
+        let capture = Capture::start(source, CameraSettings::default(), video);
+        let frames = take_like_passes(&capture, 50, 10);
         let mut status = Status::default();
         capture.status_into(&mut status);
         drop(capture);
         child.kill().ok();
         child.wait().ok();
         assert_eq!(frames.len(), 50, "frames from the fake camera; status {status:?}");
-        assert!(frames.iter().all(|&(w, h, _)| (w, h) == (640, 480)));
         let span = frames.last().unwrap().2 - frames[0].2;
         assert!((0.8..1.2).contains(&span), "50 frames at 50 fps should span about a second, got {span}");
     }

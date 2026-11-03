@@ -433,7 +433,7 @@ fn stats_ui(ui: &mut egui::Ui, stats: Option<&CaptureStats>, connected: bool, de
         row(ui, "Frames", status.frames.to_string());
         row(ui, "Rate", format!("{:.1} fps", status.fps));
         row(ui, "Camera dropped", status.camera_dropped.to_string());
-        row(ui, "Not taken in time", (status.queue_dropped + stats.missed).to_string());
+        row(ui, "Not taken in time", status.not_taken.to_string());
     });
     // Once a couple of seconds have run, so the rate has settled.
     if let Some(declared) = declared
@@ -451,10 +451,10 @@ fn stats_ui(ui: &mut egui::Ui, stats: Option<&CaptureStats>, connected: bool, de
         let warning = format!("Camera running at {:.1} fps, video declared at {declared} fps", status.fps);
         ui.label(RichText::new(warning).color(theme.warning).strong()).on_hover_text(advice);
     }
-    if stats.wrong_size > 0 {
-        let [w, h] = stats.last_wrong_size;
+    if status.wrong_size > 0 {
+        let [w, h] = status.last_wrong_size;
         let warning =
-            format!("{} frames skipped for their size ({w}×{h}): set the camera's to match", stats.wrong_size);
+            format!("{} frames skipped for their size ({w}×{h}): set the camera's to match", status.wrong_size);
         ui.label(RichText::new(warning).color(theme.warning));
     }
     for warning in &status.warnings {

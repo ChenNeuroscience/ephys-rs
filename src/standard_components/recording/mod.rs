@@ -1,9 +1,10 @@
 //! Writers: nodes that record what's connected to them while the graph is recording, to LTX files (`ltx`) or Open
 //! Ephys's binary format (`raw`).
 //!
-//! A writer's passes only copy their inputs out (see `Node::copies`), into chunks it hands to a thread of its own
-//! (`Writing`), which writes them to disk. So passes never wait on the disk. Chunks are handed back to be reused,
-//! so once there are enough of them, nothing's allocated.
+//! A writer's passes only hand their inputs out (see `Node::copies`), in chunks to a thread of its own (`Writing`),
+//! which writes them to disk. So passes never wait on the disk. The chunks are a pool (see
+//! `crate::standard_components::pool`), made before recording and handed back once written, so nothing's allocated;
+//! a writer whose inputs are its own to take (see `Node::takes`) swaps them into a chunk rather than copying.
 //!
 //! Before recording starts, a writer opens its files and starts its thread (`Node::prepare_to_record`), so passes
 //! only record once it's ready. (If it starts recording without having prepared, after the graph's changed
@@ -16,22 +17,24 @@ pub mod raw;
 
 use std::io;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
+use std::time::Duration;
 
-use crossbeam_channel::{Receiver, Sender, TrySendError};
 use eframe::egui::{self, RichText};
 
+use crate::core::engine::PoolStatus;
 use crate::core::theme::Colours;
-use crate::standard_components::widgets::queue_ui;
+use crate::standard_components::pool::{Pool, SLACK_PASSES};
 
 /// Why a writer writes on a thread of its own, for the dev tools.
 pub const WHY_A_THREAD: &str = "On a thread of its own so the disk can stall (flushing its cache, a virus scanner, a \
                                 slow drive) without holding up the passes: the files are written in order, so each \
                                 pass would wait for the one before to finish writing.";
 
-/// Chunks that can wait to be written: a few seconds' worth of passes.
-pub const QUEUE_LEN: usize = 256;
+/// About the most memory a writer's pool of chunks takes (it's at least a few passes' chunks, though).
+const POOL_BYTES: usize = 32 << 20;
 
 /// How a writer's thread is getting on.
 #[derive(Clone, Debug, Default)]
@@ -39,10 +42,8 @@ pub struct Status {
     /// Where it's writing (a file's or a folder's path, without the extension for LTX), while recording.
     pub path: Option<String>,
     pub bytes: u64,
-    /// Chunks waiting to be written.
-    pub queued: usize,
-    /// Chunks lost because the queue was full (the disk not keeping up).
-    pub dropped: u64,
+    /// Where its chunks are, and how many were lost for want of one (the disk not keeping up).
+    pub pool: PoolStatus,
     /// What went wrong, if anything did: it stops writing.
     pub problem: Option<String>,
 }
@@ -55,39 +56,51 @@ pub trait Files<C>: Send {
     fn finish(self: Box<Self>) -> io::Result<()>;
 }
 
-/// A writer's thread, writing chunks copied from its passes, while recording. Dropping it finishes the files.
+/// A writer's thread, writing the chunks its passes send, while recording. Dropping it finishes the files.
 pub struct Writing<C> {
-    chunks: Option<Sender<C>>,
-    spares: Receiver<C>,
+    /// The chunks, unless the files couldn't be made.
+    pool: Option<Pool<C>>,
+    done: Arc<AtomicBool>,
     status: Arc<Mutex<Status>>,
     thread: Option<JoinHandle<()>>,
 }
 
-impl<C: Default + Send + 'static> Writing<C> {
-    /// Starts a thread called `name` writing to `files`, opened already (or failing to be, which it reports).
-    pub fn new(name: &str, path: String, files: io::Result<Box<dyn Files<C>>>) -> Self {
+impl<C: Send + 'static> Writing<C> {
+    /// Starts a thread called `name` writing to `files`, opened already (or failing to be, which it reports), with
+    /// chunks made by `chunk`, each taking `bytes`.
+    pub fn new(
+        name: &str,
+        path: String,
+        files: io::Result<Box<dyn Files<C>>>,
+        chunk: impl Fn() -> C,
+        bytes: usize,
+    ) -> Self {
         match files {
-            Ok(files) => Self::start(name, path, move || Ok(files)),
+            Ok(files) => Self::start(name, path, move || Ok(files), chunk, bytes),
             Err(e) => {
                 log::error!("Recording to {path}: couldn't create the files: {e}");
                 let problem = Some(format!("couldn't create the files: {e}"));
                 let status = Status { path: Some(path), problem, ..Default::default() };
-                let (_, spares) = crossbeam_channel::bounded(0);
-                Writing { chunks: None, spares, status: Arc::new(Mutex::new(status)), thread: None }
+                let done = Arc::new(AtomicBool::new(true));
+                Writing { pool: None, done, status: Arc::new(Mutex::new(status)), thread: None }
             }
         }
     }
 
-    /// Starts a thread called `name` that opens files with `open`, then writes the chunks sent to it.
+    /// Starts a thread called `name` that opens files with `open`, then writes the chunks sent to it: chunks made
+    /// by `chunk`, each taking `bytes`.
     pub fn start(
         name: &str,
         path: String,
         open: impl FnOnce() -> io::Result<Box<dyn Files<C>>> + Send + 'static,
+        chunk: impl Fn() -> C,
+        bytes: usize,
     ) -> Self {
-        let (chunks, incoming) = crossbeam_channel::bounded::<C>(QUEUE_LEN);
-        let (spare, spares) = crossbeam_channel::bounded(QUEUE_LEN);
+        let size = (POOL_BYTES / bytes.max(1)).clamp(4, SLACK_PASSES);
+        let pool = Pool::new((0..size).map(|_| chunk()), bytes);
         let status = Arc::new(Mutex::new(Status { path: Some(path.clone()), ..Default::default() }));
-        let thread_status = status.clone();
+        let done = Arc::new(AtomicBool::new(false));
+        let (thread_status, thread_pool, thread_done) = (status.clone(), pool.clone(), done.clone());
         let fail = move |status: &Mutex<Status>, what: &str, e: io::Error| {
             log::error!("Recording to {path}: {what}: {e}");
             status.lock().unwrap().problem = Some(format!("{what}: {e}"));
@@ -99,49 +112,62 @@ impl<C: Default + Send + 'static> Writing<C> {
                     Ok(files) => files,
                     Err(e) => return fail(&thread_status, "couldn't create the files", e),
                 };
-                for chunk in incoming.iter() {
+                // Until recording stops, then what's left.
+                loop {
+                    let chunk = match thread_pool.next_full(Duration::from_millis(20)) {
+                        Some(chunk) => chunk,
+                        None if thread_done.load(Ordering::Acquire) => match thread_pool.try_full() {
+                            Some(chunk) => chunk,
+                            None => break,
+                        },
+                        None => continue,
+                    };
                     match files.write(&chunk) {
                         Ok(bytes) => thread_status.lock().unwrap().bytes += bytes,
                         Err(e) => return fail(&thread_status, "couldn't write", e),
                     }
-                    let _ = spare.try_send(chunk);
+                    thread_pool.give_back(chunk);
                 }
                 if let Err(e) = files.finish() {
                     fail(&thread_status, "couldn't finish the files", e);
                 }
             })
             .expect("writer thread");
-        Writing { chunks: Some(chunks), spares, status, thread: Some(thread) }
+        Writing { pool: Some(pool), done, status, thread: Some(thread) }
     }
 
-    /// An empty chunk to copy into: one written already, to reuse, if there is one.
-    pub fn chunk(&self) -> C {
-        self.spares.try_recv().unwrap_or_default()
-    }
-
-    /// Hands a chunk to the thread to write; if it's fallen too far behind, the chunk's lost (and counted).
-    pub fn send(&self, chunk: C) {
-        let Some(chunks) = &self.chunks else { return };
-        if let Err(TrySendError::Full(_)) = chunks.try_send(chunk) {
+    /// An empty chunk to put a pass's data in, unless the disk's so far behind there are none (and the pass's data
+    /// is lost, and counted).
+    pub fn chunk(&self) -> Option<C> {
+        let chunk = self.pool.as_ref()?.empty();
+        if chunk.is_none() {
             let mut status = self.status.lock().unwrap();
-            if status.dropped == 0 {
+            if status.problem.is_none() {
                 log::error!("Recording can't keep up: data is being lost");
+                status.problem = Some("the disk isn't keeping up: data is being lost".into());
             }
-            status.dropped += 1;
+        }
+        chunk
+    }
+
+    /// Hands a chunk to the thread to write.
+    pub fn send(&self, chunk: C) {
+        if let Some(pool) = &self.pool {
+            pool.send(chunk);
         }
     }
 
     /// Copies the status into `status`.
     pub fn status_into(&self, status: &mut Status) {
         status.clone_from(&self.status.lock().unwrap());
-        status.queued = self.chunks.as_ref().map_or(0, Sender::len);
+        status.pool = self.pool.as_ref().map(Pool::status).unwrap_or_default();
     }
 }
 
 impl<C> Drop for Writing<C> {
     /// Lets the thread write what's queued and finish the files, in the background.
     fn drop(&mut self) {
-        self.chunks = None;
+        self.done.store(true, Ordering::Release);
         if let Some(thread) = self.thread.take() {
             crate::core::background::finish_later(thread);
         }
@@ -182,11 +208,9 @@ pub fn status_ui(ui: &mut egui::Ui, status: Option<&Status>, theme: &Colours) {
             ui.label(small("Not recording.".into()).weak());
         }
     }
-    if status.path.is_some() {
-        queue_ui(ui, theme, "chunks", status.queued, QUEUE_LEN);
-    }
-    if status.dropped > 0 {
-        ui.label(small(format!("{} chunks lost: the disk isn't keeping up", status.dropped)).color(theme.error));
+    if status.pool.overflows > 0 {
+        let lost = format!("{} passes' data lost: the disk isn't keeping up", status.pool.overflows);
+        ui.label(small(lost).color(theme.error));
     }
 }
 

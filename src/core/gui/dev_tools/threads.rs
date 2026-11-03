@@ -8,7 +8,8 @@
 //!   (to hand over its state: a sync point) and where it copies out what it shows (a copy point). Then the memory
 //!   each worker has for the plan.
 //! - Threads nodes run of their own (acquiring from a board, say), each drawn by its node (see
-//!   `Node::thread_ui`), linked to the node's step.
+//!   `Node::thread_ui`), linked to the node's step: the link points the way data goes, and on it is the pool of
+//!   buffers the thread swaps with the passes, if it has one (see `Node::thread_pool`).
 //!
 //! While running, it shows the plan being run, and what each worker is up to; otherwise, the plan of the latest
 //! snapshot, as it would run.
@@ -19,8 +20,8 @@ use std::sync::Arc;
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Shape, Stroke, Vec2, vec2};
 
 use crate::core::engine::{
-    CopyTo, EdgeSet, Edges, Flow, Graph, NodeId, NodeSet, PASS_DURATION, Plan, Resolved, RunInfo, Runner, Snapshot,
-    Step, StepTime, ThreadContext,
+    CopyTo, EdgeSet, Edges, Flow, Graph, NodeId, NodeSet, PASS_DURATION, Plan, PoolStatus, Resolved, RunInfo, Runner,
+    Snapshot, Step, StepTime, ThreadContext,
 };
 use crate::core::gui::style;
 use crate::core::theme::Colours;
@@ -28,12 +29,22 @@ use crate::core::theme::Colours;
 type DataStream<N> = <<N as NodeSet>::Edges as Edges>::DataStream;
 
 /// Room between the columns of threads, for the links between them.
-const GAP: f32 = 70.0;
+const GAP: f32 = 96.0;
 /// Room to the left of the threads, one above another, for the links between them.
 const GUTTER: f32 = 60.0;
 /// The width it takes to show the threads side by side.
 const WIDE: f32 = 220.0 + 450.0 + 250.0 + 2.0 * GAP + 20.0;
 const ROW: f32 = 20.0;
+
+/// A node's thread, as drawn: its node, where, how and which way it hands data to the node's passes, and the pool of
+/// buffers it swaps with them, if it does (with its buffers' streams' colours).
+struct NodeThreadAnchor {
+    node: NodeId,
+    rect: Rect,
+    link: &'static str,
+    flow: Flow,
+    pool: Option<(PoolStatus, Vec<Color32>)>,
+}
 
 /// Where things were drawn, to link them up once everything is.
 #[derive(Default)]
@@ -45,7 +56,7 @@ struct Anchors {
     /// Nodes' displays, in the GUI's container.
     displays: Vec<(NodeId, Rect)>,
     /// Nodes' threads, and how each hands data to the node's passes.
-    node_threads: Vec<(NodeId, Rect, &'static str, Flow)>,
+    node_threads: Vec<NodeThreadAnchor>,
 }
 
 pub fn show<N: NodeSet>(
@@ -474,6 +485,14 @@ fn step_row<N: NodeSet>(
     for (i, buffer) in step.inputs.iter().enumerate() {
         let name = input_names.get(i).copied().unwrap_or("input");
         match buffer {
+            Some(b) if step.takes.get(i) == Some(&true) => {
+                let text = format!(
+                    "Takes buffer {b}, with {name} in it, being the last to read it: swaps it for one of its own, so \
+                     nothing's copied"
+                );
+                buffer_tag(ui, plan, *b, colours).on_hover_text(&text);
+                badge(ui, Glyph::InPlace, colours.success, &text);
+            }
             Some(b) => {
                 buffer_tag(ui, plan, *b, colours).on_hover_text(format!("Reads {name} from buffer {b}"));
             }
@@ -634,6 +653,63 @@ fn memory<N: NodeSet>(
         .on_hover_cursor(egui::CursorIcon::PointingHand);
 }
 
+/// Halfway between two points.
+fn pos2_between(a: Pos2, b: Pos2) -> Pos2 {
+    a + (b - a) * 0.5
+}
+
+/// A pool of buffers a node's thread swaps with the passes (see `PoolStatus`), as a box at `at`: each buffer's
+/// streams (dots in their colours, as the workers' buffers are shown), its size and how many; then a square for each
+/// buffer, full ones first, then the one being filled (or written), then the empty ones (the rest being the
+/// workers', for now). Hover for the counts.
+fn pool_ui(ui: &egui::Ui, colours: &Colours, pool: PoolStatus, dots: &[Color32], at: (Pos2, Align2), id: egui::Id) {
+    const ACROSS: usize = 10;
+    const SQUARE: f32 = 5.0;
+    const STEP: f32 = 6.0;
+    let painter = ui.painter();
+    let text = format!("{} × {}", megabytes(pool.bytes), pool.size);
+    let galley = painter.layout_no_wrap(text, FontId::monospace(9.5), colours.text_secondary);
+    let dots_width = dots.len() as f32 * 8.0;
+    let grid = vec2(ACROSS as f32 * STEP - 1.0, pool.size.div_ceil(ACROSS).max(1) as f32 * STEP - 1.0);
+    let inner = vec2((dots_width + 3.0 + galley.size().x).max(grid.x), galley.size().y + 4.0 + grid.y);
+    let rect = at.1.anchor_size(at.0, inner + vec2(10.0, 10.0));
+    painter.rect(rect, 4.0, colours.surface_raised, Stroke::new(1.0, colours.border), egui::StrokeKind::Inside);
+    let top = rect.min + vec2(5.0, 5.0);
+    for (i, colour) in dots.iter().enumerate() {
+        painter.circle_filled(top + vec2(3.5 + i as f32 * 8.0, galley.size().y / 2.0), 3.5, *colour);
+    }
+    painter.galley(top + vec2(dots_width + 3.0, 0.0), galley.clone(), colours.text_secondary);
+    let grid_top = top + vec2(0.0, galley.size().y + 4.0);
+    let filling = pool.filling as usize;
+    for i in 0..pool.size {
+        let min = grid_top + vec2((i % ACROSS) as f32 * STEP, (i / ACROSS) as f32 * STEP);
+        let square = Rect::from_min_size(min, Vec2::splat(SQUARE));
+        if i < pool.full {
+            painter.rect_filled(square, 1.0, colours.accent);
+        } else if i < pool.full + filling {
+            painter.rect_filled(square, 1.0, colours.warning);
+        } else if i < pool.full + filling + pool.empty {
+            painter.rect_stroke(square, 1.0, Stroke::new(1.0, colours.text_disabled), egui::StrokeKind::Inside);
+        }
+    }
+    let mut tip = format!(
+        "A pool of {} buffers of {} each ({} in all), swapped with the passes rather than copied: {} full, waiting{}, \
+         {} empty; the rest with the workers, for now. {} swaps so far.",
+        pool.size,
+        megabytes(pool.bytes),
+        megabytes(pool.bytes * pool.size),
+        pool.full,
+        if pool.filling { ", 1 being filled (or written)" } else { "" },
+        pool.empty,
+        pool.swaps
+    );
+    if pool.overflows > 0 {
+        tip += &format!("\n\nRan out {} times: data was lost.", pool.overflows);
+        painter.rect_stroke(rect, 4.0, Stroke::new(1.5, colours.error), egui::StrokeKind::Inside);
+    }
+    let _ = ui.interact(rect, id, Sense::hover()).on_hover_text(tip);
+}
+
 fn legend(ui: &mut egui::Ui, colours: &Colours) {
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 3.0;
@@ -664,6 +740,18 @@ fn node_threads<N: NodeSet>(
         for (index, thread) in entry.node.threads().iter().enumerate() {
             any = true;
             let mut draw = |ui: &mut egui::Ui, display: Option<&(dyn std::any::Any + Send)>| {
+                // The pool's buffers are like the step's: its outputs' for a source, its inputs' for a writer.
+                let ports: Vec<Option<usize>> = match thread.flow {
+                    Flow::ToPasses => step.outputs.iter().map(|&b| Some(b)).collect(),
+                    Flow::FromPasses => step.inputs.clone(),
+                };
+                let pool = entry.node.thread_pool(index, &ThreadContext { theme: colours, display });
+                let pool = pool.filter(|p| p.size > 0).map(|p| {
+                    let pooled = ports.iter().enumerate().filter(|(i, _)| *i < 64 && p.ports & (1 << i) != 0);
+                    let colour =
+                        |b: usize| plan.buffers().get(b).map_or(colours.text_disabled, |s| stream_info::<N>(s).colour);
+                    (p, pooled.filter_map(|(_, b)| b.map(colour)).collect())
+                });
                 let rect = container(ui, colours, thread.name, "", 1, runner.is_some(), |ui| {
                     node_chip(ui, graph, step.id, None);
                     ui.add_space(2.0);
@@ -671,7 +759,13 @@ fn node_threads<N: NodeSet>(
                     ui.add_space(2.0);
                     ui.label(small(thread.why, colours.text_disabled));
                 });
-                anchors.node_threads.push((step.id, rect, thread.link, thread.flow));
+                anchors.node_threads.push(NodeThreadAnchor {
+                    node: step.id,
+                    rect,
+                    link: thread.link,
+                    flow: thread.flow,
+                    pool,
+                });
                 ui.add_space(12.0);
             };
             let shown = runner.and_then(|r| r.exchange().with_latest(step.id, |d| draw(ui, Some(d))));
@@ -749,10 +843,13 @@ fn links(ui: &egui::Ui, colours: &Colours, anchors: &Anchors, wide: bool) {
         }
     }
     // Pointing the way the data goes: to the passes from a board, say, or from them to a writer.
-    for (id, thread, how, flow) in &anchors.node_threads {
+    for (index, NodeThreadAnchor { node: id, rect: thread, link: how, flow, pool }) in
+        anchors.node_threads.iter().enumerate()
+    {
         let Some(step) = anchors.steps.get(id) else { continue };
         let to_passes = *flow == Flow::ToPasses;
-        if wide {
+        // The pool's buffers, between the thread and the passes: below the link, or inside the thread's top right.
+        let pool_at = if wide {
             let (at_thread, at_step) = (thread.left_center(), ends(*step).1);
             if to_passes {
                 across(at_thread, at_step)
@@ -760,6 +857,7 @@ fn links(ui: &egui::Ui, colours: &Colours, anchors: &Anchors, wide: bool) {
                 across(at_step, at_thread)
             }
             label(at_thread + vec2(-6.0, -4.0), Align2::RIGHT_BOTTOM, how);
+            (pos2_between(at_step, at_thread), Align2::CENTER_CENTER)
         } else {
             let (at_thread, at_step, depth) = (thread.left_center(), ends(*step).0, deeper());
             if to_passes {
@@ -768,6 +866,10 @@ fn links(ui: &egui::Ui, colours: &Colours, anchors: &Anchors, wide: bool) {
                 round(at_step, at_thread, depth)
             }
             label(thread.left_top() + vec2(10.0, -2.0), Align2::LEFT_BOTTOM, how);
+            (thread.right_top() + vec2(-10.0, 10.0), Align2::RIGHT_TOP)
+        };
+        if let Some((pool, dots)) = pool {
+            pool_ui(ui, colours, *pool, dots, pool_at, ui.scope_id().with(("pool", index)));
         }
     }
 }

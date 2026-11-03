@@ -18,7 +18,8 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    ADC_VOLTS_PER_BIT, AUX_VOLTS_PER_BIT, Block, Board, BoardInfo, Config, EPHYS_MICROVOLTS_PER_BIT, Headstage,
+    ADC_VOLTS_PER_BIT, AUX_VOLTS_PER_BIT, Board, BoardInfo, Config, Decoded, EPHYS_MICROVOLTS_PER_BIT, Headstage,
+    Samples,
 };
 
 const MAGIC: &[u8; 4] = b"RHD1";
@@ -44,6 +45,8 @@ pub struct FakeBoard {
     /// Partially received block, kept across read timeouts so no bytes are lost.
     buf: Vec<u8>,
     filled: usize,
+    /// Of a whole block received, the samples decoded so far.
+    decoded: usize,
 }
 
 impl FakeBoard {
@@ -63,7 +66,7 @@ impl FakeBoard {
             adc_channels: d.adc_channels,
             ttl_lines: d.ttl_lines,
         };
-        Ok(FakeBoard { stream, info, buf: vec![0; HEADER_LEN], filled: 0 })
+        Ok(FakeBoard { stream, info, buf: vec![0; HEADER_LEN], filled: 0, decoded: 0 })
     }
 
     /// Reads until `buf` is full. Returns false on timeout (progress is kept).
@@ -116,7 +119,21 @@ impl Board for FakeBoard {
         self.stream.write_all(&line)
     }
 
-    fn read(&mut self, block: &mut Block) -> io::Result<bool> {
+    fn layout(&self) -> (usize, usize, usize) {
+        let headstages = &self.info.headstages;
+        (Headstage::total(headstages) as usize, 3 * headstages.len(), self.info.adc_channels as usize)
+    }
+
+    fn fetch(&mut self) -> io::Result<bool> {
+        let whole = self.buf.len() > HEADER_LEN && self.filled == self.buf.len();
+        if whole && self.decoded < u32_at(&self.buf, 4) as usize {
+            return Ok(true);
+        }
+        if whole {
+            // All decoded: the next block.
+            self.buf.truncate(HEADER_LEN);
+            (self.filled, self.decoded) = (0, 0);
+        }
         if self.buf.len() == HEADER_LEN {
             if !self.fill()? {
                 return Ok(false);
@@ -129,30 +146,40 @@ impl Board for FakeBoard {
             if samples == 0 || values > MAX_VALUES {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, format!("bad block of {samples} samples")));
             }
+            if (ephys, aux, adc) != self.layout() {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "a block of other channels than the board's"));
+            }
             self.buf.resize(HEADER_LEN + 2 * values, 0);
         }
-        if !self.fill()? {
-            return Ok(false);
-        }
+        self.fill()
+    }
 
+    fn decode(&mut self, into: &mut Samples, ttl: &mut Vec<u32>) -> io::Result<Decoded> {
         let [samples, ephys, aux, adc] = [4, 8, 12, 16].map(|at| u32_at(&self.buf, at) as usize);
-        block.resize(samples, ephys, aux, adc);
-        block.first = u64::from_le_bytes(self.buf[20..28].try_into().unwrap());
-        let mut values = self.buf[HEADER_LEN..].as_chunks::<2>().0.iter().copied();
-        let mut scale = |out: &mut [f32], per_bit: f32| {
-            for (value, bytes) in out.iter_mut().zip(values.by_ref()) {
-                *value = i16::from_le_bytes(bytes) as f32 * per_bit;
+        let count = (samples - self.decoded).min(into.room());
+        let (from, at) = (self.decoded, into.len());
+        let first = u64::from_le_bytes(self.buf[20..28].try_into().unwrap()) + from as u64;
+        let value = |index: usize| {
+            let at = HEADER_LEN + 2 * index;
+            [self.buf[at], self.buf[at + 1]]
+        };
+        // Channel after channel, each `samples` long: these `count` of each.
+        let scale = |out: &mut crate::standard_components::ephys::ContinuousBuffer, channels, start, per_bit| {
+            for channel in 0..channels {
+                let row = &mut out.data[channel * out.capacity + at..][..count];
+                for (i, y) in row.iter_mut().enumerate() {
+                    *y = i16::from_le_bytes(value(start + channel * samples + from + i)) as f32 * per_bit;
+                }
             }
         };
-        scale(&mut block.ephys, EPHYS_MICROVOLTS_PER_BIT);
-        scale(&mut block.aux, AUX_VOLTS_PER_BIT);
-        scale(&mut block.adc, ADC_VOLTS_PER_BIT);
-        for (word, bytes) in block.ttl.iter_mut().zip(values) {
-            *word = u16::from_le_bytes(bytes) as u32;
-        }
-        self.buf.truncate(HEADER_LEN);
-        self.filled = 0;
-        Ok(true)
+        scale(&mut into.ephys, ephys, 0, EPHYS_MICROVOLTS_PER_BIT);
+        scale(&mut into.aux, aux, ephys * samples, AUX_VOLTS_PER_BIT);
+        scale(&mut into.adc, adc, (ephys + aux) * samples, ADC_VOLTS_PER_BIT);
+        let words = (ephys + aux + adc) * samples + from;
+        ttl.extend((0..count).map(|i| u16::from_le_bytes(value(words + i)) as u32));
+        into.grow(count);
+        self.decoded += count;
+        Ok(Decoded { samples: count, first })
     }
 }
 

@@ -27,7 +27,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{Files, Status, Writing, path_in, session_name, status_ui};
 use crate::core::engine::{
-    Category, Context, Control, CopyTo, EdgeSet, Flow, Input, Node, NodeInfo, NodeThread, Output, Pass, ThreadContext,
+    Category, Context, Control, CopyTo, DataStreamType, EdgeSet, Flow, Input, Node, NodeInfo, NodeThread, Output,
+    PASS_DURATION, Pass, PoolStatus, ThreadContext,
 };
 use crate::core::exchange::Latest;
 use crate::standard_components::ephys::{Continuous, Event, Events};
@@ -84,7 +85,7 @@ impl crate::core::engine::PassState for Recorder {
                                so the files are written in order.";
 }
 
-/// A pass's data, copied for the writer's thread.
+/// A pass's data, copied for the writer's thread (keeping only what's written).
 #[derive(Default)]
 pub struct Chunk {
     /// Each spike's group and peak (a sample of its pass), and their waveforms (as in `SpikesBuffer`).
@@ -97,6 +98,55 @@ pub struct Chunk {
     positions: Vec<PositionSample>,
     events: Vec<Event>,
     event_pass_samples: usize,
+}
+
+impl Chunk {
+    /// Empty, with room for a pass of `streams`, so it doesn't grow as it's filled.
+    fn new(streams: Streams) -> Self {
+        let spikes = streams.spikes.map(|s| s.buffer(PASS_DURATION));
+        let eeg = streams.continuous.map_or(0, |c| {
+            let kept = egf_step(c.sample_rate).map_or(0, |step| c.buffer(PASS_DURATION).capacity.div_ceil(step));
+            c.channels as usize * kept
+        });
+        Chunk {
+            spikes: Vec::with_capacity(spikes.as_ref().map_or(0, |s| s.spikes.capacity())),
+            waveforms: Vec::with_capacity(spikes.as_ref().map_or(0, |s| s.waveforms.capacity())),
+            continuous: Vec::with_capacity(eeg),
+            positions: Vec::with_capacity(streams.positions.map_or(0, |p| p.buffer(PASS_DURATION).samples.capacity())),
+            events: Vec::with_capacity(streams.events.map_or(0, |e| e.buffer(PASS_DURATION).events.capacity())),
+            ..Default::default()
+        }
+    }
+
+    /// The memory one takes.
+    fn bytes(&self) -> usize {
+        self.spikes.capacity() * size_of::<(u32, i32)>()
+            + (self.waveforms.capacity() + self.continuous.capacity()) * size_of::<f32>()
+            + self.positions.capacity() * size_of::<PositionSample>()
+            + self.events.capacity() * size_of::<Event>()
+    }
+
+    /// The writer's thread, with a pool of chunks for `streams`: writing to `opened`, or opening the files itself.
+    fn writing(
+        base: PathBuf,
+        start: DateTime<Local>,
+        streams: Streams,
+        recorded: Recorded,
+        opened: Option<io::Result<LtxFiles>>,
+    ) -> Writing<Chunk> {
+        let (shown, bytes) = (base.display().to_string(), Chunk::new(streams).bytes());
+        let make = move || Chunk::new(streams);
+        match opened {
+            Some(files) => Writing::new("LTX writer", shown, files.map(|f| Box::new(f) as Box<_>), make, bytes),
+            None => Writing::start(
+                "LTX writer",
+                shown,
+                move || LtxFiles::open(&base, start, streams, recorded).map(|f| Box::new(f) as Box<_>),
+                make,
+                bytes,
+            ),
+        }
+    }
 }
 
 impl Node<Edges> for WriteLtx {
@@ -149,7 +199,11 @@ impl Node<Edges> for WriteLtx {
     }
 
     fn threads(&self) -> Vec<NodeThread> {
-        vec![NodeThread { name: "LTX writer", link: "chunk queue", flow: Flow::FromPasses, why: super::WHY_A_THREAD }]
+        vec![NodeThread { name: "LTX writer", link: "buffer pool", flow: Flow::FromPasses, why: super::WHY_A_THREAD }]
+    }
+
+    fn thread_pool(&self, _thread: usize, context: &ThreadContext) -> Option<PoolStatus> {
+        context.display::<Status>().map(|s| s.pool)
     }
 
     fn thread_ui(&self, _thread: usize, ui: &mut egui::Ui, context: &ThreadContext) {
@@ -167,10 +221,9 @@ impl Node<Edges> for WriteLtx {
         controls: &[Option<Setting>],
     ) -> Option<Box<dyn std::any::Any + Send>> {
         let (start, base) = self.base();
-        let files = LtxFiles::open(&base, start, Streams::of(inputs), Recorded::of(controls));
-        let writing: Writing<Chunk> =
-            Writing::new("LTX writer", base.display().to_string(), files.map(|f| Box::new(f) as Box<_>));
-        Some(Box::new(writing))
+        let (streams, recorded) = (Streams::of(inputs), Recorded::of(controls));
+        let files = LtxFiles::open(&base, start, streams, recorded.clone());
+        Some(Box::new(Chunk::writing(base, start, streams, recorded, Some(files))))
     }
 
     /// While recording, copies the pass's data for the writer's thread.
@@ -181,18 +234,15 @@ impl Node<Edges> for WriteLtx {
                 recorder.writing = pass.take_prepared::<Writing<Chunk>>().or_else(|| {
                     // Not prepared (the graph changed while recording, say): the thread opens the files.
                     let (start, base) = self.base();
-                    let (streams, recorded) = (recorder.streams, Recorded::of(pass.controls));
-                    let shown = base.display().to_string();
-                    Some(Writing::start("LTX writer", shown, move || {
-                        LtxFiles::open(&base, start, streams, recorded).map(|f| Box::new(f) as Box<_>)
-                    }))
+                    Some(Chunk::writing(base, start, recorder.streams, Recorded::of(pass.controls), None))
                 });
             }
             (false, Some(_)) => recorder.writing = None, // finishes the files
             _ => {}
         }
-        if let Some(writing) = &recorder.writing {
-            let mut chunk = writing.chunk();
+        if let Some(writing) = &recorder.writing
+            && let Some(mut chunk) = writing.chunk()
+        {
             let step = recorder.streams.continuous.and_then(|c| egf_step(c.sample_rate));
             copy(pass, &mut chunk, step, &mut recorder.continuous_samples);
             writing.send(chunk);
