@@ -18,7 +18,7 @@ pub fn show<N: NodeSet>(
     resolved: &Resolved<N::Edges>,
     colours: &Colours,
     exchange: Option<&crate::core::exchange::Exchange>,
-    base_directory: Option<&std::path::Path>,
+    base_directory: Option<&crate::core::base_directory::Place>,
     locked: bool,
     advanced: bool,
     id: NodeId,

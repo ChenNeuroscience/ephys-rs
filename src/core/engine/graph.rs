@@ -525,7 +525,7 @@ impl<N: NodeSet> Graph<N> {
         inputs: &[Option<DataStream<N>>],
         theme: &Colours,
         exchange: Option<&crate::core::exchange::Exchange>,
-        base_directory: Option<&std::path::Path>,
+        base_directory: Option<&crate::core::base_directory::Place>,
         running: bool,
         locked: bool,
         tools: Option<&mut dyn super::NodeToolbar>,
@@ -576,20 +576,23 @@ pub type ControlValues<N> = HashMap<NodeId, Vec<Option<Setting<N>>>>;
 /// `crate::core::base_directory`), and what each node prepared, until its first recording pass takes it.
 #[derive(Default)]
 pub struct Recording {
-    base_directory: Option<std::path::PathBuf>,
+    base_directory: Option<crate::core::base_directory::Place>,
     prepared: Mutex<HashMap<NodeId, Box<dyn Any + Send>>>,
 }
 
 impl Recording {
     /// Has every node that runs in `snapshot` prepare to record, in `base_directory` (if there is one). Can take a
     /// while (opening files, say), so isn't for the GUI's thread.
-    pub fn prepare<N: NodeSet>(snapshot: &Snapshot<N>, base_directory: Option<std::path::PathBuf>) -> Self {
+    pub fn prepare<N: NodeSet>(
+        snapshot: &Snapshot<N>,
+        base_directory: Option<crate::core::base_directory::Place>,
+    ) -> Self {
         let resolved = snapshot.graph.resolve();
         let mut prepared = HashMap::new();
         for step in snapshot.plan.steps() {
             let (Some(entry), Some(state)) = (snapshot.graph.get(step.id), resolved.get(&step.id)) else { continue };
             let controls = snapshot.controls.get(&step.id).map_or(&[][..], Vec::as_slice);
-            let base = base_directory.as_deref();
+            let base = base_directory.as_ref();
             if let Some(ready) = entry.node.prepare_to_record(&state.input_streams, controls, base) {
                 prepared.insert(step.id, ready);
             }
@@ -598,8 +601,8 @@ impl Recording {
     }
 
     /// Its base directory, if there is one.
-    pub fn base_directory(&self) -> Option<&std::path::Path> {
-        self.base_directory.as_deref()
+    pub fn base_directory(&self) -> Option<&crate::core::base_directory::Place> {
+        self.base_directory.as_ref()
     }
 
     /// What node `id` prepared, if it did and it hasn't been taken.

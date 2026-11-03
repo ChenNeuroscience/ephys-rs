@@ -19,7 +19,9 @@ mod npy;
 pub mod raw;
 
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+
+use crate::core::base_directory::Place;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -204,9 +206,9 @@ pub enum Location {
 }
 
 impl Location {
-    /// The directory it means, given the base directory, if there is one (otherwise `NO_BASE`).
-    pub fn directory(&self, base: Option<&Path>) -> PathBuf {
-        let base = || base.map_or_else(|| expand(NO_BASE), Path::to_path_buf);
+    /// The directory it means, given where the base directory says recordings go, if it says (otherwise `NO_BASE`).
+    pub fn directory(&self, base: Option<&Place>) -> PathBuf {
+        let base = || base.map_or_else(|| expand(NO_BASE), |p| p.directory.clone());
         match self {
             Location::Base => base(),
             Location::Subdirectory { name } => base().join(name.trim().trim_start_matches(['/', '\\'])),
@@ -217,7 +219,7 @@ impl Location {
 
 /// Choosing where a writer writes: in the base directory, a subdirectory of it, or a directory of its own; and where
 /// that is, for the next recording (or this one).
-pub fn location_ui(ui: &mut egui::Ui, location: &mut Location, base: Option<&Path>) {
+pub fn location_ui(ui: &mut egui::Ui, location: &mut Location, base: Option<&Place>) {
     let names = ["The base directory", "A subdirectory of it", "A directory of its own"];
     let current = match location {
         Location::Base => 0,
@@ -265,10 +267,12 @@ pub fn location_ui(ui: &mut egui::Ui, location: &mut Location, base: Option<&Pat
     }
 }
 
-/// Where a writer writes, in a line: for the next recording, or this one.
-pub fn location_summary(ui: &mut egui::Ui, location: &Location, base: Option<&Path>) {
+/// Where a writer writes, in a line, and what it names the recording (`what`: "files", say): for the next
+/// recording, or this one.
+pub fn location_summary(ui: &mut egui::Ui, location: &Location, base: Option<&Place>, prefix: &str, what: &str) {
     let directory = location.directory(base);
-    let text = format!("In {}", directory.display());
+    let name = recording_name(base, prefix, &chrono::Local::now());
+    let text = format!("In {}, {what} named {name}", directory.display());
     let tip = match (location, base) {
         (Location::Directory { .. }, _) => "Its own directory",
         (_, Some(_)) => "As the base directory is now (in the main toolbar)",
@@ -280,6 +284,12 @@ pub fn location_summary(ui: &mut egui::Ui, location: &Location, base: Option<&Pa
 /// A recording's name: the prefix, then when it started, e.g. "session_2026-11-01_143005".
 pub fn session_name(prefix: &str, start: &chrono::DateTime<chrono::Local>) -> String {
     format!("{prefix}_{}", start.format("%Y-%m-%d_%H%M%S"))
+}
+
+/// A recording's name: the base directory's, if it names recordings (a subject's trial, say), otherwise the
+/// writer's own (see `session_name`).
+pub fn recording_name(place: Option<&Place>, prefix: &str, start: &chrono::DateTime<chrono::Local>) -> String {
+    place.and_then(|p| p.name.clone()).unwrap_or_else(|| session_name(prefix, start))
 }
 
 /// What a writer's thread is up to, for its window and the dev tools.
@@ -355,8 +365,10 @@ mod tests {
 
         let snapshot = Snapshot::new(0, graph, None);
         let runner = Runner::start(&snapshot, 2);
+        // The base directory names the recording (a subject's trial, say).
+        let place = crate::core::base_directory::Place { directory: dir.clone(), name: Some("trial a".into()) };
         // The writers open their files before recording starts.
-        let recording = snapshot.with_recording(1, Some(Arc::new(Recording::prepare(&snapshot, Some(dir.clone())))));
+        let recording = snapshot.with_recording(1, Some(Arc::new(Recording::prepare(&snapshot, Some(place)))));
         assert!(runner.update(&recording), "recording carries on the same run");
         let deadline = Instant::now() + Duration::from_secs(10);
         while runner.clock() < 1.0 && Instant::now() < deadline {
@@ -368,7 +380,8 @@ mod tests {
 
         let files: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path()).collect();
         let named = |suffix: &str| files.iter().find(|p| p.to_string_lossy().ends_with(suffix)).cloned();
-        let egf = std::fs::read(named(".egf").expect("an .egf file")).unwrap();
+        let egf = named("trial a.egf").expect("an .egf file, named as the base directory says");
+        let egf = std::fs::read(egf).unwrap();
         let text = String::from_utf8_lossy(&egf);
         let samples: u64 =
             text.split("num_EEG_samples ").nth(1).unwrap().split_whitespace().next().unwrap().parse().unwrap();
@@ -376,7 +389,7 @@ mod tests {
         assert!(text.contains("data_end"), "finished");
         assert!(named(".1").is_some(), "the first tetrode's spikes");
         let raws: Vec<_> = std::fs::read_dir(dir.join("raw")).unwrap().map(|e| e.unwrap().path()).collect();
-        let folder = raws.iter().find(|p| p.is_dir()).expect("the raw recording's folder");
+        let folder = raws.iter().find(|p| p.ends_with("trial a")).expect("the raw recording's folder, named likewise");
         let dat =
             folder.join("Record Node 101/experiment1/recording1/continuous/ephys-rs-100.continuous/continuous.dat");
         let bytes = std::fs::metadata(dat).unwrap().len();

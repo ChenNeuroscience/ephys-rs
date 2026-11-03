@@ -29,7 +29,7 @@ use chrono::{DateTime, Local};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 
-use super::{Files, Location, Status, Writing, location_summary, location_ui, session_name, status_ui};
+use super::{Files, Location, Status, Writing, location_summary, location_ui, recording_name, status_ui};
 use crate::core::engine::{
     Category, Context, Control, DataStreamType, EdgeSet, Flow, Input, Node, NodeInfo, NodeThread, Output,
     PASS_DURATION, Pass, PoolStatus, ThreadContext,
@@ -230,7 +230,7 @@ impl Node<Edges> for WriteLtx {
         &self,
         inputs: &[Option<DataStream>],
         controls: &[Option<Setting>],
-        base_directory: Option<&std::path::Path>,
+        base_directory: Option<&crate::core::base_directory::Place>,
     ) -> Option<Box<dyn std::any::Any + Send>> {
         let (start, base) = self.base(base_directory);
         let (streams, recorded) = (Streams::of(inputs), Recorded::of(controls));
@@ -271,7 +271,7 @@ impl Node<Edges> for WriteLtx {
             location_ui(ui, &mut self.location, context.base_directory);
             setting(ui, "File prefix", |ui| ui.text_edit_singleline(&mut self.prefix));
         });
-        location_summary(ui, &self.location, context.base_directory);
+        location_summary(ui, &self.location, context.base_directory, &self.prefix, "files");
         ui.add_space(4.0);
         let recording: Vec<String> = self
             .inputs()
@@ -301,9 +301,9 @@ impl Node<Edges> for WriteLtx {
 
 impl WriteLtx {
     /// When a recording starts, and its files' path (without their extensions), given the base directory.
-    fn base(&self, base_directory: Option<&std::path::Path>) -> (DateTime<Local>, PathBuf) {
+    fn base(&self, base_directory: Option<&crate::core::base_directory::Place>) -> (DateTime<Local>, PathBuf) {
         let start = Local::now();
-        (start, self.location.directory(base_directory).join(session_name(&self.prefix, &start)))
+        (start, self.location.directory(base_directory).join(recording_name(base_directory, &self.prefix, &start)))
     }
 }
 

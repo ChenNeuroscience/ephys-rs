@@ -152,7 +152,7 @@ impl<'a, E: Edges> Pass<'a, E> {
     }
 
     /// The base directory the recording's in (see `crate::core::base_directory`), while recording, if there is one.
-    pub fn base_directory(&self) -> Option<&std::path::Path> {
+    pub fn base_directory(&self) -> Option<&crate::core::base_directory::Place> {
         self.prepared?.base_directory()
     }
 

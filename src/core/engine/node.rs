@@ -81,7 +81,7 @@ pub struct Context<'a, E: Edges> {
     pub exchange: Option<&'a Exchange>,
     /// The base directory recordings go in (see `crate::core::base_directory`): the next one's, or the one going
     /// on's. For a writer to say where it'll write.
-    pub base_directory: Option<&'a std::path::Path>,
+    pub base_directory: Option<&'a crate::core::base_directory::Place>,
     /// Whether the graph is running.
     pub running: bool,
     /// Whether settings are locked (while recording): a view should show its settings disabled, as changes to
@@ -380,7 +380,7 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
         &self,
         _inputs: &[Option<E::DataStream>],
         _controls: &[Option<E::Setting>],
-        _base_directory: Option<&std::path::Path>,
+        _base_directory: Option<&crate::core::base_directory::Place>,
     ) -> Option<Box<dyn Any + Send>> {
         None
     }
@@ -438,7 +438,7 @@ pub trait NodeSet: Clone + PartialEq + Serialize + DeserializeOwned + Send + Syn
         &self,
         inputs: &[Option<<Self::Edges as Edges>::DataStream>],
         controls: &[Option<<Self::Edges as Edges>::Setting>],
-        base_directory: Option<&std::path::Path>,
+        base_directory: Option<&crate::core::base_directory::Place>,
     ) -> Option<Box<dyn Any + Send>>;
     fn threads(&self) -> Vec<NodeThread>;
     fn thread_ui(&self, thread: usize, ui: &mut egui::Ui, context: &ThreadContext);
@@ -614,7 +614,7 @@ macro_rules! node_set {
                 &self,
                 inputs: &[Option<<$edges as $crate::core::engine::Edges>::DataStream>],
                 controls: &[Option<<$edges as $crate::core::engine::Edges>::Setting>],
-                base_directory: Option<&std::path::Path>,
+                base_directory: Option<&$crate::core::base_directory::Place>,
             ) -> Option<Box<dyn std::any::Any + Send>> {
                 match self {
                     $($name::$variant(n) => $crate::core::engine::Node::prepare_to_record(n, inputs, controls, base_directory)),+

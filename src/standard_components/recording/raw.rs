@@ -23,7 +23,7 @@ use eframe::egui;
 use serde::{Deserialize, Serialize};
 
 use super::npy::Npy;
-use super::{Files, Location, Status, Writing, location_summary, location_ui, session_name, status_ui};
+use super::{Files, Location, Status, Writing, location_summary, location_ui, recording_name, status_ui};
 use crate::core::engine::{
     Category, Context, DataStreamType, EdgeSet, Flow, Input, Node, NodeInfo, NodeThread, Output, PASS_DURATION, Pass,
     PoolStatus, ThreadContext,
@@ -171,7 +171,7 @@ impl Node<Edges> for WriteRaw {
         &self,
         inputs: &[Option<DataStream>],
         _controls: &[Option<crate::Setting>],
-        base_directory: Option<&std::path::Path>,
+        base_directory: Option<&crate::core::base_directory::Place>,
     ) -> Option<Box<dyn std::any::Any + Send>> {
         let Recorder { continuous, events, .. } = self.initial_state(inputs);
         let folder = self.folder(base_directory);
@@ -219,7 +219,7 @@ impl Node<Edges> for WriteRaw {
             location_ui(ui, &mut self.location, context.base_directory);
             setting(ui, "Folder prefix", |ui| ui.text_edit_singleline(&mut self.prefix));
         });
-        location_summary(ui, &self.location, context.base_directory);
+        location_summary(ui, &self.location, context.base_directory, &self.prefix, "a folder");
         ui.add_space(4.0);
         let recording: Vec<String> = self
             .inputs()
@@ -240,8 +240,8 @@ impl Node<Edges> for WriteRaw {
 
 impl WriteRaw {
     /// A new recording's folder, given the base directory.
-    fn folder(&self, base_directory: Option<&std::path::Path>) -> std::path::PathBuf {
-        self.location.directory(base_directory).join(session_name(&self.prefix, &Local::now()))
+    fn folder(&self, base_directory: Option<&crate::core::base_directory::Place>) -> std::path::PathBuf {
+        self.location.directory(base_directory).join(recording_name(base_directory, &self.prefix, &Local::now()))
     }
 }
 

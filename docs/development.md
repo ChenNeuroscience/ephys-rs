@@ -25,7 +25,8 @@ cargo test -- --ignored          # also the end-to-end tests against synthetic_s
 GUI tests render with `egui_kittest` (on wgpu) and compare against images in
 [`tests/snapshots`](../tests/snapshots), which also serve as these docs' screenshots. They're made on macOS; Windows
 gets some leeway ([`kittest.toml`](../kittest.toml)). Snapshots must look the same every run, so tests freeze what
-varies: the frame timings are paused, the worker count set, and the version shown as "v0.x".
+varies: the frame timings are paused, the worker count set, the version shown as "v0.x", and the day (for subjects' trials)
+always 2026-01-01.
 
 Tests that need a board or camera use in-process stand-ins (`serve_test_board`, `serve_test_scene`) rather than the
 Python ones, and tests that record remove the writers first, or write to a temporary directory: never to

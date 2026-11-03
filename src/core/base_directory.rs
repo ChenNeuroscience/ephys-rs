@@ -2,28 +2,59 @@
 //!
 //! A program offers base directory types (see `Components::BASE_DIRECTORIES`), of which one's in use: the first,
 //! unless another's chosen (in advanced mode, from its section's settings). Each draws its own section of the main
-//! toolbar, as wide as it likes, and says what the base directory is: for the next recording, or the one going on.
+//! toolbar, as wide as it likes, and says where recordings go (a `Place`): for the next recording, or the one going
+//! on. That's a directory, and perhaps a name for the recording (a subject's trial, say), which writers name what
+//! they write after (a file prefix, say) rather than their own.
 //! When recording's asked for, the GUI asks it, and hands that to every node preparing to record
 //! (`Node::prepare_to_record`, then `Pass::base_directory`); writers decide what to do with it (write in it, say,
 //! or in a subdirectory of it). It's told when recordings start and stop, to count them, say. What it keeps (the
 //! directory chosen, say) is saved with the app's preferences, as JSON, and given back when it's next made.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use eframe::egui;
 
 use crate::core::theme::Colours;
+
+/// Where a recording goes: the base directory, and the name to give it, if there's one (otherwise writers name it
+/// themselves).
+#[derive(Clone, PartialEq, Debug)]
+pub struct Place {
+    pub directory: PathBuf,
+    pub name: Option<String>,
+}
+
+impl Place {
+    /// Just a directory.
+    pub fn directory(directory: impl Into<PathBuf>) -> Self {
+        Place { directory: directory.into(), name: None }
+    }
+
+    /// The directory and name, as a path (the directory, if there's no name).
+    pub fn path(&self) -> PathBuf {
+        match &self.name {
+            Some(name) => self.directory.join(name),
+            None => self.directory.clone(),
+        }
+    }
+}
+
+impl std::fmt::Display for Place {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}", Path::new(&self.path()).display())
+    }
+}
 
 /// A base directory type in use (see the module docs).
 pub trait BaseDirectory: Send {
     /// Its section of the main toolbar.
     fn toolbar_ui(&mut self, ui: &mut egui::Ui, context: &BaseDirectoryContext);
 
-    /// The base directory: for the recording going on, while there is one, otherwise for the next. `None` if there
-    /// isn't one (none chosen yet, say).
-    fn directory(&self) -> Option<PathBuf>;
+    /// Where recordings go: the recording going on, while there is one, otherwise the next. `None` if there's
+    /// nowhere (none chosen yet, say).
+    fn place(&self) -> Option<Place>;
 
-    /// A recording's started, in `directory()`.
+    /// A recording's started, in `place()`.
     fn recording_started(&mut self) {}
 
     /// The recording's stopped.
@@ -36,7 +67,7 @@ pub trait BaseDirectory: Send {
 /// What a base directory's toolbar section gets to work with.
 pub struct BaseDirectoryContext<'a> {
     pub theme: &'a Colours,
-    /// Whether it's recording (in `directory()`): what decides where it goes shouldn't change meanwhile.
+    /// Whether it's recording (in `place()`): what decides where it goes shouldn't change meanwhile.
     pub recording: bool,
 }
 
@@ -96,9 +127,9 @@ impl BaseDirectories {
         Some(self.current.as_mut()?.1.as_mut())
     }
 
-    /// Its directory (see `BaseDirectory::directory`).
-    pub fn directory(&self) -> Option<PathBuf> {
-        self.current.as_ref()?.1.directory()
+    /// Where recordings go (see `BaseDirectory::place`).
+    pub fn place(&self) -> Option<Place> {
+        self.current.as_ref()?.1.place()
     }
 
     /// What to keep between runs of the program: which is in use, and what each has.
@@ -122,8 +153,8 @@ mod tests {
     impl BaseDirectory for Named {
         fn toolbar_ui(&mut self, _ui: &mut egui::Ui, _context: &BaseDirectoryContext) {}
 
-        fn directory(&self) -> Option<PathBuf> {
-            Some(PathBuf::from(&self.0))
+        fn place(&self) -> Option<Place> {
+            Some(Place::directory(&self.0))
         }
 
         fn save(&self) -> serde_json::Value {
@@ -143,12 +174,12 @@ mod tests {
     #[test]
     fn the_one_chosen_and_what_each_had_are_kept() {
         let mut directories = BaseDirectories::new(TYPES, None);
-        assert_eq!((directories.chosen(), directories.directory()), (Some(0), Some("/a".into())));
+        assert_eq!((directories.chosen(), directories.place()), (Some(0), Some(Place::directory("/a"))));
         directories.choose(1);
         let saved = directories.save();
         let again = BaseDirectories::new(TYPES, Some(&saved));
-        assert_eq!((again.chosen(), again.directory()), (Some(1), Some("/b".into())));
+        assert_eq!((again.chosen(), again.place()), (Some(1), Some(Place::directory("/b"))));
         assert_eq!(saved["types"]["a"], "/a", "what the one not in use had");
-        assert_eq!(BaseDirectories::new(&[], None).directory(), None, "none offered");
+        assert_eq!(BaseDirectories::new(&[], None).place(), None, "none offered");
     }
 }

@@ -16,22 +16,26 @@ A kind of base directory is a [`BaseDirectoryType`](../src/core/base_directory.r
 - `toolbar_ui`: draws its section of the main toolbar, as wide as it likes. `BaseDirectoryContext::recording` says
   whether it's recording, when what decides where a recording goes shouldn't change. To match the toolbar's
   buttons, use `core::gui::widgets::toolbar_button`.
-- `directory`: the base directory for the next recording, or the one going on.
+- `place`: where the next recording goes, or the one going on: a directory, and perhaps a name for the recording,
+  which writers then use rather than their own.
 - `recording_started` and `recording_stopped`: to count recordings, say.
 - `save`: what it keeps between runs of the program, as JSON.
 
 The standard ones are in [`base_directories.rs`](../src/standard_components/base_directories.rs):
 
 - **A directory**: a button to choose a directory, and the directory.
-- **Subject, date and trial**: a directory to keep them in, the subject (an animal's id, say), and the trial, which
-  counts up after each recording. Each recording goes in `<directory>/<subject>/<date>/trial_<n>`. Each day, the
-  trials start again from the first not yet on disk. Before a recording, the toolbar shows the next trial, which
-  you can change; during a recording, it shows the current trial.
+- **Subject, date and trial**: a directory to keep them in, the subject (an animal's id, say), and the trial,
+  shown as a path: `~/recordings / r2405 / 2026-11-03 a`. The subject is a directory; the day and trial are the
+  recording's name, which writers name what they write after: Write LTX its files (`2026-11-03 a.set`...), Write
+  Raw its folder. Trials are lettered a to z, then 1a to 1z, 2a, and so on, counting up after each recording, and
+  starting again each day from the first not yet on disk. Before a recording the trial is the next one, which you
+  can change; during one, it's the current one, in red.
 
 ## Writers
 
-When recording's asked for, the GUI asks the base directory in use for its directory. Every node then gets it as it
+When recording's asked for, the GUI asks the base directory in use where the recording goes. Every node then gets it as it
 prepares to record (`Node::prepare_to_record`), and from its passes while recording (`Pass::base_directory`). Its
 window gets it too (`Context::base_directory`), to show where it'll write. The standard writers have a
 [`Location`](../src/standard_components/recording/mod.rs): the base directory, a subdirectory of it, or a directory
-of their own.
+of their own. They name the recording as the base directory says, if it does, otherwise after their prefix and the
+time.

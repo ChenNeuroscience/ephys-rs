@@ -502,7 +502,7 @@ pub struct Panes<'a, N: NodeSet, A: AnnotationSet> {
     pub colours: &'static Colours,
     pub runner: Option<&'a Runner<N>>,
     /// The base directory recordings go in (see `crate::core::base_directory`).
-    pub base_directory: Option<&'a std::path::Path>,
+    pub base_directory: Option<&'a crate::core::base_directory::Place>,
     /// The latest snapshot of the graph.
     pub snapshot: &'a Snapshot<N>,
     /// What the home pane shows, and the quick actions the basic view offers.
@@ -533,7 +533,7 @@ pub fn node_ui<N: NodeSet>(
     resolved: &Resolved<N::Edges>,
     colours: &Colours,
     runner: Option<&Runner<N>>,
-    base_directory: Option<&std::path::Path>,
+    base_directory: Option<&crate::core::base_directory::Place>,
     locked: bool,
     advanced: bool,
     id: NodeId,

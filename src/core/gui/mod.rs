@@ -443,9 +443,9 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         let snapshot = self.history.current.snapshot.clone();
         let (sender, receiver) = std::sync::mpsc::channel();
         let repaint = ctx.clone();
-        let base = self.base_directories.directory();
+        let base = self.base_directories.place();
         match &base {
-            Some(base) => log::info!("Preparing to record, in {}", base.display()),
+            Some(base) => log::info!("Preparing to record, in {}", base),
             None => log::info!("Preparing to record"),
         }
         let spawned = std::thread::Builder::new().name("preparing to record".into()).spawn(move || {
@@ -962,7 +962,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         let locked = self.locked();
         let colours = self.colours();
         let advanced = self.layout.mode == Mode::Advanced;
-        let base = self.base_directories.directory();
+        let base = self.base_directories.place();
         for id in self.layout.floating() {
             let started = Instant::now();
             let Some(entry) = self.graph.get(id) else { continue };
@@ -988,7 +988,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                             resolved,
                             colours,
                             self.runner.as_ref(),
-                            base.as_deref(),
+                            base.as_ref(),
                             locked,
                             advanced,
                             id,
@@ -1181,7 +1181,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         let locked = self.locked();
         let mut timings = Vec::new();
         let graph_tools = self.graph_tools();
-        let base = self.base_directories.directory();
+        let base = self.base_directories.place();
         egui::CentralPanel::default().frame(background).show(ui, |ui| {
             let mut panes = Panes {
                 graph: &mut self.graph,
@@ -1189,7 +1189,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                 resolved: &resolved,
                 colours,
                 runner: self.runner.as_ref(),
-                base_directory: base.as_deref(),
+                base_directory: base.as_ref(),
                 snapshot: &self.history.current.snapshot,
                 mode: self.layout.mode,
                 graph_tools,
@@ -1684,8 +1684,8 @@ mod tests {
         let types = harness.state().base_directories.types();
         harness.state_mut().base_directories = BaseDirectories::new(types, Some(&saved));
         harness.run_steps(2);
-        let directory = harness.state().base_directories.directory().unwrap();
-        assert!(directory.starts_with("/nowhere/recordings/r2405") && directory.ends_with("trial_01"), "{directory:?}");
+        let place = harness.state().base_directories.place().unwrap();
+        assert_eq!(place.to_string(), "/nowhere/recordings/r2405/2026-01-01 a", "the subject's, named the day's first");
         harness.get_by_label("Where recordings go").click();
         harness.run_steps(2);
         harness.snapshot("toolbar_base_directory");
