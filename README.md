@@ -4,9 +4,8 @@
 Electrophysiology software derived from [Open Ephys](https://github.com/open-ephys), but rewritten in Rust with a custom built execution engine and more flexible user interface.
 
 
-## Status
-
-Development of this project started on 2026-Oct-31. With the help of today's AI, progress has been incredibly rapid. No serious testing has been done yet though and there are lots of things still to be done.
+> [!WARNING]
+> ephys-rs is now in alpha testing, for use with [LTX format](https://github.com/ChenNeuroscience/ltx-format) recordings. Development started on 2026-Oct-31 and has moved quickly with the help of AI, under human supervision.
 
 ## What's there
 
