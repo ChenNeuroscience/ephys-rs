@@ -1,0 +1,111 @@
+# Architecture
+
+![The example graph](../tests/snapshots/graph_example.png)
+
+## Core and standard components
+
+The program is in two parts, compiled together:
+
+- [`src/core`](../src/core/mod.rs): the graph engine, the GUI, and the traits everything else implements. It knows
+  nothing about particular node, edge or annotation types.
+- [`src/standard_components`](../src/standard_components/mod.rs): the node, edge and annotation types, themes and quick
+  actions the program ships with, grouped by feature (`ephys`, `spikes`, `tracking`, `recording`...).
+
+[`src/main.rs`](../src/main.rs) puts them together, declaring the closed sets of types the program is built with:
+`edge_types!` (data streams and settings), `node_set!` (node types, in the order the add-node menu offers them) and
+`annotation_set!`. Each macro makes an enum with a variant per type, which forwards the traits' methods to the
+variant's type, so the core works with one concrete type (`Nodes`, say) without trait objects.
+
+So it's extensible, but not a plugin system: adding a node type means adding a struct implementing
+[`Node`](nodes.md) and a line to `node_set!`, then rebuilding. There's no loading of code at run time, and no stable
+interface between versions.
+
+## The graph and snapshots
+
+The [`Graph`](../src/core/engine/graph.rs) holds node instances (each a `Nodes` value, with its settings, label and
+position) and the edges between their ports. Edges are of two dimensions: **data** edges carry data streams from
+outputs to inputs, and must form a DAG; **settings** edges let one node edit (or just read) a setting of another, so
+can point anywhere. A node's outputs are worked out from what's on its inputs (`Graph::resolve`).
+
+Every edit gives a new [`Snapshot`](../src/core/engine/graph.rs): a frozen, shared version of the graph, with whether
+it's recording, and the **plan** for running it. Undo steps back through snapshots; passes run against them.
+Snapshots that process the same way (only positions or labels changed) share a plan.
+
+## Plans, passes and epochs
+
+[`run.rs`](../src/core/engine/run.rs) runs the graph; its module docs are the detail. In short:
+
+- Time is cut into **passes** of 20 ms. A dispatcher thread releases each when its time's up, to a small pool of
+  **worker** threads (half the cores, at most four), each running whole passes.
+- A pass runs every node in the plan's order, on buffers the worker made for the plan before it ran any pass, so
+  nothing's allocated per pass. Each node reads its inputs from the buffers of the nodes before it, and fills its own.
+- The **plan** (`Plan::new`) decides which nodes run, in what order, on which buffers:
+  - Only nodes whose outputs are known, which aren't disabled, and whose outputs something needs (`Node::needs`), run.
+    Sources, and nodes without outputs (viewers, writers), always do.
+  - An output can be made **in place** in an input's buffer (`Node::in_place`), as long as the other readers of that
+    data can run first.
+  - A node can **take** an input's buffer (`Node::takes`), to swap for one of its own, if it can be the last to read it.
+  - Nodes only copying data out (`Node::copies`: viewers, writers) run as early as they can.
+- Passes run at the same time on different workers. A node with **state** carried from pass to pass (a filter's
+  history, say) is a sync point: each pass waits its turn for the state, handing it on. Working memory that carries
+  nothing over is each worker's own, so there's no waiting.
+- When a new snapshot runs the same way (a change of settings), passes carry on with it. Otherwise it starts a new
+  **epoch**, with fresh node state: workers make buffers for it as they come free, and passes move over once one's
+  ready, so none are lost.
+
+The dev tools show all of this live: the plan each pass runs through, each step's time, sync points, copy points,
+buffers made in place, and the threads.
+
+![The dev tools](../tests/snapshots/dev_tools.png)
+
+## Threads and buffers
+
+Besides the GUI, the dispatcher and the workers, nodes can run threads of their own (`Node::threads`), shown in the
+dev tools with why they're needed:
+
+- **Sources** (the board, the camera) capture on a thread, so samples are taken as they come, whatever the passes are
+  doing.
+- **Writers** write on a thread, so a stalling disk doesn't hold up the passes, which would otherwise wait for it (the
+  files being written in order).
+
+Between such a thread and the passes is a **pool** of buffers shaped like the passes' own
+([`pool.rs`](../src/standard_components/pool.rs)), swapped rather than copied. A board's capture thread decodes
+straight into a pass's buffers, and each pass swaps whatever's arrived for its own (giving the old one back to
+fill). A writer's pass swaps the data it's given into a chunk from its pool (taking its input, where it can), and
+its thread gives the chunk back once written. Pools hold about a second, so a slow pass or a stalling disk is
+absorbed. The dev tools show each pool on its thread's link: its buffers' streams and sizes, and where each is.
+
+## Between the GUI and the passes
+
+The passes never wait on the GUI, nor it on them. Each run has an [`Exchange`](../src/core/exchange.rs):
+
+- A node's passes leave the latest of something for its window (`Latest::send`): a frame of traces to draw, say.
+  Buffers are swapped, not reallocated, and a pass skips its copy rather than wait if the window's reading.
+- The GUI can **fire a trigger** on a node (`Node::triggers`): "auto detect", say, from a viewer through a settings
+  edge, or from the node's own window. A pass takes it (`Pass::triggered`), says how it's going, and when it's done.
+- Passes can't change the graph, but can **propose** a setting's value (`Pass::propose`), which the GUI applies as an
+  edit (not while recording, when settings are locked).
+
+Settings themselves go the other way through snapshots: a pass sees the snapshot's settings, so a change reaches the
+next pass.
+
+## The GUI
+
+[`gui`](../src/core/gui/mod.rs) is an egui app: menus and a toolbar, a dockable layout of panes, and a status bar.
+The app is in **basic** or **advanced** mode: in basic mode, the home pane shows the components (viewers, to begin
+with) and [quick actions](quick-actions.md); in advanced mode, the graph, and each pane has a settings menu. What a
+pane shows in each mode is up to it (`Context::advanced`).
+
+![Basic mode, after the standard LTX quick action](../tests/snapshots/standard_ltx_layout.png)
+
+## Recording
+
+Pressing Record asks every node to prepare (`Node::prepare_to_record`: writers open their files, on a thread),
+then the snapshots record, and nodes see `Pass::recording`. While recording, settings are locked: changes are undone.
+Stopping lets writers finish their files in the background ([`background.rs`](../src/core/background.rs)).
+
+## Crashes
+
+A crash, anywhere, writes a report (the thread, the pass and node it was running, a backtrace, the log) and ends the
+program; the next start says where the report is. See [`crash.rs`](../src/core/crash.rs) and
+[Development](development.md#crash-reports).
