@@ -33,6 +33,11 @@ pub fn copy<N: NodeSet>(graph: &Graph<N>, ids: &[NodeId]) -> String {
     serde_json::to_string_pretty(&Clip { format: 1, nodes }).unwrap_or_default()
 }
 
+/// Whether `text` is settings copied from nodes (see `copy`), rather than just any text, or other JSON.
+pub fn is_settings(text: &str) -> bool {
+    serde_json::from_str::<Clip>(text).is_ok()
+}
+
 /// A node's settings from the clipboard: where it goes, and whether to paste it.
 struct Row<N> {
     label: String,

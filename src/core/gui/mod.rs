@@ -615,6 +615,24 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         self.set_done(ctx, format!("Copied the settings of {what}"));
     }
 
+    /// Where settings are pasted straight onto: the node selected, if just one is.
+    fn paste_target(&self) -> Option<NodeId> {
+        (self.selection.nodes.len() == 1).then(|| self.selection.nodes.iter().next().copied()).flatten()
+    }
+
+    /// Settings pasted the usual way (Ctrl/⌘ V, while nothing's being typed in) are pasted as settings, wherever the
+    /// pointer is, rather than reaching the canvas as text.
+    fn paste_settings_pasted(&mut self, ctx: &egui::Context) {
+        let pasted = |e: &egui::Event| matches!(e, egui::Event::Paste(text) if paste_settings::is_settings(text));
+        let text = ctx.input_mut(|i| match i.events.iter().position(pasted).map(|at| i.events.remove(at)) {
+            Some(egui::Event::Paste(text)) => Some(text),
+            _ => None,
+        });
+        if let Some(text) = text {
+            self.paste_text(ctx, &text, self.paste_target());
+        }
+    }
+
     /// Pastes settings from the clipboard: straight onto `target`, if given and there's just one node's settings
     /// there; otherwise opening the window to review them.
     fn open_paste(&mut self, ctx: &egui::Context, target: Option<NodeId>) {
@@ -782,12 +800,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                 ids.sort();
                 self.copy_settings(ctx, &ids);
             }
-            Action::PasteSettings => {
-                // Straight onto the node selected, if just one is.
-                let target =
-                    (self.selection.nodes.len() == 1).then(|| self.selection.nodes.iter().next().copied()).flatten();
-                self.open_paste(ctx, target);
-            }
+            Action::PasteSettings => self.open_paste(ctx, self.paste_target()),
             Action::ToggleDisabled => {
                 let all = self.selection.nodes.iter().all(|id| self.graph.get(*id).is_some_and(|e| e.disabled));
                 for id in self.selection.nodes.clone() {
@@ -872,6 +885,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         if ctx.egui_wants_keyboard_input() || self.menu.is_some() {
             return;
         }
+        self.paste_settings_pasted(ctx);
         let key = |key| ctx.input_mut(|i| i.consume_key(Modifiers::NONE, key));
         if key(Key::Enter) {
             if let Some(id) = self.selection.single() {
@@ -1828,6 +1842,37 @@ mod tests {
         let &id = app.selection.annotations.iter().next().expect("selected");
         let AnnotationTypes::Markdown(note) = &app.annotations.get(id).unwrap().kind else { panic!("markdown") };
         assert_eq!(note.text, "# Protocol\n- check impedances", "trimmed");
+    }
+
+    #[test]
+    fn settings_pasted_the_usual_way_are_pasted_as_settings() {
+        let mut harness = harness();
+        let detector = node_named(harness.state(), "Spike Detector");
+        let threshold = |app: &TestApp| match app.graph.get(detector).map(|e| &e.node) {
+            Some(Nodes::SpikeDetector(d)) => d.thresholds.get(0),
+            _ => unreachable!(),
+        };
+        // Its settings copied, with another threshold.
+        let copied = {
+            let app = harness.state_mut();
+            let before = app.graph.get(detector).unwrap().node.clone();
+            if let Some(entry) = app.graph.get_mut(detector) {
+                entry.node.set_setting(0, crate::standard_components::spikes::Thresholds(vec![77.0]).into());
+            }
+            let copied = paste_settings::copy(&app.graph, &[detector]);
+            app.graph.get_mut(detector).unwrap().node = before;
+            copied
+        };
+        let annotations = harness.state().annotations.ids().count();
+        harness.state_mut().selection.only(detector);
+        harness.event(egui::Event::Paste(copied));
+        harness.run_steps(2);
+        assert_eq!(threshold(harness.state()), 77.0, "pasted straight onto the node selected");
+        assert_eq!(harness.state().annotations.ids().count(), annotations, "not as a note");
+        // Other JSON is only text.
+        harness.event(egui::Event::Paste("{\"format\": \"something else\"}".into()));
+        harness.run_steps(2);
+        assert_eq!(harness.state().annotations.ids().count(), annotations + 1);
     }
 
     #[test]

@@ -16,8 +16,8 @@ An annotation type is a struct implementing [`AnnotationType`](../src/core/annot
   `pasted`: what's pasted onto the canvas (`Pasted`: an image, or text) is offered to each type, which says how well
   it suits it (`Fit`: `Possible`, `Good` or `Best`) and makes one. The best fit wins; of two as good, the first in
   `annotation_set!`. As it stands, an image makes an image; a single short line, a heading; text in markdown, a
-  markdown note; other text, a sticky note. (Pasting settings onto nodes has a shortcut of its own, so doesn't
-  come here.)
+  markdown note; other text, a sticky note. (Settings copied from nodes don't come here: they're recognised, and pasted
+  as settings.)
 - `settings_ui`: its settings in the annotation pane, while it's selected; `toolbar_ui`: buttons there of its own.
 - `hit`, `behind`, `above_graph`: where it can be grabbed, and what it's drawn in front of (a box goes behind other
   annotations and beneath the graph, and is grabbed by its edge, so what's inside it still can be).
