@@ -10,7 +10,8 @@ when it disconnects we wait for the next one.
 What it sends:
   * each headstage's channels are tetrodes (groups of 4), each picking up 2 or 3 units: spikes seen on all 4
     channels at different sizes, firing at a few Hz, most often at a preferred phase of the theta rhythm
-  * LFP: theta (8 Hz) and a little gamma (40 Hz), much the same across a headstage
+  * LFP: theta (8 Hz) and a little gamma (40 Hz), much the same across a headstage, but each channel's a little
+    shifted in phase and scaled, with slow noise of its own (a few µV to tens, from 1 to 40 Hz)
   * noise, about 8 uV rms
   * auxiliary inputs (3 per headstage): an accelerometer on a moving head, with gravity on the third
   * analogue inputs: a 1 Hz sine of +-1 V on the first, a 0.5 Hz square of 0 to 3.3 V on the second,
@@ -73,15 +74,27 @@ class Signals:
                 width = min(4, channels - group)
                 cycles = 8 + (h * 7 + group // 4) % 5  # 1 to 1.5 s, differing from group to group
                 length = round(cycles * cycle)
-                lfp = [lfp_gain * (80.0 * math.sin(2 * math.pi * cycles * i / length)
-                                   + 15.0 * math.sin(2 * math.pi * 5 * cycles * i / length + 1.0))
-                       for i in range(length)]
-                loops = [[lfp[i] * rng.uniform(0.9, 1.1) + rng.gauss(0.0, 8.0) for i in range(length)]
-                         for _ in range(width)]
+                loops = [self.lfp(length, cycles, rate, lfp_gain * rng.uniform(0.9, 1.1), rng) for _ in range(width)]
                 self.add_units(loops, length, cycles, rng)
                 self.ephys.extend((to_i16(loop, EPHYS_UV_PER_BIT), length) for loop in loops)
             self.aux.extend(self.accelerometer(rate, rng))
         self.adc = self.analogue(rate, rng)
+
+    @staticmethod
+    def lfp(length, cycles, rate, gain, rng):
+        """A channel's LFP: theta and gamma, shifted a little in phase; slow noise of its own (sines of whole numbers
+        of cycles in the loop, so it joins up); and white noise."""
+        shift = rng.uniform(-0.6, 0.6)
+        seconds = length / rate
+        slow = []
+        for _ in range(6):
+            hz = rng.uniform(1.0, 40.0)
+            slow.append((max(1, round(hz * seconds)), rng.uniform(3.0, 15.0) * 8.0 / hz ** 0.5, rng.uniform(0, 2 * math.pi)))
+        return [gain * (80.0 * math.sin(2 * math.pi * cycles * i / length + shift)
+                        + 15.0 * math.sin(2 * math.pi * 5 * cycles * i / length + 1.0 + 5 * shift))
+                + sum(a * math.sin(2 * math.pi * n * i / length + phase) for n, a, phase in slow)
+                + rng.gauss(0.0, 8.0)
+                for i in range(length)]
 
     @staticmethod
     def add_units(loops, length, cycles, rng):

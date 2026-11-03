@@ -3,3 +3,4 @@
 tests/snapshots/*.diff.png
 tests/snapshots/*.new.png
 tests/snapshots/*.old.png
+__pycache__/

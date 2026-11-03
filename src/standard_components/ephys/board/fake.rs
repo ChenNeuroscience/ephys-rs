@@ -232,7 +232,9 @@ pub fn serve_test_board() -> String {
             let microvolts = |v: f32| ((v / EPHYS_MICROVOLTS_PER_BIT) as i16).to_le_bytes();
             for channel in 0..ephys as u64 {
                 for n in first..first + samples as u64 {
-                    let wave = 50.0 * (std::f64::consts::TAU * 8.0 * n as f64 / sample_rate as f64).sin() as f32;
+                    // Theta, each channel a little shifted in phase.
+                    let phase = std::f64::consts::TAU * 8.0 * n as f64 / sample_rate as f64 + 0.1 * channel as f64;
+                    let wave = 50.0 * phase.sin() as f32;
                     let spike = if noise(channel, (n / ms) as i64) > 0.99 {
                         -150.0 * spike_shape((n % ms) as f32 / ms as f32)
                     } else {
