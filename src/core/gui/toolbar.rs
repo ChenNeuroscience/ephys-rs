@@ -205,7 +205,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             // Home, and advanced mode (the graph in it, and panes' settings).
             let home = if self.layout.mode == Mode::Basic { "the basic view" } else { "the graph" };
             let tip = self.tooltip(&ctx, Action::Home, &format!("Home: {home}"));
-            if tool_button(ui, Icon::Home, &tip, true, self.layout.is_shown(Pane::Home)).clicked() {
+            if tool_button(ui, Icon::Home, &tip, true, false).clicked() {
                 chosen = Some(Action::Home);
             }
             let advanced = self.layout.mode == Mode::Advanced;

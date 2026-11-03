@@ -198,8 +198,6 @@ pub struct App<N: NodeSet, A: AnnotationSet> {
     /// The base directories as they are in the file (they aren't part of the graph's versions), if it's been saved or
     /// opened.
     saved_base_directory: Option<serde_json::Value>,
-    /// The window title as last set.
-    title: String,
     /// The user has said to close despite unsaved changes.
     closing: bool,
     /// The themes to choose from, and the one in use.
@@ -253,7 +251,6 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             path: None,
             saved: None,
             saved_base_directory: None,
-            title: String::new(),
             closing: false,
             themes,
             theme: 0,
@@ -1205,14 +1202,6 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         false
     }
 
-    fn window_title(&mut self, ctx: &egui::Context) {
-        let title = format!("{}{} — ephys-rs", self.file_name(), if self.unsaved() { " •" } else { "" });
-        if title != self.title {
-            ctx.send_viewport_cmd(ViewportCommand::Title(title.clone()));
-            self.title = title;
-        }
-    }
-
     /// Asks before closing with unsaved changes.
     fn confirm_close(&mut self, ctx: &egui::Context) {
         if ctx.input(|i| i.viewport().close_requested()) && !self.closing {
@@ -1249,7 +1238,6 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         self.frame_times.add("Upkeep", ms_since(started));
 
         let started = Instant::now();
-        self.window_title(&ctx);
         self.confirm_close(&ctx);
         let mut chosen = None;
         if !self.native_menu() {
