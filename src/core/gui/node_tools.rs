@@ -85,7 +85,7 @@ impl NodeToolbar for NodeTools<'_> {
 
     fn open_control_target(&mut self, control: usize) {
         if let Some((node, _)) = self.controls.get(control).copied().flatten() {
-            self.events.push(Event::OpenWindow(node));
+            self.events.push(Event::OpenWindow(node, Some(crate::core::layout::Pane::Node(self.id))));
         }
     }
 

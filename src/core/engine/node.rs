@@ -144,7 +144,7 @@ impl<E: Edges> Context<'_, E> {
         self.controls.get(control).is_some_and(Option::is_some)
     }
 
-    /// Whether the app's in advanced mode (see `crate::core::gui::docking::Mode`), rather than basic: what a pane
+    /// Whether the app's in advanced mode (see `crate::core::layout::Mode`), rather than basic: what a pane
     /// shows in each is up to it, but by convention, basic mode is simpler, and its settings menu (see
     /// `node_toolbar_with`) offers what to show in basic mode. Advanced, where there's no toolbar (in tests, say).
     pub fn advanced(&self) -> bool {

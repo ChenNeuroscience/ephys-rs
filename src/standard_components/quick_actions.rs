@@ -118,10 +118,14 @@ impl Change {
         }
     }
 
-    /// The change, opening `windows` (those not open already); nothing if nothing's changed (the graph already
-    /// does it all).
+    /// The change, opening `windows` (those not open already, where they'd go: see `Layout::open`); nothing if
+    /// nothing's changed (the graph already does it all).
     fn finish(self, state: &QuickState<Nodes>, windows: &[NodeId]) -> Option<QuickChange<Nodes>> {
-        let open = windows.iter().copied().filter(|w| !state.open_windows.contains(w)).collect();
+        let mut layout = state.layout.clone();
+        let open = layout.open_windows();
+        for &window in windows.iter().filter(|w| !open.contains(w)) {
+            layout.open(window, None);
+        }
         let mut done = Vec::new();
         if !self.added.is_empty() {
             done.push(format!("added {}", self.added.join(", ")));
@@ -130,15 +134,7 @@ impl Change {
             done.push(format!("connected {}", self.connected));
         }
         let summary = done.join("; ");
-        self.changed.then_some(QuickChange {
-            graph: self.graph,
-            open,
-            arrange: false,
-            panes: None,
-            close: Vec::new(),
-            summary,
-            base_directory: None,
-        })
+        self.changed.then_some(QuickChange { graph: self.graph, layout, arrange: false, summary, base_directory: None })
     }
 }
 
@@ -249,17 +245,13 @@ fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
     // A new graph, laid out tidily; recording each subject's trials.
     result.arrange = empty;
     result.base_directory = Some("Subject, date and trial");
-    let tabs = |tabs: Vec<Tab>| Arrangement::Tabs { tabs, active: 0 };
-    result.panes = Some(Arrangement::Row(vec![
-        (0.3, Arrangement::Tabs { tabs: vec![Tab::Home, Tab::Window(tracker)], active: 1 }),
-        (
-            0.7,
-            Arrangement::Column(vec![
-                (0.7, tabs(vec![Tab::Window(spike_viewer), Tab::Others])),
-                (0.3, tabs(vec![Tab::Window(lfp_viewer), Tab::Window(ttl_viewer)])),
-            ]),
-        ),
-    ]));
+    // The default layout: the tracker (with home behind it) on the left, the spikes and the EEG (with the TTLs) on the
+    // right; the panes there were before behind the spikes.
+    result.layout.arrange(&Arrangement::default_layout(
+        Arrangement::Tabs { tabs: vec![Tab::Home, Tab::Window(tracker)], active: 1 },
+        Arrangement::tabs(vec![Tab::Window(spike_viewer), Tab::Others]),
+        Arrangement::tabs(vec![Tab::Window(lfp_viewer), Tab::Window(ttl_viewer)]),
+    ));
     Some(result)
 }
 
@@ -292,10 +284,13 @@ fn set_positions_disabled(state: &QuickState<Nodes>, disabled: bool) -> Option<Q
         .copied()
         .filter(|id| matches!(graph.get(*id).map(|e| &e.node), Some(Nodes::TrackerView(_))))
         .collect();
-    let (open, close) = if disabled { (Vec::new(), trackers) } else { (trackers, Vec::new()) };
+    let mut layout = state.layout.clone();
+    for tracker in trackers {
+        if disabled { layout.close(tracker) } else { layout.open(tracker, None) }
+    }
     let names: Vec<String> = ids.iter().filter_map(|id| graph.get(*id).map(|e| e.label.clone())).collect();
     let summary = format!("{} {}", if disabled { "disabled" } else { "enabled" }, names.join(", "));
-    Some(QuickChange { graph, open, close, arrange: false, panes: None, summary, base_directory: None })
+    Some(QuickChange { graph, layout, arrange: false, summary, base_directory: None })
 }
 
 fn disable_positions(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
@@ -327,10 +322,8 @@ fn set_synthetic(state: &QuickState<Nodes>, synthetic: bool) -> Option<QuickChan
     let summary = format!("{} now {}", changed.join(", "), if synthetic { "synthetic" } else { "real devices" });
     (!changed.is_empty()).then_some(QuickChange {
         graph,
-        open: Vec::new(),
+        layout: state.layout.clone(),
         arrange: false,
-        panes: None,
-        close: Vec::new(),
         summary,
         base_directory: None,
     })
@@ -346,13 +339,12 @@ fn real(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
-
     use super::*;
+    use crate::core::quick_action::Layout;
 
     fn run(name: &str, graph: &Graph<Nodes>) -> Option<QuickChange<Nodes>> {
         let action = QUICK_ACTIONS.iter().find(|a| a.name == name).expect("action");
-        (action.run)(&QuickState { graph, open_windows: &HashSet::new() })
+        (action.run)(&QuickState { graph, layout: &Layout::default() })
     }
 
     fn offered(graph: &Graph<Nodes>) -> Vec<&'static str> {
@@ -367,7 +359,7 @@ mod tests {
         assert!(change.arrange, "a new graph is laid out");
         assert_eq!(change.base_directory, Some("Subject, date and trial"));
         assert!(change.summary.starts_with("added Acquisition Board, "), "{}", change.summary);
-        assert_eq!(change.open.len(), 4, "the four viewers");
+        assert_eq!(change.layout.open_windows().len(), 4, "the four viewers");
         let graph = change.graph;
         let resolved = graph.resolve();
         assert!(graph.iter().all(|(id, e)| e.node.warnings(&resolved[&id].input_streams).is_empty()), "all connected");

@@ -37,11 +37,12 @@ use crate::core::Components;
 use crate::core::annotation::{Annotation, AnnotationId, AnnotationSet, Annotations};
 use crate::core::base_directory::{BaseDirectories, BaseDirectoryType, Place};
 use crate::core::engine::{self, Graph, NodeId, NodeSet, Port, PortRef, Resolved, Runner, Snapshot, Stats};
+use crate::core::layout::{Layout, Mode, Pane};
 use crate::core::theme::{Colours, Theme};
 use actions::Action;
 use canvas::{Canvas, HEADER, NODE_WIDTH, Selection, Tool};
 use create_menu::{Choice, CreateMenu};
-use docking::{Layout, Mode, Pane, Panes};
+use docking::Panes;
 
 /// Runs the app built from `C`'s components, opening the file at `path` (or an empty graph).
 pub fn run<C: Components>(path: Option<PathBuf>) -> eframe::Result {
@@ -113,9 +114,11 @@ pub enum Event {
         scene: Pos2,
         from: Option<Port>,
     },
-    ToggleWindow(NodeId),
-    /// Open a node's window, or bring it to the front if it's open.
-    OpenWindow(NodeId),
+    /// Open a node's window (see `Layout::toggle`), or close it: from a pane, if it's done from one.
+    ToggleWindow(NodeId, Option<Pane>),
+    /// Open a node's window (see `Layout::open`), or bring it to the front if it's open: from a pane, if it's done
+    /// from one.
+    OpenWindow(NodeId, Option<Pane>),
     FloatWindow(NodeId),
     Duplicate(NodeId),
     Disconnect(NodeId),
@@ -718,16 +721,22 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         self.layout.show(Pane::Home);
     }
 
+    /// The quick actions offered, by index: those that apply to the graph and layout as they are.
+    fn offered(&self) -> Vec<usize> {
+        let state = crate::core::quick_action::QuickState { graph: &self.graph, layout: &self.layout };
+        (0..self.quick_actions.len()).filter(|&i| (self.quick_actions[i].run)(&state).is_some()).collect()
+    }
+
     /// Does a quick action: changes the graph, and opens windows, as it says (unless it no longer applies).
     fn quick_action(&mut self, index: usize) {
         let Some(action) = self.quick_actions.get(index) else { return };
         if self.locked() {
             return;
         }
-        let open_windows = self.layout.open_windows();
-        let state = crate::core::quick_action::QuickState { graph: &self.graph, open_windows: &open_windows };
+        let state = crate::core::quick_action::QuickState { graph: &self.graph, layout: &self.layout };
         let Some(change) = (action.run)(&state) else { return };
         self.graph = change.graph;
+        self.layout = change.layout;
         if change.arrange {
             for (id, pos) in arrange::arrange(&self.graph) {
                 if let Some(entry) = self.graph.get_mut(id) {
@@ -735,17 +744,6 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                 }
             }
             self.canvas.frame_all();
-        }
-        match &change.panes {
-            Some(panes) => self.layout.arrange(panes),
-            None => {
-                for id in change.open {
-                    self.layout.open(id);
-                }
-            }
-        }
-        for id in change.close {
-            self.layout.close(id);
         }
         let recording = self.history.current.snapshot.recording.is_some() || self.preparing.is_some();
         let types = self.base_directories.types();
@@ -830,7 +828,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                 let screen = self.add_anchor.take().unwrap_or_else(|| self.canvas.to_screen(at));
                 self.menu = Some(CreateMenu::new(screen, at, None));
             }
-            Action::ToggleDevTools => self.layout.toggle_pane(Pane::DevTools),
+            Action::ToggleDevTools => self.layout.toggle_dev_tools(),
             Action::Play => {
                 if self.runner.is_some() {
                     self.set_recording(None);
@@ -877,7 +875,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         let key = |key| ctx.input_mut(|i| i.consume_key(Modifiers::NONE, key));
         if key(Key::Enter) {
             if let Some(id) = self.selection.single() {
-                self.layout.toggle(id);
+                self.layout.toggle(id, None);
             } else if let (Some(&id), true) = (self.selection.annotations.first(), self.selection.nodes.is_empty()) {
                 self.canvas.edit_annotation(id);
             }
@@ -1040,10 +1038,10 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                 self.selection.only(id);
             }
             if clicks.close {
-                events.push(Event::ToggleWindow(id));
+                events.push(Event::ToggleWindow(id, None));
             }
             if clicks.dock {
-                self.layout.dock(id);
+                self.layout.dock(id, None);
             }
             // Timed as the window, as it is when docked.
             self.frame_times.add(&title, ms_since(started));
@@ -1053,8 +1051,8 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
     fn handle(&mut self, ctx: &egui::Context, event: Event) {
         match event {
             Event::OpenMenu { screen, scene, from } => self.menu = Some(CreateMenu::new(screen, scene, from)),
-            Event::ToggleWindow(id) => self.layout.toggle(id),
-            Event::OpenWindow(id) => self.layout.open(id),
+            Event::ToggleWindow(id, from) => self.layout.toggle(id, from),
+            Event::OpenWindow(id, from) => self.layout.open(id, from),
             Event::FloatWindow(id) => self.layout.float(id),
             Event::Duplicate(id) => {
                 if !self.selection.nodes.contains(&id) {
@@ -1210,7 +1208,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         let stats_clicked = egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui)).inner;
         self.frame_times.add("Status bar", ms_since(started));
         if stats_clicked && !self.layout.is_shown(Pane::DevTools) {
-            self.layout.toggle_pane(Pane::DevTools);
+            self.layout.toggle_dev_tools();
         }
         let mut events = Vec::new();
         // Panes don't paint their own backgrounds, so this shows behind them.
@@ -1220,6 +1218,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         let mut timings = Vec::new();
         let graph_tools = self.graph_tools();
         let base = self.base_directories.place();
+        let offered = self.offered();
         egui::CentralPanel::default().frame(background).show(ui, |ui| {
             let mut panes = Panes {
                 graph: &mut self.graph,
@@ -1232,6 +1231,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                 mode: self.layout.mode,
                 graph_tools,
                 quick_actions: self.quick_actions,
+                offered: &offered,
                 workers: self.workers,
                 locked,
                 dev_tools: &mut self.dev_tools,
@@ -1462,9 +1462,9 @@ impl<N: NodeSet, A: AnnotationSet> History<N, A> {
 mod tests {
     use super::*;
     use crate::core::engine::Role;
+    use crate::core::layout::WindowState;
     use crate::standard_components::themes::THEMES;
     use crate::{AnnotationTypes, Nodes};
-    use docking::WindowState;
     use egui_kittest::Harness;
     use egui_kittest::kittest::Queryable as _;
 
@@ -1642,10 +1642,10 @@ mod tests {
         let spikes = node_named(harness.state(), "Spike Viewer");
         let detector = node_named(harness.state(), "Spike Detector");
         let app = harness.state_mut();
-        // Opening docks: the first window in a new panel below the canvas, the next beside it.
-        app.layout.toggle(spikes);
-        app.layout.toggle(lfp);
-        app.layout.toggle(detector);
+        // Opening docks, from the graph: the first window in a column on its right, the next below that.
+        app.layout.toggle(spikes, Some(Pane::Home));
+        app.layout.toggle(lfp, Some(Pane::Home));
+        app.layout.toggle(detector, Some(Pane::Home));
         app.layout.float(detector);
         app.selection.only(detector);
         harness.run_steps(3);
@@ -1656,18 +1656,18 @@ mod tests {
         harness.snapshot("graph_windows_light");
         THEMES[0].apply(&harness.ctx);
         harness.state_mut().theme = 0;
-        assert_eq!(harness.query_all_by_label("Undock").count(), 1, "the docked windows' tab bar can undock");
+        assert_eq!(harness.query_all_by_label("Undock").count(), 2, "each group of docked windows can undock");
         assert_eq!(harness.query_all_by_label("Dock").count(), 1, "the floating window can be docked");
 
         // Closing a docked window keeps its place for when it's reopened.
         let app = harness.state_mut();
         assert_eq!(app.layout.window(lfp), WindowState::Docked);
         assert_eq!(app.layout.window(detector), WindowState::Floating);
-        app.layout.toggle(spikes);
+        app.layout.toggle(spikes, Some(Pane::Home));
         assert_eq!(app.layout.window(spikes), WindowState::Hidden);
-        app.layout.toggle(spikes);
+        app.layout.toggle(spikes, Some(Pane::Home));
         assert_eq!(app.layout.window(spikes), WindowState::Docked);
-        app.layout.dock(detector);
+        app.layout.dock(detector, Some(Pane::Home));
         assert_eq!(app.layout.window(detector), WindowState::Docked);
     }
 
@@ -1675,7 +1675,7 @@ mod tests {
     fn floating_window_moves_by_its_header() {
         let mut harness = harness();
         let detector = node_named(harness.state(), "Spike Detector");
-        harness.state_mut().layout.toggle(detector);
+        harness.state_mut().layout.toggle(detector, Some(Pane::Home));
         harness.state_mut().layout.float(detector);
         harness.run_steps(3);
         let area = |h: &Harness<TestApp>| h.ctx.memory(|m| m.area_rect(Id::unique(("node-window", detector))));
@@ -1934,8 +1934,10 @@ mod tests {
         harness.snapshot("basic_empty");
         let button = egui::accesskit::Role::Button;
         let offered = |h: &Harness<TestApp>, action: &str| h.query_by_role_and_label(button, action).is_some();
-        // A pane open before goes behind the spike viewer.
-        harness.state_mut().layout.toggle_pane(Pane::DevTools);
+        // A pane open before goes behind the spike viewer. (The dev tools open as a tab beside home: home's brought
+        // back to the front.)
+        harness.state_mut().layout.toggle_dev_tools();
+        harness.state_mut().layout.show(Pane::Home);
         harness.run_steps(2);
         assert_eq!(harness.state().base_directories.chosen(), Some(0));
         harness.get_by_role_and_label(button, "Standard LTX graph v0.5").click();
@@ -1964,7 +1966,7 @@ mod tests {
         for left_out in ["Enabled", "Show in basic view", "Delete"] {
             assert_eq!(buttons(&harness, left_out), 0, "no {left_out} in the basic view");
         }
-        harness.state_mut().layout.toggle_pane(Pane::DevTools);
+        harness.state_mut().layout.toggle_dev_tools();
         harness.state_mut().layout.show(Pane::Home);
         harness.run_steps(2);
         assert!(harness.state().layout.is_shown(Pane::Home), "the basic view stays");
@@ -2070,7 +2072,7 @@ mod tests {
         assert!(!harness.state().graph.is_edge_disabled(&edge));
         // And from its window's toggle.
         harness.state_mut().graph.get_mut(detector).unwrap().disabled = false;
-        harness.state_mut().layout.open(detector);
+        harness.state_mut().layout.open(detector, Some(Pane::Home));
         harness.run_steps(2);
         harness.get_by_label("Enabled").click();
         harness.run_steps(2);
@@ -2125,7 +2127,7 @@ mod tests {
         // In basic mode: no settings, enabling or deleting in panes.
         harness.state_mut().layout.mode = Mode::Basic;
         let viewer = node_named(harness.state(), "Spike Viewer");
-        harness.state_mut().layout.open(viewer);
+        harness.state_mut().layout.open(viewer, Some(Pane::Home));
         harness.run_steps(2);
         assert!(harness.query_by_label("Settings").is_none() && harness.query_by_label("Enabled").is_none());
         harness.key_press_modifiers(Modifiers::COMMAND, Key::Num1);
@@ -2145,7 +2147,7 @@ mod tests {
             harness.state_mut().graph.remove(id);
         }
         let (viewer, gain) = (node_named(harness.state(), "Spike Viewer"), node_named(harness.state(), "Spike Gain"));
-        harness.state_mut().layout.open(viewer);
+        harness.state_mut().layout.open(viewer, Some(Pane::Home));
         harness.run_steps(2);
         let ctx = harness.ctx.clone();
         harness.state_mut().perform(&ctx, Action::Play);

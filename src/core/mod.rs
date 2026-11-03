@@ -12,6 +12,7 @@ pub mod crash;
 pub mod engine;
 pub mod exchange;
 pub mod gui;
+pub mod layout;
 pub mod quick_action;
 pub mod theme;
 pub mod time_axis;

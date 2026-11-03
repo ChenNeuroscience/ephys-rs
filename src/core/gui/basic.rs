@@ -10,7 +10,7 @@ use eframe::egui::{self, Color32, CornerRadius, RichText, Sense, Stroke};
 use super::Event;
 use super::style;
 use crate::core::engine::{Category, EdgeSet, Graph, NodeId, NodeSet, Resolved};
-use crate::core::quick_action::{QuickAction, QuickState};
+use crate::core::quick_action::QuickAction;
 use crate::core::theme::Colours;
 
 /// The cards' widest.
@@ -25,6 +25,8 @@ pub fn show<N: NodeSet>(
     resolved: &Resolved<N::Edges>,
     colours: &Colours,
     quick_actions: &[QuickAction<N>],
+    // Those offered, by index (see `App::offered`).
+    offered: &[usize],
     open_windows: &HashSet<NodeId>,
     locked: bool,
     events: &mut Vec<Event>,
@@ -80,7 +82,7 @@ pub fn show<N: NodeSet>(
                 let tip = if open { "Its window's open" } else { "Open its window beside this view" };
                 let card = card.on_hover_text(format!("{tip} (right-click to hide it from here)"));
                 if card.clicked() {
-                    events.push(Event::OpenWindow(id));
+                    events.push(Event::OpenWindow(id, Some(crate::core::layout::Pane::Home)));
                 }
                 card.context_menu(|ui| {
                     if ui.button("Hide from the basic view").clicked() {
@@ -93,9 +95,8 @@ pub fn show<N: NodeSet>(
             ui.add_space(18.0);
             ui.label(RichText::new("Quick actions").size(22.0).color(colours.text_primary));
             ui.add_space(8.0);
-            let state = QuickState { graph, open_windows };
             let offered: Vec<(usize, &QuickAction<N>)> =
-                quick_actions.iter().enumerate().filter(|(_, a)| (a.run)(&state).is_some()).collect();
+                offered.iter().filter_map(|&i| Some((i, quick_actions.get(i)?))).collect();
             if offered.is_empty() {
                 ui.label(RichText::new("Nothing to add: the graph does all of these.").color(colours.text_secondary));
             }

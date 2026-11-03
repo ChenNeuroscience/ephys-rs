@@ -27,6 +27,7 @@ use crate::core::engine::{
     Dimension, Edge, EdgeInfo, EdgeSet, Edges, Graph, KindKey, NodeEntry, NodeId, NodeSet, NodeState, Port, Resolved,
     Role,
 };
+use crate::core::layout::Pane;
 use crate::core::theme::Colours;
 
 pub const NODE_WIDTH: f32 = 190.0;
@@ -1015,7 +1016,7 @@ impl Canvas {
         if body.clicked() {
             if !shift {
                 if selection.nodes.contains(&id) {
-                    events.push(Event::OpenWindow(id));
+                    events.push(Event::OpenWindow(id, Some(Pane::Home)));
                 }
                 selection.only(id);
             } else if !selection.nodes.remove(&id) {
@@ -1033,7 +1034,7 @@ impl Canvas {
                 ui.separator();
             }
             if ui.button(if window_open { "Close window" } else { "Open window" }).clicked() {
-                events.push(Event::ToggleWindow(id));
+                events.push(Event::ToggleWindow(id, Some(Pane::Home)));
             }
             if ui.button("Duplicate").clicked() {
                 events.push(Event::Duplicate(id));

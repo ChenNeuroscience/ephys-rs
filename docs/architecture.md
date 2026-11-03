@@ -101,7 +101,9 @@ next pass.
 [`gui`](../src/core/gui/mod.rs) is an egui app: menus and a toolbar, a dockable layout of panes, and a status bar.
 The app is in **basic** or **advanced** mode: in basic mode, the home pane shows the components (viewers, to begin
 with) and [quick actions](quick-actions.md); in advanced mode, the graph, and each pane has a settings menu. What a
-pane shows in each mode is up to it (`Context::advanced`).
+pane shows in each mode is up to it (`Context::advanced`). Where panes go when they're opened is the
+[layout](quick-actions.md#the-layout)'s to say ([`layout.rs`](../src/core/layout.rs)): windows take steps towards a
+default layout, a column on the left and two groups one above another on the right.
 
 ![Basic mode, after the standard LTX quick action](../tests/snapshots/standard_ltx_layout.png)
 

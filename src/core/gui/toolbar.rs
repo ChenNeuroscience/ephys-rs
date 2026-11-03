@@ -6,12 +6,12 @@ use eframe::egui::{self, Rect, Sense, Stroke, StrokeKind};
 
 use super::actions::{Action, MENUS, MenuEntry};
 use super::canvas::Tool;
-use super::docking::{Mode, Pane};
 use super::icons::{self, Icon};
 use super::{App, Event};
 use crate::core::annotation::AnnotationSet;
 use crate::core::base_directory::BaseDirectoryContext;
 use crate::core::engine::NodeSet;
+use crate::core::layout::{Mode, Pane};
 
 const BUTTON: egui::Vec2 = egui::vec2(26.0, 24.0);
 
