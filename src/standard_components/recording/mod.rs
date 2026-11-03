@@ -1,10 +1,13 @@
 //! Writers: nodes that record what's connected to them while the graph is recording, to LTX files (`ltx`) or Open
 //! Ephys's binary format (`raw`).
 //!
-//! A writer's passes only hand their inputs out (see `Node::copies`), in chunks to a thread of its own (`Writing`),
-//! which writes them to disk. So passes never wait on the disk. The chunks are a pool (see
-//! `crate::standard_components::pool`), made before recording and handed back once written, so nothing's allocated;
-//! a writer whose inputs are its own to take (see `Node::takes`) swaps them into a chunk rather than copying.
+//! A writer's passes only hand their inputs out, in chunks to a thread of its own (`Writing`), which writes them to
+//! disk. So passes never wait on the disk. The chunks are a pool (see `crate::standard_components::pool`), made
+//! before recording and handed back once written, so nothing's allocated; a writer that takes its inputs (see
+//! `Node::takes`) swaps them into a chunk rather than copying.
+//!
+//! Where a writer writes is its `Location`: the base directory (see `crate::core::base_directory`), a subdirectory of
+//! it, or a directory of its own.
 //!
 //! Before recording starts, a writer opens its files and starts its thread (`Node::prepare_to_record`), so passes
 //! only record once it's ready. (If it starts recording without having prepared, after the graph's changed
@@ -16,13 +19,14 @@ mod npy;
 pub mod raw;
 
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use eframe::egui::{self, RichText};
+use serde::{Deserialize, Serialize};
 
 use crate::core::engine::PoolStatus;
 use crate::core::theme::Colours;
@@ -174,14 +178,103 @@ impl<C> Drop for Writing<C> {
     }
 }
 
-/// `directory` (a leading `~` meaning the home directory), with `name` in it.
-pub fn path_in(directory: &str, name: &str) -> PathBuf {
+/// `directory`, a leading `~` meaning the home directory.
+pub fn expand(directory: &str) -> PathBuf {
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
-    let directory = match (directory.strip_prefix("~"), home) {
+    match (directory.strip_prefix("~"), home) {
         (Some(rest), Some(home)) => PathBuf::from(home).join(rest.trim_start_matches(['/', '\\'])),
         _ => PathBuf::from(directory),
+    }
+}
+
+/// Where recordings go when there's no base directory (none's been chosen) and a writer's meant to write in it.
+pub const NO_BASE: &str = "~/recordings";
+
+/// Where a writer writes.
+#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Location {
+    /// In the base directory (see `crate::core::base_directory`).
+    #[default]
+    Base,
+    /// In a subdirectory of it (or a path within it: "ltx/tetrodes", say).
+    Subdirectory { name: String },
+    /// In a directory of its own, whatever the base directory (a leading `~` meaning the home directory).
+    Directory { path: String },
+}
+
+impl Location {
+    /// The directory it means, given the base directory, if there is one (otherwise `NO_BASE`).
+    pub fn directory(&self, base: Option<&Path>) -> PathBuf {
+        let base = || base.map_or_else(|| expand(NO_BASE), Path::to_path_buf);
+        match self {
+            Location::Base => base(),
+            Location::Subdirectory { name } => base().join(name.trim().trim_start_matches(['/', '\\'])),
+            Location::Directory { path } => expand(path),
+        }
+    }
+}
+
+/// Choosing where a writer writes: in the base directory, a subdirectory of it, or a directory of its own; and where
+/// that is, for the next recording (or this one).
+pub fn location_ui(ui: &mut egui::Ui, location: &mut Location, base: Option<&Path>) {
+    let names = ["The base directory", "A subdirectory of it", "A directory of its own"];
+    let current = match location {
+        Location::Base => 0,
+        Location::Subdirectory { .. } => 1,
+        Location::Directory { .. } => 2,
     };
-    directory.join(name)
+    let mut chosen = current;
+    crate::standard_components::widgets::setting(ui, "Writes in", |ui| {
+        egui::ComboBox::from_id_salt("location")
+            .selected_text(names[current])
+            .show_ui(ui, |ui| {
+                for (index, name) in names.into_iter().enumerate() {
+                    ui.selectable_value(&mut chosen, index, name);
+                }
+            })
+            .response
+            .on_hover_text("The base directory is chosen in the main toolbar, for all the writers")
+    });
+    if chosen != current {
+        *location = match chosen {
+            0 => Location::Base,
+            1 => Location::Subdirectory { name: "subdirectory".into() },
+            _ => Location::Directory { path: location.directory(base).display().to_string() },
+        };
+    }
+    match location {
+        Location::Base => {}
+        Location::Subdirectory { name } => {
+            crate::standard_components::widgets::setting(ui, "Subdirectory", |ui| ui.text_edit_singleline(name));
+        }
+        Location::Directory { path } => {
+            crate::standard_components::widgets::setting(ui, "Directory", |ui| {
+                ui.horizontal(|ui| {
+                    let field = ui.add(egui::TextEdit::singleline(path).desired_width(180.0));
+                    if ui.small_button("Choose…").on_hover_text("Choose the directory").clicked()
+                        && let Some(chosen) = rfd::FileDialog::new().set_directory(expand(path)).pick_folder()
+                    {
+                        *path = chosen.display().to_string();
+                    }
+                    field
+                })
+                .inner
+            });
+        }
+    }
+}
+
+/// Where a writer writes, in a line: for the next recording, or this one.
+pub fn location_summary(ui: &mut egui::Ui, location: &Location, base: Option<&Path>) {
+    let directory = location.directory(base);
+    let text = format!("In {}", directory.display());
+    let tip = match (location, base) {
+        (Location::Directory { .. }, _) => "Its own directory",
+        (_, Some(_)) => "As the base directory is now (in the main toolbar)",
+        (_, None) => "There's no base directory (choose one in the main toolbar): so here",
+    };
+    ui.add(egui::Label::new(RichText::new(text).small()).wrap()).on_hover_text(tip);
 }
 
 /// A recording's name: the prefix, then when it started, e.g. "session_2026-11-01_143005".
@@ -219,6 +312,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
+    use super::Location;
     use crate::Nodes;
     use crate::core::engine::{Graph, NodeId, NodeSet, Port, Recording, Role, Runner, Snapshot};
     use crate::standard_components::ephys::board::{Source, serve_test_board};
@@ -236,7 +330,6 @@ mod tests {
     #[test]
     fn records_while_recording_and_finishes_the_files() {
         let dir = std::env::temp_dir().join(format!("ephys-rs-recording-{}", std::process::id()));
-        let directory = dir.display().to_string();
         let mut graph = Graph::default();
         let board = add(&mut graph, "Acquisition Board");
         if let Some(Nodes::AcquisitionBoard(b)) = graph.get_mut(board).map(|e| &mut e.node) {
@@ -250,19 +343,20 @@ mod tests {
         link(&mut graph, board, 0, ltx, 1);
         link(&mut graph, board, 0, raw, 0);
         link(&mut graph, board, 1, raw, 1);
+        // LTX in the base directory, raw in a subdirectory of it.
         match graph.get_mut(ltx).map(|e| &mut e.node) {
-            Some(Nodes::WriteLtx(w)) => w.directory = directory.clone(),
+            Some(Nodes::WriteLtx(w)) => w.location = Location::Base,
             _ => unreachable!(),
         }
         match graph.get_mut(raw).map(|e| &mut e.node) {
-            Some(Nodes::WriteRaw(w)) => w.directory = directory.clone(),
+            Some(Nodes::WriteRaw(w)) => w.location = Location::Subdirectory { name: "raw".into() },
             _ => unreachable!(),
         }
 
         let snapshot = Snapshot::new(0, graph, None);
         let runner = Runner::start(&snapshot, 2);
         // The writers open their files before recording starts.
-        let recording = snapshot.with_recording(1, Some(Arc::new(Recording::prepare(&snapshot))));
+        let recording = snapshot.with_recording(1, Some(Arc::new(Recording::prepare(&snapshot, Some(dir.clone())))));
         assert!(runner.update(&recording), "recording carries on the same run");
         let deadline = Instant::now() + Duration::from_secs(10);
         while runner.clock() < 1.0 && Instant::now() < deadline {
@@ -281,7 +375,8 @@ mod tests {
         assert!(samples > 1000, "a second or so at 5 kHz, got {samples}");
         assert!(text.contains("data_end"), "finished");
         assert!(named(".1").is_some(), "the first tetrode's spikes");
-        let folder = files.iter().find(|p| p.is_dir()).expect("the raw recording's folder");
+        let raws: Vec<_> = std::fs::read_dir(dir.join("raw")).unwrap().map(|e| e.unwrap().path()).collect();
+        let folder = raws.iter().find(|p| p.is_dir()).expect("the raw recording's folder");
         let dat =
             folder.join("Record Node 101/experiment1/recording1/continuous/ephys-rs-100.continuous/continuous.dat");
         let bytes = std::fs::metadata(dat).unwrap().len();

@@ -89,6 +89,8 @@ impl core::Components for Standard {
     const THEMES: &'static [core::theme::Theme] = standard_components::themes::THEMES;
     const QUICK_ACTIONS: &'static [core::quick_action::QuickAction<Nodes>] =
         standard_components::quick_actions::QUICK_ACTIONS;
+    const BASE_DIRECTORIES: &'static [core::base_directory::BaseDirectoryType] =
+        standard_components::base_directories::BASE_DIRECTORIES;
 }
 
 /// The graph in examples/rig.json, for tests.

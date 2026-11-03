@@ -424,8 +424,10 @@
         "label": "Write Raw",
         "node": {
           "settings": {
-            "directory": "~/recordings",
-            "prefix": "session"
+            "prefix": "session",
+            "location": {
+              "kind": "base"
+            }
           },
           "type": "WriteRaw"
         },
@@ -597,8 +599,10 @@
         "label": "Write LTX",
         "node": {
           "settings": {
-            "directory": "~/recordings",
-            "prefix": "session"
+            "prefix": "session",
+            "location": {
+              "kind": "base"
+            }
           },
           "type": "WriteLtx"
         },

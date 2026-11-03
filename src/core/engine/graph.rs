@@ -525,6 +525,7 @@ impl<N: NodeSet> Graph<N> {
         inputs: &[Option<DataStream<N>>],
         theme: &Colours,
         exchange: Option<&crate::core::exchange::Exchange>,
+        base_directory: Option<&std::path::Path>,
         running: bool,
         locked: bool,
         tools: Option<&mut dyn super::NodeToolbar>,
@@ -540,6 +541,7 @@ impl<N: NodeSet> Graph<N> {
             theme,
             node: id,
             exchange,
+            base_directory,
             running,
             locked,
             // Reborrowed, to live as long as the context.
@@ -570,27 +572,34 @@ impl<N: NodeSet> Graph<N> {
 /// For each node with controls, the value of the setting each is connected to, if it is.
 pub type ControlValues<N> = HashMap<NodeId, Vec<Option<Setting<N>>>>;
 
-/// A recording, once the nodes have prepared for it (see `Node::prepare_to_record`): what each prepared, until its
-/// first recording pass takes it.
+/// A recording, once the nodes have prepared for it (see `Node::prepare_to_record`): its base directory (see
+/// `crate::core::base_directory`), and what each node prepared, until its first recording pass takes it.
 #[derive(Default)]
 pub struct Recording {
+    base_directory: Option<std::path::PathBuf>,
     prepared: Mutex<HashMap<NodeId, Box<dyn Any + Send>>>,
 }
 
 impl Recording {
-    /// Has every node that runs in `snapshot` prepare to record. Can take a while (opening files, say), so isn't
-    /// for the GUI's thread.
-    pub fn prepare<N: NodeSet>(snapshot: &Snapshot<N>) -> Self {
+    /// Has every node that runs in `snapshot` prepare to record, in `base_directory` (if there is one). Can take a
+    /// while (opening files, say), so isn't for the GUI's thread.
+    pub fn prepare<N: NodeSet>(snapshot: &Snapshot<N>, base_directory: Option<std::path::PathBuf>) -> Self {
         let resolved = snapshot.graph.resolve();
         let mut prepared = HashMap::new();
         for step in snapshot.plan.steps() {
             let (Some(entry), Some(state)) = (snapshot.graph.get(step.id), resolved.get(&step.id)) else { continue };
             let controls = snapshot.controls.get(&step.id).map_or(&[][..], Vec::as_slice);
-            if let Some(ready) = entry.node.prepare_to_record(&state.input_streams, controls) {
+            let base = base_directory.as_deref();
+            if let Some(ready) = entry.node.prepare_to_record(&state.input_streams, controls, base) {
                 prepared.insert(step.id, ready);
             }
         }
-        Recording { prepared: Mutex::new(prepared) }
+        Recording { base_directory, prepared: Mutex::new(prepared) }
+    }
+
+    /// Its base directory, if there is one.
+    pub fn base_directory(&self) -> Option<&std::path::Path> {
+        self.base_directory.as_deref()
     }
 
     /// What node `id` prepared, if it did and it hasn't been taken.
@@ -743,7 +752,7 @@ mod tests {
         let thresholds = |uv: Vec<f32>| Setting::Thresholds(spikes::Thresholds(uv));
         assert_eq!(graph.control_values(viewer), vec![Some(thresholds(vec![])), None]);
         let theme = &crate::standard_components::themes::THEMES[0].colours;
-        graph.edit(viewer, &[], theme, None, false, false, None, |_, context| {
+        graph.edit(viewer, &[], theme, None, None, false, false, None, |_, context| {
             context.controls[0] = Some(thresholds(vec![55.0]))
         });
         assert_eq!(graph.get(detector).unwrap().node.settings()[0].value, thresholds(vec![55.0]));

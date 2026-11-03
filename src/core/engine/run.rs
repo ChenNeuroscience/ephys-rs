@@ -151,6 +151,11 @@ impl<'a, E: Edges> Pass<'a, E> {
         self.taken.get_mut(index)?.as_mut()
     }
 
+    /// The base directory the recording's in (see `crate::core::base_directory`), while recording, if there is one.
+    pub fn base_directory(&self) -> Option<&std::path::Path> {
+        self.prepared?.base_directory()
+    }
+
     /// What the node prepared to record (see `Node::prepare_to_record`), if it did and it's of type `T`: given once,
     /// to the first pass that asks while recording.
     pub fn take_prepared<T: 'static>(&self) -> Option<T> {

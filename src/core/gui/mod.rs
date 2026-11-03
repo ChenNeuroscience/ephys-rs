@@ -19,6 +19,12 @@ mod paste_settings;
 mod style;
 mod toolbar;
 
+/// Pieces of the GUI for components to draw with, so they look of a piece with it.
+pub mod widgets {
+    pub use super::icons::Icon;
+    pub use super::toolbar::toolbar_button;
+}
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -29,6 +35,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::Components;
 use crate::core::annotation::{Annotation, AnnotationId, AnnotationSet, Annotations};
+use crate::core::base_directory::{BaseDirectories, BaseDirectoryType};
 use crate::core::engine::{self, Graph, NodeId, NodeSet, Port, PortRef, Resolved, Runner, Snapshot, Stats};
 use crate::core::theme::{Colours, Theme};
 use actions::Action;
@@ -41,7 +48,9 @@ pub fn run<C: Components>(path: Option<PathBuf>) -> eframe::Result {
     crate::core::console::init(true);
     crate::core::crash::install();
     crate::core::crash::test_if_asked();
-    let mut app = App::<C::Nodes, C::Annotations>::open(path, C::THEMES).with_quick_actions(C::QUICK_ACTIONS);
+    let mut app = App::<C::Nodes, C::Annotations>::open(path, C::THEMES)
+        .with_quick_actions(C::QUICK_ACTIONS)
+        .with_base_directories(C::BASE_DIRECTORIES);
     app.last_crash = crate::core::crash::take_latest();
     if let Some(report) = &app.last_crash {
         log::warn!("The last time ephys-rs ran, it crashed: a report is in {}", report.display());
@@ -64,6 +73,8 @@ pub fn run<C: Components>(path: Option<PathBuf>) -> eframe::Result {
                 app.theme = index;
             }
             app.themes[app.theme].apply(&cc.egui_ctx);
+            let saved: Option<serde_json::Value> = cc.storage.and_then(|s| eframe::get_value(s, BASE_DIRECTORY_KEY));
+            app.base_directories = BaseDirectories::new(app.base_directories.types(), saved.as_ref());
             // For images in annotations.
             egui_extras::install_image_loaders(&cc.egui_ctx);
             #[cfg(target_os = "macos")]
@@ -91,6 +102,8 @@ pub fn version() -> String {
 
 /// Where the theme (by name) is kept among the app's preferences (which eframe saves, separately from graph files).
 const THEME_KEY: &str = "theme";
+/// Where the base directories are kept with the app's preferences (see `BaseDirectories::save`).
+const BASE_DIRECTORY_KEY: &str = "base directory";
 
 /// Something a pane asked for, handled once the panes are drawn.
 pub enum Event {
@@ -191,6 +204,8 @@ pub struct App<N: NodeSet, A: AnnotationSet> {
     dev_tools: dev_tools::DevTools,
     /// Offered in the basic view.
     quick_actions: &'static [crate::core::quick_action::QuickAction<N>],
+    /// Where recordings go: the one in use, in a section of the toolbar.
+    base_directories: BaseDirectories,
     /// How many workers runs start with.
     workers: usize,
     /// How long each part of the GUI's taking, frame by frame, for the dev tools; and the last frame's CPU time.
@@ -236,6 +251,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             ran: None,
             last_crash: None,
             quick_actions: &[],
+            base_directories: BaseDirectories::new(&[], None),
         };
         if let Some(path) = path {
             if path.exists() {
@@ -427,9 +443,13 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         let snapshot = self.history.current.snapshot.clone();
         let (sender, receiver) = std::sync::mpsc::channel();
         let repaint = ctx.clone();
-        log::info!("Preparing to record");
+        let base = self.base_directories.directory();
+        match &base {
+            Some(base) => log::info!("Preparing to record, in {}", base.display()),
+            None => log::info!("Preparing to record"),
+        }
         let spawned = std::thread::Builder::new().name("preparing to record".into()).spawn(move || {
-            let _ = sender.send(engine::Recording::prepare(&snapshot));
+            let _ = sender.send(engine::Recording::prepare(&snapshot, base));
             repaint.request_repaint();
         });
         match spawned {
@@ -447,6 +467,9 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             self.saved = Some(new);
         }
         let clock = self.runner.as_ref().map_or(0.0, |r| r.clock());
+        if let Some(base) = self.base_directories.current() {
+            if on { base.recording_started() } else { base.recording_stopped() }
+        }
         if on {
             self.recording_since = clock;
             log::info!("Recording, from {}", clock_text(clock));
@@ -519,6 +542,12 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
     }
 
     /// Offers `quick_actions` in the basic view.
+    /// With `types` of base directory to choose from (the first in use, until another's chosen).
+    pub fn with_base_directories(mut self, types: &'static [BaseDirectoryType]) -> Self {
+        self.base_directories = BaseDirectories::new(types, None);
+        self
+    }
+
     pub fn with_quick_actions(mut self, quick_actions: &'static [crate::core::quick_action::QuickAction<N>]) -> Self {
         self.quick_actions = quick_actions;
         self
@@ -926,6 +955,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         let locked = self.locked();
         let colours = self.colours();
         let advanced = self.layout.mode == Mode::Advanced;
+        let base = self.base_directories.directory();
         for id in self.layout.floating() {
             let started = Instant::now();
             let Some(entry) = self.graph.get(id) else { continue };
@@ -951,6 +981,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                             resolved,
                             colours,
                             self.runner.as_ref(),
+                            base.as_deref(),
                             locked,
                             advanced,
                             id,
@@ -1143,6 +1174,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         let locked = self.locked();
         let mut timings = Vec::new();
         let graph_tools = self.graph_tools();
+        let base = self.base_directories.directory();
         egui::CentralPanel::default().frame(background).show(ui, |ui| {
             let mut panes = Panes {
                 graph: &mut self.graph,
@@ -1150,6 +1182,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                 resolved: &resolved,
                 colours,
                 runner: self.runner.as_ref(),
+                base_directory: base.as_deref(),
                 snapshot: &self.history.current.snapshot,
                 mode: self.layout.mode,
                 graph_tools,
@@ -1272,6 +1305,7 @@ impl<N: NodeSet, A: AnnotationSet> eframe::App for App<N, A> {
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, THEME_KEY, &self.themes[self.theme].name);
+        eframe::set_value(storage, BASE_DIRECTORY_KEY, &self.base_directories.save());
     }
 }
 
@@ -1399,7 +1433,8 @@ mod tests {
 
     fn harness() -> Harness<'static, TestApp> {
         let mut app = TestApp::open(Some(example()), THEMES)
-            .with_quick_actions(crate::standard_components::quick_actions::QUICK_ACTIONS);
+            .with_quick_actions(crate::standard_components::quick_actions::QUICK_ACTIONS)
+            .with_base_directories(crate::standard_components::base_directories::BASE_DIRECTORIES);
         // Most tests work on the graph.
         app.layout.mode = Mode::Advanced;
         assert!(app.status.is_none(), "the example opens");
@@ -1628,6 +1663,27 @@ mod tests {
         harness.key_press(Key::Space);
         harness.run_steps(2);
         assert!(harness.state().runner.is_none());
+    }
+
+    #[test]
+    fn the_base_directory_is_in_the_toolbar_and_chosen_in_advanced_mode() {
+        let mut harness = harness();
+        // Subject, date and trial, in a directory that isn't there (so the next trial's the first).
+        let saved = serde_json::json!({
+            "chosen": "Subject, date and trial",
+            "types": { "Subject, date and trial": { "directory": "/nowhere/recordings", "subject": "r2405" } },
+        });
+        let types = harness.state().base_directories.types();
+        harness.state_mut().base_directories = BaseDirectories::new(types, Some(&saved));
+        harness.run_steps(2);
+        let directory = harness.state().base_directories.directory().unwrap();
+        assert!(directory.starts_with("/nowhere/recordings/r2405") && directory.ends_with("trial_01"), "{directory:?}");
+        harness.get_by_label("Where recordings go").click();
+        harness.run_steps(2);
+        harness.snapshot("toolbar_base_directory");
+        harness.get_by_label("A directory").click();
+        harness.run_steps(2);
+        assert_eq!(harness.state().base_directories.chosen(), Some(0));
     }
 
     #[test]

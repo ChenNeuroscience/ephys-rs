@@ -10,6 +10,7 @@ use super::docking::{Mode, Pane};
 use super::icons::{self, Icon};
 use super::{App, Event};
 use crate::core::annotation::AnnotationSet;
+use crate::core::base_directory::BaseDirectoryContext;
 use crate::core::engine::NodeSet;
 
 const BUTTON: egui::Vec2 = egui::vec2(26.0, 24.0);
@@ -240,8 +241,9 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             }
             self.record_clock(ui, recording);
             ui.separator();
-
-            ui.separator();
+            if self.base_directory_ui(ui) {
+                ui.separator();
+            }
             let tip = self.tooltip(&ctx, Action::ToggleDevTools, "Developer tools");
             if tool_button(ui, Icon::DevTools, &tip, true, self.layout.is_shown(Pane::DevTools)).clicked() {
                 chosen = Some(Action::ToggleDevTools);
@@ -260,6 +262,34 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
 }
 
 impl<N: NodeSet, A: AnnotationSet> App<N, A> {
+    /// Where recordings go: the base directory in use's section (see `crate::core::base_directory`), then in advanced
+    /// mode, choosing which is in use. Whether there's one.
+    fn base_directory_ui(&mut self, ui: &mut egui::Ui) -> bool {
+        let types = self.base_directories.types();
+        if types.is_empty() {
+            return false;
+        }
+        let colours = self.colours();
+        let recording = self.history.current.snapshot.recording.is_some() || self.preparing.is_some();
+        if let Some(current) = self.base_directories.current() {
+            current.toolbar_ui(ui, &BaseDirectoryContext { theme: colours, recording });
+        }
+        if self.layout.mode == Mode::Advanced && types.len() > 1 {
+            let tip = if recording { "Where recordings go: not while recording" } else { "Where recordings go" };
+            let button = tool_button(ui, Icon::Settings, tip, !recording, false);
+            let chosen = self.base_directories.chosen();
+            egui::Popup::menu(&button).show(|ui| {
+                for (index, kind) in types.iter().enumerate() {
+                    let item = egui::Button::new((check(chosen == Some(index)), kind.name));
+                    if ui.add(item).on_hover_text(kind.description).clicked() {
+                        self.base_directories.choose(index);
+                    }
+                }
+            });
+        }
+        true
+    }
+
     /// The acquisition clock: how long the graph's been running, greyed out when it isn't.
     fn play_clock(&self, ui: &mut egui::Ui) {
         let colours = self.colours();
@@ -302,6 +332,12 @@ fn check(on: bool) -> egui::Atom<'static> {
             ui.painter().add(egui::Shape::line(points, Stroke::new(1.6, args.fallback_text_color)));
         }
     })
+}
+
+/// A flat icon button, as along the main toolbar (for sections of it drawn by components: see
+/// `crate::core::base_directory`).
+pub fn toolbar_button(ui: &mut egui::Ui, icon: Icon, tooltip: &str, enabled: bool) -> egui::Response {
+    tool_button(ui, icon, tooltip, enabled, false)
 }
 
 /// A flat icon button, framed only when hovered or `selected` (a tool that's in use).

@@ -26,7 +26,7 @@ use chrono::{DateTime, Local};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 
-use super::{Files, Status, Writing, path_in, session_name, status_ui};
+use super::{Files, Location, Status, Writing, location_summary, location_ui, session_name, status_ui};
 use crate::core::engine::{
     Category, Context, Control, DataStreamType, EdgeSet, Flow, Input, Node, NodeInfo, NodeThread, Output,
     PASS_DURATION, Pass, PoolStatus, ThreadContext,
@@ -51,13 +51,14 @@ const MISSING: u16 = 1023;
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WriteLtx {
-    pub directory: String,
+    /// Where it writes (each recording's files in it).
+    pub location: Location,
     pub prefix: String,
 }
 
 impl Default for WriteLtx {
     fn default() -> Self {
-        WriteLtx { directory: "~/recordings".into(), prefix: "session".into() }
+        WriteLtx { location: Location::Base, prefix: "session".into() }
     }
 }
 
@@ -223,8 +224,9 @@ impl Node<Edges> for WriteLtx {
         &self,
         inputs: &[Option<DataStream>],
         controls: &[Option<Setting>],
+        base_directory: Option<&std::path::Path>,
     ) -> Option<Box<dyn std::any::Any + Send>> {
-        let (start, base) = self.base();
+        let (start, base) = self.base(base_directory);
         let (streams, recorded) = (Streams::of(inputs), Recorded::of(controls));
         let files = LtxFiles::open(&base, start, streams, recorded.clone());
         Some(Box::new(Chunk::writing(base, start, streams, recorded, Some(files))))
@@ -237,7 +239,7 @@ impl Node<Edges> for WriteLtx {
                 recorder.continuous_samples = 0;
                 recorder.writing = pass.take_prepared::<Writing<Chunk>>().or_else(|| {
                     // Not prepared (the graph changed while recording, say): the thread opens the files.
-                    let (start, base) = self.base();
+                    let (start, base) = self.base(pass.base_directory());
                     Some(Chunk::writing(base, start, recorder.streams, Recorded::of(pass.controls), None))
                 });
             }
@@ -260,9 +262,10 @@ impl Node<Edges> for WriteLtx {
 
     fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
         settings_grid(ui, |ui| {
-            setting(ui, "Directory", |ui| ui.text_edit_singleline(&mut self.directory));
+            location_ui(ui, &mut self.location, context.base_directory);
             setting(ui, "File prefix", |ui| ui.text_edit_singleline(&mut self.prefix));
         });
+        location_summary(ui, &self.location, context.base_directory);
         ui.add_space(4.0);
         let recording: Vec<String> = self
             .inputs()
@@ -288,10 +291,10 @@ impl Node<Edges> for WriteLtx {
 }
 
 impl WriteLtx {
-    /// When a recording starts, and its files' path (without their extensions).
-    fn base(&self) -> (DateTime<Local>, PathBuf) {
+    /// When a recording starts, and its files' path (without their extensions), given the base directory.
+    fn base(&self, base_directory: Option<&std::path::Path>) -> (DateTime<Local>, PathBuf) {
         let start = Local::now();
-        (start, path_in(&self.directory, &session_name(&self.prefix, &start)))
+        (start, self.location.directory(base_directory).join(session_name(&self.prefix, &start)))
     }
 }
 

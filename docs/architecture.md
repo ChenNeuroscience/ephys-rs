@@ -107,8 +107,9 @@ pane shows in each mode is up to it (`Context::advanced`).
 
 ## Recording
 
-Pressing Record asks every node to prepare (`Node::prepare_to_record`: writers open their files, on a thread),
-then the snapshots record, and nodes see `Pass::recording`. While recording, settings are locked: changes are undone.
+Pressing Record asks every node to prepare (`Node::prepare_to_record`: writers open their files, on a thread), in
+the [base directory](base-directories.md) chosen in the toolbar, then the snapshots record, and nodes see
+`Pass::recording`. While recording, settings are locked: changes are undone.
 Stopping lets writers finish their files in the background ([`background.rs`](../src/core/background.rs)).
 
 ## Crashes

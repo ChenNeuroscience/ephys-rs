@@ -819,9 +819,17 @@ mod tests {
         exchange.shared(view, || Pool::holding(display));
         let mut harness = egui_kittest::Harness::builder().with_size([1150.0, 650.0]).wgpu().build_ui_state(
             |ui, graph: &mut Graph<Nodes>| {
-                graph.edit(view, &inputs, &THEMES[0].colours, Some(&exchange), true, false, None, |node, context| {
-                    node.view_ui(ui, context)
-                });
+                graph.edit(
+                    view,
+                    &inputs,
+                    &THEMES[0].colours,
+                    Some(&exchange),
+                    None,
+                    true,
+                    false,
+                    None,
+                    |node, context| node.view_ui(ui, context),
+                );
             },
             graph,
         );

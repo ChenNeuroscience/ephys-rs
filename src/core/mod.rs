@@ -6,6 +6,7 @@
 
 pub mod annotation;
 pub mod background;
+pub mod base_directory;
 pub mod console;
 pub mod crash;
 pub mod engine;
@@ -15,8 +16,8 @@ pub mod quick_action;
 pub mod theme;
 pub mod time_axis;
 
-/// What a program is built from: its node types (which bring their edge types), annotation types, themes and quick
-/// actions.
+/// What a program is built from: its node types (which bring their edge types), annotation types, themes, quick
+/// actions and base directories.
 pub trait Components: 'static {
     type Nodes: engine::NodeSet;
     type Annotations: annotation::AnnotationSet;
@@ -24,4 +25,6 @@ pub trait Components: 'static {
     const THEMES: &'static [theme::Theme];
     /// In the order they're offered.
     const QUICK_ACTIONS: &'static [quick_action::QuickAction<Self::Nodes>] = &[];
+    /// Where recordings go (see `base_directory`): the first is the default.
+    const BASE_DIRECTORIES: &'static [base_directory::BaseDirectoryType] = &[];
 }

@@ -18,6 +18,7 @@ pub fn show<N: NodeSet>(
     resolved: &Resolved<N::Edges>,
     colours: &Colours,
     exchange: Option<&crate::core::exchange::Exchange>,
+    base_directory: Option<&std::path::Path>,
     locked: bool,
     advanced: bool,
     id: NodeId,
@@ -55,9 +56,17 @@ pub fn show<N: NodeSet>(
     egui::ScrollArea::vertical().show(ui, |ui| {
         ui.add_enabled_ui(!locked, |ui| {
             let tools = Some(&mut tools as &mut dyn crate::core::engine::NodeToolbar);
-            graph.edit(id, &state.input_streams, colours, exchange, running, locked, tools, |node: &mut N, context| {
-                node.settings_ui(ui, context)
-            });
+            graph.edit(
+                id,
+                &state.input_streams,
+                colours,
+                exchange,
+                base_directory,
+                running,
+                locked,
+                tools,
+                |node: &mut N, context| node.settings_ui(ui, context),
+            );
         });
         ui.add_space(8.0);
         for (role, title) in [

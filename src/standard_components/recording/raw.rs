@@ -23,7 +23,7 @@ use eframe::egui;
 use serde::{Deserialize, Serialize};
 
 use super::npy::Npy;
-use super::{Files, Status, Writing, path_in, session_name, status_ui};
+use super::{Files, Location, Status, Writing, location_summary, location_ui, session_name, status_ui};
 use crate::core::engine::{
     Category, Context, DataStreamType, EdgeSet, Flow, Input, Node, NodeInfo, NodeThread, Output, PASS_DURATION, Pass,
     PoolStatus, ThreadContext,
@@ -40,13 +40,14 @@ const EVENTS_FOLDER: &str = "ephys-rs-100.events";
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WriteRaw {
-    pub directory: String,
+    /// Where it writes (each recording a folder in it).
+    pub location: Location,
     pub prefix: String,
 }
 
 impl Default for WriteRaw {
     fn default() -> Self {
-        WriteRaw { directory: "~/recordings".into(), prefix: "session".into() }
+        WriteRaw { location: Location::Base, prefix: "session".into() }
     }
 }
 
@@ -170,9 +171,10 @@ impl Node<Edges> for WriteRaw {
         &self,
         inputs: &[Option<DataStream>],
         _controls: &[Option<crate::Setting>],
+        base_directory: Option<&std::path::Path>,
     ) -> Option<Box<dyn std::any::Any + Send>> {
         let Recorder { continuous, events, .. } = self.initial_state(inputs);
-        let folder = self.folder();
+        let folder = self.folder(base_directory);
         let files = RawFiles::open(&folder, continuous, events);
         Some(Box::new(Chunk::writing(folder, continuous, events, Some(files))))
     }
@@ -185,7 +187,7 @@ impl Node<Edges> for WriteRaw {
                 let (continuous, events) = (recorder.continuous, recorder.events);
                 recorder.writing = pass
                     .take_prepared::<Writing<Chunk>>()
-                    .or_else(|| Some(Chunk::writing(self.folder(), continuous, events, None)));
+                    .or_else(|| Some(Chunk::writing(self.folder(pass.base_directory()), continuous, events, None)));
             }
             (false, Some(_)) => recorder.writing = None, // finishes the files
             _ => {}
@@ -214,9 +216,10 @@ impl Node<Edges> for WriteRaw {
 
     fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
         settings_grid(ui, |ui| {
-            setting(ui, "Directory", |ui| ui.text_edit_singleline(&mut self.directory));
+            location_ui(ui, &mut self.location, context.base_directory);
             setting(ui, "Folder prefix", |ui| ui.text_edit_singleline(&mut self.prefix));
         });
+        location_summary(ui, &self.location, context.base_directory);
         ui.add_space(4.0);
         let recording: Vec<String> = self
             .inputs()
@@ -236,9 +239,9 @@ impl Node<Edges> for WriteRaw {
 }
 
 impl WriteRaw {
-    /// A new recording's folder.
-    fn folder(&self) -> std::path::PathBuf {
-        path_in(&self.directory, &session_name(&self.prefix, &Local::now()))
+    /// A new recording's folder, given the base directory.
+    fn folder(&self, base_directory: Option<&std::path::Path>) -> std::path::PathBuf {
+        self.location.directory(base_directory).join(session_name(&self.prefix, &Local::now()))
     }
 }
 

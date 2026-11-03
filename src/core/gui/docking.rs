@@ -501,6 +501,8 @@ pub struct Panes<'a, N: NodeSet, A: AnnotationSet> {
     pub resolved: &'a Resolved<N::Edges>,
     pub colours: &'static Colours,
     pub runner: Option<&'a Runner<N>>,
+    /// The base directory recordings go in (see `crate::core::base_directory`).
+    pub base_directory: Option<&'a std::path::Path>,
     /// The latest snapshot of the graph.
     pub snapshot: &'a Snapshot<N>,
     /// What the home pane shows, and the quick actions the basic view offers.
@@ -531,6 +533,7 @@ pub fn node_ui<N: NodeSet>(
     resolved: &Resolved<N::Edges>,
     colours: &Colours,
     runner: Option<&Runner<N>>,
+    base_directory: Option<&std::path::Path>,
     locked: bool,
     advanced: bool,
     id: NodeId,
@@ -545,11 +548,12 @@ pub fn node_ui<N: NodeSet>(
     if has_view {
         let Some(mut tools) = NodeTools::new(graph, id, advanced, exchange, &mut *events) else { return };
         let tools = Some(&mut tools as &mut dyn crate::core::engine::NodeToolbar);
-        graph.edit(id, &state.input_streams, colours, exchange, running, locked, tools, |node: &mut N, context| {
+        let streams = &state.input_streams;
+        graph.edit(id, streams, colours, exchange, base_directory, running, locked, tools, |node: &mut N, context| {
             node.view_ui(ui, context)
         });
     } else {
-        node_window::show(ui, graph, resolved, colours, exchange, locked, advanced, id, events);
+        node_window::show(ui, graph, resolved, colours, exchange, base_directory, locked, advanced, id, events);
     }
 }
 
@@ -711,8 +715,8 @@ impl<N: NodeSet, A: AnnotationSet> Panes<'_, N, A> {
             Pane::Node(id) => {
                 let (graph, resolved, colours, runner, locked) =
                     (&mut *self.graph, self.resolved, self.colours, self.runner, self.locked);
-                let advanced = self.mode == Mode::Advanced;
-                padded(ui, |ui| node_ui(ui, graph, resolved, colours, runner, locked, advanced, id, self.events))
+                let (advanced, base) = (self.mode == Mode::Advanced, self.base_directory);
+                padded(ui, |ui| node_ui(ui, graph, resolved, colours, runner, base, locked, advanced, id, self.events))
             }
         }
     }

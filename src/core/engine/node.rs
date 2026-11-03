@@ -79,6 +79,9 @@ pub struct Context<'a, E: Edges> {
     pub node: NodeId,
     /// What the node's passes and window share (see `crate::core::exchange`), while running.
     pub exchange: Option<&'a Exchange>,
+    /// The base directory recordings go in (see `crate::core::base_directory`): the next one's, or the one going
+    /// on's. For a writer to say where it'll write.
+    pub base_directory: Option<&'a std::path::Path>,
     /// Whether the graph is running.
     pub running: bool,
     /// Whether settings are locked (while recording): a view should show its settings disabled, as changes to
@@ -368,14 +371,16 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     /// in the pass, and the output's buffer already holds the input's data to transform.
     fn process(&self, _pass: &mut Pass<E>, _state: &mut Self::State) {}
 
-    /// Gets ready to record (a writer opening its files, say), given the data streams on its inputs and what its
-    /// controls see. Called on a thread of its own when recording's asked for; passes only start recording once
-    /// every node's ready, so this can take its time. What it returns is the node's (with `Pass::take_prepared`)
-    /// on the first pass that records.
+    /// Gets ready to record (a writer opening its files, say), given the data streams on its inputs, what its
+    /// controls see, and the base directory recordings go in, if there is one (see `crate::core::base_directory`).
+    /// Called on a thread of its own when recording's asked for; passes only start recording once every node's
+    /// ready, so this can take its time. What it returns is the node's (with `Pass::take_prepared`) on the first
+    /// pass that records.
     fn prepare_to_record(
         &self,
         _inputs: &[Option<E::DataStream>],
         _controls: &[Option<E::Setting>],
+        _base_directory: Option<&std::path::Path>,
     ) -> Option<Box<dyn Any + Send>> {
         None
     }
@@ -433,6 +438,7 @@ pub trait NodeSet: Clone + PartialEq + Serialize + DeserializeOwned + Send + Syn
         &self,
         inputs: &[Option<<Self::Edges as Edges>::DataStream>],
         controls: &[Option<<Self::Edges as Edges>::Setting>],
+        base_directory: Option<&std::path::Path>,
     ) -> Option<Box<dyn Any + Send>>;
     fn threads(&self) -> Vec<NodeThread>;
     fn thread_ui(&self, thread: usize, ui: &mut egui::Ui, context: &ThreadContext);
@@ -608,8 +614,11 @@ macro_rules! node_set {
                 &self,
                 inputs: &[Option<<$edges as $crate::core::engine::Edges>::DataStream>],
                 controls: &[Option<<$edges as $crate::core::engine::Edges>::Setting>],
+                base_directory: Option<&std::path::Path>,
             ) -> Option<Box<dyn std::any::Any + Send>> {
-                match self { $($name::$variant(n) => $crate::core::engine::Node::prepare_to_record(n, inputs, controls)),+ }
+                match self {
+                    $($name::$variant(n) => $crate::core::engine::Node::prepare_to_record(n, inputs, controls, base_directory)),+
+                }
             }
 
             fn threads(&self) -> Vec<$crate::core::engine::NodeThread> {

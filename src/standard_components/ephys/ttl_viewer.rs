@@ -327,6 +327,7 @@ mod tests {
                     &[stream],
                     &THEMES[0].colours,
                     Some(&exchange),
+                    None,
                     true,
                     false,
                     None,

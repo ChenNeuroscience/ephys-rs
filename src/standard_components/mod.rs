@@ -6,6 +6,7 @@
 
 pub mod annotations;
 pub mod auto_detect;
+pub mod base_directories;
 pub mod ephys;
 pub mod pool;
 mod preview;
