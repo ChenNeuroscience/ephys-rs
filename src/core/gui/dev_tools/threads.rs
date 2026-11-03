@@ -583,7 +583,10 @@ fn not_running<N: NodeSet>(ui: &mut egui::Ui, graph: &Graph<N>, colours: &Colour
         return;
     }
     ui.add_space(4.0);
-    ui.label(small("Not in the plan (some output can't be known: an input not connected?)", colours.text_secondary));
+    ui.label(small(
+        "Not in the plan: some output can't be known (an input not connected?), or nothing needs its outputs now",
+        colours.text_secondary,
+    ));
     ui.horizontal_wrapped(|ui| {
         ui.multiply_opacity(0.5);
         for id in idle {

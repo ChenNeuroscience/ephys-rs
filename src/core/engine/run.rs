@@ -183,22 +183,33 @@ pub struct Plan<N: NodeSet> {
 impl<N: NodeSet> Plan<N> {
     pub fn new(graph: &Graph<N>) -> Self {
         let resolved = graph.resolve();
-        let runs: Vec<NodeId> = graph
-            .topological_order()
-            .into_iter()
+        let topological = graph.topological_order();
+        let mut runs: Vec<NodeId> = topological
+            .iter()
+            .copied()
             .filter(|id| graph.get(*id).is_some_and(|e| !e.disabled))
             .filter(|id| resolved.get(id).is_some_and(|s| s.outputs.iter().all(|o| o.stream.is_some())))
             .collect();
-        let data_edges: Vec<_> = graph
-            .edges()
-            .iter()
-            .filter(|e| {
-                e.dimension == super::Dimension::Data
-                    && graph.is_live(e)
-                    && runs.contains(&e.from.node)
-                    && runs.contains(&e.to.node)
-            })
-            .collect();
+        // Data edges to inputs their nodes need now.
+        let needed_edge = |e: &&super::Edge, runs: &[NodeId]| {
+            e.dimension == super::Dimension::Data
+                && graph.is_live(e)
+                && runs.contains(&e.from.node)
+                && runs.contains(&e.to.node)
+                && graph.get(e.to.node).is_some_and(|n| n.node.needs(e.to.port))
+        };
+        // Only nodes something needs the outputs of run, besides sources and those without outputs (viewers,
+        // writers): from the last back, as needing passes back along the edges.
+        for &id in topological.iter().rev() {
+            let Some(entry) = graph.get(id) else { continue };
+            let always = entry.node.info().category == super::Category::Source
+                || resolved.get(&id).is_some_and(|s| s.outputs.is_empty());
+            let needed = always || graph.edges().iter().any(|e| e.from.node == id && needed_edge(&e, &runs));
+            if !needed {
+                runs.retain(|r| *r != id);
+            }
+        }
+        let data_edges: Vec<_> = graph.edges().iter().filter(|e| needed_edge(e, &runs)).collect();
         // Which nodes must run before which: those feeding them, and those reading data another edits in place.
         let mut before: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
         for edge in &data_edges {
@@ -1098,6 +1109,9 @@ pub mod tests {
         let filter = add(&mut graph, "Band-pass Filter");
         link(&mut graph, board, 0, gain, 0);
         link(&mut graph, gain, 0, filter, 0);
+        // Something needing the filter's output, so it runs (see `Node::needs`).
+        let end = add(&mut graph, "LFP Viewer");
+        link(&mut graph, filter, 0, end, 0);
         // Board (continuous and events), then gain and filter working in the board's continuous buffer.
         let plan = Plan::new(&graph);
         assert_eq!(plan.buffers.len(), 2);
@@ -1112,6 +1126,8 @@ pub mod tests {
         // Two nodes that would edit the board's data in place: one does (last), the other gets its own buffer.
         let second_gain = add(&mut graph, "Gain");
         link(&mut graph, board, 0, second_gain, 0);
+        let second_end = add(&mut graph, "LFP Viewer");
+        link(&mut graph, second_gain, 0, second_end, 0);
         let plan = Plan::new(&graph);
         assert_eq!(plan.buffers.len(), 3);
         assert!(position(&plan, second_gain) < position(&plan, gain));
@@ -1135,9 +1151,31 @@ pub mod tests {
         // A filter editing the board's data in place needs it after the writer: the writer copies it instead.
         let filter = add(&mut graph, "Band-pass Filter");
         link(&mut graph, board, 0, filter, 0);
+        let end = add(&mut graph, "LFP Viewer");
+        link(&mut graph, filter, 0, end, 0);
         let plan = Plan::new(&graph);
         assert_eq!(step(&plan, writer), vec![false, true]);
         assert!(position(&plan, writer) < position(&plan, filter));
+    }
+
+    #[test]
+    fn nodes_run_only_while_something_needs_their_outputs() {
+        let mut graph = Graph::default();
+        let board = add(&mut graph, "Acquisition Board");
+        let spectrum = add(&mut graph, "Spectrum");
+        let viewer = add(&mut graph, "LFP Viewer");
+        link(&mut graph, board, 0, spectrum, 0);
+        link(&mut graph, board, 0, viewer, 0);
+        link(&mut graph, spectrum, 0, viewer, 1);
+        let runs = |graph: &Graph<Nodes>, id| Plan::new(graph).steps.iter().any(|s| s.id == id);
+        assert!(runs(&graph, spectrum), "the viewer shows the spectra");
+        if let Some(Nodes::LfpViewer(v)) = graph.get_mut(viewer).map(|e| &mut e.node) {
+            v.spectrum = false;
+        }
+        assert!(!runs(&graph, spectrum), "nothing needs them");
+        assert!(runs(&graph, board) && runs(&graph, viewer), "sources and viewers run regardless");
+        let plan = Plan::new(&graph);
+        assert_eq!(plan.steps.iter().find(|s| s.id == viewer).unwrap().inputs[1], None, "nor are they passed");
     }
 
     #[test]
@@ -1146,10 +1184,12 @@ pub mod tests {
         let board = add(&mut graph, "Acquisition Board");
         let detector = add(&mut graph, "Spike Detector");
         let viewer = add(&mut graph, "LFP Viewer");
+        let spikes = add(&mut graph, "Spike Viewer");
         link(&mut graph, board, 0, detector, 0);
         link(&mut graph, board, 0, viewer, 0);
+        link(&mut graph, detector, 0, spikes, 0);
         let plan = Plan::new(&graph);
-        assert_eq!(plan.steps.iter().map(|s| s.id).collect::<Vec<_>>(), vec![board, viewer, detector]);
+        assert_eq!(plan.steps.iter().map(|s| s.id).collect::<Vec<_>>(), vec![board, viewer, detector, spikes]);
         assert_eq!(plan.steps[1].copies, Some(CopyTo::Window));
     }
 
@@ -1159,8 +1199,10 @@ pub mod tests {
         let board = add(&mut graph, "Acquisition Board");
         let reference = add(&mut graph, "Reference");
         let filter = add(&mut graph, "Band-pass Filter");
+        let viewer = add(&mut graph, "LFP Viewer");
         link(&mut graph, board, 0, reference, 0);
         link(&mut graph, reference, 0, filter, 0);
+        link(&mut graph, filter, 0, viewer, 0);
         let plan = Plan::new(&graph);
         let step = |id| plan.steps.iter().find(|s| s.id == id).unwrap();
         assert!(step(reference).state.is_none() && step(reference).memory.is_some(), "no sync point");
@@ -1179,8 +1221,10 @@ pub mod tests {
         }
         let filter = add(&mut graph, "Band-pass Filter");
         let detector = add(&mut graph, "Spike Detector");
+        let viewer = add(&mut graph, "Spike Viewer");
         link(&mut graph, board, 0, filter, 0);
         link(&mut graph, filter, 0, detector, 0);
+        link(&mut graph, detector, 0, viewer, 0);
         let snapshot = Snapshot::new(0, graph, None);
         let plan = &snapshot.plan;
         let slots = RunSlots::new(plan, &snapshot.graph, Arc::default());
@@ -1251,7 +1295,9 @@ pub mod tests {
         let mut graph = Graph::default();
         let board = add(&mut graph, "Acquisition Board");
         let filter = add(&mut graph, "Band-pass Filter");
+        let viewer = add(&mut graph, "LFP Viewer");
         link(&mut graph, board, 0, filter, 0);
+        link(&mut graph, filter, 0, viewer, 0);
         let mut snapshot = Snapshot::new(0, graph.clone(), None);
         let runner = Runner::start(&snapshot, 2);
         let mut next = |graph: &Graph<Nodes>| {
@@ -1265,10 +1311,14 @@ pub mod tests {
         }
         assert!(runner.update(&next(&graph)));
 
-        // A node that isn't connected doesn't run, so doesn't change anything; connected, it does.
+        // A node that isn't connected doesn't run, so doesn't change anything; connected (with something needing
+        // its output), it does.
         let gain = add(&mut graph, "Gain");
         assert!(runner.update(&next(&graph)));
         link(&mut graph, board, 0, gain, 0);
+        assert!(runner.update(&next(&graph)), "nothing needs its output");
+        let second = add(&mut graph, "LFP Viewer");
+        link(&mut graph, gain, 0, second, 0);
         let latest = next(&graph);
         assert!(!runner.update(&latest));
 

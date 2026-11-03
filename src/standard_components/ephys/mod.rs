@@ -7,6 +7,7 @@ pub mod channel_selector;
 pub mod gain;
 pub mod lfp_viewer;
 pub mod reference;
+pub mod spectrum;
 pub mod ttl_viewer;
 
 use eframe::egui::Color32;

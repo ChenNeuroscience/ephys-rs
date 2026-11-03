@@ -1,25 +1,23 @@
 //! The LFP Viewer: scrolling traces of continuous data, a row per channel, each at a fixed height (scrolled
-//! through), and beside each, its spectrum over a band of interest (theta, 4–12 Hz, to begin with).
+//! through), and beside each, its spectrum over a band of interest (from a Spectrum node, which only runs while the
+//! spectrum's on: see `Node::needs`).
 //!
 //! Each pass adds its samples to a few seconds' worth for each channel shown, kept as the lowest and highest
-//! sample in each of the view's columns (so spikes show however far it's zoomed out). For the spectra, it keeps
-//! about four seconds of each channel, averaged down to about 1 kHz, and works out a few channels' spectra each
-//! pass (by FFT, Hann windowed), so each is fresh every few passes, smoothed over the last few.
+//! sample in each of the view's columns (so spikes show however far it's zoomed out).
+//!
+//! The traces can be referenced to the average of some channels (in the view only): the reference is then shown
+//! too, in a row of its own at the top, and the channels in it are marked.
 //!
 //! Connected to a Channel Selector upstream, it chooses the channels it passes on: tick the ones to keep, while
 //! all are shown, then apply the selection.
 
-use std::ops::Range;
-use std::sync::Arc;
-
 use eframe::egui::{self, Align2, FontId, Pos2, Rect, Sense, Shape, Stroke};
-use realfft::num_complex::Complex;
-use realfft::{RealFftPlanner, RealToComplex};
 use serde::{Deserialize, Serialize};
 
 use crate::core::engine::{Category, Context, Control, CopyTo, EdgeType, Input, Node, NodeInfo, Output, Pass};
 use crate::core::exchange::Latest;
 use crate::standard_components::ephys::reference::{format_channels, parse_channels};
+use crate::standard_components::ephys::spectrum::{Spectra, SpectraBuffer};
 use crate::standard_components::ephys::{ChannelSelection, Continuous, ContinuousBuffer};
 use crate::standard_components::preview;
 use crate::standard_components::widgets::{require_input, setting, settings_grid};
@@ -27,14 +25,6 @@ use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
 
 /// Columns across the view.
 const COLUMNS: usize = 1200;
-/// About how many samples a second the spectra are worked out from.
-const SPECTRUM_RATE: f32 = 1000.0;
-/// Samples each spectrum's worked out from: about four seconds.
-const SPECTRUM_SAMPLES: usize = 4096;
-/// Each channel's spectrum is worked out again every so many passes (a few channels a pass).
-const SPECTRUM_PASSES: usize = 10;
-/// How much of each new spectrum goes into the smoothed one.
-const SMOOTHING: f32 = 0.3;
 /// The spectrum's column's width.
 const SPECTRUM_WIDTH: f32 = 160.0;
 
@@ -47,55 +37,74 @@ pub struct LfpViewer {
     pub scale_uv: f32,
     /// Each row's height, in points.
     pub row_height: f32,
-    /// Whether to show each channel's spectrum, and over which band (Hz).
+    /// Whether to show each channel's spectrum (from a Spectrum node).
     pub spectrum: bool,
-    pub band: [f32; 2],
+    /// The channels averaged as a reference, subtracted from every trace (in the view only): "1-4, 7", say, or
+    /// blank for none.
+    pub reference: String,
 }
 
 impl Default for LfpViewer {
     fn default() -> Self {
-        LfpViewer { span: 2.0, scale_uv: 200.0, row_height: 40.0, spectrum: true, band: [4.0, 12.0] }
+        LfpViewer { span: 2.0, scale_uv: 200.0, row_height: 40.0, spectrum: true, reference: String::new() }
     }
 }
 
-/// The last `span` seconds of each channel shown: each column's lowest and highest sample, round a ring; and the
-/// spectra.
+/// The last `span` seconds of each channel shown: each column's lowest and highest sample, round a ring.
 #[derive(Default)]
 pub struct Traces {
     /// The input's sample rate.
     rate: f32,
-    /// What it's for: the first channel, how many, and samples per column.
-    shape: (usize, usize, usize),
-    /// For each channel shown, `COLUMNS` lows then highs.
+    /// What it's for: the first channel, how many, samples per column, and whether there's a reference (in a row of
+    /// its own, after the channels').
+    shape: (usize, usize, usize, bool),
+    /// For each row (channel shown, then the reference), `COLUMNS` lows then highs.
     lows: Vec<f32>,
     highs: Vec<f32>,
+    /// The channels referenced to (their average, each sample, in `average`).
+    reference: Vec<usize>,
+    average: Vec<f32>,
     /// The column being filled, and how many samples it has so far.
     head: usize,
     filled: usize,
     /// Columns filled since starting (up to `COLUMNS`).
     columns: usize,
-    spectra: Spectra,
     shown: Latest<TracesDisplay>,
 }
 
 impl crate::core::engine::PassState for Traces {
     const WHY: &'static str = "The last few seconds of each channel shown (each column's lowest and highest \
-                               sample, round a ring, and samples for the spectra), which each pass adds its \
-                               samples to; and the spectra, smoothed over passes.";
+                               sample, round a ring), which each pass adds its samples to.";
 }
 
 impl Traces {
     /// Adds a pass's samples of the channels shown (from `first`) to their columns: a run of samples at a time, up to
-    /// where a column's full, channel by channel (as they're laid out).
+    /// where a column's full, channel by channel (as they're laid out). Referenced, less the reference's average.
     fn add(&mut self, input: &ContinuousBuffer, first: usize) {
-        let (_, shown, per_column) = self.shape;
+        let (_, shown, per_column, referenced) = self.shape;
+        if referenced {
+            self.average.clear();
+            self.average.resize(input.len, 0.0);
+            for &channel in self.reference.iter().filter(|&&c| c < input.channels) {
+                for (sum, x) in self.average.iter_mut().zip(input.channel(channel)) {
+                    *sum += x;
+                }
+            }
+            let count = self.reference.iter().filter(|&&c| c < input.channels).count().max(1) as f32;
+            self.average.iter_mut().for_each(|sum| *sum /= count);
+        }
         let mut t = 0;
         while t < input.len {
             let run = (per_column - self.filled).min(input.len - t);
-            for i in 0..shown {
-                let samples = &input.channel(first + i)[t..t + run];
-                let low = samples.iter().copied().fold(f32::INFINITY, f32::min);
-                let high = samples.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            for i in 0..shown + referenced as usize {
+                let (low, high) = if i == shown {
+                    extremes(self.average[t..t + run].iter().copied())
+                } else if referenced {
+                    let samples = &input.channel(first + i)[t..t + run];
+                    extremes(samples.iter().zip(&self.average[t..t + run]).map(|(x, r)| x - r))
+                } else {
+                    extremes(input.channel(first + i)[t..t + run].iter().copied())
+                };
                 let at = i * COLUMNS + self.head;
                 if self.filled == 0 {
                     (self.lows[at], self.highs[at]) = (low, high);
@@ -112,14 +121,16 @@ impl Traces {
         }
     }
 
-    fn reshape(&mut self, shape: (usize, usize, usize)) {
+    fn reshape(&mut self, shape: (usize, usize, usize, bool)) {
         if self.shape != shape {
-            let (_, shown, _) = shape;
+            let (_, shown, _, referenced) = shape;
+            let rows = shown + referenced as usize;
             *self = Traces {
                 rate: self.rate,
                 shape,
-                lows: vec![0.0; shown * COLUMNS],
-                highs: vec![0.0; shown * COLUMNS],
+                lows: vec![0.0; rows * COLUMNS],
+                highs: vec![0.0; rows * COLUMNS],
+                reference: std::mem::take(&mut self.reference),
                 shown: std::mem::take(&mut self.shown),
                 ..Default::default()
             };
@@ -127,129 +138,9 @@ impl Traces {
     }
 }
 
-/// The channels' spectra over the band: from the last `SPECTRUM_SAMPLES` of each, averaged down from the input.
-#[derive(Default)]
-struct Spectra {
-    /// What they're for: channels, input samples to each kept, and the band's bins.
-    shape: (usize, usize, Range<usize>),
-    /// For each channel, the sum of the input samples so far toward the next kept, and how many.
-    sums: Vec<f32>,
-    summed: usize,
-    /// For each channel, `SPECTRUM_SAMPLES` kept, round a ring; where the next goes, and how many there are.
-    kept: Vec<f32>,
-    head: usize,
-    count: usize,
-    /// For each channel, the power in each of the band's bins, smoothed; and whether it's been worked out yet.
-    power: Vec<f32>,
-    done: Vec<bool>,
-    /// The next channel to work out.
-    next: usize,
-    /// A real FFT (the samples being real, half the work of a complex one), and what it works in: the windowed
-    /// samples, the spectrum (to half the rate kept), and its scratch.
-    fft: Option<Arc<dyn RealToComplex<f32>>>,
-    window: Vec<f32>,
-    samples: Vec<f32>,
-    spectrum: Vec<Complex<f32>>,
-    scratch: Vec<Complex<f32>>,
-}
-
-impl Spectra {
-    /// Input samples to each kept, for a rate.
-    fn factor(rate: f32) -> usize {
-        (rate / SPECTRUM_RATE).round().max(1.0) as usize
-    }
-
-    /// The bins of a band, at a rate.
-    fn bins(rate: f32, band: [f32; 2]) -> Range<usize> {
-        let step = rate / Self::factor(rate) as f32 / SPECTRUM_SAMPLES as f32;
-        let low = (band[0].max(0.0) / step).ceil() as usize;
-        let high = ((band[1] / step).floor() as usize + 1).min(SPECTRUM_SAMPLES / 2);
-        low.min(high)..high
-    }
-
-    fn reshape(&mut self, channels: usize, rate: f32, band: [f32; 2]) {
-        let shape = (channels, Self::factor(rate), Self::bins(rate, band));
-        if self.shape == shape {
-            return;
-        }
-        let bins = shape.2.len();
-        let n = SPECTRUM_SAMPLES;
-        let fft = self.fft.take().unwrap_or_else(|| RealFftPlanner::new().plan_fft_forward(n));
-        let (samples, spectrum, scratch) = (fft.make_input_vec(), fft.make_output_vec(), fft.make_scratch_vec());
-        // Keep the samples so far, if they're for the same channels.
-        let (kept, head, count) = if self.shape.0 == channels && self.shape.1 == shape.1 {
-            (std::mem::take(&mut self.kept), self.head, self.count)
-        } else {
-            (vec![0.0; channels * n], 0, 0)
-        };
-        *self = Spectra {
-            shape,
-            sums: vec![0.0; channels],
-            summed: 0,
-            kept,
-            head,
-            count,
-            power: vec![0.0; channels * bins],
-            done: vec![false; channels],
-            next: 0,
-            fft: Some(fft),
-            window: (0..n).map(|i| 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / n as f32).cos()).collect(),
-            samples,
-            spectrum,
-            scratch,
-        };
-    }
-
-    /// Keeps a pass's samples of the channels shown (from `first`).
-    /// A run of samples at a time, up to where the next is kept, channel by channel (as they're laid out).
-    fn add(&mut self, input: &ContinuousBuffer, first: usize) {
-        let (channels, factor, _) = self.shape.clone();
-        let n = SPECTRUM_SAMPLES;
-        let mut t = 0;
-        while t < input.len {
-            let run = (factor - self.summed).min(input.len - t);
-            for (c, sum) in self.sums.iter_mut().enumerate().take(channels) {
-                *sum += input.channel(first + c)[t..t + run].iter().sum::<f32>();
-            }
-            (t, self.summed) = (t + run, self.summed + run);
-            if self.summed == factor {
-                for (c, sum) in self.sums.iter_mut().enumerate() {
-                    self.kept[c * n + self.head] = *sum / factor as f32;
-                    *sum = 0.0;
-                }
-                (self.head, self.summed, self.count) = ((self.head + 1) % n, 0, (self.count + 1).min(n));
-            }
-        }
-    }
-
-    /// Works out the next few channels' spectra, once there are enough samples.
-    fn work_out(&mut self) {
-        let (channels, _, bins) = self.shape.clone();
-        let n = SPECTRUM_SAMPLES;
-        let Some(fft) = self.fft.clone() else { return };
-        if self.count < n || channels == 0 {
-            return;
-        }
-        for _ in 0..channels.div_ceil(SPECTRUM_PASSES) {
-            let c = self.next;
-            self.next = (self.next + 1) % channels;
-            // Oldest first, less the mean, windowed.
-            let kept = &self.kept[c * n..(c + 1) * n];
-            let mean = kept.iter().sum::<f32>() / n as f32;
-            for (i, value) in self.samples.iter_mut().enumerate() {
-                *value = (kept[(self.head + i) % n] - mean) * self.window[i];
-            }
-            // Only fails if the vectors are the wrong lengths, which they're made not to be.
-            let _ = fft.process_with_scratch(&mut self.samples, &mut self.spectrum, &mut self.scratch);
-            let power = &mut self.power[c * bins.len()..(c + 1) * bins.len()];
-            let first = !self.done[c];
-            for (p, bin) in power.iter_mut().zip(bins.clone()) {
-                let new = self.spectrum[bin].norm_sqr() / n as f32;
-                *p = if first { new } else { *p + SMOOTHING * (new - *p) };
-            }
-            self.done[c] = true;
-        }
-    }
+/// The lowest and highest of `values`.
+fn extremes(values: impl Iterator<Item = f32>) -> (f32, f32) {
+    values.fold((f32::INFINITY, f32::NEG_INFINITY), |(low, high), x| (low.min(x), high.max(x)))
 }
 
 /// The traces as of the last pass, oldest column first, and the spectra.
@@ -260,12 +151,10 @@ pub struct TracesDisplay {
     columns: usize,
     lows: Vec<f32>,
     highs: Vec<f32>,
-    /// The spectra's frequencies: the first bin's, and the step from each to the next.
-    spectrum_hz: (f32, f32),
-    /// For each channel shown, its power in each bin, if it's been worked out.
-    power: Vec<f32>,
-    bins: usize,
-    done: Vec<bool>,
+    /// Whether the last row is the reference.
+    reference_row: bool,
+    /// Each channel's spectrum, if it's being worked out.
+    spectra: Option<SpectraBuffer>,
 }
 
 impl Node<Edges> for LfpViewer {
@@ -280,7 +169,12 @@ impl Node<Edges> for LfpViewer {
     const HAS_VIEW: bool = true;
 
     fn inputs(&self) -> Vec<Input<Edges>> {
-        vec![Input { name: "continuous", kind: Kind::Continuous }]
+        vec![Input { name: "continuous", kind: Kind::Continuous }, Input { name: "spectra", kind: Kind::Spectra }]
+    }
+
+    /// The spectra only while they're shown: otherwise, the Spectrum node needn't run at all.
+    fn needs(&self, input: usize) -> bool {
+        input != 1 || self.spectrum
     }
 
     fn outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {
@@ -309,22 +203,26 @@ impl Node<Edges> for LfpViewer {
         // Every channel: the view scrolls through them.
         let (first, shown) = (0, input.channels.max(1));
         let per_column = ((self.span as f64 * rate as f64) / COLUMNS as f64).round().max(1.0) as usize;
-        traces.reshape((first, shown, per_column));
+        let reference: Vec<usize> = parse_channels(&self.reference, input.channels as u32)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|c| c as usize)
+            .collect();
+        traces.reshape((first, shown, per_column, !reference.is_empty()));
+        traces.reference = reference;
         traces.add(input, first);
-        let spectra = &mut traces.spectra;
-        if self.spectrum {
-            spectra.reshape(shown, rate, self.band);
-            spectra.add(input, first);
-            spectra.work_out();
-        }
-        let step = rate / Spectra::factor(rate) as f32 / SPECTRUM_SAMPLES as f32;
-        let spectrum = self.spectrum;
-        let Traces { lows, highs, head, columns, spectra, shown: latest, .. } = traces;
+        let spectra = match pass.inputs.get(1) {
+            Some(Some(Buffer::Spectra(spectra))) if self.spectrum => Some(spectra),
+            _ => None,
+        };
+        let rows = shown + traces.shape.3 as usize;
+        let Traces { lows, highs, head, columns, shape, shown: latest, .. } = traces;
         latest.send(pass, |display| {
             (display.first, display.shown, display.columns) = (first, shown, *columns);
+            display.reference_row = shape.3;
             display.lows.clear();
             display.highs.clear();
-            for i in 0..shown {
+            for i in 0..rows {
                 // Oldest first: from the column after the one being filled, round to it.
                 let row = i * COLUMNS..(i + 1) * COLUMNS;
                 let (older, newer) = lows[row.clone()].split_at(*head);
@@ -334,13 +232,20 @@ impl Node<Edges> for LfpViewer {
                 display.highs.extend_from_slice(newer);
                 display.highs.extend_from_slice(older);
             }
-            display.power.clear();
-            display.done.clear();
-            if spectrum {
-                display.spectrum_hz = (spectra.shape.2.start as f32 * step, step);
-                display.bins = spectra.shape.2.len();
-                display.power.extend_from_slice(&spectra.power);
-                display.done.extend_from_slice(&spectra.done);
+            match (spectra, &mut display.spectra) {
+                (Some(spectra), Some(shown)) => {
+                    shown.power.clone_from(&spectra.power);
+                    shown.done.clone_from(&spectra.done);
+                    shown.bins = spectra.bins;
+                }
+                (Some(spectra), shown) => {
+                    *shown = Some(SpectraBuffer {
+                        power: spectra.power.clone(),
+                        done: spectra.done.clone(),
+                        bins: spectra.bins,
+                    })
+                }
+                (None, shown) => *shown = None,
             }
         });
     }
@@ -374,7 +279,11 @@ impl Node<Edges> for LfpViewer {
             let message = format!("{} · press Play to see the traces", stream.summary());
             return preview::unconnected(ui, context.theme, &message);
         };
-        self.rows_ui(ui, context.theme, display, stream, selection.as_mut(), locked);
+        let spectra = match (&display.spectra, context.inputs[1]) {
+            (Some(buffer), Some(DataStream::Spectra(stream))) => Some((buffer, stream)),
+            _ => None,
+        };
+        self.rows_ui(ui, context.theme, display, stream, spectra, selection.as_mut(), locked);
         if let Some(selection) = selection {
             context.controls[1] = Some(Setting::ChannelSelection(selection));
         }
@@ -400,7 +309,6 @@ impl LfpViewer {
         stream: Continuous,
         selection: Option<&mut ChannelSelection>,
     ) {
-        let advanced = context.advanced();
         ui.add_enabled_ui(!context.locked, |ui| {
             ui.horizontal_wrapped(|ui| {
                 let label = ui.label("Span");
@@ -413,20 +321,12 @@ impl LfpViewer {
                 ui.add(egui::DragValue::new(&mut self.row_height).range(12.0..=400.0).speed(0.5).suffix(" px"))
                     .labelled_by(label.id);
                 ui.separator();
-                ui.checkbox(&mut self.spectrum, "Spectrum")
-                    .on_hover_text("Each channel's spectrum over the band, from its last four seconds");
-                // The band, in advanced mode.
-                if self.spectrum && advanced {
-                    let nyquist = stream.sample_rate / Spectra::factor(stream.sample_rate) as f32 / 2.0;
-                    let [low, high] = &mut self.band;
-                    ui.add(egui::DragValue::new(low).range(0.0..=nyquist).speed(0.1)).on_hover_text("From (Hz)");
-                    ui.label("–");
-                    ui.add(egui::DragValue::new(high).range(0.5..=nyquist).speed(0.1).suffix(" Hz"))
-                        .on_hover_text("To (Hz)");
-                    if *high <= *low {
-                        *high = (*low + 0.5).min(nyquist);
-                    }
-                }
+                let tip = match context.inputs[1] {
+                    Some(DataStream::Spectra(s)) => format!("Each channel's spectrum, {}", s.summary()),
+                    _ => "Each channel's spectrum: connect a Spectrum node's to show them".into(),
+                };
+                ui.checkbox(&mut self.spectrum, "Spectrum").on_hover_text(tip);
+                reference_ui(ui, &mut self.reference, stream.channels);
                 // With the gain control connected, the upstream gain can be adjusted from here.
                 if let Some(Setting::Gain(mut gain)) = context.controls[0] {
                     ui.separator();
@@ -446,12 +346,14 @@ impl LfpViewer {
 
     /// A row for each channel shown, at the row height: its trace, and its spectrum, with a tick to select it if
     /// there's a selection to make.
+    #[allow(clippy::too_many_arguments)]
     fn rows_ui(
         &self,
         ui: &mut egui::Ui,
         theme: &crate::core::theme::Colours,
         display: &TracesDisplay,
         stream: Continuous,
+        spectra: Option<(&SpectraBuffer, Spectra)>,
         selection: Option<&mut ChannelSelection>,
         locked: bool,
     ) {
@@ -461,11 +363,16 @@ impl LfpViewer {
         // Which channel upstream each row is, once a selection's applied.
         let numbers = selection.as_deref().map(|s| upstream(s, stream.channels));
         let ticked: Option<Vec<u32>> = selection.as_deref().map(|s| ticked(s, stream.channels));
+        let referenced = parse_channels(&self.reference, stream.channels).unwrap_or_default();
         let mut toggled = None;
-        egui::ScrollArea::vertical().auto_shrink(false).show_rows(ui, height, display.shown, |ui, rows| {
+        // The reference first, if there is one: it's the last of the display's rows.
+        let rows_shown = display.shown + display.reference_row as usize;
+        let data_row = |r: usize| if display.reference_row { if r == 0 { display.shown } else { r - 1 } } else { r };
+        egui::ScrollArea::vertical().auto_shrink(false).show_rows(ui, height, rows_shown, |ui, rows| {
             let width = ui.available_width();
             let label = 44.0;
-            let spectrum = if self.spectrum && width > SPECTRUM_WIDTH * 2.0 { SPECTRUM_WIDTH } else { 0.0 };
+            let spectra = spectra.filter(|_| self.spectrum && width > SPECTRUM_WIDTH * 2.0);
+            let spectrum = if spectra.is_some() { SPECTRUM_WIDTH } else { 0.0 };
             let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height * rows.len() as f32), Sense::hover());
             let painter = ui.painter_at(rect);
             // Filling from the left, then scrolling, with room for the future at the right (see `time_axis`).
@@ -473,23 +380,39 @@ impl LfpViewer {
             let column = (width - label - spectrum) / (COLUMNS as f32 * future);
             // The columns filled so far are the last of each row's.
             let start = COLUMNS - display.columns;
-            for (r, i) in rows.enumerate() {
+            for (r, shown_row) in rows.enumerate() {
+                let i = data_row(shown_row);
+                let is_reference = display.reference_row && i == display.shown;
                 let top = rect.top() + r as f32 * height;
                 let row = Rect::from_min_size(egui::pos2(rect.left(), top), egui::vec2(width, height));
-                if i > 0 {
+                if shown_row > 0 {
                     painter.hline(row.x_range(), top, Stroke::new(1.0, theme.divider.gamma_multiply(0.3)));
                 }
                 let channel = display.first + i;
                 let number = numbers.as_ref().and_then(|n| n.get(channel).copied()).unwrap_or(channel as u32);
                 let text_y = top + (height * 0.5).min(9.0);
+                let (name, ink) = if is_reference {
+                    ("ref".to_owned(), theme.accent)
+                } else {
+                    ((number + 1).to_string(), theme.text_secondary)
+                };
                 painter.text(
                     egui::pos2(rect.left() + 4.0, text_y),
                     Align2::LEFT_CENTER,
-                    format!("{}", number + 1),
+                    name,
                     FontId::monospace(10.0),
-                    theme.text_secondary,
+                    ink,
                 );
-                if let Some(ticked) = &ticked {
+                // A channel in the reference is marked.
+                if !is_reference && referenced.contains(&(channel as u32)) {
+                    painter.circle_filled(egui::pos2(rect.left() + 22.0, text_y), 2.5, theme.accent);
+                }
+                if is_reference {
+                    let hover = Rect::from_min_size(row.min, egui::vec2(label, height));
+                    let tip =
+                        format!("The reference: the average of channels {}, taken from each trace", self.reference);
+                    let _ = ui.interact(hover, ui.scope_id().with("reference row"), Sense::hover()).on_hover_text(tip);
+                } else if let Some(ticked) = &ticked {
                     let mut on = ticked.contains(&number);
                     let tick = Rect::from_center_size(egui::pos2(rect.left() + 32.0, text_y), egui::vec2(16.0, 16.0));
                     let response = ui.put(tick, egui::Checkbox::without_text(&mut on));
@@ -511,11 +434,12 @@ impl LfpViewer {
                         [egui::pos2(x, y(a)), egui::pos2(x, y(b))]
                     })
                     .collect();
-                painter.add(Shape::line(points, Stroke::new(1.0, Continuous::INFO.colour)));
+                let colour = if is_reference { theme.text_secondary } else { Continuous::INFO.colour };
+                painter.add(Shape::line(points, Stroke::new(1.0, colour)));
 
-                if spectrum > 0.0 {
+                if let (Some((buffer, stream)), false) = (spectra, is_reference) {
                     let place = Rect::from_min_max(egui::pos2(row.right() - spectrum, top), row.max).shrink(2.0);
-                    spectrum_ui(&painter, place, display, i, self.band, theme);
+                    spectrum_ui(&painter, place, buffer, stream, i, theme);
                 }
             }
         });
@@ -535,36 +459,34 @@ impl LfpViewer {
 fn spectrum_ui(
     painter: &egui::Painter,
     place: Rect,
-    display: &TracesDisplay,
+    spectra: &SpectraBuffer,
+    stream: Spectra,
     i: usize,
-    band: [f32; 2],
     theme: &crate::core::theme::Colours,
 ) {
     painter.rect_filled(place, 2.0, theme.surface_raised.gamma_multiply(0.5));
-    let bins = display.bins;
-    if !display.done.get(i).copied().unwrap_or(false) || bins == 0 {
+    let bins = spectra.bins;
+    if !spectra.done.get(i).copied().unwrap_or(false) || bins == 0 || spectra.power.len() < (i + 1) * bins {
         if place.height() >= 12.0 {
             painter.text(place.center(), Align2::CENTER_CENTER, "…", FontId::proportional(10.0), theme.text_disabled);
         }
         return;
     }
-    let power = &display.power[i * bins..(i + 1) * bins];
+    let power = &spectra.power[i * bins..(i + 1) * bins];
     let (peak, &most) = power.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).unwrap();
-    let (first_hz, step) = display.spectrum_hz;
-    let span = (band[1] - band[0]).max(0.1);
-    let x = |hz: f32| place.left() + ((hz - band[0]) / span).clamp(0.0, 1.0) * place.width();
+    let (first_hz, step) = (stream.first_hz, stream.step_hz);
+    let span = (stream.last_hz() - first_hz).max(0.1);
+    let x = |hz: f32| place.left() + ((hz - first_hz) / span).clamp(0.0, 1.0) * place.width();
     let y = |p: f32| place.bottom() - if most > 0.0 { p / most } else { 0.0 } * place.height();
     let colour = Continuous::INFO.colour;
-    let mut points: Vec<Pos2> =
+    let points: Vec<Pos2> =
         power.iter().enumerate().map(|(b, &p)| egui::pos2(x(first_hz + b as f32 * step), y(p))).collect();
-    let line = Shape::line(points.clone(), Stroke::new(1.0, colour));
     // Filled beneath (as quads: the outline needn't be convex).
     for pair in points.windows(2) {
         let quad = vec![pair[0], pair[1], egui::pos2(pair[1].x, place.bottom()), egui::pos2(pair[0].x, place.bottom())];
         painter.add(Shape::convex_polygon(quad, colour.gamma_multiply(0.25), Stroke::NONE));
     }
-    painter.add(line);
-    points.clear();
+    painter.add(Shape::line(points, Stroke::new(1.0, colour)));
     let peak_hz = first_hz + peak as f32 * step;
     painter.vline(x(peak_hz), place.y_range(), Stroke::new(1.0, theme.text_secondary.gamma_multiply(0.5)));
     if place.height() >= 10.0 {
@@ -576,6 +498,52 @@ fn spectrum_ui(
             theme.text_primary,
         );
     }
+}
+
+/// The reference, compactly: a button saying which channels it is ("Ref: 1-4"), opening a menu to tick them (all,
+/// or none, at once).
+fn reference_ui(ui: &mut egui::Ui, reference: &mut String, channels: u32) {
+    let ticked = parse_channels(reference, channels).unwrap_or_default();
+    let text =
+        if ticked.is_empty() { "Ref: none".to_owned() } else { format!("Ref: {}", format_channels(&ticked, channels)) };
+    let button = ui.add(egui::Button::new(text).small()).on_hover_text(
+        "Reference the traces to the average of some channels (in this view only): it's shown in a row of its own",
+    );
+    egui::Popup::menu(&button).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        ui.horizontal(|ui| {
+            ui.label("Reference to the average of");
+            if ui.small_button("All").clicked() {
+                *reference = format_channels(&(0..channels).collect::<Vec<_>>(), channels);
+            }
+            if ui.small_button("None").clicked() {
+                reference.clear();
+            }
+        });
+        let mut ticked = parse_channels(reference, channels).unwrap_or_default();
+        let mut changed = false;
+        egui::Grid::new("reference channels").spacing(egui::vec2(2.0, 2.0)).show(ui, |ui| {
+            for channel in 0..channels {
+                let on = ticked.contains(&channel);
+                let button =
+                    egui::Button::selectable(on, format!("{:>2}", channel + 1)).min_size(egui::vec2(28.0, 0.0));
+                if ui.add(button).clicked() {
+                    if on {
+                        ticked.retain(|&c| c != channel);
+                    } else {
+                        ticked.push(channel);
+                    }
+                    changed = true;
+                }
+                if (channel + 1) % 8 == 0 {
+                    ui.end_row();
+                }
+            }
+        });
+        if changed {
+            ticked.sort_unstable();
+            *reference = if ticked.is_empty() { String::new() } else { format_channels(&ticked, channels) };
+        }
+    });
 }
 
 /// Whether a selection's channels are "all".
@@ -652,7 +620,7 @@ mod tests {
         // Passes of uneven lengths, so columns fill across them.
         let (channels, per_column) = (3, 7);
         let mut traces = Traces::default();
-        traces.reshape((0, channels, per_column));
+        traces.reshape((0, channels, per_column, false));
         let value = |c: usize, t: usize| ((t * 37 + c * 11) % 23) as f32 - (c * t % 5) as f32;
         let mut t0 = 0;
         for len in [5, 9, 1, 20, 3, 13] {
@@ -677,38 +645,30 @@ mod tests {
     }
 
     #[test]
-    fn the_spectrum_peaks_at_the_rhythm() {
-        let viewer = LfpViewer::default();
-        let stream = Continuous { channels: 2, sample_rate: 30000.0 };
-        let mut traces = viewer.initial_state(&[Some(DataStream::Continuous(stream))]);
+    fn traces_can_be_referenced_to_the_average_of_some_channels() {
+        // Three channels: a shared wave, plus 10 on the first. Referenced to the first two, the first is 5 above
+        // their average, the second 5 below, the third (not in it) 5 below; and the reference is the wave plus 5.
+        let viewer = LfpViewer { reference: "1-2".into(), ..Default::default() };
+        let stream = Continuous { channels: 3, sample_rate: 1000.0 };
+        let mut traces = viewer.initial_state(&[Some(DataStream::Continuous(stream)), None]);
         let mut input = stream.buffer(PASS_DURATION);
-        let per_pass = 600;
-        input.len = per_pass;
-        // 8 Hz on the first channel, 10 Hz on the second, for five seconds.
-        for sequence in 0..250u64 {
-            for (c, hz) in [(0, 8.0), (1, 10.0)] {
-                for (s, x) in input.channel_mut(c).iter_mut().enumerate() {
-                    let t = (sequence as usize * per_pass + s) as f32 / 30000.0;
-                    *x = 100.0 * (std::f32::consts::TAU * hz * t).sin();
-                }
+        input.len = 20;
+        for c in 0..3 {
+            for (t, x) in input.channel_mut(c).iter_mut().enumerate() {
+                *x = (t as f32).sin() * 100.0 + if c == 0 { 10.0 } else { 0.0 };
             }
-            let buffer = Buffer::Continuous(input);
-            let inputs = [Some(&buffer)];
-            let mut pass = Pass::new(sequence, PASS_DURATION, &inputs, &mut []);
-            viewer.process(&mut pass, &mut traces);
-            let Buffer::Continuous(b) = buffer else { unreachable!() };
-            input = b;
         }
-        let spectra = &traces.spectra;
-        assert!(spectra.done.iter().all(|d| *d));
-        let bins = spectra.shape.2.clone();
-        let step = 30000.0 / 30.0 / SPECTRUM_SAMPLES as f32;
-        for (c, hz) in [(0, 8.0), (1, 10.0)] {
-            let power = &spectra.power[c * bins.len()..(c + 1) * bins.len()];
-            let peak = power.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).unwrap().0;
-            let peak_hz = (bins.start + peak) as f32 * step;
-            assert!((peak_hz - hz).abs() < step, "channel {c}: {peak_hz} Hz");
-        }
+        let buffer = Buffer::Continuous(input);
+        let inputs = [Some(&buffer), None];
+        viewer.process(&mut Pass::new(0, PASS_DURATION, &inputs, &mut []), &mut traces);
+        assert!(traces.shape.3, "a reference row");
+        let column = |row: usize| (traces.lows[row * COLUMNS], traces.highs[row * COLUMNS]);
+        assert_eq!(column(0), (5.0, 5.0));
+        assert_eq!(column(1), (-5.0, -5.0));
+        assert_eq!(column(2), (-5.0, -5.0));
+        // The reference itself (the wave, plus 5): the first column's two samples, sin(0) and sin(1).
+        let (low, high) = column(3);
+        assert!(low == 5.0 && (high - (1f32.sin() * 100.0 + 5.0)).abs() < 1e-3, "{low} to {high}");
     }
 
     #[test]

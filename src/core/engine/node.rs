@@ -331,6 +331,14 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
         None
     }
 
+    /// Whether the node needs an input's data now, given its settings (a viewer with part of its view hidden might
+    /// not). If not, the plan doesn't give it the data; and a node whose outputs nothing needs doesn't run at all
+    /// (except sources, which run regardless). Changing what's needed changes the plan (a new epoch), so it's for
+    /// what's switched on and off, not what changes pass to pass.
+    fn needs(&self, _input: usize) -> bool {
+        true
+    }
+
     /// What can be triggered through one of the node's settings (by index), as well as set: "auto detect", say.
     /// A control connected to it can fire one (`Context::trigger`), as can the node's own window; its passes take it
     /// (`Pass::triggered`), and may propose new values for its settings when they're done (`Pass::propose`).
@@ -409,6 +417,7 @@ pub trait NodeSet: Clone + PartialEq + Serialize + DeserializeOwned + Send + Syn
     fn view_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Self::Edges>);
     fn in_place(&self, output: usize) -> Option<usize>;
     fn takes(&self, input: usize) -> bool;
+    fn needs(&self, input: usize) -> bool;
     fn triggers(&self, setting: usize) -> &'static [&'static str];
     fn copies(&self) -> Option<CopyTo>;
     /// Whether the node carries state from one pass to the next.
@@ -534,6 +543,10 @@ macro_rules! node_set {
 
             fn in_place(&self, output: usize) -> Option<usize> {
                 match self { $($name::$variant(n) => $crate::core::engine::Node::in_place(n, output)),+ }
+            }
+
+            fn needs(&self, input: usize) -> bool {
+                match self { $($name::$variant(n) => $crate::core::engine::Node::needs(n, input)),+ }
             }
 
             fn triggers(&self, setting: usize) -> &'static [&'static str] {

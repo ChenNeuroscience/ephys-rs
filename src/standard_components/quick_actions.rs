@@ -159,7 +159,7 @@ fn real_camera() -> camera::Source {
 
 /// Board → Channel Selector → Reference → Band-pass (spikes' band) → Spike Detector → Spike Gain → Spike Viewer
 /// (setting the detector's thresholds and the gain's gains); the selector → Band-pass (LFP's band) → LFP Viewer
-/// (choosing the selector's channels); the board's digital inputs → TTL Viewer; Camera → Position Detector → Tracker
+/// (choosing the selector's channels), with a Spectrum of it too; the board's digital inputs → TTL Viewer; Camera → Position Detector → Tracker
 /// View (setting the camera's and detector's settings). Write LTX records the spikes (at their gains), the referenced
 /// data as EEG, the positions (with the detector's settings) and the digital inputs. New boards and cameras are
 /// real.
@@ -201,8 +201,11 @@ fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
         }
     };
     change.link((selector, Output, 0), (lfp, Input, 0));
-    let lfp_viewer = change.upsert("LFP Viewer", Some(lfp));
+    let spectrum = change.upsert("Spectrum", Some(lfp));
+    change.link((lfp, Output, 0), (spectrum, Input, 0));
+    let lfp_viewer = change.upsert("LFP Viewer", Some(spectrum));
     change.link((lfp, Output, 0), (lfp_viewer, Input, 0));
+    change.link((spectrum, Output, 0), (lfp_viewer, Input, 1));
     change.link((lfp_viewer, Control, 1), (selector, Setting, 0));
 
     // Digital inputs.
