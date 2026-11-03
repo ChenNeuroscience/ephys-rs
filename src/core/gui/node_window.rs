@@ -81,37 +81,12 @@ pub fn show<N: NodeSet>(
             ui.label(RichText::new(title).small().weak());
             for index in 0..state.count(role) {
                 let port = Port { node: id, role, index };
-                // What it carries, and for settings links, what's at the other end.
-                let label = |node: NodeId| graph.get(node).map_or("?", |e| e.label.as_str()).to_string();
+                // What it carries (or a setting's value); a control, whether it's connected.
                 let detail = match role {
                     Role::Input | Role::Output => state.summary(role, index).unwrap_or_else(|| "not connected".into()),
-                    Role::Setting => {
-                        let value = state.summary(role, index).unwrap_or_default();
-                        // Each control linked to it, editing it or only reading it.
-                        let (mut set, mut read) = (Vec::new(), Vec::new());
-                        for edge in graph.edges().iter().filter(|e| e.target() == port) {
-                            let read_only = graph
-                                .get(edge.from.node)
-                                .is_some_and(|e| e.node.controls().get(edge.from.port).is_some_and(|c| c.read_only));
-                            if read_only { &mut read } else { &mut set }.push(label(edge.from.node));
-                        }
-                        let mut detail = value;
-                        if !set.is_empty() {
-                            detail += &format!(", set by {}", set.join(", "));
-                        }
-                        if !read.is_empty() {
-                            detail += &format!(", read by {}", read.join(", "));
-                        }
-                        detail
-                    }
-                    Role::Control => {
-                        let targets: Vec<String> = graph.edges_from(port).map(|e| label(e.to.node)).collect();
-                        if targets.is_empty() {
-                            "not connected".into()
-                        } else {
-                            format!("edits {}", targets.join(", "))
-                        }
-                    }
+                    Role::Setting => state.summary(role, index).unwrap_or_default(),
+                    Role::Control if graph.edges_from(port).next().is_some() => "connected".into(),
+                    Role::Control => "not connected".into(),
                 };
                 ui.horizontal(|ui| {
                     let (dot, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());

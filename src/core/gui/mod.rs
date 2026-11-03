@@ -1872,8 +1872,8 @@ mod tests {
         pointer(&mut harness, at, Some(false));
         harness.run_steps(2);
         assert_eq!(harness.state().layout.window(detector), WindowState::Docked);
-        // Its default window: its settings, and the threshold set by the spike viewer.
-        assert!(harness.query_all_by_label_contains("set by Spike Viewer").next().is_some());
+        // Its default window: its settings, and its thresholds' value.
+        assert!(harness.query_all_by_label_contains("µV").next().is_some());
     }
 
     #[test]

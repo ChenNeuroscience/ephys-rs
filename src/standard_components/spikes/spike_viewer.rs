@@ -345,9 +345,8 @@ impl SpikeViewer {
                     "Only while acquiring: it needs data".into()
                 };
                 let tip = format!(
-                    "Sample the data for a while, then set the {} (as the {} says)",
-                    controls.iter().map(|c| c.1).collect::<Vec<_>>().join(" and "),
-                    controls.iter().map(|c| c.2).collect::<Vec<_>>().join(" and ")
+                    "Sample the data for a while, then set the {}",
+                    controls.iter().map(|c| c.1).collect::<Vec<_>>().join(" and ")
                 );
                 let run = ui.add_enabled(can, egui::Button::new("Run").small());
                 if run.on_hover_text(tip).on_disabled_hover_text(why).clicked() {

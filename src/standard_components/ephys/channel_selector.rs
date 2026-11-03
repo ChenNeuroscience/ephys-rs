@@ -52,8 +52,7 @@ impl Node<Edges> for ChannelSelector {
     const INFO: NodeInfo = NodeInfo {
         name: "Channel Selector",
         category: Category::Processing,
-        description: "Passes on some of the channels: all of them until the selection's applied (which an LFP \
-                      Viewer can choose).",
+        description: "Passes on some of the channels: all of them until the selection's applied.",
     };
 
     type State = Passed;

@@ -58,7 +58,7 @@ impl Node<Edges> for SpikeGain {
         name: "Spike Gain",
         category: Category::Processing,
         description: "Multiplies spikes' waveforms by each channel's gain, into the units what takes them wants (int8 \
-                      values for Write LTX, say): set by hand, from a Spike Viewer, or chosen from the data.",
+                      values for Write LTX, say): set by hand, or chosen from the data.",
     };
 
     fn inputs(&self) -> Vec<Input<Edges>> {

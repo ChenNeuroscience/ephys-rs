@@ -1,14 +1,12 @@
-//! The Reference node: re-references channels, subtracting from each a reference made from other channels.
+//! The Reference node: re-references every channel, subtracting from each a reference made from other channels.
 //!
-//! As in Open Ephys: its common average reference (the average of some channels, times a gain, from others),
-//! and its channel map's reference channels (each channel referenced to one other). Besides those: the median
-//! rather than the average (a common median reference: a spike on one reference channel hardly moves it), and
-//! averages or medians taken separately within groups of channels (each shank of a probe, say).
+//! As in Open Ephys: its common average reference (the average of some channels), and its channel map's reference
+//! channels (each channel referenced to one other). Besides those: the median rather than the average (a common
+//! median reference: a spike on one reference channel hardly moves it).
 //!
-//! Its settings are one setting (`reference`), which another node can edit through a settings edge: the LFP Viewer
-//! chooses the reference channels on its rows. Besides the referenced data, it outputs the references themselves (a
-//! channel each: one for an average or median of them all, one for each group's, one for a single channel), which
-//! the LFP Viewer shows.
+//! Its settings are one setting (`reference`), which another node can edit through a settings edge. Besides the
+//! referenced data, it outputs the references themselves: a channel each (one, for an average, a median or a single
+//! channel; for each its own, each channel referenced to).
 
 use eframe::egui::{self, Color32, RichText};
 use serde::{Deserialize, Serialize};
@@ -37,24 +35,11 @@ pub struct Reference {
     pub method: Method,
     /// For an average or median: the channels it's of, such as "all" or "1-4, 9".
     pub reference_channels: String,
-    /// For an average or median: whether it's taken separately in each group of this many channels (from each
-    /// group's reference channels, for that group's channels), or over them all as one (0).
-    pub group_size: u32,
-    /// The channels re-referenced; the others pass through as they are.
-    pub channels: String,
-    /// How much of the reference is subtracted, in percent.
-    pub gain: f32,
 }
 
 impl Default for Reference {
     fn default() -> Self {
-        Reference {
-            method: Method::Median,
-            reference_channels: "all".into(),
-            group_size: 0,
-            channels: "all".into(),
-            gain: 100.0,
-        }
+        Reference { method: Method::Median, reference_channels: "all".into() }
     }
 }
 
@@ -163,10 +148,9 @@ impl Referencing {
             return;
         }
         let all = count as u32;
-        let applies: Vec<u32> = parse_channels(&settings.channels, all).unwrap_or_default();
         let (mut reference_of, mut references) = (vec![None; count], Vec::new());
         let mut refer = |channel: u32, sources: Vec<usize>, references: &mut Vec<Vec<usize>>| {
-            if applies.contains(&channel) && !sources.is_empty() {
+            if !sources.is_empty() {
                 let index = references.iter().position(|r| *r == sources).unwrap_or_else(|| {
                     references.push(sources);
                     references.len() - 1
@@ -190,11 +174,13 @@ impl Referencing {
                 }
             }
             Method::Average | Method::Median => {
-                let sources = parse_channels(&settings.reference_channels, all).unwrap_or_default();
-                let group = if settings.group_size == 0 { all } else { settings.group_size };
+                let sources: Vec<usize> = parse_channels(&settings.reference_channels, all)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|s| s as usize)
+                    .collect();
                 for c in 0..all {
-                    let in_group = |s: &&u32| **s / group == c / group;
-                    refer(c, sources.iter().filter(in_group).map(|&s| s as usize).collect(), &mut references);
+                    refer(c, sources.clone(), &mut references);
                 }
             }
         }
@@ -208,8 +194,8 @@ impl Node<Edges> for Reference {
     const INFO: NodeInfo = NodeInfo {
         name: "Reference",
         category: Category::Processing,
-        description: "Re-references channels: to one channel, to the average or median of some (in groups, or \
-                      all together), or each to a channel of its own.",
+        description: "Re-references every channel: to one channel, to the average or median of some, or each to a \
+                      channel of its own.",
     };
 
     type State = Referencing;
@@ -256,12 +242,11 @@ impl Node<Edges> for Reference {
                 };
             }
         }
-        let gain = self.gain / 100.0;
         for channel in 0..channels {
             let Some(r) = state.reference_of.get(channel).copied().flatten() else { continue };
             let reference = &state.values[r * n..(r + 1) * n];
             for (y, reference) in output.channel_mut(channel).iter_mut().zip(reference) {
-                *y -= gain * reference;
+                *y -= reference;
             }
         }
         // The references themselves (none: a channel of zeros).
@@ -302,7 +287,6 @@ impl Node<Edges> for Reference {
                     warnings.push(format!("{what}: {e}"));
                 }
             };
-            check("Channels", &self.channels);
             match &self.method {
                 Method::Average | Method::Median => check("Reference channels", &self.reference_channels),
                 Method::Channel { channel } if *channel == 0 || *channel > c.channels => {
@@ -326,9 +310,6 @@ impl Node<Edges> for Reference {
             Method::Median => 2,
             Method::PerChannel { .. } => 3,
         };
-        let channel_set = |ui: &mut egui::Ui, text: &mut String| {
-            ui.add(egui::TextEdit::singleline(text).hint_text("all, or e.g. 1-4, 9").desired_width(140.0))
-        };
         settings_grid(ui, |ui| {
             setting(ui, "Reference", |ui| {
                 egui::ComboBox::from_id_salt("method")
@@ -351,20 +332,13 @@ impl Node<Edges> for Reference {
                 Method::Channel { channel } => {
                     setting(ui, "Channel", |ui| ui.add(egui::DragValue::new(channel).range(1..=count)));
                 }
-                Method::Average | Method::Median => {
-                    setting(ui, "Of channels", |ui| channel_set(ui, &mut self.reference_channels));
-                    setting(ui, "Groups of", |ui| {
-                        ui.add(egui::DragValue::new(&mut self.group_size).range(0..=count).custom_formatter(|v, _| {
-                            if v == 0.0 { "all as one".into() } else { format!("{v} channels") }
-                        }))
-                        .on_hover_text("Take the reference separately in each group of this many channels")
-                    });
-                }
-                Method::PerChannel { .. } => {}
+                Method::Average | Method::Median | Method::PerChannel { .. } => {}
             }
-            setting(ui, "Re-reference", |ui| channel_set(ui, &mut self.channels));
-            setting(ui, "Gain", |ui| ui.add(egui::Slider::new(&mut self.gain, 0.0..=100.0).suffix(" %")));
         });
+        if matches!(self.method, Method::Average | Method::Median) {
+            ui.add_space(4.0);
+            reference_channels_ui(ui, &mut self.reference_channels, count);
+        }
         if let Method::PerChannel { references } = &mut self.method {
             references.resize(count as usize, 0);
             ui.label(RichText::new("Each channel's reference (0 for none)").small().weak());
@@ -381,6 +355,43 @@ impl Node<Edges> for Reference {
             });
         }
         input_summary(ui, context.inputs);
+    }
+}
+
+/// The channels the reference is of, a checkbox each, in rows as wide as fit; and all or none of them.
+fn reference_channels_ui(ui: &mut egui::Ui, text: &mut String, count: u32) {
+    let mut chosen: Vec<u32> = parse_channels(text, count).unwrap_or_default();
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(format!("Of {} of the {count} channels", chosen.len())).strong());
+        if ui.small_button("All").clicked() {
+            *text = "all".into();
+        }
+        if ui.small_button("None").clicked() {
+            *text = "none".into();
+        }
+    });
+    let across = ((ui.available_width() / 48.0) as u32).clamp(4, 16);
+    let mut changed = false;
+    egui::ScrollArea::vertical().max_height(240.0).id_salt("reference channels").show(ui, |ui| {
+        egui::Grid::new("reference channels").spacing([6.0, 2.0]).show(ui, |ui| {
+            for channel in 0..count {
+                let mut on = chosen.contains(&channel);
+                if ui.checkbox(&mut on, format!("{:>2}", channel + 1)).changed() {
+                    if on {
+                        chosen.push(channel)
+                    } else {
+                        chosen.retain(|&c| c != channel)
+                    }
+                    changed = true;
+                }
+                if (channel + 1) % across == 0 {
+                    ui.end_row();
+                }
+            }
+        });
+    });
+    if changed {
+        *text = format_channels(&chosen, count);
     }
 }
 
@@ -428,18 +439,14 @@ mod tests {
         let median = Reference { method: Method::Median, ..Default::default() };
         assert_eq!(run(&median, &data)[0], vec![1.0 - 5.0, 2.0 - 4.0], "the upper middle of an even count");
 
-        let grouped = Reference { method: Method::Average, group_size: 2, ..Default::default() };
-        assert_eq!(run(&grouped, &data)[2], vec![5.0 - 7.5, 9.0 - 4.5], "from its own group only");
+        let some = Reference { method: Method::Average, reference_channels: "1-2".into() };
+        assert_eq!(run(&some, &data)[3], vec![10.0 - 2.0, 0.0 - 3.0], "of some channels, every channel referenced");
 
-        let some = Reference { method: Method::Average, channels: "4".into(), gain: 50.0, ..Default::default() };
-        let out = run(&some, &data);
-        assert_eq!(out[0], data[0], "channels not re-referenced pass through");
-        assert_eq!(out[3], vec![10.0 - 0.5 * 4.75, 0.0 - 0.5 * 3.75]);
-
-        // And the references themselves: a channel each.
+        // And the references themselves: a channel each (each channel referenced to, here).
         let stream = Continuous { channels: 4, sample_rate: 30000.0 };
-        assert_eq!(grouped.references(4), 2);
-        let outputs = grouped.outputs(&[Some(DataStream::Continuous(stream))]);
+        let own = Reference { method: Method::PerChannel { references: vec![0, 1, 1, 3] }, ..Default::default() };
+        assert_eq!((own.references(4), average.references(4)), (2, 1));
+        let outputs = own.outputs(&[Some(DataStream::Continuous(stream))]);
         assert_eq!(outputs[1].stream, Some(DataStream::Continuous(Continuous { channels: 2, ..stream })));
         let mut input = stream.buffer(PASS_DURATION);
         input.len = 2;
@@ -451,15 +458,48 @@ mod tests {
         let references = Continuous { channels: 2, ..stream };
         let mut outputs =
             [Buffer::Continuous(stream.buffer(PASS_DURATION)), Buffer::Continuous(references.buffer(PASS_DURATION))];
-        grouped.process(&mut Pass::new(0, PASS_DURATION, &inputs, &mut outputs), &mut Referencing::default());
+        own.process(&mut Pass::new(0, PASS_DURATION, &inputs, &mut outputs), &mut Referencing::default());
         let Buffer::Continuous(references) = &outputs[1] else { unreachable!() };
-        assert_eq!((references.channel(0), references.channel(1)), (&[2.0, 3.0][..], &[7.5, 4.5][..]));
+        assert_eq!((references.channel(0), references.channel(1)), (&[1.0, 2.0][..], &[5.0, 9.0][..]));
 
-        let own = Reference { method: Method::PerChannel { references: vec![0, 1, 1, 3] }, ..Default::default() };
         let out = run(&own, &data);
         assert_eq!(
             (out[0].clone(), out[2].clone(), out[3].clone()),
             (data[0].clone(), vec![4.0, 7.0], vec![5.0, -9.0])
         );
+    }
+
+    #[test]
+    fn settings_window() {
+        use crate::Nodes;
+        use crate::core::engine::{Graph, NodeSet};
+        use crate::standard_components::themes::THEMES;
+        let mut graph = Graph::<Nodes>::default();
+        use egui_kittest::kittest::Queryable as _;
+        let index = Nodes::TYPES.iter().position(|t| t.name == "Reference").unwrap();
+        let id = graph.add(Nodes::create(index), [0.0, 0.0]);
+        if let Some(Nodes::Reference(reference)) = graph.get_mut(id).map(|e| &mut e.node) {
+            reference.reference_channels = "1-3, 5-8, 13".into();
+        }
+        let inputs = [Some(DataStream::Continuous(Continuous { channels: 16, sample_rate: 30000.0 }))];
+        let mut harness = egui_kittest::Harness::builder().with_size([360.0, 300.0]).wgpu().build_ui_state(
+            |ui, graph: &mut Graph<Nodes>| {
+                graph.edit(id, &inputs, &THEMES[0].colours, None, None, false, false, None, |node, context| {
+                    node.settings_ui(ui, context)
+                });
+            },
+            graph,
+        );
+        THEMES[0].apply(&harness.ctx);
+        harness.run_steps(3);
+        harness.snapshot("reference_settings");
+        // Ticking a channel puts it in the reference.
+        harness.get_by_label(" 4").click();
+        harness.run_steps(2);
+        let reference = match harness.state().get(id).map(|e| &e.node) {
+            Some(Nodes::Reference(reference)) => reference.reference_channels.clone(),
+            _ => unreachable!(),
+        };
+        assert_eq!(reference, "1-8, 13");
     }
 }

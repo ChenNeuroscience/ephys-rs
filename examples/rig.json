@@ -438,9 +438,6 @@
         "label": "Reference",
         "node": {
           "settings": {
-            "channels": "all",
-            "gain": 100.0,
-            "group_size": 0,
             "method": {
               "kind": "median"
             },

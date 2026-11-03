@@ -452,10 +452,8 @@ impl LfpViewer {
                     );
                     let hover = Rect::from_min_size(row.min, egui::vec2(label, height));
                     let tip = match reference {
-                        Some(reference) => {
-                            format!("The reference the spikes are referenced to: the {}", reference.summary())
-                        }
-                        None => "A reference, from the Reference".into(),
+                        Some(reference) => format!("The reference: the {}", reference.summary()),
+                        None => "The reference".into(),
                     };
                     let _ = ui
                         .interact(hover, ui.scope_id().with(("reference row", shown_row)), Sense::hover())
@@ -482,7 +480,7 @@ impl LfpViewer {
                         toggled = Some(number);
                     }
                 }
-                // Whether it's in the reference (a Reference's, beside this).
+                // Whether it's in the reference (a Reference's).
                 if let Some(reference) = reference.filter(|r| matches!(r.method, Method::Average | Method::Median)) {
                     let on = in_reference(reference, number);
                     let place = Rect::from_center_size(egui::pos2(rect.left() + 52.0, text_y), egui::vec2(18.0, 16.0));
@@ -615,8 +613,7 @@ fn toggle_reference(reference: &mut Reference, number: u32, channels: u32) {
 /// row, with R), and all or none of them. Other methods are set in the Reference itself.
 fn reference_ui(ui: &mut egui::Ui, reference: &mut Reference, channels: u32, all_shown: bool) {
     let label = ui.strong("Reference").on_hover_text(
-        "The spikes' reference, made by the Reference beside this from the same channels: R on a row puts its channel \
-         in it, or takes it out. The traces here aren't referenced",
+        "The reference: R on a row puts its channel in it, or takes it out. The traces here aren't referenced",
     );
     let median = match reference.method {
         Method::Average => false,
@@ -658,13 +655,13 @@ fn reference_ui(ui: &mut egui::Ui, reference: &mut Reference, channels: u32, all
     }
 }
 
-/// The gains (an Continuous Gain's: what the continuous data's recorded at, beside this), compactly: the range one for all
+/// The gains (a Continuous Gain's: what the continuous data's recorded at), compactly: the range one for all
 /// fits, or that they're each channel's (as each row shows); and detecting them from the data.
 fn gains_ui(ui: &mut egui::Ui, context: &mut Context<Edges>, gains: &mut Gains, channels: u32) {
     let label = ui.strong("Gain");
     let label = label.on_hover_text(
-        "The Continuous Gain's gains, beside this: what the continuous data's recorded at. Each row shows the range it fits \
-         (dashed, if it's within the row): beyond it, it's clipped",
+        "The gains the continuous data's recorded at. Each row shows the range its gain fits (dashed, if it's within \
+         the row): beyond it, it's clipped",
     );
     let layout = Channels { count: channels as usize, group_size: 1 };
     let detecting =
@@ -680,10 +677,7 @@ fn gains_ui(ui: &mut egui::Ui, context: &mut Context<Edges>, gains: &mut Gains, 
     } else {
         ui.label("each channel's");
     }
-    let tip = format!(
-        "Sample the data, then set the gains so its bigger excursions reach ±{} (as the Continuous Gain says)",
-        gains.output_range
-    );
+    let tip = format!("Sample the data, then set the gains so its bigger excursions reach ±{}", gains.output_range);
     auto_detect_ui(ui, context, Some(GAINS), &tip);
 }
 
