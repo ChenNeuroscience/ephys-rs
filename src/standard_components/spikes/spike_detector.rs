@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::core::engine::EdgeType;
 use crate::core::engine::{Category, Context, Input, Node, NodeInfo, Output, PASS_DURATION, Pass, SettingPort};
 use crate::core::exchange::Latest;
-use crate::standard_components::spikes::spike_gain::{AUTO_DETECT, SAMPLING, auto_detect_ui, detecting};
+use crate::standard_components::auto_detect::{AUTO_DETECT, SAMPLING, auto_detect_ui, detecting};
 use crate::standard_components::spikes::{Polarity, Spike, Spikes, Thresholds};
 use crate::standard_components::widgets::{
     combo, input_summary, named_settings_grid, require_input, setting, settings_grid,

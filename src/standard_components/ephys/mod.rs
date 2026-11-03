@@ -4,6 +4,7 @@
 pub mod band_pass;
 pub mod board;
 pub mod channel_selector;
+pub mod eeg_gain;
 pub mod gain;
 pub mod lfp_viewer;
 pub mod reference;

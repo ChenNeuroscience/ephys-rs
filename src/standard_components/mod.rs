@@ -5,6 +5,7 @@
 //! node types use.
 
 pub mod annotations;
+pub mod auto_detect;
 pub mod ephys;
 mod pool;
 mod preview;

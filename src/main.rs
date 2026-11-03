@@ -16,7 +16,7 @@ mod standard_components;
 
 use standard_components::annotations::{arrow, group_box, heading, image, markdown, sticky_note};
 use standard_components::ephys::{
-    self, band_pass, board, channel_selector, gain, lfp_viewer, reference, spectrum, ttl_viewer,
+    self, band_pass, board, channel_selector, eeg_gain, gain, lfp_viewer, reference, spectrum, ttl_viewer,
 };
 use standard_components::recording::{ltx, raw};
 use standard_components::spikes::{self, spike_detector, spike_gain, spike_viewer};
@@ -54,6 +54,7 @@ node_set! {
         BandPassFilter(band_pass::BandPassFilter),
         Spectrum(spectrum::Spectrum),
         Gain(gain::Gain),
+        EegGain(eeg_gain::EegGain),
         SpikeDetector(spike_detector::SpikeDetector),
         SpikeGain(spike_gain::SpikeGain),
         PositionDetector(position_detector::PositionDetector),

@@ -2030,7 +2030,7 @@ mod tests {
         // Not the Run menu's: the viewer's, drawn after it.
         harness.get_all_by_label("Run").last().expect("the viewer's Run").click();
         harness.run_steps(2);
-        use crate::standard_components::spikes::spike_gain::AUTO_DETECT;
+        use crate::standard_components::auto_detect::AUTO_DETECT;
         let progress =
             |h: &Harness<TestApp>| h.state().runner.as_ref().unwrap().exchange().trigger_progress(gain, AUTO_DETECT);
         assert!(progress(&harness).is_some(), "the Spike Gain's auto detect, fired");

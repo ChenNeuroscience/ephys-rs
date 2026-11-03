@@ -11,8 +11,8 @@
 //! duration are filled in at the end. Timestamps count 96 kHz ticks from the start of recording, and multi-byte
 //! values are big-endian. Spikes' samples are -128 to 127: their waveforms should come as int8 values (as floats),
 //! multiplied into them by a Spike Gain, whose gains (connected, read-only, to `gains`) are recorded in the `.set`
-//! file, with the full scale, as Axona's are (`gain_ch_0`..., `ADC_fullscale_mv`). The 5 kHz data is stored two µV a
-//! step.
+//! file, with the full scale, as Axona's are (`gain_ch_0`..., `ADC_fullscale_mv`). The 5 kHz data should come as
+//! int8 values too, multiplied into them by an EEG Gain.
 //!
 //! The positions' header records the position detector's settings (connected, read-only, to `detection`): the
 //! crop, whose bounding box positions are measured from (scaled down to fit 0–1022 if need be; 1023 means no LED),
@@ -665,7 +665,8 @@ impl Files<Chunk> for LtxFiles {
             for (channel, egf) in self.egf.iter_mut().enumerate() {
                 let values = &chunk.continuous[channel * len..(channel + 1) * len];
                 self.record.clear();
-                self.record.extend(values.iter().map(|v| to_i8(v / 2.0)));
+                // Already int8 values (from an EEG Gain), as floats: just made integers.
+                self.record.extend(values.iter().map(|&v| to_i8(v)));
                 egf.file.data(&self.record)?;
                 egf.samples += self.record.len() as u64;
                 bytes += self.record.len() as u64;
@@ -794,8 +795,8 @@ mod tests {
         chunk.spikes.push((spike.group, spike.sample));
         // As int8 values (from a Spike Gain), from -80.
         chunk.waveforms = (0..160).map(|i| i as f32 - 80.0).collect();
-        // Two samples kept on each channel (at 5 kHz), halved.
-        chunk.continuous = vec![0.0, 60.0, 120.0, 180.0];
+        // Two samples kept on each channel (at 5 kHz), as int8 values.
+        chunk.continuous = vec![0.0, 30.0, 60.0, 90.0];
         chunk.continuous_len = 2;
         let blob = Blob { x: 100.0, y: 50.0, area: 30 };
         chunk.positions.push(PositionSample {

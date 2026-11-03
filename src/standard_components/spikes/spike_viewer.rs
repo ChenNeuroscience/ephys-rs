@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::engine::{Category, Context, Control, CopyTo, EdgeType, Input, Node, NodeInfo, Output, Pass};
 use crate::core::exchange::Latest;
+use crate::standard_components::auto_detect::AUTO_DETECT;
 use crate::standard_components::preview;
-use crate::standard_components::spikes::spike_gain::AUTO_DETECT;
 use crate::standard_components::spikes::{
     Channels, DEFAULT_RANGE_UV, DEFAULT_THRESHOLD_UV, Gains, Polarity, Spikes, Thresholds, range_step,
 };

@@ -66,7 +66,7 @@ it fires one (`Context::trigger(Some(control), name)`), as can the node's own wi
 takes it (`Pass::triggered`), reports progress (`Pass::trigger_progress`), and finishes (`Pass::trigger_done`).
 Meanwhile it can be stopped (`Context::cancel_trigger`): the passes then see `Pass::trigger_cancelled`, and abandon it. Since
 passes can't change the graph, what it finds it proposes (`Pass::propose(setting, value)`), and the GUI applies it as
-an edit. The [Spike Gain](../src/standard_components/spikes/spike_gain.rs) and
+an edit. The [EEG Gain](../src/standard_components/ephys/eeg_gain.rs), [Spike Gain](../src/standard_components/spikes/spike_gain.rs) and
 [Spike Detector](../src/standard_components/spikes/spike_detector.rs) work this way, triggered from the Spike Viewer.
 
 ## Threads of its own
