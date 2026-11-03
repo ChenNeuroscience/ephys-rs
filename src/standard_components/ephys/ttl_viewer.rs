@@ -23,11 +23,13 @@ const LONGEST: f32 = 60.0;
 pub struct TtlViewer {
     /// Seconds across the view.
     pub span: f32,
+    /// Each line's height, in points: more lines than fit scroll.
+    pub line_height: f32,
 }
 
 impl Default for TtlViewer {
     fn default() -> Self {
-        TtlViewer { span: 5.0 }
+        TtlViewer { span: 5.0, line_height: 32.0 }
     }
 }
 
@@ -189,6 +191,9 @@ impl Node<Edges> for TtlViewer {
                 let label = ui.label("Span");
                 let field = egui::DragValue::new(&mut self.span).range(0.1..=LONGEST).speed(0.05).suffix(" s");
                 ui.add(field).labelled_by(label.id).on_hover_text("Seconds across the view");
+                let label = ui.label("Line height");
+                let field = egui::DragValue::new(&mut self.line_height).range(12.0..=200.0).speed(0.5).suffix(" px");
+                ui.add(field).labelled_by(label.id);
             });
             context.node_toolbar(ui);
         });
@@ -200,12 +205,23 @@ impl Node<Edges> for TtlViewer {
             return preview::unconnected(ui, context.theme, &message);
         };
         let theme = context.theme;
-        let rect = preview::plot_area(ui, theme);
+        let area = ui.available_rect_before_wrap();
+        ui.painter().rect_filled(area, 2.0, theme.surface_sunken);
+        let row = self.line_height.clamp(12.0, 200.0);
+        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| Self::lines_ui(ui, display, row, theme));
+        preview::repaint_with_data(ui);
+    }
+}
+
+impl TtlViewer {
+    /// The lines, each `row` high.
+    fn lines_ui(ui: &mut egui::Ui, display: &LinesDisplay, row: f32, theme: &crate::core::theme::Colours) {
+        let size = egui::vec2(ui.available_width(), row * display.lines as f32);
+        let (rect, hover) = ui.allocate_exact_size(size, egui::Sense::hover());
         let painter = ui.painter_at(rect);
         // Line numbers on the left, counts on the right.
         let (label, counts) = (34.0, 170.0);
         let trace = egui::Rect::from_x_y_ranges(rect.left() + label..=rect.right() - counts, rect.y_range());
-        let row = rect.height() / display.lines as f32;
         // Filling from the left, then scrolling, with room for the future at the right (see `time_axis`).
         let (left, right) = crate::core::time_axis::window(0.0, display.now, display.span);
         let x = |time: f64| trace.left() + ((time - left) / (right - left)) as f32 * trace.width();
@@ -244,9 +260,10 @@ impl Node<Edges> for TtlViewer {
             let colour = if ups > 0 { theme.text_primary } else { theme.text_disabled };
             painter.text(Pos2::new(rect.right() - 6.0, middle), Align2::RIGHT_CENTER, text, font.clone(), colour);
         }
-        let hover = ui.interact(rect, ui.scope_id().with("ttl rows"), egui::Sense::hover());
-        hover.on_hover_text("Each line's level; and how many times it's gone up since acquisition started, and since recording last started");
-        preview::repaint_with_data(ui);
+        hover.on_hover_text(
+            "Each line's level; and how many times it's gone up since acquisition started, and since recording last \
+             started",
+        );
     }
 }
 
@@ -278,5 +295,43 @@ mod tests {
         assert_eq!(lines.ups_recording, vec![1, 1]);
         assert_eq!(lines.changes[3].time, 0.105, "a change in the second pass, 5 samples in");
         assert_eq!(lines.levels, 0b11);
+    }
+
+    /// Eight lines at the line height set, scrolling past those that don't fit. See tests/snapshots/.
+    #[test]
+    fn lines_are_as_high_as_set() {
+        use crate::Nodes;
+        use crate::core::engine::{Graph, NodeSet};
+        use crate::standard_components::themes::THEMES;
+        let mut graph = Graph::<Nodes>::default();
+        let index = Nodes::TYPES.iter().position(|t| t.name == "TTL Viewer").unwrap();
+        let viewer = graph.add(Nodes::create(index), [0.0, 0.0]);
+        let changes = (0..8)
+            .flat_map(|line| {
+                (0..4).map(move |i| Change { line, time: 0.5 + i as f64 + line as f64 * 0.1, high: i % 2 == 0 })
+            })
+            .collect();
+        let display = LinesDisplay {
+            lines: 8,
+            now: 5.0,
+            span: 5.0,
+            changes,
+            ups: vec![2; 8],
+            ups_recording: vec![0; 8],
+            ..Default::default()
+        };
+        let stream = Some(DataStream::Events(Events { lines: 8, sample_rate: 30000.0 }));
+        let mut harness = egui_kittest::Harness::builder().with_size([600.0, 220.0]).wgpu().build_ui_state(
+            |ui, graph: &mut Graph<Nodes>| {
+                let display: &(dyn std::any::Any + Send) = &display;
+                graph.edit(viewer, &[stream], &THEMES[0].colours, Some(display), true, false, None, |node, context| {
+                    node.view_ui(ui, context)
+                });
+            },
+            graph,
+        );
+        THEMES[0].apply(&harness.ctx);
+        harness.run_steps(3);
+        harness.snapshot("ttl_viewer");
     }
 }
