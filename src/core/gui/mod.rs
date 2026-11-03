@@ -83,6 +83,16 @@ pub fn run<C: Components>(path: Option<PathBuf>) -> eframe::Result {
     result
 }
 
+/// The program's version, "v0.12": each commit counts the minor version up (see docs/development.md). Tests show
+/// "v0.x", so their snapshots don't change with it.
+pub fn version() -> String {
+    if cfg!(test) {
+        "v0.x".into()
+    } else {
+        format!("v{}.{}", env!("CARGO_PKG_VERSION_MAJOR"), env!("CARGO_PKG_VERSION_MINOR"))
+    }
+}
+
 /// Where the theme (by name) is kept among the app's preferences (which eframe saves, separately from graph files).
 const THEME_KEY: &str = "theme";
 const HOME_KEY: &str = "home";
@@ -130,9 +140,8 @@ struct SaveFile<N, A> {
     graph: Graph<N>,
     #[serde(default)]
     annotations: Annotations<A>,
-    /// Kept loose, so a layout from an older version is dropped rather than failing the whole file.
     #[serde(default)]
-    layout: Option<serde_json::Value>,
+    layout: Option<Layout>,
 }
 
 #[derive(Serialize)]
@@ -297,7 +306,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
     fn load(&mut self, path: &Path) -> Result<(), String> {
         let json = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
         let file: SaveFile<N, A> = serde_json::from_str(&json).map_err(|e| e.to_string())?;
-        self.layout = file.layout.and_then(|l| serde_json::from_value(l).ok()).unwrap_or_default();
+        self.layout = file.layout.unwrap_or_default();
         self.layout.mode = self.home_mode;
         self.history = History::new(&file.graph, &file.annotations);
         self.graph = file.graph;
@@ -843,16 +852,18 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         let now = ui.input(|i| i.time);
         let mut clicked = false;
         ui.horizontal(|ui| {
-            if let Some(runner) = &self.runner {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.weak(version()).on_hover_text("The version: each change to the program counts it up");
+                if let Some(runner) = &self.runner {
+                    ui.separator();
                     let stats = ui.scope(|ui| self.run_stats(ui, &runner.stats())).response.rect;
                     // Watched rather than made a button, so the stats keep their own tooltips.
                     if ui.rect_contains_pointer(stats) {
                         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                         clicked = ui.input(|i| i.pointer.primary_clicked());
                     }
-                });
-            }
+                }
+            });
             match (&self.status, self.canvas.hint()) {
                 (Some(status), _) if now < status.until => {
                     let colours = self.colours();

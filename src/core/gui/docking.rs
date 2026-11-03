@@ -28,7 +28,6 @@ use crate::core::theme::Colours;
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub enum Pane {
     /// Home: the basic view, or the graph (see `Mode`).
-    #[serde(alias = "Main", alias = "Canvas")]
     Home,
     DevTools,
     /// The selected annotation's settings: there while an annotation's selected.
