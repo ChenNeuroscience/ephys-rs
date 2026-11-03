@@ -685,6 +685,19 @@ struct Shared {
     next_pass: AtomicU64,
     /// Epochs started, which numbers them (from 1).
     epochs: AtomicU64,
+    /// The newest version a pass has run against.
+    newest_used: AtomicU64,
+    /// Versions first run against, since they were last asked for.
+    first_uses: Mutex<Vec<FirstUse>>,
+}
+
+/// The first pass to run against a version (a later one, if passes never ran against those before it).
+#[derive(Clone, Copy, Debug)]
+pub struct FirstUse {
+    pub version: u64,
+    pub sequence: u64,
+    /// When the pass started.
+    pub at: Instant,
 }
 
 /// What a pass in `WorkerSlot::pass` is when the worker isn't running one.
@@ -892,6 +905,11 @@ impl<N: NodeSet> Runner<N> {
         }
     }
 
+    /// The versions passes have started running against since this was last asked.
+    pub fn first_uses(&self) -> Vec<FirstUse> {
+        std::mem::take(&mut *self.shared.first_uses.lock().unwrap())
+    }
+
     /// The plan passes are being dispatched for, once they are.
     #[cfg(test)]
     fn running_plan(&self) -> Option<Arc<Plan<N>>> {
@@ -1021,6 +1039,10 @@ fn work<N: NodeSet>(epochs: &Epochs<N>, shared: &Shared, index: usize) {
                 slot.pass.store(job.sequence, Ordering::Relaxed);
                 let start = Instant::now();
                 let snapshot = epoch.snapshot.lock().unwrap().clone();
+                if shared.newest_used.fetch_max(snapshot.version, Ordering::Relaxed) < snapshot.version {
+                    let first = FirstUse { version: snapshot.version, sequence: job.sequence, at: start };
+                    shared.first_uses.lock().unwrap().push(first);
+                }
                 let pass = PassId { epoch: epoch.number, sequence: job.sequence, node: None, node_type: None };
                 epoch.plan.run(&snapshot, pass, workspace, &epoch.slots);
                 let finished = Instant::now();

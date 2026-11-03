@@ -51,7 +51,10 @@ For now, files and the clipboard are read only as they're written now: nothing i
 ## Performance
 
 The dev tools (Ctrl/⌘ Alt I) show each step's time in the passes (its work, and any wait at a sync point), the passes'
-and the GUI's frames over time (marking changes to the run: new epochs, versions, recording), and the buffers and pools.
+and the GUI's frames over time, and the buffers and pools. The charts mark changes to the run (new epochs, versions,
+recording) twice: a solid line when the change was asked for, and a dashed one at the first pass to use it
+(`Runner::first_uses`). Hovering either says what changed, and the dashed one how long it took: a pass or so for new
+settings, longer for a new epoch, as passes carry on with the old one until a worker's ready for it.
 Release builds keep line tables, so profilers and crash backtraces name lines.
 
 ## Crash reports

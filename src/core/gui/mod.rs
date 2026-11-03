@@ -500,6 +500,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         self.history.commit(&self.graph, &self.annotations);
         self.runner = Some(Runner::start(&self.history.current.snapshot, self.workers));
         self.frame_times.run_started = Some(self.frame_times.now());
+        self.frame_times.run_restarted();
         self.ran = Some(self.history.current.snapshot.clone());
     }
 
@@ -967,9 +968,12 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                     MarkKind::Epoch => format!("v{} new epoch", snapshot.version),
                     MarkKind::Version => format!("v{}", snapshot.version),
                 };
-                self.frame_times.mark(kind, label, detail);
+                self.frame_times.mark(snapshot.version, kind, label, detail);
             }
             self.ran = Some(snapshot.clone());
+        }
+        for first in runner.first_uses() {
+            self.frame_times.first_use(first.version, first.sequence, first.at);
         }
         // Keep the stats in the status bar fresh.
         ctx.request_repaint_after(std::time::Duration::from_millis(250));
@@ -2173,6 +2177,17 @@ mod tests {
         assert!(marks.iter().any(|m| m.contains("Settings of Spike Detector")), "{marks:?}");
         assert!(marks.iter().any(|m| m.contains("Recording started")), "{marks:?}");
         assert!(marks.iter().any(|m| m.contains("Disabled TTL Viewer")), "{marks:?}");
+        // And marked again once a pass has used them.
+        let used = |h: &Harness<TestApp>| {
+            let marks = &h.state().frame_times.marks;
+            marks.iter().any(|m| m.first_use && m.detail.contains("Recording started"))
+        };
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        while !used(&harness) && Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            harness.run_steps(1);
+        }
+        assert!(used(&harness), "the first pass recording");
         harness.state_mut().set_recording(None);
         harness.state_mut().perform(&ctx, Action::Play);
     }
