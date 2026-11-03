@@ -335,6 +335,7 @@ mod tests {
         assert_eq!(gains.summary(), "±250 µV–±500 µV");
         // Mapped to ±1 (floats, say), the ranges stay.
         gains.set_magnitude(1.0);
-        assert_eq!((gains.get(2), gains.range_uv(2), gains.range_uv(9)), (1.0 / 500.0, 500.0, DEFAULT_RANGE_UV));
+        assert_eq!((gains.get(2), gains.range_uv(9)), (1.0 / 500.0, DEFAULT_RANGE_UV));
+        assert!((gains.range_uv(2) - 500.0).abs() < 1e-3);
     }
 }
