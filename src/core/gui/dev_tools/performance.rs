@@ -177,7 +177,7 @@ pub fn show(
     });
     let tip = "How long the GUI took over each frame, part by part: those it builds, then laying it out and painting \
                it; the slowest in each twentieth of a second. Against the 1/60 s a frame can take, at 60 frames a \
-               second (the line across). The solid lines down mark changes to the run, and the dashed ones the first \
+               second (the line across). The dashed lines down mark changes to the run, and the solid ones the first \
                pass to use each: hover one for what changed, and how long it took";
     let _ = shown_plot.response.on_hover_text(shown_plot.inner.unwrap_or_else(|| tip.to_owned()));
 
@@ -217,7 +217,7 @@ pub fn show(
 }
 
 /// The changes to the run in view, as lines down a plot (labelled, if `labelled`, at its `top`): red for recording
-/// starting or stopping, amber for a new epoch, grey for other versions; solid when it was asked for, dashed at the
+/// starting or stopping, amber for a new epoch, grey for other versions; dashed when it was asked for, solid at the
 /// first pass to use it. Returns what changed at the one under the pointer, if any.
 fn show_marks(plot: &mut PlotUi, marks: &[&Mark], colours: &Colours, top: f64, labelled: bool) -> Option<String> {
     let colour = |kind: MarkKind| match kind {
@@ -226,7 +226,7 @@ fn show_marks(plot: &mut PlotUi, marks: &[&Mark], colours: &Colours, top: f64, l
         MarkKind::Version => colours.text_secondary,
     };
     for mark in marks {
-        let style = if mark.first_use { LineStyle::dashed_dense() } else { LineStyle::Solid };
+        let style = if mark.first_use { LineStyle::Solid } else { LineStyle::dashed_dense() };
         plot.vline(VLine::new(mark.label.clone(), mark.at).color(colour(mark.kind)).width(1.5).style(style));
         if labelled && !mark.first_use {
             let text = RichText::new(&mark.label).small().color(colour(mark.kind));
