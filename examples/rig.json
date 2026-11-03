@@ -449,11 +449,11 @@
         "node": {
           "settings": {
             "gains": {
-              "magnitude": 128.0,
+              "output_range": 128.0,
+              "scope": "Channel",
               "gains": []
             },
-            "sampling": 10.0,
-            "target": 95.0
+            "sampling": 10.0
           },
           "type": "SpikeGain"
         },
@@ -516,7 +516,8 @@
         "label": "Spike Viewer",
         "node": {
           "settings": {
-            "plot_height": 120.0
+            "plot_height": 120.0,
+            "detect": "Both"
           },
           "type": "SpikeViewer"
         },

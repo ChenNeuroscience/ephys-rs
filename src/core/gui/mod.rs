@@ -2027,7 +2027,13 @@ mod tests {
         let ctx = harness.ctx.clone();
         harness.state_mut().perform(&ctx, Action::Play);
         harness.run_steps(2);
-        harness.get_by_label("Gains").click();
+        // Just the gains, from the viewer's toolbar.
+        if let Some(Nodes::SpikeViewer(v)) = harness.state_mut().graph.get_mut(viewer).map(|e| &mut e.node) {
+            v.detect = crate::standard_components::spikes::spike_viewer::Detect::Gains;
+        }
+        harness.run_steps(2);
+        // Not the Run menu's: the viewer's, drawn after it.
+        harness.get_all_by_label("Run").last().expect("the viewer's Run").click();
         harness.run_steps(2);
         let exchange = || harness.state().runner.as_ref().unwrap().exchange();
         assert!(
@@ -2035,7 +2041,7 @@ mod tests {
             "the Spike Gain's auto detect, fired"
         );
         // What the passes propose is applied, as an edit.
-        let gains = crate::standard_components::spikes::Gains { magnitude: 128.0, gains: vec![0.25] };
+        let gains = crate::standard_components::spikes::Gains { gains: vec![0.25], ..Default::default() };
         harness.state().runner.as_ref().unwrap().exchange().propose(
             gain,
             0,

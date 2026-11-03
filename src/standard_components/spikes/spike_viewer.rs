@@ -16,7 +16,7 @@ use crate::core::exchange::Latest;
 use crate::standard_components::preview;
 use crate::standard_components::spikes::spike_gain::AUTO_DETECT;
 use crate::standard_components::spikes::{
-    DEFAULT_RANGE_UV, DEFAULT_THRESHOLD_UV, Gains, Polarity, Spikes, Thresholds, range_step,
+    Channels, DEFAULT_RANGE_UV, DEFAULT_THRESHOLD_UV, Gains, Polarity, Spikes, Thresholds, range_step,
 };
 use crate::standard_components::widgets::require_input;
 use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
@@ -31,11 +31,43 @@ const WAVEFORMS: usize = 30;
 pub struct SpikeViewer {
     /// Each channel's plot's height, in points (its width follows).
     pub plot_height: f32,
+    /// What to detect from the data, when asked.
+    pub detect: Detect,
 }
 
 impl Default for SpikeViewer {
     fn default() -> Self {
-        SpikeViewer { plot_height: 120.0 }
+        SpikeViewer { plot_height: 120.0, detect: Detect::Both }
+    }
+}
+
+/// What to detect from the data.
+#[derive(Clone, Copy, PartialEq, Debug, Default, Serialize, Deserialize)]
+pub enum Detect {
+    #[default]
+    Both,
+    Gains,
+    Thresholds,
+}
+
+impl Detect {
+    fn name(self) -> &'static str {
+        match self {
+            Detect::Both => "Gains and thresholds",
+            Detect::Gains => "Gains",
+            Detect::Thresholds => "Thresholds",
+        }
+    }
+
+    /// The controls whose settings' auto-detect it triggers, with what each detects and what does it.
+    fn controls(self) -> &'static [(usize, &'static str, &'static str)] {
+        const GAIN: (usize, &str, &str) = (GAINS_CONTROL, "gains", "Spike Gain");
+        const THRESHOLD: (usize, &str, &str) = (THRESHOLDS, "thresholds", "Spike Detector");
+        match self {
+            Detect::Both => &[GAIN, THRESHOLD],
+            Detect::Gains => &[GAIN],
+            Detect::Thresholds => &[THRESHOLD],
+        }
     }
 }
 
@@ -159,7 +191,13 @@ impl Node<Edges> for SpikeViewer {
         for (i, spike) in input.spikes.iter().enumerate() {
             let group = spike.group as usize;
             let slot = (group * keep + recent.head[group]) * size;
-            recent.waveforms[slot..slot + size].copy_from_slice(input.waveform(i));
+            // In µV, whatever gains they've been multiplied by (see `SpikesBuffer::gains`).
+            let stored = &mut recent.waveforms[slot..slot + size];
+            stored.copy_from_slice(input.waveform(i));
+            for (c, values) in stored.chunks_mut(input.samples.max(1)).enumerate() {
+                let gain = input.gains.get(group * input.group_size + c).copied().unwrap_or(1.0);
+                values.iter_mut().for_each(|v| *v /= gain.max(f32::MIN_POSITIVE));
+            }
             recent.head[group] = (recent.head[group] + 1) % keep;
             recent.count[group] = (recent.count[group] + 1).min(keep);
             recent.total[group] += 1;
@@ -167,7 +205,7 @@ impl Node<Edges> for SpikeViewer {
         let channels = recent.thresholds.len();
         recent.thresholds.copy_from_slice(&input.thresholds[..channels]);
         for (range, gain) in recent.ranges.iter_mut().zip(&input.gains) {
-            *range = input.magnitude / gain.max(f32::MIN_POSITIVE);
+            *range = input.output_range / gain.max(f32::MIN_POSITIVE);
         }
 
         let groups = stream.groups() as usize;
@@ -262,33 +300,60 @@ impl SpikeViewer {
                     .labelled_by(label.id);
             });
             ui.separator();
-            ui.strong("Auto detect");
-            for (control, name, what, how) in [
-                (GAINS_CONTROL, "Gains", "Spike Gain", "so each channel's bigger spikes fill its plot"),
-                (THRESHOLDS, "Thresholds", "Spike Detector", "from each channel's noise"),
-            ] {
-                let progress = context.trigger_progress(Some(control), AUTO_DETECT);
-                let can = context.can_trigger(Some(control), AUTO_DETECT) && progress.is_none() && !context.locked;
-                let why = if !context.control_connected(control) {
-                    format!("Connect its {} to a {what} to detect them", name.to_lowercase())
-                } else if context.locked {
-                    "Not while recording".into()
-                } else if !context.running {
-                    "Only while acquiring: it needs data".into()
-                } else {
-                    "Detecting…".into()
-                };
-                let tip = format!(
-                    "Sample the data for a while, then set the {} {how} (as the {what} says)",
-                    name.to_lowercase()
-                );
-                let button = ui.add_enabled(can, egui::Button::new(name).small());
-                if button.on_hover_text(tip).on_disabled_hover_text(why).clicked() {
+            // Auto detect: what, then run (each by its node, as it says: see their settings).
+            let label = ui.strong("Auto detect");
+            ui.add_enabled_ui(!context.locked, |ui| {
+                egui::ComboBox::from_id_salt("detect")
+                    .selected_text(self.detect.name())
+                    .width(150.0)
+                    .show_ui(ui, |ui| {
+                        for option in [Detect::Both, Detect::Gains, Detect::Thresholds] {
+                            ui.selectable_value(&mut self.detect, option, option.name());
+                        }
+                    })
+                    .response
+                    .labelled_by(label.id)
+                    .on_hover_text("What to detect from the data");
+            });
+            let controls = self.detect.controls();
+            let progress: Vec<f32> =
+                controls.iter().filter_map(|&(c, _, _)| context.trigger_progress(Some(c), AUTO_DETECT)).collect();
+            let missing: Vec<String> = controls
+                .iter()
+                .filter(|&&(c, _, _)| !context.control_connected(c))
+                .map(|&(_, what, by)| format!("connect its {what} to a {by}"))
+                .collect();
+            let can = missing.is_empty()
+                && progress.is_empty()
+                && !context.locked
+                && controls.iter().all(|&(c, _, _)| context.can_trigger(Some(c), AUTO_DETECT));
+            let why = if !missing.is_empty() {
+                format!("To detect them, {}", missing.join(", and "))
+            } else if context.locked {
+                "Not while recording".into()
+            } else if !context.running {
+                "Only while acquiring: it needs data".into()
+            } else {
+                "Detecting…".into()
+            };
+            let tip = format!(
+                "Sample the data for a while, then set the {} (as the {} says)",
+                controls.iter().map(|c| c.1).collect::<Vec<_>>().join(" and "),
+                controls.iter().map(|c| c.2).collect::<Vec<_>>().join(" and ")
+            );
+            if ui
+                .add_enabled(can, egui::Button::new("Run").small())
+                .on_hover_text(tip)
+                .on_disabled_hover_text(why)
+                .clicked()
+            {
+                for &(control, _, _) in controls {
                     context.trigger(Some(control), AUTO_DETECT);
                 }
-                if let Some(progress) = progress {
-                    ui.add(egui::ProgressBar::new(progress).desired_width(60.0).show_percentage());
-                }
+            }
+            if !progress.is_empty() {
+                let least = progress.iter().copied().fold(1.0, f32::min);
+                ui.add(egui::ProgressBar::new(least).desired_width(60.0).show_percentage());
             }
             if context.advanced() {
                 ui.separator();
@@ -397,6 +462,7 @@ impl SpikeViewer {
     ) {
         let theme = plots.theme;
         let polarity = plots.stream.polarity;
+        let layout = Channels { count: plots.stream.channels as usize, group_size: plots.stream.group_size as usize };
         let shown = |values: &[f32], default: f32| values.get(channel).copied().unwrap_or(default);
         let display_thresholds = plots.display.map_or(&[][..], |d| &d.thresholds[..]);
         let display_ranges = plots.display.map_or(&[][..], |d| &d.ranges[..]);
@@ -467,7 +533,7 @@ impl SpikeViewer {
             for (place, up, text) in [(up, true, "+"), (down, false, "−")] {
                 let tip = if up { "Raise the gain: spikes look bigger" } else { "Lower the gain: spikes look smaller" };
                 if ui.put(place, egui::Button::new(text).small()).on_hover_text(tip).clicked() {
-                    gains.set_range(channel, range_step(range, up));
+                    gains.set_range(channel, range_step(range, up), layout);
                 }
             }
         }
@@ -516,7 +582,7 @@ impl SpikeViewer {
                 match (cancelled, value.filter(|v| v.is_finite() && *v > 0.0), t.what) {
                     (false, Some(v), Typed::Gain) => {
                         if let Some(gains) = plots.gains.as_deref_mut() {
-                            gains.set_range(channel, v)
+                            gains.set_range(channel, v, layout)
                         }
                     }
                     (false, Some(v), Typed::Threshold) => {

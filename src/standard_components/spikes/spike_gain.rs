@@ -1,16 +1,16 @@
-//! The Spike Gain: each channel's gain for spikes (see `Gains`): what their waveforms are multiplied by, for whatever
-//! takes them, up to a magnitude (±128, for Write LTX's 8-bit samples; ±1 for floats, say), so the range of µV each
-//! channel's waveforms fit in, which the Spike Viewer shows. It passes spikes through, setting their gains, and can
-//! choose the gains from the data when it's triggered ("auto detect", from its window or a Spike Viewer's): its passes
-//! sample each channel's spikes for a while, then have the bigger of them reach a target share of the range.
+//! The Spike Gain: multiplies each channel's spike waveforms (µV) by its gain, a dumb multiplier, into whatever units
+//! what takes them wants (as floats): int8 values for Write LTX, say, or int16, or 0 to 1. Gains can be one for all
+//! channels, one for each group (a tetrode's, say), or one each (see `Gains`). They can be chosen from the data when
+//! it's triggered ("auto detect", from its window or a Spike Viewer's): its passes sample each channel's spikes for a
+//! while, then have the bigger of them reach the output range, which is the only thing that range is for.
 
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 
-use crate::core::engine::{Category, Context, EdgeType, Input, Node, NodeInfo, Output, Pass, SettingPort};
+use crate::core::engine::{Category, Context, Input, Node, NodeInfo, Output, Pass, SettingPort};
 use crate::core::exchange::Latest;
-use crate::standard_components::spikes::{DEFAULT_RANGE_UV, Gains, RANGES_UV, SpikesBuffer};
-use crate::standard_components::widgets::{input_summary, require_input, setting, settings_grid};
+use crate::standard_components::spikes::{Channels, DEFAULT_RANGE_UV, GainScope, Gains, RANGES_UV, SpikesBuffer};
+use crate::standard_components::widgets::{input_summary, named_settings_grid, require_input, setting};
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
 
 /// Its trigger, to choose the gains from the data.
@@ -26,13 +26,11 @@ pub struct SpikeGain {
     pub gains: Gains,
     /// Seconds to sample the data for, to choose the gains from.
     pub sampling: f32,
-    /// How far up the range (in percent) a channel's bigger spikes reach, with gains chosen from the data.
-    pub target: f32,
 }
 
 impl Default for SpikeGain {
     fn default() -> Self {
-        SpikeGain { gains: Gains::default(), sampling: 10.0, target: 95.0 }
+        SpikeGain { gains: Gains::default(), sampling: 10.0 }
     }
 }
 
@@ -64,8 +62,8 @@ impl Node<Edges> for SpikeGain {
     const INFO: NodeInfo = NodeInfo {
         name: "Spike Gain",
         category: Category::Processing,
-        description: "Each channel's gain for spikes, up to a magnitude (±128 for 8-bit samples, say), so the range \
-                      they're recorded and viewed over: set by hand, from a Spike Viewer, or chosen from the data.",
+        description: "Multiplies spikes' waveforms by each channel's gain, into the units what takes them wants (int8 \
+                      values for Write LTX, say): set by hand, from a Spike Viewer, or chosen from the data.",
     };
 
     fn inputs(&self) -> Vec<Input<Edges>> {
@@ -98,19 +96,17 @@ impl Node<Edges> for SpikeGain {
         &[AUTO_DETECT]
     }
 
-    /// Sets the spikes' gains; and, when triggered, samples the spikes for a while, then proposes gains from them.
+    /// Multiplies each channel's waveforms by its gain (saying so on the spikes); and, when triggered, samples the
+    /// spikes (in µV, before that) for a while, then proposes gains from them.
     fn process(&self, pass: &mut Pass<Edges>, gaining: &mut Gaining) {
         if let Some(Some(Buffer::Spikes(input))) = pass.inputs.first()
             && let Some(Buffer::Spikes(output)) = pass.outputs.get_mut(0)
         {
             copy(input, output);
         }
-        let Some(Buffer::Spikes(spikes)) = pass.outputs.first_mut() else { return };
-        for (channel, gain) in spikes.gains.iter_mut().enumerate() {
-            *gain = self.gains.get(channel);
-        }
-        spikes.magnitude = self.gains.magnitude;
+        let Some(Buffer::Spikes(spikes)) = pass.outputs.first() else { return };
         let channels = spikes.gains.len();
+        let layout = Channels { count: channels, group_size: spikes.group_size };
         if pass.triggered(AUTO_DETECT) {
             let seconds = self.sampling.clamp(*SAMPLING.start(), *SAMPLING.end()) as f64;
             gaining.sampling = Some(Sampling {
@@ -121,16 +117,12 @@ impl Node<Edges> for SpikeGain {
                 peaks: (0..channels).map(|_| Vec::with_capacity(SAMPLED_SPIKES)).collect(),
             });
         }
-        let Some(Buffer::Spikes(spikes)) = pass.outputs.first() else { return };
         if let Some(sampling) = &mut gaining.sampling {
             sampling.add(spikes, pass.duration);
             pass.trigger_progress(AUTO_DETECT, (sampling.elapsed / sampling.seconds) as f32);
             if sampling.elapsed >= sampling.seconds {
                 let mut gains = self.gains.clone();
-                for (channel, range) in sampling.choose(&spikes.thresholds, self.target / 100.0).into_iter().enumerate()
-                {
-                    gains.set_range(channel, range);
-                }
+                gains.set_ranges(&sampling.choose(&spikes.thresholds), layout);
                 pass.propose(0, Setting::Gains(gains));
                 pass.trigger_done(AUTO_DETECT);
                 gaining.sampling = None;
@@ -138,70 +130,108 @@ impl Node<Edges> for SpikeGain {
         }
         let progress = gaining.sampling.as_ref().map(|s| (s.elapsed as f32, s.seconds as f32));
         gaining.shown.send(pass, |shown| *shown = progress);
+
+        // The gains, applied: a dumb multiplier, into whatever units what takes the spikes wants.
+        let Some(Buffer::Spikes(spikes)) = pass.outputs.first_mut() else { return };
+        for (channel, gain) in spikes.gains.iter_mut().enumerate() {
+            *gain = self.gains.get(channel);
+        }
+        spikes.output_range = self.gains.output_range;
+        let (k, samples, size) = (spikes.group_size, spikes.samples, spikes.group_size * spikes.samples);
+        for (i, spike) in spikes.spikes.iter().enumerate() {
+            let waveform = &mut spikes.waveforms[i * size..(i + 1) * size];
+            for c in 0..k {
+                let gain = spikes.gains.get(spike.group as usize * k + c).copied().unwrap_or(1.0);
+                waveform[c * samples..(c + 1) * samples].iter_mut().for_each(|v| *v *= gain);
+            }
+        }
     }
 
     fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
-        settings_grid(ui, |ui| {
-            setting(ui, "Gains", |ui| ui.label(self.gains.summary()));
-            setting(ui, "Output range", |ui| {
-                let mut magnitude = self.gains.magnitude;
-                let field = egui::DragValue::new(&mut magnitude).range(1e-6..=1e9).speed(1.0).prefix("±");
-                let response = ui.add(field).on_hover_text(
-                    "What the gains map each channel's range to, in the units of what takes the spikes: ±128 for \
-                         Write LTX's 8-bit samples, ±1 for floats, say. Changing it keeps the ranges",
-                );
-                if response.changed() {
-                    self.gains.set_magnitude(magnitude);
+        let channels = match context.inputs[0] {
+            Some(DataStream::Spikes(s)) => Channels { count: s.channels as usize, group_size: s.group_size as usize },
+            _ => Channels { count: 0, group_size: 4 },
+        };
+        // The gains: how they're shared out, then each one.
+        ui.strong("Gains");
+        named_settings_grid(ui, "gain scope", |ui| {
+            setting(ui, "One for", |ui| {
+                let mut scope = self.gains.scope;
+                let response = egui::ComboBox::from_id_salt("gain scope")
+                    .selected_text(scope.name(channels.group_size))
+                    .show_ui(ui, |ui| {
+                        for option in GainScope::ALL {
+                            ui.selectable_value(&mut scope, option, option.name(channels.group_size));
+                        }
+                    })
+                    .response
+                    .on_hover_text("Whether the channels share a gain: all of them, each group's, or none");
+                if scope != self.gains.scope {
+                    self.gains.set_scope(scope, channels);
                 }
                 response
             });
-            setting(ui, "Auto detect over", |ui| {
+        });
+        if channels.count > 0 {
+            let units = self.gains.units(channels);
+            let kind = match self.gains.scope {
+                GainScope::All => "All",
+                GainScope::Group => "Group",
+                GainScope::Channel => "Channel",
+            };
+            egui::ScrollArea::vertical().max_height(260.0).id_salt("gains").show(ui, |ui| {
+                egui::Grid::new("gains").num_columns(3).striped(true).show(ui, |ui| {
+                    ui.strong(kind);
+                    ui.strong("Gain");
+                    ui.strong("Fits").on_hover_text("The µV that reach the output range, at this gain");
+                    ui.end_row();
+                    for (index, unit) in units.iter().enumerate() {
+                        let name = match self.gains.scope {
+                            GainScope::All => format!("1–{}", channels.count),
+                            GainScope::Group => format!("{} ({}–{})", index + 1, unit.start + 1, unit.end),
+                            GainScope::Channel => format!("{}", unit.start + 1),
+                        };
+                        ui.label(name);
+                        let mut gain = self.gains.get(unit.start);
+                        let speed = gain * 0.01;
+                        let field =
+                            egui::DragValue::new(&mut gain).range(1e-6..=1e6).speed(speed).max_decimals(3).prefix("×");
+                        if ui.add(field).changed() {
+                            self.gains.set(unit.start, gain, channels);
+                        }
+                        ui.label(format!("±{:.0} µV", self.gains.range_uv(unit.start)));
+                        ui.end_row();
+                    }
+                });
+            });
+        }
+
+        // Choosing them from the data.
+        ui.add_space(8.0);
+        ui.strong("Auto detect");
+        named_settings_grid(ui, "auto detect", |ui| {
+            setting(ui, "Fit to", |ui| {
+                let mut output_range = self.gains.output_range;
+                let field = egui::DragValue::new(&mut output_range).range(1e-6..=1e9).speed(1.0).prefix("±");
+                let response = ui.add(field).on_hover_text(
+                    "Gains chosen from the data have each channel's bigger spikes (the 98th percentile's biggest \
+                     excursion) reach this, in the units of what takes them: ±128 for Write LTX's int8 values, say \
+                     (or less, for room above them), ±32768 for int16, ±1 for floats",
+                );
+                self.gains.output_range = output_range;
+                response
+            });
+            setting(ui, "Sampling for", |ui| {
                 ui.add(egui::DragValue::new(&mut self.sampling).range(SAMPLING).speed(0.2).suffix(" s"))
                     .on_hover_text("How long to sample the spikes for")
             });
-            setting(ui, "Target", |ui| {
-                ui.add(egui::DragValue::new(&mut self.target).range(20.0..=100.0).speed(0.5).suffix(" % of range"))
-                    .on_hover_text(
-                        "How far up the recording's 8-bit range each channel's bigger spikes reach (the 98th \
-                         percentile's biggest excursion), with gains chosen from the data",
-                    )
-            });
         });
-        auto_detect_ui(
-            ui,
-            context,
-            None,
-            "Sample the spikes, then set each channel's gain so its bigger ones fill the range",
+        let tip = format!(
+            "Sample the spikes, then set the gains so the bigger ones reach ±{}, sharing them out as above",
+            self.gains.output_range
         );
-        let channels = match context.inputs[0] {
-            Some(DataStream::Spikes(s)) => s.channels as usize,
-            _ => 0,
-        };
-        if channels > 0 {
-            egui::CollapsingHeader::new("Each channel")
-                .id_salt("each channel")
-                .show(ui, |ui| {
-                    egui::Grid::new("gains").num_columns(3).striped(true).show(ui, |ui| {
-                        ui.strong("Channel");
-                        ui.strong("Range");
-                        ui.strong("Gain");
-                        ui.end_row();
-                        for channel in 0..channels {
-                            ui.label(format!("{}", channel + 1));
-                            let mut range = self.gains.range_uv(channel);
-                            let field =
-                                egui::DragValue::new(&mut range).range(RANGES_UV).speed(1.0).prefix("±").suffix(" µV");
-                            if ui.add(field).changed() {
-                                self.gains.set_range(channel, range);
-                            }
-                            ui.label(format!("×{:.4}", self.gains.get(channel)));
-                            ui.end_row();
-                        }
-                    });
-                })
-                .header_response
-                .on_hover_cursor(egui::CursorIcon::PointingHand);
-        }
+        auto_detect_ui(ui, context, None, &tip);
+        ui.add_space(4.0);
         input_summary(ui, context.inputs);
     }
 }
@@ -255,9 +285,9 @@ impl Sampling {
     }
 
     /// Each channel's range (µV), given its threshold: the bigger of its spikes (the 98th percentile's biggest
-    /// excursion) reach `target` of it, with room for its threshold (at most two-thirds of the way up); with too few
-    /// spikes to tell, it's eight standard deviations of its noise.
-    fn choose(&mut self, thresholds: &[f32], target: f32) -> Vec<f32> {
+    /// excursion) reach it, with room for its threshold (at most two-thirds of the way up); with too few spikes to
+    /// tell, it's eight standard deviations of its noise.
+    fn choose(&mut self, thresholds: &[f32]) -> Vec<f32> {
         let passes = self.passes.max(1) as f64;
         self.peaks
             .iter_mut()
@@ -267,7 +297,7 @@ impl Sampling {
                 let noise = (noise / passes) as f32;
                 let biggest = if peaks.len() >= 10 {
                     peaks.sort_unstable_by(f32::total_cmp);
-                    peaks[(peaks.len() - 1) * 98 / 100] / target.max(0.01)
+                    peaks[(peaks.len() - 1) * 98 / 100]
                 } else {
                     8.0 * noise
                 };
@@ -329,10 +359,41 @@ mod tests {
         let proposals = exchange.take_proposals();
         let Some(Setting::Gains(gains)) = proposals[0].2.downcast_ref::<Setting>() else { panic!() };
         let close = |a: f32, b: f32| (a - b).abs() < 0.01;
-        assert!(close(gains.range_uv(0), 100.0 / 0.95), "the first channel's spikes reach 95%");
-        assert!(close(gains.range_uv(1), 500.0 / 0.95), "the second's biggest");
+        assert!(close(gains.range_uv(0), 100.0), "the first channel's spikes reach the output range");
+        assert!(close(gains.range_uv(1), 500.0), "the second's biggest");
         assert!(close(gains.range_uv(2), 120.0), "spikes no bigger than 0: room for its threshold");
         assert!(close(gains.range_uv(3), 75.0), "and for the default threshold, with no noise");
-        assert_eq!(gains.magnitude, 128.0, "for 8-bit samples, to begin with");
+        assert_eq!(gains.output_range, 128.0, "for 8-bit samples, to begin with");
+    }
+
+    /// Its window, a gain for each tetrode. See tests/snapshots/.
+    #[test]
+    fn settings_window() {
+        use crate::Nodes;
+        use crate::core::engine::{Graph, NodeSet};
+        use crate::standard_components::spikes::Spikes;
+        use crate::standard_components::themes::THEMES;
+        let mut graph = Graph::<Nodes>::default();
+        let index = Nodes::TYPES.iter().position(|t| t.name == "Spike Gain").unwrap();
+        let id = graph.add(Nodes::create(index), [0.0, 0.0]);
+        let spikes =
+            Spikes { channels: 8, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32, polarity: Default::default() };
+        if let Some(Nodes::SpikeGain(gain)) = graph.get_mut(id).map(|e| &mut e.node) {
+            let channels = Channels { count: 8, group_size: 4 };
+            gain.gains.set_scope(GainScope::Group, channels);
+            gain.gains.set_range(5, 120.0, channels);
+        }
+        let inputs = [Some(DataStream::Spikes(spikes))];
+        let mut harness = egui_kittest::Harness::builder().with_size([420.0, 380.0]).wgpu().build_ui_state(
+            |ui, graph: &mut Graph<Nodes>| {
+                graph.edit(id, &inputs, &THEMES[0].colours, None, false, false, None, |node, context| {
+                    node.settings_ui(ui, context)
+                });
+            },
+            graph,
+        );
+        THEMES[0].apply(&harness.ctx);
+        harness.run_steps(3);
+        harness.snapshot("spike_gain_settings");
     }
 }

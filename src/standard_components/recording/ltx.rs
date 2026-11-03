@@ -9,9 +9,10 @@
 //!
 //! Each file is `key value` header lines, then the data between `data_start` and `data_end`; counts and the
 //! duration are filled in at the end. Timestamps count 96 kHz ticks from the start of recording, and multi-byte
-//! values are big-endian. Spikes' samples are each channel's ±(full scale / gain) as -128 to 127: the gains are
-//! the spike detector's (connected, read-only, to `gains`), and are recorded in the `.set` file, with the full scale,
-//! as Axona's are (`gain_ch_0`..., `ADC_fullscale_mv`). The 5 kHz data is stored two µV a step.
+//! values are big-endian. Spikes' samples are -128 to 127: their waveforms should come as int8 values (as floats),
+//! multiplied into them by a Spike Gain, whose gains (connected, read-only, to `gains`) are recorded in the `.set`
+//! file, with the full scale, as Axona's are (`gain_ch_0`..., `ADC_fullscale_mv`). The 5 kHz data is stored two µV a
+//! step.
 //!
 //! The positions' header records the position detector's settings (connected, read-only, to `detection`): the
 //! crop, whose bounding box positions are measured from (scaled down to fit 0–1022 if need be; 1023 means no LED),
@@ -281,7 +282,7 @@ impl Node<Edges> for WriteLtx {
             ui.weak("Connect the detection to record the crop and calibration with the positions.");
         }
         if context.controls[1].is_none() && context.inputs[0].is_some() {
-            ui.weak("Connect the spike detector's gains to record the spikes at them (until then, all are ×6000).");
+            ui.weak("Connect the Spike Gain's gains, to record them with the spikes.");
         }
         ui.separator();
         status_ui(ui, context.display::<Status>(), context.theme);
@@ -499,7 +500,6 @@ struct LtxFiles {
     streams: Streams,
     set: LtxFile,
     tetrodes: Vec<Tetrode>,
-    gains: Gains,
     egf: Vec<Egf>,
     /// Samples of continuous data so far (for which to keep at 5 kHz), and of the spikes' and events' passes.
     spike_samples: i64,
@@ -533,8 +533,8 @@ impl LtxFiles {
         if let Some(spikes) = streams.spikes {
             set.header("ADC_fullscale_mv", FULL_SCALE_UV / 1000.0)?;
             for channel in 0..spikes.channels as usize {
-                // In the Axona format's terms: the gain giving the channel's range.
-                let gain = FULL_SCALE_UV / recorded.gains.range_uv(channel);
+                // In the Axona format's terms: the gain giving the range its 8-bit samples (±128) cover.
+                let gain = FULL_SCALE_UV * recorded.gains.get(channel) / 128.0;
                 set.header(&format!("gain_ch_{channel}"), (gain * 10.0).round() / 10.0)?;
             }
             for group in 0..spikes.groups() {
@@ -578,7 +578,6 @@ impl LtxFiles {
             streams,
             set,
             tetrodes,
-            gains: recorded.gains,
             egf,
             spike_samples: 0,
             event_samples: 0,
@@ -645,15 +644,13 @@ impl Files<Chunk> for LtxFiles {
                 let Some(tetrode) = self.tetrodes.get_mut(group as usize) else { continue };
                 let seconds = (self.spike_samples + sample as i64) as f64 / spikes.sample_rate as f64;
                 let waveform = &chunk.waveforms[i * k * samples..(i + 1) * k * samples];
-                let first = spikes.group_channels(group).start as usize;
                 self.record.clear();
                 for channel in 0..SPIKE_CHANNELS {
                     self.record.extend_from_slice(&ticks(seconds));
                     let values = waveform.get(channel * samples..(channel + 1) * samples).unwrap_or(&[]);
-                    // The channel's range, over the 8-bit samples' ±128 steps (whatever its gains map to).
-                    let steps = 128.0 / self.gains.range_uv(first + channel);
+                    // Already int8 values (from a Spike Gain), as floats: just made integers.
                     let start = self.record.len();
-                    self.record.extend(values.iter().take(SPIKE_SAMPLES).map(|v| to_i8(v * steps)));
+                    self.record.extend(values.iter().take(SPIKE_SAMPLES).map(|&v| to_i8(v)));
                     self.record.resize(start + SPIKE_SAMPLES, 0);
                 }
                 tetrode.file.data(&self.record)?;
@@ -782,10 +779,11 @@ mod tests {
             positions: Some(Positions { fps: 50.0, width: 640, height: 480 }),
             events: None,
         };
-        // A µV a step on the first channel, half a µV on the second.
+        // Gains recorded: a µV a step on the first channel, half a µV on the second.
         let mut gains = Gains::default();
-        gains.set_range(0, 128.0);
-        gains.set_range(1, 64.0);
+        let channels = crate::standard_components::spikes::Channels { count: 4, group_size: 4 };
+        gains.set_range(0, 128.0, channels);
+        gains.set_range(1, 64.0, channels);
         let recorded = Recorded { detection: None, gains };
         let mut files = Box::new(LtxFiles::open(&base, Local::now(), streams, recorded).unwrap());
 
@@ -794,6 +792,7 @@ mod tests {
         files.write(&chunk).unwrap();
         let spike = Spike { sample: 300, group: 0, channel: 0 };
         chunk.spikes.push((spike.group, spike.sample));
+        // As int8 values (from a Spike Gain), from -80.
         chunk.waveforms = (0..160).map(|i| i as f32 - 80.0).collect();
         // Two samples kept on each channel (at 5 kHz), halved.
         chunk.continuous = vec![0.0, 60.0, 120.0, 180.0];
@@ -813,10 +812,11 @@ mod tests {
         let record = data(&tetrode);
         assert_eq!(record.len(), 4 * 54);
         assert_eq!(i32::from_be_bytes(record[..4].try_into().unwrap()), 2880);
-        assert_eq!(record[4] as i8, -80, "the first channel's first sample");
-        assert_eq!(record[54 + 4] as i8, -80, "the second channel's (-40 µV), at twice the gain");
-        assert_eq!(record[2 * 54 + 4] as i8, 0, "the third's (0 µV)");
-        assert_eq!(record[3 * 54 + 4] as i8, 20, "the fourth's (40 µV) at the default gain (±250 µV)");
+        // Each channel's first sample, as it came.
+        assert_eq!(record[4] as i8, -80);
+        assert_eq!(record[54 + 4] as i8, -40);
+        assert_eq!(record[2 * 54 + 4] as i8, 0);
+        assert_eq!(record[3 * 54 + 4] as i8, 40);
         let egf = read(&base, ".egf2");
         assert_eq!(header(&egf, "num_EEG_samples"), "2");
         assert_eq!(data(&egf).iter().map(|b| *b as i8).collect::<Vec<_>>(), vec![60, 90]);

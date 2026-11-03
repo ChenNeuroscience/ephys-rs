@@ -104,11 +104,13 @@ pub struct SpikesBuffer {
     pub waveforms: Vec<f32>,
     pub group_size: usize,
     pub samples: usize,
-    /// Each channel's threshold, gain and noise (a standard deviation, µV) as the pass ended, and what the gains map
-    /// to (see `Gains`).
+    /// Each channel's threshold and noise (a standard deviation), in µV, as the pass ended.
     pub thresholds: Vec<f32>,
+    /// The gain each channel's waveforms have been multiplied by (1 until a Spike Gain has: they're then in the
+    /// units of what takes them, not µV), and the range of those units they're meant to fit, ±`output_range` (so
+    /// ±`output_range / gain` µV, which the Spike Viewer shows).
     pub gains: Vec<f32>,
-    pub magnitude: f32,
+    pub output_range: f32,
     pub noise: Vec<f32>,
     /// How many samples of continuous data the pass covers (for timing spikes across passes).
     pub pass_samples: usize,
@@ -156,8 +158,8 @@ impl DataStreamType for Spikes {
             group_size,
             samples: waveform,
             thresholds: vec![0.0; self.channels as usize],
-            gains: vec![DEFAULT_MAGNITUDE / DEFAULT_RANGE_UV; self.channels as usize],
-            magnitude: DEFAULT_MAGNITUDE,
+            gains: vec![1.0; self.channels as usize],
+            output_range: DEFAULT_RANGE_UV,
             noise: vec![0.0; self.channels as usize],
             pass_samples: 0,
         }
@@ -168,7 +170,7 @@ impl DataStreamType for Spikes {
     }
 }
 
-/// What gains map to until it's set: Write LTX's 8-bit samples, ±128 steps.
+/// The range gains are chosen to fit until it's set: Write LTX's int8 values.
 pub const DEFAULT_MAGNITUDE: f32 = 128.0;
 /// A channel's range until it's set: µV either side of zero.
 pub const DEFAULT_RANGE_UV: f32 = 250.0;
@@ -238,54 +240,114 @@ impl EdgeType for Thresholds {
     }
 }
 
-/// Each channel's gain for spikes: a waveform's values times its channel's gain are in the units of what takes them
-/// (a writer's samples, say), up to ±`magnitude` (the range of those units). So a channel's waveforms fit within
-/// ±`magnitude / gain` µV (its range), which is what the Spike Viewer's plots show, and beyond which a recording's
-/// values clip. Write LTX's 8-bit samples take ±128 steps; floats might take ±1.
+/// How spike gains are shared out: one for all the channels, one for each group (a tetrode's, say), or one each.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub enum GainScope {
+    All,
+    Group,
+    #[default]
+    Channel,
+}
+
+impl GainScope {
+    pub const ALL: [GainScope; 3] = [GainScope::All, GainScope::Group, GainScope::Channel];
+
+    /// "Each tetrode", say, for groups of `group_size`.
+    pub fn name(self, group_size: usize) -> &'static str {
+        match self {
+            GainScope::All => "All channels together",
+            GainScope::Group => match group_size {
+                1 => "Each channel",
+                2 => "Each stereotrode",
+                4 => "Each tetrode",
+                8 => "Each octrode",
+                _ => "Each group",
+            },
+            GainScope::Channel => "Each channel",
+        }
+    }
+}
+
+/// Each channel's gain for spikes: what the Spike Gain multiplies its waveforms' values (µV) by, a dumb multiplier,
+/// into whatever units what takes them wants (still floats): int8 values for Write LTX, int16 or 0–1 for others.
+/// Chosen from the data, a channel's bigger spikes reach ±`output_range` (the units' range, which is up to whoever
+/// chooses it), so its range, which the Spike Viewer's plots show, is ±`output_range / gain` µV. They're shared out
+/// as `scope` says: setting one channel's sets its group's, or all.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Gains {
-    pub magnitude: f32,
+    pub output_range: f32,
+    pub scope: GainScope,
     /// Each channel's gain (channels past the end have the default range's).
     pub gains: Vec<f32>,
 }
 
 impl Default for Gains {
     fn default() -> Self {
-        Gains { magnitude: DEFAULT_MAGNITUDE, gains: Vec::new() }
+        Gains { output_range: DEFAULT_MAGNITUDE, scope: GainScope::default(), gains: Vec::new() }
     }
+}
+
+/// Channels, and how many to a group: what gains are shared out over.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Channels {
+    pub count: usize,
+    pub group_size: usize,
 }
 
 impl Gains {
     pub fn get(&self, channel: usize) -> f32 {
-        per_channel(&self.gains, channel, self.magnitude / DEFAULT_RANGE_UV)
+        per_channel(&self.gains, channel, self.output_range / DEFAULT_RANGE_UV)
     }
 
-    /// A channel's range: µV either side of zero that its gain fits within the magnitude.
+    /// A channel's range: µV either side of zero that its gain fits within the output range.
     pub fn range_uv(&self, channel: usize) -> f32 {
         match self.gains.get(channel) {
-            Some(gain) => self.magnitude / gain.max(f32::MIN_POSITIVE),
+            Some(gain) => self.output_range / gain.max(f32::MIN_POSITIVE),
             None => DEFAULT_RANGE_UV,
         }
     }
 
-    /// Sets a channel's gain (within what gives a range in `RANGES_UV`).
-    pub fn set(&mut self, channel: usize, gain: f32) {
-        let (low, high) = (self.magnitude / RANGES_UV.end(), self.magnitude / RANGES_UV.start());
-        set_per_channel(&mut self.gains, channel, gain.clamp(low, high), self.magnitude / DEFAULT_RANGE_UV);
+    /// The channels sharing a gain, unit by unit, as the scope has it.
+    pub fn units(&self, channels: Channels) -> Vec<std::ops::Range<usize>> {
+        let size = match self.scope {
+            GainScope::All => channels.count.max(1),
+            GainScope::Group => channels.group_size.max(1),
+            GainScope::Channel => 1,
+        };
+        (0..channels.count).step_by(size).map(|start| start..(start + size).min(channels.count)).collect()
     }
 
-    /// Sets a channel's gain to give a range of `range_uv`.
-    pub fn set_range(&mut self, channel: usize, range_uv: f32) {
-        self.set(channel, self.magnitude / range_uv.clamp(*RANGES_UV.start(), *RANGES_UV.end()));
+    /// Sets a channel's range (so its gain), and those of the channels sharing its gain.
+    pub fn set_range(&mut self, channel: usize, range_uv: f32, channels: Channels) {
+        let gain = self.output_range / range_uv.clamp(*RANGES_UV.start(), *RANGES_UV.end());
+        self.set(channel, gain, channels);
     }
 
-    /// Changes what the gains map to, keeping each channel's range.
-    pub fn set_magnitude(&mut self, magnitude: f32) {
-        let magnitude = magnitude.max(f32::MIN_POSITIVE);
-        let scale = magnitude / self.magnitude;
-        self.gains.iter_mut().for_each(|g| *g *= scale);
-        self.magnitude = magnitude;
+    /// Sets a channel's gain, and those of the channels sharing it.
+    pub fn set(&mut self, channel: usize, gain: f32, channels: Channels) {
+        let gain = gain.max(f32::MIN_POSITIVE);
+        let unit = self.units(channels).into_iter().find(|u| u.contains(&channel)).unwrap_or(channel..channel + 1);
+        for channel in unit {
+            set_per_channel(&mut self.gains, channel, gain, self.output_range / DEFAULT_RANGE_UV);
+        }
+    }
+
+    /// Sets each channel's range, those sharing a gain taking the widest of theirs (so none's spikes clip).
+    pub fn set_ranges(&mut self, ranges: &[f32], channels: Channels) {
+        for unit in self.units(channels) {
+            let widest = ranges[unit.clone()].iter().copied().fold(0.0, f32::max);
+            if widest > 0.0 {
+                self.set_range(unit.start, widest, channels);
+            }
+        }
+    }
+
+    /// Changes how the gains are shared out, those now sharing one taking the widest range of theirs.
+    pub fn set_scope(&mut self, scope: GainScope, channels: Channels) {
+        let ranges: Vec<f32> = (0..channels.count).map(|c| self.range_uv(c)).collect();
+        self.scope = scope;
+        self.set_ranges(&ranges, channels);
     }
 }
 
@@ -293,8 +355,8 @@ impl EdgeType for Gains {
     const INFO: EdgeInfo = EdgeInfo {
         name: "gains",
         colour: Color32::from_rgb(110, 215, 150),
-        description: "Each channel's gain for spikes: what their waveforms' values are multiplied by, for what takes \
-                      them (up to a magnitude: ±128 for Write LTX's 8-bit samples), so the range they fit within.",
+        description: "Each channel's gain for spikes: what their waveforms' values (µV) are multiplied by, for \
+                      whatever takes them, so the range they fit within.",
     };
 
     /// The channels' ranges, which is what the gains mean to people.
@@ -324,18 +386,25 @@ mod tests {
     }
 
     #[test]
-    fn gains_mean_ranges_whatever_they_map_to() {
+    fn gains_are_shared_out_by_scope() {
         assert_eq!(range_step(250.0, true), 200.0);
         assert_eq!(range_step(250.0, false), 300.0);
         assert_eq!(range_step(220.0, true), 200.0, "from between steps, to the next");
+        let tetrodes = Channels { count: 8, group_size: 4 };
         let mut gains = Gains::default();
         assert_eq!(gains.range_uv(0), DEFAULT_RANGE_UV);
-        gains.set_range(2, 500.0);
-        assert_eq!(gains.gains, vec![128.0 / 250.0, 128.0 / 250.0, 128.0 / 500.0]);
-        assert_eq!(gains.summary(), "±250 µV–±500 µV");
-        // Mapped to ±1 (floats, say), the ranges stay.
-        gains.set_magnitude(1.0);
-        assert_eq!((gains.get(2), gains.range_uv(9)), (1.0 / 500.0, DEFAULT_RANGE_UV));
-        assert!((gains.range_uv(2) - 500.0).abs() < 1e-3);
+        gains.set_range(2, 500.0, tetrodes);
+        assert_eq!(gains.get(2), 128.0 / 500.0, "a gain in the output's units a µV");
+        let near = |a: f32, b: f32| (a - b).abs() < 1e-3;
+        assert!(near(gains.range_uv(1), DEFAULT_RANGE_UV) && near(gains.range_uv(2), 500.0), "each channel its own");
+        // A tetrode each: the widest of each's.
+        gains.set_scope(GainScope::Group, tetrodes);
+        assert!((0..4).all(|c| near(gains.range_uv(c), 500.0)));
+        assert!((4..8).all(|c| near(gains.range_uv(c), DEFAULT_RANGE_UV)));
+        gains.set_range(5, 100.0, tetrodes);
+        assert!((4..8).all(|c| near(gains.range_uv(c), 100.0)), "the whole tetrode");
+        // All together.
+        gains.set_scope(GainScope::All, tetrodes);
+        assert!((0..8).all(|c| near(gains.range_uv(c), 500.0)));
     }
 }
