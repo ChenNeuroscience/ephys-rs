@@ -49,7 +49,7 @@ pub fn run<C: Components>(path: Option<PathBuf>) -> eframe::Result {
     crate::core::console::init(true);
     crate::core::crash::install();
     crate::core::crash::test_if_asked();
-    let mut app = App::<C::Nodes, C::Annotations>::open(path, C::THEMES)
+    let mut app = App::<C::Nodes, C::Annotations>::open(None, C::THEMES)
         .with_quick_actions(C::QUICK_ACTIONS)
         .with_base_directories(C::BASE_DIRECTORIES);
     app.last_crash = crate::core::crash::take_latest();
@@ -76,6 +76,10 @@ pub fn run<C: Components>(path: Option<PathBuf>) -> eframe::Result {
             app.themes[app.theme].apply(&cc.egui_ctx);
             let saved: Option<serde_json::Value> = cc.storage.and_then(|s| eframe::get_value(s, BASE_DIRECTORY_KEY));
             app.base_directories = BaseDirectories::new(app.base_directories.types(), saved.as_ref());
+            // After the preferences: what a file has comes first.
+            if let Some(path) = path {
+                app.open_path(path);
+            }
             // For images in annotations.
             egui_extras::install_image_loaders(&cc.egui_ctx);
             #[cfg(target_os = "macos")]
@@ -143,7 +147,7 @@ pub enum Event {
     PasteSettings(Option<NodeId>),
 }
 
-/// The file: the graph, its annotations, and the window layout.
+/// The file: the graph, its annotations, the window layout, and the base directories.
 #[derive(Deserialize)]
 #[serde(bound = "N: NodeSet, A: AnnotationSet")]
 struct SaveFile<N, A> {
@@ -152,6 +156,8 @@ struct SaveFile<N, A> {
     annotations: Annotations<A>,
     #[serde(default)]
     layout: Option<Layout>,
+    #[serde(default)]
+    base_directory: Option<serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -160,6 +166,7 @@ struct SaveFileRef<'a, N, A> {
     graph: &'a Graph<N>,
     annotations: &'a Annotations<A>,
     layout: &'a Layout,
+    base_directory: &'a serde_json::Value,
 }
 
 /// Where the settings are saved beside a recording in `place` that starts at `start`: named as the recording, if the
@@ -187,6 +194,9 @@ pub struct App<N: NodeSet, A: AnnotationSet> {
     path: Option<PathBuf>,
     /// The version in the file, if any: anything else has unsaved changes.
     saved: Option<u64>,
+    /// The base directories as they are in the file (they aren't part of the graph's versions), if it's been saved or
+    /// opened.
+    saved_base_directory: Option<serde_json::Value>,
     /// The window title as last set.
     title: String,
     /// The user has said to close despite unsaved changes.
@@ -239,6 +249,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         let mut app = App {
             path: None,
             saved: None,
+            saved_base_directory: None,
             title: String::new(),
             closing: false,
             themes,
@@ -268,20 +279,20 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             base_directories: BaseDirectories::new(&[], None),
         };
         if let Some(path) = path {
-            if path.exists() {
-                if let Err(e) = app.load(&path) {
-                    app.status = Some(Status {
-                        message: format!("Couldn't open {}: {e}", path.display()),
-                        until: f64::INFINITY,
-                        ok: false,
-                    });
-                }
-            } else {
-                // A new file, once saved.
-                app.path = Some(path);
-            }
+            app.open_path(path);
         }
         app
+    }
+
+    /// Opens the file at `path`, or if there isn't one there, makes it the file to save to.
+    fn open_path(&mut self, path: PathBuf) {
+        if !path.exists() {
+            // A new file, once saved.
+            self.path = Some(path);
+        } else if let Err(e) = self.load(&path) {
+            let message = format!("Couldn't open {}: {e}", path.display());
+            self.status = Some(Status { message, until: f64::INFINITY, ok: false });
+        }
     }
 
     fn colours(&self) -> &'static Colours {
@@ -306,7 +317,9 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
     }
 
     fn unsaved(&self) -> bool {
+        let base_directory = self.saved_base_directory.as_ref();
         self.saved != Some(self.history.current.snapshot.version)
+            || base_directory.is_some_and(|saved| *saved != self.base_directories.save())
     }
 
     fn file_name(&self) -> String {
@@ -333,12 +346,21 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         self.history = History::new(&file.graph, &file.annotations);
         self.graph = file.graph;
         self.annotations = file.annotations;
+        if let Some(saved) = &file.base_directory {
+            self.base_directories = BaseDirectories::new(self.base_directories.types(), Some(saved));
+        }
         self.selection.clear();
         self.menu = None;
         self.canvas.frame_all();
         self.path = Some(path.to_owned());
-        self.saved = Some(self.history.current.snapshot.version);
+        self.mark_saved();
         Ok(())
+    }
+
+    /// What there is now is what's in the file.
+    fn mark_saved(&mut self) {
+        self.saved = Some(self.history.current.snapshot.version);
+        self.saved_base_directory = Some(self.base_directories.save());
     }
 
     /// Saves to the current file, or asks where if there isn't one. Returns whether it saved.
@@ -357,12 +379,18 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         }
     }
 
+    /// What's written to a file.
+    fn save_file<'a>(&'a self, base_directory: &'a serde_json::Value) -> SaveFileRef<'a, N, A> {
+        SaveFileRef { graph: &self.graph, annotations: &self.annotations, layout: &self.layout, base_directory }
+    }
+
     /// Saves the graph (as File › Save would, but without changing which file is open) beside a recording starting in
     /// `place` (see `settings_path`), so what recorded it is kept with it. On a thread of its own, so a slow disk
     /// doesn't hold up the GUI.
     fn save_with_recording(&self, place: &Place) {
         let path = settings_path(place, &chrono::Local::now());
-        let file = SaveFileRef { graph: &self.graph, annotations: &self.annotations, layout: &self.layout };
+        let base_directory = self.base_directories.save();
+        let file = self.save_file(&base_directory);
         let json = match serde_json::to_string_pretty(&file) {
             Ok(json) => json,
             Err(e) => return log::error!("Couldn't save the settings with the recording: {e}"),
@@ -384,7 +412,8 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
     fn save_to(&mut self, ctx: &egui::Context, path: PathBuf) -> bool {
         // Make sure the latest edits are in the version being marked as saved.
         self.history.commit(&self.graph, &self.annotations);
-        let file = SaveFileRef { graph: &self.graph, annotations: &self.annotations, layout: &self.layout };
+        let base_directory = self.base_directories.save();
+        let file = self.save_file(&base_directory);
         let result = serde_json::to_string_pretty(&file)
             .map_err(|e| e.to_string())
             .and_then(|json| std::fs::write(&path, json).map_err(|e| e.to_string()));
@@ -392,7 +421,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             Ok(()) => {
                 self.set_done(ctx, format!("Saved {}", path.display()));
                 self.path = Some(path);
-                self.saved = Some(self.history.current.snapshot.version);
+                self.mark_saved();
                 true
             }
             Err(e) => {
@@ -430,7 +459,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         self.history = History::new(&self.graph, &self.annotations);
         self.selection.clear();
         self.path = None;
-        self.saved = Some(self.history.current.snapshot.version);
+        self.mark_saved();
     }
 
     fn open_file(&mut self, ctx: &egui::Context) {
@@ -500,13 +529,18 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
     /// Recording isn't an edit, so it's not undone, and doesn't count as an unsaved change.
     fn set_recording(&mut self, recording: Option<Arc<engine::Recording>>) {
         let on = recording.is_some();
+        let place = recording.as_ref().and_then(|r| r.base_directory().cloned());
         let Some((old, new)) = self.history.set_recording(recording) else { return };
         if self.saved == Some(old) {
             self.saved = Some(new);
         }
         let clock = self.runner.as_ref().map_or(0.0, |r| r.clock());
         if let Some(base) = self.base_directories.current() {
-            if on { base.recording_started() } else { base.recording_stopped() }
+            match &place {
+                Some(place) => base.recording_started(place),
+                None if !on => base.recording_stopped(),
+                None => {}
+            }
         }
         if on {
             self.recording_since = clock;
@@ -1737,7 +1771,11 @@ mod tests {
         harness.state_mut().base_directories = BaseDirectories::new(types, Some(&saved));
         harness.run_steps(2);
         let place = harness.state().base_directories.place().unwrap();
-        assert_eq!(place.to_string(), "/nowhere/recordings/r2405/2026-01-01 a", "the subject's, named the day's first");
+        assert_eq!(
+            place.to_string(),
+            "/nowhere/recordings/r2405/2026-01-01/2026-01-01 a",
+            "the subject's, named the day's first"
+        );
         harness.get_by_label("Where recordings go").click();
         harness.run_steps(2);
         harness.snapshot("toolbar_base_directory");
@@ -1761,7 +1799,44 @@ mod tests {
         let saved = std::fs::read_to_string(directory.join("trial a.ephys-rs.json")).unwrap();
         let file: SaveFile<Nodes, crate::AnnotationTypes> = serde_json::from_str(&saved).unwrap();
         assert_eq!(file.graph.iter().count(), harness.state().graph.iter().count(), "the graph, as it was");
+        assert_eq!(file.base_directory, Some(harness.state().base_directories.save()), "and where it went");
         std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn files_keep_the_base_directories() {
+        let trials = "Subject, date and trial";
+        let mut harness = harness();
+        let saved = serde_json::json!({
+            "chosen": trials,
+            "types": {
+                "A directory": { "directory": "/nowhere/else" },
+                trials: { "directory": "/nowhere/recordings", "subject": "r2405" },
+            },
+        });
+        let types = harness.state().base_directories.types();
+        harness.state_mut().base_directories = BaseDirectories::new(types, Some(&saved));
+        let path = std::env::temp_dir().join(format!("ephys-rs-file-{}.json", std::process::id()));
+        let context = harness.ctx.clone();
+        assert!(harness.state_mut().save_to(&context, path.clone()));
+        assert!(!harness.state().unsaved());
+
+        // Something else, in the app: what's chosen counts as a change to the file, and opening it brings it back.
+        harness.state_mut().base_directories.choose(0);
+        assert!(harness.state().unsaved(), "another one chosen");
+        harness.state_mut().load(&path).unwrap();
+        assert!(!harness.state().unsaved());
+        assert_eq!(harness.state().base_directories.save(), saved, "which is in use, and what each has");
+
+        // A file from before files kept them leaves them as they are.
+        let mut old: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        old.as_object_mut().unwrap().remove("base_directory").unwrap();
+        std::fs::write(&path, old.to_string()).unwrap();
+        harness.state_mut().base_directories.choose(0);
+        harness.state_mut().load(&path).unwrap();
+        assert_eq!(harness.state().base_directories.chosen(), Some(0));
+        assert!(!harness.state().unsaved());
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]

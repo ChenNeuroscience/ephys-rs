@@ -1,7 +1,9 @@
 //! The base directories offered (see `crate::core::base_directory`): a directory chosen; or a directory for each
-//! subject within one, each recording named after the day and trial ("2026-11-03 a").
+//! subject within one, and each day within that, each recording named after the day and trial ("2026-11-03 a").
 
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use eframe::egui::{self, RichText};
 use serde::{Deserialize, Serialize};
@@ -19,9 +21,9 @@ pub const BASE_DIRECTORIES: &[BaseDirectoryType] = &[
     },
     BaseDirectoryType {
         name: "Subject, date and trial",
-        description: "Recordings go in a directory for the subject (an animal's id, say), within a directory you \
-                      choose, each named after the day and the trial (\"2026-11-03 a\"): the trials lettered from a \
-                      each day.",
+        description: "Recordings go in a directory for the day, in one for the subject (an animal's id, say), within \
+                      a directory you choose, each named after the day and the trial (\"2026-11-03 a\"): the next \
+                      trial is the first letter not yet there.",
         make: |saved| Box::new(Trials::from_saved(saved)),
     },
 ];
@@ -90,27 +92,45 @@ impl BaseDirectory for Chosen {
     }
 }
 
-/// A directory for each subject, within one, each recording named after the day and trial: in
-/// `<directory>/<subject>/`, named `<date> <trial>` ("2026-11-03 a"; writers decide what that names: files, or a
-/// folder). Trials are lettered a to z, then 1a to 1z, 2a...; the trial's counted up after each recording, and
-/// starts again each day from the first not yet on disk (so after a restart, it carries on); it can be changed by hand.
+/// A directory for each subject, within one, and in it, one for each day, each recording named after the day and
+/// trial: in `<directory>/<subject>/<date>/`, named `<date> <trial>` ("2026-11-03 a"; writers decide what that names:
+/// files, or a folder). Trials are lettered a to z, then 1a to 1z, 2a...; the next is the first not on disk, so an
+/// empty directory, or a new day, starts at a. It can be chosen by hand, for the next recording.
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
 pub struct Trials {
     pub directory: String,
     pub subject: String,
-    /// The next trial (or, while recording, this one), counting from 1 (a).
-    pub trial: u32,
-    /// The day the trials are counted for, as in the name ("2026-11-03").
-    pub day: String,
+    /// The day and trial chosen by hand for the next recording, if one was.
+    #[serde(skip)]
+    chosen: Option<(String, u32)>,
     /// Where the recording going on is, while there is one.
     #[serde(skip)]
     recording: Option<Place>,
+    /// What was last seen on disk (`place` is asked for every frame, so it isn't looked at every time).
+    #[serde(skip)]
+    looked: RefCell<Option<Looked>>,
 }
+
+/// The trials on disk for `day`, as of `at`.
+struct Looked {
+    at: Instant,
+    day: String,
+    trials: Vec<u32>,
+}
+
+/// How long what's on disk is taken to stay as it was.
+const LOOK_EVERY: Duration = Duration::from_secs(1);
 
 impl Default for Trials {
     fn default() -> Self {
-        Trials { directory: NO_BASE.into(), subject: String::new(), trial: 1, day: today(), recording: None }
+        Trials {
+            directory: NO_BASE.into(),
+            subject: String::new(),
+            chosen: None,
+            recording: None,
+            looked: RefCell::new(None),
+        }
     }
 }
 
@@ -137,9 +157,7 @@ pub fn trial_number(letters: &str) -> Option<u32> {
 
 impl Trials {
     fn from_saved(saved: Option<&serde_json::Value>) -> Self {
-        let mut trials: Trials = saved.and_then(|s| serde_json::from_value(s.clone()).ok()).unwrap_or_default();
-        trials.new_day();
-        trials
+        saved.and_then(|s| serde_json::from_value(s.clone()).ok()).unwrap_or_default()
     }
 
     /// The subject's directory.
@@ -148,16 +166,17 @@ impl Trials {
         if self.subject.trim().is_empty() { directory } else { directory.join(self.subject.trim()) }
     }
 
-    /// Trial `trial`'s name.
-    fn name(&self, trial: u32) -> String {
-        format!("{} {}", self.day, trial_letters(trial))
+    /// Where trial `trial` of `day` goes.
+    fn place_of(&self, day: &str, trial: u32) -> Place {
+        let name = format!("{day} {}", trial_letters(trial));
+        Place { directory: self.subject_directory().join(day), name: Some(name) }
     }
 
-    /// The trials of the day already on disk: the names in the subject's directory starting with the day's, then
-    /// a trial's letters (then an extension, perhaps).
-    fn on_disk(&self) -> Vec<u32> {
-        let Ok(entries) = std::fs::read_dir(self.subject_directory()) else { return Vec::new() };
-        let prefix = format!("{} ", self.day);
+    /// The trials of `day` in its directory: the names starting with the day, then a trial's letters (then an
+    /// extension, perhaps).
+    fn read_trials(&self, day: &str) -> Vec<u32> {
+        let Ok(entries) = std::fs::read_dir(self.subject_directory().join(day)) else { return Vec::new() };
+        let prefix = format!("{day} ");
         entries
             .flatten()
             .filter_map(|e| {
@@ -168,24 +187,45 @@ impl Trials {
             .collect()
     }
 
-    /// The first trial after those already on disk for the subject and day.
-    fn first_free(&self) -> u32 {
-        self.on_disk().into_iter().max().map_or(1, |n| n + 1)
+    /// Today's trials already on disk.
+    fn on_disk(&self) -> Vec<u32> {
+        let day = today();
+        let mut looked = self.looked.borrow_mut();
+        match &*looked {
+            Some(seen) if seen.day == day && seen.at.elapsed() < LOOK_EVERY => seen.trials.clone(),
+            _ => {
+                let trials = self.read_trials(&day);
+                *looked = Some(Looked { at: Instant::now(), day, trials: trials.clone() });
+                trials
+            }
+        }
     }
 
-    /// If it's a new day, letters trials from the first free.
-    fn new_day(&mut self) {
-        if self.recording.is_none() && self.day != today() {
-            self.day = today();
-            self.trial = self.first_free();
+    /// The first of today's trials not on disk.
+    fn first_free(&self) -> u32 {
+        let taken = self.on_disk();
+        (1..).find(|trial| !taken.contains(trial)).unwrap_or(1)
+    }
+
+    /// The next trial today: the one chosen, or the first free.
+    fn next(&self) -> u32 {
+        match &self.chosen {
+            Some((day, trial)) if *day == today() => *trial,
+            _ => self.first_free(),
         }
+    }
+
+    /// What's next is worked out afresh.
+    fn start_again(&mut self) {
+        self.chosen = None;
+        self.looked.take();
     }
 }
 
 impl BaseDirectory for Trials {
-    /// As a path: the directory, the subject, then the day and trial: "~/recordings / r2405 / 2026-11-03 a".
+    /// As a path: the directory, the subject, the day, then the day and trial:
+    /// "~/recordings / r2405 / 2026-11-03 / 2026-11-03 a".
     fn toolbar_ui(&mut self, ui: &mut egui::Ui, context: &BaseDirectoryContext) {
-        self.new_day();
         let separator = |ui: &mut egui::Ui| {
             ui.label(RichText::new(std::path::MAIN_SEPARATOR_STR).color(context.theme.text_disabled));
         };
@@ -196,51 +236,58 @@ impl BaseDirectory for Trials {
         changed |= response.changed();
         response.on_hover_text("The subject (an animal's id, say): a directory of its own");
         if changed {
-            self.trial = self.first_free();
+            self.start_again();
         }
         separator(ui);
+        let now = self.recording.as_ref().and_then(|place| place.name.as_deref()?.split_once(' '));
+        let now = now.map(|(day, letters)| (day.to_owned(), letters.to_owned()));
+        let day = now.as_ref().map_or_else(today, |(day, _)| day.clone());
+        let label = RichText::new(&day).color(context.theme.text_secondary);
+        ui.label(label.clone()).on_hover_text("The day: a directory of its own");
+        separator(ui);
         ui.spacing_mut().item_spacing.x = 4.0;
-        let day = ui.label(RichText::new(&self.day).color(context.theme.text_secondary));
-        day.on_hover_text("Each recording's named after the day and trial (the writers' files, or folders, are)");
-        match &self.recording {
-            Some(place) => {
-                let text = RichText::new(trial_letters(self.trial)).strong().color(context.theme.error);
+        ui.label(label)
+            .on_hover_text("Each recording's named after the day and trial (the writers' files, or folders, are)");
+        match (&self.recording, now) {
+            (Some(place), Some((_, letters))) => {
+                let text = RichText::new(letters).strong().color(context.theme.error);
                 ui.label(text).on_hover_text(format!("The trial recording now: {place}"));
             }
-            None => {
-                let next = self.name(self.trial);
-                let taken = self.on_disk().contains(&self.trial);
-                let field = egui::DragValue::new(&mut self.trial)
+            _ => {
+                let mut trial = self.next();
+                let taken = self.on_disk().contains(&trial);
+                let field = egui::DragValue::new(&mut trial)
                     .range(1..=9999)
                     .custom_formatter(|n, _| trial_letters(n as u32))
                     .custom_parser(|text| trial_number(text).map(f64::from));
                 let field = if taken { field.prefix("⚠ ") } else { field };
                 ui.spacing_mut().interact_size.x = 20.0; // as narrow as its letters
                 let response = ui.add(field);
-                let place = self.subject_directory().join(&next);
+                let place = self.place_of(&day, trial);
+                if response.changed() {
+                    self.chosen = (trial != self.first_free()).then_some((day, trial));
+                }
                 if taken {
-                    let tip = format!("The next trial: {} is there already, and would be added to", place.display());
+                    let tip = format!("The next trial: {place} is there already, and would be added to");
                     response.on_hover_text(RichText::new(tip).color(context.theme.warning));
                 } else {
-                    response.on_hover_text(format!("The next trial: {}", place.display()));
+                    response.on_hover_text(format!("The next trial: {place}"));
                 }
             }
         }
     }
 
     fn place(&self) -> Option<Place> {
-        let next = || Place { directory: self.subject_directory(), name: Some(self.name(self.trial)) };
-        Some(self.recording.clone().unwrap_or_else(next))
+        Some(self.recording.clone().unwrap_or_else(|| self.place_of(&today(), self.next())))
     }
 
-    fn recording_started(&mut self) {
-        self.recording = self.place();
+    fn recording_started(&mut self, place: &Place) {
+        self.recording = Some(place.clone());
     }
 
     fn recording_stopped(&mut self) {
-        if self.recording.take().is_some() {
-            self.trial += 1;
-        }
+        self.recording = None;
+        self.start_again();
     }
 
     fn save(&self) -> serde_json::Value {
@@ -261,23 +308,42 @@ mod tests {
     }
 
     #[test]
-    fn trials_count_up_and_start_from_the_first_free() {
+    fn the_next_trial_is_the_first_not_on_disk() {
         let base = std::env::temp_dir().join(format!("ephys-rs-trials-{}", std::process::id()));
         let mut trials = Trials { directory: base.display().to_string(), subject: "r123".into(), ..Default::default() };
-        let subject = base.join("r123");
-        let named =
-            |trial: &str| Some(Place { directory: subject.clone(), name: Some(format!("{} {trial}", today())) });
-        assert_eq!(trials.place(), named("a"));
-        trials.recording_started();
+        let day = base.join("r123").join(today());
+        let named = |trial: &str| Some(Place { directory: day.clone(), name: Some(format!("{} {trial}", today())) });
+        assert_eq!(trials.place(), named("a"), "nothing's there yet");
+
+        // A recording: its settings are there (and a writer's files, say) by when it stops.
+        std::fs::create_dir_all(&day).unwrap();
+        let place = trials.place().unwrap();
+        trials.recording_started(&place);
+        std::fs::write(day.join(format!("{} a.ephys-rs.json", today())), "").unwrap();
+        trials.looked.take();
+        assert_eq!(trials.place(), named("a"), "where the recording is, whatever's on disk by now");
         trials.recording_stopped();
-        assert_eq!(trials.place(), named("b"), "counted up after a recording");
-        // Made again (the program restarted, say) on another day: from the first not on disk (an LTX recording's
-        // files, say).
-        std::fs::create_dir_all(&subject).unwrap();
-        std::fs::write(subject.join(format!("{} c.set", today())), "").unwrap();
-        let saved = Trials { day: "2000-01-01".into(), ..Trials::from_saved(Some(&trials.save())) };
-        let again = Trials::from_saved(Some(&saved.save()));
-        assert_eq!(again.place(), named("d"));
+        assert_eq!(trials.place(), named("b"));
+
+        // The lowest free, whatever's after it; other days', and other things, don't count.
+        std::fs::create_dir(day.join(format!("{} b", today()))).unwrap();
+        std::fs::write(day.join(format!("{} d.set", today())), "").unwrap();
+        std::fs::write(day.join(format!("{} notes.txt", today())), "").unwrap();
+        std::fs::write(day.join("2000-01-01 c.set"), "").unwrap();
+        trials.looked.take();
+        assert_eq!(trials.place(), named("c"));
+
+        // Chosen by hand: for the next recording.
+        trials.chosen = Some((today(), 6));
+        assert_eq!(trials.place(), named("f"));
+        trials.recording_started(&trials.place().unwrap());
+        trials.recording_stopped();
+        assert_eq!(trials.place(), named("c"));
+
+        // What's kept is what was chosen: what's next is on disk.
+        let saved = trials.save();
+        assert_eq!(saved, serde_json::json!({ "directory": base.display().to_string(), "subject": "r123" }));
+        assert_eq!(Trials::from_saved(Some(&saved)).place(), named("c"));
         std::fs::remove_dir_all(&base).unwrap();
     }
 }

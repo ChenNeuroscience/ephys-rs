@@ -7,8 +7,9 @@
 //! they write after (a file prefix, say) rather than their own.
 //! When recording's asked for, the GUI asks it, and hands that to every node preparing to record
 //! (`Node::prepare_to_record`, then `Pass::base_directory`); writers decide what to do with it (write in it, say,
-//! or in a subdirectory of it). It's told when recordings start and stop, to count them, say. What it keeps (the
-//! directory chosen, say) is saved with the app's preferences, as JSON, and given back when it's next made.
+//! or in a subdirectory of it). It's told when recordings start and stop. What each type keeps (the directory chosen,
+//! say), and which is in use, is saved as JSON: with the app's preferences, and in saved files (so with each
+//! recording too), and given back when it's next made or the file's opened.
 
 use std::path::{Path, PathBuf};
 
@@ -54,13 +55,14 @@ pub trait BaseDirectory: Send {
     /// nowhere (none chosen yet, say).
     fn place(&self) -> Option<Place>;
 
-    /// A recording's started, in `place()`.
-    fn recording_started(&mut self) {}
+    /// A recording's started, in `place` (what `place()` said when it was asked for).
+    fn recording_started(&mut self, _place: &Place) {}
 
     /// The recording's stopped.
     fn recording_stopped(&mut self) {}
 
-    /// What it keeps between runs of the program, as JSON (given back to `BaseDirectoryType::make`).
+    /// What it keeps, between runs of the program and in saved files, as JSON (given back to
+    /// `BaseDirectoryType::make`). A saved file counts as changed when this does, so it should only be what's chosen.
     fn save(&self) -> serde_json::Value;
 }
 
@@ -132,7 +134,7 @@ impl BaseDirectories {
         self.current.as_ref()?.1.place()
     }
 
-    /// What to keep between runs of the program: which is in use, and what each has.
+    /// What to keep, between runs of the program and in saved files: which is in use, and what each has.
     pub fn save(&self) -> serde_json::Value {
         let mut types = self.saved.clone();
         if let Some((index, current)) = &self.current {
