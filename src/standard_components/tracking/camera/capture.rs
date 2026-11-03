@@ -241,9 +241,11 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(seconds);
         while frames.len() < wanted && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
-            let Some(video) = capture.pool().take(|v| v.frames == 0) else { continue };
-            frames.extend((0..video.frames).map(|i| (video.width, video.height, video.times[i])));
-            capture.pool().give_back(video);
+            // All that's waiting, as passes catching up would.
+            while let Some(video) = capture.pool().take(|v| v.frames == 0) {
+                frames.extend((0..video.frames).map(|i| (video.width, video.height, video.times[i])));
+                capture.pool().give_back(video);
+            }
         }
         frames
     }

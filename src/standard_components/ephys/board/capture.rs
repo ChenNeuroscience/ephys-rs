@@ -299,15 +299,18 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(seconds);
         while samples < wanted && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
-            let Some(taken) = capture.pool().take(|s| s.len() == 0) else { continue };
-            samples += taken.len();
-            layout = Some(taken.layout());
-            changes += taken.events.events.len();
-            for c in 0..taken.ephys.channels {
-                peak = taken.ephys.channel(c).iter().fold(peak, |m, v| m.max(v.abs()));
+            // All that's waiting, as passes catching up would (a sleep can take longer than a buffer holds, on a busy
+            // machine).
+            while let Some(taken) = capture.pool().take(|s| s.len() == 0) {
+                samples += taken.len();
+                layout = Some(taken.layout());
+                changes += taken.events.events.len();
+                for c in 0..taken.ephys.channels {
+                    peak = taken.ephys.channel(c).iter().fold(peak, |m, v| m.max(v.abs()));
+                }
+                assert_eq!(taken.events.pass_samples, taken.len());
+                capture.pool().give_back(taken);
             }
-            assert_eq!(taken.events.pass_samples, taken.len());
-            capture.pool().give_back(taken);
         }
         (samples, layout, changes, peak)
     }
