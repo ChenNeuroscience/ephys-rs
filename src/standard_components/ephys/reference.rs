@@ -54,8 +54,8 @@ impl EdgeType for Reference {
     fn summary(&self) -> String {
         match &self.method {
             Method::Channel { channel } => format!("channel {channel}"),
-            Method::Average => format!("average of {}", self.reference_channels),
-            Method::Median => format!("median of {}", self.reference_channels),
+            Method::Average => format!("average of {}", channels_summary(&self.reference_channels)),
+            Method::Median => format!("median of {}", channels_summary(&self.reference_channels)),
             Method::PerChannel { .. } => "each its own".into(),
         }
     }
@@ -95,6 +95,21 @@ pub fn parse_channels(text: &str, count: u32) -> Result<Vec<u32>, String> {
     channels.sort_unstable();
     channels.dedup();
     Ok(channels)
+}
+
+/// A set of channels (as `parse_channels` reads it) in a few words, however many there are: "all channels", "no
+/// channels", "channel 5", "8 channels".
+pub fn channels_summary(text: &str) -> String {
+    let text = text.trim();
+    if text.is_empty() || text.eq_ignore_ascii_case("all") {
+        return "all channels".into();
+    }
+    match parse_channels(text, u32::MAX / 2).as_deref() {
+        Ok([]) => "no channels".into(),
+        Ok([channel]) => format!("channel {}", channel + 1),
+        Ok(channels) => format!("{} channels", channels.len()),
+        Err(_) => text.into(),
+    }
 }
 
 /// Channels (indices from 0) as a set `parse_channels` reads: "all" if they're all `count`, else runs like "1-4, 9".
@@ -416,6 +431,12 @@ mod tests {
         reference.process(&mut pass, &mut Referencing::default());
         let Buffer::Continuous(output) = &outputs[0] else { unreachable!() };
         (0..channels.len()).map(|c| output.channel(c).to_vec()).collect()
+    }
+
+    #[test]
+    fn channel_sets_are_summed_up_in_a_few_words() {
+        let summaries: Vec<String> = ["all", "", "none", "5", "1-4, 9, 12-15"].map(channels_summary).into();
+        assert_eq!(summaries, ["all channels", "all channels", "no channels", "channel 5", "9 channels"]);
     }
 
     #[test]

@@ -18,7 +18,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::engine::{Category, Context, Control, EdgeType, Input, Node, NodeInfo, Output, Pass};
 use crate::standard_components::auto_detect::auto_detect_ui;
-use crate::standard_components::ephys::reference::{Method, Reference, format_channels, parse_channels};
+use crate::standard_components::ephys::reference::{
+    Method, Reference, channels_summary, format_channels, parse_channels,
+};
 use crate::standard_components::ephys::spectrum::{Spectra, SpectraBuffer};
 use crate::standard_components::ephys::{ChannelSelection, Continuous, ContinuousBuffer};
 use crate::standard_components::pool::{Pool, SharedPool};
@@ -358,7 +360,7 @@ impl LfpViewer {
                 }
                 if let Some(reference) = reference {
                     ui.separator();
-                    reference_ui(ui, reference, stream.channels, all_shown);
+                    reference_ui(ui, reference, all_shown);
                 }
                 if let Some(selection) = selection {
                     ui.separator();
@@ -611,7 +613,7 @@ fn toggle_reference(reference: &mut Reference, number: u32, channels: u32) {
 
 /// The reference (a Reference's, for the spikes), compactly: the mean or median of which channels (each chosen on its
 /// row, with R), and all or none of them. Other methods are set in the Reference itself.
-fn reference_ui(ui: &mut egui::Ui, reference: &mut Reference, channels: u32, all_shown: bool) {
+fn reference_ui(ui: &mut egui::Ui, reference: &mut Reference, all_shown: bool) {
     let label = ui.strong("Reference").on_hover_text(
         "The reference: R on a row puts its channel in it, or takes it out. The traces here aren't referenced",
     );
@@ -637,13 +639,7 @@ fn reference_ui(ui: &mut egui::Ui, reference: &mut Reference, channels: u32, all
     if chosen != median {
         reference.method = if chosen { Method::Median } else { Method::Average };
     }
-    let members: Vec<u32> = (0..channels).filter(|&c| in_reference(reference, c)).collect();
-    let text = match reference.reference_channels.trim() {
-        "" | "all" => "of all".to_owned(),
-        _ if members.is_empty() => "of none".to_owned(),
-        text => format!("of {text}"),
-    };
-    ui.label(text);
+    ui.label(format!("of {}", channels_summary(&reference.reference_channels)));
     let why = "Show all the channels to change it";
     let all = ui.add_enabled(all_shown, egui::Button::new("All").small());
     if all.on_hover_text("Every channel").on_disabled_hover_text(why).clicked() {

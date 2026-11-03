@@ -173,7 +173,7 @@ impl EdgeType for ChannelSelection {
     };
 
     fn summary(&self) -> String {
-        if self.apply { format!("channels {}", self.channels) } else { "all channels".into() }
+        if self.apply { reference::channels_summary(&self.channels) } else { "all channels".into() }
     }
 }
 
