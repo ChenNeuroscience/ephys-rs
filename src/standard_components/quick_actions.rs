@@ -157,10 +157,10 @@ fn real_camera() -> camera::Source {
     camera::Source::Spinnaker { serial: String::new(), library: String::new() }
 }
 
-/// Board → Channel Selector → Reference → Band-pass (spikes' band) → Spike Detector → Spike Gain → Spike Viewer
-/// (setting the detector's thresholds and the gain's gains); the selector → Band-pass (LFP's band) → LFP Viewer
-/// (choosing the selector's channels), with a Spectrum of it too; the board's digital inputs → TTL Viewer; Camera → Position Detector → Tracker
-/// View (setting the camera's and detector's settings). Write LTX records the spikes (at their gains), the referenced
+/// Board → Reference → Band-pass (spikes' band) → Spike Detector → Spike Gain → Spike Viewer (setting the
+/// detector's thresholds and the gain's gains); Board → Channel Selector → Band-pass (LFP's band) → LFP Viewer
+/// (choosing the selector's channels, which only the LFP branch is), with a Spectrum of it too; the board's digital
+/// inputs → TTL Viewer; Camera → Position Detector → Tracker View (setting the camera's and detector's settings). Write LTX records the spikes (at their gains), the referenced
 /// data as EEG, the positions (with the detector's settings) and the digital inputs. New boards and cameras are
 /// real.
 fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
@@ -172,10 +172,8 @@ fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
             change.add(Nodes::AcquisitionBoard(AcquisitionBoard { source: real_board(), ..Default::default() }), None)
         }
     };
-    let selector = change.upsert("Channel Selector", Some(board));
-    change.link((board, Output, 0), (selector, Input, 0));
-    let reference = change.upsert("Reference", Some(selector));
-    change.link((selector, Output, 0), (reference, Input, 0));
+    let reference = change.upsert("Reference", Some(board));
+    change.link((board, Output, 0), (reference, Input, 0));
 
     // Spikes.
     let band = match change.find(|n| matches!(n, Nodes::BandPassFilter(f) if f.low_hz >= 100.0)) {
@@ -192,7 +190,9 @@ fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
     change.link((spike_viewer, Control, 0), (detector, Setting, 0));
     change.link((spike_viewer, Control, 1), (gain, Setting, 0));
 
-    // EEG.
+    // EEG: only some channels, chosen in the LFP Viewer.
+    let selector = change.upsert("Channel Selector", Some(board));
+    change.link((board, Output, 0), (selector, Input, 0));
     let lfp = match change.find(|n| matches!(n, Nodes::BandPassFilter(f) if f.high_hz <= 500.0)) {
         Some(lfp) => lfp,
         None => {
@@ -358,6 +358,22 @@ mod tests {
         let graph = change.graph;
         let resolved = graph.resolve();
         assert!(graph.iter().all(|(id, e)| e.node.warnings(&resolved[&id].input_streams).is_empty()), "all connected");
+        // The Channel Selector's only on the LFP branch: the spikes' starts at the board.
+        let named = |name: &str| graph.iter().find(|(_, e)| e.label == name).unwrap().0;
+        let feeding = |id| {
+            graph.edges().iter().find(|e| e.target() == Port { node: id, role: Input, index: 0 }).unwrap().from.node
+        };
+        assert_eq!(feeding(named("Reference")), named("Acquisition Board"));
+        let selector = named("Channel Selector");
+        let fed: Vec<NodeId> = graph
+            .edges()
+            .iter()
+            .filter(|e| e.from.node == selector && e.dimension == crate::core::engine::Dimension::Data)
+            .map(|e| e.to.node)
+            .collect();
+        let lfp =
+            graph.iter().find(|(_, e)| matches!(&e.node, Nodes::BandPassFilter(f) if f.high_hz <= 500.0)).unwrap().0;
+        assert_eq!(fed, vec![lfp], "only the LFP branch");
         let ltx = graph.iter().find(|(_, e)| e.node.info().name == "Write LTX").unwrap().0;
         let into = |i| graph.edges().iter().any(|e| e.target() == Port { node: ltx, role: Input, index: i });
         assert!((0..4).all(into), "Write LTX records spikes, EEG, positions and digital inputs");
