@@ -701,8 +701,8 @@ mod tests {
     fn rejects_bad_connections() {
         let mut graph = Graph::default();
         let board = graph.add(create("Acquisition Board"), [0.0, 0.0]);
-        let gain = graph.add(create("Gain"), [0.0, 0.0]);
-        let gain2 = graph.add(create("Gain"), [0.0, 0.0]);
+        let gain = graph.add(create("Continuous Gain"), [0.0, 0.0]);
+        let gain2 = graph.add(create("Continuous Gain"), [0.0, 0.0]);
         let video = graph.add(create("Video Viewer"), [0.0, 0.0]);
         let spikes = graph.add(create("Spike Viewer"), [0.0, 0.0]);
 
@@ -731,7 +731,7 @@ mod tests {
         let mut graph = Graph::default();
         let a = graph.add(create("Acquisition Board"), [0.0, 0.0]);
         let b = graph.add(create("Acquisition Board"), [0.0, 0.0]);
-        let gain = graph.add(create("Gain"), [0.0, 0.0]);
+        let gain = graph.add(create("Continuous Gain"), [0.0, 0.0]);
         graph.connect(port(a, Role::Output, 0), port(gain, Role::Input, 0)).unwrap();
         let edge = graph.connect(port(b, Role::Output, 0), port(gain, Role::Input, 0)).unwrap();
         assert_eq!(graph.edges(), &[edge]);
@@ -805,10 +805,10 @@ mod tests {
     #[test]
     fn labels_are_unique() {
         let mut graph = Graph::<Nodes>::default();
-        let a = graph.add(create("Gain"), [0.0, 0.0]);
-        let b = graph.add(create("Gain"), [0.0, 0.0]);
-        assert_eq!(graph.get(a).unwrap().label, "Gain");
-        assert_eq!(graph.get(b).unwrap().label, "Gain 2");
+        let a = graph.add(create("Continuous Gain"), [0.0, 0.0]);
+        let b = graph.add(create("Continuous Gain"), [0.0, 0.0]);
+        assert_eq!(graph.get(a).unwrap().label, "Continuous Gain");
+        assert_eq!(graph.get(b).unwrap().label, "Continuous Gain 2");
     }
 
     #[test]

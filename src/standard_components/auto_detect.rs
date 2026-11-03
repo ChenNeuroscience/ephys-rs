@@ -1,5 +1,5 @@
 //! Choosing settings from the data ("auto detect"): a node's trigger (see `Node::triggers`), which its passes take,
-//! sample the data for a while, then propose settings from. The Spike Gain, EEG Gain and Spike Detector have one,
+//! sample the data for a while, then propose settings from. The Spike Gain, Continuous Gain and Spike Detector have one,
 //! fired from their windows or a viewer's; these are the pieces they share.
 
 use eframe::egui;

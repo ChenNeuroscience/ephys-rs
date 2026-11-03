@@ -1,4 +1,4 @@
-//! The EEG Gain: multiplies each channel of continuous data (µV) by its gain, a dumb multiplier, into whatever units
+//! The Continuous Gain: multiplies each channel of continuous data (µV) by its gain, a dumb multiplier, into whatever units
 //! what takes it wants (as floats): int8 values for Write LTX's EEG, say, or int16, or 0 to 1. Gains can be one for
 //! all channels, or one each (see `Gains`). They can be chosen from the data when it's triggered ("auto detect", from
 //! its window): its passes take each channel's biggest excursion in each pass for a while, then have the bigger of
@@ -15,15 +15,15 @@ use crate::{Buffer, DataStream, Edges, Kind, Setting};
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct EegGain {
+pub struct ContinuousGain {
     pub gains: Gains,
     /// Seconds to sample the data for, to choose the gains from.
     pub sampling: f32,
 }
 
-impl Default for EegGain {
+impl Default for ContinuousGain {
     fn default() -> Self {
-        EegGain { gains: Gains { scope: GainScope::All, ..Default::default() }, sampling: 10.0 }
+        ContinuousGain { gains: Gains { scope: GainScope::All, ..Default::default() }, sampling: 10.0 }
     }
 }
 
@@ -61,11 +61,11 @@ impl Sampling {
     }
 }
 
-impl Node<Edges> for EegGain {
+impl Node<Edges> for ContinuousGain {
     type State = Gaining;
 
     const INFO: NodeInfo = NodeInfo {
-        name: "EEG Gain",
+        name: "Continuous Gain",
         category: Category::Processing,
         description: "Multiplies continuous data by each channel's gain (or one for all), into the units what takes \
                       it wants (int8 values for Write LTX's EEG, say): set by hand, or chosen from the data.",
@@ -243,7 +243,7 @@ mod tests {
 
     #[test]
     fn multiplies_and_chooses_gains_from_the_data() {
-        let gain = EegGain { sampling: 4.0, ..Default::default() };
+        let gain = ContinuousGain { sampling: 4.0, ..Default::default() };
         let stream = Continuous { channels: 2, sample_rate: 1000.0 };
         let mut state = gain.initial_state(&[Some(DataStream::Continuous(stream))]);
         let exchange = Pass::<Edges>::new(0, PASS_DURATION, &[], &mut []).exchange;

@@ -12,7 +12,7 @@
 //! values are big-endian. Spikes' samples are -128 to 127: their waveforms should come as int8 values (as floats),
 //! multiplied into them by a Spike Gain, whose gains (connected, read-only, to `gains`) are recorded in the `.set`
 //! file, with the full scale, as Axona's are (`gain_ch_0`..., `ADC_fullscale_mv`). The 5 kHz data should come as
-//! int8 values too, multiplied into them by an EEG Gain.
+//! int8 values too, multiplied into them by an Continuous Gain.
 //!
 //! The positions' header records the position detector's settings (connected, read-only, to `detection`): the
 //! crop, whose bounding box positions are measured from (scaled down to fit 0–1022 if need be; 1023 means no LED),
@@ -666,7 +666,7 @@ impl Files<Chunk> for LtxFiles {
             for (channel, egf) in self.egf.iter_mut().enumerate() {
                 let values = &chunk.continuous[channel * len..(channel + 1) * len];
                 self.record.clear();
-                // Already int8 values (from an EEG Gain), as floats: just made integers.
+                // Already int8 values (from an Continuous Gain), as floats: just made integers.
                 self.record.extend(values.iter().map(|&v| to_i8(v)));
                 egf.file.data(&self.record)?;
                 egf.samples += self.record.len() as u64;

@@ -2,8 +2,9 @@
 
 A node type is a struct of its settings implementing [`Node`](../src/core/engine/node.rs), listed in `node_set!` in
 [`main.rs`](../src/main.rs). Its settings are saved in the graph's file (with serde), copied and pasted, and undone;
-two nodes of a type differ only in their settings. The simplest complete one is the
-[Gain](../src/standard_components/ephys/gain.rs): one input, an output made in place, one setting.
+two nodes of a type differ only in their settings. A simple complete one is the
+[Channel Selector](../src/standard_components/ephys/channel_selector.rs): one input, one output, one setting (which
+another node can edit).
 
 ![A node's window, and the graph](../tests/snapshots/graph_windows.png)
 
@@ -97,7 +98,7 @@ it fires one (`Context::trigger(Some(control), name)`), as can the node's own wi
 takes it (`Pass::triggered`), reports progress (`Pass::trigger_progress`), and finishes (`Pass::trigger_done`).
 Meanwhile it can be stopped (`Context::cancel_trigger`): the passes then see `Pass::trigger_cancelled`, and abandon it. Since
 passes can't change the graph, what it finds it proposes (`Pass::propose(setting, value)`), and the GUI applies it as
-an edit. The [EEG Gain](../src/standard_components/ephys/eeg_gain.rs), [Spike Gain](../src/standard_components/spikes/spike_gain.rs) and
+an edit. The [Continuous Gain](../src/standard_components/ephys/continuous_gain.rs), [Spike Gain](../src/standard_components/spikes/spike_gain.rs) and
 [Spike Detector](../src/standard_components/spikes/spike_detector.rs) work this way, triggered from the Spike Viewer.
 
 ## Threads of its own

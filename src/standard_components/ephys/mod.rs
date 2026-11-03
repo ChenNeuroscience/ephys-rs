@@ -4,8 +4,7 @@
 pub mod band_pass;
 pub mod board;
 pub mod channel_selector;
-pub mod eeg_gain;
-pub mod gain;
+pub mod continuous_gain;
 pub mod lfp_viewer;
 pub mod reference;
 pub mod spectrum;
@@ -155,21 +154,6 @@ impl DataStreamType for Events {
     fn copy(from: &EventsBuffer, to: &mut EventsBuffer) {
         to.events.clone_from(&from.events);
         to.pass_samples = from.pass_samples;
-    }
-}
-
-/// A scale factor.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub struct Gain {
-    pub factor: f32,
-}
-
-impl EdgeType for Gain {
-    const INFO: EdgeInfo =
-        EdgeInfo { name: "gain", colour: Color32::from_rgb(80, 210, 220), description: "A scale factor." };
-
-    fn summary(&self) -> String {
-        format!("×{:.2}", self.factor)
     }
 }
 

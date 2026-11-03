@@ -6,7 +6,7 @@
 //! sample in each of the view's columns (so spikes show however far it's zoomed out).
 //!
 //! It sets what's upstream of it and beside it, through its controls (as the Spike Viewer does the spikes'):
-//! - an EEG Gain's gains (what the continuous data's recorded at): each row shows the range they fit, and their
+//! - an Continuous Gain's gains (what the continuous data's recorded at): each row shows the range they fit, and their
 //!   auto-detect can be run from here;
 //! - a Channel Selector's selection, upstream: tick the channels to keep, while all are shown, then apply it;
 //! - a Reference's reference (the spikes' re-referencing, from the same channels): R on a row puts its channel in the
@@ -31,7 +31,7 @@ const COLUMNS: usize = 1200;
 /// The spectrum's column's width.
 const SPECTRUM_WIDTH: f32 = 160.0;
 
-/// Its controls: an EEG Gain's gains, a Channel Selector's selection and a Reference's reference.
+/// Its controls: an Continuous Gain's gains, a Channel Selector's selection and a Reference's reference.
 const GAINS: usize = 0;
 const SELECTION: usize = 1;
 const REFERENCE: usize = 2;
@@ -152,7 +152,7 @@ impl Node<Edges> for LfpViewer {
         name: "LFP Viewer",
         category: Category::Visualisation,
         description: "Scrolling traces of continuous data, one row per channel, each with its spectrum over a band \
-                      (theta, say). Sets an EEG Gain's gains, a Channel Selector's channels and a Reference's \
+                      (theta, say). Sets an Continuous Gain's gains, a Channel Selector's channels and a Reference's \
                       reference channels.",
     };
     const HAS_VIEW: bool = true;
@@ -346,7 +346,7 @@ impl LfpViewer {
                 }
                 if context.advanced() {
                     ui.separator();
-                    for (control, what) in [(GAINS, "EEG Gain"), (REFERENCE, "Reference")] {
+                    for (control, what) in [(GAINS, "Continuous Gain"), (REFERENCE, "Reference")] {
                         let tip = format!("Open the {what}, for the rest of its settings");
                         let button =
                             ui.add_enabled(context.control_connected(control), egui::Button::new(what).small());
@@ -610,12 +610,12 @@ fn reference_ui(ui: &mut egui::Ui, reference: &mut Reference, channels: u32, all
     }
 }
 
-/// The gains (an EEG Gain's: what the continuous data's recorded at, beside this), compactly: the range one for all
+/// The gains (an Continuous Gain's: what the continuous data's recorded at, beside this), compactly: the range one for all
 /// fits, or that they're each channel's (as each row shows); and detecting them from the data.
 fn gains_ui(ui: &mut egui::Ui, context: &mut Context<Edges>, gains: &mut Gains, channels: u32) {
     let label = ui.strong("Gain");
     let label = label.on_hover_text(
-        "The EEG Gain's gains, beside this: what the continuous data's recorded at. Each row shows the range it fits \
+        "The Continuous Gain's gains, beside this: what the continuous data's recorded at. Each row shows the range it fits \
          (dashed, if it's within the row): beyond it, it's clipped",
     );
     let layout = Channels { count: channels as usize, group_size: 1 };
@@ -633,7 +633,7 @@ fn gains_ui(ui: &mut egui::Ui, context: &mut Context<Edges>, gains: &mut Gains, 
         ui.label("each channel's");
     }
     let tip = format!(
-        "Sample the data, then set the gains so its bigger excursions reach ±{} (as the EEG Gain says)",
+        "Sample the data, then set the gains so its bigger excursions reach ±{} (as the Continuous Gain says)",
         gains.output_range
     );
     auto_detect_ui(ui, context, Some(GAINS), &tip);

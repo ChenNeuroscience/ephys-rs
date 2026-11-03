@@ -1580,11 +1580,12 @@ mod tests {
         assert!(harness.state().menu.is_some());
         harness.snapshot("graph_create_menu");
         let edges = harness.state().graph.edges().len();
-        harness.get_by_label("Gain").click();
+        harness.get_by_label("Continuous Gain").click();
         harness.run_steps(2);
         let app = harness.state();
         assert_eq!(app.graph.edges().len(), edges + 1);
-        let gain = Port { node: node_named(app, "Gain"), role: Role::Input, index: 0 };
+        // Named after the example's own.
+        let gain = Port { node: node_named(app, "Continuous Gain 2"), role: Role::Input, index: 0 };
         let board = node_named(app, "Acquisition Board");
         assert_eq!(app.graph.edge_into(gain).map(|e| e.from.node), Some(board));
     }

@@ -514,7 +514,7 @@
         ]
       },
       "17": {
-        "label": "EEG Gain",
+        "label": "Continuous Gain",
         "node": {
           "settings": {
             "gains": {
@@ -524,7 +524,7 @@
             },
             "sampling": 10.0
           },
-          "type": "EegGain"
+          "type": "ContinuousGain"
         },
         "pos": [
           840.0,

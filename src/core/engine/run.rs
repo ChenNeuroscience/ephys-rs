@@ -1181,7 +1181,7 @@ pub mod tests {
     fn outputs_are_made_in_place_after_other_readers() {
         let mut graph = Graph::default();
         let board = add(&mut graph, "Acquisition Board");
-        let gain = add(&mut graph, "Gain");
+        let gain = add(&mut graph, "Continuous Gain");
         let filter = add(&mut graph, "Band-pass Filter");
         link(&mut graph, board, 0, gain, 0);
         link(&mut graph, gain, 0, filter, 0);
@@ -1200,7 +1200,7 @@ pub mod tests {
         assert!(position(&plan, viewer) < position(&plan, gain));
 
         // Two nodes that would edit the board's data in place: one does (last), the other gets its own buffer.
-        let second_gain = add(&mut graph, "Gain");
+        let second_gain = add(&mut graph, "Continuous Gain");
         link(&mut graph, board, 0, second_gain, 0);
         let second_end = add(&mut graph, "LFP Viewer");
         link(&mut graph, second_gain, 0, second_end, 0);
@@ -1390,7 +1390,7 @@ pub mod tests {
         graph.get_mut(board).unwrap().pos = [100.0, 50.0];
         let moved = Snapshot::new(1, graph.clone(), Some(&first));
         assert!(Arc::ptr_eq(&first.plan, &moved.plan), "moving a node doesn't change how it runs");
-        add(&mut graph, "Gain");
+        add(&mut graph, "Continuous Gain");
         let added = Snapshot::new(2, graph, Some(&moved));
         assert!(!Arc::ptr_eq(&moved.plan, &added.plan));
     }
@@ -1418,7 +1418,7 @@ pub mod tests {
 
         // A node that isn't connected doesn't run, so doesn't change anything; connected (with something needing
         // its output), it does.
-        let gain = add(&mut graph, "Gain");
+        let gain = add(&mut graph, "Continuous Gain");
         assert!(runner.update(&next(&graph)));
         link(&mut graph, board, 0, gain, 0);
         assert!(runner.update(&next(&graph)), "nothing needs its output");
