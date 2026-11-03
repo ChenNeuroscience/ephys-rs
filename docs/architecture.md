@@ -109,7 +109,8 @@ pane shows in each mode is up to it (`Context::advanced`).
 
 Pressing Record asks every node to prepare (`Node::prepare_to_record`: writers open their files, on a thread), in
 the [base directory](base-directories.md) chosen in the toolbar, then the snapshots record, and nodes see
-`Pass::recording`. While recording, settings are locked: changes are undone.
+`Pass::recording`. The graph's saved with the recording, as `<name>.ephys-rs.json`. While recording, settings are
+locked: changes are undone.
 Stopping lets writers finish their files in the background ([`background.rs`](../src/core/background.rs)).
 
 ## Crashes

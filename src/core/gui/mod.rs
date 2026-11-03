@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::Components;
 use crate::core::annotation::{Annotation, AnnotationId, AnnotationSet, Annotations};
-use crate::core::base_directory::{BaseDirectories, BaseDirectoryType};
+use crate::core::base_directory::{BaseDirectories, BaseDirectoryType, Place};
 use crate::core::engine::{self, Graph, NodeId, NodeSet, Port, PortRef, Resolved, Runner, Snapshot, Stats};
 use crate::core::theme::{Colours, Theme};
 use actions::Action;
@@ -158,6 +158,17 @@ struct SaveFileRef<'a, N, A> {
     annotations: &'a Annotations<A>,
     layout: &'a Layout,
 }
+
+/// Where the settings are saved beside a recording in `place` that starts at `start`: named as the recording, if the
+/// base directory names it (beside a writer's files of that name, or the folder it writes them in), otherwise when it
+/// started.
+fn settings_path(place: &Place, start: &chrono::DateTime<chrono::Local>) -> PathBuf {
+    let name = place.name.clone().unwrap_or_else(|| start.format("%Y-%m-%d_%H%M%S").to_string());
+    place.directory.join(format!("{name}{SETTINGS_EXTENSION}"))
+}
+
+/// What the settings saved with a recording are named with.
+const SETTINGS_EXTENSION: &str = ".ephys-rs.json";
 
 /// A message in the status bar.
 struct Status {
@@ -340,6 +351,30 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         match dialog.save_file() {
             Some(path) => self.save_to(ctx, path),
             None => false,
+        }
+    }
+
+    /// Saves the graph (as File › Save would, but without changing which file is open) beside a recording starting in
+    /// `place` (see `settings_path`), so what recorded it is kept with it. On a thread of its own, so a slow disk
+    /// doesn't hold up the GUI.
+    fn save_with_recording(&self, place: &Place) {
+        let path = settings_path(place, &chrono::Local::now());
+        let file = SaveFileRef { graph: &self.graph, annotations: &self.annotations, layout: &self.layout };
+        let json = match serde_json::to_string_pretty(&file) {
+            Ok(json) => json,
+            Err(e) => return log::error!("Couldn't save the settings with the recording: {e}"),
+        };
+        let write = move || {
+            let written =
+                path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::write(&path, json));
+            match written {
+                Ok(()) => log::info!("Saved the settings with the recording, in {}", path.display()),
+                Err(e) => log::error!("Couldn't save the settings with the recording, in {}: {e}", path.display()),
+            }
+        };
+        match std::thread::Builder::new().name("saving settings with a recording".into()).spawn(write) {
+            Ok(thread) => crate::core::background::finish_later(thread),
+            Err(e) => log::error!("Couldn't save the settings with the recording: {e}"),
         }
     }
 
@@ -862,6 +897,9 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
     fn keep_running(&mut self, ctx: &egui::Context) {
         if let Some(recording) = self.preparing.as_ref().and_then(|r| r.try_recv().ok()) {
             self.preparing = None;
+            if let Some(place) = recording.base_directory() {
+                self.save_with_recording(place);
+            }
             self.set_recording(Some(Arc::new(recording)));
         }
         let Some(runner) = &self.runner else { return };
@@ -1692,6 +1730,24 @@ mod tests {
         harness.get_by_label("A directory").click();
         harness.run_steps(2);
         assert_eq!(harness.state().base_directories.chosen(), Some(0));
+    }
+
+    #[test]
+    fn recordings_keep_the_settings_they_were_made_with() {
+        let start = chrono::Local::now();
+        let named = Place { directory: "/r/r2405".into(), name: Some("2026-01-01 a".into()) };
+        assert_eq!(settings_path(&named, &start), PathBuf::from("/r/r2405/2026-01-01 a.ephys-rs.json"));
+        let unnamed = settings_path(&Place::directory("/r"), &start);
+        assert!(unnamed.starts_with("/r") && unnamed.to_string_lossy().ends_with(".ephys-rs.json"));
+
+        let harness = harness();
+        let directory = std::env::temp_dir().join(format!("ephys-rs-settings-{}", std::process::id()));
+        harness.state().save_with_recording(&Place { directory: directory.clone(), name: Some("trial a".into()) });
+        crate::core::background::wait();
+        let saved = std::fs::read_to_string(directory.join("trial a.ephys-rs.json")).unwrap();
+        let file: SaveFile<Nodes, crate::AnnotationTypes> = serde_json::from_str(&saved).unwrap();
+        assert_eq!(file.graph.iter().count(), harness.state().graph.iter().count(), "the graph, as it was");
+        std::fs::remove_dir_all(&directory).unwrap();
     }
 
     #[test]

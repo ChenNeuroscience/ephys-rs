@@ -39,3 +39,7 @@ window gets it too (`Context::base_directory`), to show where it'll write. The s
 [`Location`](../src/standard_components/recording/mod.rs): the base directory, a subdirectory of it, or a directory
 of their own. They name the recording as the base directory says, if it does, otherwise after their prefix and the
 time.
+
+The settings are kept with each recording too: as it starts, the graph (as File › Save writes it) is saved in the
+base directory, as `<name>.ephys-rs.json`, named as the recording if the base directory names it (beside Write
+LTX's files of that name, or Write Raw's folder), otherwise after when it started.
