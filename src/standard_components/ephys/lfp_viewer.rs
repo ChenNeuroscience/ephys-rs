@@ -5,21 +5,24 @@
 //! Each pass adds its samples to a few seconds' worth for each channel shown, kept as the lowest and highest
 //! sample in each of the view's columns (so spikes show however far it's zoomed out).
 //!
-//! The traces can be referenced to the average of some channels (in the view only): the reference is then shown
-//! too, in a row of its own at the top, and the channels in it are marked.
-//!
-//! Connected to a Channel Selector upstream, it chooses the channels it passes on: tick the ones to keep, while
-//! all are shown, then apply the selection.
+//! It sets what's upstream of it and beside it, through its controls (as the Spike Viewer does the spikes'):
+//! - an EEG Gain's gains (what the continuous data's recorded at): each row shows the range they fit, and their
+//!   auto-detect can be run from here;
+//! - a Channel Selector's selection, upstream: tick the channels to keep, while all are shown, then apply it;
+//! - a Reference's reference (the spikes' re-referencing, from the same channels): R on a row puts its channel in the
+//!   reference, or takes it out. The traces themselves aren't referenced.
 
 use eframe::egui::{self, Align2, FontId, Pos2, Rect, Sense, Shape, Stroke};
 use serde::{Deserialize, Serialize};
 
 use crate::core::engine::{Category, Context, Control, EdgeType, Input, Node, NodeInfo, Output, Pass};
-use crate::standard_components::ephys::reference::{format_channels, parse_channels};
+use crate::standard_components::auto_detect::auto_detect_ui;
+use crate::standard_components::ephys::reference::{Method, Reference, format_channels, parse_channels};
 use crate::standard_components::ephys::spectrum::{Spectra, SpectraBuffer};
 use crate::standard_components::ephys::{ChannelSelection, Continuous, ContinuousBuffer};
 use crate::standard_components::pool::{Pool, SharedPool};
 use crate::standard_components::preview;
+use crate::standard_components::spikes::{Channels, GainScope, Gains};
 use crate::standard_components::widgets::{require_input, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
 
@@ -27,6 +30,11 @@ use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
 const COLUMNS: usize = 1200;
 /// The spectrum's column's width.
 const SPECTRUM_WIDTH: f32 = 160.0;
+
+/// Its controls: an EEG Gain's gains, a Channel Selector's selection and a Reference's reference.
+const GAINS: usize = 0;
+const SELECTION: usize = 1;
+const REFERENCE: usize = 2;
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -39,14 +47,11 @@ pub struct LfpViewer {
     pub row_height: f32,
     /// Whether to show each channel's spectrum (from a Spectrum node).
     pub spectrum: bool,
-    /// The channels averaged as a reference, subtracted from every trace (in the view only): "1-4, 7", say, or
-    /// blank for none.
-    pub reference: String,
 }
 
 impl Default for LfpViewer {
     fn default() -> Self {
-        LfpViewer { span: 2.0, scale_uv: 200.0, row_height: 40.0, spectrum: true, reference: String::new() }
+        LfpViewer { span: 2.0, scale_uv: 200.0, row_height: 40.0, spectrum: true }
     }
 }
 
@@ -55,15 +60,11 @@ impl Default for LfpViewer {
 pub struct Traces {
     /// The input's sample rate.
     rate: f32,
-    /// What it's for: the first channel, how many, samples per column, and whether there's a reference (in a row of
-    /// its own, after the channels').
-    shape: (usize, usize, usize, bool),
-    /// For each row (channel shown, then the reference), `COLUMNS` lows then highs.
+    /// What it's for: the first channel, how many, and samples per column.
+    shape: (usize, usize, usize),
+    /// For each channel shown, `COLUMNS` lows then highs.
     lows: Vec<f32>,
     highs: Vec<f32>,
-    /// The channels referenced to (their average, each sample, in `average`).
-    reference: Vec<usize>,
-    average: Vec<f32>,
     /// The column being filled, and how many samples it has so far.
     head: usize,
     filled: usize,
@@ -79,32 +80,14 @@ impl crate::core::engine::PassState for Traces {
 
 impl Traces {
     /// Adds a pass's samples of the channels shown (from `first`) to their columns: a run of samples at a time, up to
-    /// where a column's full, channel by channel (as they're laid out). Referenced, less the reference's average.
+    /// where a column's full, channel by channel (as they're laid out).
     fn add(&mut self, input: &ContinuousBuffer, first: usize) {
-        let (_, shown, per_column, referenced) = self.shape;
-        if referenced {
-            self.average.clear();
-            self.average.resize(input.len, 0.0);
-            for &channel in self.reference.iter().filter(|&&c| c < input.channels) {
-                for (sum, x) in self.average.iter_mut().zip(input.channel(channel)) {
-                    *sum += x;
-                }
-            }
-            let count = self.reference.iter().filter(|&&c| c < input.channels).count().max(1) as f32;
-            self.average.iter_mut().for_each(|sum| *sum /= count);
-        }
+        let (_, shown, per_column) = self.shape;
         let mut t = 0;
         while t < input.len {
             let run = (per_column - self.filled).min(input.len - t);
-            for i in 0..shown + referenced as usize {
-                let (low, high) = if i == shown {
-                    extremes(self.average[t..t + run].iter().copied())
-                } else if referenced {
-                    let samples = &input.channel(first + i)[t..t + run];
-                    extremes(samples.iter().zip(&self.average[t..t + run]).map(|(x, r)| x - r))
-                } else {
-                    extremes(input.channel(first + i)[t..t + run].iter().copied())
-                };
+            for i in 0..shown {
+                let (low, high) = extremes(input.channel(first + i)[t..t + run].iter().copied());
                 let at = i * COLUMNS + self.head;
                 if self.filled == 0 {
                     (self.lows[at], self.highs[at]) = (low, high);
@@ -121,16 +104,14 @@ impl Traces {
         }
     }
 
-    fn reshape(&mut self, shape: (usize, usize, usize, bool)) {
+    fn reshape(&mut self, shape: (usize, usize, usize)) {
         if self.shape != shape {
-            let (_, shown, _, referenced) = shape;
-            let rows = shown + referenced as usize;
+            let (_, shown, _) = shape;
             *self = Traces {
                 rate: self.rate,
                 shape,
-                lows: vec![0.0; rows * COLUMNS],
-                highs: vec![0.0; rows * COLUMNS],
-                reference: std::mem::take(&mut self.reference),
+                lows: vec![0.0; shown * COLUMNS],
+                highs: vec![0.0; shown * COLUMNS],
                 shown: std::mem::take(&mut self.shown),
                 ..Default::default()
             };
@@ -151,10 +132,17 @@ pub struct TracesDisplay {
     columns: usize,
     lows: Vec<f32>,
     highs: Vec<f32>,
-    /// Whether the last row is the reference.
-    reference_row: bool,
     /// Each channel's spectrum, if it's being worked out.
     spectra: Option<SpectraBuffer>,
+}
+
+/// What the rows are drawn from: the traces, and the controls' gains and reference, if they're connected.
+struct Rows<'a> {
+    display: &'a TracesDisplay,
+    stream: Continuous,
+    spectra: Option<(&'a SpectraBuffer, Spectra)>,
+    gains: Option<&'a Gains>,
+    reference: Option<&'a Reference>,
 }
 
 impl Node<Edges> for LfpViewer {
@@ -164,7 +152,8 @@ impl Node<Edges> for LfpViewer {
         name: "LFP Viewer",
         category: Category::Visualisation,
         description: "Scrolling traces of continuous data, one row per channel, each with its spectrum over a band \
-                      (theta, say). Chooses an upstream Channel Selector's channels.",
+                      (theta, say). Sets an EEG Gain's gains, a Channel Selector's channels and a Reference's \
+                      reference channels.",
     };
     const HAS_VIEW: bool = true;
 
@@ -199,23 +188,18 @@ impl Node<Edges> for LfpViewer {
         // Every channel: the view scrolls through them.
         let (first, shown) = (0, input.channels.max(1));
         let per_column = ((self.span as f64 * rate as f64) / COLUMNS as f64).round().max(1.0) as usize;
-        let reference: Vec<usize> =
-            referenced(&self.reference, input.channels as u32).into_iter().map(|c| c as usize).collect();
-        traces.reshape((first, shown, per_column, !reference.is_empty()));
-        traces.reference = reference;
+        traces.reshape((first, shown, per_column));
         traces.add(input, first);
         let spectra = match pass.inputs.get(1) {
             Some(Some(Buffer::Spectra(spectra))) if self.spectrum => Some(spectra),
             _ => None,
         };
-        let rows = shown + traces.shape.3 as usize;
-        let Traces { lows, highs, head, columns, shape, shown: latest, .. } = traces;
-        latest.send_newest(pass, |display| {
+        let Traces { lows, highs, head, columns, shown: sent, .. } = traces;
+        sent.send_newest(pass, |display| {
             (display.first, display.shown, display.columns) = (first, shown, *columns);
-            display.reference_row = shape.3;
             display.lows.clear();
             display.highs.clear();
-            for i in 0..rows {
+            for i in 0..shown {
                 // Oldest first: from the column after the one being filled, round to it.
                 let row = i * COLUMNS..(i + 1) * COLUMNS;
                 let (older, newer) = lows[row.clone()].split_at(*head);
@@ -245,8 +229,9 @@ impl Node<Edges> for LfpViewer {
 
     fn controls(&self) -> Vec<Control<Edges>> {
         vec![
-            Control { name: "gain", kind: SettingKind::Gain, read_only: false },
+            Control { name: "gains", kind: SettingKind::Gains, read_only: false },
             Control { name: "selection", kind: SettingKind::ChannelSelection, read_only: false },
+            Control { name: "reference", kind: SettingKind::Reference, read_only: false },
         ]
     }
 
@@ -262,11 +247,19 @@ impl Node<Edges> for LfpViewer {
         let Some(DataStream::Continuous(stream)) = context.inputs[0] else {
             return preview::unconnected(ui, context.theme, "Connect a continuous data stream to view it");
         };
-        let mut selection = match &context.controls[1] {
+        let mut selection = match &context.controls[SELECTION] {
             Some(Setting::ChannelSelection(s)) => Some(s.clone()),
             _ => None,
         };
-        self.toolbar(ui, context, stream, selection.as_mut());
+        let mut reference = match &context.controls[REFERENCE] {
+            Some(Setting::Reference(r)) => Some(r.clone()),
+            _ => None,
+        };
+        let mut gains = match &context.controls[GAINS] {
+            Some(Setting::Gains(g)) => Some(g.clone()),
+            _ => None,
+        };
+        self.toolbar(ui, context, stream, selection.as_mut(), reference.as_mut(), gains.as_mut());
 
         let pool = context.shared::<Pool<TracesDisplay>>();
 
@@ -278,21 +271,20 @@ impl Node<Edges> for LfpViewer {
             (Some(buffer), Some(DataStream::Spectra(stream))) => Some((buffer, stream)),
             _ => None,
         };
-        let reference = self.rows_ui(ui, context.theme, &display, stream, spectra, selection.as_mut(), locked);
-        if let Some(channel) = reference {
-            let mut channels = referenced(&self.reference, stream.channels);
-            match channels.iter().position(|&c| c == channel) {
-                Some(at) => {
-                    channels.remove(at);
-                }
-                None => channels.push(channel),
-            }
-            channels.sort_unstable();
-            self.reference =
-                if channels.is_empty() { String::new() } else { format_channels(&channels, stream.channels) };
+        let rows = Rows { display: &display, stream, spectra, gains: gains.as_ref(), reference: reference.as_ref() };
+        let toggled = self.rows_ui(ui, context.theme, rows, selection.as_mut(), locked);
+        // R on a row: its channel (upstream) in the reference, or out.
+        if let (Some(channel), Some(reference)) = (toggled, reference.as_mut()) {
+            toggle_reference(reference, channel, stream.channels);
         }
         if let Some(selection) = selection {
-            context.controls[1] = Some(Setting::ChannelSelection(selection));
+            context.controls[SELECTION] = Some(Setting::ChannelSelection(selection));
+        }
+        if let Some(reference) = reference {
+            context.controls[REFERENCE] = Some(Setting::Reference(reference));
+        }
+        if let Some(gains) = gains {
+            context.controls[GAINS] = Some(Setting::Gains(gains));
         }
         preview::repaint_with_data(ui);
     }
@@ -307,15 +299,19 @@ impl LfpViewer {
         egui::DragValue::new(&mut self.scale_uv).range(10.0..=5000.0).speed(2.0).prefix("±").suffix(" µV")
     }
 
-    /// The span, scale and rows' height, the spectrum, the upstream gain and the channel selection (if they're
-    /// connected).
+    /// The span, scale and rows' height, the spectrum, and (if they're connected) the gains, the reference and the
+    /// channel selection.
     fn toolbar(
         &mut self,
         ui: &mut egui::Ui,
         context: &mut Context<Edges>,
         stream: Continuous,
         selection: Option<&mut ChannelSelection>,
+        reference: Option<&mut Reference>,
+        gains: Option<&mut Gains>,
     ) {
+        // The reference's channels can be told apart (to change) only while every channel upstream is shown.
+        let all_shown = !selection.as_deref().is_some_and(|s| s.apply);
         ui.add_enabled_ui(!context.locked, |ui| {
             ui.horizontal_wrapped(|ui| {
                 let label = ui.label("Span");
@@ -335,54 +331,60 @@ impl LfpViewer {
                 if ui.add(egui::Button::selectable(self.spectrum, "Spectrum")).on_hover_text(tip).clicked() {
                     self.spectrum = !self.spectrum;
                 }
-                ui.separator();
-                reference_ui(ui, &mut self.reference, stream.channels);
-                // With the gain control connected, the upstream gain can be adjusted from here.
-                if let Some(Setting::Gain(mut gain)) = context.controls[0] {
+                if let Some(gains) = gains {
                     ui.separator();
-                    let label = ui.label("Upstream gain");
-                    ui.add(egui::DragValue::new(&mut gain.factor).range(0.0..=1000.0).speed(0.01).prefix("×"))
-                        .labelled_by(label.id);
-                    context.controls[0] = Some(Setting::Gain(gain));
+                    gains_ui(ui, context, gains, stream.channels);
+                }
+                if let Some(reference) = reference {
+                    ui.separator();
+                    reference_ui(ui, reference, stream.channels, all_shown);
                 }
                 if let Some(selection) = selection {
                     ui.separator();
                     ui.strong("Selection");
                     selection_ui(ui, selection, stream.channels);
                 }
+                if context.advanced() {
+                    ui.separator();
+                    for (control, what) in [(GAINS, "EEG Gain"), (REFERENCE, "Reference")] {
+                        let tip = format!("Open the {what}, for the rest of its settings");
+                        let button =
+                            ui.add_enabled(context.control_connected(control), egui::Button::new(what).small());
+                        if button.on_hover_text(tip).clicked() {
+                            context.open_control_target(control);
+                        }
+                    }
+                }
                 context.node_toolbar(ui);
             });
         });
     }
 
-    /// A row for each channel shown, at the row height: its trace, and its spectrum, with a tick to select it if
-    /// there's a selection to make.
-    #[allow(clippy::too_many_arguments)]
-    /// Returns the channel whose R was clicked, if one was: to put in the reference, or take out.
+    /// A row for each channel shown, at the row height: its trace, the range its gain fits (if the gains are
+    /// connected), and its spectrum; with a tick to select it if there's a selection to make, and R for the reference
+    /// if there's one. Returns the channel (upstream) whose R was clicked, if one was: to put in the reference, or take
+    /// out.
     fn rows_ui(
         &self,
         ui: &mut egui::Ui,
         theme: &crate::core::theme::Colours,
-        display: &TracesDisplay,
-        stream: Continuous,
-        spectra: Option<(&SpectraBuffer, Spectra)>,
+        rows_of: Rows,
         selection: Option<&mut ChannelSelection>,
         locked: bool,
     ) -> Option<u32> {
+        let Rows { display, stream, spectra, gains, reference } = rows_of;
         let area = ui.available_rect_before_wrap();
         ui.painter().rect_filled(area, 2.0, theme.surface_sunken);
         let height = self.row_height.clamp(12.0, 400.0);
         // Which channel upstream each row is, once a selection's applied.
         let numbers = selection.as_deref().map(|s| upstream(s, stream.channels));
         let ticked: Option<Vec<u32>> = selection.as_deref().map(|s| ticked(s, stream.channels));
-        let referenced = referenced(&self.reference, stream.channels);
+        let selection_applied = selection.as_deref().map(|s| s.apply);
+        // The reference's channels can be changed only while every channel upstream is shown (see `toggle_reference`).
+        let editable = !locked && selection_applied != Some(true);
         let mut toggled = None;
         let mut reference_toggled = None;
-        let selection_applied = selection.as_deref().map(|s| s.apply);
-        // The reference first, if there is one: it's the last of the display's rows.
-        let rows_shown = display.shown + display.reference_row as usize;
-        let data_row = |r: usize| if display.reference_row { if r == 0 { display.shown } else { r - 1 } } else { r };
-        egui::ScrollArea::vertical().auto_shrink(false).show_rows(ui, height, rows_shown, |ui, rows| {
+        egui::ScrollArea::vertical().auto_shrink(false).show_rows(ui, height, display.shown, |ui, rows| {
             let width = ui.available_width();
             let label = 64.0;
             let spectra = spectra.filter(|_| self.spectrum && width > SPECTRUM_WIDTH * 2.0);
@@ -394,59 +396,48 @@ impl LfpViewer {
             let column = (width - label - spectrum) / (COLUMNS as f32 * future);
             // The columns filled so far are the last of each row's.
             let start = COLUMNS - display.columns;
-            for (r, shown_row) in rows.enumerate() {
-                let i = data_row(shown_row);
-                let is_reference = display.reference_row && i == display.shown;
+            for (r, i) in rows.enumerate() {
                 let top = rect.top() + r as f32 * height;
                 let row = Rect::from_min_size(egui::pos2(rect.left(), top), egui::vec2(width, height));
-                if shown_row > 0 {
+                if i > 0 {
                     painter.hline(row.x_range(), top, Stroke::new(1.0, theme.divider.gamma_multiply(0.3)));
                 }
                 let channel = display.first + i;
                 let number = numbers.as_ref().and_then(|n| n.get(channel).copied()).unwrap_or(channel as u32);
                 let text_y = top + (height * 0.5).min(9.0);
-                let (name, ink) = if is_reference {
-                    ("ref".to_owned(), theme.text_primary)
-                } else {
-                    ((number + 1).to_string(), theme.text_secondary)
-                };
                 painter.text(
                     egui::pos2(rect.left() + 4.0, text_y),
                     Align2::LEFT_CENTER,
-                    name,
+                    (number + 1).to_string(),
                     FontId::monospace(10.0),
-                    ink,
+                    theme.text_secondary,
                 );
-                if is_reference {
-                    let hover = Rect::from_min_size(row.min, egui::vec2(label, height));
-                    let tip = format!(
-                        "The reference: the average of channels {}, taken from each trace (R on a row puts its channel \
-                         in it, or takes it out)",
-                        self.reference
-                    );
-                    let _ = ui.interact(hover, ui.scope_id().with("reference row"), Sense::hover()).on_hover_text(tip);
-                } else {
-                    // Whether it's selected (to pass on, from a Channel Selector upstream), and in the reference.
-                    if let Some(ticked) = &ticked {
-                        let mut on = ticked.contains(&number);
-                        let tick =
-                            Rect::from_center_size(egui::pos2(rect.left() + 32.0, text_y), egui::vec2(16.0, 16.0));
-                        let tip = format!("Select channel {}, to pass on (once the selection's applied)", number + 1);
-                        if ui.put(tick, egui::Checkbox::without_text(&mut on)).on_hover_text(tip).changed() && !locked {
-                            toggled = Some(number);
-                        }
+                // Whether it's selected (to pass on, from a Channel Selector upstream).
+                if let Some(ticked) = &ticked {
+                    let mut on = ticked.contains(&number);
+                    let tick = Rect::from_center_size(egui::pos2(rect.left() + 32.0, text_y), egui::vec2(16.0, 16.0));
+                    let tip = format!("Select channel {}, to pass on (once the selection's applied)", number + 1);
+                    if ui.put(tick, egui::Checkbox::without_text(&mut on)).on_hover_text(tip).changed() && !locked {
+                        toggled = Some(number);
                     }
-                    let on = referenced.contains(&(channel as u32));
+                }
+                // Whether it's in the reference (a Reference's, beside this).
+                if let Some(reference) = reference.filter(|r| matches!(r.method, Method::Average | Method::Median)) {
+                    let on = in_reference(reference, number);
                     let place = Rect::from_center_size(egui::pos2(rect.left() + 52.0, text_y), egui::vec2(18.0, 16.0));
-                    let tip = if on {
-                        format!("Channel {} is in the reference: click to take it out", number + 1)
-                    } else {
-                        format!("Put channel {} in the reference (their average is taken from every trace)", number + 1)
+                    let tip = match (on, editable) {
+                        (_, false) if !locked => format!(
+                            "Channel {} is {}in the reference: show all the channels to change it",
+                            number + 1,
+                            if on { "" } else { "not " }
+                        ),
+                        (true, _) => format!("Channel {} is in the reference: click to take it out", number + 1),
+                        (false, _) => format!("Put channel {} in the reference", number + 1),
                     };
                     let button =
                         egui::Button::selectable(on, egui::RichText::new("R").size(10.0)).min_size(place.size());
-                    if ui.put(place, button).on_hover_text(tip).clicked() && !locked {
-                        reference_toggled = Some(channel as u32);
+                    if ui.put(place, button).on_hover_text(tip).clicked() && editable {
+                        reference_toggled = Some(number);
                     }
                 }
 
@@ -464,19 +455,30 @@ impl LfpViewer {
                     })
                     .collect();
                 // Not selected (with a selection to apply), dimmed: it won't be passed on.
-                let unselected = !is_reference
-                    && selection_applied == Some(false)
-                    && ticked.as_ref().is_some_and(|t| !t.contains(&number));
-                let colour = if is_reference {
-                    theme.text_secondary
-                } else if unselected {
-                    Continuous::INFO.colour.gamma_multiply(0.3)
-                } else {
-                    Continuous::INFO.colour
-                };
+                let unselected =
+                    selection_applied == Some(false) && ticked.as_ref().is_some_and(|t| !t.contains(&number));
+                let colour =
+                    if unselected { Continuous::INFO.colour.gamma_multiply(0.3) } else { Continuous::INFO.colour };
                 painter.add(Shape::line(points, Stroke::new(1.0, colour)));
+                // The range its gain fits (what's recorded), if it's within the row: beyond it, it's clipped.
+                if let Some(gains) = gains {
+                    let range = gains.range_uv(i);
+                    if range < self.scale_uv {
+                        let x = egui::Rangef::new(rect.left() + label, row.right() - spectrum);
+                        let stroke = Stroke::new(1.0, theme.warning.gamma_multiply(0.5));
+                        for level in [range, -range] {
+                            let dashes = Shape::dashed_line(
+                                &[egui::pos2(x.min, y(level)), egui::pos2(x.max, y(level))],
+                                stroke,
+                                4.0,
+                                4.0,
+                            );
+                            painter.extend(dashes);
+                        }
+                    }
+                }
 
-                if let (Some((buffer, stream)), false) = (spectra, is_reference) {
+                if let Some((buffer, stream)) = spectra {
                     let place = Rect::from_min_max(egui::pos2(row.right() - spectrum, top), row.max).shrink(2.0);
                     spectrum_ui(&painter, place, buffer, stream, i, theme);
                 }
@@ -540,31 +542,101 @@ fn spectrum_ui(
     }
 }
 
-/// The channels a reference (as text) takes the mean of: none, if it's blank.
-fn referenced(reference: &str, channels: u32) -> Vec<u32> {
-    if reference.trim().is_empty() { Vec::new() } else { parse_channels(reference, channels).unwrap_or_default() }
+/// Whether channel `number` (upstream, from 0) is in the reference.
+fn in_reference(reference: &Reference, number: u32) -> bool {
+    let text = reference.reference_channels.trim();
+    text.is_empty()
+        || text.eq_ignore_ascii_case("all")
+        || parse_channels(text, u32::MAX / 2).is_ok_and(|channels| channels.contains(&number))
 }
 
-/// The reference, compactly: which channels' mean it is (each chosen on its row, with R), and all or none of them.
-fn reference_ui(ui: &mut egui::Ui, reference: &mut String, channels: u32) {
-    let label = ui.strong("Reference");
-    label.on_hover_text(
-        "Reference the traces to the mean of some channels (in this view only), shown in a row of its own at the top: \
-         R on a row puts its channel in it, or takes it out",
+/// Puts channel `number` (upstream, from 0) in the reference, or takes it out, of the `channels` there are (all of
+/// them shown, so "all" can be told).
+fn toggle_reference(reference: &mut Reference, number: u32, channels: u32) {
+    let mut members: Vec<u32> = (0..channels).filter(|&c| in_reference(reference, c)).collect();
+    match members.iter().position(|&c| c == number) {
+        Some(at) => {
+            members.remove(at);
+        }
+        None => members.push(number),
+    }
+    reference.reference_channels = format_channels(&members, channels);
+}
+
+/// The reference (a Reference's, for the spikes), compactly: the mean or median of which channels (each chosen on its
+/// row, with R), and all or none of them. Other methods are set in the Reference itself.
+fn reference_ui(ui: &mut egui::Ui, reference: &mut Reference, channels: u32, all_shown: bool) {
+    let label = ui.strong("Reference").on_hover_text(
+        "The spikes' reference, made by the Reference beside this from the same channels: R on a row puts its channel \
+         in it, or takes it out. The traces here aren't referenced",
     );
-    let ticked = referenced(reference, channels);
-    let text = match ticked.len() {
-        0 => "none".to_owned(),
-        n if n == channels as usize => "mean of all".to_owned(),
-        _ => format!("mean of {}", format_channels(&ticked, channels)),
+    let median = match reference.method {
+        Method::Average => false,
+        Method::Median => true,
+        _ => {
+            ui.label(reference.summary()).on_hover_text("Set in the Reference");
+            return;
+        }
+    };
+    let mut chosen = median;
+    egui::ComboBox::from_id_salt("reference method")
+        .selected_text(if median { "median" } else { "mean" })
+        .width(70.0)
+        .show_ui(ui, |ui| {
+            ui.selectable_value(&mut chosen, false, "mean").on_hover_text("A common average reference");
+            ui.selectable_value(&mut chosen, true, "median")
+                .on_hover_text("A common median reference: a spike on one of its channels hardly moves it");
+        })
+        .response
+        .labelled_by(label.id);
+    if chosen != median {
+        reference.method = if chosen { Method::Median } else { Method::Average };
+    }
+    let members: Vec<u32> = (0..channels).filter(|&c| in_reference(reference, c)).collect();
+    let text = match reference.reference_channels.trim() {
+        "" | "all" => "of all".to_owned(),
+        _ if members.is_empty() => "of none".to_owned(),
+        text => format!("of {text}"),
     };
     ui.label(text);
-    if ui.small_button("All").on_hover_text("The mean of every channel (a common average)").clicked() {
-        *reference = "all".into();
+    let why = "Show all the channels to change it";
+    let all = ui.add_enabled(all_shown, egui::Button::new("All").small());
+    if all.on_hover_text("Every channel").on_disabled_hover_text(why).clicked() {
+        reference.reference_channels = "all".into();
     }
-    if ui.small_button("None").on_hover_text("No reference").clicked() {
-        reference.clear();
+    let none = ui.add_enabled(all_shown, egui::Button::new("None").small());
+    if none.on_hover_text("No reference").on_disabled_hover_text(why).clicked() {
+        reference.reference_channels = "none".into();
     }
+}
+
+/// The gains (an EEG Gain's: what the continuous data's recorded at, beside this), compactly: the range one for all
+/// fits, or that they're each channel's (as each row shows); and detecting them from the data.
+fn gains_ui(ui: &mut egui::Ui, context: &mut Context<Edges>, gains: &mut Gains, channels: u32) {
+    let label = ui.strong("Gain");
+    let label = label.on_hover_text(
+        "The EEG Gain's gains, beside this: what the continuous data's recorded at. Each row shows the range it fits \
+         (dashed, if it's within the row): beyond it, it's clipped",
+    );
+    let layout = Channels { count: channels as usize, group_size: 1 };
+    let detecting =
+        context.trigger_progress(Some(GAINS), crate::standard_components::auto_detect::AUTO_DETECT).is_some();
+    if gains.scope == GainScope::All {
+        let mut range = gains.range_uv(0);
+        let speed = range * 0.01;
+        let field = egui::DragValue::new(&mut range).range(1.0..=100_000.0).speed(speed).prefix("fits ±").suffix(" µV");
+        let field = ui.add_enabled(!detecting, field).labelled_by(label.id);
+        if field.on_hover_text("The range one gain for all channels fits").changed() {
+            gains.set_range(0, range, layout);
+        }
+    } else {
+        ui.label("each channel's");
+    }
+    let tip = format!(
+        "Sample the data, then set the gains so its bigger excursions reach ±{} (as the EEG Gain says)",
+        gains.output_range
+    );
+    auto_detect_ui(ui, context, Some(GAINS), &tip);
 }
 
 /// Whether a selection's channels are "all".
@@ -634,14 +706,13 @@ fn selection_ui(ui: &mut egui::Ui, selection: &mut ChannelSelection, channels: u
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::engine::{DataStreamType, PASS_DURATION};
 
     #[test]
     fn columns_hold_each_runs_lowest_and_highest() {
         // Passes of uneven lengths, so columns fill across them.
         let (channels, per_column) = (3, 7);
         let mut traces = Traces::default();
-        traces.reshape((0, channels, per_column, false));
+        traces.reshape((0, channels, per_column));
         let value = |c: usize, t: usize| ((t * 37 + c * 11) % 23) as f32 - (c * t % 5) as f32;
         let mut t0 = 0;
         for len in [5, 9, 1, 20, 3, 13] {
@@ -666,32 +737,18 @@ mod tests {
     }
 
     #[test]
-    fn traces_can_be_referenced_to_the_average_of_some_channels() {
-        // Three channels: a shared wave, plus 10 on the first. Referenced to the first two, the first is 5 above
-        // their average, the second 5 below, the third (not in it) 5 below; and the reference is the wave plus 5.
-        let viewer = LfpViewer { reference: "1-2".into(), ..Default::default() };
-        let stream = Continuous { channels: 3, sample_rate: 1000.0 };
-        let mut traces = viewer.initial_state(&[Some(DataStream::Continuous(stream)), None]);
-        let mut input = stream.buffer(PASS_DURATION);
-        input.len = 20;
-        for c in 0..3 {
-            for (t, x) in input.channel_mut(c).iter_mut().enumerate() {
-                *x = (t as f32).sin() * 100.0 + if c == 0 { 10.0 } else { 0.0 };
-            }
-        }
-        let buffer = Buffer::Continuous(input);
-        let inputs = [Some(&buffer), None];
-        viewer.process(&mut Pass::new(0, PASS_DURATION, &inputs, &mut []), &mut traces);
-        assert!(traces.shape.3, "a reference row");
-        // Blank, there's none (not all).
-        assert!(referenced("", 3).is_empty() && referenced("all", 3) == vec![0, 1, 2]);
-        let column = |row: usize| (traces.lows[row * COLUMNS], traces.highs[row * COLUMNS]);
-        assert_eq!(column(0), (5.0, 5.0));
-        assert_eq!(column(1), (-5.0, -5.0));
-        assert_eq!(column(2), (-5.0, -5.0));
-        // The reference itself (the wave, plus 5): the first column's two samples, sin(0) and sin(1).
-        let (low, high) = column(3);
-        assert!(low == 5.0 && (high - (1f32.sin() * 100.0 + 5.0)).abs() < 1e-3, "{low} to {high}");
+    fn rows_put_their_channels_in_the_reference_or_take_them_out() {
+        let mut reference = Reference { reference_channels: "all".into(), ..Default::default() };
+        assert!(in_reference(&reference, 7));
+        toggle_reference(&mut reference, 2, 4);
+        assert_eq!(reference.reference_channels, "1-2, 4");
+        assert!(!in_reference(&reference, 2) && in_reference(&reference, 3));
+        toggle_reference(&mut reference, 2, 4);
+        assert_eq!(reference.reference_channels, "all");
+        reference.reference_channels = "none".into();
+        assert!(!in_reference(&reference, 0));
+        toggle_reference(&mut reference, 0, 4);
+        assert_eq!(reference.reference_channels, "1");
     }
 
     #[test]

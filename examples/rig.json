@@ -279,7 +279,7 @@
       {
         "dimension": "Data",
         "from": {
-          "node": 13,
+          "node": 1,
           "port": 0
         },
         "to": {
@@ -339,6 +339,28 @@
         },
         "to": {
           "node": 17,
+          "port": 0
+        }
+      },
+      {
+        "dimension": "Settings",
+        "from": {
+          "node": 5,
+          "port": 0
+        },
+        "to": {
+          "node": 17,
+          "port": 0
+        }
+      },
+      {
+        "dimension": "Settings",
+        "from": {
+          "node": 5,
+          "port": 2
+        },
+        "to": {
+          "node": 10,
           "port": 0
         }
       }
@@ -559,7 +581,6 @@
         "label": "LFP Viewer",
         "node": {
           "settings": {
-            "reference": "",
             "row_height": 40.0,
             "scale_uv": 200.0,
             "span": 2.0,

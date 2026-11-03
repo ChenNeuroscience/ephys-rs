@@ -38,6 +38,7 @@ edge_types! {
         Gains(spikes::Gains),
         Gain(ephys::Gain),
         ChannelSelection(ephys::ChannelSelection),
+        Reference(reference::Reference),
         Camera(camera::CameraSettings),
         Detection(tracking::Detection),
     }

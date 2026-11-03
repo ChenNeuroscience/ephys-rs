@@ -4,15 +4,18 @@
 //! and its channel map's reference channels (each channel referenced to one other). Besides those: the median
 //! rather than the average (a common median reference: a spike on one reference channel hardly moves it), and
 //! averages or medians taken separately within groups of channels (each shank of a probe, say).
+//!
+//! Its settings are one setting (`reference`), which another node can edit through a settings edge: the LFP Viewer
+//! chooses the reference channels on its rows.
 
-use eframe::egui::{self, RichText};
+use eframe::egui::{self, Color32, RichText};
 use serde::{Deserialize, Serialize};
 
-use crate::core::engine::{Category, Context, Input, Node, NodeInfo, Output, Pass};
+use crate::core::engine::{Category, Context, EdgeInfo, EdgeType, Input, Node, NodeInfo, Output, Pass, SettingPort};
 use crate::standard_components::widgets::{input_summary, require_input, setting, settings_grid};
-use crate::{Buffer, DataStream, Edges, Kind};
+use crate::{Buffer, DataStream, Edges, Kind, Setting};
 
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Method {
     /// Every channel referenced to one channel (counting from 1).
@@ -25,7 +28,7 @@ pub enum Method {
     PerChannel { references: Vec<u32> },
 }
 
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Reference {
     pub method: Method,
@@ -48,6 +51,24 @@ impl Default for Reference {
             group_size: 0,
             channels: "all".into(),
             gain: 100.0,
+        }
+    }
+}
+
+/// The Reference's settings, as a setting another node can edit.
+impl EdgeType for Reference {
+    const INFO: EdgeInfo = EdgeInfo {
+        name: "reference",
+        colour: Color32::from_rgb(150, 200, 120),
+        description: "How channels are re-referenced: the method, and which channels the reference is made of.",
+    };
+
+    fn summary(&self) -> String {
+        match &self.method {
+            Method::Channel { channel } => format!("channel {channel}"),
+            Method::Average => format!("average of {}", self.reference_channels),
+            Method::Median => format!("median of {}", self.reference_channels),
+            Method::PerChannel { .. } => "each its own".into(),
         }
     }
 }
@@ -183,6 +204,16 @@ impl Node<Edges> for Reference {
 
     fn in_place(&self, _output: usize) -> Option<usize> {
         Some(0)
+    }
+
+    fn settings(&self) -> Vec<SettingPort<Edges>> {
+        vec![SettingPort { name: "reference", value: self.clone().into() }]
+    }
+
+    fn set_setting(&mut self, _index: usize, value: Setting) {
+        if let Setting::Reference(reference) = value {
+            *self = reference;
+        }
     }
 
     fn process(&self, pass: &mut Pass<Edges>, state: &mut Referencing) {
