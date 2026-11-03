@@ -14,7 +14,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::engine::EdgeType;
 use crate::core::engine::{Category, Context, Input, Node, NodeInfo, Output, PASS_DURATION, Pass, SettingPort};
-use crate::core::exchange::Latest;
 use crate::standard_components::auto_detect::{AUTO_DETECT, SAMPLING, auto_detect_ui, detecting};
 use crate::standard_components::spikes::{Polarity, Spike, Spikes, Thresholds};
 use crate::standard_components::widgets::{
@@ -84,7 +83,6 @@ pub struct Detector {
     /// While choosing thresholds from the data: seconds sampled, of how many; and each channel's noise summed over
     /// the passes so far, and how many.
     sampling: Option<(f64, f64, Vec<f64>, u32)>,
-    shown: Latest<Option<(f32, f32)>>,
 }
 
 impl crate::core::engine::PassState for Detector {
@@ -354,8 +352,6 @@ impl SpikeDetector {
                 detector.sampling = None;
             }
         }
-        let progress = detector.sampling.as_ref().map(|s| (s.0 as f32, s.1 as f32));
-        detector.shown.send(pass, |shown| *shown = progress);
     }
 
     /// Each channel's threshold, to set by hand (usually set from a Spike Viewer, or chosen from the data).

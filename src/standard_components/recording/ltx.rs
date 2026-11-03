@@ -28,11 +28,11 @@ use serde::{Deserialize, Serialize};
 
 use super::{Files, Status, Writing, path_in, session_name, status_ui};
 use crate::core::engine::{
-    Category, Context, Control, CopyTo, DataStreamType, EdgeSet, Flow, Input, Node, NodeInfo, NodeThread, Output,
+    Category, Context, Control, DataStreamType, EdgeSet, Flow, Input, Node, NodeInfo, NodeThread, Output,
     PASS_DURATION, Pass, PoolStatus, ThreadContext,
 };
-use crate::core::exchange::Latest;
 use crate::standard_components::ephys::{Continuous, Event, Events};
+use crate::standard_components::latest::{self, Latest};
 use crate::standard_components::spikes::{Gains, Spikes};
 use crate::standard_components::tracking::{Crop, Detection, PositionSample, Positions};
 use crate::standard_components::widgets::{require_input, setting, settings_grid};
@@ -78,7 +78,7 @@ pub struct Recorder {
     /// Continuous samples so far while recording: the EEG keeps every so many (see `egf_step`), carrying on from
     /// pass to pass.
     continuous_samples: u64,
-    shown: Latest<Status>,
+    shown: latest::Sender<Status>,
 }
 
 impl crate::core::engine::PassState for Recorder {
@@ -195,10 +195,6 @@ impl Node<Edges> for WriteLtx {
         warnings
     }
 
-    fn copies(&self) -> Option<CopyTo> {
-        Some(CopyTo::Thread)
-    }
-
     fn threads(&self) -> Vec<NodeThread> {
         vec![NodeThread {
             name: "LTX writer",
@@ -210,11 +206,12 @@ impl Node<Edges> for WriteLtx {
     }
 
     fn thread_pool(&self, _thread: usize, context: &ThreadContext) -> Option<PoolStatus> {
-        context.display::<Status>().map(|s| s.pool)
+        context.shared::<Latest<Status>>().and_then(|l| l.read().map(|s| s.pool))
     }
 
     fn thread_ui(&self, _thread: usize, ui: &mut egui::Ui, context: &ThreadContext) {
-        status_ui(ui, context.display::<Status>(), context.theme);
+        let latest = context.shared::<Latest<Status>>();
+        status_ui(ui, latest.as_deref().and_then(Latest::read).as_deref(), context.theme);
     }
 
     fn initial_state(&self, inputs: &[Option<DataStream>]) -> Recorder {
@@ -285,7 +282,8 @@ impl Node<Edges> for WriteLtx {
             ui.weak("Connect the Spike Gain's gains, to record them with the spikes.");
         }
         ui.separator();
-        status_ui(ui, context.display::<Status>(), context.theme);
+        let latest = context.shared::<Latest<Status>>();
+        status_ui(ui, latest.as_deref().and_then(Latest::read).as_deref(), context.theme);
     }
 }
 

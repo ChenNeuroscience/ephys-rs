@@ -8,7 +8,6 @@ use eframe::egui;
 use serde::{Deserialize, Serialize};
 
 use crate::core::engine::{Category, Context, Input, Node, NodeInfo, Output, Pass, SettingPort};
-use crate::core::exchange::Latest;
 use crate::standard_components::auto_detect::{AUTO_DETECT, SAMPLING, auto_detect_ui, detecting};
 use crate::standard_components::spikes::{Channels, DEFAULT_RANGE_UV, GainScope, Gains, RANGES_UV, SpikesBuffer};
 use crate::standard_components::widgets::{input_summary, named_settings_grid, require_input, setting};
@@ -35,7 +34,6 @@ impl Default for SpikeGain {
 #[derive(Default)]
 pub struct Gaining {
     sampling: Option<Sampling>,
-    shown: Latest<Option<(f32, f32)>>,
 }
 
 impl crate::core::engine::PassState for Gaining {
@@ -128,8 +126,6 @@ impl Node<Edges> for SpikeGain {
                 gaining.sampling = None;
             }
         }
-        let progress = gaining.sampling.as_ref().map(|s| (s.elapsed as f32, s.seconds as f32));
-        gaining.shown.send(pass, |shown| *shown = progress);
 
         // The gains, applied: a dumb multiplier, into whatever units what takes the spikes wants.
         let Some(Buffer::Spikes(spikes)) = pass.outputs.first_mut() else { return };

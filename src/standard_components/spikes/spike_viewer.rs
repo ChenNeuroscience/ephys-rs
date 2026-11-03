@@ -11,9 +11,9 @@
 use eframe::egui::{self, Align2, FontId, Key, Pos2, Rect, Sense, Shape, Stroke};
 use serde::{Deserialize, Serialize};
 
-use crate::core::engine::{Category, Context, Control, CopyTo, EdgeType, Input, Node, NodeInfo, Output, Pass};
-use crate::core::exchange::Latest;
+use crate::core::engine::{Category, Context, Control, EdgeType, Input, Node, NodeInfo, Output, Pass};
 use crate::standard_components::auto_detect::AUTO_DETECT;
+use crate::standard_components::latest::{self, Latest};
 use crate::standard_components::preview;
 use crate::standard_components::spikes::{
     Channels, DEFAULT_RANGE_UV, DEFAULT_THRESHOLD_UV, Gains, Polarity, Spikes, Thresholds, range_step,
@@ -90,7 +90,7 @@ pub struct Recent {
     thresholds: Vec<f32>,
     /// Each channel's range (µV either side of zero), from its gain.
     ranges: Vec<f32>,
-    shown: Latest<RecentDisplay>,
+    shown: latest::Sender<RecentDisplay>,
 }
 
 impl crate::core::engine::PassState for Recent {
@@ -159,10 +159,6 @@ impl Node<Edges> for SpikeViewer {
             Control { name: "thresholds", kind: SettingKind::Thresholds, read_only: false },
             Control { name: "gains", kind: SettingKind::Gains, read_only: false },
         ]
-    }
-
-    fn copies(&self) -> Option<CopyTo> {
-        Some(CopyTo::Window)
     }
 
     fn initial_state(&self, inputs: &[Option<DataStream>]) -> Recent {
@@ -241,7 +237,9 @@ impl Node<Edges> for SpikeViewer {
         let Some(DataStream::Spikes(stream)) = context.inputs[0] else {
             return preview::unconnected(ui, context.theme, "Connect spikes to view them");
         };
-        let display = context.display.and_then(|d| d.downcast_ref::<RecentDisplay>()).filter(|d| d.stream.is_some());
+        let latest = context.shared::<Latest<RecentDisplay>>();
+        let reading = latest.as_deref().and_then(Latest::read).filter(|d| d.stream.is_some());
+        let display = reading.as_deref();
         self.toolbar(ui, context);
         let mut thresholds = match &context.controls[THRESHOLDS] {
             Some(Setting::Thresholds(t)) => Some(t.clone()),

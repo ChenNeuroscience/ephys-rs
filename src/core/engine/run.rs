@@ -24,10 +24,11 @@
 //! one queued), and the dispatcher only sends passes for it once a worker is ready, to the workers that are;
 //! until then, passes carry on with the old one. So a worker is never handed a pass it isn't ready to run.
 //!
-//! A node that only copies its inputs out to another thread (to show in its window, say, or to write to disk) says
-//! so (see `Node::copies`), and the plan runs it as early as it can; it makes the copy itself. A node can instead
-//! take an input's buffer (see `Node::takes`), swapping it for one of its own, if it can be the last to read it. Each run has an
-//! `Exchange` where nodes can leave things for their windows (see `crate::core::exchange`).
+//! Nodes don't copy their inputs: a node that would hand an input's data on (to a thread of its own, say, or its
+//! window) takes its buffer (see `Node::takes`), swapping it for one of its own. The plan decides when that needs a
+//! copy: if the node can be the last to read the data, it takes the buffer itself; otherwise the plan copies the data
+//! into a buffer of the node's own, as soon as it's made, which the node takes instead (a copy point). Each run has
+//! an `Exchange` where nodes keep what their passes and windows share (see `crate::core::exchange`).
 
 use std::any::Any;
 use std::cell::UnsafeCell;
@@ -43,7 +44,7 @@ use crossbeam_utils::CachePadded;
 use crate::core::console::{self, PassId};
 use crate::core::exchange::Exchange;
 
-use super::{Buffer, CopyTo, DataStreamSet, Edges, Graph, NodeId, NodeSet, Port, Recording, Role, Snapshot};
+use super::{Buffer, DataStreamSet, Edges, Graph, NodeId, NodeSet, Port, Recording, Role, Snapshot};
 
 type DataStream<N> = <<N as NodeSet>::Edges as Edges>::DataStream;
 
@@ -72,7 +73,7 @@ pub struct Pass<'a, E: Edges> {
     pub recording: bool,
     /// The recording, with what nodes prepared for it.
     prepared: Option<&'a Recording>,
-    /// Where the node can leave things for its window (see `crate::core::exchange`).
+    /// What the node's passes and window share (see `crate::core::exchange`).
     pub exchange: &'a Exchange,
 }
 
@@ -85,10 +86,27 @@ impl<'a, E: Edges> Pass<'a, E> {
         inputs: &'a [Option<&'a Buffer<E>>],
         outputs: &'a mut [Buffer<E>],
     ) -> Self {
+        Self::taking(sequence, duration, inputs, Box::leak(Box::new([])), outputs)
+    }
+
+    /// The same, with the node given `taken` to take (see `Node::takes`), for each input (`None` for those it reads).
+    #[cfg(test)]
+    pub fn taking(
+        sequence: u64,
+        duration: f64,
+        inputs: &'a [Option<&'a Buffer<E>>],
+        taken: &'a mut [Option<Buffer<E>>],
+        outputs: &'a mut [Buffer<E>],
+    ) -> Self {
         let exchange: &'static Exchange = Box::leak(Box::default());
         let (node, controls, recording, prepared) = (NodeId(0), &[], false, None);
-        let taken = Box::leak(Box::new([]));
         Pass { sequence, duration, node, inputs, taken, outputs, controls, recording, prepared, exchange }
+    }
+
+    /// The node's shared `T` in the run's exchange, made with `make` the first time (see `crate::core::exchange`):
+    /// keep it in the node's state, rather than finding it every pass.
+    pub fn shared<T: crate::core::exchange::Shared>(&self, make: impl FnOnce() -> T) -> Arc<T> {
+        self.exchange.shared(self.node, make)
     }
 
     /// Whether the node's trigger `name` (see `Node::triggers`) has been fired, taking it if so: the node then says
@@ -127,8 +145,8 @@ impl<'a, E: Edges> Pass<'a, E> {
         }
     }
 
-    /// An input's buffer, if the plan's given it to the node to take (see `Node::takes`): to swap for another just
-    /// as big (of the same data stream), which the pass carries on with.
+    /// The buffer of an input the node takes (see `Node::takes`), if it's connected: to swap for another just as big
+    /// (of the same data stream), which the pass carries on with. The data's the node's to do as it likes with.
     pub fn take_input(&mut self, index: usize) -> Option<&mut Buffer<E>> {
         self.taken.get_mut(index)?.as_mut()
     }
@@ -151,15 +169,26 @@ pub struct Step {
     pub outputs: Vec<usize>,
     /// For each output, the input it's made from in place (taking over its buffer), if it is.
     pub in_place: Vec<Option<usize>>,
-    /// For each input, whether the node takes its buffer, being the last to read it (see `Node::takes`).
+    /// For each input, whether the node takes its buffer (see `Node::takes`): being the last to read it, or a copy.
     pub takes: Vec<bool>,
+    /// Copies of outputs the plan makes once the node's run, for nodes taking them that can't be the last to read
+    /// them: from the output's buffer, into the taker's own.
+    pub copies: Vec<CopyPoint>,
     /// The node's state, if it carries any over: an index into the run's state slots. Each pass waits here for
     /// the pass before to hand the state over.
     pub state: Option<usize>,
     /// The node's working memory, if its state is only that: an index into each worker's own.
     pub memory: Option<usize>,
-    /// Where the node copies its inputs out to, if that's all it does with them (see `Node::copies`).
-    pub copies: Option<CopyTo>,
+}
+
+/// A copy of a buffer the plan makes, for a node taking it that can't be the last to read it.
+#[derive(Clone, PartialEq, Debug)]
+pub struct CopyPoint {
+    pub from: usize,
+    pub to: usize,
+    /// The node it's for, and which of its inputs.
+    pub node: NodeId,
+    pub input: usize,
 }
 
 /// Which nodes run, in what order, on which buffers: worked out when a snapshot is taken (see `Snapshot`), so
@@ -172,8 +201,9 @@ pub struct Step {
 /// nodes to make that so: the other readers first (they only read, e.g. viewers copying what they show),
 /// then the one editing in place. Only if another reader depends on the editor's output can't it be.
 ///
-/// Otherwise nodes run in the graph's order, except that nodes only copying their inputs out (see `Node::copies`)
-/// run as soon as their inputs are ready, so the copies are made early in the pass.
+/// Likewise a node taking an input's buffer (see `Node::takes`) takes it if every other reader of the data can run
+/// first, and no one's editing it in place; otherwise the plan copies it for the node into a buffer of its own, once
+/// it's made. Otherwise nodes run in the graph's order.
 pub struct Plan<N: NodeSet> {
     steps: Vec<Step>,
     /// The data stream each buffer in the pool holds.
@@ -277,13 +307,11 @@ impl<N: NodeSet> Plan<N> {
             }
         }
 
-        let copying: Vec<NodeId> =
-            runs.iter().copied().filter(|id| graph.get(*id).is_some_and(|e| e.node.copies().is_some())).collect();
         let (mut steps, mut buffers, mut state_inputs, mut memory_inputs) =
             (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         // The buffer each output (of the nodes so far) is in.
         let mut buffer_of: HashMap<(NodeId, usize), usize> = HashMap::new();
-        for id in order(&runs, &before, &copying) {
+        for id in order(&runs, &before) {
             let (Some(entry), Some(state)) = (graph.get(id), resolved.get(&id)) else { continue };
             let mut inputs: Vec<Option<usize>> = (0..state.inputs.len())
                 .map(|index| {
@@ -317,8 +345,33 @@ impl<N: NodeSet> Plan<N> {
                 memory_inputs.push((id, state.input_streams.clone()));
                 memory_inputs.len() - 1
             });
-            let copies = entry.node.copies();
-            let takes = (0..inputs.len()).map(|i| inputs[i].is_some() && taken.contains(&(id, i))).collect();
+            // The inputs it takes but can't be the last to read: copied for it, once they're made.
+            let mut takes = Vec::with_capacity(inputs.len());
+            for (input, buffer) in inputs.iter_mut().enumerate() {
+                let Some(from) = *buffer else {
+                    takes.push(false);
+                    continue;
+                };
+                if !(entry.node.takes(input) && entry.node.needs(input)) {
+                    takes.push(false);
+                } else if taken.contains(&(id, input)) {
+                    takes.push(true);
+                } else {
+                    // Copied once the node making it has run, before anything edits it in place.
+                    let edge = graph.live_edge_into(Port { node: id, role: Role::Input, index: input });
+                    let maker = edge.and_then(|e| steps.iter_mut().find(|s: &&mut Step| s.id == e.from.node));
+                    let Some(maker) = maker else {
+                        takes.push(false);
+                        continue;
+                    };
+                    buffers.push(buffers[from]);
+                    let to = buffers.len() - 1;
+                    maker.copies.push(CopyPoint { from, to, node: id, input });
+                    *buffer = Some(to);
+                    takes.push(true);
+                }
+            }
+            let copies = Vec::new();
             steps.push(Step { id, inputs, outputs, in_place: made_in_place, takes, state: node_state, memory, copies });
         }
         Plan { steps, buffers, state_inputs, memory_inputs, bytes: OnceLock::new() }
@@ -387,7 +440,7 @@ impl<N: NodeSet> Plan<N> {
                 .zip(&step.takes)
                 .map(|(b, &takes)| if takes { b.and_then(|b| workspace[b].take()) } else { None })
                 .collect();
-            {
+            let (work, wait) = {
                 let inputs: Vec<Option<&Buffer<N::Edges>>> =
                     step.inputs.iter().map(|b| b.and_then(|b| workspace[b].as_ref())).collect();
                 let mut pass_data = Pass {
@@ -413,11 +466,8 @@ impl<N: NodeSet> Plan<N> {
                     (None, Some(m)) => node.process(&mut pass_data, Some(memory[m].as_mut())),
                     (None, None) => node.process(&mut pass_data, None),
                 });
-                StepTimes::add(&times.work, began.elapsed());
-                if step.state.is_some() {
-                    StepTimes::add(&times.wait, began - start);
-                }
-            }
+                (began.elapsed(), began - start)
+            };
             for (&b, buffer) in step.outputs.iter().zip(outputs) {
                 workspace[b] = Some(buffer);
             }
@@ -425,6 +475,20 @@ impl<N: NodeSet> Plan<N> {
                 if let (Some(b), Some(buffer)) = (b, buffer) {
                     workspace[*b] = Some(buffer);
                 }
+            }
+            // Copies of what it made, for nodes taking it that can't be the last to read it (counted as its work).
+            let copying = Instant::now();
+            for copy in &step.copies {
+                let mut to = workspace[copy.to].take().expect("buffer in pool");
+                if let Some(from) = &workspace[copy.from] {
+                    <DataStream<N> as DataStreamSet>::copy(from, &mut to);
+                }
+                workspace[copy.to] = Some(to);
+            }
+            let copied = if step.copies.is_empty() { Duration::ZERO } else { copying.elapsed() };
+            StepTimes::add(&times.work, work + copied);
+            if step.state.is_some() {
+                StepTimes::add(&times.wait, wait);
             }
         }
     }
@@ -448,7 +512,7 @@ fn reaches(before: &HashMap<NodeId, Vec<NodeId>>, from: NodeId, to: NodeId) -> b
 
 /// `nodes` ordered so each comes after those it must run after, otherwise keeping their order, but with those
 /// in `early` as soon as they can be.
-fn order(nodes: &[NodeId], before: &HashMap<NodeId, Vec<NodeId>>, early: &[NodeId]) -> Vec<NodeId> {
+fn order(nodes: &[NodeId], before: &HashMap<NodeId, Vec<NodeId>>) -> Vec<NodeId> {
     let mut waiting: HashMap<NodeId, usize> = nodes.iter().map(|id| (*id, 0)).collect();
     for later in before.values().flatten() {
         if let Some(count) = waiting.get_mut(later) {
@@ -457,9 +521,9 @@ fn order(nodes: &[NodeId], before: &HashMap<NodeId, Vec<NodeId>>, early: &[NodeI
     }
     let mut ordered = Vec::with_capacity(nodes.len());
     while ordered.len() < nodes.len() {
-        // The first node (in the original order, those to run early first) with nothing left to wait for.
+        // The first node (in the original order) with nothing left to wait for.
         let ready = |id: &&NodeId| waiting.get(id) == Some(&0);
-        let Some(&next) = early.iter().find(ready).or_else(|| nodes.iter().find(ready)) else { break };
+        let Some(&next) = nodes.iter().find(ready) else { break };
         waiting.remove(&next);
         ordered.push(next);
         for later in before.get(&next).into_iter().flatten() {
@@ -1038,16 +1102,17 @@ fn queue_capacity(workers: usize) -> usize {
     2 * workers
 }
 
-/// "4 steps, 6 buffers (1.2 MB a worker), 3 with state, 2 copying out".
+/// "4 steps, 6 buffers (1.2 MB a worker), 3 with state, 1 copy".
 fn describe<N: NodeSet>(plan: &Plan<N>) -> String {
     let bytes: usize = plan.buffer_bytes().iter().sum();
+    let copies: usize = plan.steps.iter().map(|s| s.copies.len()).sum();
     format!(
-        "{} steps, {} buffers ({:.2} MB a worker), {} with state, {} copying out",
+        "{} steps, {} buffers ({:.2} MB a worker), {} with state, {copies} {}",
         plan.steps.len(),
         plan.buffers.len(),
         bytes as f64 / 1e6,
         plan.state_inputs.len(),
-        plan.steps.iter().filter(|s| s.copies.is_some()).count()
+        if copies == 1 { "copy" } else { "copies" }
     )
 }
 
@@ -1154,14 +1219,19 @@ pub mod tests {
         assert_eq!(step(&plan, writer), vec![true, true]);
         assert!(position(&plan, viewer) < position(&plan, writer));
 
-        // A filter editing the board's data in place needs it after the writer: the writer copies it instead.
+        // A filter editing the board's data in place: the plan copies it for the writer, once the board's run.
         let filter = add(&mut graph, "Band-pass Filter");
         link(&mut graph, board, 0, filter, 0);
         let end = add(&mut graph, "LFP Viewer");
         link(&mut graph, filter, 0, end, 0);
         let plan = Plan::new(&graph);
-        assert_eq!(step(&plan, writer), vec![false, true]);
-        assert!(position(&plan, writer) < position(&plan, filter));
+        assert_eq!(step(&plan, writer), vec![true, true], "it's always given buffers to take");
+        let board_step = plan.steps.iter().find(|s| s.id == board).unwrap();
+        let writer_step = plan.steps.iter().find(|s| s.id == writer).unwrap();
+        let copy =
+            CopyPoint { from: board_step.outputs[0], to: writer_step.inputs[0].unwrap(), node: writer, input: 0 };
+        assert_eq!(board_step.copies, vec![copy]);
+        assert_eq!(plan.buffers[writer_step.inputs[0].unwrap()], plan.buffers[board_step.outputs[0]]);
     }
 
     #[test]
@@ -1185,18 +1255,42 @@ pub mod tests {
     }
 
     #[test]
-    fn nodes_only_copying_out_run_as_soon_as_they_can() {
+    fn copies_for_nodes_taking_are_made_before_the_data_is_edited() {
+        use crate::standard_components::ephys::board::{Source, serve_test_board};
+
         let mut graph = Graph::default();
         let board = add(&mut graph, "Acquisition Board");
-        let detector = add(&mut graph, "Spike Detector");
+        if let Some(Nodes::AcquisitionBoard(b)) = graph.get_mut(board).map(|e| &mut e.node) {
+            b.source = Source::Fake { address: serve_test_board() };
+        }
+        let filter = add(&mut graph, "Band-pass Filter");
         let viewer = add(&mut graph, "LFP Viewer");
-        let spikes = add(&mut graph, "Spike Viewer");
-        link(&mut graph, board, 0, detector, 0);
-        link(&mut graph, board, 0, viewer, 0);
-        link(&mut graph, detector, 0, spikes, 0);
-        let plan = Plan::new(&graph);
-        assert_eq!(plan.steps.iter().map(|s| s.id).collect::<Vec<_>>(), vec![board, viewer, detector, spikes]);
-        assert_eq!(plan.steps[1].copies, Some(CopyTo::Window));
+        let writer = add(&mut graph, "Write Raw");
+        link(&mut graph, board, 0, filter, 0);
+        link(&mut graph, filter, 0, viewer, 0);
+        link(&mut graph, board, 0, writer, 0);
+        let snapshot = Snapshot::new(0, graph, None);
+        let plan = &snapshot.plan;
+        let slots = RunSlots::new(plan, &snapshot.graph, Arc::default());
+        let mut workspace = plan.workspace(&snapshot.graph);
+        let filtered = plan.steps.iter().find(|s| s.id == filter).unwrap().outputs[0];
+        let copied = plan.steps.iter().find(|s| s.id == writer).unwrap().inputs[0].unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        for sequence in 0.. {
+            plan.run(&snapshot, PassId { epoch: 1, sequence, node: None, node_type: None }, &mut workspace, &slots);
+            let (Some(Buffer::Continuous(filtered)), Some(Buffer::Continuous(copied))) =
+                (&workspace.buffers[filtered], &workspace.buffers[copied])
+            else {
+                panic!("continuous buffers")
+            };
+            // The writer's copy is the board's data as it was made, not filtered.
+            assert_eq!(copied.len, filtered.len);
+            if copied.len > 0 && copied.channel(0) != filtered.channel(0) {
+                break;
+            }
+            assert!(Instant::now() < deadline, "no samples came");
+            std::thread::sleep(Duration::from_secs_f64(PASS_DURATION));
+        }
     }
 
     #[test]

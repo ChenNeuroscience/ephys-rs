@@ -1,12 +1,14 @@
 //! The `Node` trait implemented by each node type, and `NodeSet`, the list of types a program is built with.
 
 use std::any::{Any, TypeId};
+use std::sync::Arc;
 
 use eframe::egui;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use super::{Edges, Kind, Pass};
+use super::{Edges, Kind, NodeId, Pass};
+use crate::core::exchange::{Exchange, Shared};
 use crate::core::theme::Colours;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -64,15 +66,6 @@ pub struct Control<E: Edges> {
     pub read_only: bool,
 }
 
-/// Where a node copies its inputs out to, if that's all it does with them (see `Node::copies`).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum CopyTo {
-    /// To show in its window (see `crate::core::exchange`).
-    Window,
-    /// To a thread of its own (see `Node::threads`): a writer's, say.
-    Thread,
-}
-
 /// What a node's UI gets to work with besides its own settings.
 pub struct Context<'a, E: Edges> {
     /// For each input, the data stream connected to it, if any.
@@ -82,8 +75,10 @@ pub struct Context<'a, E: Edges> {
     pub controls: &'a mut [Option<E::Setting>],
     /// The colours to draw with, by role. A node can derive more of its own from these.
     pub theme: &'a Colours,
-    /// The latest the node's passes have left for its window (see `crate::core::exchange`), while running.
-    pub display: Option<&'a (dyn Any + Send)>,
+    /// The node.
+    pub node: NodeId,
+    /// What the node's passes and window share (see `crate::core::exchange`), while running.
+    pub exchange: Option<&'a Exchange>,
     /// Whether the graph is running.
     pub running: bool,
     /// Whether settings are locked (while recording): a view should show its settings disabled, as changes to
@@ -211,9 +206,9 @@ pub trait NodeToolbar {
 }
 
 impl<E: Edges> Context<'_, E> {
-    /// The latest live display, if there is one, of type `T`.
-    pub fn display<T: 'static>(&self) -> Option<&T> {
-        self.display?.downcast_ref()
+    /// The node's shared `T` (see `crate::core::exchange`), if it's running and its passes have made one.
+    pub fn shared<T: Shared>(&self) -> Option<Arc<T>> {
+        self.exchange?.get(self.node)
     }
 }
 
@@ -262,14 +257,15 @@ pub enum Flow {
 /// What a node's drawing of one of its threads (in the dev tools) gets to work with.
 pub struct ThreadContext<'a> {
     pub theme: &'a Colours,
-    /// The latest the node's passes have left for its window (see `crate::core::exchange`), while running.
-    pub display: Option<&'a (dyn Any + Send)>,
+    pub node: NodeId,
+    /// What the node's passes and window share (see `crate::core::exchange`), while running.
+    pub exchange: Option<&'a Exchange>,
 }
 
 impl ThreadContext<'_> {
-    /// The latest live display, if there is one, of type `T`.
-    pub fn display<T: 'static>(&self) -> Option<&T> {
-        self.display?.downcast_ref()
+    /// The node's shared `T` (see `crate::core::exchange`), if it's running and its passes have made one.
+    pub fn shared<T: Shared>(&self) -> Option<Arc<T>> {
+        self.exchange?.get(self.node)
     }
 }
 
@@ -358,20 +354,13 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
         &[]
     }
 
-    /// Whether the node would take an input's buffer, to swap it for one of its own rather than copy the data out (a
-    /// writer, handing it to its thread). The plan decides, before running, whether it can: it can if no node edits
-    /// that data in place, and every other node reading it can run first. Then the pass gives the node the buffer
-    /// (see `Pass::take_input`), to swap for another just as big; otherwise it reads it as usual, to copy.
+    /// Whether the node takes an input's buffer, to do as it likes with the data (swap it for another just as big,
+    /// say, to hand to its thread or window), rather than only reading it. Nodes don't copy their inputs: the plan
+    /// does, when it needs to. The pass always gives the node a buffer to take (see `Pass::take_input`): the input's
+    /// own if no node edits that data in place and every other node reading it can run first, otherwise a copy the
+    /// plan makes as soon as the data's made.
     fn takes(&self, _input: usize) -> bool {
         false
-    }
-
-    /// Where the node copies its inputs out to, if that's all it does with them: a viewer copying what it shows
-    /// to its window, a writer handing data to its writing thread. The node makes the copy itself (for a window,
-    /// see `crate::core::exchange`); this just tells the plan, which runs such nodes as early as it can, so the
-    /// copies are made before anything else is done with the data, and shows them as copy points.
-    fn copies(&self) -> Option<CopyTo> {
-        None
     }
 
     /// Does the node's work for one pass: reads its inputs and fills its outputs, which are already sized for
@@ -431,7 +420,6 @@ pub trait NodeSet: Clone + PartialEq + Serialize + DeserializeOwned + Send + Syn
     fn takes(&self, input: usize) -> bool;
     fn needs(&self, input: usize) -> bool;
     fn triggers(&self, setting: usize) -> &'static [&'static str];
-    fn copies(&self) -> Option<CopyTo>;
     /// Whether the node carries state from one pass to the next.
     fn has_state(&self) -> bool;
     /// Why it does (see `PassState::WHY`).
@@ -567,10 +555,6 @@ macro_rules! node_set {
 
             fn takes(&self, input: usize) -> bool {
                 match self { $($name::$variant(n) => $crate::core::engine::Node::takes(n, input)),+ }
-            }
-
-            fn copies(&self) -> Option<$crate::core::engine::CopyTo> {
-                match self { $($name::$variant(n) => $crate::core::engine::Node::copies(n)),+ }
             }
 
             fn has_state(&self) -> bool {

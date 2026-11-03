@@ -95,6 +95,12 @@ impl DataStreamType for Spectra {
     fn bytes(buffer: &SpectraBuffer) -> usize {
         buffer.power.capacity() * size_of::<f32>() + buffer.done.capacity()
     }
+
+    fn copy(from: &SpectraBuffer, to: &mut SpectraBuffer) {
+        to.power.clone_from(&from.power);
+        to.done.clone_from(&from.done);
+        to.bins = from.bins;
+    }
 }
 
 impl crate::core::engine::PassState for Analysis {

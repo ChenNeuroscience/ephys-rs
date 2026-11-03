@@ -53,6 +53,10 @@ pub trait DataStreamType: EdgeType + Copy {
 
     /// The memory a buffer has allocated, in bytes.
     fn bytes(buffer: &Self::Buffer) -> usize;
+
+    /// Copies `from` into `to`, a buffer of the same data stream, without allocating (for the plan, copying for a
+    /// node taking a buffer it can't be the last to read: see `Node::takes`).
+    fn copy(from: &Self::Buffer, to: &mut Self::Buffer);
 }
 
 /// The data edge types, with their buffers. Implemented by `edge_types!`.
@@ -60,6 +64,8 @@ pub trait DataStreamSet: EdgeSet + Copy {
     type Buffer: Send + Sync + 'static;
     fn buffer(&self, duration: f64) -> Self::Buffer;
     fn bytes(buffer: &Self::Buffer) -> usize;
+    /// See `DataStreamType::copy`: nothing, if they're different kinds of buffer.
+    fn copy(from: &Self::Buffer, to: &mut Self::Buffer);
 }
 
 /// The edge types a program is built with, in both dimensions.
@@ -127,6 +133,14 @@ macro_rules! edge_types {
 
             fn bytes(buffer: &$buffer) -> usize {
                 match buffer { $($buffer::$sv(b) => <$st as $crate::core::engine::DataStreamType>::bytes(b)),+ }
+            }
+
+            #[allow(unreachable_patterns)]
+            fn copy(from: &$buffer, to: &mut $buffer) {
+                match (from, to) {
+                    $(($buffer::$sv(from), $buffer::$sv(to)) => <$st as $crate::core::engine::DataStreamType>::copy(from, to),)+
+                    _ => {}
+                }
             }
         }
     };

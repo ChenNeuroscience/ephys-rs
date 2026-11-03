@@ -59,6 +59,10 @@ impl DataStreamType for CameraStats {
     fn bytes(_buffer: &CaptureStats) -> usize {
         size_of::<CaptureStats>()
     }
+
+    fn copy(from: &CaptureStats, to: &mut CaptureStats) {
+        to.copy_from(from);
+    }
 }
 
 /// Camera settings that another node (the Tracker View) can adjust.

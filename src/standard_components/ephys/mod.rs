@@ -116,6 +116,14 @@ impl DataStreamType for Continuous {
     fn bytes(buffer: &ContinuousBuffer) -> usize {
         buffer.data.capacity() * size_of::<f32>()
     }
+
+    fn copy(from: &ContinuousBuffer, to: &mut ContinuousBuffer) {
+        to.len = from.len.min(to.capacity);
+        let len = to.len;
+        for channel in 0..from.channels.min(to.channels) {
+            to.channel_mut(channel).copy_from_slice(&from.channel(channel)[..len]);
+        }
+    }
 }
 
 /// A digital event: a line going high or low, at a sample within the pass.
@@ -142,6 +150,11 @@ impl DataStreamType for Events {
 
     fn bytes(buffer: &EventsBuffer) -> usize {
         buffer.events.capacity() * size_of::<Event>()
+    }
+
+    fn copy(from: &EventsBuffer, to: &mut EventsBuffer) {
+        to.events.clone_from(&from.events);
+        to.pass_samples = from.pass_samples;
     }
 }
 

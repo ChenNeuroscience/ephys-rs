@@ -14,11 +14,11 @@
 use eframe::egui::{self, Align2, FontId, Pos2, Rect, Sense, Shape, Stroke};
 use serde::{Deserialize, Serialize};
 
-use crate::core::engine::{Category, Context, Control, CopyTo, EdgeType, Input, Node, NodeInfo, Output, Pass};
-use crate::core::exchange::Latest;
+use crate::core::engine::{Category, Context, Control, EdgeType, Input, Node, NodeInfo, Output, Pass};
 use crate::standard_components::ephys::reference::{format_channels, parse_channels};
 use crate::standard_components::ephys::spectrum::{Spectra, SpectraBuffer};
 use crate::standard_components::ephys::{ChannelSelection, Continuous, ContinuousBuffer};
+use crate::standard_components::latest::{self, Latest};
 use crate::standard_components::preview;
 use crate::standard_components::widgets::{require_input, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
@@ -69,7 +69,7 @@ pub struct Traces {
     filled: usize,
     /// Columns filled since starting (up to `COLUMNS`).
     columns: usize,
-    shown: Latest<TracesDisplay>,
+    shown: latest::Sender<TracesDisplay>,
 }
 
 impl crate::core::engine::PassState for Traces {
@@ -185,10 +185,6 @@ impl Node<Edges> for LfpViewer {
         require_input(inputs, "a continuous data stream")
     }
 
-    fn copies(&self) -> Option<CopyTo> {
-        Some(CopyTo::Window)
-    }
-
     fn initial_state(&self, inputs: &[Option<DataStream>]) -> Traces {
         let rate = match inputs[0] {
             Some(DataStream::Continuous(c)) => c.sample_rate,
@@ -272,7 +268,9 @@ impl Node<Edges> for LfpViewer {
         };
         self.toolbar(ui, context, stream, selection.as_mut());
 
-        let Some(display) = context.display::<TracesDisplay>() else {
+        let latest = context.shared::<Latest<TracesDisplay>>();
+
+        let Some(display) = latest.as_deref().and_then(Latest::read) else {
             let message = format!("{} · press Play to see the traces", stream.summary());
             return preview::unconnected(ui, context.theme, &message);
         };
@@ -280,7 +278,7 @@ impl Node<Edges> for LfpViewer {
             (Some(buffer), Some(DataStream::Spectra(stream))) => Some((buffer, stream)),
             _ => None,
         };
-        let reference = self.rows_ui(ui, context.theme, display, stream, spectra, selection.as_mut(), locked);
+        let reference = self.rows_ui(ui, context.theme, &display, stream, spectra, selection.as_mut(), locked);
         if let Some(channel) = reference {
             let mut channels = referenced(&self.reference, stream.channels);
             match channels.iter().position(|&c| c == channel) {

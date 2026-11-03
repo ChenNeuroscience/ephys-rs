@@ -32,13 +32,15 @@ settings: the latest, as of the pass.
   point. State is fresh each epoch.
 - **In place.** `in_place(output)` names an input whose buffer the output can be made in, when nothing else needs that
   data after it. Then the input's `None` in the pass, and the output already holds its data.
-- **Taking.** `takes(input)`: the node would take the input's buffer, to swap for one of its own, rather than copy it
-  out (a writer, handing it to its thread). When it can, `Pass::take_input` gives it the buffer; otherwise it reads it.
+- **Taking.** `takes(input)`: the node takes the input's buffer, to do as it likes with (swap it for one of its own,
+  say, to hand to its thread or window). Nodes don't copy their inputs; the plan decides when a copy's needed.
+  `Pass::take_input` always gives the node a buffer: the input's own, if no one edits that data in place and every
+  other reader can run first, otherwise a copy the plan makes as soon as the data's made (a copy point, in the dev
+  tools). A node that only reads an input doesn't take it.
 - **Needs.** `needs(input)`: whether it needs an input's data now, given its settings. If not, the plan doesn't pass it,
   and doesn't run a node whose outputs nothing needs (the LFP viewer's spectrum, switched off, stops the
   [Spectrum](../src/standard_components/ephys/spectrum.rs) node). Changing it changes the plan, so it's for what's
   switched on and off.
-- **Copying out.** `copies()`: it only copies its inputs out, to its window or a thread, so it can run early.
 
 ## Its window
 
@@ -46,8 +48,8 @@ Double-clicking a node opens its window: `view_ui` if it has a view (`HAS_VIEW`)
 name, warnings and ports. Both get a [`Context`](../src/core/engine/node.rs):
 
 - `inputs`: the streams on its inputs; `controls`: the values of the settings its controls see, to edit.
-- `display`: the latest its passes left in the exchange (send it from `process` with
-  [`Latest`](../src/core/exchange.rs)).
+- `shared::<T>()`: what its passes share with it in the run's [exchange](../src/core/exchange.rs), while running (see
+  below).
 - `running` and `locked` (while recording, settings changes are undone, so show them disabled).
 - `advanced()`: whether the app's in advanced mode. What a view shows in basic mode is up to it, but basic is meant to
   be simpler; options for it go in its settings menu.
@@ -58,6 +60,34 @@ name, warnings and ports. Both get a [`Context`](../src/core/engine/node.rs):
 
 The [Spike Viewer](../src/standard_components/spikes/spike_viewer.rs) and [LFP Viewer](../src/standard_components/ephys/lfp_viewer.rs)
 are full examples.
+
+## Sharing with its window
+
+The engine doesn't hand anything to a node's window itself. Each run has an [`Exchange`](../src/core/exchange.rs),
+where a node keeps whatever its passes and its window (or the dev tools: `ThreadContext::shared`) both reach, of any
+type implementing `Shared`: `Pass::shared(make)` finds or makes it (keep the `Arc` in the node's state, rather than
+finding it every pass), and `Context::shared` finds it. A `Shared` can report a pool of buffers (`Shared::pool`),
+which the dev tools show on the GUI.
+
+For the usual case, the latest of something to show, there's a util,
+[`latest`](../src/standard_components/latest.rs): a `Latest<T>` is a [`Pool`](../src/standard_components/pool.rs)
+of buffers, and a `latest::Sender<T>` in the node's state sends to it.
+
+```rust
+// In the state: a sender (its buffers made by T::default, or by `Sender::with`: to size, say).
+shown: latest::Sender<TracesDisplay>,
+
+// In process: fill a buffer (an earlier send's, to overwrite), and queue it.
+state.shown.send(pass, |display| display.fill_from(...));
+
+// In view_ui: the newest sent, held for as long as the view likes.
+let latest = context.shared::<Latest<TracesDisplay>>();
+let Some(display) = latest.as_deref().and_then(Latest::read) else { return };
+```
+
+Neither side waits: passes don't skip a send while the window's reading, and if the window's closed, passes reuse the
+oldest buffer queued. A node that takes its input can swap it straight in (`Sender::empty`, then `Sender::queue`),
+so nothing's copied: the [Video Viewer](../src/standard_components/tracking/video_viewer.rs) does this with frames.
 
 ## Triggers and proposals
 

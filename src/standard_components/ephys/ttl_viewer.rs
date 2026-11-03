@@ -6,9 +6,9 @@ use std::collections::VecDeque;
 use eframe::egui::{self, Align2, FontId, Pos2, Shape, Stroke};
 use serde::{Deserialize, Serialize};
 
-use crate::core::engine::{Category, Context, CopyTo, EdgeType, Input, Node, NodeInfo, Output, Pass, PassState};
-use crate::core::exchange::Latest;
+use crate::core::engine::{Category, Context, EdgeType, Input, Node, NodeInfo, Output, Pass, PassState};
 use crate::standard_components::ephys::Events;
+use crate::standard_components::latest::{self, Latest};
 use crate::standard_components::preview;
 use crate::standard_components::widgets::{require_input, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind};
@@ -58,7 +58,7 @@ pub struct Lines {
     /// Whether it's recording, and whether it has since acquisition started.
     recording: bool,
     recorded: bool,
-    shown: Latest<LinesDisplay>,
+    shown: latest::Sender<LinesDisplay>,
 }
 
 impl PassState for Lines {
@@ -105,10 +105,6 @@ impl Node<Edges> for TtlViewer {
 
     fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
         require_input(inputs, "events")
-    }
-
-    fn copies(&self) -> Option<CopyTo> {
-        Some(CopyTo::Window)
     }
 
     fn initial_state(&self, inputs: &[Option<DataStream>]) -> Lines {
@@ -200,7 +196,8 @@ impl Node<Edges> for TtlViewer {
         let Some(DataStream::Events(stream)) = context.inputs[0] else {
             return preview::unconnected(ui, context.theme, "Connect events to view them");
         };
-        let Some(display) = context.display::<LinesDisplay>().filter(|d| d.lines > 0) else {
+        let latest = context.shared::<Latest<LinesDisplay>>();
+        let Some(display) = latest.as_deref().and_then(Latest::read).filter(|d| d.lines > 0) else {
             let message = format!("{} · press Play to see them", stream.summary());
             return preview::unconnected(ui, context.theme, &message);
         };
@@ -208,7 +205,7 @@ impl Node<Edges> for TtlViewer {
         let area = ui.available_rect_before_wrap();
         ui.painter().rect_filled(area, 2.0, theme.surface_sunken);
         let row = self.line_height.clamp(12.0, 200.0);
-        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| Self::lines_ui(ui, display, row, theme));
+        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| Self::lines_ui(ui, &display, row, theme));
         preview::repaint_with_data(ui);
     }
 }
@@ -321,12 +318,20 @@ mod tests {
             ..Default::default()
         };
         let stream = Some(DataStream::Events(Events { lines: 8, sample_rate: 30000.0 }));
+        let exchange = crate::core::exchange::Exchange::default();
+        exchange.shared(viewer, || Latest::holding(display));
         let mut harness = egui_kittest::Harness::builder().with_size([600.0, 220.0]).wgpu().build_ui_state(
             |ui, graph: &mut Graph<Nodes>| {
-                let display: &(dyn std::any::Any + Send) = &display;
-                graph.edit(viewer, &[stream], &THEMES[0].colours, Some(display), true, false, None, |node, context| {
-                    node.view_ui(ui, context)
-                });
+                graph.edit(
+                    viewer,
+                    &[stream],
+                    &THEMES[0].colours,
+                    Some(&exchange),
+                    true,
+                    false,
+                    None,
+                    |node, context| node.view_ui(ui, context),
+                );
             },
             graph,
         );

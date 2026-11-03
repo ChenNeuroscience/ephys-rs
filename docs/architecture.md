@@ -44,8 +44,10 @@ Snapshots that process the same way (only positions or labels changed) share a p
     Sources, and nodes without outputs (viewers, writers), always do.
   - An output can be made **in place** in an input's buffer (`Node::in_place`), as long as the other readers of that
     data can run first.
-  - A node can **take** an input's buffer (`Node::takes`), to swap for one of its own, if it can be the last to read it.
-  - Nodes only copying data out (`Node::copies`: viewers, writers) run as early as they can.
+  - A node can **take** an input's buffer (`Node::takes`), to do as it likes with (swap for one of its own, say).
+    Nodes never copy their inputs: the plan does, when it must. The taker gets the buffer itself if it can be the
+    last to read it; otherwise the plan copies the data into a buffer of the taker's own as soon as it's made (a
+    copy point), before anything edits it in place.
 - Passes run at the same time on different workers. A node with **state** carried from pass to pass (a filter's
   history, say) is a sync point: each pass waits its turn for the state, handing it on. Working memory that carries
   nothing over is each worker's own, so there's no waiting.
@@ -54,7 +56,7 @@ Snapshots that process the same way (only positions or labels changed) share a p
   ready, so none are lost.
 
 The dev tools show all of this live: the plan each pass runs through, each step's time, sync points, copy points,
-buffers made in place, and the threads.
+buffers made in place or taken, and the threads.
 
 ![The dev tools](../tests/snapshots/dev_tools.png)
 
@@ -71,9 +73,10 @@ dev tools with why they're needed:
 Between such a thread and the passes is a **pool** of buffers shaped like the passes' own
 ([`pool.rs`](../src/standard_components/pool.rs)), swapped rather than copied. A board's capture thread decodes
 straight into a pass's buffers, and each pass swaps whatever's arrived for its own (giving the old one back to
-fill). A writer's pass swaps the data it's given into a chunk from its pool (taking its input, where it can), and
-its thread gives the chunk back once written. Pools hold about a second, so a slow pass or a stalling disk is
-absorbed. The dev tools show each pool on its thread's link: its buffers' streams and sizes, and where each is,
+fill). A writer's pass swaps the buffers it takes into a chunk from its pool, and its thread gives the chunk back
+once written. Pools hold about a second, so a slow pass or a stalling disk is absorbed. Passes never wait on a pool:
+its queues are lock-free (crossbeam's), and a pass finding a source's thread filling a buffer just then leaves it for
+the next pass. The dev tools show each pool on its thread's link: its buffers' streams and sizes, and where each is,
 with a dashed arrow back to it from whoever frees buffers into it; steps that swap rather than copy show a swap icon.
 The pass queue is shown the same way, on the link between the dispatcher and the workers, which it's between.
 
@@ -81,8 +84,10 @@ The pass queue is shown the same way, on the link between the dispatcher and the
 
 The passes never wait on the GUI, nor it on them. Each run has an [`Exchange`](../src/core/exchange.rs):
 
-- A node's passes leave the latest of something for its window (`Latest::send`): a frame of traces to draw, say.
-  Buffers are swapped, not reallocated, and a pass skips its copy rather than wait if the window's reading.
+- Each node keeps there whatever its passes and its window share, of any type (`Pass::shared`, `Context::shared`).
+  The engine and GUI don't treat any of it specially. The usual thing is a pool of buffers for the latest to show
+  ([`latest`](../src/standard_components/latest.rs)): passes fill buffers (or swap their own in) and queue them; the
+  window reads the newest, giving the rest back. The dev tools show each such pool on the GUI's thread.
 - The GUI can **fire a trigger** on a node (`Node::triggers`): "auto detect", say, from a viewer through a settings
   edge, or from the node's own window. A pass takes it (`Pass::triggered`), says how it's going, and when it's done.
 - Passes can't change the graph, but can **propose** a setting's value (`Pass::propose`), which the GUI applies as an

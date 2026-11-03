@@ -85,6 +85,10 @@ impl DataStreamType for Positions {
     fn bytes(buffer: &PositionsBuffer) -> usize {
         buffer.samples.capacity() * size_of::<PositionSample>()
     }
+
+    fn copy(from: &PositionsBuffer, to: &mut PositionsBuffer) {
+        to.samples.clone_from(&from.samples);
+    }
 }
 
 /// A pass's video frames (often none or one), each `width` × `height` bytes of grey.
@@ -130,6 +134,14 @@ impl DataStreamType for Video {
 
     fn bytes(buffer: &VideoBuffer) -> usize {
         buffer.pixels.capacity()
+    }
+
+    fn copy(from: &VideoBuffer, to: &mut VideoBuffer) {
+        (to.width, to.height, to.frames) = (from.width, from.height, from.frames.min(to.capacity));
+        let size = from.width * from.height * to.frames;
+        to.pixels[..size].copy_from_slice(&from.pixels[..size]);
+        to.ids[..to.frames].copy_from_slice(&from.ids[..to.frames]);
+        to.times[..to.frames].copy_from_slice(&from.times[..to.frames]);
     }
 }
 

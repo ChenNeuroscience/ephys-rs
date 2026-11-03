@@ -168,6 +168,16 @@ impl DataStreamType for Spikes {
     fn bytes(buffer: &SpikesBuffer) -> usize {
         buffer.spikes.capacity() * size_of::<Spike>() + buffer.waveforms.capacity() * size_of::<f32>()
     }
+
+    fn copy(from: &SpikesBuffer, to: &mut SpikesBuffer) {
+        to.spikes.clone_from(&from.spikes);
+        to.waveforms.clone_from(&from.waveforms);
+        (to.group_size, to.samples, to.output_range, to.pass_samples) =
+            (from.group_size, from.samples, from.output_range, from.pass_samples);
+        to.thresholds.clone_from(&from.thresholds);
+        to.gains.clone_from(&from.gains);
+        to.noise.clone_from(&from.noise);
+    }
 }
 
 /// The range gains are chosen to fit until it's set: Write LTX's int8 values.

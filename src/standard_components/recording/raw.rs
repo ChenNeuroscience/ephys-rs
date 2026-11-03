@@ -25,12 +25,12 @@ use serde::{Deserialize, Serialize};
 use super::npy::Npy;
 use super::{Files, Status, Writing, path_in, session_name, status_ui};
 use crate::core::engine::{
-    Category, Context, CopyTo, DataStreamType, EdgeSet, Flow, Input, Node, NodeInfo, NodeThread, Output, PASS_DURATION,
-    Pass, PoolStatus, ThreadContext,
+    Category, Context, DataStreamType, EdgeSet, Flow, Input, Node, NodeInfo, NodeThread, Output, PASS_DURATION, Pass,
+    PoolStatus, ThreadContext,
 };
-use crate::core::exchange::Latest;
 use crate::standard_components::ephys::board::EPHYS_MICROVOLTS_PER_BIT;
 use crate::standard_components::ephys::{Continuous, ContinuousBuffer, Event, Events, EventsBuffer};
+use crate::standard_components::latest::{self, Latest};
 use crate::standard_components::widgets::{require_input, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind};
 
@@ -56,7 +56,7 @@ pub struct Recorder {
     continuous: Option<Continuous>,
     events: Option<Events>,
     writing: Option<Writing<Chunk>>,
-    shown: Latest<Status>,
+    shown: latest::Sender<Status>,
 }
 
 impl crate::core::engine::PassState for Recorder {
@@ -128,10 +128,6 @@ impl Node<Edges> for WriteRaw {
         require_input(inputs, "something to record")
     }
 
-    fn copies(&self) -> Option<CopyTo> {
-        Some(CopyTo::Thread)
-    }
-
     fn threads(&self) -> Vec<NodeThread> {
         vec![NodeThread {
             name: "Raw writer",
@@ -142,18 +138,19 @@ impl Node<Edges> for WriteRaw {
         }]
     }
 
-    /// Its buffers are its own to take, if nothing else needs them after it: it swaps them into the chunk for its
-    /// thread, rather than copying.
+    /// It takes its buffers, swapping them into the chunk for its thread (the plan copies them for it, if something
+    /// else needs them after it).
     fn takes(&self, _input: usize) -> bool {
         true
     }
 
     fn thread_pool(&self, _thread: usize, context: &ThreadContext) -> Option<PoolStatus> {
-        context.display::<Status>().map(|s| s.pool)
+        context.shared::<Latest<Status>>().and_then(|l| l.read().map(|s| s.pool))
     }
 
     fn thread_ui(&self, _thread: usize, ui: &mut egui::Ui, context: &ThreadContext) {
-        status_ui(ui, context.display::<Status>(), context.theme);
+        let latest = context.shared::<Latest<Status>>();
+        status_ui(ui, latest.as_deref().and_then(Latest::read).as_deref(), context.theme);
     }
 
     fn initial_state(&self, inputs: &[Option<DataStream>]) -> Recorder {
@@ -180,8 +177,7 @@ impl Node<Edges> for WriteRaw {
         Some(Box::new(Chunk::writing(folder, continuous, events, Some(files))))
     }
 
-    /// While recording, hands the pass's data to the writer's thread: swapping the buffers it's in for a chunk's, if
-    /// they're the node's to take, or copying it.
+    /// While recording, hands the pass's data to the writer's thread, swapping the buffers it's in for a chunk's.
     fn process(&self, pass: &mut Pass<Edges>, recorder: &mut Recorder) {
         match (pass.recording, &recorder.writing) {
             (true, None) => {
@@ -197,22 +193,15 @@ impl Node<Edges> for WriteRaw {
         if let Some(writing) = &recorder.writing
             && let Some(mut chunk) = writing.chunk()
         {
+            // Its inputs' buffers, swapped into the chunk (the plan copies them for it, if it must).
             chunk.continuous.len = 0;
             if let Some(Buffer::Continuous(taken)) = pass.take_input(0) {
                 std::mem::swap(taken, &mut chunk.continuous);
-            } else if let Some(Buffer::Continuous(continuous)) = pass.input(0) {
-                chunk.continuous.len = continuous.len;
-                for channel in 0..continuous.channels.min(chunk.continuous.channels) {
-                    chunk.continuous.channel_mut(channel).copy_from_slice(continuous.channel(channel));
-                }
             }
             chunk.events.events.clear();
             chunk.events.pass_samples = 0;
             if let Some(Buffer::Events(taken)) = pass.take_input(1) {
                 std::mem::swap(taken, &mut chunk.events);
-            } else if let Some(Buffer::Events(events)) = pass.input(1) {
-                chunk.events.events.extend_from_slice(&events.events);
-                chunk.events.pass_samples = events.pass_samples;
             }
             writing.send(chunk);
         }
@@ -241,7 +230,8 @@ impl Node<Edges> for WriteRaw {
             ui.label(format!("Records {}.", recording.join(", ")));
         }
         ui.separator();
-        status_ui(ui, context.display::<Status>(), context.theme);
+        let latest = context.shared::<Latest<Status>>();
+        status_ui(ui, latest.as_deref().and_then(Latest::read).as_deref(), context.theme);
     }
 }
 

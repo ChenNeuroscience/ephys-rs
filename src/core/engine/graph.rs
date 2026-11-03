@@ -524,7 +524,7 @@ impl<N: NodeSet> Graph<N> {
         id: NodeId,
         inputs: &[Option<DataStream<N>>],
         theme: &Colours,
-        display: Option<&(dyn Any + Send)>,
+        exchange: Option<&crate::core::exchange::Exchange>,
         running: bool,
         locked: bool,
         tools: Option<&mut dyn super::NodeToolbar>,
@@ -538,7 +538,8 @@ impl<N: NodeSet> Graph<N> {
             inputs,
             controls: &mut controls,
             theme,
-            display,
+            node: id,
+            exchange,
             running,
             locked,
             // Reborrowed, to live as long as the context.

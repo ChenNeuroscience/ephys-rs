@@ -1,8 +1,6 @@
 //! A node's window, for a node without a view of its own (see `Node::HAS_VIEW`): its name (to edit), what it is,
 //! any problems, its settings, and what its ports carry and are connected to.
 
-use std::any::Any;
-
 use eframe::egui::{self, RichText};
 
 use super::node_tools::NodeTools;
@@ -11,15 +9,14 @@ use crate::core::engine::NodeToolbar;
 use crate::core::engine::{Graph, NodeId, NodeSet, Port, Resolved, Role};
 use crate::core::theme::Colours;
 
-/// The window of a node without a view of its own: what it is, its settings, and its connections. `display` is
-/// the latest its passes have left for its window (see `crate::core::exchange`), while running.
+/// The window of a node without a view of its own: what it is, its settings, and its connections. `exchange` is what
+/// its passes share with its window (see `crate::core::exchange`), while running.
 #[allow(clippy::too_many_arguments)]
 pub fn show<N: NodeSet>(
     ui: &mut egui::Ui,
     graph: &mut Graph<N>,
     resolved: &Resolved<N::Edges>,
     colours: &Colours,
-    display: Option<&(dyn Any + Send)>,
     exchange: Option<&crate::core::exchange::Exchange>,
     locked: bool,
     advanced: bool,
@@ -58,7 +55,7 @@ pub fn show<N: NodeSet>(
     egui::ScrollArea::vertical().show(ui, |ui| {
         ui.add_enabled_ui(!locked, |ui| {
             let tools = Some(&mut tools as &mut dyn crate::core::engine::NodeToolbar);
-            graph.edit(id, &state.input_streams, colours, display, running, locked, tools, |node: &mut N, context| {
+            graph.edit(id, &state.input_streams, colours, exchange, running, locked, tools, |node: &mut N, context| {
                 node.settings_ui(ui, context)
             });
         });

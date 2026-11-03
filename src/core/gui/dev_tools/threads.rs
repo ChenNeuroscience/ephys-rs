@@ -1,12 +1,13 @@
 //! The dev tools' picture of the threads: each thread as a container, with links between them where they hand
 //! things over.
 //!
-//! - The GUI (the main thread), which makes snapshots of the graph and shows nodes' latest displays.
+//! - The GUI (the main thread), which makes snapshots of the graph, and shows what nodes' passes share with their
+//!   windows: each pool of buffers they share (see `Shared::pool`), on the link from the node's step.
 //! - The pass dispatcher, sending a pass to the workers' queue every `PASS_DURATION`.
 //! - The pass workers: one container, stacked to show there are several, holding the plan each pass runs
 //!   through, step by step: each node with the buffers it reads and fills, where it waits for the pass before
-//!   (to hand over its state: a sync point) and where it copies out what it shows (a copy point). Then the memory
-//!   each worker has for the plan.
+//!   (to hand over its state: a sync point), which buffers it takes (to swap away) and where the plan copies data for
+//!   a node taking it that can't be the last to read it (a copy point). Then the memory each worker has for the plan.
 //! - Threads nodes run of their own (acquiring from a board, say), each drawn by its node (see
 //!   `Node::thread_ui`), linked to the node's step: the link points the way data goes, and on it is the pool of
 //!   buffers the thread swaps with the passes, if it has one (see `Node::thread_pool`).
@@ -20,8 +21,8 @@ use std::sync::Arc;
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Shape, Stroke, Vec2, vec2};
 
 use crate::core::engine::{
-    CopyTo, EdgeSet, Edges, Flow, Graph, NodeId, NodeSet, PASS_DURATION, Plan, PoolStatus, Resolved, RunInfo, Runner,
-    Snapshot, Step, StepTime, ThreadContext,
+    EdgeSet, Edges, Flow, Graph, NodeId, NodeSet, PASS_DURATION, Plan, PoolStatus, Resolved, RunInfo, Runner, Snapshot,
+    Step, StepTime, ThreadContext,
 };
 use crate::core::gui::style;
 use crate::core::theme::Colours;
@@ -55,7 +56,7 @@ struct Anchors {
     /// The workers' first step, taking a pass off the queue.
     queue: Option<Rect>,
     steps: HashMap<NodeId, Rect>,
-    /// Nodes' displays, in the GUI's container.
+    /// Pools nodes share with their windows, in the GUI's container: the node, and where.
     displays: Vec<(NodeId, Rect)>,
     /// Nodes' threads, and how each hands data to the node's passes.
     node_threads: Vec<NodeThreadAnchor>,
@@ -86,7 +87,7 @@ pub fn show<N: NodeSet>(
             });
         };
         let gui_and_dispatcher = |ui: &mut egui::Ui, anchors: &mut Anchors| {
-            gui_thread(ui, graph, colours, &plan, anchors);
+            gui_thread(ui, graph, colours, runner, &plan, anchors);
             ui.add_space(16.0);
             dispatcher(ui, colours, info.as_ref(), anchors);
         };
@@ -213,7 +214,7 @@ fn buffer_tag<N: NodeSet>(ui: &mut egui::Ui, plan: &Plan<N>, buffer: usize, colo
 enum Glyph {
     /// A sync point: waiting for another thread.
     Sync,
-    /// A copy point: data copied out for another thread.
+    /// A copy point: data the plan copies, for a node taking it that can't be the last to read it.
     Copy,
     /// Made in place, in its input's buffer.
     InPlace,
@@ -303,24 +304,31 @@ fn gui_thread<N: NodeSet>(
     ui: &mut egui::Ui,
     graph: &Graph<N>,
     colours: &Colours,
+    runner: Option<&Runner<N>>,
     plan: &Plan<N>,
     anchors: &mut Anchors,
 ) {
-    // The windows it shows the latest copied for.
+    // The nodes sharing pools of buffers with their windows (the latest to show, say), while running: each with
+    // where its buffers are.
     container(ui, colours, "GUI", "main thread", 1, true, |ui| {
-        let shown: Vec<NodeId> =
-            plan.steps().iter().filter(|s| s.copies == Some(CopyTo::Window)).map(|s| s.id).collect();
-        if shown.is_empty() {
+        let Some(exchange) = runner.map(|r| r.exchange()) else {
+            ui.label(small("Shows what nodes' passes share with their windows, while running.", colours.text_disabled));
             return;
-        }
-        for id in shown {
-            let row = ui
-                .horizontal(|ui| {
-                    ui.set_height(ROW);
-                    node_chip(ui, graph, id, None);
-                })
-                .response;
-            anchors.displays.push((id, row.rect.with_max_x(ui.max_rect().right())));
+        };
+        for step in plan.steps() {
+            for (name, pool) in exchange.pools(step.id) {
+                let row = ui
+                    .horizontal(|ui| {
+                        ui.set_height(ROW);
+                        node_chip(ui, graph, step.id, None);
+                        ui.label(small(name, colours.text_secondary));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            pool_squares(ui, colours, pool);
+                        });
+                    })
+                    .response;
+                anchors.displays.push((step.id, row.rect.with_max_x(ui.max_rect().right())));
+            }
         }
     });
 }
@@ -484,11 +492,22 @@ fn step_row<N: NodeSet>(
     let output_names: Vec<&str> = state.map(|s| s.outputs.iter().map(|o| o.name).collect()).unwrap_or_default();
     for (i, buffer) in step.inputs.iter().enumerate() {
         let name = input_names.get(i).copied().unwrap_or("input");
+        // Copied for it, if it takes a buffer it can't be the last to read.
+        let copied = plan.steps().iter().flat_map(|s| &s.copies).find(|c| c.node == step.id && c.input == i);
         match buffer {
+            Some(b) if step.takes.get(i) == Some(&true) && copied.is_some() => {
+                let from = copied.map_or(0, |c| c.from);
+                let text = format!(
+                    "Takes buffer {b}, a copy of {name} (from buffer {from}) the plan makes for it, as it can't be \
+                     the last to read it: then does as it likes with it (swaps it for one of its own, say)"
+                );
+                buffer_tag(ui, plan, *b, colours).on_hover_text(&text);
+                badge(ui, Glyph::Copy, colours.accent, &text);
+            }
             Some(b) if step.takes.get(i) == Some(&true) => {
                 let text = format!(
-                    "Takes buffer {b}, with {name} in it, being the last to read it: swaps it for one of its own, so \
-                     nothing's copied"
+                    "Takes buffer {b}, with {name} in it, being the last to read it: then does as it likes with it \
+                     (swaps it for one of its own, say), so nothing's copied"
                 );
                 buffer_tag(ui, plan, *b, colours).on_hover_text(&text);
                 badge(ui, Glyph::InPlace, colours.success, &text);
@@ -527,11 +546,10 @@ fn step_row<N: NodeSet>(
         }
     }
     // A node whose thread swaps buffers with the passes: a source's passes take what it's filled; a writer's hand it
-    // what they're given (if they can take it all: otherwise they copy).
+    // the buffers they take.
     let threads = graph.get(step.id).map(|e| e.node.threads()).unwrap_or_default();
     let swaps_in = threads.iter().any(|t| t.swaps && t.flow == Flow::ToPasses);
-    let taken_all = step.inputs.iter().zip(&step.takes).all(|(input, &takes)| input.is_none() || takes);
-    let swaps_out = threads.iter().any(|t| t.swaps && t.flow == Flow::FromPasses) && taken_all;
+    let swaps_out = threads.iter().any(|t| t.swaps && t.flow == Flow::FromPasses);
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         if swaps_in {
             badge(
@@ -542,35 +560,31 @@ fn step_row<N: NodeSet>(
                  (which go back to the pool, freed, to be filled again). Nothing's copied",
             );
         }
-        match step.copies {
-            Some(CopyTo::Thread) if swaps_out => {
-                badge(
-                    ui,
-                    Glyph::Swap,
-                    colours.success,
-                    "Swap point: swaps the buffers it takes into its thread's, from their pool, for it to write (and \
-                     free, back to the pool, once written). Nothing's copied",
-                );
-            }
-            Some(CopyTo::Window) => {
-                badge(
-                    ui,
-                    Glyph::Copy,
-                    colours.accent,
-                    "Copy point: only copies its inputs out, to show in its window. It makes the copy itself, so \
-                     runs as early as it can",
-                );
-            }
-            Some(CopyTo::Thread) => {
-                badge(
-                    ui,
-                    Glyph::Copy,
-                    colours.accent,
-                    "Copy point: only copies its inputs out, to a thread of its own. It makes the copy itself, so \
-                     runs as early as it can",
-                );
-            }
-            None => {}
+        if swaps_out {
+            badge(
+                ui,
+                Glyph::Swap,
+                colours.success,
+                "Swap point: swaps the buffers it takes into its thread's, from their pool, for it to write (and \
+                 free, back to the pool, once written)",
+            );
+        }
+        if !step.copies.is_empty() {
+            let copies: Vec<String> = step
+                .copies
+                .iter()
+                .map(|c| {
+                    let name = graph.get(c.node).map_or("a node", |e| e.node.info().name);
+                    format!("buffer {} into buffer {}, for {name} to take", c.from, c.to)
+                })
+                .collect();
+            let text = format!(
+                "Copy point: once it's run, the plan copies {}. A node taking a buffer gets a copy when it can't be \
+                 the last to read it (another reader depends on it, or the data's edited in place). Counted in its \
+                 time",
+                copies.join("; ")
+            );
+            badge(ui, Glyph::Copy, colours.accent, &text);
         }
         if step.state.is_some() {
             let why = graph.get(step.id).map_or("", |e| e.node.state_reason());
@@ -659,12 +673,12 @@ fn memory<N: NodeSet>(
             });
             let states = plan.steps().iter().filter(|s| s.state.is_some()).count();
             let working = plan.steps().iter().filter(|s| s.memory.is_some()).count();
-            let copying = plan.steps().iter().filter(|s| s.copies.is_some()).count();
+            let copies = plan.steps().iter().map(|s| s.copies.len()).sum::<usize>();
             ui.label(small(
                 format!(
                     "Also: {states} node states (one each, handed from pass to pass), {working} nodes' working \
-                     memory (each worker its own, so no waiting), and whatever the {copying} nodes copying out keep \
-                     to copy into."
+                     memory (each worker its own, so no waiting), and the pools nodes share with their threads and \
+                     windows. {copies} of the buffers are copies the plan makes, for nodes taking them."
                 ),
                 colours.text_secondary,
             ));
@@ -701,7 +715,12 @@ fn pool_ui(
     const SQUARE: f32 = 5.0;
     const STEP: f32 = 6.0;
     let painter = ui.painter();
-    let text = format!("{} × {}", megabytes(pool.bytes), pool.size);
+    // Its buffers' size, if it's known.
+    let text = if pool.bytes > 0 {
+        format!("{} × {}", megabytes(pool.bytes), pool.size)
+    } else {
+        format!("× {}", pool.size)
+    };
     let galley = painter.layout_no_wrap(text, FontId::monospace(9.5), colours.text_secondary);
     let dots_width = dots.len() as f32 * 8.0;
     let grid = vec2(ACROSS as f32 * STEP - 1.0, pool.size.div_ceil(ACROSS).max(1) as f32 * STEP - 1.0);
@@ -728,7 +747,7 @@ fn pool_ui(
     }
     let mut tip = format!(
         "A pool of {} buffers of {} each ({} in all), swapped with the passes rather than copied: {} full, waiting{}, \
-         {} empty; the rest with the workers, for now. {} swaps so far.",
+         {} empty; the rest with the workers (or the window), for now. {} swaps so far.",
         pool.size,
         megabytes(pool.bytes),
         megabytes(pool.bytes * pool.size),
@@ -743,6 +762,33 @@ fn pool_ui(
     }
     let _ = ui.interact(rect, id, Sense::hover()).on_hover_text(tip);
     rect
+}
+
+/// A pool a node shares with its window, in a row: a square for each buffer, filled for those queued (the newest
+/// to be read), outlined for the empty ones (the rest being filled by passes, or read). Hover for the counts.
+fn pool_squares(ui: &mut egui::Ui, colours: &Colours, pool: PoolStatus) {
+    const STEP: f32 = 6.0;
+    let (rect, response) = ui.allocate_exact_size(vec2(pool.size as f32 * STEP, ROW), Sense::hover());
+    let painter = ui.painter();
+    for i in 0..pool.size {
+        let square =
+            Rect::from_min_size(egui::pos2(rect.left() + i as f32 * STEP, rect.center().y - 2.5), Vec2::splat(5.0));
+        if i < pool.full {
+            painter.rect_filled(square, 1.0, colours.accent);
+        } else if i < pool.full + pool.empty {
+            painter.rect_stroke(square, 1.0, Stroke::new(1.0, colours.text_disabled), egui::StrokeKind::Inside);
+        }
+    }
+    let mut tip = format!(
+        "A pool of {} buffers the node's passes fill (or swap their own into) for its window, which reads the newest \
+         and gives the rest back: {} queued, {} empty; the rest being filled, or read. Neither waits on the other. {} \
+         sent so far.",
+        pool.size, pool.full, pool.empty, pool.swaps
+    );
+    if pool.overflows > 0 {
+        tip += &format!("\n\nRan out {} times: passes skipped sending.", pool.overflows);
+    }
+    response.on_hover_text(tip);
 }
 
 /// The pass queue, between the dispatcher and the workers, as a box at `at`: a square for each place in it, filled for
@@ -803,13 +849,15 @@ fn node_threads<N: NodeSet>(
         let Some(entry) = graph.get(step.id) else { continue };
         for (index, thread) in entry.node.threads().iter().enumerate() {
             any = true;
-            let mut draw = |ui: &mut egui::Ui, display: Option<&(dyn std::any::Any + Send)>| {
+            let exchange = runner.map(|r| r.exchange());
+            let context = ThreadContext { theme: colours, node: step.id, exchange };
+            {
                 // The pool's buffers are like the step's: its outputs' for a source, its inputs' for a writer.
                 let ports: Vec<Option<usize>> = match thread.flow {
                     Flow::ToPasses => step.outputs.iter().map(|&b| Some(b)).collect(),
                     Flow::FromPasses => step.inputs.clone(),
                 };
-                let pool = entry.node.thread_pool(index, &ThreadContext { theme: colours, display });
+                let pool = entry.node.thread_pool(index, &context);
                 let pool = pool.filter(|p| p.size > 0).map(|p| {
                     let pooled = ports.iter().enumerate().filter(|(i, _)| *i < 64 && p.ports & (1 << i) != 0);
                     let colour =
@@ -819,7 +867,7 @@ fn node_threads<N: NodeSet>(
                 let rect = container(ui, colours, thread.name, "", 1, runner.is_some(), |ui| {
                     node_chip(ui, graph, step.id, None);
                     ui.add_space(2.0);
-                    entry.node.thread_ui(index, ui, &ThreadContext { theme: colours, display });
+                    entry.node.thread_ui(index, ui, &context);
                     ui.add_space(2.0);
                     ui.label(small(thread.why, colours.text_disabled));
                 });
@@ -831,10 +879,6 @@ fn node_threads<N: NodeSet>(
                     pool,
                 });
                 ui.add_space(12.0);
-            };
-            let shown = runner.and_then(|r| r.exchange().with_latest(step.id, |d| draw(ui, Some(d))));
-            if shown.is_none() {
-                draw(ui, None);
             }
         }
     }
@@ -897,13 +941,14 @@ fn links(ui: &egui::Ui, colours: &Colours, anchors: &Anchors, wide: bool) {
         // Belonging to neither thread, but between them (drawn last, over the other links).
         queue_box = anchors.queue_status.filter(|_| wide).map(|status| (status, pos2_between(from, to)));
     }
+    // To the windows, through the pools the passes share with them (the GUI reading the latest, say).
     for (index, (id, display)) in anchors.displays.iter().enumerate() {
         let Some(step) = anchors.steps.get(id) else { continue };
         if wide {
             let to = ends(*display).1;
             across(ends(*step).0, to);
             if index == 0 {
-                label(to + vec2(8.0, -6.0), Align2::LEFT_BOTTOM, "latest copy");
+                label(to + vec2(8.0, -6.0), Align2::LEFT_BOTTOM, "shared pool");
             }
         } else {
             round(ends(*step).0, ends(*display).0, deeper());

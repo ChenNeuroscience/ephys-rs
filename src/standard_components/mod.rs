@@ -7,6 +7,7 @@
 pub mod annotations;
 pub mod auto_detect;
 pub mod ephys;
+pub mod latest;
 mod pool;
 mod preview;
 pub mod quick_actions;

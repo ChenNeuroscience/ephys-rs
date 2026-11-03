@@ -10,8 +10,8 @@ use super::{AUX_PER_HEADSTAGE, Bandwidth, BoardInfo, Config, Headstage, OpalKell
 use crate::core::engine::{
     Category, Context, Flow, Node, NodeInfo, NodeThread, Output, Pass, PoolStatus, ThreadContext,
 };
-use crate::core::exchange::Latest;
 use crate::standard_components::ephys::{Continuous, Events};
+use crate::standard_components::latest::{self, Latest};
 use crate::standard_components::widgets::{named_settings_grid, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind};
 
@@ -51,7 +51,7 @@ impl Default for AcquisitionBoard {
 #[derive(Default)]
 pub struct Acquiring {
     capture: Option<Capture>,
-    shown: Latest<BoardDisplay>,
+    shown: latest::Sender<BoardDisplay>,
 }
 
 impl crate::core::engine::PassState for Acquiring {
@@ -137,7 +137,8 @@ impl Node<Edges> for AcquisitionBoard {
 
     fn thread_ui(&self, _thread: usize, ui: &mut egui::Ui, context: &ThreadContext) {
         let small = |text: String| RichText::new(text).size(11.0);
-        let Some(display) = context.display::<BoardDisplay>() else {
+        let latest = context.shared::<Latest<BoardDisplay>>();
+        let Some(display) = latest.as_deref().and_then(Latest::read) else {
             ui.label(small("Reads the board as samples arrive; starts when running.".into()).weak());
             return;
         };
@@ -155,7 +156,7 @@ impl Node<Edges> for AcquisitionBoard {
     }
 
     fn thread_pool(&self, _thread: usize, context: &ThreadContext) -> Option<PoolStatus> {
-        context.display::<BoardDisplay>().map(|d| d.pool)
+        context.shared::<Latest<BoardDisplay>>().and_then(|l| l.read().map(|d| d.pool))
     }
 
     fn initial_state(&self, _inputs: &[Option<DataStream>]) -> Acquiring {
@@ -281,7 +282,8 @@ impl Node<Edges> for AcquisitionBoard {
         });
 
         ui.separator();
-        let Some(display) = context.display::<BoardDisplay>() else {
+        let latest = context.shared::<Latest<BoardDisplay>>();
+        let Some(display) = latest.as_deref().and_then(Latest::read) else {
             ui.weak("Press Play to start acquiring.");
             return;
         };
@@ -462,10 +464,11 @@ mod tests {
             ..Default::default()
         };
         let display = BoardDisplay { status, pool: PoolStatus::default() };
+        let exchange = crate::core::exchange::Exchange::default();
+        exchange.shared(board, || Latest::holding(display));
         let mut harness = egui_kittest::Harness::builder().with_size([420.0, 560.0]).wgpu().build_ui_state(
             |ui, graph: &mut Graph<Nodes>| {
-                let display: &(dyn std::any::Any + Send) = &display;
-                graph.edit(board, &[], &THEMES[0].colours, Some(display), true, false, None, |node, context| {
+                graph.edit(board, &[], &THEMES[0].colours, Some(&exchange), true, false, None, |node, context| {
                     node.settings_ui(ui, context)
                 });
             },

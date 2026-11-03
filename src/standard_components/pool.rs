@@ -9,6 +9,14 @@
 //!
 //! For a writer, a pass swaps its data into an empty buffer and queues it (`send`); the thread writes it and gives
 //! the buffer back (`give_back`). If the pool runs out, the disk is a long way behind: that pass's data is lost.
+//!
+//! For a window (see `crate::standard_components::latest`), passes fill empty buffers and queue them, and the GUI
+//! takes the latest, giving back the rest.
+//!
+//! Passes never wait on it. The empty and full buffers are on lock-free queues (crossbeam's bounded channels), so
+//! taking and giving back is a few atomic operations; only a writer's thread blocks, waiting for a buffer to write.
+//! A source's buffer being filled is behind a lock, which its thread holds while it decodes into it: a pass that
+//! finds it held doesn't wait, but leaves what's in it for the next pass.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -109,10 +117,11 @@ impl<T> Pool<T> {
     // A source's passes.
 
     /// What's arrived since the last pass took any: a full buffer waiting, if there is one, or the one being
-    /// filled, unless `is_empty` says there's nothing in it yet. Give a buffer back for each taken.
+    /// filled, unless `is_empty` says there's nothing in it yet (or the thread's filling it just then: it's left for
+    /// the next pass, rather than waited for). Give a buffer back for each taken.
     pub fn take(&self, is_empty: impl FnOnce(&T) -> bool) -> Option<T> {
         let taken = self.shared.full.1.try_recv().ok().or_else(|| {
-            let mut filling = self.shared.filling.lock().unwrap();
+            let mut filling = self.shared.filling.try_lock().ok()?;
             if filling.as_ref().is_some_and(|b| !is_empty(b)) { filling.take() } else { None }
         });
         if taken.is_some() {
@@ -127,7 +136,7 @@ impl<T> Pool<T> {
         let _ = self.shared.empty.0.try_send(buffer);
     }
 
-    // A writer's passes.
+    // A writer's passes (or a window's).
 
     /// An empty buffer to swap data into, if there's one left (otherwise the disk's a long way behind).
     pub fn empty(&self) -> Option<T> {
@@ -138,20 +147,25 @@ impl<T> Pool<T> {
         buffer
     }
 
+    /// An empty buffer, if there's one, without counting it lost if there isn't.
+    pub fn try_empty(&self) -> Option<T> {
+        self.shared.empty.1.try_recv().ok()
+    }
+
     /// Queues a buffer of data for the thread.
     pub fn send(&self, buffer: T) {
         self.shared.swaps.fetch_add(1, Ordering::Relaxed);
         let _ = self.shared.full.0.try_send(buffer);
     }
 
-    // A writer's thread.
+    // A writer's thread (or a window).
 
     /// The next buffer to write, waiting up to `timeout` for one.
     pub fn next_full(&self, timeout: Duration) -> Option<T> {
         self.shared.full.1.recv_timeout(timeout).ok()
     }
 
-    /// The buffers queued, without waiting.
+    /// The next buffer queued, without waiting.
     pub fn try_full(&self) -> Option<T> {
         self.shared.full.1.try_recv().ok()
     }

@@ -13,9 +13,9 @@ use super::camera::capture::State;
 use super::camera::node::camera_settings_ui;
 use super::led_chart::{self, History};
 use super::position_detector::{calibration_ui, crop_ui, detection_ui};
-use crate::core::engine::{Category, Context, Control, CopyTo, EdgeType, Input, Node, NodeInfo, Output, Pass};
-use crate::core::exchange::Latest;
+use crate::core::engine::{Category, Context, Control, EdgeType, Input, Node, NodeInfo, Output, Pass};
 use crate::core::theme::Colours;
+use crate::standard_components::latest::{self, Latest};
 use crate::standard_components::preview;
 use crate::standard_components::tracking::VideoBuffer;
 use crate::standard_components::tracking::overlay::{self, Drag, Overlay, Overlays, Xform};
@@ -42,7 +42,7 @@ pub struct Tracking {
     history: History,
     path: Arc<Mutex<Path>>,
     recording: bool,
-    shown: Latest<TrackerDisplay>,
+    shown: latest::Sender<TrackerDisplay>,
 }
 
 /// Where the animal's been while recording: the middle of the LEDs found in each frame (in pixels), NaN where
@@ -64,7 +64,20 @@ pub struct Frame {
     pub id: u64,
 }
 
+/// A frame to show, wherever it is: a `Frame`, or one of a `VideoBuffer`'s.
+#[derive(Clone, Copy)]
+pub struct FrameView<'a> {
+    pub width: usize,
+    pub height: usize,
+    pub pixels: &'a [u8],
+    pub id: u64,
+}
+
 impl Frame {
+    pub fn view(&self) -> FrameView<'_> {
+        FrameView { width: self.width, height: self.height, pixels: &self.pixels, id: self.id }
+    }
+
     /// Copies frame `index` of `video`, reusing this one's memory.
     pub fn copy_from(&mut self, video: &VideoBuffer, index: usize) {
         (self.width, self.height, self.id) = (video.width, video.height, video.ids[index]);
@@ -116,10 +129,6 @@ impl Node<Edges> for TrackerView {
             Control { name: "camera", kind: SettingKind::Camera, read_only: false },
             Control { name: "detection", kind: SettingKind::Detection, read_only: false },
         ]
-    }
-
-    fn copies(&self) -> Option<CopyTo> {
-        Some(CopyTo::Window)
     }
 
     /// Room for the LEDs' sizes over `led_chart::SECONDS`, so it isn't allocated while running.
@@ -252,17 +261,18 @@ impl TrackerView {
 
     /// The camera, with what's detected drawn over it, and the LED chart beside or below it.
     fn camera_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>, arrangement: Arrangement) {
+        let latest = context.shared::<Latest<TrackerDisplay>>();
+        let reading = latest.as_deref().and_then(Latest::read);
+        let display = reading.as_deref();
         if self.overlays.detection.visible
-            && let Some(display) = context.display.and_then(|d| d.downcast_ref::<TrackerDisplay>())
+            && let Some(display) = display
         {
             led_panel(ui, &display.history, arrangement);
         }
 
-        // Through the context's reference, so the context itself is free to change below.
-        let display = context.display.and_then(|d| d.downcast_ref::<TrackerDisplay>());
         let Some(display) = display.filter(|d| d.frame.width > 0) else {
             let state = display.and_then(|d| d.stats.as_ref()).map(|s| &s.status.state);
-            let message = match (context.display, state) {
+            let message = match (display, state) {
                 (None, _) => "Press Play to see the camera".to_string(),
                 (_, Some(State::Starting)) => "Opening the camera…".to_string(),
                 (_, Some(State::Problem(problem))) => format!("No video: {problem}"),
@@ -274,7 +284,7 @@ impl TrackerView {
             Some(Setting::Detection(detection)) => Some(detection.clone()),
             _ => None,
         };
-        let (rect, response) = show_frame(ui, &display.frame, detection.as_ref(), &self.overlays, context.theme);
+        let (rect, response) = show_frame(ui, display.frame.view(), detection.as_ref(), &self.overlays, context.theme);
         let xf = Xform { origin: rect.min, scale: rect.width() / display.frame.width as f32 };
 
         // Dragging the crop and rulers edits the detector's settings, if it's connected.
@@ -302,7 +312,9 @@ impl TrackerView {
     /// The camera's and the detector's settings (through the controls), in sections whose headers say what's
     /// shown over the video and lock what can be changed.
     fn controls_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>, size: [f32; 2]) {
-        let stats = context.display.and_then(|d| d.downcast_ref::<TrackerDisplay>()).and_then(|d| d.stats.as_ref());
+        let latest = context.shared::<Latest<TrackerDisplay>>();
+        let reading = latest.as_deref().and_then(Latest::read);
+        let stats = reading.as_deref().and_then(|d| d.stats.as_ref());
         let declared = match context.inputs[0] {
             Some(DataStream::Video(video)) => Some(video.fps as f64),
             _ => None,
@@ -588,7 +600,7 @@ fn led_panel(ui: &mut egui::Ui, history: &History, arrangement: Arrangement) {
 /// shown, and the response there.
 pub fn show_frame(
     ui: &mut egui::Ui,
-    frame: &Frame,
+    frame: FrameView,
     detection: Option<&Detection>,
     overlays: &Overlays,
     theme: &Colours,
@@ -639,7 +651,7 @@ struct Shown {
 
 /// The frame in colour: grey, with above-threshold pixels in the crop highlighted (when detection's shown),
 /// and the outside of the crop black (when the crop's hidden).
-fn colour_image(frame: &Frame, detection: Option<&Detection>, overlays: &Overlays) -> ColorImage {
+fn colour_image(frame: FrameView, detection: Option<&Detection>, overlays: &Overlays) -> ColorImage {
     let (width, height) = (frame.width, frame.height);
     let mut pixels = Vec::with_capacity(width * height);
     for (y, row) in frame.pixels.chunks_exact(width.max(1)).enumerate() {
@@ -690,12 +702,8 @@ mod tests {
 
     /// The LEDs in the view's latest display, once it has a frame.
     fn leds_shown(runner: &Runner<Nodes>, view: NodeId) -> Option<usize> {
-        runner
-            .exchange()
-            .with_latest(view, |d| {
-                d.downcast_ref::<TrackerDisplay>().filter(|d| d.frame.width > 0).map(|d| d.leds.len())
-            })
-            .flatten()
+        let latest = runner.exchange().get::<Latest<TrackerDisplay>>(view)?;
+        latest.read().filter(|d| d.frame.width > 0).map(|d| d.leds.len())
     }
 
     /// Waits (ten seconds at most, on a busy machine) for `done`.
@@ -807,10 +815,11 @@ mod tests {
 
         let resolved = graph.resolve();
         let inputs = resolved[&view].input_streams.clone();
+        let exchange = crate::core::exchange::Exchange::default();
+        exchange.shared(view, || Latest::holding(display));
         let mut harness = egui_kittest::Harness::builder().with_size([1150.0, 650.0]).wgpu().build_ui_state(
             |ui, graph: &mut Graph<Nodes>| {
-                let display: &(dyn std::any::Any + Send) = &display;
-                graph.edit(view, &inputs, &THEMES[0].colours, Some(display), true, false, None, |node, context| {
+                graph.edit(view, &inputs, &THEMES[0].colours, Some(&exchange), true, false, None, |node, context| {
                     node.view_ui(ui, context)
                 });
             },

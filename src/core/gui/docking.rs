@@ -539,22 +539,17 @@ pub fn node_ui<N: NodeSet>(
     let Some(state) = resolved.get(&id) else { return };
     let has_view = graph.get(id).is_some_and(|e| e.node.has_view());
     let running = runner.is_some();
-    // A view stays live while recording (changes it makes to settings are undone: see `App::lock`).
-    let mut show = |graph: &mut Graph<N>, display: Option<&(dyn std::any::Any + Send)>| {
-        let exchange = runner.map(|r| r.exchange());
-        if has_view {
-            let Some(mut tools) = NodeTools::new(graph, id, advanced, exchange, &mut *events) else { return };
-            let tools = Some(&mut tools as &mut dyn crate::core::engine::NodeToolbar);
-            graph.edit(id, &state.input_streams, colours, display, running, locked, tools, |node: &mut N, context| {
-                node.view_ui(ui, context)
-            });
-        } else {
-            node_window::show(ui, graph, resolved, colours, display, exchange, locked, advanced, id, events);
-        }
-    };
-    let shown = runner.and_then(|runner| runner.exchange().with_latest(id, |display| show(graph, Some(display))));
-    if shown.is_none() {
-        show(graph, None);
+    // A view stays live while recording (changes it makes to settings are undone: see `App::lock`). It finds what
+    // its passes share with it in the run's exchange.
+    let exchange = runner.map(|r| r.exchange());
+    if has_view {
+        let Some(mut tools) = NodeTools::new(graph, id, advanced, exchange, &mut *events) else { return };
+        let tools = Some(&mut tools as &mut dyn crate::core::engine::NodeToolbar);
+        graph.edit(id, &state.input_streams, colours, exchange, running, locked, tools, |node: &mut N, context| {
+            node.view_ui(ui, context)
+        });
+    } else {
+        node_window::show(ui, graph, resolved, colours, exchange, locked, advanced, id, events);
     }
 }
 

@@ -1,10 +1,13 @@
 use eframe::egui::{self, Align2, Color32, FontId, Stroke};
 use serde::{Deserialize, Serialize};
 
-use super::tracker_view::{Frame, show_frame};
-use crate::core::engine::{Category, Context, CopyTo, EdgeType, Input, Node, NodeInfo, Output, Pass};
-use crate::core::exchange::Latest;
+use super::tracker_view::{FrameView, show_frame};
+use crate::core::engine::{
+    Category, Context, DataStreamType, EdgeType, Input, Node, NodeInfo, Output, PASS_DURATION, Pass,
+};
+use crate::standard_components::latest::{self, Latest};
 use crate::standard_components::preview;
+use crate::standard_components::tracking::VideoBuffer;
 use crate::standard_components::tracking::overlay::Overlays;
 use crate::standard_components::widgets::require_input;
 use crate::{Buffer, DataStream, Edges, Kind};
@@ -15,13 +18,13 @@ pub struct VideoViewer {
     pub crosshair: bool,
 }
 
-/// Where it sends the latest frame to its window.
+/// Where it sends the latest frames to its window: their buffers, swapped in (so a pool of buffers like the pass's).
 #[derive(Default)]
-pub struct Showing(Latest<Frame>);
+pub struct Showing(Option<latest::Sender<VideoBuffer>>);
 
 impl crate::core::engine::PassState for Showing {
-    const WHY: &'static str = "Only where it sends the latest frame to its window, kept so the frames' memory is \
-                               reused: working memory, so each worker has its own.";
+    const WHY: &'static str = "Only where it sends the latest frames to its window, kept so it's found once: \
+                               working memory, so each worker has its own.";
     const CARRIED_OVER: bool = false;
 }
 
@@ -44,16 +47,28 @@ impl Node<Edges> for VideoViewer {
         require_input(inputs, "video")
     }
 
-    fn copies(&self) -> Option<CopyTo> {
-        Some(CopyTo::Window)
+    /// Takes the pass's frames, to show the last.
+    fn takes(&self, _input: usize) -> bool {
+        true
     }
 
-    /// Keeps the pass's last frame.
+    fn initial_state(&self, inputs: &[Option<DataStream>]) -> Showing {
+        let Some(DataStream::Video(stream)) = inputs[0] else { return Showing::default() };
+        Showing(Some(latest::Sender::with(move || stream.buffer(PASS_DURATION))))
+    }
+
+    /// Swaps the pass's frames (if it has any) into the pool its window reads from: nothing's copied.
     fn process(&self, pass: &mut Pass<Edges>, showing: &mut Showing) {
-        let Some(Buffer::Video(video)) = pass.inputs[0] else { return };
-        if video.frames > 0 {
-            showing.0.send(pass, |frame| frame.copy_from(video, video.frames - 1));
+        let (Some(sender), Some(Buffer::Video(video))) = (&mut showing.0, pass.input(0)) else { return };
+        if video.frames == 0 {
+            return;
         }
+        let sequence = pass.sequence;
+        let Some(mut frames) = sender.empty(pass) else { return };
+        if let Some(Buffer::Video(video)) = pass.take_input(0) {
+            std::mem::swap(video, &mut frames);
+        }
+        sender.queue(sequence, frames);
     }
 
     fn settings_ui(&mut self, ui: &mut egui::Ui, _context: &mut Context<Edges>) {
@@ -69,10 +84,15 @@ impl Node<Edges> for VideoViewer {
         let Some(DataStream::Video(stream)) = context.inputs[0] else {
             return preview::unconnected(ui, context.theme, "Connect video to view it");
         };
-        let Some(frame) = context.display::<Frame>().filter(|f| f.width > 0) else {
+        // The last of the latest frames sent.
+        let latest = context.shared::<Latest<VideoBuffer>>();
+        let Some(frames) = latest.as_deref().and_then(Latest::read).filter(|f| f.frames > 0 && f.width > 0) else {
             let message = if context.running { "Waiting for frames…" } else { "Press Play to see the video" };
             return preview::unconnected(ui, context.theme, message);
         };
+        let last = frames.frames - 1;
+        let frame =
+            FrameView { width: frames.width, height: frames.height, pixels: frames.frame(last), id: frames.ids[last] };
         let (rect, _) = show_frame(ui, frame, None, &Overlays::default(), context.theme);
         let painter = ui.painter_at(rect);
         if self.crosshair {
