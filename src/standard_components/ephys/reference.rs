@@ -39,7 +39,7 @@ pub struct Reference {
 
 impl Default for Reference {
     fn default() -> Self {
-        Reference { method: Method::Median, reference_channels: "all".into() }
+        Reference { method: Method::Average, reference_channels: "all".into() }
     }
 }
 

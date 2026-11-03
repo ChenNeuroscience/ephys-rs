@@ -439,7 +439,7 @@
         "node": {
           "settings": {
             "method": {
-              "kind": "median"
+              "kind": "average"
             },
             "reference_channels": "all"
           },
