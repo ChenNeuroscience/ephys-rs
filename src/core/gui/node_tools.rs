@@ -1,5 +1,6 @@
-//! The buttons every node has, for its window (see `NodeToolbar`): copying and pasting its settings, showing it in
-//! the basic view, enabling it, and deleting it (those last three not in the basic view, where they'd confuse). A node's default window has them beside its name; a view puts them
+//! The buttons every node has, for its window (see `NodeToolbar`): copying and pasting its settings; and in advanced
+//! mode, its settings menu (whether it shows in basic mode, and the pane's own options), enabling it, and deleting
+//! it. A node's default window has them beside its name; a view puts them
 //! where it likes, through its `Context`.
 
 use eframe::egui;
@@ -14,8 +15,8 @@ pub struct NodeTools<'e> {
     /// Whether it's in the basic view, and enabled, now.
     pub in_basic: bool,
     pub enabled: bool,
-    /// Whether it's in the basic view, which leaves out what changes the graph (see `NodeToolbar::basic_toggle`).
-    pub basic: bool,
+    /// Whether the app's in advanced mode (otherwise, what changes the graph is left out).
+    pub advanced: bool,
     /// What's clicked becomes these.
     pub events: &'e mut Vec<Event>,
 }
@@ -38,24 +39,28 @@ impl NodeToolbar for NodeTools<'_> {
         button
     }
 
-    fn basic_toggle(&mut self, ui: &mut egui::Ui) -> Option<egui::Response> {
-        if self.basic {
+    fn settings_menu(&mut self, ui: &mut egui::Ui, more: &mut dyn FnMut(&mut egui::Ui)) -> Option<egui::Response> {
+        if !self.advanced {
             return None;
         }
-        let tip = if self.in_basic {
-            "In the basic view: click to leave it out"
-        } else {
-            "Click to show it in the basic view"
-        };
-        let button = toolbar::small_toggle_button(ui, Icon::Home, "Show in basic view", tip, self.in_basic);
-        if button.clicked() {
-            self.events.push(Event::InBasic(self.id, !self.in_basic));
-        }
+        let button = toolbar::small_icon_button(ui, Icon::Settings, "Settings", "This window's settings");
+        egui::Popup::menu(&button).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+            let mut in_basic = self.in_basic;
+            let tick = ui.checkbox(&mut in_basic, "Show in basic mode");
+            if tick.on_hover_text("Shown among the components in basic mode").changed() {
+                self.events.push(Event::InBasic(self.id, in_basic));
+            }
+            more(ui);
+        });
         Some(button)
     }
 
+    fn advanced(&self) -> bool {
+        self.advanced
+    }
+
     fn enabled_toggle(&mut self, ui: &mut egui::Ui) -> Option<egui::Response> {
-        if self.basic {
+        if !self.advanced {
             return None;
         }
         let tip = if self.enabled {
@@ -71,7 +76,7 @@ impl NodeToolbar for NodeTools<'_> {
     }
 
     fn delete_button(&mut self, ui: &mut egui::Ui) -> Option<egui::Response> {
-        if self.basic {
+        if !self.advanced {
             return None;
         }
         let button = toolbar::small_icon_button(ui, Icon::Delete, "Delete", "Delete this node");

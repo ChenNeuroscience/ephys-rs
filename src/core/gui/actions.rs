@@ -30,12 +30,10 @@ pub enum Action {
     AddNode,
     /// Picks the tool for drawing annotations of a type (by index) on the graph.
     DrawTool(usize),
-    /// Shows the home pane in the home mode (the user's choice of basic or graph).
+    /// Shows the home pane: the basic view, or in advanced mode the graph.
     Home,
-    /// Shows the basic view in the home pane, and makes it home.
-    ShowBasic,
-    /// Shows the graph in the home pane, and makes it home.
-    ShowGraph,
+    /// Turns advanced mode on or off: the graph in the home pane, and panes' settings (see `Mode`).
+    Advanced,
     /// Closes the home pane (Home brings it back).
     CloseHome,
     FrameAll,
@@ -99,8 +97,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
         "View",
         &[
             Item(Action::Home),
-            Item(Action::ShowBasic),
-            Item(Action::ShowGraph),
+            Item(Action::Advanced),
             Item(Action::CloseHome),
             Separator,
             Item(Action::FrameAll),
@@ -115,7 +112,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
 ];
 
 /// Checked in this order, so that e.g. shift-ctrl-Z (redo) is seen before ctrl-Z (undo).
-const SHORTCUT_ORDER: [Action; 19] = [
+const SHORTCUT_ORDER: [Action; 18] = [
     Action::Redo,
     Action::Undo,
     Action::SaveAs,
@@ -133,8 +130,7 @@ const SHORTCUT_ORDER: [Action; 19] = [
     Action::PasteSettings,
     Action::ToggleDisabled,
     Action::Home,
-    Action::ShowBasic,
-    Action::ShowGraph,
+    Action::Advanced,
 ];
 
 impl Action {
@@ -164,8 +160,7 @@ impl Action {
             Action::AddNode => "Node…",
             Action::DrawTool(index) => annotations.get(index).map_or("?", |a| a.name),
             Action::Home => "Home",
-            Action::ShowBasic => "Basic View",
-            Action::ShowGraph => "Graph View",
+            Action::Advanced => "Advanced Mode",
             Action::CloseHome => "Close Home",
             Action::FrameAll => "Frame All",
             Action::ActualSize => "Actual Size",
@@ -196,8 +191,7 @@ impl Action {
             Action::PasteSettings => Some(KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::ALT, Key::V)),
             Action::ToggleDisabled => command(Key::E),
             Action::Home => command(Key::Num0),
-            Action::ShowBasic => command(Key::Num1),
-            Action::ShowGraph => command(Key::Num2),
+            Action::Advanced => command(Key::Num1),
             // As in browsers.
             Action::ToggleDevTools => Some(KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::ALT, Key::I)),
             _ => None,

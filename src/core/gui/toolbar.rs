@@ -32,82 +32,53 @@ pub struct GraphTools {
 }
 
 /// The graph's toolbar, along the top of its pane: adding nodes, and drawing annotations; duplicating and deleting;
-/// arranging and framing it; and, at the right, back to the basic view.
+/// arranging and framing it.
 pub fn graph_toolbar<A: AnnotationSet>(ui: &mut egui::Ui, tools: GraphTools, tool: Tool, events: &mut Vec<Event>) {
     let ctx = ui.ctx().clone();
-    home_strip(ui, Mode::Basic, events, |ui, events| {
-        let mut perform = |action, anchor| events.push(Event::Perform(action, anchor));
-        let add =
-            dropdown_button(ui, Icon::AddNode, "Add node").on_hover_text("Add a node (or press Tab over the graph)");
-        if add.clicked() && tools.add {
-            perform(Action::AddNode, Some(add.rect.left_bottom()));
-        }
-        // A tool for drawing each type of annotation.
-        for (index, info) in A::TYPES.iter().enumerate() {
-            let tip = format!("{}: {}", info.name, info.description);
-            let paint =
-                |painter: &egui::Painter, rect: Rect, _: egui::Color32, _: bool| A::paint_icon(index, painter, rect);
-            if icon_button(ui, &paint, &tip, &tip, BUTTON, 16.0, true, tool == Tool::Draw(index)).clicked() {
-                perform(Action::DrawTool(index), None);
-            }
-        }
-        ui.separator();
-        for (action, icon, text, enabled) in [
-            (Action::Duplicate, Icon::Duplicate, "Duplicate", tools.duplicate),
-            (Action::Delete, Icon::Delete, "Delete", tools.delete),
-        ] {
-            if tool_button(ui, icon, &tooltip(&ctx, action, text), enabled, false).clicked() {
-                perform(action, None);
-            }
-        }
-        ui.separator();
-        for (action, icon, text, enabled) in [
-            (
-                Action::Arrange,
-                Icon::Arrange,
-                "Arrange nodes: in columns, left to right the way data flows",
-                tools.arrange,
-            ),
-            (Action::FrameAll, Icon::FrameAll, "Frame all", true),
-            (Action::ActualSize, Icon::ActualSize, "Actual size", true),
-        ] {
-            if tool_button(ui, icon, &tooltip(&ctx, action, text), enabled, false).clicked() {
-                perform(action, None);
-            }
-        }
-    });
-}
-
-/// The strip along the top of the home pane: `left` (the graph's tools, or nothing, in the basic view), and at its
-/// right a button to switch to `other`, the other mode, in the same place in either.
-pub fn home_strip(
-    ui: &mut egui::Ui,
-    other: Mode,
-    events: &mut Vec<Event>,
-    left: impl FnOnce(&mut egui::Ui, &mut Vec<Event>),
-) {
-    egui::Frame::new().inner_margin(egui::Margin { left: 6, right: 14, top: 4, bottom: 4 }).show(ui, |ui| {
+    egui::Frame::new().inner_margin(egui::Margin::symmetric(6, 4)).show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.set_min_height(BUTTON.y);
             ui.spacing_mut().item_spacing.x = 2.0;
-            left(ui, events);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let (text, tip, event) = match other {
-                    Mode::Basic => (
-                        "Switch to basic",
-                        "The basic view: the components, and quick actions",
-                        Event::Perform(Action::ShowBasic, None),
-                    ),
-                    Mode::Graph => (
-                        "Switch to graph",
-                        "The graph: every node, and how data flows between them, to build and change it node by node",
-                        Event::ShowGraph,
-                    ),
+            let mut perform = |action, anchor| events.push(Event::Perform(action, anchor));
+            let add = dropdown_button(ui, Icon::AddNode, "Add node")
+                .on_hover_text("Add a node (or press Tab over the graph)");
+            if add.clicked() && tools.add {
+                perform(Action::AddNode, Some(add.rect.left_bottom()));
+            }
+            // A tool for drawing each type of annotation.
+            for (index, info) in A::TYPES.iter().enumerate() {
+                let tip = format!("{}: {}", info.name, info.description);
+                let paint = |painter: &egui::Painter, rect: Rect, _: egui::Color32, _: bool| {
+                    A::paint_icon(index, painter, rect)
                 };
-                if ui.add(egui::Button::new(text).min_size(egui::vec2(0.0, BUTTON.y))).on_hover_text(tip).clicked() {
-                    events.push(event);
+                if icon_button(ui, &paint, &tip, &tip, BUTTON, 16.0, true, tool == Tool::Draw(index)).clicked() {
+                    perform(Action::DrawTool(index), None);
                 }
-            });
+            }
+            ui.separator();
+            for (action, icon, text, enabled) in [
+                (Action::Duplicate, Icon::Duplicate, "Duplicate", tools.duplicate),
+                (Action::Delete, Icon::Delete, "Delete", tools.delete),
+            ] {
+                if tool_button(ui, icon, &tooltip(&ctx, action, text), enabled, false).clicked() {
+                    perform(action, None);
+                }
+            }
+            ui.separator();
+            for (action, icon, text, enabled) in [
+                (
+                    Action::Arrange,
+                    Icon::Arrange,
+                    "Arrange nodes: in columns, left to right the way data flows",
+                    tools.arrange,
+                ),
+                (Action::FrameAll, Icon::FrameAll, "Frame all", true),
+                (Action::ActualSize, Icon::ActualSize, "Actual size", true),
+            ] {
+                if tool_button(ui, icon, &tooltip(&ctx, action, text), enabled, false).clicked() {
+                    perform(action, None);
+                }
+            }
         });
     });
 }
@@ -152,8 +123,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         match action {
             Action::DrawTool(index) => Some(self.canvas.tool == Tool::Draw(index)),
             Action::ToggleDevTools => Some(self.layout.is_shown(Pane::DevTools)),
-            Action::ShowBasic => Some(self.home_mode == Mode::Basic),
-            Action::ShowGraph => Some(self.home_mode == Mode::Graph),
+            Action::Advanced => Some(self.layout.mode == Mode::Advanced),
             Action::Theme(index) => Some(self.theme == index),
             Action::Play => Some(self.runner.is_some()),
             Action::Record => Some(self.history.current.snapshot.recording.is_some() || self.preparing.is_some()),
@@ -231,30 +201,21 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                 ui.separator();
             }
 
-            // Home: the home pane, in the basic view or the graph, as chosen from its menu.
-            let tip = format!("Home: the {}", if self.home_mode == Mode::Basic { "basic view" } else { "graph" });
-            let tip = self.tooltip(&ctx, Action::Home, &tip);
-            let home_showing = self.layout.is_shown(Pane::Home) && self.layout.mode == self.home_mode;
-            if tool_button(ui, Icon::Home, &tip, true, home_showing).clicked() {
+            // Home, and advanced mode (the graph in it, and panes' settings).
+            let home = if self.layout.mode == Mode::Basic { "the basic view" } else { "the graph" };
+            let tip = self.tooltip(&ctx, Action::Home, &format!("Home: {home}"));
+            if tool_button(ui, Icon::Home, &tip, true, self.layout.is_shown(Pane::Home)).clicked() {
                 chosen = Some(Action::Home);
             }
-            let arrow = arrow_button(ui, "Home menu", "Choose home: the basic view or the graph");
-            egui::Popup::menu(&arrow).show(|ui| {
-                for (action, mode, text) in [
-                    (Action::ShowBasic, Mode::Basic, "Basic view: the viewers, and quick actions"),
-                    (Action::ShowGraph, Mode::Graph, "Graph: every node, to build and change it"),
-                ] {
-                    let shortcut = action.shortcut().map(|s| ctx.format_shortcut(&s)).unwrap_or_default();
-                    let button = egui::Button::new((check(self.home_mode == mode), text)).shortcut_text(shortcut);
-                    if ui.add(button).clicked() {
-                        chosen = Some(action);
-                    }
-                }
-                ui.separator();
-                if ui.add_enabled(self.enabled(Action::CloseHome), egui::Button::new("Close")).clicked() {
-                    chosen = Some(Action::CloseHome);
-                }
-            });
+            let advanced = self.layout.mode == Mode::Advanced;
+            let tip = self.tooltip(
+                &ctx,
+                Action::Advanced,
+                "Advanced mode: the graph, to build and change it node by node, and each window's settings",
+            );
+            if tool_button(ui, Icon::Graph, &tip, true, advanced).clicked() {
+                chosen = Some(Action::Advanced);
+            }
             ui.separator();
 
             let running = self.runner.is_some();
@@ -396,15 +357,6 @@ fn icon_button(
     frame(ui, rect, &response, enabled, selected);
     let icon_rect = Rect::from_center_size(rect.center(), egui::vec2(icon_size, icon_size));
     paint(ui.painter(), icon_rect, ui.visuals().text_color(), enabled);
-    response.on_hover_text(tooltip)
-}
-
-/// A narrow button with just a down arrow, opening a menu for the button before it.
-fn arrow_button(ui: &mut egui::Ui, label: &str, tooltip: &str) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(14.0, BUTTON.y), Sense::click());
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label));
-    frame(ui, rect, &response, true, false);
-    icons::dropdown_arrow(ui.painter(), rect.center(), ui.visuals().text_color());
     response.on_hover_text(tooltip)
 }
 

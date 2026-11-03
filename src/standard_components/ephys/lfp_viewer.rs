@@ -400,6 +400,7 @@ impl LfpViewer {
         stream: Continuous,
         selection: Option<&mut ChannelSelection>,
     ) {
+        let advanced = context.advanced();
         ui.add_enabled_ui(!context.locked, |ui| {
             ui.horizontal_wrapped(|ui| {
                 let label = ui.label("Span");
@@ -414,7 +415,8 @@ impl LfpViewer {
                 ui.separator();
                 ui.checkbox(&mut self.spectrum, "Spectrum")
                     .on_hover_text("Each channel's spectrum over the band, from its last four seconds");
-                ui.add_enabled_ui(self.spectrum, |ui| {
+                // The band, in advanced mode.
+                if self.spectrum && advanced {
                     let nyquist = stream.sample_rate / Spectra::factor(stream.sample_rate) as f32 / 2.0;
                     let [low, high] = &mut self.band;
                     ui.add(egui::DragValue::new(low).range(0.0..=nyquist).speed(0.1)).on_hover_text("From (Hz)");
@@ -424,7 +426,7 @@ impl LfpViewer {
                     if *high <= *low {
                         *high = (*low + 0.5).min(nyquist);
                     }
-                });
+                }
                 // With the gain control connected, the upstream gain can be adjusted from here.
                 if let Some(Setting::Gain(mut gain)) = context.controls[0] {
                     ui.separator();

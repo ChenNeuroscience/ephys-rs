@@ -44,6 +44,10 @@ pub enum Icon {
     DevTools,
     /// Start or stop recording: a red dot.
     Record,
+    /// Advanced mode, with the graph: three nodes, joined.
+    Graph,
+    /// A pane's settings: a gear.
+    Settings,
 }
 
 const PAPER: Color32 = Color32::from_gray(246);
@@ -177,6 +181,30 @@ impl Icon {
                 for y in [7.0, 9.0, 11.0] {
                     painter.line_segment([p(6.0, y), p(10.0, y)], Stroke::new(0.8 * s, fade(Color32::from_gray(120))));
                 }
+            }
+            Icon::Graph => {
+                let link = Stroke::new(1.3 * s, ink);
+                painter.line_segment([p(4.0, 11.5), p(8.0, 4.0)], link);
+                painter.line_segment([p(8.0, 4.0), p(12.5, 11.0)], link);
+                painter.line_segment([p(4.0, 11.5), p(12.5, 11.0)], link);
+                for (x, y, c) in [
+                    (4.0, 11.5, Category::Source),
+                    (8.0, 4.0, Category::Processing),
+                    (12.5, 11.0, Category::Visualisation),
+                ] {
+                    painter.circle(p(x, y), 2.6 * s, fade(style::category_colour(c)), Stroke::new(0.8 * s, ink));
+                }
+            }
+            Icon::Settings => {
+                // A gear: teeth round a ring, with a hole.
+                let centre = p(8.0, 8.0);
+                for i in 0..8 {
+                    let a = PI / 4.0 * i as f32;
+                    let d = vec2(a.cos(), a.sin());
+                    painter.line_segment([centre + d * 4.0 * s, centre + d * 6.6 * s], Stroke::new(2.4 * s, ink));
+                }
+                painter.circle_stroke(centre, 4.4 * s, Stroke::new(1.8 * s, ink));
+                painter.circle_stroke(centre, 1.6 * s, Stroke::new(1.2 * s, ink));
             }
             Icon::Power => {
                 let stroke = Stroke::new(1.7 * s, ink);

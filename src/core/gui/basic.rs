@@ -1,7 +1,7 @@
 //! The basic view, the home pane's first mode, for people who'd rather not work with the graph: the components shown
 //! in it (viewers, unless set otherwise: see `NodeEntry::in_basic`), large, to open their windows (beside it); and the
 //! quick actions that apply to the graph, in grey (blue is for processing). Disabled components are faded, as on the
-//! graph. The graph's a click away ("Switch to graph", along the top, or in Home's menu).
+//! graph. The graph is in advanced mode (the toolbar's graph button), a click away.
 
 use std::collections::HashSet;
 
@@ -30,7 +30,7 @@ pub fn show<N: NodeSet>(
     events: &mut Vec<Event>,
 ) {
     egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-        egui::Frame::new().inner_margin(egui::Margin { left: 20, right: 20, top: 6, bottom: 16 }).show(ui, |ui| {
+        egui::Frame::new().inner_margin(egui::Margin::symmetric(20, 16)).show(ui, |ui| {
             ui.set_max_width(WIDTH.min(ui.available_width()));
             ui.label(RichText::new("Components").size(22.0).color(colours.text_primary));
             ui.add_space(8.0);

@@ -98,29 +98,50 @@ pub struct Context<'a, E: Edges> {
 impl<E: Edges> Context<'_, E> {
     /// The node's toolbar (see `NodeToolbar::toolbar`), if there is one here.
     pub fn node_toolbar(&mut self, ui: &mut egui::Ui) {
+        self.node_toolbar_with(ui, &mut |_| {});
+    }
+
+    /// The node's toolbar, with `settings` added to its settings menu (in advanced mode): options of the pane's own,
+    /// such as what it offers in basic mode.
+    pub fn node_toolbar_with(&mut self, ui: &mut egui::Ui, settings: &mut dyn FnMut(&mut egui::Ui)) {
         if let Some(tools) = &mut self.tools {
-            tools.toolbar(ui);
+            tools.toolbar_with(ui, settings);
         }
+    }
+
+    /// Whether the app's in advanced mode (see `crate::core::gui::docking::Mode`), rather than basic: what a pane
+    /// shows in each is up to it, but by convention, basic mode is simpler, and its settings menu (see
+    /// `node_toolbar_with`) offers what to show in basic mode. Advanced, where there's no toolbar (in tests, say).
+    pub fn advanced(&self) -> bool {
+        self.tools.as_ref().is_none_or(|t| t.advanced())
     }
 }
 
-/// The buttons every node has, for its window: each on its own, or all together. The GUI does what they ask.
+/// The buttons every node has, for its window: each on its own, or all together. The GUI does what they ask. Those
+/// that change the graph (its settings, enabling and deleting it) are only there in advanced mode (giving `None`
+/// otherwise).
 pub trait NodeToolbar {
+    /// Whether the app's in advanced mode.
+    fn advanced(&self) -> bool;
     /// Copy its settings.
     fn copy_button(&mut self, ui: &mut egui::Ui) -> egui::Response;
     /// Paste settings onto it.
     fn paste_button(&mut self, ui: &mut egui::Ui) -> egui::Response;
-    /// Whether it's shown in the basic view: on or off. This and the others that change the graph (enabling and
-    /// deleting) aren't there (are `None`) in the basic view, where the graph isn't changed node by node.
-    fn basic_toggle(&mut self, ui: &mut egui::Ui) -> Option<egui::Response>;
+    /// Its settings, in a menu: whether it shows in basic mode, then `more` (the pane's own options).
+    fn settings_menu(&mut self, ui: &mut egui::Ui, more: &mut dyn FnMut(&mut egui::Ui)) -> Option<egui::Response>;
     /// Whether it's enabled: on or off.
     fn enabled_toggle(&mut self, ui: &mut egui::Ui) -> Option<egui::Response>;
     /// Delete it.
     fn delete_button(&mut self, ui: &mut egui::Ui) -> Option<egui::Response>;
 
     /// All of them (that are there), in a row, laid out right to left (for the right of a toolbar): copy and paste;
-    /// shown in the basic view, and enabled; delete. In a wrapping toolbar, on a row of their own if there isn't room left.
+    /// settings, and enabled; delete. In a wrapping toolbar, on a row of their own if there isn't room left.
     fn toolbar(&mut self, ui: &mut egui::Ui) {
+        self.toolbar_with(ui, &mut |_| {});
+    }
+
+    /// All of them, with `settings` added to the settings menu.
+    fn toolbar_with(&mut self, ui: &mut egui::Ui, settings: &mut dyn FnMut(&mut egui::Ui)) {
         let width_id = ui.scope_id().with("node toolbar width");
         let width: f32 = ui.data(|d| d.get_temp(width_id)).unwrap_or(0.0);
         if ui.available_size_before_wrap().x < width {
@@ -132,7 +153,7 @@ pub trait NodeToolbar {
                 ui.separator();
             }
             let enabled = self.enabled_toggle(ui);
-            if self.basic_toggle(ui).is_some() || enabled.is_some() {
+            if self.settings_menu(ui, settings).is_some() || enabled.is_some() {
                 ui.separator();
             }
             self.paste_button(ui);

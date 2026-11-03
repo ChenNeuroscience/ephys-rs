@@ -1,11 +1,11 @@
 //! The dockable layout, like an IDE's: the home pane, the dev tools and node windows are panes that can be
-//! dragged by their tabs to sit beside, above or below each other, or together as tabs. The home pane is in one of
-//! two modes: the basic view (the viewers, and quick actions), or the graph.
+//! dragged by their tabs to sit beside, above or below each other, or together as tabs. The app is in basic or
+//! advanced mode (see `Mode`): the home pane shows the basic view (the viewers, and quick actions) or the graph.
 //!
-//! A node's window opens docked. In the graph mode, it goes alongside the largest group of node windows, or failing
-//! that in a new panel below the graph. In the basic mode, it goes beside the basic view, the windows sharing the
-//! space beside it (a few, one above another, then as tabs). It can be undocked to float, and docked again. Closing a docked window hides it but keeps
-//! its place in the layout, so it comes back where it was when reopened.
+//! A node's window opens docked. In advanced mode, it goes alongside the largest group of node windows, or failing
+//! that in a new panel below the graph. In basic mode, it goes beside the basic view, the windows sharing the space
+//! beside it (a few, one above another, then as tabs). It can be undocked to float, and docked again. Closing a
+//! docked window hides it but keeps its place in the layout, so it comes back where it was when reopened.
 
 use std::collections::{BTreeSet, HashSet};
 
@@ -36,21 +36,21 @@ pub enum Pane {
     Node(NodeId),
 }
 
-/// What the home pane shows.
+/// Basic or advanced: what the home pane shows, and what panes offer (each pane decides: see `Context::advanced`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 pub enum Mode {
     /// The viewers, large, and quick actions: for most people, most of the time.
     #[default]
     Basic,
-    /// The graph, to build and change it node by node.
-    Graph,
+    /// The graph, to build and change it node by node, and each pane's settings.
+    Advanced,
 }
 
 impl Mode {
     pub fn name(self) -> &'static str {
         match self {
             Mode::Basic => "Basic",
-            Mode::Graph => "Graph",
+            Mode::Advanced => "Advanced",
         }
     }
 }
@@ -532,7 +532,7 @@ pub fn node_ui<N: NodeSet>(
     colours: &Colours,
     runner: Option<&Runner<N>>,
     locked: bool,
-    basic: bool,
+    advanced: bool,
     id: NodeId,
     events: &mut Vec<Event>,
 ) {
@@ -544,13 +544,13 @@ pub fn node_ui<N: NodeSet>(
         if has_view {
             let Some(entry) = graph.get(id) else { return };
             let mut tools =
-                NodeTools { id, in_basic: entry.in_basic(), enabled: !entry.disabled, basic, events: &mut *events };
+                NodeTools { id, in_basic: entry.in_basic(), enabled: !entry.disabled, advanced, events: &mut *events };
             let tools = Some(&mut tools as &mut dyn crate::core::engine::NodeToolbar);
             graph.edit(id, &state.input_streams, colours, display, running, locked, tools, |node: &mut N, context| {
                 node.view_ui(ui, context)
             });
         } else {
-            node_window::show(ui, graph, resolved, colours, display, running, locked, basic, id, events);
+            node_window::show(ui, graph, resolved, colours, display, running, locked, advanced, id, events);
         }
     };
     let shown = runner.and_then(|runner| runner.exchange().with_latest(id, |display| show(graph, Some(display))));
@@ -677,19 +677,16 @@ fn padded(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
 impl<N: NodeSet, A: AnnotationSet> Panes<'_, N, A> {
     fn pane_contents(&mut self, ui: &mut egui::Ui, pane: Pane) {
         match pane {
-            Pane::Home if self.mode == Mode::Basic => {
-                toolbar::home_strip(ui, Mode::Graph, self.events, |_, _| {});
-                basic::show(
-                    ui,
-                    self.graph,
-                    self.resolved,
-                    self.colours,
-                    self.quick_actions,
-                    self.open_windows,
-                    self.locked,
-                    self.events,
-                )
-            }
+            Pane::Home if self.mode == Mode::Basic => basic::show(
+                ui,
+                self.graph,
+                self.resolved,
+                self.colours,
+                self.quick_actions,
+                self.open_windows,
+                self.locked,
+                self.events,
+            ),
             Pane::Home => {
                 // The line under the toolbar right under it, so its margins above and below are the same.
                 ui.spacing_mut().item_spacing.y = 0.0;
@@ -720,8 +717,8 @@ impl<N: NodeSet, A: AnnotationSet> Panes<'_, N, A> {
             Pane::Node(id) => {
                 let (graph, resolved, colours, runner, locked) =
                     (&mut *self.graph, self.resolved, self.colours, self.runner, self.locked);
-                let basic = self.mode == Mode::Basic;
-                padded(ui, |ui| node_ui(ui, graph, resolved, colours, runner, locked, basic, id, self.events))
+                let advanced = self.mode == Mode::Advanced;
+                padded(ui, |ui| node_ui(ui, graph, resolved, colours, runner, locked, advanced, id, self.events))
             }
         }
     }

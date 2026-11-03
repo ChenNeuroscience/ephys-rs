@@ -64,9 +64,8 @@ pub fn run<C: Components>(path: Option<PathBuf>) -> eframe::Result {
                 app.theme = index;
             }
             app.themes[app.theme].apply(&cc.egui_ctx);
-            if let Some(home) = cc.storage.and_then(|s| eframe::get_value::<Mode>(s, HOME_KEY)) {
-                app.home_mode = home;
-                app.layout.mode = home;
+            if let Some(mode) = cc.storage.and_then(|s| eframe::get_value::<Mode>(s, MODE_KEY)) {
+                app.layout.mode = mode;
             }
             // For images in annotations.
             egui_extras::install_image_loaders(&cc.egui_ctx);
@@ -95,7 +94,7 @@ pub fn version() -> String {
 
 /// Where the theme (by name) is kept among the app's preferences (which eframe saves, separately from graph files).
 const THEME_KEY: &str = "theme";
-const HOME_KEY: &str = "home";
+const MODE_KEY: &str = "mode";
 
 /// Something a pane asked for, handled once the panes are drawn.
 pub enum Event {
@@ -117,7 +116,6 @@ pub enum Event {
     /// Do the quick action of this index.
     QuickAction(usize),
     /// Show the graph in the home pane.
-    ShowGraph,
     /// Do an action (from the graph's toolbar), with where a menu it opens goes.
     Perform(Action, Option<Pos2>),
     /// List a node in the basic view, or not.
@@ -195,9 +193,6 @@ pub struct App<N: NodeSet, A: AnnotationSet> {
     /// While the nodes prepare to record, where the recording comes from when they're ready.
     preparing: Option<std::sync::mpsc::Receiver<engine::Recording>>,
     dev_tools: dev_tools::DevTools,
-    /// What the home pane shows at home: when the app starts, a file's opened, or Home's pressed. The user's, kept
-    /// across files (as the theme is).
-    home_mode: Mode,
     /// Offered in the basic view.
     quick_actions: &'static [crate::core::quick_action::QuickAction<N>],
     /// How many workers runs start with.
@@ -245,7 +240,6 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             ran: None,
             last_crash: None,
             quick_actions: &[],
-            home_mode: Mode::Basic,
         };
         if let Some(path) = path {
             if path.exists() {
@@ -306,8 +300,10 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
     fn load(&mut self, path: &Path) -> Result<(), String> {
         let json = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
         let file: SaveFile<N, A> = serde_json::from_str(&json).map_err(|e| e.to_string())?;
+        // The mode's the user's, kept across files (as the theme is).
+        let mode = self.layout.mode;
         self.layout = file.layout.unwrap_or_default();
-        self.layout.mode = self.home_mode;
+        self.layout.mode = mode;
         self.history = History::new(&file.graph, &file.annotations);
         self.graph = file.graph;
         self.annotations = file.annotations;
@@ -681,7 +677,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             action,
             Action::AddNode | Action::DrawTool(_) | Action::FrameAll | Action::ActualSize | Action::Arrange
         ) {
-            self.show_mode(Mode::Graph);
+            self.show_mode(Mode::Advanced);
         }
         match action {
             Action::New => self.new_file(ctx),
@@ -720,14 +716,10 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                     self.graph.set_edge_disabled(edge, !disabled);
                 }
             }
-            Action::Home => self.show_mode(self.home_mode),
-            Action::ShowBasic => {
-                self.home_mode = Mode::Basic;
-                self.show_mode(Mode::Basic);
-            }
-            Action::ShowGraph => {
-                self.home_mode = Mode::Graph;
-                self.show_mode(Mode::Graph);
+            Action::Home => self.layout.show(Pane::Home),
+            Action::Advanced => {
+                let mode = if self.layout.mode == Mode::Advanced { Mode::Basic } else { Mode::Advanced };
+                self.show_mode(mode);
             }
             Action::CloseHome => self.layout.hide(Pane::Home),
             Action::Arrange => {
@@ -741,8 +733,9 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             Action::FrameAll => self.canvas.frame_all(),
             Action::ActualSize => self.canvas.reset_zoom(),
             Action::ResetLayout => {
+                let mode = self.layout.mode;
                 self.layout = Layout::default();
-                self.layout.mode = self.home_mode;
+                self.layout.mode = mode;
             }
             // Goes through `confirm_close`, like closing the window.
             Action::Quit => ctx.send_viewport_cmd(ViewportCommand::Close),
@@ -870,7 +863,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                     let colour = if status.ok { colours.success } else { colours.warning };
                     ui.label(RichText::new(&status.message).color(colour))
                 }
-                (_, Some(hint)) if self.layout.mode == Mode::Graph => ui.label(hint),
+                (_, Some(hint)) if self.layout.mode == Mode::Advanced => ui.label(hint),
                 _ if !self.layout.is_shown(Pane::Home) => {
                     ui.weak("Home, at the left of the toolbar, brings back the basic view or the graph")
                 }
@@ -917,7 +910,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
     fn floating_windows(&mut self, ctx: &egui::Context, resolved: &Resolved<N::Edges>, events: &mut Vec<Event>) {
         let locked = self.locked();
         let colours = self.colours();
-        let in_basic_view = self.layout.mode == Mode::Basic;
+        let advanced = self.layout.mode == Mode::Advanced;
         for id in self.layout.floating() {
             let started = Instant::now();
             let Some(entry) = self.graph.get(id) else { continue };
@@ -944,7 +937,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                             colours,
                             self.runner.as_ref(),
                             locked,
-                            in_basic_view,
+                            advanced,
                             id,
                             events,
                         );
@@ -997,12 +990,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             }
             Event::Status(message) => self.set_status(ctx, message),
             Event::QuickAction(index) => self.quick_action(index),
-            Event::ShowGraph => self.show_mode(Mode::Graph),
             Event::Perform(action, anchor) => {
-                // Showing the basic view from the graph's toolbar doesn't change home.
-                if action == Action::ShowBasic {
-                    return self.show_mode(Mode::Basic);
-                }
                 if anchor.is_some() {
                     self.add_anchor = anchor;
                 }
@@ -1268,7 +1256,7 @@ impl<N: NodeSet, A: AnnotationSet> eframe::App for App<N, A> {
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, THEME_KEY, &self.themes[self.theme].name);
-        eframe::set_value(storage, HOME_KEY, &self.home_mode);
+        eframe::set_value(storage, MODE_KEY, &self.layout.mode);
     }
 }
 
@@ -1398,7 +1386,7 @@ mod tests {
         let mut app = TestApp::open(Some(example()), THEMES)
             .with_quick_actions(crate::standard_components::quick_actions::QUICK_ACTIONS);
         // Most tests work on the graph.
-        app.layout.mode = Mode::Graph;
+        app.layout.mode = Mode::Advanced;
         assert!(app.status.is_none(), "the example opens");
         let mut harness = Harness::builder()
             .with_size([1400.0, 850.0])
@@ -1850,10 +1838,10 @@ mod tests {
         harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
         harness.run_steps(2);
         assert!(offered(&harness, "Disable position tracking"));
-        // To the graph, and back.
-        harness.get_by_label("Switch to graph").click();
+        // Advanced mode, with the graph, and back.
+        harness.get_by_label_contains("Advanced mode").click();
         harness.run_steps(2);
-        assert_eq!(harness.state().layout.mode, Mode::Graph);
+        assert_eq!(harness.state().layout.mode, Mode::Advanced);
         harness.key_press_modifiers(Modifiers::COMMAND, Key::Num1);
         harness.run_steps(2);
         assert_eq!(harness.state().layout.mode, Mode::Basic);
@@ -1870,22 +1858,15 @@ mod tests {
         harness.run_steps(2);
         assert!(!card(&harness, "Spike Viewer") && card(&harness, "Spike Detector"));
 
-        // Closed, Home brings it back, in the home mode: the graph, once chosen from Home's menu.
+        // Closed, Home brings it back: in advanced mode, the graph.
         let ctx = harness.ctx.clone();
+        harness.state_mut().perform(&ctx, Action::Advanced);
         harness.state_mut().perform(&ctx, Action::CloseHome);
         harness.run_steps(2);
         assert!(!harness.state().layout.is_shown(Pane::Home));
-        harness.get_by_label("Home menu").click();
-        harness.run_steps(2);
-        harness.get_by_label_contains("Graph: every node").click();
-        harness.run_steps(2);
-        assert_eq!((harness.state().home_mode, harness.state().layout.mode), (Mode::Graph, Mode::Graph));
-        let ctx = harness.ctx.clone();
-        harness.state_mut().perform(&ctx, Action::CloseHome);
-        harness.run_steps(2);
         harness.get_by_label_contains("Home: the graph").click();
         harness.run_steps(2);
-        assert!(harness.state().layout.is_shown(Pane::Home) && harness.state().layout.mode == Mode::Graph);
+        assert!(harness.state().layout.is_shown(Pane::Home) && harness.state().layout.mode == Mode::Advanced);
     }
 
     #[test]
@@ -1996,13 +1977,21 @@ mod tests {
     }
 
     #[test]
-    fn the_graphs_toolbar_switches_to_the_basic_view() {
+    fn panes_have_settings_in_advanced_mode() {
         let mut harness = harness();
-        harness.state_mut().home_mode = Mode::Graph;
-        harness.get_by_label("Switch to basic").click();
+        // In basic mode: no settings, enabling or deleting in panes.
+        harness.state_mut().layout.mode = Mode::Basic;
+        let viewer = node_named(harness.state(), "Spike Viewer");
+        harness.state_mut().layout.open(viewer);
         harness.run_steps(2);
-        assert_eq!(harness.state().layout.mode, Mode::Basic);
-        assert_eq!(harness.state().home_mode, Mode::Graph, "home's unchanged");
+        assert!(harness.query_by_label("Settings").is_none() && harness.query_by_label("Enabled").is_none());
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::Num1);
+        harness.run_steps(2);
+        harness.get_by_label("Settings").click();
+        harness.run_steps(2);
+        harness.get_by_label("Show in basic mode").click();
+        harness.run_steps(2);
+        assert_eq!(harness.state().graph.get(viewer).unwrap().basic, Some(false), "taken out of basic mode");
     }
 
     #[test]

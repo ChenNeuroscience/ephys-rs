@@ -22,7 +22,7 @@ pub fn show<N: NodeSet>(
     display: Option<&(dyn Any + Send)>,
     running: bool,
     locked: bool,
-    basic: bool,
+    advanced: bool,
     id: NodeId,
     events: &mut Vec<Event>,
 ) {
@@ -38,7 +38,7 @@ pub fn show<N: NodeSet>(
             .desired_width(width);
         ui.add(name).on_hover_text("Its name");
         let mut tools =
-            NodeTools { id, in_basic: entry.in_basic(), enabled: !entry.disabled, basic, events: &mut *events };
+            NodeTools { id, in_basic: entry.in_basic(), enabled: !entry.disabled, advanced, events: &mut *events };
         tools.toolbar(ui);
     });
     ui.horizontal_wrapped(|ui| {
