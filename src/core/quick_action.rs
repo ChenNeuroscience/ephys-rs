@@ -2,7 +2,8 @@
 //! node by node ("add spike tracking", say). Each is a pure function: given the graph (with all its settings) and
 //! which node windows are open, it gives the graph to change to and the windows to open and close; or nothing, if it doesn't
 //! apply to this graph (it's already doing it, say), when it isn't offered. Windows it opens are put somewhere
-//! sensible by the layout, beside the home pane; or it can arrange the panes itself (see `Arrangement`). The program supplies its quick actions (see main.rs), through
+//! sensible by the layout, beside the home pane; or it can arrange the panes itself (see `Arrangement`). It says
+//! what it did (`QuickChange::summary`), which is logged. The program supplies its quick actions (see main.rs), through
 //! `Components`.
 
 use std::collections::HashSet;
@@ -33,6 +34,8 @@ pub struct QuickChange<N: NodeSet> {
     pub arrange: bool,
     /// Where to put the panes, if it says: replacing the layout, the windows in it opened (and docked).
     pub panes: Option<Arrangement>,
+    /// What it did, in a line, for the log: "added Spike Detector, Spike Viewer; connected 3", say.
+    pub summary: String,
 }
 
 /// An arrangement of the panes: rows and columns of groups of tabs.

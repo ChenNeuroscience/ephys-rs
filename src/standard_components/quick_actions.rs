@@ -51,15 +51,17 @@ pub const QUICK_ACTIONS: &[QuickAction<Nodes>] = &[
 const STEP: f32 = 280.0;
 const NODE_HEIGHT: f32 = 150.0;
 
-/// The graph being changed, and whether it has been.
+/// The graph being changed, and what's been done to it.
 struct Change {
     graph: Graph<Nodes>,
     changed: bool,
+    added: Vec<String>,
+    connected: usize,
 }
 
 impl Change {
     fn new(graph: &Graph<Nodes>) -> Self {
-        Change { graph: graph.clone(), changed: false }
+        Change { graph: graph.clone(), changed: false, added: Vec::new(), connected: 0 }
     }
 
     /// The first node that's `matches`.
@@ -93,7 +95,9 @@ impl Change {
             pos[1] += 40.0;
         }
         self.changed = true;
-        self.graph.add(node, pos)
+        let id = self.graph.add(node, pos);
+        self.added.extend(self.graph.get(id).map(|e| e.label.clone()));
+        id
     }
 
     /// Whether a port has an edge.
@@ -110,6 +114,7 @@ impl Change {
         };
         if free && self.graph.connect(from, to).is_ok() {
             self.changed = true;
+            self.connected += 1;
         }
     }
 
@@ -117,7 +122,22 @@ impl Change {
     /// does it all).
     fn finish(self, state: &QuickState<Nodes>, windows: &[NodeId]) -> Option<QuickChange<Nodes>> {
         let open = windows.iter().copied().filter(|w| !state.open_windows.contains(w)).collect();
-        self.changed.then_some(QuickChange { graph: self.graph, open, arrange: false, panes: None, close: Vec::new() })
+        let mut done = Vec::new();
+        if !self.added.is_empty() {
+            done.push(format!("added {}", self.added.join(", ")));
+        }
+        if self.connected > 0 {
+            done.push(format!("connected {}", self.connected));
+        }
+        let summary = done.join("; ");
+        self.changed.then_some(QuickChange {
+            graph: self.graph,
+            open,
+            arrange: false,
+            panes: None,
+            close: Vec::new(),
+            summary,
+        })
     }
 }
 
@@ -256,7 +276,9 @@ fn set_positions_disabled(state: &QuickState<Nodes>, disabled: bool) -> Option<Q
         .filter(|id| matches!(graph.get(*id).map(|e| &e.node), Some(Nodes::TrackerView(_))))
         .collect();
     let (open, close) = if disabled { (Vec::new(), trackers) } else { (trackers, Vec::new()) };
-    Some(QuickChange { graph, open, close, arrange: false, panes: None })
+    let names: Vec<String> = ids.iter().filter_map(|id| graph.get(*id).map(|e| e.label.clone())).collect();
+    let summary = format!("{} {}", if disabled { "disabled" } else { "enabled" }, names.join(", "));
+    Some(QuickChange { graph, open, close, arrange: false, panes: None, summary })
 }
 
 fn disable_positions(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
@@ -270,22 +292,30 @@ fn enable_positions(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
 /// Sets every board and camera to the synthetic data or to real devices, if any isn't already.
 fn set_synthetic(state: &QuickState<Nodes>, synthetic: bool) -> Option<QuickChange<Nodes>> {
     let mut graph = state.graph.clone();
-    let mut changed = false;
+    let mut changed = Vec::new();
     for id in graph.ids().collect::<Vec<_>>() {
         let Some(entry) = graph.get_mut(id) else { continue };
         match &mut entry.node {
             Nodes::AcquisitionBoard(b) if matches!(b.source, board::Source::Fake { .. }) != synthetic => {
                 b.source = if synthetic { board::Source::default() } else { real_board() };
-                changed = true;
+                changed.push(entry.label.clone());
             }
             Nodes::Camera(c) if matches!(c.source, camera::Source::Fake { .. }) != synthetic => {
                 c.source = if synthetic { camera::Source::default() } else { real_camera() };
-                changed = true;
+                changed.push(entry.label.clone());
             }
             _ => {}
         }
     }
-    changed.then_some(QuickChange { graph, open: Vec::new(), arrange: false, panes: None, close: Vec::new() })
+    let summary = format!("{} now {}", changed.join(", "), if synthetic { "synthetic" } else { "real devices" });
+    (!changed.is_empty()).then_some(QuickChange {
+        graph,
+        open: Vec::new(),
+        arrange: false,
+        panes: None,
+        close: Vec::new(),
+        summary,
+    })
 }
 
 fn synthetic(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
@@ -317,6 +347,7 @@ mod tests {
         assert_eq!(offered(&empty), vec!["Standard LTX graph v0.5"]);
         let change = run("Standard LTX graph v0.5", &empty).unwrap();
         assert!(change.arrange, "a new graph is laid out");
+        assert!(change.summary.starts_with("added Acquisition Board, "), "{}", change.summary);
         assert_eq!(change.open.len(), 4, "the four viewers");
         let graph = change.graph;
         let resolved = graph.resolve();

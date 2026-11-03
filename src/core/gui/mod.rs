@@ -672,7 +672,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         for id in change.close {
             self.layout.close(id);
         }
-        log::info!("{}", action.name);
+        log::info!("Quick action \"{}\": {}", action.name, change.summary);
     }
 
     fn perform(&mut self, ctx: &egui::Context, action: Action) {
@@ -1213,6 +1213,31 @@ fn describe_change<N: NodeSet>(before: &engine::Snapshot<N>, after: &engine::Sna
     }
     if !changed.is_empty() {
         changes.push(format!("Settings of {}", names(new, changed)));
+    }
+    let switched = |disabled: bool| -> Vec<NodeId> {
+        new.iter()
+            .filter(|(id, e)| e.disabled == disabled && old.get(*id).is_some_and(|o| o.disabled != disabled))
+            .map(|(id, _)| id)
+            .collect()
+    };
+    let (disabled, enabled) = (switched(true), switched(false));
+    if !disabled.is_empty() {
+        changes.push(format!("Disabled {}", names(new, disabled)));
+    }
+    if !enabled.is_empty() {
+        changes.push(format!("Enabled {}", names(new, enabled)));
+    }
+    let edges_switched = |disabled: bool| {
+        new.edges()
+            .iter()
+            .filter(|e| old.edges().contains(e))
+            .filter(|e| new.is_edge_disabled(e) == disabled && old.is_edge_disabled(e) != disabled)
+            .count()
+    };
+    for (count, what) in [(edges_switched(true), "disabled"), (edges_switched(false), "enabled")] {
+        if count > 0 {
+            changes.push(format!("{count} connection{} {what}", if count == 1 { "" } else { "s" }));
+        }
     }
     let connected = new.edges().iter().filter(|e| !old.edges().contains(e)).count();
     let disconnected = old.edges().iter().filter(|e| !new.edges().contains(e)).count();
@@ -1879,11 +1904,15 @@ mod tests {
             d.thresholds.set(0, 70.0);
         }
         harness.run_steps(3);
+        let viewer = node_named(harness.state(), "TTL Viewer");
+        harness.state_mut().graph.get_mut(viewer).unwrap().disabled = true;
+        harness.run_steps(3);
         harness.state_mut().set_recording(Some(Arc::new(engine::Recording::default())));
         harness.run_steps(3);
         let marks: Vec<String> = harness.state().frame_times.marks.iter().map(|m| m.detail.clone()).collect();
         assert!(marks.iter().any(|m| m.contains("Settings of Spike Detector")), "{marks:?}");
         assert!(marks.iter().any(|m| m.contains("Recording started")), "{marks:?}");
+        assert!(marks.iter().any(|m| m.contains("Disabled TTL Viewer")), "{marks:?}");
         harness.state_mut().set_recording(None);
         harness.state_mut().perform(&ctx, Action::Play);
     }
