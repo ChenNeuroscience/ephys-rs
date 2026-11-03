@@ -1,9 +1,9 @@
 //! The Spike Detector: finds spikes in groups of channels (tetrodes, say) of continuous data: a crossing of a
 //! channel's threshold (µV past zero, the way the spikes go), on any of a group's channels, then the waveform on all
-//! of them around the peak that follows. Each channel's threshold, and gain (which spikes are recorded, and viewed,
-//! at), are settings, set from the Spike Viewer, which can also choose them from the data: the detector measures
-//! each channel's noise for that (its median absolute value / 0.6745, as the Open Ephys spike detector does, which
-//! spikes themselves hardly move).
+//! of them around the peak that follows. Each channel's threshold is a setting, set by hand, from a Spike Viewer,
+//! or chosen from the data when it's triggered ("auto detect"): so many standard deviations of the channel's noise
+//! over a while (its median absolute value / 0.6745, as the Open Ephys spike detector has it, which spikes
+//! themselves hardly move).
 //!
 //! A group can't spike again until its last spike's waveform has ended, so spikes don't overlap, and a pass's
 //! spikes always fit the buffer (see `Spikes`). A spike is only found once its whole waveform has come, so
@@ -14,7 +14,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::engine::EdgeType;
 use crate::core::engine::{Category, Context, Input, Node, NodeInfo, Output, PASS_DURATION, Pass, SettingPort};
-use crate::standard_components::spikes::{GAINS, Gains, Polarity, Spike, Spikes, Thresholds, range_uv};
+use crate::core::exchange::Latest;
+use crate::standard_components::spikes::spike_gain::{AUTO_DETECT, SAMPLING, auto_detect_ui};
+use crate::standard_components::spikes::{Polarity, Spike, Spikes, Thresholds};
 use crate::standard_components::widgets::{combo, input_summary, require_input, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
 
@@ -28,7 +30,10 @@ pub struct SpikeDetector {
     pub pre: u32,
     pub post: u32,
     pub thresholds: Thresholds,
-    pub gains: Gains,
+    /// Thresholds chosen from the data are this many standard deviations of each channel's noise, sampled for so
+    /// many seconds.
+    pub threshold_sd: f32,
+    pub sampling: f32,
 }
 
 impl Default for SpikeDetector {
@@ -39,7 +44,8 @@ impl Default for SpikeDetector {
             pre: 8,
             post: 32,
             thresholds: Thresholds::default(),
-            gains: Gains::default(),
+            threshold_sd: 4.0,
+            sampling: 10.0,
         }
     }
 }
@@ -73,12 +79,16 @@ pub struct Detector {
     scratch: Vec<f32>,
     /// For each group, the first position (in `samples`) its next spike's peak can be at.
     next: Vec<i64>,
+    /// While choosing thresholds from the data: seconds sampled, of how many; and each channel's noise summed over
+    /// the passes so far, and how many.
+    sampling: Option<(f64, f64, Vec<f64>, u32)>,
+    shown: Latest<Option<(f32, f32)>>,
 }
 
 impl crate::core::engine::PassState for Detector {
     const WHY: &'static str = "Each channel's last samples (so a spike across two passes is found whole), its \
-                               noise level (smoothed over passes), and when each group can next spike (so a \
-                               group's spikes don't overlap).";
+                               noise level (smoothed over passes), when each group can next spike (so a group's \
+                               spikes don't overlap), and while choosing thresholds, the noise sampled so far.";
 }
 
 impl Detector {
@@ -96,6 +106,7 @@ impl Detector {
             noise: Vec::new(),
             scratch: Vec::with_capacity(pass),
             next: vec![0; spikes.groups() as usize],
+            ..Default::default()
         }
     }
 
@@ -149,7 +160,6 @@ impl Node<Edges> for SpikeDetector {
         }
         for channel in 0..channels {
             output.thresholds[channel] = self.thresholds.get(channel);
-            output.gains[channel] = self.gains.get(channel);
         }
         if detector.noise.len() < channels {
             output.noise.fill(0.0);
@@ -212,6 +222,7 @@ impl Node<Edges> for SpikeDetector {
             let row = &mut detector.samples[channel * stride..(channel + 1) * stride];
             row.copy_within(n..n + tail, 0);
         }
+        self.choose_thresholds(pass, detector);
     }
 
     fn inputs(&self) -> Vec<Input<Edges>> {
@@ -242,18 +253,17 @@ impl Node<Edges> for SpikeDetector {
     }
 
     fn settings(&self) -> Vec<SettingPort<Edges>> {
-        vec![
-            SettingPort { name: "thresholds", value: self.thresholds.clone().into() },
-            SettingPort { name: "gains", value: self.gains.clone().into() },
-        ]
+        vec![SettingPort { name: "thresholds", value: self.thresholds.clone().into() }]
     }
 
     fn set_setting(&mut self, _index: usize, value: Setting) {
-        match value {
-            Setting::Thresholds(t) => self.thresholds = t,
-            Setting::Gains(g) => self.gains = g,
-            _ => {}
+        if let Setting::Thresholds(t) = value {
+            self.thresholds = t;
         }
+    }
+
+    fn triggers(&self, _setting: usize) -> &'static [&'static str] {
+        &[AUTO_DETECT]
     }
 
     fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
@@ -283,8 +293,20 @@ impl Node<Edges> for SpikeDetector {
             setting(ui, "Before peak", |ui| ui.add(egui::DragValue::new(&mut self.pre).range(1..=64).suffix(pre)));
             setting(ui, "After peak", |ui| ui.add(egui::DragValue::new(&mut self.post).range(1..=128).suffix(post)));
             setting(ui, "Thresholds", |ui| ui.label(self.thresholds.summary()));
-            setting(ui, "Gains", |ui| ui.label(self.gains.summary()));
+            setting(ui, "Auto detect at", |ui| {
+                ui.add(egui::DragValue::new(&mut self.threshold_sd).range(1.0..=20.0).speed(0.05).suffix(" SD"))
+                    .on_hover_text("Thresholds chosen from the data are this many standard deviations of the noise")
+            });
+            setting(ui, "over", |ui| {
+                ui.add(egui::DragValue::new(&mut self.sampling).range(SAMPLING).speed(0.2).suffix(" s"))
+                    .on_hover_text("How long to sample the noise for")
+            });
         });
+        let tip = format!(
+            "Sample the noise, then set each channel's threshold to {} standard deviations of it",
+            self.threshold_sd
+        );
+        auto_detect_ui(ui, context, None, &tip);
         if channels > 0 {
             self.channels_ui(ui, channels);
         }
@@ -293,16 +315,45 @@ impl Node<Edges> for SpikeDetector {
 }
 
 impl SpikeDetector {
-    /// Each channel's threshold and gain, to set by hand (they're usually set from a Spike Viewer).
+    /// When triggered, samples each channel's noise for a while, then proposes thresholds from it.
+    fn choose_thresholds(&self, pass: &Pass<Edges>, detector: &mut Detector) {
+        let channels = detector.noise.len();
+        if pass.triggered(AUTO_DETECT) {
+            let seconds = self.sampling.clamp(*SAMPLING.start(), *SAMPLING.end()) as f64;
+            detector.sampling = Some((0.0, seconds, vec![0.0; channels], 0));
+        }
+        if let Some((elapsed, seconds, sums, passes)) = &mut detector.sampling {
+            for (sum, noise) in sums.iter_mut().zip(&detector.noise) {
+                *sum += *noise as f64;
+            }
+            *passes += 1;
+            *elapsed += pass.duration;
+            pass.trigger_progress(AUTO_DETECT, (*elapsed / *seconds) as f32);
+            if *elapsed >= *seconds {
+                let mut thresholds = self.thresholds.clone();
+                for (channel, sum) in sums.iter().enumerate() {
+                    let noise = (sum / (*passes).max(1) as f64) as f32;
+                    if noise > 0.0 {
+                        thresholds.set(channel, (self.threshold_sd * noise).max(0.5));
+                    }
+                }
+                pass.propose(0, Setting::Thresholds(thresholds));
+                pass.trigger_done(AUTO_DETECT);
+                detector.sampling = None;
+            }
+        }
+        let progress = detector.sampling.as_ref().map(|s| (s.0 as f32, s.1 as f32));
+        detector.shown.send(pass, |shown| *shown = progress);
+    }
+
+    /// Each channel's threshold, to set by hand (usually set from a Spike Viewer, or chosen from the data).
     fn channels_ui(&mut self, ui: &mut egui::Ui, channels: usize) {
         egui::CollapsingHeader::new("Each channel")
             .id_salt("each channel")
             .show(ui, |ui| {
-                ui.weak("Usually set from a Spike Viewer: drag a threshold, or choose them from the data.");
-                egui::Grid::new("channels").num_columns(3).striped(true).show(ui, |ui| {
+                egui::Grid::new("channels").num_columns(2).striped(true).show(ui, |ui| {
                     ui.strong("Channel");
                     ui.strong("Threshold");
-                    ui.strong("Gain");
                     ui.end_row();
                     for channel in 0..channels {
                         ui.label(format!("{}", channel + 1));
@@ -310,12 +361,6 @@ impl SpikeDetector {
                         let field = egui::DragValue::new(&mut threshold).range(0.1..=10_000.0).speed(0.5).suffix(" µV");
                         if ui.add(field).changed() {
                             self.thresholds.set(channel, threshold);
-                        }
-                        let mut gain = self.gains.get(channel);
-                        let range = format!(" (±{:.0} µV)", range_uv(gain));
-                        let field = egui::DragValue::new(&mut gain).range(GAINS).speed(10.0).prefix("×").suffix(range);
-                        if ui.add(field).changed() {
-                            self.gains.set(channel, gain);
                         }
                         ui.end_row();
                     }
@@ -399,5 +444,35 @@ mod tests {
         let peaks: Vec<i64> = found.iter().map(|(p, s, _)| *p as i64 * 600 + s.sample as i64).collect();
         assert!(peaks.windows(2).all(|w| w[1] - w[0] >= 40), "{peaks:?}");
         assert!(found.len() >= 10, "{}", found.len());
+    }
+
+    #[test]
+    fn chooses_thresholds_from_the_noise_when_triggered() {
+        let detector = SpikeDetector { sampling: 4.0, threshold_sd: 4.0, ..Default::default() };
+        let stream = Continuous { channels: 4, sample_rate: 30000.0 };
+        let mut state = detector.initial_state(&[Some(DataStream::Continuous(stream))]);
+        let spikes = detector.stream(4, 30000.0);
+        let exchange = Pass::<Edges>::new(0, PASS_DURATION, &[], &mut []).exchange;
+        exchange.fire(crate::core::engine::NodeId(0), AUTO_DETECT);
+        let passes = (4.0 / PASS_DURATION).round() as u64;
+        for sequence in 0..passes {
+            let mut input = stream.buffer(PASS_DURATION);
+            input.len = 600;
+            for (channel, samples) in noise(4, 600, sequence * 10).iter().enumerate() {
+                input.channel_mut(channel).copy_from_slice(samples);
+            }
+            let input = Buffer::Continuous(input);
+            let mut outputs = [Buffer::Spikes(spikes.buffer(PASS_DURATION))];
+            let inputs = [Some(&input)];
+            let mut pass = Pass::new(sequence, PASS_DURATION, &inputs, &mut outputs);
+            pass.exchange = exchange;
+            detector.process(&mut pass, &mut state);
+        }
+        let proposals = exchange.take_proposals();
+        let Some(Setting::Thresholds(thresholds)) = proposals[0].2.downcast_ref::<Setting>() else { panic!() };
+        for channel in 0..4 {
+            let threshold = thresholds.get(channel);
+            assert!((20.0..50.0).contains(&threshold), "4 SD of the noise (10 µV at most): {threshold}");
+        }
     }
 }

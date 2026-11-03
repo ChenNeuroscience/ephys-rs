@@ -1,4 +1,4 @@
-//! Handing things from a node's passes to its window, without either waiting on the other.
+//! Handing things from a node's passes to its window, and back, without either waiting on the other.
 //!
 //! Each run has an `Exchange`, where each node can leave the latest of something for its window: a frame to show,
 //! say. The engine doesn't make or move these; a node that wants to keeps a `Latest` in its state, and sends to
@@ -9,6 +9,11 @@
 //! swapped rather than replaced, so once they've grown to size, nothing is allocated. A node whose state is only
 //! working memory has a `Latest` on each worker (see `PassState::CARRIED_OVER`): they share the node's slot, and a
 //! copy from an earlier pass than the one there is skipped.
+//!
+//! The other way, the GUI can fire a node's triggers (see `Node::triggers`): "auto detect", say. A pass of the node
+//! takes it (`Pass::triggered`), says how it's getting on (`Pass::trigger_progress`) and when it's done. And the
+//! passes, which can't change the graph, can propose a new value for one of the node's settings (`Pass::propose`),
+//! which the GUI applies (as an edit, unless recording).
 
 use std::any::Any;
 use std::collections::HashMap;
@@ -42,13 +47,75 @@ struct Entry {
     slot: Arc<dyn Slot>,
 }
 
-/// Where a run's nodes leave things for their windows.
+/// Where a run's nodes leave things for their windows, and the GUI fires their triggers.
 #[derive(Default)]
 pub struct Exchange {
     slots: Mutex<HashMap<NodeId, Entry>>,
+    /// Triggers fired, until they're done: how far along each is (0 until a pass takes it).
+    triggers: Mutex<HashMap<(NodeId, &'static str), Trigger>>,
+    /// Settings' values proposed by passes, for the GUI to apply: the node, which setting, and its value.
+    proposals: Mutex<Vec<Proposal>>,
+}
+
+/// A setting's value proposed by a pass: the node, which of its settings, and the value.
+pub type Proposal = (NodeId, usize, Box<dyn Any + Send>);
+
+/// A trigger fired: waiting for a pass to take it, or taken, and how far along (0 to 1).
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Trigger {
+    Fired,
+    Running(f32),
 }
 
 impl Exchange {
+    /// Fires node `node`'s trigger `name`: its next pass takes it.
+    pub fn fire(&self, node: NodeId, name: &'static str) {
+        self.triggers.lock().unwrap().insert((node, name), Trigger::Fired);
+    }
+
+    /// How far along node `node`'s trigger `name` is (0 to 1), if it's been fired and isn't done.
+    pub fn trigger_progress(&self, node: NodeId, name: &'static str) -> Option<f32> {
+        self.triggers.lock().unwrap().get(&(node, name)).map(|t| match t {
+            Trigger::Fired => 0.0,
+            Trigger::Running(progress) => *progress,
+        })
+    }
+
+    /// The settings' values passes have proposed since last time: the node, which setting, and the value.
+    pub fn take_proposals(&self) -> Vec<Proposal> {
+        std::mem::take(&mut *self.proposals.lock().unwrap())
+    }
+
+    /// For `Pass`: whether node `node`'s trigger `name` has been fired, taking it if so.
+    pub(crate) fn take_trigger(&self, node: NodeId, name: &'static str) -> bool {
+        let mut triggers = self.triggers.lock().unwrap();
+        match triggers.get_mut(&(node, name)) {
+            Some(trigger @ Trigger::Fired) => {
+                *trigger = Trigger::Running(0.0);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// For `Pass`: how far along a trigger taken is, or (`None`) that it's done.
+    pub(crate) fn set_trigger_progress(&self, node: NodeId, name: &'static str, progress: Option<f32>) {
+        let mut triggers = self.triggers.lock().unwrap();
+        match progress {
+            Some(progress) => {
+                triggers.insert((node, name), Trigger::Running(progress));
+            }
+            None => {
+                triggers.remove(&(node, name));
+            }
+        }
+    }
+
+    /// For `Pass`: a proposed value for a node's setting.
+    pub(crate) fn propose(&self, node: NodeId, setting: usize, value: Box<dyn Any + Send>) {
+        self.proposals.lock().unwrap().push((node, setting, value));
+    }
+
     /// Runs `f` on the latest that node `id` has sent, if it's sent anything. Passes sending meanwhile skip
     /// their copy rather than wait.
     pub fn with_latest<R>(&self, id: NodeId, f: impl FnOnce(&(dyn Any + Send)) -> R) -> Option<R> {

@@ -1,7 +1,9 @@
-//! Spikes: detected in groups of channels (tetrodes, say) of continuous data against each channel's threshold,
-//! and viewed (where the thresholds, and the gains they're recorded at, can be adjusted).
+//! Spikes: detected in groups of channels (tetrodes, say) of continuous data against each channel's threshold
+//! (`spike_detector`), given each channel's gain, which they're recorded and viewed at (`spike_gain`), and viewed
+//! (`spike_viewer`, where the thresholds and gains can be adjusted, and detected from the data).
 
 pub mod spike_detector;
+pub mod spike_gain;
 pub mod spike_viewer;
 
 use eframe::egui::Color32;

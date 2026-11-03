@@ -109,6 +109,36 @@ impl<E: Edges> Context<'_, E> {
         }
     }
 
+    /// Fires the trigger `name` (see `Node::triggers`) of the setting that control `control` connects to, or (with
+    /// `None`) of the node's own. Nothing, if it can't be (see `can_trigger`).
+    pub fn trigger(&mut self, control: Option<usize>, name: &'static str) {
+        if let Some(tools) = &mut self.tools {
+            tools.trigger(control, name);
+        }
+    }
+
+    /// Whether the trigger can be fired: the graph running, and (for a control) connected to a setting that has it.
+    pub fn can_trigger(&self, control: Option<usize>, name: &'static str) -> bool {
+        self.tools.as_ref().is_some_and(|t| t.can_trigger(control, name))
+    }
+
+    /// How far along the trigger is (0 to 1), if it's been fired and isn't done.
+    pub fn trigger_progress(&self, control: Option<usize>, name: &'static str) -> Option<f32> {
+        self.tools.as_ref().and_then(|t| t.trigger_progress(control, name))
+    }
+
+    /// Opens the window of the node control `control` connects to (to change its settings there, say).
+    pub fn open_control_target(&mut self, control: usize) {
+        if let Some(tools) = &mut self.tools {
+            tools.open_control_target(control);
+        }
+    }
+
+    /// Whether control `control` is connected.
+    pub fn control_connected(&self, control: usize) -> bool {
+        self.controls.get(control).is_some_and(Option::is_some)
+    }
+
     /// Whether the app's in advanced mode (see `crate::core::gui::docking::Mode`), rather than basic: what a pane
     /// shows in each is up to it, but by convention, basic mode is simpler, and its settings menu (see
     /// `node_toolbar_with`) offers what to show in basic mode. Advanced, where there's no toolbar (in tests, say).
@@ -117,10 +147,17 @@ impl<E: Edges> Context<'_, E> {
     }
 }
 
-/// The buttons every node has, for its window: each on its own, or all together. The GUI does what they ask. Those
-/// that change the graph (its settings, enabling and deleting it) are only there in advanced mode (giving `None`
-/// otherwise).
+/// What the GUI does for a node's window: the buttons every node has, each on its own or all together (those that
+/// change the graph, its settings, enabling and deleting it, only there in advanced mode, giving `None` otherwise);
+/// and firing triggers (see `Node::triggers`), and opening other nodes' windows. A view uses these through its
+/// `Context`.
 pub trait NodeToolbar {
+    /// Fires a trigger (see `Context::trigger`).
+    fn trigger(&mut self, control: Option<usize>, name: &'static str);
+    fn can_trigger(&self, control: Option<usize>, name: &'static str) -> bool;
+    fn trigger_progress(&self, control: Option<usize>, name: &'static str) -> Option<f32>;
+    fn open_control_target(&mut self, control: usize);
+
     /// Whether the app's in advanced mode.
     fn advanced(&self) -> bool;
     /// Copy its settings.
@@ -294,6 +331,13 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
         None
     }
 
+    /// What can be triggered through one of the node's settings (by index), as well as set: "auto detect", say.
+    /// A control connected to it can fire one (`Context::trigger`), as can the node's own window; its passes take it
+    /// (`Pass::triggered`), and may propose new values for its settings when they're done (`Pass::propose`).
+    fn triggers(&self, _setting: usize) -> &'static [&'static str] {
+        &[]
+    }
+
     /// Whether the node would take an input's buffer, to swap it for one of its own rather than copy the data out (a
     /// writer, handing it to its thread). The plan decides, before running, whether it can: it can if no node edits
     /// that data in place, and every other node reading it can run first. Then the pass gives the node the buffer
@@ -365,6 +409,7 @@ pub trait NodeSet: Clone + PartialEq + Serialize + DeserializeOwned + Send + Syn
     fn view_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Self::Edges>);
     fn in_place(&self, output: usize) -> Option<usize>;
     fn takes(&self, input: usize) -> bool;
+    fn triggers(&self, setting: usize) -> &'static [&'static str];
     fn copies(&self) -> Option<CopyTo>;
     /// Whether the node carries state from one pass to the next.
     fn has_state(&self) -> bool;
@@ -489,6 +534,10 @@ macro_rules! node_set {
 
             fn in_place(&self, output: usize) -> Option<usize> {
                 match self { $($name::$variant(n) => $crate::core::engine::Node::in_place(n, output)),+ }
+            }
+
+            fn triggers(&self, setting: usize) -> &'static [&'static str] {
+                match self { $($name::$variant(n) => $crate::core::engine::Node::triggers(n, setting)),+ }
             }
 
             fn takes(&self, input: usize) -> bool {

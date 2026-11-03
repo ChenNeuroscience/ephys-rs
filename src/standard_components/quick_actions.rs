@@ -157,11 +157,12 @@ fn real_camera() -> camera::Source {
     camera::Source::Spinnaker { serial: String::new(), library: String::new() }
 }
 
-/// Board → Channel Selector → Reference → Band-pass (spikes' band) → Spike Detector → Spike Viewer (setting the
-/// detector's thresholds and gains); the selector → Band-pass (LFP's band) → LFP Viewer (choosing the selector's
-/// channels); the board's digital inputs → TTL Viewer; Camera → Position Detector → Tracker View (setting the
-/// camera's and detector's settings). Write LTX records the spikes (at the detector's gains), the referenced data as
-/// EEG, the positions (with the detector's settings) and the digital inputs. New boards and cameras are real.
+/// Board → Channel Selector → Reference → Band-pass (spikes' band) → Spike Detector → Spike Gain → Spike Viewer
+/// (setting the detector's thresholds and the gain's gains); the selector → Band-pass (LFP's band) → LFP Viewer
+/// (choosing the selector's channels); the board's digital inputs → TTL Viewer; Camera → Position Detector → Tracker
+/// View (setting the camera's and detector's settings). Write LTX records the spikes (at their gains), the referenced
+/// data as EEG, the positions (with the detector's settings) and the digital inputs. New boards and cameras are
+/// real.
 fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
     let mut change = Change::new(state.graph);
     let empty = state.graph.iter().next().is_none();
@@ -184,10 +185,12 @@ fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
     change.link((reference, Output, 0), (band, Input, 0));
     let detector = change.upsert("Spike Detector", Some(band));
     change.link((band, Output, 0), (detector, Input, 0));
-    let spike_viewer = change.upsert("Spike Viewer", Some(detector));
-    change.link((detector, Output, 0), (spike_viewer, Input, 0));
+    let gain = change.upsert("Spike Gain", Some(detector));
+    change.link((detector, Output, 0), (gain, Input, 0));
+    let spike_viewer = change.upsert("Spike Viewer", Some(gain));
+    change.link((gain, Output, 0), (spike_viewer, Input, 0));
     change.link((spike_viewer, Control, 0), (detector, Setting, 0));
-    change.link((spike_viewer, Control, 1), (detector, Setting, 1));
+    change.link((spike_viewer, Control, 1), (gain, Setting, 0));
 
     // EEG.
     let lfp = match change.find(|n| matches!(n, Nodes::BandPassFilter(f) if f.high_hz <= 500.0)) {
@@ -221,13 +224,13 @@ fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
     change.link((tracker, Control, 1), (positions, Setting, 0));
 
     // Recording it all.
-    let ltx = change.upsert("Write LTX", Some(detector));
-    change.link((detector, Output, 0), (ltx, Input, 0));
+    let ltx = change.upsert("Write LTX", Some(gain));
+    change.link((gain, Output, 0), (ltx, Input, 0));
     change.link((reference, Output, 0), (ltx, Input, 1));
     change.link((positions, Output, 0), (ltx, Input, 2));
     change.link((board, Output, 1), (ltx, Input, 3));
     change.link((ltx, Control, 0), (positions, Setting, 0));
-    change.link((ltx, Control, 1), (detector, Setting, 1));
+    change.link((ltx, Control, 1), (gain, Setting, 0));
 
     let mut result = change.finish(state, &[spike_viewer, lfp_viewer, ttl_viewer, tracker])?;
     // A new graph, laid out tidily.

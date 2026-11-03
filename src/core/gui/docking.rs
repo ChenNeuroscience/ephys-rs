@@ -541,16 +541,15 @@ pub fn node_ui<N: NodeSet>(
     let running = runner.is_some();
     // A view stays live while recording (changes it makes to settings are undone: see `App::lock`).
     let mut show = |graph: &mut Graph<N>, display: Option<&(dyn std::any::Any + Send)>| {
+        let exchange = runner.map(|r| r.exchange());
         if has_view {
-            let Some(entry) = graph.get(id) else { return };
-            let mut tools =
-                NodeTools { id, in_basic: entry.in_basic(), enabled: !entry.disabled, advanced, events: &mut *events };
+            let Some(mut tools) = NodeTools::new(graph, id, advanced, exchange, &mut *events) else { return };
             let tools = Some(&mut tools as &mut dyn crate::core::engine::NodeToolbar);
             graph.edit(id, &state.input_streams, colours, display, running, locked, tools, |node: &mut N, context| {
                 node.view_ui(ui, context)
             });
         } else {
-            node_window::show(ui, graph, resolved, colours, display, running, locked, advanced, id, events);
+            node_window::show(ui, graph, resolved, colours, display, exchange, locked, advanced, id, events);
         }
     };
     let shown = runner.and_then(|runner| runner.exchange().with_latest(id, |display| show(graph, Some(display))));

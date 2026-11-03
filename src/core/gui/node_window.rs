@@ -20,13 +20,15 @@ pub fn show<N: NodeSet>(
     resolved: &Resolved<N::Edges>,
     colours: &Colours,
     display: Option<&(dyn Any + Send)>,
-    running: bool,
+    exchange: Option<&crate::core::exchange::Exchange>,
     locked: bool,
     advanced: bool,
     id: NodeId,
     events: &mut Vec<Event>,
 ) {
     let Some(state) = resolved.get(&id) else { return };
+    let running = exchange.is_some();
+    let Some(mut tools) = NodeTools::new(graph, id, advanced, exchange, events) else { return };
     let Some(entry) = graph.get_mut(id) else { return };
     let info = entry.node.info();
     // Its name, and its toolbar (see `node_tools`). Then its type.
@@ -37,8 +39,6 @@ pub fn show<N: NodeSet>(
             .hint_text("Name")
             .desired_width(width);
         ui.add(name).on_hover_text("Its name");
-        let mut tools =
-            NodeTools { id, in_basic: entry.in_basic(), enabled: !entry.disabled, advanced, events: &mut *events };
         tools.toolbar(ui);
     });
     ui.horizontal_wrapped(|ui| {
@@ -57,7 +57,8 @@ pub fn show<N: NodeSet>(
     }
     egui::ScrollArea::vertical().show(ui, |ui| {
         ui.add_enabled_ui(!locked, |ui| {
-            graph.edit(id, &state.input_streams, colours, display, running, locked, None, |node: &mut N, context| {
+            let tools = Some(&mut tools as &mut dyn crate::core::engine::NodeToolbar);
+            graph.edit(id, &state.input_streams, colours, display, running, locked, tools, |node: &mut N, context| {
                 node.settings_ui(ui, context)
             });
         });

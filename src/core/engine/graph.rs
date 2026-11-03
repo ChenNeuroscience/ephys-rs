@@ -750,11 +750,11 @@ mod tests {
         // A setting can have several controls (an LTX writer reading the gains the viewer sets); a control, one
         // setting.
         let writer = graph.add(create("Write LTX"), [0.0, 0.0]);
-        graph.connect(port(viewer, Role::Control, 1), port(detector, Role::Setting, 1)).unwrap();
-        graph.connect(port(writer, Role::Control, 1), port(detector, Role::Setting, 1)).unwrap();
-        let into_gains = |graph: &Graph<Nodes>| {
-            graph.edges().iter().filter(|e| e.target() == port(detector, Role::Setting, 1)).count()
-        };
+        let gain = graph.add(create("Spike Gain"), [0.0, 0.0]);
+        graph.connect(port(viewer, Role::Control, 1), port(gain, Role::Setting, 0)).unwrap();
+        graph.connect(port(writer, Role::Control, 1), port(gain, Role::Setting, 0)).unwrap();
+        let into_gains =
+            |graph: &Graph<Nodes>| graph.edges().iter().filter(|e| e.target() == port(gain, Role::Setting, 0)).count();
         assert_eq!(into_gains(&graph), 2);
     }
 

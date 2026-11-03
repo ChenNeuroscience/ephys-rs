@@ -8,7 +8,8 @@ use eframe::egui;
 use super::Event;
 use super::icons::Icon;
 use super::toolbar;
-use crate::core::engine::{NodeId, NodeToolbar};
+use crate::core::engine::{Graph, NodeId, NodeSet, NodeToolbar, Port, Role};
+use crate::core::exchange::Exchange;
 
 pub struct NodeTools<'e> {
     pub id: NodeId,
@@ -17,11 +18,71 @@ pub struct NodeTools<'e> {
     pub enabled: bool,
     /// Whether the app's in advanced mode (otherwise, what changes the graph is left out).
     pub advanced: bool,
+    /// The triggers of the node's own settings; and for each of its controls, the node and the triggers of the setting
+    /// it's connected to, if it is.
+    pub own_triggers: Vec<&'static str>,
+    pub controls: Vec<Option<(NodeId, &'static [&'static str])>>,
+    /// Where triggers go, while running.
+    pub exchange: Option<&'e Exchange>,
     /// What's clicked becomes these.
     pub events: &'e mut Vec<Event>,
 }
 
+impl<'e> NodeTools<'e> {
+    /// For node `id`'s window: what it can trigger, through its own settings and its controls.
+    pub fn new<N: NodeSet>(
+        graph: &Graph<N>,
+        id: NodeId,
+        advanced: bool,
+        exchange: Option<&'e Exchange>,
+        events: &'e mut Vec<Event>,
+    ) -> Option<Self> {
+        let entry = graph.get(id)?;
+        let node = &entry.node;
+        let own_triggers = (0..node.settings().len()).flat_map(|s| node.triggers(s).iter().copied()).collect();
+        let controls = (0..node.controls().len())
+            .map(|index| {
+                let edge = graph.live_edges_from(Port { node: id, role: Role::Control, index }).next()?;
+                Some((edge.to.node, graph.get(edge.to.node)?.node.triggers(edge.to.port)))
+            })
+            .collect();
+        let (in_basic, enabled) = (entry.in_basic(), !entry.disabled);
+        Some(NodeTools { id, in_basic, enabled, advanced, own_triggers, controls, exchange, events })
+    }
+
+    /// The node whose trigger `name` is meant, if it has one: the node's own, or the one a control connects to.
+    fn trigger_node(&self, control: Option<usize>, name: &'static str) -> Option<NodeId> {
+        match control {
+            None => self.own_triggers.contains(&name).then_some(self.id),
+            Some(control) => {
+                let (node, triggers) = self.controls.get(control).copied().flatten()?;
+                triggers.contains(&name).then_some(node)
+            }
+        }
+    }
+}
+
 impl NodeToolbar for NodeTools<'_> {
+    fn trigger(&mut self, control: Option<usize>, name: &'static str) {
+        if let (Some(node), Some(exchange)) = (self.trigger_node(control, name), self.exchange) {
+            exchange.fire(node, name);
+        }
+    }
+
+    fn can_trigger(&self, control: Option<usize>, name: &'static str) -> bool {
+        self.exchange.is_some() && self.trigger_node(control, name).is_some()
+    }
+
+    fn trigger_progress(&self, control: Option<usize>, name: &'static str) -> Option<f32> {
+        self.exchange?.trigger_progress(self.trigger_node(control, name)?, name)
+    }
+
+    fn open_control_target(&mut self, control: usize) {
+        if let Some((node, _)) = self.controls.get(control).copied().flatten() {
+            self.events.push(Event::OpenWindow(node));
+        }
+    }
+
     fn copy_button(&mut self, ui: &mut egui::Ui) -> egui::Response {
         let button = toolbar::small_icon_button(ui, Icon::Copy, "Copy settings", "Copy this node's settings");
         if button.clicked() {

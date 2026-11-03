@@ -1,271 +1,27 @@
 {
-  "graph": {
-    "next_id": 15,
-    "nodes": {
+  "annotations": {
+    "items": {
       "1": {
-        "node": {
-          "type": "AcquisitionBoard",
-          "settings": {
-            "source": {
-              "kind": "fake",
-              "address": "127.0.0.1:27031"
-            },
-            "sample_rate": 30000,
-            "headstages": [
-              {
-                "port": "A1",
-                "channels": 32
-              },
-              {
-                "port": "B1",
-                "channels": 32
-              }
-            ],
-            "aux": false,
-            "adc": false,
-            "bandwidth": {
-              "lower_hz": 1.0,
-              "upper_hz": 7500.0,
-              "dsp_hz": 0.5
-            }
-          }
+        "kind": {
+          "content": {
+            "size": "Large",
+            "text": "Example processing graph"
+          },
+          "type": "Heading"
         },
-        "label": "Acquisition Board",
         "pos": [
           0.0,
-          193.5
-        ]
-      },
-      "2": {
-        "node": {
-          "type": "BandPassFilter",
-          "settings": {
-            "low_hz": 300.0,
-            "high_hz": 6000.0
-          }
-        },
-        "label": "Band-pass Filter",
-        "pos": [
-          840.0,
-          208.0
-        ]
-      },
-      "3": {
-        "node": {
-          "type": "SpikeDetector",
-          "settings": {
-            "polarity": "Negative",
-            "group_size": 4,
-            "pre": 8,
-            "post": 32,
-            "thresholds": [],
-            "gains": []
-          }
-        },
-        "label": "Spike Detector",
-        "pos": [
-          1120.0,
-          182.0
-        ]
-      },
-      "4": {
-        "node": {
-          "type": "SpikeViewer",
-          "settings": {
-            "plot_height": 120.0
-          }
-        },
-        "label": "Spike Viewer",
-        "pos": [
-          1400.0,
-          116.0
-        ]
-      },
-      "5": {
-        "node": {
-          "type": "LfpViewer",
-          "settings": {
-            "span": 2.0,
-            "scale_uv": 200.0
-          }
-        },
-        "label": "LFP Viewer",
-        "pos": [
-          840.0,
-          439.0
-        ]
-      },
-      "6": {
-        "node": {
-          "type": "WriteLtx",
-          "settings": {
-            "directory": "~/recordings",
-            "prefix": "session"
-          }
-        },
-        "label": "Write LTX",
-        "pos": [
-          1400.0,
-          319.0
-        ]
-      },
-      "7": {
-        "node": {
-          "type": "Camera",
-          "settings": {
-            "source": {
-              "kind": "fake",
-              "address": "127.0.0.1:27030"
-            },
-            "size": [
-              640,
-              480
-            ],
-            "settings": {
-              "frame_rate": 50.0,
-              "exposure": {
-                "mode": "unchanged"
-              },
-              "gain": {
-                "mode": "unchanged"
-              }
-            }
-          }
-        },
-        "label": "Camera",
-        "pos": [
-          0.0,
-          574.5
-        ]
-      },
-      "8": {
-        "node": {
-          "type": "PositionDetector",
-          "settings": {
-            "detection": {
-              "threshold": 200,
-              "min_area": 5,
-              "max_area": null,
-              "crop": {
-                "shape": "none"
-              },
-              "edge": {
-                "enabled": false,
-                "width": 25.0,
-                "threshold": 250
-              },
-              "rulers": []
-            }
-          }
-        },
-        "label": "Position Detector",
-        "pos": [
-          280.0,
-          533.0
-        ]
-      },
-      "9": {
-        "node": {
-          "type": "TrackerView",
-          "settings": {
-            "overlays": {
-              "crop": {
-                "visible": true,
-                "locked": false
-              },
-              "detection": {
-                "visible": true,
-                "locked": false
-              },
-              "rulers": {
-                "visible": true,
-                "locked": false
-              }
-            }
-          }
-        },
-        "label": "Tracker View",
-        "pos": [
-          560.0,
-          605.0
-        ]
-      },
-      "10": {
-        "node": {
-          "type": "Reference",
-          "settings": {
-            "method": {
-              "kind": "median"
-            },
-            "reference_channels": "all",
-            "group_size": 0,
-            "channels": "all",
-            "gain": 100.0
-          }
-        },
-        "label": "Reference",
-        "pos": [
-          560.0,
-          255.0
-        ]
-      },
-      "11": {
-        "node": {
-          "type": "WriteRaw",
-          "settings": {
-            "directory": "~/recordings",
-            "prefix": "session"
-          }
-        },
-        "label": "Write Raw",
-        "pos": [
-          1400.0,
-          0.0
-        ]
-      },
-      "12": {
-        "node": {
-          "type": "TtlViewer",
-          "settings": {
-            "span": 5.0
-          }
-        },
-        "label": "TTL Viewer",
-        "pos": [
-          280.0,
-          78.0
-        ]
-      },
-      "13": {
-        "node": {
-          "type": "ChannelSelector",
-          "settings": {
-            "apply": false,
-            "channels": "all"
-          }
-        },
-        "label": "Channel Selector",
-        "pos": [
-          280.0,
-          277.5
-        ]
-      },
-      "14": {
-        "node": {
-          "type": "BandPassFilter",
-          "settings": {
-            "low_hz": 1.0,
-            "high_hz": 300.0,
-            "order": 2
-          }
-        },
-        "label": "LFP Band-pass",
-        "pos": [
-          560.0,
-          454.0
+          -90.0
+        ],
+        "size": [
+          520.0,
+          60.0
         ]
       }
     },
+    "next_id": 2
+  },
+  "graph": {
     "edges": [
       {
         "dimension": "Data",
@@ -281,7 +37,7 @@
       {
         "dimension": "Data",
         "from": {
-          "node": 3,
+          "node": 15,
           "port": 0
         },
         "to": {
@@ -369,7 +125,7 @@
       {
         "dimension": "Data",
         "from": {
-          "node": 3,
+          "node": 15,
           "port": 0
         },
         "to": {
@@ -461,8 +217,8 @@
           "port": 1
         },
         "to": {
-          "node": 3,
-          "port": 1
+          "node": 15,
+          "port": 0
         }
       },
       {
@@ -472,8 +228,8 @@
           "port": 1
         },
         "to": {
-          "node": 3,
-          "port": 1
+          "node": 15,
+          "port": 0
         }
       },
       {
@@ -541,28 +297,308 @@
           "node": 2,
           "port": 0
         }
+      },
+      {
+        "dimension": "Data",
+        "from": {
+          "node": 3,
+          "port": 0
+        },
+        "to": {
+          "node": 15,
+          "port": 0
+        }
       }
-    ]
-  },
-  "annotations": {
-    "next_id": 2,
-    "items": {
+    ],
+    "next_id": 16,
+    "nodes": {
       "1": {
+        "label": "Acquisition Board",
+        "node": {
+          "settings": {
+            "adc": false,
+            "aux": false,
+            "bandwidth": {
+              "dsp_hz": 0.5,
+              "lower_hz": 1.0,
+              "upper_hz": 7500.0
+            },
+            "headstages": [
+              {
+                "channels": 32,
+                "port": "A1"
+              },
+              {
+                "channels": 32,
+                "port": "B1"
+              }
+            ],
+            "sample_rate": 30000,
+            "source": {
+              "address": "127.0.0.1:27031",
+              "kind": "fake"
+            }
+          },
+          "type": "AcquisitionBoard"
+        },
         "pos": [
           0.0,
-          -90.0
-        ],
-        "size": [
-          520.0,
-          60.0
-        ],
-        "kind": {
-          "type": "Heading",
-          "content": {
-            "text": "Example processing graph",
-            "size": "Large"
-          }
-        }
+          193.0
+        ]
+      },
+      "10": {
+        "label": "Reference",
+        "node": {
+          "settings": {
+            "channels": "all",
+            "gain": 100.0,
+            "group_size": 0,
+            "method": {
+              "kind": "median"
+            },
+            "reference_channels": "all"
+          },
+          "type": "Reference"
+        },
+        "pos": [
+          560.0,
+          249.5
+        ]
+      },
+      "11": {
+        "label": "Write Raw",
+        "node": {
+          "settings": {
+            "directory": "~/recordings",
+            "prefix": "session"
+          },
+          "type": "WriteRaw"
+        },
+        "pos": [
+          1680.0,
+          0.0
+        ]
+      },
+      "12": {
+        "label": "TTL Viewer",
+        "node": {
+          "settings": {
+            "line_height": 32.0,
+            "span": 5.0
+          },
+          "type": "TtlViewer"
+        },
+        "pos": [
+          280.0,
+          78.0
+        ]
+      },
+      "13": {
+        "label": "Channel Selector",
+        "node": {
+          "settings": {
+            "apply": false,
+            "channels": "all"
+          },
+          "type": "ChannelSelector"
+        },
+        "pos": [
+          280.0,
+          266.5
+        ]
+      },
+      "14": {
+        "label": "LFP Band-pass",
+        "node": {
+          "settings": {
+            "high_hz": 300.0,
+            "low_hz": 1.0,
+            "order": 2
+          },
+          "type": "BandPassFilter"
+        },
+        "pos": [
+          560.0,
+          448.5
+        ]
+      },
+      "15": {
+        "label": "Spike Gain",
+        "node": {
+          "settings": {
+            "gains": [],
+            "sampling": 10.0,
+            "target": 95.0
+          },
+          "type": "SpikeGain"
+        },
+        "pos": [
+          1400.0,
+          251.0
+        ]
+      },
+      "2": {
+        "label": "Band-pass Filter",
+        "node": {
+          "settings": {
+            "high_hz": 6000.0,
+            "low_hz": 300.0,
+            "order": 2
+          },
+          "type": "BandPassFilter"
+        },
+        "pos": [
+          840.0,
+          208.0
+        ]
+      },
+      "3": {
+        "label": "Spike Detector",
+        "node": {
+          "settings": {
+            "group_size": 4,
+            "polarity": "Negative",
+            "post": 32,
+            "pre": 8,
+            "sampling": 10.0,
+            "threshold_sd": 4.0,
+            "thresholds": []
+          },
+          "type": "SpikeDetector"
+        },
+        "pos": [
+          1120.0,
+          193.0
+        ]
+      },
+      "4": {
+        "label": "Spike Viewer",
+        "node": {
+          "settings": {
+            "plot_height": 120.0
+          },
+          "type": "SpikeViewer"
+        },
+        "pos": [
+          1680.0,
+          116.0
+        ]
+      },
+      "5": {
+        "label": "LFP Viewer",
+        "node": {
+          "settings": {
+            "band": [
+              4.0,
+              12.0
+            ],
+            "row_height": 40.0,
+            "scale_uv": 200.0,
+            "span": 2.0,
+            "spectrum": true
+          },
+          "type": "LfpViewer"
+        },
+        "pos": [
+          840.0,
+          433.5
+        ]
+      },
+      "6": {
+        "label": "Write LTX",
+        "node": {
+          "settings": {
+            "directory": "~/recordings",
+            "prefix": "session"
+          },
+          "type": "WriteLtx"
+        },
+        "pos": [
+          1680.0,
+          319.0
+        ]
+      },
+      "7": {
+        "label": "Camera",
+        "node": {
+          "settings": {
+            "settings": {
+              "exposure": {
+                "mode": "unchanged"
+              },
+              "frame_rate": 50.0,
+              "gain": {
+                "mode": "unchanged"
+              }
+            },
+            "size": [
+              640,
+              480
+            ],
+            "source": {
+              "address": "127.0.0.1:27030",
+              "kind": "fake"
+            }
+          },
+          "type": "Camera"
+        },
+        "pos": [
+          0.0,
+          569.0
+        ]
+      },
+      "8": {
+        "label": "Position Detector",
+        "node": {
+          "settings": {
+            "detection": {
+              "crop": {
+                "shape": "none"
+              },
+              "edge": {
+                "enabled": false,
+                "threshold": 250,
+                "width": 25.0
+              },
+              "max_area": null,
+              "min_area": 5,
+              "rulers": [],
+              "threshold": 200
+            }
+          },
+          "type": "PositionDetector"
+        },
+        "pos": [
+          280.0,
+          527.5
+        ]
+      },
+      "9": {
+        "label": "Tracker View",
+        "node": {
+          "settings": {
+            "camera_locked": false,
+            "overlays": {
+              "crop": {
+                "locked": false,
+                "visible": true
+              },
+              "detection": {
+                "locked": false,
+                "visible": true
+              },
+              "rulers": {
+                "locked": false,
+                "visible": true
+              }
+            }
+          },
+          "type": "TrackerView"
+        },
+        "pos": [
+          560.0,
+          599.5
+        ]
       }
     }
   }

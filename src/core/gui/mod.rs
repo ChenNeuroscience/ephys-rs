@@ -592,6 +592,25 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         self.set_done(ctx, format!("Pasted settings onto {count} node{plural}{left_out} (see the console)"));
     }
 
+    /// Applies settings the passes have proposed (see `Pass::propose`): an auto-detected gain, say. Not while
+    /// recording, when settings are locked.
+    fn apply_proposals(&mut self) {
+        let Some(runner) = &self.runner else { return };
+        let proposals = runner.exchange().take_proposals();
+        let locked = self.locked();
+        for (id, setting, value) in proposals {
+            let Ok(value) = value.downcast::<<N::Edges as engine::Edges>::Setting>() else { continue };
+            let Some(entry) = self.graph.get_mut(id) else { continue };
+            let name = entry.node.settings().get(setting).map_or("a setting", |s| s.name);
+            if locked {
+                log::warn!("{}'s {name} weren't changed: settings are locked while recording", entry.label);
+                continue;
+            }
+            entry.node.set_setting(setting, *value);
+            log::info!("{}'s {name} set from its data", entry.label);
+        }
+    }
+
     /// Says where the report of the last time's crash is, until it's dismissed.
     fn crash_window(&mut self, ctx: &egui::Context) {
         let Some(report) = &self.last_crash else { return };
@@ -1162,6 +1181,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         self.create_menu(&ctx, &resolved);
         self.paste_window(&ctx);
         self.crash_window(&ctx);
+        self.apply_proposals();
         self.lock(&ctx);
         self.history.record(&self.graph, &self.annotations, &ctx);
         self.keep_running(&ctx);
@@ -1488,7 +1508,7 @@ mod tests {
             names(&graph),
             vec![
                 ("Data", vec!["continuous", "spikes", "video", "camera stats"]),
-                ("Settings", vec!["thresholds", "gains", "camera"])
+                ("Settings", vec!["thresholds", "camera"])
             ]
         );
     }
@@ -1992,6 +2012,39 @@ mod tests {
         harness.get_by_label("Show in basic mode").click();
         harness.run_steps(2);
         assert_eq!(harness.state().graph.get(viewer).unwrap().basic, Some(false), "taken out of basic mode");
+    }
+
+    #[test]
+    fn viewers_trigger_auto_detect_and_proposals_are_applied() {
+        let mut harness = harness();
+        for writer in ["Write LTX", "Write Raw"] {
+            let id = node_named(harness.state(), writer);
+            harness.state_mut().graph.remove(id);
+        }
+        let (viewer, gain) = (node_named(harness.state(), "Spike Viewer"), node_named(harness.state(), "Spike Gain"));
+        harness.state_mut().layout.open(viewer);
+        harness.run_steps(2);
+        let ctx = harness.ctx.clone();
+        harness.state_mut().perform(&ctx, Action::Play);
+        harness.run_steps(2);
+        harness.get_by_label("Gains").click();
+        harness.run_steps(2);
+        let exchange = || harness.state().runner.as_ref().unwrap().exchange();
+        assert!(
+            exchange().trigger_progress(gain, crate::standard_components::spikes::spike_gain::AUTO_DETECT).is_some(),
+            "the Spike Gain's auto detect, fired"
+        );
+        // What the passes propose is applied, as an edit.
+        let gains = crate::standard_components::spikes::Gains(vec![1234.0]);
+        harness.state().runner.as_ref().unwrap().exchange().propose(
+            gain,
+            0,
+            Box::new(crate::Setting::Gains(gains.clone())),
+        );
+        harness.run_steps(2);
+        let settings = harness.state().graph.get(gain).unwrap().node.settings();
+        assert_eq!(settings[0].value, crate::Setting::Gains(gains), "applied");
+        harness.state_mut().perform(&ctx, Action::Play);
     }
 
     #[test]

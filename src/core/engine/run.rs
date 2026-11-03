@@ -91,6 +91,28 @@ impl<'a, E: Edges> Pass<'a, E> {
         Pass { sequence, duration, node, inputs, taken, outputs, controls, recording, prepared, exchange }
     }
 
+    /// Whether the node's trigger `name` (see `Node::triggers`) has been fired, taking it if so: the node then says
+    /// how it's getting on (`trigger_progress`) until it's done (`trigger_done`).
+    pub fn triggered(&self, name: &'static str) -> bool {
+        self.exchange.take_trigger(self.node, name)
+    }
+
+    /// How far along the node's trigger `name` is, from 0 to 1, for the GUI to show.
+    pub fn trigger_progress(&self, name: &'static str, progress: f32) {
+        self.exchange.set_trigger_progress(self.node, name, Some(progress.clamp(0.0, 1.0)));
+    }
+
+    /// The node's trigger `name` is done.
+    pub fn trigger_done(&self, name: &'static str) {
+        self.exchange.set_trigger_progress(self.node, name, None);
+    }
+
+    /// Proposes a new value for the node's setting `setting` (by index), which the GUI applies as an edit (unless
+    /// it's recording): passes can't change the graph themselves.
+    pub fn propose(&self, setting: usize, value: E::Setting) {
+        self.exchange.propose(self.node, setting, Box::new(value));
+    }
+
     /// An input's data, taken (see `take_input`) or not.
     pub fn input(&self, index: usize) -> Option<&Buffer<E>> {
         match self.taken.get(index) {
