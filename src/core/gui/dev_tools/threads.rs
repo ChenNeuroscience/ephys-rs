@@ -695,6 +695,28 @@ fn memory<N: NodeSet>(
 }
 
 /// Halfway between two points.
+/// The curve of a link across from one column to another, from `from` to `to`: leaving and arriving level.
+fn across_points(from: Pos2, to: Pos2) -> [Pos2; 4] {
+    let bend = ((to.x - from.x).abs() * 0.5).max(30.0);
+    let dx = if to.x >= from.x { bend } else { -bend };
+    [from, from + vec2(dx, 0.0), to - vec2(dx, 0.0), to]
+}
+
+/// The points along a curve, `by` points below it (on its lower side, whichever way it goes).
+fn parallel(curve: [Pos2; 4], by: f32) -> Vec<Pos2> {
+    let shape = egui::epaint::CubicBezierShape::from_points_stroke(curve, false, Color32::TRANSPARENT, Stroke::NONE);
+    let points = shape.flatten(Some(0.25));
+    let last = points.len().saturating_sub(1);
+    (0..points.len())
+        .map(|i| {
+            // The tangent here, pointing rightwards, so the offset is always below.
+            let tangent = (points[(i + 1).min(last)] - points[i.saturating_sub(1)]).normalized();
+            let tangent = if tangent.x < 0.0 { -tangent } else { tangent };
+            points[i] - tangent.rot90() * by
+        })
+        .collect()
+}
+
 fn pos2_between(a: Pos2, b: Pos2) -> Pos2 {
     a + (b - a) * 0.5
 }
@@ -909,11 +931,8 @@ fn links(ui: &egui::Ui, colours: &Colours, anchors: &Anchors, wide: bool) {
     };
     // Across from one column to another.
     let across = |from: Pos2, to: Pos2| {
-        let bend = ((to.x - from.x).abs() * 0.5).max(30.0);
-        let rightwards = to.x >= from.x;
-        let dx = if rightwards { bend } else { -bend };
-        curve([from, from + vec2(dx, 0.0), to - vec2(dx, 0.0), to]);
-        arrow(to, rightwards);
+        curve(across_points(from, to));
+        arrow(to, to.x >= from.x);
     };
     // From one left edge round to another, `depth` out into the gutter.
     let round = |from: Pos2, to: Pos2, depth: f32| {
@@ -983,23 +1002,22 @@ fn links(ui: &egui::Ui, colours: &Colours, anchors: &Anchors, wide: bool) {
         if let Some((pool, dots)) = pool {
             let rect = pool_ui(ui, colours, *pool, dots, pool_at, ui.scope_id().with(("pool", index)));
             // Buffers freed back to the pool, by whoever's done with them (the passes give back their own old ones as
-            // they swap in a source's; a writer's thread, those it's written): dashed, alongside the link.
+            // they swap in a source's; a writer's thread, those it's written): dashed, along the same path as the link
+            // a few points below it, from where the data goes back to the pool's box.
             if wide {
-                let giver = if to_passes { ends(*step).1 } else { thread.left_center() };
-                let offset = vec2(0.0, 7.0);
-                let rightwards = giver.x < rect.center().x;
-                let to = if rightwards { rect.left_center() } else { rect.right_center() } + offset;
-                let from = giver + offset;
-                let bend = ((to.x - from.x).abs() * 0.5).max(10.0) * if rightwards { 1.0 } else { -1.0 };
-                let curve = egui::epaint::CubicBezierShape::from_points_stroke(
-                    [from, from + vec2(bend, 0.0), to - vec2(bend, 0.0), to],
-                    false,
-                    Color32::TRANSPARENT,
-                    Stroke::NONE,
-                );
-                let points = curve.flatten(Some(0.5));
-                painter.extend(Shape::dashed_line(&points, Stroke::new(1.0, colour), 3.0, 3.0));
-                arrow(to, rightwards);
+                let (at_thread, at_step) = (thread.left_center(), ends(*step).1);
+                let (from, to) = if to_passes { (at_thread, at_step) } else { (at_step, at_thread) };
+                let mut freed = parallel(across_points(from, to), 6.0);
+                freed.reverse();
+                let outside = rect.expand(1.5);
+                let inside = freed.iter().position(|p| outside.contains(*p)).unwrap_or(freed.len());
+                freed.truncate(inside);
+                if let [.., before, end] = freed[..] {
+                    painter.extend(Shape::dashed_line(&freed, Stroke::new(1.0, colour), 3.0, 3.0));
+                    let (along, across) = ((end - before).normalized(), (end - before).normalized().rot90());
+                    let tip = vec![end, end - along * 6.0 + across * 3.5, end - along * 6.0 - across * 3.5];
+                    painter.add(Shape::convex_polygon(tip, colour, Stroke::NONE));
+                }
             }
         }
     }

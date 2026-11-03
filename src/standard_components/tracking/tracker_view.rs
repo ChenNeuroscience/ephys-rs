@@ -15,7 +15,7 @@ use super::led_chart::{self, History};
 use super::position_detector::{calibration_ui, crop_ui, detection_ui};
 use crate::core::engine::{Category, Context, Control, EdgeType, Input, Node, NodeInfo, Output, Pass};
 use crate::core::theme::Colours;
-use crate::standard_components::latest::{self, Latest};
+use crate::standard_components::pool::{Pool, SharedPool};
 use crate::standard_components::preview;
 use crate::standard_components::tracking::VideoBuffer;
 use crate::standard_components::tracking::overlay::{self, Drag, Overlay, Overlays, Xform};
@@ -42,7 +42,7 @@ pub struct Tracking {
     history: History,
     path: Arc<Mutex<Path>>,
     recording: bool,
-    shown: latest::Sender<TrackerDisplay>,
+    shown: SharedPool<TrackerDisplay>,
 }
 
 /// Where the animal's been while recording: the middle of the LEDs found in each frame (in pixels), NaN where
@@ -174,7 +174,7 @@ impl Node<Edges> for TrackerView {
             Some(Buffer::Positions(positions)) => Some(positions),
             _ => None,
         };
-        shown.send(pass, |display| {
+        shown.send_newest(pass, |display| {
             display.leds.clear();
             match video {
                 Some(video) => {
@@ -261,8 +261,8 @@ impl TrackerView {
 
     /// The camera, with what's detected drawn over it, and the LED chart beside or below it.
     fn camera_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>, arrangement: Arrangement) {
-        let latest = context.shared::<Latest<TrackerDisplay>>();
-        let reading = latest.as_deref().and_then(Latest::read);
+        let pool = context.shared::<Pool<TrackerDisplay>>();
+        let reading = pool.as_deref().and_then(Pool::newest);
         let display = reading.as_deref();
         if self.overlays.detection.visible
             && let Some(display) = display
@@ -312,8 +312,8 @@ impl TrackerView {
     /// The camera's and the detector's settings (through the controls), in sections whose headers say what's
     /// shown over the video and lock what can be changed.
     fn controls_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>, size: [f32; 2]) {
-        let latest = context.shared::<Latest<TrackerDisplay>>();
-        let reading = latest.as_deref().and_then(Latest::read);
+        let pool = context.shared::<Pool<TrackerDisplay>>();
+        let reading = pool.as_deref().and_then(Pool::newest);
         let stats = reading.as_deref().and_then(|d| d.stats.as_ref());
         let declared = match context.inputs[0] {
             Some(DataStream::Video(video)) => Some(video.fps as f64),
@@ -702,8 +702,8 @@ mod tests {
 
     /// The LEDs in the view's latest display, once it has a frame.
     fn leds_shown(runner: &Runner<Nodes>, view: NodeId) -> Option<usize> {
-        let latest = runner.exchange().get::<Latest<TrackerDisplay>>(view)?;
-        latest.read().filter(|d| d.frame.width > 0).map(|d| d.leds.len())
+        let pool = runner.exchange().get::<Pool<TrackerDisplay>>(view)?;
+        pool.newest().filter(|d| d.frame.width > 0).map(|d| d.leds.len())
     }
 
     /// Waits (ten seconds at most, on a busy machine) for `done`.
@@ -816,7 +816,7 @@ mod tests {
         let resolved = graph.resolve();
         let inputs = resolved[&view].input_streams.clone();
         let exchange = crate::core::exchange::Exchange::default();
-        exchange.shared(view, || Latest::holding(display));
+        exchange.shared(view, || Pool::holding(display));
         let mut harness = egui_kittest::Harness::builder().with_size([1150.0, 650.0]).wgpu().build_ui_state(
             |ui, graph: &mut Graph<Nodes>| {
                 graph.edit(view, &inputs, &THEMES[0].colours, Some(&exchange), true, false, None, |node, context| {

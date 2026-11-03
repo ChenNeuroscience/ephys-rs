@@ -9,7 +9,7 @@ use super::{CameraControls, CameraSettings, CameraStats, CaptureStats, Control, 
 use crate::core::engine::{
     Category, Context, Flow, Node, NodeInfo, NodeThread, Output, Pass, PoolStatus, SettingPort, ThreadContext,
 };
-use crate::standard_components::latest::{self, Latest};
+use crate::standard_components::pool::{Pool, SharedPool};
 use crate::standard_components::tracking::Video;
 use crate::standard_components::widgets::{setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
@@ -33,7 +33,7 @@ impl Default for Camera {
 #[derive(Default)]
 pub struct Capturing {
     capture: Option<Capture>,
-    shown: latest::Sender<CaptureStats>,
+    shown: SharedPool<CaptureStats>,
 }
 
 impl crate::core::engine::PassState for Capturing {
@@ -83,8 +83,8 @@ impl Node<Edges> for Camera {
 
     fn thread_ui(&self, _thread: usize, ui: &mut egui::Ui, context: &ThreadContext) {
         let small = |text: String| RichText::new(text).size(11.0);
-        let latest = context.shared::<Latest<CaptureStats>>();
-        let Some(stats) = latest.as_deref().and_then(Latest::read) else {
+        let pool = context.shared::<Pool<CaptureStats>>();
+        let Some(stats) = pool.as_deref().and_then(Pool::newest) else {
             ui.label(small("Takes frames as they arrive; starts when running.".into()).weak());
             return;
         };
@@ -103,7 +103,7 @@ impl Node<Edges> for Camera {
     }
 
     fn thread_pool(&self, _thread: usize, context: &ThreadContext) -> Option<PoolStatus> {
-        context.shared::<Latest<CaptureStats>>().and_then(|l| l.read().map(|s| s.pool))
+        context.shared::<Pool<CaptureStats>>().and_then(|l| l.newest().map(|s| s.pool))
     }
 
     fn initial_state(&self, _inputs: &[Option<DataStream>]) -> Capturing {
@@ -135,7 +135,7 @@ impl Node<Edges> for Camera {
         if let Some(Buffer::CameraStats(stats)) = pass.outputs.get_mut(1) {
             fill(stats);
         }
-        capturing.shown.send(pass, fill);
+        capturing.shown.send_newest(pass, fill);
     }
 
     fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
@@ -161,8 +161,8 @@ impl Node<Edges> for Camera {
                 .response
             });
         });
-        let latest = context.shared::<Latest<CaptureStats>>();
-        let display = latest.as_deref().and_then(Latest::read);
+        let pool = context.shared::<Pool<CaptureStats>>();
+        let display = pool.as_deref().and_then(Pool::newest);
         camera_settings_ui(ui, &mut self.settings, display.as_ref().map(|d| &d.status.controls));
         ui.separator();
         let Some(display) = display else {

@@ -65,7 +65,7 @@ pub struct Writing<C> {
     thread: Option<JoinHandle<()>>,
 }
 
-impl<C: Send + 'static> Writing<C> {
+impl<C: Send + Sync + 'static> Writing<C> {
     /// Starts a thread called `name` writing to `files`, opened already (or failing to be, which it reports), with
     /// chunks made by `chunk`, each taking `bytes`.
     pub fn new(

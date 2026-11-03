@@ -18,7 +18,7 @@ use crate::core::engine::{Category, Context, Control, EdgeType, Input, Node, Nod
 use crate::standard_components::ephys::reference::{format_channels, parse_channels};
 use crate::standard_components::ephys::spectrum::{Spectra, SpectraBuffer};
 use crate::standard_components::ephys::{ChannelSelection, Continuous, ContinuousBuffer};
-use crate::standard_components::latest::{self, Latest};
+use crate::standard_components::pool::{Pool, SharedPool};
 use crate::standard_components::preview;
 use crate::standard_components::widgets::{require_input, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
@@ -69,7 +69,7 @@ pub struct Traces {
     filled: usize,
     /// Columns filled since starting (up to `COLUMNS`).
     columns: usize,
-    shown: latest::Sender<TracesDisplay>,
+    shown: SharedPool<TracesDisplay>,
 }
 
 impl crate::core::engine::PassState for Traces {
@@ -210,7 +210,7 @@ impl Node<Edges> for LfpViewer {
         };
         let rows = shown + traces.shape.3 as usize;
         let Traces { lows, highs, head, columns, shape, shown: latest, .. } = traces;
-        latest.send(pass, |display| {
+        latest.send_newest(pass, |display| {
             (display.first, display.shown, display.columns) = (first, shown, *columns);
             display.reference_row = shape.3;
             display.lows.clear();
@@ -268,9 +268,9 @@ impl Node<Edges> for LfpViewer {
         };
         self.toolbar(ui, context, stream, selection.as_mut());
 
-        let latest = context.shared::<Latest<TracesDisplay>>();
+        let pool = context.shared::<Pool<TracesDisplay>>();
 
-        let Some(display) = latest.as_deref().and_then(Latest::read) else {
+        let Some(display) = pool.as_deref().and_then(Pool::newest) else {
             let message = format!("{} · press Play to see the traces", stream.summary());
             return preview::unconnected(ui, context.theme, &message);
         };

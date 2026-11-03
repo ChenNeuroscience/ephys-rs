@@ -30,7 +30,7 @@ use crate::core::engine::{
 };
 use crate::standard_components::ephys::board::EPHYS_MICROVOLTS_PER_BIT;
 use crate::standard_components::ephys::{Continuous, ContinuousBuffer, Event, Events, EventsBuffer};
-use crate::standard_components::latest::{self, Latest};
+use crate::standard_components::pool::{Pool, SharedPool};
 use crate::standard_components::widgets::{require_input, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind};
 
@@ -56,7 +56,7 @@ pub struct Recorder {
     continuous: Option<Continuous>,
     events: Option<Events>,
     writing: Option<Writing<Chunk>>,
-    shown: latest::Sender<Status>,
+    shown: SharedPool<Status>,
 }
 
 impl crate::core::engine::PassState for Recorder {
@@ -145,12 +145,12 @@ impl Node<Edges> for WriteRaw {
     }
 
     fn thread_pool(&self, _thread: usize, context: &ThreadContext) -> Option<PoolStatus> {
-        context.shared::<Latest<Status>>().and_then(|l| l.read().map(|s| s.pool))
+        context.shared::<Pool<Status>>().and_then(|l| l.newest().map(|s| s.pool))
     }
 
     fn thread_ui(&self, _thread: usize, ui: &mut egui::Ui, context: &ThreadContext) {
-        let latest = context.shared::<Latest<Status>>();
-        status_ui(ui, latest.as_deref().and_then(Latest::read).as_deref(), context.theme);
+        let pool = context.shared::<Pool<Status>>();
+        status_ui(ui, pool.as_deref().and_then(Pool::newest).as_deref(), context.theme);
     }
 
     fn initial_state(&self, inputs: &[Option<DataStream>]) -> Recorder {
@@ -206,7 +206,7 @@ impl Node<Edges> for WriteRaw {
             writing.send(chunk);
         }
         let writing = &recorder.writing;
-        recorder.shown.send(pass, |status| match writing {
+        recorder.shown.send_newest(pass, |status| match writing {
             Some(writing) => writing.status_into(status),
             None => *status = Status::default(),
         });
@@ -230,8 +230,8 @@ impl Node<Edges> for WriteRaw {
             ui.label(format!("Records {}.", recording.join(", ")));
         }
         ui.separator();
-        let latest = context.shared::<Latest<Status>>();
-        status_ui(ui, latest.as_deref().and_then(Latest::read).as_deref(), context.theme);
+        let pool = context.shared::<Pool<Status>>();
+        status_ui(ui, pool.as_deref().and_then(Pool::newest).as_deref(), context.theme);
     }
 }
 

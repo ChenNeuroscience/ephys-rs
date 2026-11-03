@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::engine::{Category, Context, Control, EdgeType, Input, Node, NodeInfo, Output, Pass};
 use crate::standard_components::auto_detect::AUTO_DETECT;
-use crate::standard_components::latest::{self, Latest};
+use crate::standard_components::pool::{Pool, SharedPool};
 use crate::standard_components::preview;
 use crate::standard_components::spikes::{
     Channels, DEFAULT_RANGE_UV, DEFAULT_THRESHOLD_UV, Gains, Polarity, Spikes, Thresholds, range_step,
@@ -90,7 +90,7 @@ pub struct Recent {
     thresholds: Vec<f32>,
     /// Each channel's range (µV either side of zero), from its gain.
     ranges: Vec<f32>,
-    shown: latest::Sender<RecentDisplay>,
+    shown: SharedPool<RecentDisplay>,
 }
 
 impl crate::core::engine::PassState for Recent {
@@ -206,8 +206,8 @@ impl Node<Edges> for SpikeViewer {
 
         let groups = stream.groups() as usize;
         let (first, shown) = self.groups(groups);
-        let Recent { waveforms, head, count, total, thresholds, ranges, shown: latest, .. } = recent;
-        latest.send(pass, |display| {
+        let Recent { waveforms, head, count, total, thresholds, ranges, shown: sent, .. } = recent;
+        sent.send_newest(pass, |display| {
             (display.stream, display.first, display.shown, display.keep) = (Some(stream), first, shown, keep);
             display.waveforms.clear();
             display.count.clear();
@@ -237,8 +237,8 @@ impl Node<Edges> for SpikeViewer {
         let Some(DataStream::Spikes(stream)) = context.inputs[0] else {
             return preview::unconnected(ui, context.theme, "Connect spikes to view them");
         };
-        let latest = context.shared::<Latest<RecentDisplay>>();
-        let reading = latest.as_deref().and_then(Latest::read).filter(|d| d.stream.is_some());
+        let pool = context.shared::<Pool<RecentDisplay>>();
+        let reading = pool.as_deref().and_then(Pool::newest).filter(|d| d.stream.is_some());
         let display = reading.as_deref();
         self.toolbar(ui, context);
         let mut thresholds = match &context.controls[THRESHOLDS] {

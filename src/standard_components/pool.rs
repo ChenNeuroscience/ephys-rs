@@ -1,7 +1,7 @@
-//! A pool of buffers that a node's thread and its passes swap, rather than copying what's in them: the thread fills
-//! a buffer and a pass swaps it for one of the worker's own (taking the data, giving back the worker's old buffer to
-//! fill again), or the other way round, a pass swaps the data it's given for an empty buffer from the pool and the
-//! thread writes it out. Nothing is copied, and once the pool's made, nothing's allocated.
+//! A pool of buffers that threads swap, rather than copying what's in them: one fills a buffer (or swaps its own in)
+//! and queues it, another takes it, and empty buffers go back to be filled again. Nothing is copied, and once the
+//! pool's made, nothing's allocated. It's for any two threads: a node's thread and its passes, or its passes and its
+//! window. How it's used depends on who's at each end, as below.
 //!
 //! For a source (a board, say), the pass takes whatever's arrived since the last: the buffer being filled, however
 //! full (`take`). If passes fall behind, a full buffer waits for them (`filled`) and the thread fills the next, and
@@ -10,28 +10,46 @@
 //! For a writer, a pass swaps its data into an empty buffer and queues it (`send`); the thread writes it and gives
 //! the buffer back (`give_back`). If the pool runs out, the disk is a long way behind: that pass's data is lost.
 //!
-//! For a window (see `crate::standard_components::latest`), passes fill empty buffers and queue them, and the GUI
-//! takes the latest, giving back the rest.
+//! For a window, only the newest matters: passes fill a buffer (`reuse`: an empty one, or failing that the oldest
+//! queued, so none are lost if the window's closed) and queue it as of their pass (`send_as_of`); the window reads
+//! the newest (`newest`), giving back the one it was reading and any older, and holds on to it for as long as it
+//! likes. A pool shared with a window lives in the run's exchange (see `crate::core::exchange`), where `SharedPool`
+//! finds or makes it from the passes, and `Context::shared::<Pool<T>>` from the window.
 //!
 //! Passes never wait on it. The empty and full buffers are on lock-free queues (crossbeam's bounded channels), so
 //! taking and giving back is a few atomic operations; only a writer's thread blocks, waiting for a buffer to write.
 //! A source's buffer being filled is behind a lock, which its thread holds while it decodes into it: a pass that
 //! finds it held doesn't wait, but leaves what's in it for the next pass.
 
+use std::ops::Deref;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
 use std::time::Duration;
 
 use crossbeam_channel::{Receiver, Sender};
 
-use crate::core::engine::PoolStatus;
+use crate::core::engine::{Edges, Pass, PoolStatus};
+use crate::core::exchange;
 
 /// Passes' worth of slack a pool of a pass's buffers gives, before data's lost: a second's.
 pub const SLACK_PASSES: usize = 50;
 
+/// Buffers in a pool shared with a window: one for each worker sending at once, one queued, and one being read.
+pub const WINDOW_BUFFERS: usize = 6;
+
 /// One end of a pool (clone it for the other).
 pub struct Pool<T> {
     shared: Arc<Shared<T>>,
+}
+
+impl<T: Send + Sync + 'static> exchange::Shared for Pool<T> {
+    fn name(&self) -> &'static str {
+        "pool"
+    }
+
+    fn pool(&self) -> Option<PoolStatus> {
+        Some(self.status())
+    }
 }
 
 impl<T> Clone for Pool<T> {
@@ -40,13 +58,19 @@ impl<T> Clone for Pool<T> {
     }
 }
 
+/// A buffer, with the pass it's as of.
+type AsOf<T> = (u64, T);
+
 struct Shared<T> {
     size: usize,
     bytes: usize,
     empty: (Sender<T>, Receiver<T>),
-    full: (Sender<T>, Receiver<T>),
+    /// Each with the pass it's as of, for a window to take the newest (0 if no one's said).
+    full: (Sender<AsOf<T>>, Receiver<AsOf<T>>),
     /// A source's buffer being filled, which the next pass takes however full it is.
     filling: Mutex<Option<T>>,
+    /// What a window's reading (perhaps in more than one place at once: it's only replaced when it isn't).
+    reading: RwLock<Option<(u64, T)>>,
     swaps: AtomicU64,
     overflows: AtomicU64,
 }
@@ -66,6 +90,7 @@ impl<T> Pool<T> {
             empty,
             full,
             filling: Mutex::new(None),
+            reading: RwLock::new(None),
             swaps: AtomicU64::new(0),
             overflows: AtomicU64::new(0),
         };
@@ -110,7 +135,7 @@ impl<T> Pool<T> {
     /// The buffer being filled is full: it waits for a pass, and the next starts.
     pub fn filled(&self) {
         if let Some(buffer) = self.shared.filling.lock().unwrap().take() {
-            let _ = self.shared.full.0.try_send(buffer);
+            let _ = self.shared.full.0.try_send((0, buffer));
         }
     }
 
@@ -120,7 +145,7 @@ impl<T> Pool<T> {
     /// filled, unless `is_empty` says there's nothing in it yet (or the thread's filling it just then: it's left for
     /// the next pass, rather than waited for). Give a buffer back for each taken.
     pub fn take(&self, is_empty: impl FnOnce(&T) -> bool) -> Option<T> {
-        let taken = self.shared.full.1.try_recv().ok().or_else(|| {
+        let taken = self.shared.full.1.try_recv().ok().map(|(_, b)| b).or_else(|| {
             let mut filling = self.shared.filling.try_lock().ok()?;
             if filling.as_ref().is_some_and(|b| !is_empty(b)) { filling.take() } else { None }
         });
@@ -147,27 +172,122 @@ impl<T> Pool<T> {
         buffer
     }
 
-    /// An empty buffer, if there's one, without counting it lost if there isn't.
-    pub fn try_empty(&self) -> Option<T> {
-        self.shared.empty.1.try_recv().ok()
-    }
-
     /// Queues a buffer of data for the thread.
     pub fn send(&self, buffer: T) {
-        self.shared.swaps.fetch_add(1, Ordering::Relaxed);
-        let _ = self.shared.full.0.try_send(buffer);
+        self.send_as_of(0, buffer);
     }
 
-    // A writer's thread (or a window).
+    /// Queues a buffer of data as of pass `sequence` (for a window, taking the newest).
+    pub fn send_as_of(&self, sequence: u64, buffer: T) {
+        self.shared.swaps.fetch_add(1, Ordering::Relaxed);
+        let _ = self.shared.full.0.try_send((sequence, buffer));
+    }
+
+    /// A buffer to fill when only the newest matters (for a window): an empty one, or failing that the oldest queued
+    /// (the window's not reading them). Nothing, and counted, if every one's in use.
+    pub fn reuse(&self) -> Option<T> {
+        let buffer = self.shared.empty.1.try_recv().ok().or_else(|| self.shared.full.1.try_recv().ok().map(|(_, b)| b));
+        if buffer.is_none() {
+            self.overflowed();
+        }
+        buffer
+    }
+
+    // A writer's thread.
 
     /// The next buffer to write, waiting up to `timeout` for one.
     pub fn next_full(&self, timeout: Duration) -> Option<T> {
-        self.shared.full.1.recv_timeout(timeout).ok()
+        self.shared.full.1.recv_timeout(timeout).ok().map(|(_, b)| b)
     }
 
     /// The next buffer queued, without waiting.
     pub fn try_full(&self) -> Option<T> {
-        self.shared.full.1.try_recv().ok()
+        self.shared.full.1.try_recv().ok().map(|(_, b)| b)
+    }
+
+    // A window (on the GUI thread).
+
+    /// The newest queued, if anything has been, giving back the one being read and any older. Passes on different
+    /// workers can queue out of order: it's the latest pass's.
+    pub fn newest(&self) -> Option<Newest<'_, T>> {
+        if let Ok(mut reading) = self.shared.reading.try_write() {
+            while let Ok(newer) = self.shared.full.1.try_recv() {
+                match reading.take() {
+                    Some(old) if old.0 > newer.0 => {
+                        self.give_back(newer.1);
+                        *reading = Some(old);
+                    }
+                    old => {
+                        if let Some((_, old)) = old {
+                            self.give_back(old);
+                        }
+                        *reading = Some(newer);
+                    }
+                }
+            }
+        }
+        let reading = self.shared.reading.read().unwrap();
+        reading.is_some().then_some(Newest(reading))
+    }
+
+    /// Already holding `value`, as if it had been sent and read (for tests).
+    #[cfg(test)]
+    pub fn holding(value: T) -> Self {
+        let pool = Pool::new([], 0);
+        *pool.shared.reading.write().unwrap() = Some((0, value));
+        pool
+    }
+}
+
+/// The newest in a pool, being read by a window.
+pub struct Newest<'a, T>(RwLockReadGuard<'a, Option<(u64, T)>>);
+
+impl<T> Deref for Newest<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.0.as_ref().expect("only made when there's something").1
+    }
+}
+
+/// A node's pool in the run's exchange, kept in its state: found (or made) by the first pass that asks for it, so the
+/// node's window (or the dev tools) can find it too (`Context::shared::<Pool<T>>`). A node whose state is only working
+/// memory has one on each worker (see `PassState::CARRIED_OVER`): they find the same pool.
+pub struct SharedPool<T> {
+    pool: Option<Arc<Pool<T>>>,
+    size: usize,
+    /// Makes the pool's buffers.
+    make: Box<dyn Fn() -> T + Send + Sync>,
+}
+
+impl<T: Default + 'static> Default for SharedPool<T> {
+    /// A window's pool, its buffers made by `T::default`.
+    fn default() -> Self {
+        SharedPool { pool: None, size: WINDOW_BUFFERS, make: Box::new(T::default) }
+    }
+}
+
+impl<T: Send + Sync + 'static> SharedPool<T> {
+    /// Of `size` buffers made by `make`: like a pass's, say, to swap them in.
+    pub fn new(size: usize, make: impl Fn() -> T + Send + Sync + 'static) -> Self {
+        SharedPool { pool: None, size, make: Box::new(make) }
+    }
+
+    /// The pool, found or made in the pass's exchange.
+    pub fn pool<E: Edges>(&mut self, pass: &Pass<E>) -> &Pool<T> {
+        let (size, make) = (self.size, &self.make);
+        self.pool.get_or_insert_with(|| pass.shared(|| Pool::new((0..size).map(|_| make()), 0)))
+    }
+
+    /// For a window: fills a buffer with `fill` (an earlier send's, to overwrite: see `Pool::reuse`) and queues it as of
+    /// this pass. Nothing, if every buffer's in use (passes on every worker sending at once).
+    pub fn send_newest<E: Edges>(&mut self, pass: &Pass<E>, fill: impl FnOnce(&mut T)) {
+        let sequence = pass.sequence;
+        let pool = self.pool(pass);
+        if let Some(mut buffer) = pool.reuse() {
+            fill(&mut buffer);
+            pool.send_as_of(sequence, buffer);
+        }
     }
 }
 
@@ -215,5 +335,43 @@ mod tests {
         assert_eq!(written, vec![5]);
         thread.give_back(written);
         assert!(pool.empty().is_some());
+    }
+
+    #[test]
+    fn a_window_reads_the_newest_sent() {
+        use crate::Edges;
+        use crate::core::engine::NodeId;
+
+        let mut pass: Pass<Edges> = Pass::new(0, 0.02, &[], &mut []);
+        pass.node = NodeId(7);
+        let exchange = pass.exchange;
+        let mut sender = SharedPool::<u32>::default();
+        sender.send_newest(&pass, |n| *n = 1);
+        let pool = exchange.get::<Pool<u32>>(NodeId(7)).unwrap();
+        pass.sequence = 1;
+        sender.send_newest(&pass, |n| *n = 2);
+        assert_eq!(pool.newest().as_deref(), Some(&2));
+        // Sending while the window reads (in two places at once).
+        let reading = pool.newest().unwrap();
+        pass.sequence = 2;
+        sender.send_newest(&pass, |n| *n = 3);
+        assert_eq!(*reading, 2);
+        assert_eq!(pool.newest().as_deref(), Some(&2), "the same, until it's done with");
+        drop(reading);
+        assert_eq!(pool.newest().as_deref(), Some(&3));
+        // Another worker's sender shares the pool; an earlier pass's doesn't replace a later one.
+        let mut other = SharedPool::<u32>::default();
+        pass.sequence = 5;
+        other.send_newest(&pass, |n| *n = 5);
+        pass.sequence = 4;
+        sender.send_newest(&pass, |n| *n = 4);
+        assert_eq!(pool.newest().as_deref(), Some(&5));
+        // Not read for a while: the oldest queued are reused, and nothing's lost for want of a buffer.
+        for sequence in 6..30 {
+            pass.sequence = sequence;
+            sender.send_newest(&pass, |n| *n = sequence as u32);
+        }
+        assert_eq!(pool.newest().as_deref(), Some(&29));
+        assert_eq!(pool.status().overflows, 0);
     }
 }

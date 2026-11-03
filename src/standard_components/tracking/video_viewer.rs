@@ -5,7 +5,7 @@ use super::tracker_view::{FrameView, show_frame};
 use crate::core::engine::{
     Category, Context, DataStreamType, EdgeType, Input, Node, NodeInfo, Output, PASS_DURATION, Pass,
 };
-use crate::standard_components::latest::{self, Latest};
+use crate::standard_components::pool::{Pool, SharedPool, WINDOW_BUFFERS};
 use crate::standard_components::preview;
 use crate::standard_components::tracking::VideoBuffer;
 use crate::standard_components::tracking::overlay::Overlays;
@@ -20,7 +20,7 @@ pub struct VideoViewer {
 
 /// Where it sends the latest frames to its window: their buffers, swapped in (so a pool of buffers like the pass's).
 #[derive(Default)]
-pub struct Showing(Option<latest::Sender<VideoBuffer>>);
+pub struct Showing(Option<SharedPool<VideoBuffer>>);
 
 impl crate::core::engine::PassState for Showing {
     const WHY: &'static str = "Only where it sends the latest frames to its window, kept so it's found once: \
@@ -54,7 +54,7 @@ impl Node<Edges> for VideoViewer {
 
     fn initial_state(&self, inputs: &[Option<DataStream>]) -> Showing {
         let Some(DataStream::Video(stream)) = inputs[0] else { return Showing::default() };
-        Showing(Some(latest::Sender::with(move || stream.buffer(PASS_DURATION))))
+        Showing(Some(SharedPool::new(WINDOW_BUFFERS, move || stream.buffer(PASS_DURATION))))
     }
 
     /// Swaps the pass's frames (if it has any) into the pool its window reads from: nothing's copied.
@@ -64,11 +64,12 @@ impl Node<Edges> for VideoViewer {
             return;
         }
         let sequence = pass.sequence;
-        let Some(mut frames) = sender.empty(pass) else { return };
+        let pool = sender.pool(pass);
+        let Some(mut frames) = pool.reuse() else { return };
         if let Some(Buffer::Video(video)) = pass.take_input(0) {
             std::mem::swap(video, &mut frames);
         }
-        sender.queue(sequence, frames);
+        pool.send_as_of(sequence, frames);
     }
 
     fn settings_ui(&mut self, ui: &mut egui::Ui, _context: &mut Context<Edges>) {
@@ -85,8 +86,8 @@ impl Node<Edges> for VideoViewer {
             return preview::unconnected(ui, context.theme, "Connect video to view it");
         };
         // The last of the latest frames sent.
-        let latest = context.shared::<Latest<VideoBuffer>>();
-        let Some(frames) = latest.as_deref().and_then(Latest::read).filter(|f| f.frames > 0 && f.width > 0) else {
+        let pool = context.shared::<Pool<VideoBuffer>>();
+        let Some(frames) = pool.as_deref().and_then(Pool::newest).filter(|f| f.frames > 0 && f.width > 0) else {
             let message = if context.running { "Waiting for frames…" } else { "Press Play to see the video" };
             return preview::unconnected(ui, context.theme, message);
         };

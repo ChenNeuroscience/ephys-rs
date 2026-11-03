@@ -523,7 +523,7 @@ pub struct Panes<'a, N: NodeSet, A: AnnotationSet> {
 }
 
 /// A node's window content: its own view if it has one (which shows its settings as it likes), otherwise the
-/// default window (`node_window`). While running, it gets the latest its passes have left for its window.
+/// default window (`node_window`). While running, it finds what its passes share with it in the run's exchange.
 #[allow(clippy::too_many_arguments)]
 pub fn node_ui<N: NodeSet>(
     ui: &mut egui::Ui,

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::engine::{Category, Context, EdgeType, Input, Node, NodeInfo, Output, Pass, PassState};
 use crate::standard_components::ephys::Events;
-use crate::standard_components::latest::{self, Latest};
+use crate::standard_components::pool::{Pool, SharedPool};
 use crate::standard_components::preview;
 use crate::standard_components::widgets::{require_input, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind};
@@ -58,7 +58,7 @@ pub struct Lines {
     /// Whether it's recording, and whether it has since acquisition started.
     recording: bool,
     recorded: bool,
-    shown: latest::Sender<LinesDisplay>,
+    shown: SharedPool<LinesDisplay>,
 }
 
 impl PassState for Lines {
@@ -154,7 +154,7 @@ impl Node<Edges> for TtlViewer {
 
         let span = self.span.clamp(0.1, LONGEST) as f64;
         let Lines { levels, changes, ups, ups_recording, recording, recorded, shown, .. } = lines;
-        shown.send(pass, |display| {
+        shown.send_newest(pass, |display| {
             let first = changes.partition_point(|c| c.time < now - span);
             // The levels before the span: now's, with the changes since undone.
             let mut before = *levels;
@@ -196,8 +196,8 @@ impl Node<Edges> for TtlViewer {
         let Some(DataStream::Events(stream)) = context.inputs[0] else {
             return preview::unconnected(ui, context.theme, "Connect events to view them");
         };
-        let latest = context.shared::<Latest<LinesDisplay>>();
-        let Some(display) = latest.as_deref().and_then(Latest::read).filter(|d| d.lines > 0) else {
+        let pool = context.shared::<Pool<LinesDisplay>>();
+        let Some(display) = pool.as_deref().and_then(Pool::newest).filter(|d| d.lines > 0) else {
             let message = format!("{} · press Play to see them", stream.summary());
             return preview::unconnected(ui, context.theme, &message);
         };
@@ -319,7 +319,7 @@ mod tests {
         };
         let stream = Some(DataStream::Events(Events { lines: 8, sample_rate: 30000.0 }));
         let exchange = crate::core::exchange::Exchange::default();
-        exchange.shared(viewer, || Latest::holding(display));
+        exchange.shared(viewer, || Pool::holding(display));
         let mut harness = egui_kittest::Harness::builder().with_size([600.0, 220.0]).wgpu().build_ui_state(
             |ui, graph: &mut Graph<Nodes>| {
                 graph.edit(

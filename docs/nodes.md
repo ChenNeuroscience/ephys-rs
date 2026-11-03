@@ -69,25 +69,26 @@ type implementing `Shared`: `Pass::shared(make)` finds or makes it (keep the `Ar
 finding it every pass), and `Context::shared` finds it. A `Shared` can report a pool of buffers (`Shared::pool`),
 which the dev tools show on the GUI.
 
-For the usual case, the latest of something to show, there's a util,
-[`latest`](../src/standard_components/latest.rs): a `Latest<T>` is a [`Pool`](../src/standard_components/pool.rs)
-of buffers, and a `latest::Sender<T>` in the node's state sends to it.
+The usual thing to share is a [`Pool`](../src/standard_components/pool.rs) of buffers: the same cross-thread pool
+sources and writers use with their threads. A `SharedPool<T>` in the node's state finds (or makes) the node's pool
+in the exchange, and the window finds it as `Pool<T>`. For something to show, only the newest matters:
 
 ```rust
-// In the state: a sender (its buffers made by T::default, or by `Sender::with`: to size, say).
-shown: latest::Sender<TracesDisplay>,
+// In the state: the node's pool (its buffers made by T::default, or by `SharedPool::new`: to size, say).
+shown: SharedPool<TracesDisplay>,
 
-// In process: fill a buffer (an earlier send's, to overwrite), and queue it.
-state.shown.send(pass, |display| display.fill_from(...));
+// In process: fill a buffer (an earlier send's, to overwrite), and queue it as of the pass.
+state.shown.send_newest(pass, |display| display.fill_from(...));
 
-// In view_ui: the newest sent, held for as long as the view likes.
-let latest = context.shared::<Latest<TracesDisplay>>();
-let Some(display) = latest.as_deref().and_then(Latest::read) else { return };
+// In view_ui: the newest queued, held for as long as the view likes.
+let pool = context.shared::<Pool<TracesDisplay>>();
+let Some(display) = pool.as_deref().and_then(Pool::newest) else { return };
 ```
 
 Neither side waits: passes don't skip a send while the window's reading, and if the window's closed, passes reuse the
-oldest buffer queued. A node that takes its input can swap it straight in (`Sender::empty`, then `Sender::queue`),
-so nothing's copied: the [Video Viewer](../src/standard_components/tracking/video_viewer.rs) does this with frames.
+oldest buffer queued. A node that takes its input can swap it straight in (`SharedPool::pool`, then `Pool::reuse` and
+`Pool::send_as_of`), so nothing's copied: the [Video Viewer](../src/standard_components/tracking/video_viewer.rs)
+does this with frames.
 
 ## Triggers and proposals
 
