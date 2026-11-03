@@ -64,9 +64,6 @@ pub fn run<C: Components>(path: Option<PathBuf>) -> eframe::Result {
                 app.theme = index;
             }
             app.themes[app.theme].apply(&cc.egui_ctx);
-            if let Some(mode) = cc.storage.and_then(|s| eframe::get_value::<Mode>(s, MODE_KEY)) {
-                app.layout.mode = mode;
-            }
             // For images in annotations.
             egui_extras::install_image_loaders(&cc.egui_ctx);
             #[cfg(target_os = "macos")]
@@ -94,7 +91,6 @@ pub fn version() -> String {
 
 /// Where the theme (by name) is kept among the app's preferences (which eframe saves, separately from graph files).
 const THEME_KEY: &str = "theme";
-const MODE_KEY: &str = "mode";
 
 /// Something a pane asked for, handled once the panes are drawn.
 pub enum Event {
@@ -300,7 +296,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
     fn load(&mut self, path: &Path) -> Result<(), String> {
         let json = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
         let file: SaveFile<N, A> = serde_json::from_str(&json).map_err(|e| e.to_string())?;
-        // The mode's the user's, kept across files (as the theme is).
+        // The mode stays as it is, opening a file (it starts basic, each time the app does).
         let mode = self.layout.mode;
         self.layout = file.layout.unwrap_or_default();
         self.layout.mode = mode;
@@ -1276,7 +1272,6 @@ impl<N: NodeSet, A: AnnotationSet> eframe::App for App<N, A> {
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, THEME_KEY, &self.themes[self.theme].name);
-        eframe::set_value(storage, MODE_KEY, &self.layout.mode);
     }
 }
 

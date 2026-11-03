@@ -203,11 +203,8 @@ impl Node<Edges> for LfpViewer {
         // Every channel: the view scrolls through them.
         let (first, shown) = (0, input.channels.max(1));
         let per_column = ((self.span as f64 * rate as f64) / COLUMNS as f64).round().max(1.0) as usize;
-        let reference: Vec<usize> = parse_channels(&self.reference, input.channels as u32)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|c| c as usize)
-            .collect();
+        let reference: Vec<usize> =
+            referenced(&self.reference, input.channels as u32).into_iter().map(|c| c as usize).collect();
         traces.reshape((first, shown, per_column, !reference.is_empty()));
         traces.reference = reference;
         traces.add(input, first);
@@ -285,7 +282,7 @@ impl Node<Edges> for LfpViewer {
         };
         let reference = self.rows_ui(ui, context.theme, display, stream, spectra, selection.as_mut(), locked);
         if let Some(channel) = reference {
-            let mut channels = parse_channels(&self.reference, stream.channels).unwrap_or_default();
+            let mut channels = referenced(&self.reference, stream.channels);
             match channels.iter().position(|&c| c == channel) {
                 Some(at) => {
                     channels.remove(at);
@@ -334,10 +331,13 @@ impl LfpViewer {
                     .labelled_by(label.id);
                 ui.separator();
                 let tip = match context.inputs[1] {
-                    Some(DataStream::Spectra(s)) => format!("Each channel's spectrum, {}", s.summary()),
-                    _ => "Each channel's spectrum: connect a Spectrum node's to show them".into(),
+                    Some(DataStream::Spectra(s)) => format!("Show each channel's spectrum, {}", s.summary()),
+                    _ => "Show each channel's spectrum: connect a Spectrum node's".into(),
                 };
-                ui.checkbox(&mut self.spectrum, "Spectrum").on_hover_text(tip);
+                if ui.add(egui::Button::selectable(self.spectrum, "Spectrum")).on_hover_text(tip).clicked() {
+                    self.spectrum = !self.spectrum;
+                }
+                ui.separator();
                 reference_ui(ui, &mut self.reference, stream.channels);
                 // With the gain control connected, the upstream gain can be adjusted from here.
                 if let Some(Setting::Gain(mut gain)) = context.controls[0] {
@@ -349,6 +349,7 @@ impl LfpViewer {
                 }
                 if let Some(selection) = selection {
                     ui.separator();
+                    ui.strong("Selection");
                     selection_ui(ui, selection, stream.channels);
                 }
                 context.node_toolbar(ui);
@@ -376,7 +377,7 @@ impl LfpViewer {
         // Which channel upstream each row is, once a selection's applied.
         let numbers = selection.as_deref().map(|s| upstream(s, stream.channels));
         let ticked: Option<Vec<u32>> = selection.as_deref().map(|s| ticked(s, stream.channels));
-        let referenced = parse_channels(&self.reference, stream.channels).unwrap_or_default();
+        let referenced = referenced(&self.reference, stream.channels);
         let mut toggled = None;
         let mut reference_toggled = None;
         let selection_applied = selection.as_deref().map(|s| s.apply);
@@ -541,19 +542,29 @@ fn spectrum_ui(
     }
 }
 
-/// The reference, compactly: which channels it is ("Ref: 1-4"), each chosen on its row (R), and clearing it.
+/// The channels a reference (as text) takes the mean of: none, if it's blank.
+fn referenced(reference: &str, channels: u32) -> Vec<u32> {
+    if reference.trim().is_empty() { Vec::new() } else { parse_channels(reference, channels).unwrap_or_default() }
+}
+
+/// The reference, compactly: which channels' mean it is (each chosen on its row, with R), and all or none of them.
 fn reference_ui(ui: &mut egui::Ui, reference: &mut String, channels: u32) {
-    let ticked = parse_channels(reference, channels).unwrap_or_default();
-    if ticked.is_empty() {
-        ui.weak("Ref: none").on_hover_text(
-            "Reference the traces to the average of some channels (in this view only): R on a row puts its channel \
-             in the reference",
-        );
-        return;
+    let label = ui.strong("Reference");
+    label.on_hover_text(
+        "Reference the traces to the mean of some channels (in this view only), shown in a row of its own at the top: \
+         R on a row puts its channel in it, or takes it out",
+    );
+    let ticked = referenced(reference, channels);
+    let text = match ticked.len() {
+        0 => "none".to_owned(),
+        n if n == channels as usize => "mean of all".to_owned(),
+        _ => format!("mean of {}", format_channels(&ticked, channels)),
+    };
+    ui.label(text);
+    if ui.small_button("All").on_hover_text("The mean of every channel (a common average)").clicked() {
+        *reference = "all".into();
     }
-    ui.label(format!("Ref: {}", format_channels(&ticked, channels)))
-        .on_hover_text("The traces are referenced to these channels' average, shown in its own row at the top");
-    if ui.small_button("Clear").on_hover_text("No reference").clicked() {
+    if ui.small_button("None").on_hover_text("No reference").clicked() {
         reference.clear();
     }
 }
@@ -674,6 +685,8 @@ mod tests {
         let inputs = [Some(&buffer), None];
         viewer.process(&mut Pass::new(0, PASS_DURATION, &inputs, &mut []), &mut traces);
         assert!(traces.shape.3, "a reference row");
+        // Blank, there's none (not all).
+        assert!(referenced("", 3).is_empty() && referenced("all", 3) == vec![0, 1, 2]);
         let column = |row: usize| (traces.lows[row * COLUMNS], traces.highs[row * COLUMNS]);
         assert_eq!(column(0), (5.0, 5.0));
         assert_eq!(column(1), (-5.0, -5.0));
