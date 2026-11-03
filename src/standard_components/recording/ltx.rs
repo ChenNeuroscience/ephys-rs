@@ -11,8 +11,11 @@
 //! duration are filled in at the end. Timestamps count 96 kHz ticks from the start of recording, and multi-byte
 //! values are big-endian. Spikes' samples are -128 to 127: their waveforms should come as int8 values (as floats),
 //! multiplied into them by a Spike Gain, whose gains (connected, read-only, to `gains`) are recorded in the `.set`
-//! file, with the full scale, as Axona's are (`gain_ch_0`..., `ADC_fullscale_mv`). The 5 kHz data should come as
-//! int8 values too, multiplied into them by an Continuous Gain.
+//! file, with the full scale, as Axona's are (`gain_ch_0`..., `ADC_fullscale_mv`). The EEG (its `eeg` input, kept at
+//! 5 kHz) should come as int8 values too, multiplied into them by a Continuous Gain, whose gains (connected, read-only,
+//! to `eeg gains`) are recorded likewise, as `EEG_gain_1`... in the `.set` file, and `gain` in each `.egf` file. Which
+//! channel each EEG channel is (from the Channel Selector choosing them, connected to `eeg selection`) is recorded as
+//! `EEG_ch_1`... in the `.set` file, and `chan_name` in each `.egf` file.
 //!
 //! The positions' header records the position detector's settings (connected, read-only, to `detection`): the
 //! crop, whose bounding box positions are measured from (scaled down to fit 0–1022 if need be; 1023 means no LED),
@@ -31,7 +34,8 @@ use crate::core::engine::{
     Category, Context, Control, DataStreamType, EdgeSet, Flow, Input, Node, NodeInfo, NodeThread, Output,
     PASS_DURATION, Pass, PoolStatus, ThreadContext,
 };
-use crate::standard_components::ephys::{Continuous, Event, Events};
+use crate::standard_components::ephys::reference::parse_channels;
+use crate::standard_components::ephys::{ChannelSelection, Continuous, Event, Events};
 use crate::standard_components::pool::{Pool, SharedPool};
 use crate::standard_components::spikes::{Gains, Spikes};
 use crate::standard_components::tracking::{Crop, Detection, PositionSample, Positions};
@@ -164,7 +168,7 @@ impl Node<Edges> for WriteLtx {
     fn inputs(&self) -> Vec<Input<Edges>> {
         vec![
             Input { name: "spikes", kind: Kind::Spikes },
-            Input { name: "continuous", kind: Kind::Continuous },
+            Input { name: "eeg", kind: Kind::Continuous },
             Input { name: "positions", kind: Kind::Positions },
             Input { name: "events", kind: Kind::Events },
         ]
@@ -178,6 +182,8 @@ impl Node<Edges> for WriteLtx {
         vec![
             Control { name: "detection", kind: SettingKind::Detection, read_only: true },
             Control { name: "gains", kind: SettingKind::Gains, read_only: true },
+            Control { name: "eeg selection", kind: SettingKind::ChannelSelection, read_only: true },
+            Control { name: "eeg gains", kind: SettingKind::Gains, read_only: true },
         ]
     }
 
@@ -284,6 +290,9 @@ impl Node<Edges> for WriteLtx {
         if context.controls[1].is_none() && context.inputs[0].is_some() {
             ui.weak("Connect the Spike Gain's gains, to record them with the spikes.");
         }
+        if (context.controls[2].is_none() || context.controls[3].is_none()) && context.inputs[1].is_some() {
+            ui.weak("Connect the Channel Selector's selection and the Continuous Gain's gains, to record them with the EEG.");
+        }
         ui.separator();
         let pool = context.shared::<Pool<Status>>();
         status_ui(ui, pool.as_deref().and_then(Pool::newest).as_deref(), context.theme);
@@ -319,20 +328,47 @@ impl Streams {
 struct Recorded {
     detection: Option<Detection>,
     gains: Gains,
+    /// Which channels the EEG's are, and their gains.
+    eeg_selection: Option<ChannelSelection>,
+    eeg_gains: Gains,
 }
 
 impl Recorded {
     fn of(controls: &[Option<Setting>]) -> Self {
         let mut recorded = Recorded::default();
-        for control in controls.iter().flatten() {
-            match control {
-                Setting::Detection(detection) => recorded.detection = Some(detection.clone()),
-                Setting::Gains(gains) => recorded.gains = gains.clone(),
-                _ => {}
-            }
+        if let Some(Some(Setting::Detection(detection))) = controls.first() {
+            recorded.detection = Some(detection.clone());
+        }
+        if let Some(Some(Setting::Gains(gains))) = controls.get(1) {
+            recorded.gains = gains.clone();
+        }
+        if let Some(Some(Setting::ChannelSelection(selection))) = controls.get(2) {
+            recorded.eeg_selection = Some(selection.clone());
+        }
+        if let Some(Some(Setting::Gains(gains))) = controls.get(3) {
+            recorded.eeg_gains = gains.clone();
         }
         recorded
     }
+
+    /// Which channel (upstream, counting from 1) each of `count` EEG channels is: as the selection passes them on,
+    /// if it's applied, otherwise as they come.
+    fn eeg_channels(&self, count: u32) -> Vec<u32> {
+        let selected = self
+            .eeg_selection
+            .as_ref()
+            .filter(|s| s.apply)
+            .map(|s| s.channels.trim())
+            .filter(|c| !c.is_empty() && !c.eq_ignore_ascii_case("all"));
+        let channels =
+            selected.and_then(|text| parse_channels(text, u32::MAX / 2).ok()).filter(|c| c.len() == count as usize);
+        channels.unwrap_or_else(|| (0..count).collect()).into_iter().map(|c| c + 1).collect()
+    }
+}
+
+/// A gain in the Axona format's terms: what gives the range a byte's samples (±128) cover.
+fn axona_gain(gain: f32) -> f32 {
+    (FULL_SCALE_UV * gain / 128.0 * 10.0).round() / 10.0
 }
 
 /// Copies a pass's inputs into `chunk`: of the continuous data, only what the EEG keeps, every `step`th sample
@@ -534,9 +570,7 @@ impl LtxFiles {
         if let Some(spikes) = streams.spikes {
             set.header("ADC_fullscale_mv", FULL_SCALE_UV / 1000.0)?;
             for channel in 0..spikes.channels as usize {
-                // In the Axona format's terms: the gain giving the range its 8-bit samples (±128) cover.
-                let gain = FULL_SCALE_UV * recorded.gains.get(channel) / 128.0;
-                set.header(&format!("gain_ch_{channel}"), (gain * 10.0).round() / 10.0)?;
+                set.header(&format!("gain_ch_{channel}"), axona_gain(recorded.gains.get(channel)))?;
             }
             for group in 0..spikes.groups() {
                 let mut f = file(&format!(".{}", group + 1))?;
@@ -554,12 +588,21 @@ impl LtxFiles {
 
         let mut egf = Vec::new();
         if let Some(continuous) = streams.continuous.filter(|c| egf_step(c.sample_rate).is_some()) {
+            if streams.spikes.is_none() {
+                set.header("ADC_fullscale_mv", FULL_SCALE_UV / 1000.0)?;
+            }
+            let numbers = recorded.eeg_channels(continuous.channels);
             for channel in 0..continuous.channels {
+                let (number, gain) = (numbers[channel as usize], recorded.eeg_gains.get(channel as usize));
+                set.header(&format!("EEG_ch_{}", channel + 1), number)?;
+                set.header(&format!("EEG_gain_{}", channel + 1), axona_gain(gain))?;
                 let mut f = file(&if channel == 0 { ".egf".into() } else { format!(".egf{}", channel + 1) })?;
                 f.header("num_chans", 1)?;
                 f.header("sample_rate", format!("{EGF_RATE} hz"))?;
-                f.header("stream_name", "continuous")?;
-                f.header("chan_name", format!("CH{}", channel + 1))?;
+                f.header("stream_name", "eeg")?;
+                f.header("chan_name", format!("CH{number}"))?;
+                f.header("gain", axona_gain(gain))?;
+                f.header("range_uv", format!("{:.1}", recorded.eeg_gains.range_uv(channel as usize)))?;
                 f.count_header("num_EEG_samples")?;
                 egf.push(Egf { file: f, samples: 0 });
             }
@@ -786,7 +829,11 @@ mod tests {
         let channels = crate::standard_components::spikes::Channels { count: 4, group_size: 4 };
         gains.set_range(0, 128.0, channels);
         gains.set_range(1, 64.0, channels);
-        let recorded = Recorded { detection: None, gains };
+        // The EEG: channels 5 and 7 of the board's, at ±200 µV.
+        let mut eeg_gains = Gains { scope: crate::standard_components::spikes::GainScope::All, ..Default::default() };
+        eeg_gains.set_range(0, 200.0, crate::standard_components::spikes::Channels { count: 2, group_size: 1 });
+        let eeg_selection = Some(ChannelSelection { apply: true, channels: "5, 7".into() });
+        let recorded = Recorded { detection: None, gains, eeg_selection, eeg_gains };
         let mut files = Box::new(LtxFiles::open(&base, Local::now(), streams, recorded).unwrap());
 
         // A spike 300 samples into the second pass of 600: at 900 samples, 30 ms, 2880 ticks.
@@ -822,6 +869,7 @@ mod tests {
         let egf = read(&base, ".egf2");
         assert_eq!(header(&egf, "num_EEG_samples"), "2");
         assert_eq!(data(&egf).iter().map(|b| *b as i8).collect::<Vec<_>>(), vec![60, 90]);
+        assert_eq!((header(&egf, "chan_name"), header(&egf, "range_uv")), ("CH7".into(), "200.0".into()));
         let pos = read(&base, ".pos");
         let sample = data(&pos);
         assert_eq!(u16::from_be_bytes([sample[4], sample[5]]), 100);
@@ -832,6 +880,8 @@ mod tests {
         assert_eq!(header(&set, "ADC_fullscale_mv"), "1500");
         assert_eq!(header(&set, "gain_ch_1"), "23437.5");
         assert_eq!(header(&set, "gain_ch_3"), "6000");
+        assert_eq!((header(&set, "EEG_ch_1"), header(&set, "EEG_ch_2")), ("5".into(), "7".into()));
+        assert_eq!(header(&set, "EEG_gain_1"), "7500");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

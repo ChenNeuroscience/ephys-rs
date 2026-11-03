@@ -374,6 +374,28 @@
           "node": 5,
           "port": 2
         }
+      },
+      {
+        "dimension": "Settings",
+        "from": {
+          "node": 6,
+          "port": 2
+        },
+        "to": {
+          "node": 13,
+          "port": 0
+        }
+      },
+      {
+        "dimension": "Settings",
+        "from": {
+          "node": 6,
+          "port": 3
+        },
+        "to": {
+          "node": 17,
+          "port": 0
+        }
       }
     ],
     "next_id": 18,

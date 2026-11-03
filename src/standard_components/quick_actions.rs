@@ -241,6 +241,8 @@ fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
     change.link((board, Output, 1), (ltx, Input, 3));
     change.link((ltx, Control, 0), (positions, Setting, 0));
     change.link((ltx, Control, 1), (gain, Setting, 0));
+    change.link((ltx, Control, 2), (selector, Setting, 0));
+    change.link((ltx, Control, 3), (continuous_gain, Setting, 0));
 
     let mut result = change.finish(state, &[spike_viewer, lfp_viewer, ttl_viewer, tracker])?;
     // A new graph, laid out tidily.
@@ -397,6 +399,13 @@ mod tests {
         let ltx = graph.iter().find(|(_, e)| e.node.info().name == "Write LTX").unwrap().0;
         let into = |i| graph.edges().iter().any(|e| e.target() == Port { node: ltx, role: Input, index: i });
         assert!((0..4).all(into), "Write LTX records spikes, EEG, positions and digital inputs");
+        // With the EEG's selection and gains.
+        let ltx_controls = |port| {
+            let from = crate::core::engine::PortRef { node: ltx, port };
+            graph.edges().iter().find(|e| e.dimension == crate::core::engine::Dimension::Settings && e.from == from)
+        };
+        assert_eq!(ltx_controls(2).map(|e| e.to.node), Some(selector));
+        assert_eq!(ltx_controls(3).map(|e| e.to.node), Some(named("Continuous Gain")));
         assert!(graph.iter().any(|(_, e)| matches!(&e.node, Nodes::AcquisitionBoard(b)
             if b.source == real_board())));
         // Then: disabling positions, and using synthetic data, are offered.
