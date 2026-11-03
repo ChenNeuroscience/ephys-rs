@@ -31,8 +31,8 @@ The standard ones are in [`base_directories.rs`](../src/standard_components/base
   trial, shown as a path: `~/recordings / r2405 / 2026-11-03 / 2026-11-03 a`. The subject and the day are
   directories; the day and trial, again, are the recording's name, which writers name what they write after: Write
   LTX its files (`2026-11-03 a.set`...), Write Raw its folder. Trials are lettered a to z, then 1a to 1z, 2a, and so
-  on. The next is the lowest not on disk in the day's directory, so an empty directory, or a new day, starts at a,
-  and a trial deleted is used again. Nothing's counted or stored: what's on disk is looked at once a second at most,
+  on. The next is the one after the last on disk in the day's directory, so an empty directory, or a new day, starts
+  at a, gaps aren't filled, and trials stay in the order they were made. Nothing's counted or stored: what's on disk is looked at once a second at most,
   and after each recording. Before a recording the trial is the next one, which you can change for that recording;
   during one, it's the current one, in red.
 

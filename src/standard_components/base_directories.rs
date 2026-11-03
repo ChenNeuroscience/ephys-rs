@@ -23,7 +23,7 @@ pub const BASE_DIRECTORIES: &[BaseDirectoryType] = &[
         name: "Subject, date and trial",
         description: "Recordings go in a directory for the day, in one for the subject (an animal's id, say), within \
                       a directory you choose, each named after the day and the trial (\"2026-11-03 a\"): the next \
-                      trial is the first letter not yet there.",
+                      trial is the letter after the last one there.",
         make: |saved| Box::new(Trials::from_saved(saved)),
     },
 ];
@@ -94,8 +94,8 @@ impl BaseDirectory for Chosen {
 
 /// A directory for each subject, within one, and in it, one for each day, each recording named after the day and
 /// trial: in `<directory>/<subject>/<date>/`, named `<date> <trial>` ("2026-11-03 a"; writers decide what that names:
-/// files, or a folder). Trials are lettered a to z, then 1a to 1z, 2a...; the next is the first not on disk, so an
-/// empty directory, or a new day, starts at a. It can be chosen by hand, for the next recording.
+/// files, or a folder). Trials are lettered a to z, then 1a to 1z, 2a...; the next is the one after the last on disk, so
+/// an empty directory, or a new day, starts at a. It can be chosen by hand, for the next recording.
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
 pub struct Trials {
@@ -201,17 +201,16 @@ impl Trials {
         }
     }
 
-    /// The first of today's trials not on disk.
-    fn first_free(&self) -> u32 {
-        let taken = self.on_disk();
-        (1..).find(|trial| !taken.contains(trial)).unwrap_or(1)
+    /// The trial after the last of today's on disk (so gaps aren't filled, and trials stay in the order they were made).
+    fn after_last(&self) -> u32 {
+        self.on_disk().into_iter().max().map_or(1, |last| last + 1)
     }
 
-    /// The next trial today: the one chosen, or the first free.
+    /// The next trial today: the one chosen, or the one after the last.
     fn next(&self) -> u32 {
         match &self.chosen {
             Some((day, trial)) if *day == today() => *trial,
-            _ => self.first_free(),
+            _ => self.after_last(),
         }
     }
 
@@ -265,7 +264,7 @@ impl BaseDirectory for Trials {
                 let response = ui.add(field);
                 let place = self.place_of(&day, trial);
                 if response.changed() {
-                    self.chosen = (trial != self.first_free()).then_some((day, trial));
+                    self.chosen = (trial != self.after_last()).then_some((day, trial));
                 }
                 if taken {
                     let tip = format!("The next trial: {place} is there already, and would be added to");
@@ -308,7 +307,7 @@ mod tests {
     }
 
     #[test]
-    fn the_next_trial_is_the_first_not_on_disk() {
+    fn the_next_trial_is_after_the_last_on_disk() {
         let base = std::env::temp_dir().join(format!("ephys-rs-trials-{}", std::process::id()));
         let mut trials = Trials { directory: base.display().to_string(), subject: "r123".into(), ..Default::default() };
         let day = base.join("r123").join(today());
@@ -325,25 +324,26 @@ mod tests {
         trials.recording_stopped();
         assert_eq!(trials.place(), named("b"));
 
-        // The lowest free, whatever's after it; other days', and other things, don't count.
+        // After the last, leaving any gap; other days', and other things, don't count.
         std::fs::create_dir(day.join(format!("{} b", today()))).unwrap();
         std::fs::write(day.join(format!("{} d.set", today())), "").unwrap();
         std::fs::write(day.join(format!("{} notes.txt", today())), "").unwrap();
         std::fs::write(day.join("2000-01-01 c.set"), "").unwrap();
         trials.looked.take();
-        assert_eq!(trials.place(), named("c"));
+        assert_eq!(trials.place(), named("e"));
 
-        // Chosen by hand: for the next recording.
+        // Chosen by hand: for the next recording, then carrying on from it.
         trials.chosen = Some((today(), 6));
         assert_eq!(trials.place(), named("f"));
         trials.recording_started(&trials.place().unwrap());
+        std::fs::write(day.join(format!("{} f.set", today())), "").unwrap();
         trials.recording_stopped();
-        assert_eq!(trials.place(), named("c"));
+        assert_eq!(trials.place(), named("g"));
 
         // What's kept is what was chosen: what's next is on disk.
         let saved = trials.save();
         assert_eq!(saved, serde_json::json!({ "directory": base.display().to_string(), "subject": "r123" }));
-        assert_eq!(Trials::from_saved(Some(&saved)).place(), named("c"));
+        assert_eq!(Trials::from_saved(Some(&saved)).place(), named("g"));
         std::fs::remove_dir_all(&base).unwrap();
     }
 }
