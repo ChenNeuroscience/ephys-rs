@@ -982,7 +982,7 @@ checksum = "cfc1cc505827f4c23eedc297975a0fd038268d41293f389dd8ff3b574aefab19"
 
 [[package]]
 name = "ephys-rs"
-version = "0.63.0"
+version = "0.64.0"
 dependencies = [
  "arboard",
  "base64",
@@ -1012,7 +1012,7 @@ dependencies = [
 
 [[package]]
 name = "ephys-rs-example"
-version = "0.907.0"
+version = "0.908.0"
 dependencies = [
  "chrono",
  "eframe",

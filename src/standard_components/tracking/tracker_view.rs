@@ -756,8 +756,7 @@ mod tests {
         let runner = Runner::start(&recording, 2);
         let proposed = || {
             let proposals = runner.exchange().take_proposals();
-            let values = proposals.into_iter().filter_map(|(_, _, value)| value.downcast::<crate::Setting>().ok());
-            values.last().map(|value| *value)
+            proposals.into_iter().find_map(|(_, _, value)| value.downcast::<crate::Setting>().ok()).map(|value| *value)
         };
         std::thread::sleep(Duration::from_millis(1000));
         assert!(proposed().is_none(), "settings are locked while recording");
