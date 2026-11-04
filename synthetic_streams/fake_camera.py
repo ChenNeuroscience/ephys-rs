@@ -38,8 +38,7 @@ WALL_THICKNESS = 0.015
 COMMUTATOR = (-1.1, -0.15, 2.0)
 CABLE_DIAMETER = 0.005
 NOISE_VARIANTS = 8
-WALL_JITTER = 0.6  # pixels, on the walls that shimmer
-SHIMMERING_WALLS = (0, 2)
+WALL_JITTER = 0.08  # the most the top and bottom walls move, as a fraction of a pixel
 LAPTOP = (0.73, 0.22, 0.12)  # x, y and angle
 TIMING_LED = (-0.70, 0.30, 0.02)
 TIMING_LED_ON = 0.3  # seconds
@@ -151,18 +150,8 @@ def draw_timing_led_housing(buf, cam):
     draw_disc(buf, w, h, u, v, 0.006 * k, 95)
 
 
-def render_background(cam, jitter=0.0):
-    """The room, with the shimmering walls `jitter` pixels or so from where they belong."""
+def render_background(cam):
     w, h = cam.w, cam.h
-
-    # Each wall moves as one, so its parts stay joined.
-    nudges = [(random.uniform(-jitter, jitter), random.uniform(-jitter, jitter)) for _ in range(4)]
-
-    def nudged(points, side):
-        if side not in SHIMMERING_WALLS:
-            return points
-        dx, dy = nudges[side]
-        return [(u + dx, v + dy) for u, v in points]
 
     buf = bytearray(b"\x26" * (w * h))  # room floor
 
@@ -184,20 +173,34 @@ def render_background(cam, jitter=0.0):
                 cam.project(bx * ARENA_HALF, by * ARENA_HALF, z1),
                 cam.project(ax * ARENA_HALF, ay * ARENA_HALF, z1),
             ]
-            fill_polygon(buf, w, h, nudged(quad, side), tone)
+            fill_polygon(buf, w, h, quad, tone)
 
     # Wall tops: a light ring between the inner and outer top edges.
     outer = floor_square(ARENA_HALF + WALL_THICKNESS, WALL_HEIGHT)
     inner = floor_square(ARENA_HALF, WALL_HEIGHT)
     for side in range(4):
-        ring = [inner[side], inner[(side + 1) % 4], outer[(side + 1) % 4], outer[side]]
-        fill_polygon(buf, w, h, nudged(ring, side), 175)
+        fill_polygon(buf, w, h, [inner[side], inner[(side + 1) % 4], outer[(side + 1) % 4], outer[side]], 175)
 
     fill_polygon(buf, w, h, floor_square(ARENA_HALF, 0), 0x0C)  # arena floor
 
     draw_laptop(buf, cam)
     draw_timing_led_housing(buf, cam)
     return buf
+
+
+def with_shimmer(base, cam):
+    """The top and bottom walls moved a fraction of a pixel up or down, each its own way: each pixel is blended a
+    little with the one next to it, so only their edges change, and only slightly."""
+    w, h = cam.w, cam.h
+    out = bytearray(base)
+    inner = int(cam.project(0, ARENA_HALF, 0)[1]) + 2
+    outer = min(h - 2, int(cam.project(0, ARENA_HALF + WALL_THICKNESS, WALL_HEIGHT)[1]) + 2)
+    for rows in (range(max(1, h - outer), h - inner + 1), range(inner - 1, outer)):
+        shift = random.uniform(-WALL_JITTER, WALL_JITTER)
+        step = w if shift > 0 else -w
+        for i in range(rows.start * w, rows.stop * w):
+            out[i] = round(base[i] + abs(shift) * (base[i + step] - base[i]))
+    return out
 
 
 def with_noise(base):
@@ -372,7 +375,8 @@ def main():
 
     cam = Camera(args.width, args.height)
     print("rendering background...")
-    backgrounds = [with_noise(render_background(cam, WALL_JITTER)) for _ in range(NOISE_VARIANTS)]
+    base = render_background(cam)
+    backgrounds = [with_noise(with_shimmer(base, cam)) for _ in range(NOISE_VARIANTS)]
     print(f"floor: {cam.scale(0):.1f} px/m, wall tops: {cam.scale(WALL_HEIGHT):.1f} px/m "
           f"(so a ruler along the 1 m floor edge should read {cam.scale(0):.0f} px)")
 
