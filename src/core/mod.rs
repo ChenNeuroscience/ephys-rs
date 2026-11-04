@@ -22,6 +22,24 @@ fn shown_version(version: &str) -> String {
     format!("v{}", version.strip_suffix(".0").unwrap_or(version))
 }
 
+/// The program's version, once it's running (see `full_version`).
+static FULL_VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// The program's version: what `Components::version` says, "chen-neuro v0.900 (ephys-rs v0.12)", say. It can be asked for
+/// from anywhere (for a writer's headers, or a crash report), as it's the same for the whole of a run. `version` is
+/// the core's alone, for what wants only that. Until `gui::run` has started, it's just the core's.
+pub fn full_version() -> String {
+    #[cfg(test)]
+    return <crate::components::Example as Components>::version();
+    #[cfg(not(test))]
+    FULL_VERSION.get().cloned().unwrap_or_else(version)
+}
+
+/// Says what the program's version is, for `full_version`.
+pub(crate) fn set_full_version(version: String) {
+    let _ = FULL_VERSION.set(version);
+}
+
 /// The core's version, "ephys-rs v0.12": a count of the changes to the library (see docs/development.md). Tests show
 /// "v0.y", so their snapshots don't change with it.
 pub fn version() -> String {
@@ -49,8 +67,9 @@ pub trait Components: 'static {
     /// Where recordings go (see `base_directory`): the first is the default.
     const BASE_DIRECTORIES: &'static [base_directory::BaseDirectoryType] = &[];
 
-    /// The program's version, shown in the status bar, and given by `--version` (which is how CI names a release). It's
-    /// up to the build, but `build_version` is recommended: the core's alone doesn't say which build it is.
+    /// The program's version, shown in the status bar, given by `--version` (which is how CI names a release), and what
+    /// `full_version` says, for nodes to keep in what they write. It's up to the build, but `build_version` is
+    /// recommended: the core's alone doesn't say which build it is.
     fn version() -> String {
         version()
     }

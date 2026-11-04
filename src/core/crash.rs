@@ -69,7 +69,7 @@ pub fn file_url(path: &std::path::Path) -> String {
 fn report(what: &str) {
     let thread = std::thread::current();
     let mut text = String::new();
-    let _ = writeln!(text, "ephys-rs {} crashed, {}", env!("CARGO_PKG_VERSION"), chrono::Local::now().to_rfc2822());
+    let _ = writeln!(text, "{} crashed, {}", crate::core::full_version(), chrono::Local::now().to_rfc2822());
     let _ = writeln!(text, "{} {}\n", std::env::consts::OS, std::env::consts::ARCH);
     let _ = writeln!(text, "{what}\n");
     let _ = writeln!(text, "Thread: {}", thread.name().unwrap_or("(unnamed)"));

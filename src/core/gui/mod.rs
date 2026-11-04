@@ -49,8 +49,9 @@ use docking::Panes;
 ///
 /// With `--version` as the first argument, says the version and stops.
 pub fn run<C: Components>(path: Option<PathBuf>) -> eframe::Result {
+    crate::core::set_full_version(C::version());
     if std::env::args().nth(1).as_deref() == Some("--version") {
-        println!("{}", C::version());
+        println!("{}", crate::core::full_version());
         return Ok(());
     }
     crate::core::console::init(true);
@@ -58,8 +59,7 @@ pub fn run<C: Components>(path: Option<PathBuf>) -> eframe::Result {
     crate::core::crash::test_if_asked();
     let mut app = App::<C::Nodes, C::Annotations>::open(None, C::THEMES)
         .with_quick_actions(C::QUICK_ACTIONS)
-        .with_base_directories(C::BASE_DIRECTORIES)
-        .with_version(C::version());
+        .with_base_directories(C::BASE_DIRECTORIES);
     app.last_crash = crate::core::crash::take_latest();
     if let Some(report) = &app.last_crash {
         log::warn!("The last time ephys-rs ran, it crashed: a report is in {}", report.display());
@@ -224,8 +224,6 @@ pub struct App<N: NodeSet, A: AnnotationSet> {
     dev_tools: dev_tools::DevTools,
     /// Offered in the basic view.
     quick_actions: &'static [crate::core::quick_action::QuickAction<N>],
-    /// The program's version (see `Components::version`).
-    version: String,
     /// Where recordings go: the one in use, in a section of the toolbar.
     base_directories: BaseDirectories,
     /// How full the disk the base directory is on is.
@@ -275,7 +273,6 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             ran: None,
             last_crash: None,
             quick_actions: &[],
-            version: crate::core::version(),
             base_directories: BaseDirectories::new(&[], None),
             disk_space: Default::default(),
         };
@@ -624,11 +621,6 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
 
     pub fn with_quick_actions(mut self, quick_actions: &'static [crate::core::quick_action::QuickAction<N>]) -> Self {
         self.quick_actions = quick_actions;
-        self
-    }
-
-    pub fn with_version(mut self, version: String) -> Self {
-        self.version = version;
         self
     }
 
@@ -992,7 +984,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         let mut clicked = false;
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.weak(&self.version).on_hover_text("The version of this build, and of ephys-rs in it");
+                ui.weak(crate::core::full_version()).on_hover_text("The version of this build, and of ephys-rs in it");
                 if let Some(runner) = &self.runner {
                     ui.separator();
                     let stats = ui.scope(|ui| self.run_stats(ui, &runner.stats())).response.rect;
@@ -1531,8 +1523,7 @@ mod tests {
     fn harness() -> Harness<'static, TestApp> {
         let mut app = TestApp::open(Some(example()), THEMES)
             .with_quick_actions(crate::components::quick_actions::QUICK_ACTIONS)
-            .with_base_directories(crate::components::BASE_DIRECTORIES)
-            .with_version(<crate::components::Example as Components>::version());
+            .with_base_directories(crate::components::BASE_DIRECTORIES);
         // Most tests work on the graph.
         app.layout.mode = Mode::Advanced;
         assert!(app.status.is_none(), "the example opens");

@@ -33,9 +33,10 @@ Python ones, and tests that record remove the writers first, or write to a tempo
 `~/recordings`.
 
 CI ([`.github/workflows/build.yml`](../.github/workflows/build.yml)) checks formatting and clippy (warnings are
-errors), runs the tests on Windows and macOS, and builds release packages. Each push to `main` publishes a release,
-tagged with the build's version (`v0.x`, below), and titled with the whole of it, which the macOS build is asked for
-with `--version`.
+errors), runs the tests on Windows and macOS, and builds release packages for both. Each push to `main`, other than of
+Markdown alone, publishes a release, titled with the whole version (below), which one of the builds is asked for with
+`--version`. It's tagged `chen-neuro-v0.x`, and the first with a new core version is tagged `ephys-rs-v0.y` too (tags
+can't have spaces). Releases before these two versions were split are tagged `v0.x`.
 
 ## Versions
 
@@ -43,7 +44,8 @@ There are two versions, shown together at the right of the status bar: `chen-neu
 what it shows, with `Components::version` (see [custom builds](architecture.md#core-standard-components-and-custom-builds)),
 and this one's in [`example/`](../example/src/components/mod.rs).
 
-- `x` is the build's: example/Cargo.toml's minor version, from 900. It's what's released, so every commit counts it up.
+- `x` is the build's: example/Cargo.toml's minor version, from 900. It's what's released, so every commit counts it up,
+  including those that only change the core. Commits of nothing but Markdown (the README, these docs) count up neither.
 - `y` is the core's: the root Cargo.toml's minor version. Only commits that change the library (`src/`, or the root
   Cargo.toml) count it up.
 
@@ -53,6 +55,10 @@ them, bumping the Cargo.toml files and Cargo.lock and staging them. Turn it on o
 ```bash
 git config core.hooksPath .githooks
 ```
+
+Anything can ask for them: `core::full_version()` is the whole thing, and `core::version()` the core's alone. Write LTX
+keeps the whole thing in its headers (`created_by`, `data_source`), Write Raw in `structure.oebin` (`recorded_with`), and
+crash reports start with it.
 
 For now, files and the clipboard are read only as they're written now: nothing is kept to read older versions.
 

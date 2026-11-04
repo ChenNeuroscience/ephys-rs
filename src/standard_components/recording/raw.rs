@@ -362,6 +362,7 @@ fn structure(continuous: Option<Continuous>, events: Option<Events>) -> String {
         .collect();
     let structure = serde_json::json!({
         "GUI version": "0.6.7",
+        "recorded_with": crate::core::full_version(),
         "continuous": continuous,
         "events": events,
         "spikes": [],
@@ -462,6 +463,7 @@ mod tests {
         let oebin: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(recording.join("structure.oebin")).unwrap()).unwrap();
         assert_eq!(oebin["continuous"][0]["num_channels"], 2);
+        assert_eq!(oebin["recorded_with"], crate::core::full_version(), "which build wrote it");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

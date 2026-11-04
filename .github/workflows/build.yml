@@ -3,6 +3,8 @@ name: Build
 on:
   push:
     branches: [main]
+    # Text alone isn't a change to the program: the pre-commit hook doesn't count the versions up for it.
+    paths-ignore: ['**.md']
   pull_request:
   workflow_dispatch:
 
@@ -87,22 +89,26 @@ jobs:
           pattern: ephys-rs-*
           path: release
           merge-multiple: true
-      - name: Select version and tag
+      - name: Select version and tags
         id: package
         run: |
-          # The tag is the build's own version, v0.x: example/Cargo.toml's minor version, counted up by the pre-commit hook.
-          minor=$(python3 -c 'import tomllib; print(tomllib.load(open("example/Cargo.toml", "rb"))["package"]["version"].split(".")[1])')
-          tag="v0.$minor"
+          # All from the version as the app says it, "chen-neuro v0.x (ephys-rs v0.y)": the release is titled with it, and
+          # tagged "chen-neuro-v0.x" (tags can't have spaces), and the core tagged "ephys-rs-v0.y".
+          version=$(cat release/version.txt)
+          build=${version%% (*}
+          core=${version##*(}
+          core=${core%)}
+          tag=${build// /-}
+          core_tag=${core// /-}
+          test -n "$tag" && test -n "$core_tag" && test "$tag" != "$core_tag"
           # Each version is one commit: a commit made without the hook would otherwise replace its release.
           tagged=$(git ls-remote --tags origin "refs/tags/$tag" | cut -f1)
           if [ -n "$tagged" ] && [ "$tagged" != "$GITHUB_SHA" ]; then
             echo "::error::$tag is already released from $tagged: commit with the pre-commit hook on, so the version's counted up"
             exit 1
           fi
-          # The release is named with the whole version, as the app shows it.
-          version=$(cat release/version.txt)
-          test -n "$version"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "core_tag=$core_tag" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           test "$(ls release/*.zip | wc -l)" -eq 2
       - name: Publish GitHub release
@@ -120,3 +126,10 @@ jobs:
           artifactErrorsFailBuild: true
           allowUpdates: true
           makeLatest: true
+      - name: Tag the core, if its version's new
+        run: |
+          tag=${{ steps.package.outputs.core_tag }}
+          if [ -z "$(git ls-remote --tags origin "refs/tags/$tag")" ]; then
+            git tag "$tag" "$GITHUB_SHA"
+            git push origin "refs/tags/$tag"
+          fi

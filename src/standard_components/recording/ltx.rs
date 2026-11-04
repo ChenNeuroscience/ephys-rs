@@ -446,7 +446,7 @@ impl LtxFile {
         let mut file = BufWriter::new(File::create(path)?);
         write!(file, "trial_date {}", start.format("%A, %d %b %Y"))?;
         write!(file, "\r\ntrial_time {}", start.format("%H:%M"))?;
-        write!(file, "\r\ncreated_by ephys-rs {}", env!("CARGO_PKG_VERSION"))?;
+        write!(file, "\r\ncreated_by {}", crate::core::full_version())?;
         write!(file, "\r\nduration ")?;
         let duration_at = file.stream_position()?;
         write!(file, "{PLACEHOLDER}")?;
@@ -651,7 +651,7 @@ fn open_pos(mut f: LtxFile, positions: Positions, detection: Option<&Detection>)
         f.header(&format!("bearing_colour_{}", i + 1), bearing)?;
     }
     f.header("position_metadata_source", "camera_tracker")?;
-    f.header("data_source", format!("ephys-rs {}", env!("CARGO_PKG_VERSION")))?;
+    f.header("data_source", crate::core::full_version())?;
     f.header("pixels_per_metre", ppm.map_or(f32::NAN, |p| p * scale))?;
     let (right, bottom) = ((width * scale).round(), (height * scale).round());
     for (key, value) in [("min_x", 0.0), ("max_x", right), ("min_y", 0.0), ("max_y", bottom)] {
@@ -858,6 +858,7 @@ mod tests {
 
         let tetrode = read(&base, ".1");
         assert_eq!(header(&tetrode, "num_spikes"), "1");
+        assert_eq!(header(&tetrode, "created_by"), crate::core::full_version(), "which build wrote it");
         let record = data(&tetrode);
         assert_eq!(record.len(), 4 * 54);
         assert_eq!(i32::from_be_bytes(record[..4].try_into().unwrap()), 2880);

@@ -1,9 +1,12 @@
 #!/bin/sh
-# Every commit counts the build's version up, as that's what's released, and the core's too if the library changed: the
-# x and y of "chen-neuro v0.x (ephys-rs v0.y)", each its Cargo.toml's minor version (not semver, just a count). See
-# docs/development.md. Turn on with: git config core.hooksPath .githooks
+# Every commit but those of Markdown alone counts the build's version up, as that's what's released, and the core's too
+# if the library changed: the x and y of "chen-neuro v0.x (ephys-rs v0.y)", each its Cargo.toml's minor version (not
+# semver, just a count). See docs/development.md. Turn on with: git config core.hooksPath .githooks
 set -e
 cd "$(git rev-parse --show-toplevel)"
+
+# Text alone isn't a change to the program, and CI doesn't build it.
+git diff --cached --name-only | grep -qv '\.md$' || exit 0
 
 # Counts up the version in $1, of package $2.
 count_up() {
