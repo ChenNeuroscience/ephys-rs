@@ -6,7 +6,7 @@
 //!
 //! Opening a camera takes a couple of seconds, so a new epoch doesn't: its `Capture` carries on with the camera that's
 //! capturing (new state's made before the old's let go of), changing only the pool if the frame size has changed. It's
-//! closed once nothing's using it, when the run stops. Two Camera nodes with the same source and rate share it too.
+//! closed once nothing's using it, when the run stops. Two Camera nodes with the same source share it too.
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -108,8 +108,8 @@ impl Drop for Running {
     }
 }
 
-/// The cameras capturing, by source and frame rate (as bits). Weak, so a camera closes once nothing's using it.
-static RUNNING: Mutex<Vec<(Source, u64, Weak<Running>)>> = Mutex::new(Vec::new());
+/// The cameras capturing, by source. Weak, so a camera closes once nothing's using it.
+static RUNNING: Mutex<Vec<(Source, Weak<Running>)>> = Mutex::new(Vec::new());
 
 fn new_pool(video: Video) -> Pool<VideoBuffer> {
     let bytes = video.buffer(PASS_DURATION).pixels.len();
@@ -124,14 +124,12 @@ pub struct Capture {
 }
 
 impl Capture {
-    /// Uses `source` at `settings` (its frame rate fixed from now on), for passes' `video`: carrying on with it, if
-    /// it's capturing already, otherwise opening it.
+    /// Uses `source` at `settings`, for passes' `video`: carrying on with it, if it's capturing already, otherwise
+    /// opening it.
     pub fn start(source: Source, settings: CameraSettings, video: Video) -> Self {
-        let rate = settings.frame_rate.to_bits();
         let mut running = RUNNING.lock().unwrap();
-        running.retain(|(_, _, capture)| capture.strong_count() > 0);
-        let same = |(s, r, _): &&(Source, u64, Weak<Running>)| *s == source && *r == rate;
-        if let Some(capture) = running.iter().find(same).and_then(|(_, _, capture)| capture.upgrade()) {
+        running.retain(|(_, capture)| capture.strong_count() > 0);
+        if let Some(capture) = running.iter().find(|(s, _)| *s == source).and_then(|(_, capture)| capture.upgrade()) {
             log::info!("Camera: carrying on with it, for {}×{} frames", video.width, video.height);
             let pool = capture.pool_for(video);
             return Capture { running: capture, pool };
@@ -149,11 +147,11 @@ impl Capture {
             .spawn(move || capture(&thread_shared, &thread_source))
             .expect("capture thread");
         let capture = Arc::new(Running { shared, thread: Some(thread) });
-        running.push((source, rate, Arc::downgrade(&capture)));
+        running.push((source, Arc::downgrade(&capture)));
         Capture { running: capture, pool }
     }
 
-    /// Changes the exposure and gain (the frame rate only takes effect on restarting).
+    /// Changes the frame rate, exposure and gain.
     pub fn apply(&self, settings: &CameraSettings) {
         *self.running.shared.settings.lock().unwrap() = *settings;
     }
@@ -401,9 +399,10 @@ mod tests {
         drop(second);
         assert!(take_like_passes(&third, 5, 5).len() >= 5);
 
-        let other_rate = CameraSettings { frame_rate: 25.0, ..settings };
-        let fourth = Capture::start(source, other_rate, right);
-        assert!(!Arc::ptr_eq(&third.running, &fourth.running), "a frame rate's set as a camera opens");
+        // Another frame rate's set on the camera that's open, for buffers of its own.
+        let (other_rate, slower) = (CameraSettings { frame_rate: 25.0, ..settings }, Video { fps: 25.0, ..right });
+        let fourth = Capture::start(source, other_rate, slower);
+        assert!(Arc::ptr_eq(&third.running, &fourth.running));
         drop(fourth);
 
         let camera = Arc::downgrade(&third.running);

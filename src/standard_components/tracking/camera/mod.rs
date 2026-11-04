@@ -69,9 +69,10 @@ impl DataStreamType for CameraStats {
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CameraSettings {
-    /// Frames per second: also the rate of the video stream, so changing it restarts the run.
+    /// Frames per second, for a camera that takes one: also the rate declared for the video stream, whatever the camera
+    /// does (an externally triggered one goes by its trigger), so changing it starts a new epoch.
     pub frame_rate: f64,
-    /// The video stream's frame size, so changing it restarts the run too. Frames of other sizes are skipped: the camera
+    /// The video stream's frame size, so changing it starts a new epoch too. Frames of other sizes are skipped: the camera
     /// proposes the size it's sending, unless it's recording (see `Pass::propose`).
     pub frame_size: [u32; 2],
     /// Microseconds.
@@ -144,7 +145,7 @@ pub trait Camera: Send {
         Vec::new()
     }
 
-    /// Applies exposure and gain (the frame rate is only set when the camera is opened).
+    /// Applies the frame rate, exposure and gain.
     fn apply(&mut self, _settings: &CameraSettings) -> io::Result<()> {
         Ok(())
     }

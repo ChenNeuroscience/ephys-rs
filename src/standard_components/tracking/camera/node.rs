@@ -242,7 +242,7 @@ pub(in crate::standard_components::tracking) fn camera_settings_ui(
             ui.add(
                 egui::DragValue::new(&mut settings.frame_rate).range(range).speed(0.1).max_decimals(2).suffix(" fps"),
             )
-            .on_hover_text("Also the video's rate: changing it restarts the run")
+            .on_hover_text("Also the rate declared for the video, whatever a triggered camera does")
         });
         let unknown = |min, max| Range { min, max, current: f64::NAN };
         let exposure = controls.map_or(Some(unknown(10.0, 1e6)), |c| c.exposure);

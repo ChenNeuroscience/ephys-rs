@@ -4,10 +4,14 @@
 //! arrived since the last, and nothing's copied. The digital inputs' changes are found as they're decoded. The
 //! thread's status (what it's doing, the sample rate, losses) is shared for display. If the board can't be opened,
 //! or fails, it keeps trying.
+//!
+//! A new epoch doesn't open the board again: if nothing it's acquiring has changed, its `Capture` carries on with the
+//! one acquiring (new state's made before the old's let go of), and the same pool. A new configuration does, once the
+//! old has closed. It's closed once nothing's using it, when the run stops.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -50,7 +54,7 @@ pub struct Status {
 }
 
 /// The channels the passes take: each pass's buffers are made for them.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Shape {
     pub ephys: Continuous,
     pub aux: Continuous,
@@ -69,44 +73,94 @@ struct Shared {
     status: Mutex<Status>,
 }
 
-/// A board acquiring on its own thread, until dropped.
-pub struct Capture {
+/// A board acquiring on its own thread, until the last `Capture` using it lets go.
+struct Running {
     shared: Arc<Shared>,
     pool: Pool<Samples>,
     thread: Option<JoinHandle<()>>,
 }
 
-impl Capture {
-    /// Starts opening `source`, to acquire at `config`, into buffers for `shape`.
-    pub fn start(source: Source, config: Config, shape: Shape) -> Self {
-        let shared = Arc::new(Shared { stop: AtomicBool::new(false), status: Mutex::new(Status::default()) });
-        let bytes = shape.samples().bytes();
-        let pool = Pool::new((0..SLACK_PASSES).map(|_| shape.samples()), bytes);
-        let (thread_shared, thread_pool) = (shared.clone(), pool.clone());
-        let thread = std::thread::Builder::new()
-            .name("board capture".into())
-            .spawn(move || capture(&thread_shared, &source, &config, shape, &thread_pool))
-            .expect("capture thread");
-        Capture { shared, pool, thread: Some(thread) }
-    }
-
-    /// The buffers the passes swap with.
-    pub fn pool(&self) -> &Pool<Samples> {
-        &self.pool
-    }
-
-    /// Copies the status into `status`, reusing its memory.
-    pub fn status_into(&self, status: &mut Status) {
-        status.clone_from(&self.shared.status.lock().unwrap());
-    }
-}
-
-impl Drop for Capture {
+impl Drop for Running {
     fn drop(&mut self) {
         self.shared.stop.store(true, Ordering::Relaxed);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+    }
+}
+
+/// A board acquiring, and what it's acquiring. Weak, so a board closes once nothing's using it.
+struct Entry {
+    source: Source,
+    config: Config,
+    shape: Shape,
+    capture: Weak<Running>,
+}
+
+/// The boards acquiring.
+static RUNNING: Mutex<Vec<Entry>> = Mutex::new(Vec::new());
+
+/// The boards open, or still closing.
+static IN_USE: Mutex<Vec<Source>> = Mutex::new(Vec::new());
+
+/// Having a board to open, until it's closed: a new configuration of a board has to wait for the old one to close.
+struct Claim(Source);
+
+impl Claim {
+    fn take(source: &Source) -> Option<Self> {
+        let mut in_use = IN_USE.lock().unwrap();
+        if in_use.contains(source) {
+            return None;
+        }
+        in_use.push(source.clone());
+        Some(Claim(source.clone()))
+    }
+}
+
+impl Drop for Claim {
+    fn drop(&mut self) {
+        IN_USE.lock().unwrap().retain(|source| *source != self.0);
+    }
+}
+
+/// An epoch's use of a board acquiring.
+pub struct Capture {
+    running: Arc<Running>,
+}
+
+impl Capture {
+    /// Uses `source`, to acquire at `config`, into buffers for `shape`: carrying on with it, if it's doing that already,
+    /// otherwise opening it.
+    pub fn start(source: Source, config: Config, shape: Shape) -> Self {
+        let mut running = RUNNING.lock().unwrap();
+        running.retain(|entry| entry.capture.strong_count() > 0);
+        let same = |entry: &&Entry| entry.source == source && entry.config == config && entry.shape == shape;
+        if let Some(capture) = running.iter().find(same).and_then(|entry| entry.capture.upgrade()) {
+            log::info!("Carrying on with the board");
+            return Capture { running: capture };
+        }
+        let shared = Arc::new(Shared { stop: AtomicBool::new(false), status: Mutex::new(Status::default()) });
+        let bytes = shape.samples().bytes();
+        let pool = Pool::new((0..SLACK_PASSES).map(|_| shape.samples()), bytes);
+        let (thread_shared, thread_pool) = (shared.clone(), pool.clone());
+        let (thread_source, thread_config) = (source.clone(), config.clone());
+        let thread = std::thread::Builder::new()
+            .name("board capture".into())
+            .spawn(move || capture(&thread_shared, &thread_source, &thread_config, shape, &thread_pool))
+            .expect("capture thread");
+        let capture = Arc::new(Running { shared, pool, thread: Some(thread) });
+        running.push(Entry { source, config, shape, capture: Arc::downgrade(&capture) });
+        Capture { running: capture }
+    }
+
+    /// The buffers the passes swap with.
+    pub fn pool(&self) -> &Pool<Samples> {
+        &self.running.pool
+    }
+
+    /// Copies the status into `status`, reusing its memory.
+    pub fn status_into(&self, status: &mut Status) {
+        status.clone_from(&self.running.shared.status.lock().unwrap());
     }
 }
 
@@ -129,6 +183,12 @@ fn capture(shared: &Shared, source: &Source, config: &Config, shape: Shape, pool
     let lines = shape.events.lines.min(32);
     let mask = if lines == 32 { u32::MAX } else { (1 << lines) - 1 };
     while !stopping() {
+        // Before `board`, so it's let go of after it's closed.
+        let Some(_claim) = Claim::take(source) else {
+            set_state(State::Problem("waiting for board: it's in use, or still closing".into()));
+            wait();
+            continue;
+        };
         let mut board = match super::open(source) {
             Ok(board) => board,
             Err(e) => {
@@ -323,6 +383,25 @@ mod tests {
             adc: continuous(8),
             events: Events { lines: 8, sample_rate: rate },
         }
+    }
+
+    #[test]
+    fn epochs_carry_on_with_the_board_and_a_new_configuration_waits_for_it_to_close() {
+        // The test board takes one connection, so samples coming later show it wasn't opened again.
+        let source = Source::Fake { address: crate::standard_components::ephys::board::serve_test_board() };
+        let config = Config { sample_rate: 30000, bandwidth: Bandwidth::default(), headstages: Vec::new() };
+        let first = Capture::start(source.clone(), config.clone(), shape(64, 6, 30000.0));
+        assert!(take_like_passes(&first, 3000, 10).0 >= 3000);
+        let second = Capture::start(source.clone(), config, shape(64, 6, 30000.0));
+        assert!(Arc::ptr_eq(&first.running, &second.running), "the same board");
+        drop(first);
+        assert!(take_like_passes(&second, 3000, 10).0 >= 3000, "carrying on");
+
+        assert!(Claim::take(&source).is_none(), "it's open");
+        let board = Arc::downgrade(&second.running);
+        drop(second);
+        assert!(board.upgrade().is_none());
+        assert!(Claim::take(&source).is_some(), "closed");
     }
 
     #[test]

@@ -342,7 +342,8 @@ pub struct SpinnakerCamera {
     map: Handle,
     /// Camera clock timestamps from chunk data (as Bonsai used), rather than the transport layer's.
     chunk_timestamps: bool,
-    /// The camera accepted the requested frame rate.
+    /// The frame rate last asked for, and whether the camera accepted it.
+    frame_rate: f64,
     frame_rate_set: bool,
     description: String,
     /// Its serial number, in `IN_USE`, once it's found.
@@ -381,6 +382,7 @@ impl SpinnakerCamera {
             camera: std::ptr::null_mut(),
             map: std::ptr::null_mut(),
             chunk_timestamps: false,
+            frame_rate: fps,
             frame_rate_set: false,
             description: String::new(),
             serial: None,
@@ -577,6 +579,11 @@ impl Camera for SpinnakerCamera {
 
     fn apply(&mut self, settings: &CameraSettings) -> io::Result<()> {
         let api = self.api;
+        // Not an error if it won't: what it's doing about it is reported as it opens, and in `controls`.
+        if settings.frame_rate != self.frame_rate {
+            self.frame_rate = settings.frame_rate;
+            self.frame_rate_set = api.set_float(self.map, "AcquisitionFrameRate", self.frame_rate).is_ok();
+        }
         let exposure = api.set_control(self.map, "ExposureAuto", "ExposureTime", settings.exposure);
         let gain = api.set_control(self.map, "GainAuto", "Gain", settings.gain);
         exposure.and(gain)

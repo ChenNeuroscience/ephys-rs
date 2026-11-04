@@ -85,7 +85,9 @@ Besides the GUI, the dispatcher and the workers, nodes can run threads of their 
 dev tools with why they're needed:
 
 - **Sources** (the board, the camera) capture on a thread, so samples are taken as they come, whatever the passes are
-  doing.
+  doing. Opening one takes a while, so its connection lasts the run rather than an epoch: a new epoch's state joins the
+  capture that's running, found in a table of weak references in its module, and the last to let go closes it. A board
+  is only opened again for a new configuration, once the old one's closed.
 - **Writers** write on a thread, so a stalling disk doesn't hold up the passes, which would otherwise wait for it (the
   files being written in order).
 

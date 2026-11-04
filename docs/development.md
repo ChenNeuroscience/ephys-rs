@@ -50,8 +50,9 @@ size, one of its camera settings. Frames of any other size are skipped. When the
 they are (`Pass::propose`, like other auto-detected settings), which starts a new epoch.
 
 A new epoch doesn't open the camera again, as that takes a couple of seconds: it carries on with the one capturing, only
-changing the buffers if the frame size has. Stopping closes it, so other programs can use it. Changing the frame rate or
-source opens it afresh. See [`capture.rs`](../src/standard_components/tracking/camera/capture.rs).
+changing the buffers if the frame size has, and setting the frame rate on it if that has (a triggered camera goes by its
+trigger, so there it only changes the rate declared for the video). Stopping closes it, so other programs can use it, and
+changing its source opens another. See [`capture.rs`](../src/standard_components/tracking/camera/capture.rs).
 
 While recording, settings are locked, so it logs an error instead, and proposes the size once recording stops.
 
