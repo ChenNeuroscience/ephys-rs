@@ -67,6 +67,11 @@ pub trait Components: 'static {
     /// Where recordings go (see `base_directory`): the first is the default.
     const BASE_DIRECTORIES: &'static [base_directory::BaseDirectoryType] = &[];
 
+    /// What's special about this build, in markdown, for the About window, under the version.
+    const ABOUT: &'static str = "";
+    /// Where the program's source is, for the Help menu and About window: this repository, unless it's a fork's.
+    const SOURCE: &'static str = "https://github.com/ChenNeuroscience/ephys-rs";
+
     /// The program's version, shown in the status bar, given by `--version` (which is how CI names a release), and what
     /// `full_version` says, for nodes to keep in what they write. It's up to the build, but `build_version` is
     /// recommended: the core's alone doesn't say which build it is.

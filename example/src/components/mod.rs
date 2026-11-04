@@ -70,6 +70,10 @@ impl Components for Example {
     const THEMES: &'static [Theme] = THEMES;
     const QUICK_ACTIONS: &'static [QuickAction<Nodes>] = quick_actions::QUICK_ACTIONS;
     const BASE_DIRECTORIES: &'static [BaseDirectoryType] = BASE_DIRECTORIES;
+    const ABOUT: &'static str = "The Chen lab's build, for its LTX rig:\n\n\
+        - **Quick actions** for setting up the rig, in the basic view\n\
+        - **Subject, date and trial**: recordings filed by subject and day, and numbered for you\n\
+        - [LTX format](https://github.com/ChenNeuroscience/ltx-format) recording, in alpha testing";
 
     fn version() -> String {
         build_version("chen-neuro", env!("CARGO_PKG_VERSION"))

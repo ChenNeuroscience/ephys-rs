@@ -60,7 +60,8 @@ pub fn run<C: Components>(path: Option<PathBuf>) -> eframe::Result {
     crate::core::crash::test_if_asked();
     let mut app = App::<C::Nodes, C::Annotations>::open(None, C::THEMES)
         .with_quick_actions(C::QUICK_ACTIONS)
-        .with_base_directories(C::BASE_DIRECTORIES);
+        .with_base_directories(C::BASE_DIRECTORIES)
+        .with_about(C::ABOUT, C::SOURCE);
     app.last_crash = crate::core::crash::take_latest();
     if let Some(report) = &app.last_crash {
         log::warn!("The last time ephys-rs ran, it crashed: a report is in {}", report.display());
@@ -225,6 +226,10 @@ pub struct App<N: NodeSet, A: AnnotationSet> {
     dev_tools: dev_tools::DevTools,
     /// Offered in the basic view.
     quick_actions: &'static [crate::core::quick_action::QuickAction<N>],
+    /// The About window, while it's open (see `Components::ABOUT`, and `SOURCE`).
+    about: Option<egui_commonmark::CommonMarkCache>,
+    about_text: &'static str,
+    source: &'static str,
     /// Where recordings go: the one in use, in a section of the toolbar.
     base_directories: BaseDirectories,
     /// How full the disk the base directory is on is.
@@ -274,6 +279,9 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             ran: None,
             last_crash: None,
             quick_actions: &[],
+            about: None,
+            about_text: "",
+            source: "",
             base_directories: BaseDirectories::new(&[], None),
             disk_space: Default::default(),
         };
@@ -625,6 +633,13 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         self
     }
 
+    /// What's said about the program, in markdown, and where its source is.
+    pub fn with_about(mut self, text: &'static str, source: &'static str) -> Self {
+        self.about_text = text;
+        self.source = source;
+        self
+    }
+
     /// `id` and the rest of the selection, if it's in it; otherwise just `id`.
     fn selected_or(&self, id: NodeId) -> Vec<NodeId> {
         if self.selection.nodes.contains(&id) {
@@ -753,6 +768,28 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         }
     }
 
+    /// The version, what the build says about itself, and where its source is, until it's dismissed.
+    fn about_window(&mut self, ctx: &egui::Context) {
+        let (text, source) = (self.about_text, self.source);
+        let Some(cache) = &mut self.about else { return };
+        let mut close = false;
+        let modal = egui::Modal::new(egui::Id::unique("about")).show(ctx, |ui| {
+            ui.set_max_width(480.0);
+            ui.heading(crate::core::full_version());
+            if !text.is_empty() {
+                ui.add_space(4.0);
+                egui_commonmark::CommonMarkViewer::new().show(ui, cache, text);
+            }
+            ui.add_space(8.0);
+            ui.hyperlink(source);
+            ui.add_space(8.0);
+            close = ui.button("OK").clicked();
+        });
+        if close || modal.should_close() {
+            self.about = None;
+        }
+    }
+
     /// The window for pasting settings, while it's open; pasting them when it says to.
     fn paste_window(&mut self, ctx: &egui::Context) {
         let (colours, locked) = (self.colours(), self.locked());
@@ -876,6 +913,8 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                 self.menu = Some(CreateMenu::new(screen, at, None));
             }
             Action::ToggleDevTools => self.layout.toggle_dev_tools(),
+            Action::About => self.about = Some(Default::default()),
+            Action::Source => ctx.open_url(egui::OpenUrl::new_tab(self.source)),
             Action::Play => {
                 if self.runner.is_some() {
                     self.set_recording(None);
@@ -1298,6 +1337,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         self.create_menu(&ctx, &resolved);
         self.paste_window(&ctx);
         self.crash_window(&ctx);
+        self.about_window(&ctx);
         self.apply_proposals();
         self.lock(&ctx);
         self.history.record(&self.graph, &self.annotations, &ctx);
@@ -1524,7 +1564,11 @@ mod tests {
     fn harness() -> Harness<'static, TestApp> {
         let mut app = TestApp::open(Some(example()), THEMES)
             .with_quick_actions(crate::components::quick_actions::QUICK_ACTIONS)
-            .with_base_directories(crate::components::BASE_DIRECTORIES);
+            .with_base_directories(crate::components::BASE_DIRECTORIES)
+            .with_about(
+                <crate::components::Example as Components>::ABOUT,
+                <crate::components::Example as Components>::SOURCE,
+            );
         // Most tests work on the graph.
         app.layout.mode = Mode::Advanced;
         assert!(app.status.is_none(), "the example opens");
@@ -1876,6 +1920,22 @@ mod tests {
         harness.key_press(Key::Enter);
         harness.run_steps(3);
         assert!(next(&harness).ends_with(" b"), "{}", next(&harness));
+    }
+
+    #[test]
+    fn about_says_the_version_what_the_build_is_and_where_its_source_is() {
+        let mut harness = harness();
+        harness.get_by_label("Help").click();
+        harness.run_steps(2);
+        harness.get_by_label("About…").click();
+        harness.run_steps(3);
+        assert_eq!(harness.get_all_by_label("chen-neuro v0.x (ephys-rs v0.y)").count(), 2, "and in the status bar");
+        assert!(harness.query_by_label_contains("LTX rig").is_some(), "the build's markdown");
+        harness.get_by_label("https://github.com/ChenNeuroscience/ephys-rs");
+        harness.snapshot("about");
+        harness.get_by_label("OK").click();
+        harness.run_steps(3);
+        assert!(harness.state().about.is_none());
     }
 
     #[test]

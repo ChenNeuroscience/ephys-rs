@@ -28,6 +28,9 @@ A build can also say what its version is, with `Components::version`. It's shown
 prints it. The recommendation, for a build for a whole lab, is `core::build_version`: the lab's name, the build's
 version, and the core's in brackets, `chen-neuro v0.900 (ephys-rs v0.55)`. Without it, it's just the core's.
 
+Help › About shows the version, with `Components::ABOUT` under it: markdown saying what's special about the build. Help ›
+Source Code, and a link in About, go to `Components::SOURCE`, which is this repository unless a fork changes it.
+
 So a build can add nodes, annotations, themes, quick actions and base directories of its own. The kinds of data stream
 and setting are the exception: they're declared once, with `edge_types!` in [`lib.rs`](../src/lib.rs), as the standard
 components are written against them, and adding one means adding it there. There's no loading of code at run time, and

@@ -46,6 +46,10 @@ pub enum Action {
     Play,
     /// Starts or stops recording (starting the graph running, if it isn't).
     Record,
+    /// Says what the program is: its version, and what its build says about itself.
+    About,
+    /// Opens where the program's source is, in the browser.
+    Source,
 }
 
 pub enum MenuEntry {
@@ -109,6 +113,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Submenu("Theme", &[Themes]),
         ],
     ),
+    ("Help", &[Item(Action::About), Item(Action::Source)]),
 ];
 
 /// Checked in this order, so that e.g. shift-ctrl-Z (redo) is seen before ctrl-Z (undo).
@@ -169,6 +174,8 @@ impl Action {
             Action::Theme(index) => themes.get(index).map_or("?", |t| t.name),
             Action::Play => "Play",
             Action::Record => "Record",
+            Action::About => "About…",
+            Action::Source => "Source Code",
         }
     }
 
