@@ -1,5 +1,5 @@
-//! What's drawn over the video, and dragged: the crop (moved, resized by its sides and corners, and rotated)
-//! and the calibration rulers; and the LEDs found, drawn as circles.
+//! What's drawn over the video, and dragged: the crop (moved, resized by its sides and corners, and rotated),
+//! the calibration rulers and the timing LED's spot; and the LEDs found, drawn as circles.
 
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
@@ -7,10 +7,11 @@ use eframe::egui::{self, Align2, Color32, CursorIcon, FontId, Painter, Pos2, Rec
 use serde::{Deserialize, Serialize};
 
 use super::pipeline::Blob;
-use super::{Crop, Detection, Ruler, from_local, to_local};
+use super::{Crop, Detection, Ruler, TimingLed, from_local, to_local};
 
 pub const CROP_COLOUR: Color32 = Color32::YELLOW;
 pub const RULER_COLOUR: Color32 = Color32::from_rgb(0, 200, 255);
+pub const TIMING_COLOUR: Color32 = Color32::from_rgb(120, 180, 255);
 /// The biggest LED, then the second biggest.
 pub const LED_COLOURS: [Color32; 2] = [Color32::from_rgb(80, 220, 120), Color32::from_rgb(255, 110, 200)];
 
@@ -19,6 +20,8 @@ const HANDLE_RADIUS: f32 = 5.0;
 const HIT_RADIUS: f32 = 9.0;
 const RULER_HIT_DISTANCE: f32 = 6.0;
 const ROTATE_STALK: f32 = 28.0;
+/// How far the handle resizing the timing LED's spot is from its edge.
+const TIMING_STALK: f32 = 12.0;
 /// Smallest crop dimension, in image pixels.
 const MIN_SIZE: f32 = 4.0;
 const ROTATE_SNAP: f32 = 15.0 * PI / 180.0;
@@ -52,6 +55,8 @@ pub struct Overlays {
     /// Above-threshold pixels highlighted and the LEDs circled.
     pub detection: Overlay,
     pub rulers: Overlay,
+    /// The timing LED's spot, and its pixels above the threshold.
+    pub timing: Overlay,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -69,6 +74,8 @@ pub enum Target {
         end: usize,
     },
     RulerMove(usize),
+    TimingMove,
+    TimingRadius,
 }
 
 /// A drag in progress.
@@ -132,8 +139,8 @@ pub fn interact(
     changed
 }
 
-/// Draws the crop, edge band, rulers and LEDs, as the overlays say.
-pub fn draw(painter: &Painter, xf: Xform, detection: &Detection, overlays: &Overlays, leds: &[Blob]) {
+/// Draws the crop, edge band, rulers, timing LED's spot (filled in if `timing_on`) and LEDs, as the overlays say.
+pub fn draw(painter: &Painter, xf: Xform, detection: &Detection, overlays: &Overlays, leds: &[Blob], timing_on: bool) {
     draw_crop(painter, xf, &detection.crop, overlays.crop);
     if overlays.crop.visible
         && detection.edge_width() > 0.0
@@ -145,6 +152,9 @@ pub fn draw(painter: &Painter, xf: Xform, detection: &Detection, overlays: &Over
         for (i, ruler) in detection.rulers.iter().enumerate() {
             draw_ruler(painter, xf, i, ruler, overlays.rulers.locked);
         }
+    }
+    if overlays.timing.visible && detection.timing_led.enabled {
+        draw_timing(painter, xf, &detection.timing_led, overlays.timing.locked, timing_on);
     }
     if overlays.detection.visible {
         for (led, colour) in leds.iter().zip(LED_COLOURS) {
@@ -162,6 +172,9 @@ pub fn draw(painter: &Painter, xf: Xform, detection: &Detection, overlays: &Over
 /// Point handles in priority order, in image coordinates.
 fn handles(xf: Xform, detection: &Detection, overlays: &Overlays) -> Vec<(Target, [f32; 2])> {
     let mut out = Vec::new();
+    if overlays.timing.editable() && detection.timing_led.enabled {
+        out.push((Target::TimingRadius, timing_handle(xf, &detection.timing_led)));
+    }
     if overlays.rulers.editable() {
         for (i, r) in detection.rulers.iter().enumerate() {
             out.push((Target::RulerEnd { ruler: i, end: 0 }, r.a));
@@ -240,6 +253,13 @@ fn hit(pos: Pos2, xf: Xform, detection: &Detection, overlays: &Overlays) -> Opti
     if let Some((target, _)) = nearest {
         return Some(target);
     }
+    let timing = &detection.timing_led;
+    if overlays.timing.editable()
+        && timing.enabled
+        && xf.to_screen(timing.center).distance(pos) <= (timing.radius * xf.scale).max(HIT_RADIUS)
+    {
+        return Some(Target::TimingMove);
+    }
     if overlays.rulers.editable() {
         for (i, r) in detection.rulers.iter().enumerate() {
             if distance_to_segment(pos, xf.to_screen(r.a), xf.to_screen(r.b)) <= RULER_HIT_DISTANCE {
@@ -253,7 +273,14 @@ fn hit(pos: Pos2, xf: Xform, detection: &Detection, overlays: &Overlays) -> Opti
 
 fn apply_drag(target: Target, p: [f32; 2], delta: [f32; 2], snap: bool, detection: &mut Detection) {
     let rulers = &mut detection.rulers;
+    let timing = &mut detection.timing_led;
     match (target, &mut detection.crop) {
+        (Target::TimingMove, _) => {
+            timing.center = [timing.center[0] + delta[0], timing.center[1] + delta[1]];
+        }
+        (Target::TimingRadius, _) => {
+            timing.radius = (timing.radius + delta[0]).clamp(*TimingLed::RADII.start(), *TimingLed::RADII.end());
+        }
         (Target::CropMove, crop) => {
             if let Some(c) = crop.center() {
                 crop.set_center([c[0] + delta[0], c[1] + delta[1]]);
@@ -292,6 +319,27 @@ fn apply_drag(target: Target, p: [f32; 2], delta: [f32; 2], snap: bool, detectio
             }
         }
         _ => {} // the crop changed shape mid-drag
+    }
+}
+
+/// Where the handle resizing the timing LED's spot is, to the right of it.
+fn timing_handle(xf: Xform, led: &TimingLed) -> [f32; 2] {
+    [led.center[0] + led.radius + TIMING_STALK / xf.scale, led.center[1]]
+}
+
+fn draw_timing(painter: &Painter, xf: Xform, led: &TimingLed, locked: bool, on: bool) {
+    let (center, radius) = (xf.to_screen(led.center), led.radius * xf.scale);
+    let stroke = Stroke::new(1.5, TIMING_COLOUR);
+    if on {
+        painter.circle_filled(center, radius, TIMING_COLOUR.gamma_multiply(0.5));
+    }
+    painter.circle_stroke(center, radius, stroke);
+    let name = center + egui::vec2(0.0, -radius - 4.0);
+    label(painter, name, Align2::CENTER_BOTTOM, "Timing LED".into(), TIMING_COLOUR);
+    if !locked {
+        let handle = xf.to_screen(timing_handle(xf, led));
+        painter.line_segment([center + egui::vec2(radius, 0.0), handle], stroke);
+        painter.circle(handle, HANDLE_RADIUS - 1.5, Color32::WHITE, Stroke::new(1.0, Color32::BLACK));
     }
 }
 
@@ -437,6 +485,28 @@ mod tests {
         apply_drag(Target::CropResize { sides: [0, -1] }, [3.0, -15.0], [0.0, 0.0], false, &mut detection);
         // Top edge moved from y=-5 to y=-15 with the bottom edge (y=5) fixed: size 20, centre (0, -5).
         assert_eq!(detection.crop, Crop::Square { center: [0.0, -5.0], size: 20.0, angle: 0.0 });
+    }
+
+    #[test]
+    fn the_timing_led_is_dragged_and_resized_ahead_of_the_crop_around_it() {
+        let crop = Crop::Square { center: [100.0, 100.0], size: 100.0, angle: 0.0 };
+        let timing_led = TimingLed { enabled: true, center: [100.0, 100.0], radius: 10.0, ..Default::default() };
+        let mut detection = Detection { crop, timing_led, ..Default::default() };
+        let (xf, mut overlays) = (Xform { origin: Pos2::ZERO, scale: 1.0 }, Overlays::default());
+        let at = |x: f32| Pos2::new(x, 100.0);
+        assert_eq!(hit(at(100.0), xf, &detection, &overlays), Some(Target::TimingMove));
+        assert_eq!(hit(at(122.0), xf, &detection, &overlays), Some(Target::TimingRadius));
+        assert_eq!(hit(at(135.0), xf, &detection, &overlays), Some(Target::CropMove), "beyond it");
+
+        apply_drag(Target::TimingMove, [0.0; 2], [5.0, -3.0], false, &mut detection);
+        assert_eq!(detection.timing_led.center, [105.0, 97.0]);
+        apply_drag(Target::TimingRadius, [0.0; 2], [1000.0, 0.0], false, &mut detection);
+        assert_eq!(detection.timing_led.radius, *TimingLed::RADII.end(), "only so big");
+
+        for hidden_or_locked in [Overlay { visible: false, locked: false }, Overlay { visible: true, locked: true }] {
+            overlays.timing = hidden_or_locked;
+            assert_eq!(hit(at(105.0), xf, &detection, &overlays), Some(Target::CropMove));
+        }
     }
 
     #[test]

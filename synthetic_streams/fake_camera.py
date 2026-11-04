@@ -13,7 +13,10 @@ Scene (world coordinates in metres, origin at the centre of the arena floor, x r
   * a mouse with a headstage carrying a big and a small LED
   * a tether cable rising from the headstage towards a commutator 2 m up, off to the left of the frame;
     it gets thicker as it approaches the camera
-  * a bright glint on the room floor outside the arena (something for the crop to exclude)
+  * a laptop on the room floor outside the arena, seen from above with its bright screen tilted back (something for
+    the crop to exclude)
+  * a timing LED on the room floor just outside the arena, which flashes for 300 ms every 3-6 s
+  * a little noise on every frame, and a tiny shimmer on a couple of the walls
 
 Wire format per frame, little-endian (must match src/standard_components/tracking/camera/fake.rs):
     b"FRM1", u32 width, u32 height, u64 frame_id, f64 timestamp_seconds, width*height uint8 pixels
@@ -34,7 +37,13 @@ WALL_HEIGHT = 0.45
 WALL_THICKNESS = 0.015
 COMMUTATOR = (-1.1, -0.15, 2.0)
 CABLE_DIAMETER = 0.005
-NOISE_VARIANTS = 4
+NOISE_VARIANTS = 8
+WALL_JITTER = 0.6  # pixels, on the walls that shimmer
+SHIMMERING_WALLS = (0, 2)
+LAPTOP = (0.73, 0.22, 0.12)  # x, y and angle
+TIMING_LED = (-0.70, 0.30, 0.02)
+TIMING_LED_ON = 0.3  # seconds
+TIMING_LED_GAP = (3.0, 6.0)  # seconds between flashes
 
 
 class Camera:
@@ -114,8 +123,47 @@ def draw_glow(buf, w, h, cx, cy, core, value):
 # ---- the static scene ----
 
 
-def render_background(cam):
+def draw_laptop(buf, cam):
+    """A laptop from above: its base, keys and trackpad, and past them its screen, tilted back and lit."""
     w, h = cam.w, cam.h
+    x, y, angle = LAPTOP
+    ca, sa = math.cos(angle), math.sin(angle)
+
+    def box(x0, y0, x1, y1, value, z=0.02):
+        corners = ((x0, y0), (x1, y0), (x1, y1), (x0, y1))
+        fill_polygon(buf, w, h, [cam.project(x + u * ca - v * sa, y + u * sa + v * ca, z) for u, v in corners], value)
+
+    box(-0.085, -0.098, 0.085, -0.058, 225, 0.1)  # screen
+    box(-0.085, -0.06, 0.085, 0.06, 58)  # base
+    columns, rows, pitch = 13, 5, 0.0125
+    for row in range(rows):
+        for column in range(columns):
+            u, v = -0.08 + column * pitch, -0.052 + row * pitch
+            box(u, v, u + pitch - 0.003, v + pitch - 0.003, 88)
+    box(-0.03, 0.017, 0.03, 0.054, 72)  # trackpad
+
+
+def draw_timing_led_housing(buf, cam):
+    w, h = cam.w, cam.h
+    k = cam.scale(TIMING_LED[2])
+    u, v = cam.project(*TIMING_LED)
+    draw_disc(buf, w, h, u, v, 0.014 * k, 50)
+    draw_disc(buf, w, h, u, v, 0.006 * k, 95)
+
+
+def render_background(cam, jitter=0.0):
+    """The room, with the shimmering walls `jitter` pixels or so from where they belong."""
+    w, h = cam.w, cam.h
+
+    # Each wall moves as one, so its parts stay joined.
+    nudges = [(random.uniform(-jitter, jitter), random.uniform(-jitter, jitter)) for _ in range(4)]
+
+    def nudged(points, side):
+        if side not in SHIMMERING_WALLS:
+            return points
+        dx, dy = nudges[side]
+        return [(u + dx, v + dy) for u, v in points]
+
     buf = bytearray(b"\x26" * (w * h))  # room floor
 
     def floor_square(half, z):
@@ -136,26 +184,47 @@ def render_background(cam):
                 cam.project(bx * ARENA_HALF, by * ARENA_HALF, z1),
                 cam.project(ax * ARENA_HALF, ay * ARENA_HALF, z1),
             ]
-            fill_polygon(buf, w, h, quad, tone)
+            fill_polygon(buf, w, h, nudged(quad, side), tone)
 
     # Wall tops: a light ring between the inner and outer top edges.
     outer = floor_square(ARENA_HALF + WALL_THICKNESS, WALL_HEIGHT)
     inner = floor_square(ARENA_HALF, WALL_HEIGHT)
     for side in range(4):
-        fill_polygon(buf, w, h, [inner[side], inner[(side + 1) % 4], outer[(side + 1) % 4], outer[side]], 175)
+        ring = [inner[side], inner[(side + 1) % 4], outer[(side + 1) % 4], outer[side]]
+        fill_polygon(buf, w, h, nudged(ring, side), 175)
 
     fill_polygon(buf, w, h, floor_square(ARENA_HALF, 0), 0x0C)  # arena floor
 
-    # Glint off something shiny on the room floor, outside the arena.
-    gx, gy = cam.project(0.78, 0.25, 0)
-    if 0 <= gx < w and 0 <= gy < h:
-        draw_glow(buf, w, h, gx, gy, 4, 255)
+    draw_laptop(buf, cam)
+    draw_timing_led_housing(buf, cam)
     return buf
 
 
 def with_noise(base):
     noise = os.urandom(len(base))
     return bytearray(min(255, max(0, v + (n % 7) - 3)) for v, n in zip(base, noise))
+
+
+# ---- the timing LED ----
+
+
+class TimingLed:
+    def __init__(self, fps):
+        self.dt = 1 / fps
+        self.t = 0.0
+        self.off_at = 0.0
+        self.on_at = random.uniform(*TIMING_LED_GAP)
+
+    def step(self):
+        self.t += self.dt
+        if self.t >= self.on_at:
+            self.off_at = self.t + TIMING_LED_ON
+            self.on_at = self.off_at + random.uniform(*TIMING_LED_GAP)
+
+    def draw(self, buf, cam):
+        if self.t < self.off_at:
+            u, v = cam.project(*TIMING_LED)
+            draw_glow(buf, cam.w, cam.h, u, v, 0.007 * cam.scale(TIMING_LED[2]), 255)
 
 
 # ---- the mouse ----
@@ -266,6 +335,7 @@ class Mouse:
 
 def serve_client(conn, args, backgrounds, cam):
     mouse = Mouse(args.fps)
+    timing_led = TimingLed(args.fps)
     interval = 1.0 / args.fps
     next_due = time.monotonic()
     frame_id = 0
@@ -273,8 +343,10 @@ def serve_client(conn, args, backgrounds, cam):
     report_every = int(args.fps) * 5
     while True:
         mouse.step()
+        timing_led.step()
         frame = bytearray(random.choice(backgrounds))
         mouse.draw(frame, cam)
+        timing_led.draw(frame, cam)
         conn.sendall(HEADER.pack(b"FRM1", cam.w, cam.h, frame_id, time.time()) + frame)
         frame_id += 1
         if frame_id % report_every == 0:
@@ -300,8 +372,7 @@ def main():
 
     cam = Camera(args.width, args.height)
     print("rendering background...")
-    base = render_background(cam)
-    backgrounds = [with_noise(base) for _ in range(NOISE_VARIANTS)]
+    backgrounds = [with_noise(render_background(cam, WALL_JITTER)) for _ in range(NOISE_VARIANTS)]
     print(f"floor: {cam.scale(0):.1f} px/m, wall tops: {cam.scale(WALL_HEIGHT):.1f} px/m "
           f"(so a ruler along the 1 m floor edge should read {cam.scale(0):.0f} px)")
 

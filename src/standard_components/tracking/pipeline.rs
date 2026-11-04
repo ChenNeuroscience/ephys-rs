@@ -25,12 +25,6 @@ pub struct Pipeline {
     blobs: Vec<Blob>,
 }
 
-impl crate::core::engine::PassState for Pipeline {
-    const WHY: &'static str = "Only working memory for finding LEDs (runs of bright pixels, and how they join \
-                               up), kept so it isn't remade every pass: each worker has its own.";
-    const CARRIED_OVER: bool = false;
-}
-
 /// A horizontal run of foreground pixels, carrying the totals of its region once merged.
 #[derive(Clone, Copy)]
 struct Run {
@@ -46,7 +40,7 @@ struct Run {
 /// only when the crop, edge width or frame size changes.
 #[derive(Default)]
 struct SpanCache {
-    key: Option<(Crop, f32, u32, u32)>,
+    key: Option<(Crop, f32, Option<Crop>, u32, u32)>,
     spans: Vec<RowSpans>,
 }
 
@@ -57,28 +51,49 @@ pub struct RowSpans {
     pub outer: (u32, u32),
     /// Inside the crop and outside the edge band (all of `outer` when there's no band).
     pub inner: (u32, u32),
+    /// Inside the timing LED's spot, which isn't looked at for the other LEDs.
+    pub timing: (u32, u32),
 }
 
 impl SpanCache {
-    fn get(&mut self, crop: &Crop, edge_width: f32, width: u32, height: u32) -> &[RowSpans] {
-        let key = (*crop, edge_width, width, height);
+    fn get(&mut self, detection: &Detection, width: u32, height: u32) -> &[RowSpans] {
+        let key = (detection.crop, detection.edge_width(), detection.timing_spot(), width, height);
         if self.key != Some(key) {
-            self.spans = (0..height).map(|y| row_spans(crop, edge_width, y, width)).collect();
+            self.spans = (0..height).map(|y| row_spans(detection, y, width)).collect();
             self.key = Some(key);
         }
         &self.spans
     }
 }
 
-/// The crop's spans for row `y`, and those inside the edge band.
-pub fn row_spans(crop: &Crop, edge_width: f32, y: u32, width: u32) -> RowSpans {
+/// The crop's spans for row `y`, those inside the edge band, and the timing LED's spot.
+pub fn row_spans(detection: &Detection, y: u32, width: u32) -> RowSpans {
+    let (crop, edge_width) = (&detection.crop, detection.edge_width());
     let outer = row_span(crop, y, width);
     let inner = if edge_width <= 0.0 || *crop == Crop::None {
         outer
     } else {
         crop.inset(edge_width).map_or((0, 0), |inset| row_span(&inset, y, width))
     };
-    RowSpans { outer, inner }
+    let timing = detection.timing_spot().map_or((0, 0), |spot| row_span(&spot, y, width));
+    RowSpans { outer, inner, timing }
+}
+
+/// Whether the timing LED is on in a `width` × `height` frame of grey `pixels`, if there is one: enough of its spot is
+/// bright enough, wherever the crop is.
+pub fn timing_led_on(pixels: &[u8], width: u32, height: u32, detection: &Detection) -> Option<bool> {
+    let spot = detection.timing_spot()?;
+    let threshold = detection.timing_threshold();
+    let [center, radius] = [detection.timing_led.center[1], detection.timing_led.radius];
+    let rows = (center - radius).floor().max(0.0) as u32..((center + radius).ceil().max(0.0) as u32 + 1).min(height);
+    let bright: usize = rows
+        .map(|y| {
+            let (start, end) = row_span(&spot, y, width);
+            let row = (y * width) as usize;
+            pixels[row + start as usize..row + end as usize].iter().filter(|&&value| value > threshold).count()
+        })
+        .sum();
+    Some(bright >= detection.timing_min_area() as usize)
 }
 
 /// Columns of row `y` whose pixel centres are inside `crop`, as start..end (empty if start >= end). Worked
@@ -139,7 +154,7 @@ pub fn row_span(crop: &Crop, y: u32, width: u32) -> (u32, u32) {
 impl Pipeline {
     /// The blobs in a `width` × `height` frame of grey `pixels` passing the area limits, largest first.
     pub fn process(&mut self, pixels: &[u8], width: u32, height: u32, detection: &Detection) -> &[Blob] {
-        let spans = self.spans.get(&detection.crop, detection.edge_width(), width, height);
+        let spans = self.spans.get(detection, width, height);
         let threshold = detection.threshold;
         let edge_threshold = detection.edge_threshold(); // >= threshold
         let (runs, parent) = (&mut self.runs, &mut self.parent);
@@ -157,8 +172,12 @@ impl Pipeline {
                     // The edge band (outside `inner`) has the higher threshold.
                     let inner =
                         (spans.inner.0.saturating_sub(start) as usize, spans.inner.1.saturating_sub(start) as usize);
-                    let foreground =
-                        |x: usize| row[x] > if x >= inner.0 && x < inner.1 { threshold } else { edge_threshold };
+                    let timing =
+                        spans.timing.0.saturating_sub(start) as usize..spans.timing.1.saturating_sub(start) as usize;
+                    let foreground = |x: usize| {
+                        !timing.contains(&x)
+                            && row[x] > if x >= inner.0 && x < inner.1 { threshold } else { edge_threshold }
+                    };
                     let mut x = 0;
                     while x < row.len() {
                         if !foreground(x) {
@@ -249,7 +268,7 @@ fn union(parent: &mut [u32], a: usize, b: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::standard_components::tracking::EdgeThreshold;
+    use crate::standard_components::tracking::{EdgeThreshold, TimingLed};
 
     /// A grey frame, for tests.
     struct Image {
@@ -380,7 +399,7 @@ mod tests {
             // sides of it (and both above the main threshold of 100).
             let edge = EdgeThreshold { enabled: case % 8 >= 4, width: rand(15) as f32, threshold: 150 };
             let detection =
-                Detection { threshold: 100, min_area: rand(3), max_area: None, crop, edge, rulers: Vec::new() };
+                Detection { threshold: 100, min_area: rand(3), crop, edge, max_area: None, ..Default::default() };
             assert_eq!(
                 sorted(image.process(&detection)),
                 sorted(reference(&image, &detection)),
@@ -401,6 +420,40 @@ mod tests {
         // Within 30 px of the boundary the threshold is 230, so the 220 LED there doesn't count.
         detection.edge = EdgeThreshold { enabled: true, width: 30.0, threshold: 230 };
         assert_eq!(image.process(&detection), vec![Blob { x: 99.5, y: 99.5, area: 16 }]);
+    }
+
+    #[test]
+    fn the_timing_spot_is_left_out_and_read_on_its_own_terms() {
+        let mut image = Image::new(200, 200, 10);
+        image.fill(46, 46, 8, 8, 255); // the timing LED, outside the crop
+        image.fill(146, 146, 8, 8, 255); // the animal's
+        image.fill(95, 95, 10, 10, 255); // something else, for the spot to go over
+        let crop = Crop::Circle { center: [130.0, 130.0], radius: 50.0 };
+        let timing_led = TimingLed { enabled: true, center: [50.0, 50.0], radius: 10.0, ..Default::default() };
+        let mut detection = Detection { crop, timing_led, ..Default::default() };
+        let on = |d: &Detection| timing_led_on(&image.pixels, image.width, image.height, d);
+
+        assert_eq!(on(&detection), Some(true), "whatever the crop");
+        detection.timing_led.center = [20.0, 20.0];
+        assert_eq!(on(&detection), Some(false), "nothing's there");
+        detection.timing_led.center = [50.0, 50.0];
+        detection.timing_led.enabled = false;
+        assert_eq!(on(&detection), None, "there's none");
+
+        // Its threshold and area are the others', unless it has its own.
+        detection.timing_led.enabled = true;
+        detection.threshold = 255;
+        assert_eq!(on(&detection), Some(false));
+        (detection.timing_led.separate, detection.timing_led.threshold) = (true, 200);
+        assert_eq!(on(&detection), Some(true));
+        detection.timing_led.min_area = 10_000;
+        assert_eq!(on(&detection), Some(false));
+
+        // The others don't see what's in its spot.
+        let mut detection = Detection::default();
+        let all = image.process(&detection).len();
+        detection.timing_led = TimingLed { enabled: true, center: [100.0, 100.0], radius: 14.0, ..Default::default() };
+        assert_eq!(image.process(&detection).len(), all - 1);
     }
 
     #[test]

@@ -160,7 +160,8 @@ fn real_camera() -> camera::Source {
 /// reference channels, and showing the reference), with a Spectrum of it too; the board's digital
 /// inputs → TTL Viewer; Camera → Position Detector → Tracker View (setting the camera's and detector's settings).
 /// Write LTX records the spikes (at their gains), the LFP branch's data as EEG (the channels selected, band-passed,
-/// through a Continuous Gain), the positions (with the detector's settings) and the digital inputs. New boards and cameras
+/// through a Continuous Gain), the positions (with the detector's settings), the digital inputs and the timing LED, if
+/// there is one. New boards and cameras
 /// are real. Recordings go in a directory for each subject, day and trial.
 fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
     let mut change = Change::new(state.graph);
@@ -236,6 +237,7 @@ fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
     change.link((reference, Output, 1), (lfp_viewer, Input, 2));
     change.link((positions, Output, 0), (ltx, Input, 2));
     change.link((board, Output, 1), (ltx, Input, 3));
+    change.link((positions, Output, 1), (ltx, Input, 4));
     change.link((ltx, Control, 0), (positions, Setting, 0));
     change.link((ltx, Control, 1), (gain, Setting, 0));
     change.link((ltx, Control, 2), (selector, Setting, 0));

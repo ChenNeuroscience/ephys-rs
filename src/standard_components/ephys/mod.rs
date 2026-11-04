@@ -51,7 +51,7 @@ impl EdgeType for Events {
     };
 
     fn summary(&self) -> String {
-        format!("{} lines", self.lines)
+        format!("{} line{}", self.lines, if self.lines == 1 { "" } else { "s" })
     }
 }
 
@@ -132,6 +132,8 @@ pub struct Event {
     pub sample: u32,
     pub line: u8,
     pub high: bool,
+    /// When it happened, in seconds by its source's own clock, if it has one: otherwise it's timed by its sample.
+    pub time: Option<f64>,
 }
 
 pub struct EventsBuffer {

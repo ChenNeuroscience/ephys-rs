@@ -12,7 +12,7 @@ use super::camera::CaptureStats;
 use super::camera::capture::State;
 use super::camera::node::camera_settings_ui;
 use super::led_chart::{self, History};
-use super::position_detector::{calibration_ui, crop_ui, detection_ui};
+use super::position_detector::{calibration_ui, crop_ui, detection_ui, timing_led_ui};
 use crate::core::engine::{Category, Context, Control, EdgeType, Input, Node, NodeInfo, Output, Pass};
 use crate::core::theme::Colours;
 use crate::standard_components::pool::{Pool, SharedPool};
@@ -92,6 +92,8 @@ impl Frame {
 pub struct TrackerDisplay {
     frame: Frame,
     leds: Vec<Blob>,
+    /// Whether the timing LED's on in the frame, if there is one.
+    timing_led: Option<bool>,
     history: History,
     stats: Option<CaptureStats>,
     path: Option<Arc<Mutex<Path>>>,
@@ -152,7 +154,8 @@ impl Node<Edges> for TrackerView {
         if let Some(Buffer::Positions(positions)) = pass.inputs[1] {
             for sample in &positions.samples {
                 let area = |led: Option<Blob>| led.map_or(0, |b| b.area);
-                led_chart::record(history, sample.time, [area(sample.leds[0]), area(sample.leds[1])]);
+                let timing_on = sample.timing_led == Some(true);
+                led_chart::record(history, sample.time, [area(sample.leds[0]), area(sample.leds[1])], timing_on);
             }
             if pass.recording && !positions.samples.is_empty() {
                 let mut path = path.lock().unwrap();
@@ -176,12 +179,14 @@ impl Node<Edges> for TrackerView {
         };
         shown.send_newest(pass, |display| {
             display.leds.clear();
+            display.timing_led = None;
             match video {
                 Some(video) => {
                     let last = video.frames - 1;
                     display.frame.copy_from(video, last);
                     let found = positions.and_then(|p| p.samples.iter().find(|s| s.frame == video.ids[last]));
                     display.leds.extend(found.into_iter().flat_map(|s| s.leds).flatten());
+                    display.timing_led = found.and_then(|s| s.timing_led);
                 }
                 None => display.frame.width = 0,
             }
@@ -295,9 +300,10 @@ impl TrackerView {
                 context.controls[1] = Some(Setting::Detection(detection.clone()));
             }
             ui.data_mut(|d| d.insert_temp(drag_id, drag));
-            overlay::draw(&ui.painter_at(rect), xf, &detection, &self.overlays, &display.leds);
+            let timing_on = display.timing_led == Some(true);
+            overlay::draw(&ui.painter_at(rect), xf, &detection, &self.overlays, &display.leds, timing_on);
         } else {
-            overlay::draw(&ui.painter_at(rect), xf, &Detection::default(), &self.overlays, &display.leds);
+            overlay::draw(&ui.painter_at(rect), xf, &Detection::default(), &self.overlays, &display.leds, false);
         }
         if let Some(path) = &display.path {
             let calibration = match &context.controls[1] {
@@ -351,7 +357,7 @@ impl TrackerView {
         let unconnected = |ui: &mut egui::Ui| {
             ui.weak("Connect the detection control to a Position Detector to adjust it here.");
         };
-        let Overlays { crop, detection: found, rulers } = &mut self.overlays;
+        let Overlays { crop, detection: found, rulers, timing } = &mut self.overlays;
 
         let mut reshaped = false;
         section(
@@ -410,6 +416,32 @@ impl TrackerView {
         );
         if added {
             rulers.visible = true;
+        }
+
+        let timing_on = reading.as_deref().and_then(|d| d.timing_led);
+        let mut switched_on = false;
+        section(
+            ui,
+            "Timing LED",
+            Some((
+                &mut timing.visible,
+                "Show the spot and its pixels above the threshold, or nothing on the video (the LED's times stay on the \
+                 LED sizes chart, and it's still found)",
+            )),
+            (&mut timing.locked, "Lock the timing LED, so it can't be moved or changed"),
+            |ui, locked| match &mut detection {
+                Some(detection) => {
+                    if locked {
+                        ui.disable();
+                    }
+                    switched_on = timing_led_ui(ui, detection, size, timing_on);
+                }
+                None => unconnected(ui),
+            },
+        );
+        // A new spot is for placing.
+        if switched_on {
+            *timing = Overlay { visible: true, locked: false };
         }
 
         if let Some(detection) = detection {
@@ -615,8 +647,9 @@ pub fn show_frame(
     // Only redrawn when the frame or how it's shown changes.
     let shown = Shown {
         frame: (frame.id, frame.width, frame.height),
-        detection: detection.map(|d| (d.threshold, d.edge_threshold(), d.crop, d.edge_width())),
-        overlays: (overlays.crop.visible, overlays.detection.visible),
+        detection: detection
+            .map(|d| (d.threshold, d.edge_threshold(), d.crop, d.edge_width(), d.timing_spot(), d.timing_threshold())),
+        overlays: (overlays.crop.visible, overlays.detection.visible, overlays.timing.visible),
     };
     let texture_id = ui.scope_id().with("frame texture");
     let cached: Option<(TextureHandle, Shown)> = ui.data(|d| d.get_temp(texture_id));
@@ -644,19 +677,20 @@ pub fn show_frame(
 #[derive(Clone, PartialEq)]
 struct Shown {
     frame: (u64, usize, usize),
-    /// Threshold, edge threshold, crop and edge width.
-    detection: Option<(u8, u8, Crop, f32)>,
-    /// Whether the crop and detection are shown.
-    overlays: (bool, bool),
+    /// Threshold, edge threshold, crop, edge width, and the timing LED's spot and threshold.
+    detection: Option<(u8, u8, Crop, f32, Option<Crop>, u8)>,
+    /// Whether the crop, detection and timing LED are shown.
+    overlays: (bool, bool, bool),
 }
 
 /// The frame in colour: grey, with above-threshold pixels in the crop highlighted (when detection's shown),
-/// and the outside of the crop black (when the crop's hidden).
+/// and the outside of the crop black (when the crop's hidden). The timing LED's spot, if it's shown, is seen whatever the
+/// crop, with its own threshold.
 fn colour_image(frame: FrameView, detection: Option<&Detection>, overlays: &Overlays) -> ColorImage {
     let (width, height) = (frame.width, frame.height);
     let mut pixels = Vec::with_capacity(width * height);
     for (y, row) in frame.pixels.chunks_exact(width.max(1)).enumerate() {
-        let spans = detection.map(|d| (d, row_spans(&d.crop, d.edge_width(), y as u32, width as u32)));
+        let spans = detection.map(|d| (d, row_spans(d, y as u32, width as u32)));
         for (x, &value) in row.iter().enumerate() {
             let x = x as u32;
             let colour = match spans {
@@ -665,9 +699,12 @@ fn colour_image(frame: FrameView, detection: Option<&Detection>, overlays: &Over
                     let inside = x >= spans.outer.0 && x < spans.outer.1;
                     let in_band = !(x >= spans.inner.0 && x < spans.inner.1);
                     let threshold = if in_band { detection.edge_threshold() } else { detection.threshold };
-                    if !inside && !overlays.crop.visible && detection.crop != Crop::None {
+                    let in_timing = x >= spans.timing.0 && x < spans.timing.1;
+                    if in_timing && overlays.timing.visible {
+                        if value > detection.timing_threshold() { HIGHLIGHT } else { Color32::from_gray(value) }
+                    } else if !inside && !overlays.crop.visible && detection.crop != Crop::None {
                         Color32::BLACK
-                    } else if inside && overlays.detection.visible && value > threshold {
+                    } else if inside && !in_timing && overlays.detection.visible && value > threshold {
                         HIGHLIGHT
                     } else {
                         Color32::from_gray(value)
@@ -741,6 +778,38 @@ mod tests {
         }
         assert!(runner.update(&Snapshot::new(1, graph, Some(&first))));
         assert!(wait_for(|| leds_shown(&runner, view) == Some(1)), "one LED found: {:?}", leds_shown(&runner, view));
+    }
+
+    #[test]
+    fn a_timing_led_takes_its_spot_from_the_others_and_is_seen_coming_on() {
+        let mut graph = Graph::default();
+        let camera = add(&mut graph, "Camera");
+        let address = super::super::camera::serve_test_scene(640, 480);
+        if let Some(Nodes::Camera(c)) = graph.get_mut(camera).map(|e| &mut e.node) {
+            c.source = super::super::camera::Source::Fake { address };
+        }
+        let detector = add(&mut graph, "Position Detector");
+        let view = add(&mut graph, "Tracker View");
+        let port = |node, role, index| Port { node, role, index };
+        graph.connect(port(camera, Role::Output, 0), port(detector, Role::Input, 0)).unwrap();
+        graph.connect(port(camera, Role::Output, 0), port(view, Role::Input, 0)).unwrap();
+        graph.connect(port(detector, Role::Output, 0), port(view, Role::Input, 1)).unwrap();
+        // Over the test scene's big LED, in the middle of the frame.
+        if let Some(Nodes::PositionDetector(d)) = graph.get_mut(detector).map(|e| &mut e.node) {
+            let center = [320.5, 240.5];
+            d.detection.timing_led = crate::standard_components::tracking::TimingLed {
+                enabled: true,
+                center,
+                radius: 12.0,
+                ..Default::default()
+            };
+        }
+        let runner = Runner::start(&Snapshot::new(0, graph, None), 2);
+        let shown = || {
+            let pool = runner.exchange().get::<Pool<TrackerDisplay>>(view)?;
+            pool.newest().filter(|d| d.frame.width > 0).map(|d| (d.leds.len(), d.timing_led))
+        };
+        assert!(wait_for(|| shown() == Some((1, Some(true)))), "only the small LED's left: {:?}", shown());
     }
 
     #[test]
@@ -827,9 +896,12 @@ mod tests {
             d.detection.rulers.push(Ruler { a: [110.0, 420.0], b: [470.0, 420.0], length_cm: 100.0 });
         }
 
-        // A lit arena on a dark floor, and the two LEDs.
+        // A lit arena on a dark floor, the two LEDs, and a timing LED away from them.
         let (width, height) = (640, 480);
         let mut pixels = vec![25u8; width * height];
+        for y in 56..64 {
+            pixels[y * width + 586..y * width + 594].fill(255);
+        }
         for y in 90..390 {
             for x in 110..530 {
                 pixels[y * width + x] = 70 + ((x * 7 + y * 13) % 11) as u8;
@@ -864,6 +936,7 @@ mod tests {
         let mut display = TrackerDisplay {
             frame: Frame { width, height, pixels, id: 1 },
             leds: leds.to_vec(),
+            timing_led: Some(true),
             stats: Some(CaptureStats { status, ..Default::default() }),
             ..Default::default()
         };
@@ -871,7 +944,8 @@ mod tests {
             let t = frame as f64 / 50.0;
             let wobble = (t * 2.0).sin();
             let small = if (300..312).contains(&frame) { 0 } else { (12.0 + wobble) as u32 };
-            led_chart::record(&mut display.history, t, [(30.0 + 2.0 * wobble) as u32, small]);
+            let timing_on = (200..215).contains(&frame);
+            led_chart::record(&mut display.history, t, [(30.0 + 2.0 * wobble) as u32, small], timing_on);
         }
 
         let resolved = graph.resolve();
@@ -897,5 +971,14 @@ mod tests {
         THEMES[0].apply(&harness.ctx);
         harness.run_steps(3);
         harness.snapshot("tracker_view");
+
+        // With a timing LED, on, outside the crop.
+        if let Some(Nodes::PositionDetector(d)) = harness.state_mut().get_mut(detector).map(|e| &mut e.node) {
+            d.detection.timing_led.enabled = true;
+            d.detection.timing_led.center = [590.0, 60.0];
+        }
+        harness.set_size(egui::vec2(1150.0, 900.0));
+        harness.run_steps(3);
+        harness.snapshot("tracker_view_timing_led");
     }
 }

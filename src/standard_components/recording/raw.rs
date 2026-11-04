@@ -447,7 +447,8 @@ mod tests {
         chunk.continuous.len = 3;
         chunk.continuous.channel_mut(0).copy_from_slice(&[1.0, 2.0, 3.0].map(|s| s * EPHYS_MICROVOLTS_PER_BIT));
         chunk.continuous.channel_mut(1).copy_from_slice(&[10.0, 20.0, 30.0].map(|s| s * EPHYS_MICROVOLTS_PER_BIT));
-        chunk.events = EventsBuffer { events: vec![Event { sample: 2, line: 1, high: true }], pass_samples: 3 };
+        chunk.events =
+            EventsBuffer { events: vec![Event { sample: 2, line: 1, high: true, time: None }], pass_samples: 3 };
         files.write(&chunk).unwrap();
         files.write(&chunk).unwrap();
         files.finish().unwrap();

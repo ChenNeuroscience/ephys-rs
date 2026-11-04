@@ -6,6 +6,8 @@
 //! - `name.egf`, `name.egf2`...: each continuous channel at 5 kHz, a byte a sample.
 //! - `name.pos`: LED positions, a 4-byte timestamp then 8 two-byte values (x1, y1, x2, y2, and the LEDs' sizes).
 //! - `name.ttl`: digital input changes, as text.
+//! - `name.pos.ttl`: the timing LED's changes, likewise, from its `pos ttl` input, if there's a timing LED. They're timed
+//!   by the camera's clock, as positions are, counting from the same first position.
 //!
 //! Each file is `key value` header lines, then the data between `data_start` and `data_end`; counts and the
 //! duration are filled in at the end. Timestamps count 96 kHz ticks from the start of recording, and multi-byte
@@ -73,6 +75,7 @@ struct Streams {
     continuous: Option<Continuous>,
     positions: Option<Positions>,
     events: Option<Events>,
+    position_events: Option<Events>,
 }
 
 /// While running: the writer's thread while recording, and its status for the window.
@@ -104,6 +107,8 @@ pub struct Chunk {
     positions: Vec<PositionSample>,
     events: Vec<Event>,
     event_pass_samples: usize,
+    position_events: Vec<Event>,
+    position_event_pass_samples: usize,
 }
 
 impl Chunk {
@@ -120,6 +125,9 @@ impl Chunk {
             continuous: Vec::with_capacity(eeg),
             positions: Vec::with_capacity(streams.positions.map_or(0, |p| p.buffer(PASS_DURATION).samples.capacity())),
             events: Vec::with_capacity(streams.events.map_or(0, |e| e.buffer(PASS_DURATION).events.capacity())),
+            position_events: Vec::with_capacity(
+                streams.position_events.map_or(0, |e| e.buffer(PASS_DURATION).events.capacity()),
+            ),
             ..Default::default()
         }
     }
@@ -129,7 +137,7 @@ impl Chunk {
         self.spikes.capacity() * size_of::<(u32, i32)>()
             + (self.waveforms.capacity() + self.continuous.capacity()) * size_of::<f32>()
             + self.positions.capacity() * size_of::<PositionSample>()
-            + self.events.capacity() * size_of::<Event>()
+            + (self.events.capacity() + self.position_events.capacity()) * size_of::<Event>()
     }
 
     /// The writer's thread, with a pool of chunks for `streams`: writing to `opened`, or opening the files itself.
@@ -161,8 +169,8 @@ impl Node<Edges> for WriteLtx {
     const INFO: NodeInfo = NodeInfo {
         name: "Write LTX",
         category: Category::Recording,
-        description: "Records tetrode spikes, continuous data (at 5 kHz), positions and digital inputs in the LTX \
-                      format, for legacy tetrode analysis code.",
+        description: "Records tetrode spikes, continuous data (at 5 kHz), positions, digital inputs and a timing LED's \
+                      changes in the LTX format, for legacy tetrode analysis code.",
     };
 
     fn inputs(&self) -> Vec<Input<Edges>> {
@@ -171,6 +179,7 @@ impl Node<Edges> for WriteLtx {
             Input { name: "eeg", kind: Kind::Continuous },
             Input { name: "positions", kind: Kind::Positions },
             Input { name: "events", kind: Kind::Events },
+            Input { name: "pos ttl", kind: Kind::Events },
         ]
     }
 
@@ -198,6 +207,9 @@ impl Node<Edges> for WriteLtx {
             && egf_step(continuous.sample_rate).is_none()
         {
             warnings.push(format!("LTX continuous data is {EGF_RATE} Hz: the input's rate must be a multiple"));
+        }
+        if inputs[4].is_some() && inputs[2].is_none() {
+            warnings.push("Connect the positions too, so the pos ttl's times can be compared with them".into());
         }
         warnings
     }
@@ -309,13 +321,16 @@ impl WriteLtx {
 
 impl Streams {
     fn of(inputs: &[Option<DataStream>]) -> Self {
-        let mut streams = Streams::default();
+        let events = |index: usize| match inputs.get(index) {
+            Some(Some(DataStream::Events(events))) => Some(*events),
+            _ => None,
+        };
+        let mut streams = Streams { events: events(3), position_events: events(4), ..Default::default() };
         for input in inputs.iter().flatten() {
             match *input {
                 DataStream::Spikes(s) => streams.spikes = Some(s),
                 DataStream::Continuous(c) => streams.continuous = Some(c),
                 DataStream::Positions(p) => streams.positions = Some(p),
-                DataStream::Events(e) => streams.events = Some(e),
                 _ => {}
             }
         }
@@ -401,6 +416,12 @@ fn copy(pass: &Pass<Edges>, chunk: &mut Chunk, step: Option<usize>, continuous_s
     if let Some(Some(Buffer::Events(events))) = pass.inputs.get(3) {
         chunk.events.extend_from_slice(&events.events);
         chunk.event_pass_samples = events.pass_samples;
+    }
+    chunk.position_events.clear();
+    chunk.position_event_pass_samples = 0;
+    if let Some(Some(Buffer::Events(events))) = pass.inputs.get(4) {
+        chunk.position_events.extend_from_slice(&events.events);
+        chunk.position_event_pass_samples = events.pass_samples;
     }
 }
 
@@ -526,8 +547,6 @@ struct Egf {
 struct Pos {
     file: LtxFile,
     encoding: Encoding,
-    /// The camera's time of the first position, which timestamps count from.
-    first: Option<f64>,
     samples: u64,
 }
 
@@ -541,8 +560,12 @@ struct LtxFiles {
     /// Samples of continuous data so far (for which to keep at 5 kHz), and of the spikes' and events' passes.
     spike_samples: i64,
     event_samples: u64,
+    position_event_samples: u64,
+    /// The camera's time of the first position, which positions' times and the timing LED's count from.
+    first_position: Option<f64>,
     pos: Option<Pos>,
     ttl: Option<LtxFile>,
+    pos_ttl: Option<LtxFile>,
     /// For each record of `bytes`.
     record: Vec<u8>,
 }
@@ -613,8 +636,25 @@ impl LtxFiles {
             None => None,
         };
         let ttl = match streams.events {
-            Some(_) => Some(file(".ttl")?),
+            Some(_) => Some(open_ttl(file(".ttl")?, "digital_inputs", "recording_start")?),
             None => None,
+        };
+        // Connected, it only has anything to say if there's a timing LED, as far as we can tell.
+        let timing_led = recorded.detection.as_ref().map(|d| d.timing_led);
+        let pos_ttl = match streams.position_events {
+            Some(_) if timing_led.is_none_or(|led| led.enabled) => {
+                let mut f = open_ttl(file(".pos.ttl")?, "timing_led", "first_position")?;
+                if let Some(detection) = recorded.detection.as_ref().filter(|_| timing_led.is_some()) {
+                    let led = detection.timing_led;
+                    f.header("timing_led_x", led.center[0])?;
+                    f.header("timing_led_y", led.center[1])?;
+                    f.header("timing_led_radius", led.radius)?;
+                    f.header("timing_led_threshold", detection.timing_threshold())?;
+                    f.header("timing_led_min_area", detection.timing_min_area())?;
+                }
+                Some(f)
+            }
+            _ => None,
         };
         log::info!("Recording LTX to {}", base.display());
         Ok(LtxFiles {
@@ -625,11 +665,24 @@ impl LtxFiles {
             egf,
             spike_samples: 0,
             event_samples: 0,
+            position_event_samples: 0,
+            first_position: None,
             pos,
             ttl,
+            pos_ttl,
             record: Vec::new(),
         })
     }
+}
+
+/// A TTL file's headers, saying how to read its lines: what its changes are of, and what their seconds count from.
+fn open_ttl(mut f: LtxFile, source: &str, seconds_from: &str) -> io::Result<LtxFile> {
+    f.header("ttl_format", "ttl_<line> <seconds> <state>")?;
+    f.header("ttl_state_1", "up")?;
+    f.header("ttl_state_0", "down")?;
+    f.header("ttl_source", source)?;
+    f.header("ttl_seconds_from", seconds_from)?;
+    Ok(f)
 }
 
 /// The position file's headers: what's needed to read the positions, and the detector's settings.
@@ -676,7 +729,7 @@ fn open_pos(mut f: LtxFile, positions: Positions, detection: Option<&Detection>)
     f.header("position_missing_coordinate", MISSING)?;
     f.header("position_area_units", "camera_pixels_saturated_uint16")?;
     f.count_header("num_pos_samples")?;
-    Ok(Pos { file: f, encoding: Encoding { origin: [min_x, min_y], scale }, first: None, samples: 0 })
+    Ok(Pos { file: f, encoding: Encoding { origin: [min_x, min_y], scale }, samples: 0 })
 }
 
 impl Files<Chunk> for LtxFiles {
@@ -719,7 +772,7 @@ impl Files<Chunk> for LtxFiles {
 
         if let Some(pos) = &mut self.pos {
             for sample in &chunk.positions {
-                let first = *pos.first.get_or_insert(sample.time);
+                let first = *self.first_position.get_or_insert(sample.time);
                 self.record.clear();
                 self.record.extend_from_slice(&ticks(sample.time - first));
                 let led = |i: usize| sample.leds[i].map_or([f32::NAN, f32::NAN, 0.0], |b| [b.x, b.y, b.area as f32]);
@@ -752,6 +805,19 @@ impl Files<Chunk> for LtxFiles {
             }
             self.event_samples += chunk.event_pass_samples as u64;
         }
+
+        if let (Some(ttl), Some(events)) = (&mut self.pos_ttl, self.streams.position_events) {
+            for event in &chunk.position_events {
+                let seconds = match event.time {
+                    Some(time) => time - *self.first_position.get_or_insert(time),
+                    None => (self.position_event_samples + event.sample as u64) as f64 / events.sample_rate as f64,
+                };
+                let line = format!("ttl_{} {seconds:.6} {}\r\n", event.line + 1, event.high as u8);
+                ttl.data(line.as_bytes())?;
+                bytes += line.len() as u64;
+            }
+            self.position_event_samples += chunk.position_event_pass_samples as u64;
+        }
         Ok(bytes)
     }
 
@@ -767,7 +833,7 @@ impl Files<Chunk> for LtxFiles {
         if let Some(pos) = self.pos {
             pos.file.finish(seconds, pos.samples)?;
         }
-        if let Some(ttl) = self.ttl {
+        for ttl in [self.ttl, self.pos_ttl].into_iter().flatten() {
             ttl.finish(seconds, 0)?;
         }
         Ok(())
@@ -778,6 +844,7 @@ impl Files<Chunk> for LtxFiles {
 mod tests {
     use super::*;
     use crate::standard_components::spikes::Spike;
+    use crate::standard_components::tracking::TimingLed;
     use crate::standard_components::tracking::pipeline::Blob;
 
     fn read(path: &Path, extension: &str) -> Vec<u8> {
@@ -813,6 +880,65 @@ mod tests {
     }
 
     #[test]
+    fn writes_ups_and_downs_saying_which_is_which_and_the_timing_led_by_the_positions_clock() {
+        let dir = std::env::temp_dir().join(format!("ephys-rs-ltx-ttl-{}", std::process::id()));
+        let base = dir.join("test");
+        let events = Events { lines: 8, sample_rate: 1000.0 };
+        let streams = Streams {
+            positions: Some(Positions { fps: 50.0, width: 640, height: 480 }),
+            events: Some(events),
+            position_events: Some(Events { lines: 1, sample_rate: 50.0 }),
+            ..Default::default()
+        };
+        let timing_led = TimingLed { enabled: true, center: [600.0, 30.0], radius: 8.0, ..Default::default() };
+        let detection = Some(Detection { timing_led, ..Default::default() });
+        let recorded = Recorded { detection, ..Default::default() };
+        let mut files = Box::new(LtxFiles::open(&base, Local::now(), streams, recorded).unwrap());
+
+        let sample = |time| PositionSample {
+            frame: 0,
+            time,
+            leds: [None, None],
+            timing_led: Some(true),
+            pixels_per_metre: f32::NAN,
+        };
+        let event = |sample, line, high, time| Event { sample, line, high, time };
+        // Positions start at 100 s by the camera's clock; the LED comes on 0.25 s later, and goes off 0.3 s after that.
+        let mut chunk = Chunk { event_pass_samples: 20, ..Default::default() };
+        chunk.positions.push(sample(100.0));
+        chunk.events.push(event(10, 1, true, None));
+        chunk.events.push(event(15, 1, false, None));
+        files.write(&chunk).unwrap();
+        chunk.events.clear();
+        chunk.positions[0] = sample(100.25);
+        chunk.position_events.push(event(0, 0, true, Some(100.25)));
+        chunk.position_events.push(event(0, 0, false, Some(100.55)));
+        files.write(&chunk).unwrap();
+        files.finish().unwrap();
+
+        let ttl = read(&base, ".ttl");
+        assert_eq!(data(&ttl), b"ttl_2 0.01 1\r\nttl_2 0.015 0\r\n", "both ups and downs");
+        assert_eq!(header(&ttl, "ttl_format"), "ttl_<line> <seconds> <state>");
+        assert_eq!((header(&ttl, "ttl_state_1"), header(&ttl, "ttl_state_0")), ("up".into(), "down".into()));
+        assert_eq!(header(&ttl, "ttl_source"), "digital_inputs");
+        let pos_ttl = read(&base, ".pos.ttl");
+        assert_eq!(data(&pos_ttl), b"ttl_1 0.250000 1\r\nttl_1 0.550000 0\r\n", "from the first position");
+        assert_eq!(header(&pos_ttl, "ttl_source"), "timing_led");
+        assert_eq!(header(&pos_ttl, "ttl_seconds_from"), "first_position");
+        assert_eq!(header(&pos_ttl, "timing_led_x"), "600");
+        assert_eq!(header(&pos_ttl, "timing_led_threshold"), "200");
+
+        // Without a timing LED, connected or not, there's no file.
+        let base = dir.join("no led");
+        let recorded = Recorded { detection: Some(Detection::default()), ..Default::default() };
+        Box::new(LtxFiles::open(&base, Local::now(), streams, recorded).unwrap()).finish().unwrap();
+        let mut path = base.clone();
+        path.as_mut_os_string().push(".pos.ttl");
+        assert!(!path.exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn writes_spikes_eeg_and_positions() {
         let dir = std::env::temp_dir().join(format!("ephys-rs-ltx-{}", std::process::id()));
         let base = dir.join("test");
@@ -823,6 +949,7 @@ mod tests {
             continuous: Some(Continuous { channels: 2, sample_rate: 30000.0 }),
             positions: Some(Positions { fps: 50.0, width: 640, height: 480 }),
             events: None,
+            position_events: None,
         };
         // Gains recorded: a µV a step on the first channel, half a µV on the second.
         let mut gains = Gains::default();
@@ -851,6 +978,7 @@ mod tests {
             frame: 1,
             time: 5.0,
             leds: [Some(blob), None],
+            timing_led: None,
             pixels_per_metre: f32::NAN,
         });
         files.write(&chunk).unwrap();

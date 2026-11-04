@@ -1,11 +1,14 @@
-//! Finds LEDs in video: in each frame, the two biggest bright spots within the crop (see `tracking::pipeline`).
+//! Finds LEDs in video: in each frame, the two biggest bright spots within the crop (see `tracking::pipeline`). There
+//! can also be a timing LED, in a spot of its own: its coming on and going off are the `pos ttl` output's ups and downs,
+//! timed by the camera's clock, as the positions are.
 
 use eframe::egui::{self, RichText};
 use serde::{Deserialize, Serialize};
 
 use crate::core::engine::{Category, Context, Input, Node, NodeInfo, Output, Pass, SettingPort};
-use crate::standard_components::tracking::pipeline::Pipeline;
-use crate::standard_components::tracking::{Crop, Detection, Ruler};
+use crate::standard_components::ephys::{Event, Events};
+use crate::standard_components::tracking::pipeline::{Pipeline, timing_led_on};
+use crate::standard_components::tracking::{Crop, Detection, Ruler, TimingLed};
 use crate::standard_components::tracking::{PositionSample, Positions};
 use crate::standard_components::widgets::{named_settings_grid, require_input, setting};
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
@@ -16,29 +19,48 @@ pub struct PositionDetector {
     pub detection: Detection,
 }
 
+/// The pipeline's working memory, and whether the timing LED was on in the last frame, if there's been one.
+#[derive(Default)]
+pub struct Finding {
+    pipeline: Pipeline,
+    timing_led: Option<bool>,
+}
+
+impl crate::core::engine::PassState for Finding {
+    const WHY: &'static str = "Whether the timing LED was on in the last frame, as it's its changes that are output.";
+}
+
+/// Whether `on` is a change from the last frame, for the first frame only taking note of it: it wasn't seen coming on.
+fn changed(last: &mut Option<bool>, on: bool) -> bool {
+    last.replace(on).is_some_and(|was| was != on)
+}
+
 impl Node<Edges> for PositionDetector {
     const INFO: NodeInfo = NodeInfo {
         name: "Position Detector",
         category: Category::Processing,
         description: "Finds the two biggest bright spots (LEDs) in each video frame, within a crop, and outputs \
-                      their positions.",
+                      their positions. A timing LED, in a spot of its own, can be output as a TTL.",
     };
 
-    /// The pipeline's working memory, kept between frames.
-    type State = Pipeline;
+    type State = Finding;
 
     fn inputs(&self) -> Vec<Input<Edges>> {
         vec![Input { name: "video", kind: Kind::Video }]
     }
 
     fn outputs(&self, inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {
-        let stream = match inputs[0] {
-            Some(DataStream::Video(video)) => {
-                Some(DataStream::Positions(Positions { fps: video.fps, width: video.width, height: video.height }))
-            }
-            _ => None,
+        let (positions, ttl) = match inputs[0] {
+            Some(DataStream::Video(video)) => (
+                Some(DataStream::Positions(Positions { fps: video.fps, width: video.width, height: video.height })),
+                Some(DataStream::Events(Events { lines: 1, sample_rate: video.fps })),
+            ),
+            _ => (None, None),
         };
-        vec![Output { name: "positions", kind: Kind::Positions, stream }]
+        vec![
+            Output { name: "positions", kind: Kind::Positions, stream: positions },
+            Output { name: "pos ttl", kind: Kind::Events, stream: ttl },
+        ]
     }
 
     fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
@@ -55,19 +77,34 @@ impl Node<Edges> for PositionDetector {
         }
     }
 
-    fn process(&self, pass: &mut Pass<Edges>, pipeline: &mut Pipeline) {
+    fn process(&self, pass: &mut Pass<Edges>, finding: &mut Finding) {
         let Some(Some(Buffer::Video(video))) = pass.inputs.first() else { return };
-        let Some(Buffer::Positions(output)) = pass.outputs.get_mut(0) else { return };
+        let [Buffer::Positions(output), Buffer::Events(ttl)] = &mut *pass.outputs else { return };
         output.samples.clear();
+        ttl.events.clear();
+        ttl.pass_samples = video.frames;
         let pixels_per_metre = self.detection.pixels_per_metre().unwrap_or(f32::NAN);
+        let (width, height) = (video.width as u32, video.height as u32);
         for frame in 0..video.frames.min(output.samples.capacity()) {
-            let blobs = pipeline.process(video.frame(frame), video.width as u32, video.height as u32, &self.detection);
+            let pixels = video.frame(frame);
+            let blobs = finding.pipeline.process(pixels, width, height, &self.detection);
+            let leds = [blobs.first().copied(), blobs.get(1).copied()];
+            let timing_led = timing_led_on(pixels, width, height, &self.detection);
             output.samples.push(PositionSample {
                 frame: video.ids[frame],
                 time: video.times[frame],
-                leds: [blobs.first().copied(), blobs.get(1).copied()],
+                leds,
+                timing_led,
                 pixels_per_metre,
             });
+            match timing_led {
+                Some(on) if changed(&mut finding.timing_led, on) && ttl.events.len() < ttl.events.capacity() => {
+                    let time = Some(video.times[frame]);
+                    ttl.events.push(Event { sample: frame as u32, line: 0, high: on, time });
+                }
+                Some(_) => {}
+                None => finding.timing_led = None,
+            }
         }
     }
 
@@ -93,6 +130,64 @@ fn all_detection_ui(ui: &mut egui::Ui, detection: &mut Detection, size: [f32; 2]
     ui.add_space(6.0);
     ui.label(RichText::new("Calibration").strong());
     calibration_ui(ui, detection, size, false);
+
+    ui.add_space(6.0);
+    ui.label(RichText::new("Timing LED").strong());
+    timing_led_ui(ui, detection, size, None);
+}
+
+/// Whether there's a timing LED, and how it's told to be on (`on`, if it's known, says whether it is). `size` is the
+/// frame size, for placing it the first time. Returns whether it was switched on.
+pub(super) fn timing_led_ui(ui: &mut egui::Ui, detection: &mut Detection, size: [f32; 2], on: Option<bool>) -> bool {
+    let (threshold, min_area) = (detection.threshold, detection.min_area);
+    let led = &mut detection.timing_led;
+    let was_enabled = led.enabled;
+    ui.checkbox(&mut led.enabled, "Use a timing LED").on_hover_text(
+        "An LED in a spot of its own, usually outside the crop: it coming on is an up on the pos ttl output, and it \
+         going off a down. Drag the circle over it. The spot isn't looked at for the other LEDs.",
+    );
+    let switched_on = led.enabled && !was_enabled;
+    if switched_on && led.center == [0.0; 2] {
+        led.center = [size[0] - 40.0, 40.0];
+    }
+    if !led.enabled {
+        return false;
+    }
+    named_settings_grid(ui, "timing led", |ui| {
+        setting(ui, "Centre", |ui| {
+            ui.horizontal(|ui| {
+                ui.add(egui::DragValue::new(&mut led.center[0]).speed(1.0).prefix("x "));
+                ui.add(egui::DragValue::new(&mut led.center[1]).speed(1.0).prefix("y "));
+            })
+            .response
+        });
+        setting(ui, "Radius", |ui| {
+            ui.add(egui::DragValue::new(&mut led.radius).speed(0.25).range(TimingLed::RADII).suffix(" px"))
+        });
+        setting(ui, "Threshold", |ui| {
+            ui.horizontal(|ui| {
+                let was_separate = led.separate;
+                ui.selectable_value(&mut led.separate, false, "Same as the LEDs");
+                ui.selectable_value(&mut led.separate, true, "Its own");
+                if led.separate && !was_separate {
+                    (led.threshold, led.min_area) = (threshold, min_area);
+                }
+            })
+            .response
+        });
+        if led.separate {
+            setting(ui, "Its threshold", |ui| ui.add(egui::Slider::new(&mut led.threshold, 0..=255)));
+            setting(ui, "Its min area", |ui| {
+                ui.add(egui::DragValue::new(&mut led.min_area).range(1..=100_000).suffix(" px"))
+            });
+        }
+    });
+    match on {
+        Some(true) => ui.label(RichText::new("On").strong()),
+        Some(false) => ui.weak("Off"),
+        None => ui.weak("Press Play to see whether it's on"),
+    };
+    switched_on
 }
 
 /// The threshold and the sizes of LED to look for.
@@ -243,4 +338,24 @@ pub(super) fn calibration_ui(ui: &mut egui::Ui, detection: &mut Detection, size:
         rulers.remove(i);
     }
     added
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_changes_of_the_timing_led_count_and_not_the_first_frame() {
+        let mut last = None;
+        let changes: Vec<bool> = [true, true, false, false, true].map(|on| changed(&mut last, on)).to_vec();
+        assert_eq!(changes, [false, false, true, false, true]);
+    }
+
+    #[test]
+    fn says_what_it_outputs() {
+        let video = crate::standard_components::tracking::Video { width: 640, height: 480, fps: 50.0 };
+        let outputs = PositionDetector::default().outputs(&[Some(DataStream::Video(video))]);
+        assert_eq!(outputs[1].name, "pos ttl");
+        assert!(matches!(outputs[1].stream, Some(DataStream::Events(Events { lines: 1, .. }))), "a single line");
+    }
 }

@@ -56,6 +56,22 @@ changing its source opens another. See [`capture.rs`](../src/standard_components
 
 While recording, settings are locked, so it logs an error instead, and proposes the size once recording stops.
 
+## The timing LED
+
+A Position Detector can watch a spot of its own for a timing LED, set by `Detection::timing_led`: usually outside the
+crop, and placed by dragging a circle over the Tracker View's video. It's on when enough of the spot is bright enough,
+by the other LEDs' threshold and min area, or its own. The spot isn't looked at for the other LEDs. See
+[`pipeline.rs`](../src/standard_components/tracking/pipeline.rs).
+
+Its changes come out of the detector's `pos ttl` output as ordinary `Events`, one line, ups and downs, so anything that
+takes TTLs can take them. Each carries the camera's time (`Event::time`), as positions do. Write LTX puts them in
+`.pos.ttl`, counting from the first position, and only makes the file if there's a timing LED.
+
+Telling a change means remembering the last frame, so the detector's state is carried over, and it's a sync point.
+
+The Tracker View's LED sizes chart shows when it was on as pale blue bars, whether or not its section's hidden: hiding
+only takes it off the video.
+
 ## Errors and warnings
 
 The status bar counts the errors and warnings logged so far this session, whatever logged them, and clicking the count

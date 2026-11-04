@@ -1,10 +1,10 @@
 //! A chart of the two LEDs' sizes over the last few seconds, below the Tracker View's video: steady lines
-//! mean steady tracking; gaps are frames where an LED wasn't found.
+//! mean steady tracking; gaps are frames where an LED wasn't found. Pale blue bars are when the timing LED was on.
 
 use std::collections::VecDeque;
 
 use eframe::egui::{self, Color32};
-use egui_plot::{Line, Plot, PlotBounds, uniform_grid_spacer};
+use egui_plot::{Line, Plot, PlotBounds, Polygon, uniform_grid_spacer};
 
 /// Seconds of LED sizes kept and shown.
 pub const SECONDS: f64 = 10.0;
@@ -12,14 +12,17 @@ pub const SECONDS: f64 = 10.0;
 /// Big (green) and small (red) LED, the colours tracking setups have long used for the two head LEDs.
 pub const COLOURS: [Color32; 2] = [Color32::GREEN, Color32::RED];
 
-/// (camera timestamp, [big, small] LED areas in pixels) per frame, oldest first; an area of 0 is an LED not
-/// found in that frame.
-pub type History = VecDeque<(f64, [u32; 2])>;
+/// When the timing LED was on: pale blue, under the lines.
+const TIMING_COLOUR: Color32 = Color32::from_rgba_unmultiplied_const(120, 180, 255, 70);
 
-/// Adds a frame's LED areas to `history`, dropping those more than `SECONDS` older.
-pub fn record(history: &mut History, time: f64, areas: [u32; 2]) {
-    history.push_back((time, areas));
-    while history.front().is_some_and(|&(t, _)| t < time - SECONDS) {
+/// (camera timestamp, [big, small] LED areas in pixels, whether the timing LED was on) per frame, oldest first; an
+/// area of 0 is an LED not found in that frame.
+pub type History = VecDeque<(f64, [u32; 2], bool)>;
+
+/// Adds a frame's LED areas, and whether the timing LED was on, to `history`, dropping those more than `SECONDS` older.
+pub fn record(history: &mut History, time: f64, areas: [u32; 2], timing_on: bool) {
+    history.push_back((time, areas, timing_on));
+    while history.front().is_some_and(|&(t, ..)| t < time - SECONDS) {
         history.pop_front();
     }
 }
@@ -27,8 +30,8 @@ pub fn record(history: &mut History, time: f64, areas: [u32; 2]) {
 /// The chart, filling the space left: 0 s is the oldest frame kept, so the lines fill from the left and then
 /// scroll (see `time_axis`). Frames where an LED wasn't found leave a gap in its line.
 pub fn chart(ui: &mut egui::Ui, history: &History) {
-    let start = history.front().map_or(0.0, |&(t, _)| t);
-    let top = history.iter().map(|&(_, a)| a[0].max(a[1])).max().unwrap_or(0).max(10) as f64 * 1.15;
+    let start = history.front().map_or(0.0, |&(t, ..)| t);
+    let top = history.iter().map(|&(_, a, _)| a[0].max(a[1])).max().unwrap_or(0).max(10) as f64 * 1.15;
     let step = nice_step(top / 5.0);
     Plot::new(ui.scope_id().with("led sizes"))
         .width(ui.available_width())
@@ -43,9 +46,13 @@ pub fn chart(ui: &mut egui::Ui, history: &History) {
         .allow_boxed_zoom(false)
         .allow_double_click_reset(false)
         .show(ui, |plot| {
-            let now = history.back().map_or(0.0, |&(t, _)| t - start);
+            let now = history.back().map_or(0.0, |&(t, ..)| t - start);
             let (left, right) = crate::core::time_axis::window(0.0, now, SECONDS);
             plot.set_plot_bounds(PlotBounds::from_min_max([left, 0.0], [right, top]));
+            for [from, to] in timing_runs(history, start) {
+                let bar = vec![[from, 0.0], [to, 0.0], [to, top], [from, top]];
+                plot.polygon(Polygon::new("Timing LED", bar).fill_color(TIMING_COLOUR).stroke((0.0, TIMING_COLOUR)));
+            }
             for (i, name) in ["Big", "Small"].into_iter().enumerate() {
                 for run in seen_runs(history, i, start) {
                     plot.line(Line::new(name, run).color(COLOURS[i]).width(2.0));
@@ -63,7 +70,7 @@ fn nice_step(raw: f64) -> f64 {
 /// Runs of consecutive frames in which LED `i` was found, as (seconds after `start`, area) points.
 fn seen_runs(history: &History, i: usize, start: f64) -> Vec<Vec<[f64; 2]>> {
     let mut runs = vec![Vec::new()];
-    for &(t, areas) in history {
+    for &(t, areas, _) in history {
         if areas[i] > 0 {
             runs.last_mut().unwrap().push([t - start, areas[i] as f64]);
         } else if !runs.last().unwrap().is_empty() {
@@ -74,13 +81,41 @@ fn seen_runs(history: &History, i: usize, start: f64) -> Vec<Vec<[f64; 2]>> {
     runs
 }
 
+/// When the timing LED was on, as seconds after `start`: from the first frame it was on to the first it was off, or
+/// the last there is.
+fn timing_runs(history: &History, start: f64) -> Vec<[f64; 2]> {
+    let (mut runs, mut from) = (Vec::new(), None);
+    for &(t, _, on) in history {
+        match (on, from) {
+            (true, None) => from = Some(t - start),
+            (false, Some(began)) => {
+                runs.push([began, t - start]);
+                from = None;
+            }
+            _ => {}
+        }
+    }
+    if let (Some(began), Some(&(t, ..))) = (from, history.back()) {
+        runs.push([began, t - start]);
+    }
+    runs
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
+    fn timing_bars_run_from_it_coming_on_to_it_going_off() {
+        let frames = [(1.0, false), (2.0, true), (3.0, true), (4.0, false), (5.0, true), (6.0, true)];
+        let history: History = frames.map(|(t, on)| (t, [0, 0], on)).into();
+        assert_eq!(timing_runs(&history, 1.0), [[1.0, 3.0], [4.0, 5.0]], "the last still on");
+    }
+
+    #[test]
     fn runs_break_where_the_led_was_not_found() {
-        let history: History = [(1.0, [30, 10]), (1.1, [32, 0]), (1.2, [0, 14]), (1.3, [31, 12])].into();
+        let frames = [(1.0, [30, 10]), (1.1, [32, 0]), (1.2, [0, 14]), (1.3, [31, 12])];
+        let history: History = frames.map(|(t, areas)| (t, areas, false)).into();
         let close = |a: f64, b: f64| (a - b).abs() < 1e-9;
         let big = seen_runs(&history, 0, 1.0);
         assert_eq!(big.len(), 2);
@@ -92,7 +127,7 @@ mod tests {
     fn history_keeps_the_last_seconds() {
         let mut history = History::new();
         for frame in 0..=600 {
-            record(&mut history, frame as f64 / 50.0, [30, 10]);
+            record(&mut history, frame as f64 / 50.0, [30, 10], false);
         }
         assert_eq!(history.len(), 501, "10 s at 50 fps, both ends included");
         assert_eq!(history.front().unwrap().0, 2.0);

@@ -270,7 +270,7 @@ mod tests {
     use crate::standard_components::ephys::{Event, EventsBuffer};
 
     fn events(list: &[(u32, u8, bool)], pass_samples: usize) -> crate::Buffer {
-        let events = list.iter().map(|&(sample, line, high)| Event { sample, line, high }).collect();
+        let events = list.iter().map(|&(sample, line, high)| Event { sample, line, high, time: None }).collect();
         Buffer::Events(EventsBuffer { events, pass_samples })
     }
 

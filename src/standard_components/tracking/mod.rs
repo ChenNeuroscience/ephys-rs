@@ -67,6 +67,8 @@ pub struct PositionSample {
     pub time: f64,
     /// The biggest LED found, then the second biggest, in pixels.
     pub leds: [Option<Blob>; 2],
+    /// Whether the timing LED was on, if there is one.
+    pub timing_led: Option<bool>,
     /// The calibration when it was found; NaN if there wasn't one.
     pub pixels_per_metre: f32,
 }
@@ -178,6 +180,8 @@ pub struct Detection {
     /// A higher threshold near the crop boundary, to ignore LED reflections off the walls.
     pub edge: EdgeThreshold,
     pub rulers: Vec<Ruler>,
+    /// An LED of its own for timing, whose spot's left out of finding the others.
+    pub timing_led: TimingLed,
 }
 
 impl Default for Detection {
@@ -189,6 +193,7 @@ impl Default for Detection {
             crop: Crop::None,
             edge: EdgeThreshold::default(),
             rulers: Vec::new(),
+            timing_led: TimingLed::default(),
         }
     }
 }
@@ -206,6 +211,22 @@ impl Detection {
     /// Width of the edge band in effect: 0 when it's switched off or there's no crop.
     pub fn edge_width(&self) -> f32 {
         if self.edge.enabled && self.crop != Crop::None { self.edge.width.max(0.0) } else { 0.0 }
+    }
+
+    /// The timing LED's spot, if it's in use.
+    pub fn timing_spot(&self) -> Option<Crop> {
+        let TimingLed { enabled, center, radius, .. } = self.timing_led;
+        enabled.then_some(Crop::Circle { center, radius })
+    }
+
+    /// What pixels in the timing LED's spot have to be brighter than, to count.
+    pub fn timing_threshold(&self) -> u8 {
+        if self.timing_led.separate { self.timing_led.threshold } else { self.threshold }
+    }
+
+    /// How many pixels in the timing LED's spot have to count, for it to be on.
+    pub fn timing_min_area(&self) -> u32 {
+        (if self.timing_led.separate { self.timing_led.min_area } else { self.min_area }).max(1)
     }
 
     /// The mean over rulers that have a physical length entered.
@@ -229,6 +250,31 @@ pub struct EdgeThreshold {
 impl Default for EdgeThreshold {
     fn default() -> Self {
         EdgeThreshold { enabled: false, width: 25.0, threshold: 250 }
+    }
+}
+
+/// A spot in the frame, likely outside the crop, where an LED comes on and goes off for timing. The values are kept
+/// while it's switched off.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TimingLed {
+    pub enabled: bool,
+    /// Pixels.
+    pub center: [f32; 2],
+    pub radius: f32,
+    /// Whether it has a threshold and area of its own, rather than the other LEDs'.
+    pub separate: bool,
+    pub threshold: u8,
+    pub min_area: u32,
+}
+
+impl TimingLed {
+    pub const RADII: std::ops::RangeInclusive<f32> = 2.0..=60.0;
+}
+
+impl Default for TimingLed {
+    fn default() -> Self {
+        TimingLed { enabled: false, center: [0.0; 2], radius: 10.0, separate: false, threshold: 200, min_area: 5 }
     }
 }
 

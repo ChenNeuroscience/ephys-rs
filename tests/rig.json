@@ -26,6 +26,17 @@
       {
         "dimension": "Data",
         "from": {
+          "node": 8,
+          "port": 1
+        },
+        "to": {
+          "node": 6,
+          "port": 4
+        }
+      },
+      {
+        "dimension": "Data",
+        "from": {
           "node": 2,
           "port": 0
         },

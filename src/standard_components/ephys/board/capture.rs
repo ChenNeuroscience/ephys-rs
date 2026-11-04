@@ -253,7 +253,7 @@ fn capture(shared: &Shared, source: &Source, config: &Config, shape: Shape, pool
                                 let events = &mut samples.events.events;
                                 if events.len() < events.capacity() {
                                     let high = word & (1 << line) != 0;
-                                    events.push(Event { sample: (at + i) as u32, line: line as u8, high });
+                                    events.push(Event { sample: (at + i) as u32, line: line as u8, high, time: None });
                                 } else {
                                     lost_events += 1;
                                 }
