@@ -463,10 +463,11 @@ fn stats_ui(ui: &mut egui::Ui, stats: Option<&CaptureStats>, connected: bool, de
         let warning = format!("Camera running at {:.1} fps, video declared at {declared} fps", status.fps);
         ui.label(RichText::new(warning).color(theme.warning).strong()).on_hover_text(advice);
     }
-    if status.wrong_size > 0 {
-        let [w, h] = status.last_wrong_size;
-        let warning =
-            format!("{} frames skipped for their size ({w}×{h}): set the camera's to match", status.wrong_size);
+    if let Some([w, h]) = status.last_wrong_size {
+        let warning = format!(
+            "{} frames skipped for their size ({w}×{h}): it'll change to match, unless recording",
+            status.wrong_size
+        );
         ui.label(RichText::new(warning).color(theme.warning));
     }
     for warning in &status.warnings {
@@ -740,6 +741,36 @@ mod tests {
         }
         assert!(runner.update(&Snapshot::new(1, graph, Some(&first))));
         assert!(wait_for(|| leds_shown(&runner, view) == Some(1)), "one LED found: {:?}", leds_shown(&runner, view));
+    }
+
+    #[test]
+    fn the_camera_proposes_the_size_its_sending_unless_recording() {
+        let mut graph = Graph::default();
+        let camera = add(&mut graph, "Camera");
+        let address = super::super::camera::serve_test_scene(320, 240);
+        if let Some(Nodes::Camera(c)) = graph.get_mut(camera).map(|e| &mut e.node) {
+            c.source = super::super::camera::Source::Fake { address };
+        }
+        let idle = Snapshot::new(0, graph, None);
+        let recording = idle.with_recording(1, Some(std::sync::Arc::new(crate::core::engine::Recording::default())));
+        let runner = Runner::start(&recording, 2);
+        let proposed = || {
+            let proposals = runner.exchange().take_proposals();
+            let values = proposals.into_iter().filter_map(|(_, _, value)| value.downcast::<crate::Setting>().ok());
+            values.last().map(|value| *value)
+        };
+        std::thread::sleep(Duration::from_millis(1000));
+        assert!(proposed().is_none(), "settings are locked while recording");
+
+        assert!(runner.update(&recording.with_recording(2, None)));
+        let mut value = None;
+        assert!(wait_for(|| {
+            value = proposed();
+            value.is_some()
+        }));
+        let Some(crate::Setting::Camera(settings)) = value else { panic!("the camera's settings") };
+        assert_eq!(settings.frame_size, [320, 240]);
+        assert_eq!(settings.frame_rate, 50.0, "and the rest as they were");
     }
 
     /// The window, laid out as in the tracker plugin, on a made-up frame. See tests/snapshots/.

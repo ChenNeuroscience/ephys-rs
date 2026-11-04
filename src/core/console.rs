@@ -94,6 +94,9 @@ struct Kept {
     lines: VecDeque<Line>,
     /// Lines ever kept, so a viewer can tell when there are new ones.
     count: u64,
+    /// Errors and warnings ever logged, however long ago, including those no longer kept.
+    errors: u64,
+    warnings: u64,
 }
 
 struct Logger {
@@ -151,6 +154,8 @@ impl Logger {
             let thread = message.thread.name().unwrap_or("?");
             let line = format!("{:9.3} {:5} [{thread}] {}", message.time, message.level, message.text);
             crate::core::crash::note(&line);
+            kept.errors += (message.level == Level::Error) as u64;
+            kept.warnings += (message.level == Level::Warn) as u64;
             if self.echo && message.level <= Level::Info {
                 eprintln!("{line}");
             }
@@ -208,6 +213,14 @@ pub fn with_lines<R>(f: impl FnOnce(&VecDeque<Line>, u64) -> R) -> R {
     }
 }
 
+/// How many errors and warnings have been logged since the program started.
+pub fn totals() -> (u64, u64) {
+    let Some(logger) = LOGGER.get() else { return (0, 0) };
+    logger.drain();
+    let kept = logger.kept.lock().unwrap();
+    (kept.errors, kept.warnings)
+}
+
 /// The last `count` lines logged, as text, without waiting for the log (for a crash report: none, if it's in use).
 pub fn recent(count: usize) -> Vec<String> {
     let Some(logger) = LOGGER.get() else { return Vec::new() };
@@ -238,6 +251,18 @@ pub fn clear() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn errors_and_warnings_are_counted() {
+        init(false);
+        let (errors, warnings) = totals();
+        log::error!("an error");
+        log::warn!("a warning");
+        log::info!("not either");
+        let (more_errors, more_warnings) = totals();
+        // Other tests log too.
+        assert!(more_errors > errors && more_warnings > warnings);
+    }
 
     #[test]
     fn keeps_our_lines_and_others_warnings() {

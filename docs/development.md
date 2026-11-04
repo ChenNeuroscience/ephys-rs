@@ -45,8 +45,16 @@ cameras it sees, how the one opened is set up (its size, pixel format, trigger m
 the size of the first frame. Connecting's tried twice a second, so each of those is said once. It warns if frames are
 incomplete, or stop coming, or aren't the size set.
 
-The frame size isn't detected: it's the Camera node's Frame size setting, as the video stream's size has to be known
-before running, for its buffers. Frames of any other size are skipped.
+The video stream's size has to be known before running, for its buffers, so it's a setting: the Camera node's Frame
+size, one of its camera settings. Frames of any other size are skipped. When they come, the camera proposes the size
+they are (`Pass::propose`, like other auto-detected settings), which restarts the run as changing the frame rate does.
+While recording, settings are locked, so it logs an error instead, and proposes the size once recording stops.
+
+## Errors and warnings
+
+The status bar counts the errors and warnings logged so far this session, whatever logged them, and clicking the count
+opens the console. Nothing's counted until there's something to count, and the totals don't go back down. Tests share
+one log, so they fix what's shown (`App::problems`), rather than showing each other's.
 
 ## Versions
 

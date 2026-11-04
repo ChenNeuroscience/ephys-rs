@@ -229,6 +229,8 @@ pub struct App<N: NodeSet, A: AnnotationSet> {
     dev_tools: dev_tools::DevTools,
     /// Offered in the basic view.
     quick_actions: &'static [crate::core::quick_action::QuickAction<N>],
+    /// How many errors and warnings there have been so far.
+    problems: (u64, u64),
     /// The About window, while it's open (see `Components::ABOUT`, and `SOURCE`).
     about: Option<about::About>,
     about_text: &'static str,
@@ -282,6 +284,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             ran: None,
             last_crash: None,
             quick_actions: &[],
+            problems: (0, 0),
             about: None,
             about_text: "",
             source: "",
@@ -1007,13 +1010,28 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         ctx.request_repaint_after(std::time::Duration::from_millis(250));
     }
 
-    /// Returns whether the run's stats were clicked (to open the dev tools).
-    fn status_bar(&self, ui: &mut egui::Ui) -> bool {
+    /// Returns whether the run's stats were clicked (to open the dev tools), and whether the count of errors and
+    /// warnings was (to open the console).
+    fn status_bar(&self, ui: &mut egui::Ui) -> (bool, bool) {
         let now = ui.input(|i| i.time);
-        let mut clicked = false;
+        let (mut clicked, mut problems_clicked) = (false, false);
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.weak(crate::core::full_version()).on_hover_text("The version of this build, and of ephys-rs in it");
+                let colours = self.colours();
+                let (errors, warnings) = self.problems;
+                for (symbol, count, name, colour) in
+                    [("⚠", warnings, "warning", colours.warning), ("✖", errors, "error", colours.error)]
+                {
+                    if count > 0 {
+                        let plural = if count == 1 { "" } else { "s" };
+                        let text = RichText::new(format!("{symbol} {count} {name}{plural}")).color(colour);
+                        let response = ui.add(egui::Label::new(text).selectable(false).sense(egui::Sense::click()));
+                        let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+                        let response = response.on_hover_text("So far this session: click to see them in the console");
+                        problems_clicked |= response.clicked();
+                    }
+                }
                 if let Some(runner) = &self.runner {
                     ui.separator();
                     let stats = ui.scope(|ui| self.run_stats(ui, &runner.stats())).response.rect;
@@ -1023,25 +1041,33 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                         clicked = ui.input(|i| i.pointer.primary_clicked());
                     }
                 }
+                // In what's left: anything after this layout would be past the right-hand end.
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+                    self.status_message(ui, now);
+                });
             });
-            match (&self.status, self.canvas.hint()) {
-                (Some(status), _) if now < status.until => {
-                    let colours = self.colours();
-                    let colour = if status.ok { colours.success } else { colours.warning };
-                    ui.label(RichText::new(&status.message).color(colour))
-                }
-                (_, Some(hint)) if self.layout.mode == Mode::Advanced => ui.label(hint),
-                _ if !self.layout.is_shown(Pane::Home) => {
-                    ui.weak("Home, at the left of the toolbar, brings back the basic view or the graph")
-                }
-                _ if self.layout.mode == Mode::Basic => ui.weak(
-                    "Open a component, or add some with a quick action · the graph shows how it all fits together",
-                ),
-                _ => ui
-                    .weak("Double-click, right-click or Tab on the canvas to add a node · drag from a port to connect"),
-            };
         });
-        clicked
+        (clicked, problems_clicked)
+    }
+
+    /// What's just happened, or a hint.
+    fn status_message(&self, ui: &mut egui::Ui, now: f64) {
+        match (&self.status, self.canvas.hint()) {
+            (Some(status), _) if now < status.until => {
+                let colours = self.colours();
+                let colour = if status.ok { colours.success } else { colours.warning };
+                ui.label(RichText::new(&status.message).color(colour))
+            }
+            (_, Some(hint)) if self.layout.mode == Mode::Advanced => ui.label(hint),
+            _ if !self.layout.is_shown(Pane::Home) => {
+                ui.weak("Home, at the left of the toolbar, brings back the basic view or the graph")
+            }
+            _ if self.layout.mode == Mode::Basic => {
+                ui.weak("Open a component, or add some with a quick action · the graph shows how it all fits together")
+            }
+            _ => ui.weak("Double-click, right-click or Tab on the canvas to add a node · drag from a port to connect"),
+        };
     }
 
     /// How the run is going: workers, passes and their timing, and memory.
@@ -1276,10 +1302,17 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         }
         self.frame_times.add("Menus and toolbar", ms_since(started));
         let started = Instant::now();
-        let stats_clicked = egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui)).inner;
+        // Fixed in tests, which share a log, so their snapshots don't show each other's.
+        if !cfg!(test) {
+            self.problems = crate::core::console::totals();
+        }
+        let (stats_clicked, problems_clicked) = egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui)).inner;
         self.frame_times.add("Status bar", ms_since(started));
-        if stats_clicked && !self.layout.is_shown(Pane::DevTools) {
+        if (stats_clicked || problems_clicked) && !self.layout.is_shown(Pane::DevTools) {
             self.layout.toggle_dev_tools();
+        }
+        if problems_clicked {
+            self.dev_tools.open_console();
         }
         let mut events = Vec::new();
         // Panes don't paint their own backgrounds, so this shows behind them.
@@ -1925,6 +1958,22 @@ mod tests {
         harness.get_by_label("OK").click();
         harness.run_steps(3);
         assert!(harness.state().about.is_none());
+    }
+
+    #[test]
+    fn the_status_bar_counts_errors_and_warnings_and_they_open_the_console() {
+        let mut harness = harness();
+        harness.run_steps(2);
+        assert!(harness.query_by_label_contains("error").is_none(), "none yet, so nothing's said");
+        harness.state_mut().problems = (1, 12);
+        harness.run_steps(2);
+        harness.get_by_label("⚠ 12 warnings");
+        harness.snapshot("status_bar_problems");
+        harness.get_by_label("✖ 1 error").click();
+        harness.run_steps(3);
+        assert!(harness.state().layout.is_shown(Pane::DevTools));
+        harness.get_by_label("Console");
+        assert_eq!(harness.state().problems, (1, 12), "the session's total, which carries on");
     }
 
     #[test]

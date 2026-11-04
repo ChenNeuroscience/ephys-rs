@@ -14,19 +14,11 @@ use crate::standard_components::tracking::Video;
 use crate::standard_components::widgets::{setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
 
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Camera {
     pub source: Source,
-    /// The frame size: frames of other sizes are skipped.
-    pub size: [u32; 2],
     pub settings: CameraSettings,
-}
-
-impl Default for Camera {
-    fn default() -> Self {
-        Camera { source: Source::default(), size: [640, 480], settings: CameraSettings::default() }
-    }
 }
 
 /// Capturing, while running.
@@ -34,6 +26,9 @@ impl Default for Camera {
 pub struct Capturing {
     capture: Option<Capture>,
     shown: SharedPool<CaptureStats>,
+    /// The wrong frame size last acted on (proposing the right one, or saying it can't be, while recording).
+    proposed: Option<[u32; 2]>,
+    complained: Option<[u32; 2]>,
 }
 
 impl crate::core::engine::PassState for Capturing {
@@ -52,7 +47,7 @@ impl Node<Edges> for Camera {
     type State = Capturing;
 
     fn outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {
-        let [width, height] = self.size;
+        let [width, height] = self.settings.frame_size;
         let stream = Video { width, height, fps: self.settings.frame_rate as f32 };
         vec![
             Output { name: "video", kind: Kind::Video, stream: Some(DataStream::Video(stream)) },
@@ -107,7 +102,7 @@ impl Node<Edges> for Camera {
     }
 
     fn initial_state(&self, _inputs: &[Option<DataStream>]) -> Capturing {
-        let [width, height] = self.size;
+        let [width, height] = self.settings.frame_size;
         let video = Video { width, height, fps: self.settings.frame_rate as f32 };
         Capturing { capture: Some(Capture::start(self.source.clone(), self.settings, video)), ..Default::default() }
     }
@@ -136,6 +131,21 @@ impl Node<Edges> for Camera {
             fill(stats);
         }
         capturing.shown.send_newest(pass, fill);
+        // Frames of the wrong size are skipped. The right size is proposed, but while recording settings are locked.
+        if let Some(size @ [w, h]) = capture.wrong_size() {
+            if !pass.recording && capturing.proposed != Some(size) {
+                log::info!("Camera: setting its Frame size to the {w}×{h} it's sending");
+                pass.propose(0, Setting::Camera(CameraSettings { frame_size: size, ..self.settings }));
+                capturing.proposed = Some(size);
+            } else if pass.recording && capturing.complained != Some(size) {
+                let [set_w, set_h] = self.settings.frame_size;
+                log::error!(
+                    "Camera: frames are {w}×{h}, not the {set_w}×{set_h} set, so this recording has no video. It can't be \
+                     changed while recording: stop, and it'll change to match"
+                );
+                capturing.complained = Some(size);
+            }
+        }
     }
 
     fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
@@ -154,9 +164,9 @@ impl Node<Edges> for Camera {
             }
             setting(ui, "Frame size", |ui| {
                 ui.horizontal(|ui| {
-                    ui.add(egui::DragValue::new(&mut self.size[0]).range(16..=8192).suffix(" px"));
+                    ui.add(egui::DragValue::new(&mut self.settings.frame_size[0]).range(16..=8192).suffix(" px"));
                     ui.label("×");
-                    ui.add(egui::DragValue::new(&mut self.size[1]).range(16..=8192).suffix(" px"));
+                    ui.add(egui::DragValue::new(&mut self.settings.frame_size[1]).range(16..=8192).suffix(" px"));
                 })
                 .response
             });
@@ -186,11 +196,12 @@ impl Node<Edges> for Camera {
             "{:.1} fps · {} frames · {} dropped by the camera · {} not taken in time",
             status.fps, status.frames, status.camera_dropped, status.not_taken
         ));
-        if status.wrong_size > 0 {
-            let [w, h] = status.last_wrong_size;
+        if let Some([w, h]) = status.last_wrong_size {
+            let [set_w, set_h] = self.settings.frame_size;
             let message = format!(
-                "{} frames skipped: they're {w}×{h}, not the {}×{} set. Change the frame size to match.",
-                status.wrong_size, self.size[0], self.size[1]
+                "{} frames skipped: they're {w}×{h}, not the {set_w}×{set_h} set. It'll change to match, unless \
+                 recording.",
+                status.wrong_size
             );
             ui.label(RichText::new(message).color(theme.warning));
         }

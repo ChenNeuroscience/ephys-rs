@@ -71,6 +71,9 @@ impl DataStreamType for CameraStats {
 pub struct CameraSettings {
     /// Frames per second: also the rate of the video stream, so changing it restarts the run.
     pub frame_rate: f64,
+    /// The video stream's frame size, so changing it restarts the run too. Frames of other sizes are skipped: the camera
+    /// proposes the size it's sending, unless it's recording (see `Pass::propose`).
+    pub frame_size: [u32; 2],
     /// Microseconds.
     pub exposure: Control,
     /// Decibels.
@@ -79,7 +82,12 @@ pub struct CameraSettings {
 
 impl Default for CameraSettings {
     fn default() -> Self {
-        CameraSettings { frame_rate: 50.0, exposure: Control::Unchanged, gain: Control::Unchanged }
+        CameraSettings {
+            frame_rate: 50.0,
+            frame_size: [640, 480],
+            exposure: Control::Unchanged,
+            gain: Control::Unchanged,
+        }
     }
 }
 
@@ -98,7 +106,7 @@ impl EdgeType for CameraSettings {
     const INFO: EdgeInfo = EdgeInfo {
         name: "camera",
         colour: Color32::from_rgb(150, 160, 255),
-        description: "A camera's frame rate, exposure and gain.",
+        description: "A camera's frame rate, frame size, exposure and gain.",
     };
 
     fn summary(&self) -> String {

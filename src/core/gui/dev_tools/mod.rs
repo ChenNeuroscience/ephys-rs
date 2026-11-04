@@ -23,6 +23,13 @@ pub struct DevTools {
     open: [bool; 3],
 }
 
+impl DevTools {
+    /// Opens the console's section.
+    pub fn open_console(&mut self) {
+        self.open[2] = true;
+    }
+}
+
 impl Default for DevTools {
     fn default() -> Self {
         DevTools {

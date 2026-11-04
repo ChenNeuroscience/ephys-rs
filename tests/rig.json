@@ -650,14 +650,14 @@
                 "mode": "unchanged"
               },
               "frame_rate": 50.0,
+              "frame_size": [
+                640,
+                480
+              ],
               "gain": {
                 "mode": "unchanged"
               }
             },
-            "size": [
-              640,
-              480
-            ],
             "source": {
               "address": "127.0.0.1:27030",
               "kind": "fake"

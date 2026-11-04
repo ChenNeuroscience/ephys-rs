@@ -48,9 +48,9 @@ pub struct Status {
     pub camera_dropped: u64,
     /// Frames lost because the passes were so far behind there was no buffer to put them in.
     pub not_taken: u64,
-    /// Frames skipped for not being the size the passes expect, and the size of the last of them.
+    /// Frames skipped for not being the size the passes expect, and the size they're coming at, if the last one was.
     pub wrong_size: u64,
-    pub last_wrong_size: [u32; 2],
+    pub last_wrong_size: Option<[u32; 2]>,
     /// Frames per second, from the camera's timestamps over the last couple of seconds.
     pub fps: f64,
 }
@@ -108,6 +108,11 @@ impl Capture {
     /// The buffers the passes swap with.
     pub fn pool(&self) -> &Pool<VideoBuffer> {
         &self.pool
+    }
+
+    /// The size frames are coming at, if it isn't the size the passes expect.
+    pub fn wrong_size(&self) -> Option<[u32; 2]> {
+        self.shared.status.lock().unwrap().last_wrong_size
     }
 
     /// Copies the status into `status`, reusing its memory.
@@ -242,14 +247,11 @@ fn capture(shared: &Shared, source: &Source, pool: &Pool<VideoBuffer>) {
             match into_pool {
                 Some(None) => {
                     status.wrong_size += 1;
-                    if status.last_wrong_size != [frame.width, frame.height] {
+                    if status.last_wrong_size != Some([frame.width, frame.height]) {
                         let ([w, h], [set_w, set_h]) = ([frame.width, frame.height], expected);
-                        log::warn!(
-                            "Camera: frames are {w}×{h}, but its Frame size is set to {set_w}×{set_h}, so they're being \
-                             skipped and nothing will show. Set Frame size to {w}×{h}"
-                        );
+                        log::warn!("Camera: frames are {w}×{h}, not the {set_w}×{set_h} set, so they're being skipped");
                     }
-                    status.last_wrong_size = [frame.width, frame.height];
+                    status.last_wrong_size = Some([frame.width, frame.height]);
                 }
                 None => {
                     pool.overflowed();
@@ -258,7 +260,7 @@ fn capture(shared: &Shared, source: &Source, pool: &Pool<VideoBuffer>) {
                     }
                     status.not_taken += 1;
                 }
-                Some(Some(_)) => {}
+                Some(Some(_)) => status.last_wrong_size = None,
             }
             if let Some(last) = last {
                 status.camera_dropped += id.saturating_sub(last + 1);
@@ -325,7 +327,7 @@ mod tests {
         let capture = Capture::start(source, CameraSettings::default(), Video { width: 640, ..video });
         assert!(take_like_passes(&capture, 1, 1).is_empty());
         capture.status_into(&mut status);
-        assert_eq!(status.last_wrong_size, [320, 240]);
+        assert_eq!(status.last_wrong_size, Some([320, 240]));
     }
 
     /// End to end with synthetic_streams/fake_camera.py, so needs python3: `cargo test -- --ignored`.
