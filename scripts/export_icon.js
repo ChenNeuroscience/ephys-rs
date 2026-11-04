@@ -1,4 +1,4 @@
-// Exports from assets/icon.svg: icon.png (the window icon, embedded in the binary), icon-1024.png (for the macOS app
+// Exports github.png from assets/github.svg, and from assets/icon.svg: icon.png (the window icon, embedded in the binary), icon-1024.png (for the macOS app
 // bundle's icon, made when packaging) and icon.ico (the Windows executable's icon, embedded by example/build.rs).
 // Development only; needs @resvg/resvg-js on NODE_PATH:
 //     NODE_PATH=path/to/node_modules node scripts/export_icon.js
@@ -13,6 +13,11 @@ for (const [name, width] of [['icon.png', 256], ['icon-1024.png', 1024]]) {
     fs.writeFileSync(path.join(assets, name), png);
     console.log(`Exported assets/${name} from assets/icon.svg`);
 }
+
+// The mark on the About window's link, white so it can be tinted to suit the theme.
+const mark = new Resvg(fs.readFileSync(path.join(assets, 'github.svg')), { fitTo: { mode: 'width', value: 64 } });
+fs.writeFileSync(path.join(assets, 'github.png'), mark.render().asPng());
+console.log('Exported assets/github.png from assets/github.svg');
 
 // An .ico is a list of images: here PNGs, at the sizes Windows asks for.
 const pngs = [16, 24, 32, 48, 64, 128, 256].map((width) => ({

@@ -2,6 +2,7 @@
 //! developer tools), then a status bar. Double-clicking a node opens its window: its own view, if it has one, otherwise its
 //! settings (`node_window`). Node windows open docked, and can float.
 
+mod about;
 mod actions;
 mod arrange;
 mod basic;
@@ -227,7 +228,7 @@ pub struct App<N: NodeSet, A: AnnotationSet> {
     /// Offered in the basic view.
     quick_actions: &'static [crate::core::quick_action::QuickAction<N>],
     /// The About window, while it's open (see `Components::ABOUT`, and `SOURCE`).
-    about: Option<egui_commonmark::CommonMarkCache>,
+    about: Option<about::About>,
     about_text: &'static str,
     source: &'static str,
     /// Where recordings go: the one in use, in a section of the toolbar.
@@ -768,24 +769,10 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         }
     }
 
-    /// The version, what the build says about itself, and where its source is, until it's dismissed.
+    /// The About window, until it's dismissed.
     fn about_window(&mut self, ctx: &egui::Context) {
-        let (text, source) = (self.about_text, self.source);
-        let Some(cache) = &mut self.about else { return };
-        let mut close = false;
-        let modal = egui::Modal::new(egui::Id::unique("about")).show(ctx, |ui| {
-            ui.set_max_width(480.0);
-            ui.heading(crate::core::full_version());
-            if !text.is_empty() {
-                ui.add_space(4.0);
-                egui_commonmark::CommonMarkViewer::new().show(ui, cache, text);
-            }
-            ui.add_space(8.0);
-            ui.hyperlink(source);
-            ui.add_space(8.0);
-            close = ui.button("OK").clicked();
-        });
-        if close || modal.should_close() {
+        let (text, source, colours) = (self.about_text, self.source, self.colours());
+        if self.about.as_mut().is_some_and(|about| !about.show(ctx, text, source, colours)) {
             self.about = None;
         }
     }
@@ -913,7 +900,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                 self.menu = Some(CreateMenu::new(screen, at, None));
             }
             Action::ToggleDevTools => self.layout.toggle_dev_tools(),
-            Action::About => self.about = Some(Default::default()),
+            Action::About => self.about = Some(about::About::new(ctx)),
             Action::Source => ctx.open_url(egui::OpenUrl::new_tab(self.source)),
             Action::Play => {
                 if self.runner.is_some() {
@@ -1931,7 +1918,7 @@ mod tests {
         harness.run_steps(3);
         assert_eq!(harness.get_all_by_label("chen-neuro v0.x (ephys-rs v0.y)").count(), 2, "and in the status bar");
         assert!(harness.query_by_label_contains("LTX rig").is_some(), "the build's markdown");
-        harness.get_by_label("https://github.com/ChenNeuroscience/ephys-rs");
+        harness.get_by_label("Source code");
         harness.snapshot("about");
         harness.get_by_label("OK").click();
         harness.run_steps(3);
