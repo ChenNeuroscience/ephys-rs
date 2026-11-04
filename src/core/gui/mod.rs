@@ -170,11 +170,11 @@ struct SaveFileRef<'a, N, A> {
     base_directory: &'a serde_json::Value,
 }
 
-/// Where the settings are saved beside a recording in `place` that starts at `start`: named as the recording, if the
-/// base directory names it (beside a writer's files of that name, or the folder it writes them in), otherwise when it
+/// Where the settings are saved beside a recording in `place` that starts at `start`: with the base directory's prefix,
+/// if it has one (beside a writer's files with it, or the folder it writes them in), otherwise named after when it
 /// started.
 fn settings_path(place: &Place, start: &chrono::DateTime<chrono::Local>) -> PathBuf {
-    let name = place.name.clone().unwrap_or_else(|| start.format("%Y-%m-%d_%H%M%S").to_string());
+    let name = place.prefix.clone().unwrap_or_else(|| start.format("%Y-%m-%d_%H%M%S").to_string());
     place.directory.join(format!("{name}{SETTINGS_EXTENSION}"))
 }
 
@@ -1790,7 +1790,7 @@ mod tests {
         let place = harness.state().base_directories.place().unwrap();
         assert_eq!(
             place.path(),
-            Path::new("/nowhere/recordings/r2405/2026-01-01/2026-01-01 a"),
+            Path::new("/nowhere/recordings/r2405/2026-01-01/r2405 2026-01-01 a"),
             "the subject's, named the day's first"
         );
         harness.get_by_label("512 GB free");
@@ -1812,29 +1812,37 @@ mod tests {
         let types = harness.state().base_directories.types();
         harness.state_mut().base_directories = BaseDirectories::new(types, Some(&saved));
         harness.run_steps(2);
-        let next = |h: &Harness<TestApp>| h.state().base_directories.place().unwrap().name.unwrap();
-        harness.get_by_label("r2405").hover();
+        let next = |h: &Harness<TestApp>| h.state().base_directories.place().unwrap().prefix.unwrap();
+        let subjects = |h: &Harness<TestApp>| h.get_all_by_label("r2405").count();
+        assert_eq!(subjects(&harness), 2, "as a directory, and in the file prefix");
+        harness.get_all_by_label("r2405").next().unwrap().hover();
         harness.run_steps(2);
-        assert!(harness.query_by_label_contains("a directory of its own").is_some(), "with no wait");
+        assert!(harness.query_by_label_contains("its directory, and in the file prefix").is_some(), "with no wait");
         harness.snapshot("toolbar_base_directory_hovered");
 
         // The subject, in place: Esc leaves it, and Enter changes it.
         let subject = |h: &Harness<TestApp>| h.state().base_directories.place().unwrap().directory;
         let before = subject(&harness);
-        harness.get_by_label("r2405").click();
+        harness.get_all_by_label("r2405").next().unwrap().click();
         harness.run_steps(3);
         harness.event(egui::Event::Text("6".into()));
         harness.run_steps(3);
         harness.key_press(Key::Escape);
         harness.run_steps(3);
         assert_eq!(subject(&harness), before, "cancelled");
-        harness.get_by_label("r2405").click();
+        assert_eq!(subjects(&harness), 2, "both as they were");
+
+        // Either of them changes both, the other following what's typed.
+        harness.get_all_by_label("r2405").last().unwrap().click();
         harness.run_steps(3);
         harness.event(egui::Event::Text("6".into()));
         harness.run_steps(3);
+        assert!(harness.query_by_label("r24056").is_some(), "the other, as it's typed");
         harness.key_press(Key::Enter);
         harness.run_steps(3);
         assert_ne!(subject(&harness), before, "applied");
+        assert_eq!(harness.get_all_by_label("r24056").count(), 2);
+        assert!(next(&harness).starts_with("r24056 "), "{}", next(&harness));
 
         // The trial: stepped, and for the next recording.
         harness.get_by_label("a").click();
@@ -1848,16 +1856,36 @@ mod tests {
     }
 
     #[test]
+    fn a_directory_can_have_a_file_prefix_typed_in_place() {
+        let mut harness = harness();
+        let saved = serde_json::json!({ "chosen": "A directory", "types": { "A directory": { "directory": "/r" } } });
+        let types = harness.state().base_directories.types();
+        harness.state_mut().base_directories = BaseDirectories::new(types, Some(&saved));
+        harness.run_steps(2);
+        let prefix = |h: &Harness<TestApp>| h.state().base_directories.place().unwrap().prefix;
+        assert_eq!(prefix(&harness), None, "the writers name it");
+        harness.get_by_label("file prefix").click();
+        harness.run_steps(3);
+        harness.event(egui::Event::Text("a/b".into()));
+        harness.run_steps(3);
+        harness.key_press(Key::Enter);
+        harness.run_steps(3);
+        harness.get_by_label("a-b");
+        assert!(prefix(&harness).unwrap().starts_with("a-b_"), "a name, not a path, and when it starts");
+        harness.snapshot("toolbar_base_directory_prefix");
+    }
+
+    #[test]
     fn recordings_keep_the_settings_they_were_made_with() {
         let start = chrono::Local::now();
-        let named = Place { directory: "/r/r2405".into(), name: Some("2026-01-01 a".into()) };
+        let named = Place { directory: "/r/r2405".into(), prefix: Some("2026-01-01 a".into()) };
         assert_eq!(settings_path(&named, &start), PathBuf::from("/r/r2405/2026-01-01 a.ephys-rs.json"));
         let unnamed = settings_path(&Place::directory("/r"), &start);
         assert!(unnamed.starts_with("/r") && unnamed.to_string_lossy().ends_with(".ephys-rs.json"));
 
         let harness = harness();
         let directory = std::env::temp_dir().join(format!("ephys-rs-settings-{}", std::process::id()));
-        harness.state().save_with_recording(&Place { directory: directory.clone(), name: Some("trial a".into()) });
+        harness.state().save_with_recording(&Place { directory: directory.clone(), prefix: Some("trial a".into()) });
         crate::core::background::wait();
         let saved = std::fs::read_to_string(directory.join("trial a.ephys-rs.json")).unwrap();
         let file: SaveFile<Nodes, crate::AnnotationTypes> = serde_json::from_str(&saved).unwrap();

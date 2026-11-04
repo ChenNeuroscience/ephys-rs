@@ -286,10 +286,10 @@ pub fn session_name(prefix: &str, start: &chrono::DateTime<chrono::Local>) -> St
     format!("{prefix}_{}", start.format("%Y-%m-%d_%H%M%S"))
 }
 
-/// A recording's name: the base directory's, if it names recordings (a subject's trial, say), otherwise the
-/// writer's own (see `session_name`).
+/// A recording's name: the base directory's prefix, if it has one (a subject's trial, say), otherwise the writer's
+/// own (see `session_name`).
 pub fn recording_name(place: Option<&Place>, prefix: &str, start: &chrono::DateTime<chrono::Local>) -> String {
-    place.and_then(|p| p.name.clone()).unwrap_or_else(|| session_name(prefix, start))
+    place.and_then(|p| p.prefix.clone()).unwrap_or_else(|| session_name(prefix, start))
 }
 
 /// What a writer's thread is up to, for its window and the dev tools.
@@ -365,8 +365,8 @@ mod tests {
 
         let snapshot = Snapshot::new(0, graph, None);
         let runner = Runner::start(&snapshot, 2);
-        // The base directory names the recording (a subject's trial, say).
-        let place = crate::core::base_directory::Place { directory: dir.clone(), name: Some("trial a".into()) };
+        // The base directory has a prefix (a subject's trial, say).
+        let place = crate::core::base_directory::Place { directory: dir.clone(), prefix: Some("trial a".into()) };
         // The writers open their files before recording starts.
         let recording = snapshot.with_recording(1, Some(Arc::new(Recording::prepare(&snapshot, Some(place)))));
         assert!(runner.update(&recording), "recording carries on the same run");

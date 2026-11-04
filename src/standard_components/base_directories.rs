@@ -1,4 +1,4 @@
-//! The standard base directory (see `crate::core::base_directory`): a directory chosen.
+//! The standard base directory (see `crate::core::base_directory`): a directory chosen, and perhaps a file prefix.
 
 use std::path::{MAIN_SEPARATOR, MAIN_SEPARATOR_STR, Path, PathBuf};
 
@@ -7,12 +7,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::base_directory::{BaseDirectory, BaseDirectoryContext, BaseDirectoryType, Place};
 use crate::core::gui::widgets::{Icon, toolbar_button};
-use crate::standard_components::recording::{NO_BASE, expand};
+use crate::standard_components::recording::{NO_BASE, expand, session_name};
 
 /// A directory you choose.
 pub const A_DIRECTORY: BaseDirectoryType = BaseDirectoryType {
     name: "A directory",
-    description: "Recordings go in a directory you choose.",
+    description: "Recordings go in a directory you choose, with a file prefix if you give one.",
     make: |saved| Box::new(Chosen::from_saved(saved)),
 };
 
@@ -71,6 +71,46 @@ pub fn path_chip(
     if clickable { response.on_hover_cursor(egui::CursorIcon::PointingHand) } else { response }
 }
 
+/// Text being typed into a piece of a path, in place of its chip.
+pub struct PathEdit {
+    pub text: String,
+    /// Whether it's been given the focus yet.
+    focused: bool,
+}
+
+impl PathEdit {
+    pub fn new(text: impl Into<String>) -> Self {
+        PathEdit { text: text.into(), focused: false }
+    }
+
+    /// Its id, in `ui`.
+    pub fn id(ui: &egui::Ui) -> egui::Id {
+        ui.scope_id().with("changing a piece of the path")
+    }
+
+    /// The text box. When it's finished, whether to apply it: Enter or clicking elsewhere does, Esc cancels.
+    pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<bool> {
+        let width = 8.0 * (self.text.chars().count() + 1) as f32;
+        let edit = egui::TextEdit::singleline(&mut self.text)
+            .id(Self::id(ui))
+            .frame(egui::Frame::NONE)
+            .margin(egui::Margin::symmetric(3, 1))
+            .desired_width(width.max(24.0))
+            .lock_focus(true);
+        let response = ui.add(edit);
+        if !self.focused {
+            response.request_focus();
+            self.focused = true;
+        }
+        response.lost_focus().then(|| !ui.input(|i| i.key_pressed(egui::Key::Escape)))
+    }
+}
+
+/// `text`, to go in a file's name: a separator would make it a path.
+pub fn name_piece(text: &str) -> String {
+    text.trim().replace(['/', '\\'], "-")
+}
+
 /// A button to open `directory`, or as much of it as there is yet, in the system's file manager.
 pub fn open_button(ui: &mut egui::Ui, directory: &Path) {
     let tip = format!("Open where recordings go: {}", directory.display());
@@ -123,16 +163,24 @@ pub fn directory_ui(ui: &mut egui::Ui, directory: &mut String, context: &BaseDir
     false
 }
 
-/// A directory chosen.
+/// A directory chosen, and perhaps a file prefix: recordings are named after it and when they start (so one doesn't
+/// write over the last), otherwise by the writers.
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
 pub struct Chosen {
     pub directory: String,
+    pub prefix: String,
+    /// Where the recording going on is, while there is one.
+    #[serde(skip)]
+    recording: Option<Place>,
+    /// The prefix being changed, if it is.
+    #[serde(skip)]
+    editing: Option<PathEdit>,
 }
 
 impl Default for Chosen {
     fn default() -> Self {
-        Chosen { directory: NO_BASE.into() }
+        Chosen { directory: NO_BASE.into(), prefix: String::new(), recording: None, editing: None }
     }
 }
 
@@ -140,16 +188,71 @@ impl Chosen {
     fn from_saved(saved: Option<&serde_json::Value>) -> Self {
         saved.and_then(|s| serde_json::from_value(s.clone()).ok()).unwrap_or_default()
     }
+
+    /// The prefix, as the last piece of the path: clicked to change it, in place.
+    fn prefix_ui(&mut self, ui: &mut egui::Ui, context: &BaseDirectoryContext) {
+        if let Some(editing) = &mut self.editing {
+            if let Some(apply) = editing.ui(ui) {
+                if apply {
+                    self.prefix = name_piece(&editing.text);
+                }
+                self.editing = None;
+            }
+            return;
+        }
+        let theme = context.theme;
+        let prefix = self.prefix.trim();
+        if let Some(name) = self.recording.as_ref().and_then(|place| place.prefix.as_deref()) {
+            path_chip(ui, RichText::new(name).color(theme.text_primary), "The file prefix", false, context);
+        } else if !context.recording {
+            let example = session_name(if prefix.is_empty() { "prefix" } else { prefix }, &chrono::Local::now());
+            let info = format!(
+                "The file prefix, if you want one: recordings are named after it and when they start \
+                 (\"{example}\"), otherwise the writers name them\nClick to change it"
+            );
+            let text = match prefix {
+                "" => RichText::new("file prefix").color(theme.text_disabled),
+                prefix => RichText::new(prefix).color(theme.text_primary),
+            };
+            if path_chip(ui, text, info, true, context).clicked() {
+                self.editing = Some(PathEdit::new(prefix));
+            }
+        }
+    }
 }
 
 impl BaseDirectory for Chosen {
+    /// As a flat path, of pale pieces: "~/recordings/mouse1".
     fn toolbar_ui(&mut self, ui: &mut egui::Ui, context: &BaseDirectoryContext) {
+        if context.recording {
+            self.editing = None;
+        }
         open_button(ui, &expand(&self.directory));
-        directory_ui(ui, &mut self.directory, context, "Where recordings go");
+        ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            directory_ui(ui, &mut self.directory, context, "Where recordings go");
+            if !context.recording || self.recording.as_ref().is_some_and(|place| place.prefix.is_some()) {
+                path_separator(ui, context);
+                self.prefix_ui(ui, context);
+            }
+        });
     }
 
     fn place(&self) -> Option<Place> {
-        Some(Place::directory(expand(&self.directory)))
+        if self.recording.is_some() {
+            return self.recording.clone();
+        }
+        let prefix = self.prefix.trim();
+        let prefix = (!prefix.is_empty()).then(|| session_name(prefix, &chrono::Local::now()));
+        Some(Place { directory: expand(&self.directory), prefix })
+    }
+
+    fn recording_started(&mut self, place: &Place) {
+        self.recording = Some(place.clone());
+    }
+
+    fn recording_stopped(&mut self) {
+        self.recording = None;
     }
 
     fn save(&self) -> serde_json::Value {
@@ -168,5 +271,25 @@ mod tests {
         assert_eq!(shown("~/recordings/r1"), format!("~{sep}recordings{sep}r1"));
         assert_eq!(shown(&expand("~/recordings").display().to_string()), format!("~{sep}recordings"), "the home");
         assert_eq!(shown("/data/recordings"), format!("{sep}data{sep}recordings"));
+    }
+
+    #[test]
+    fn a_prefix_is_optional_and_stays_the_same_through_a_recording() {
+        let mut chosen = Chosen { directory: "/r".into(), ..Default::default() };
+        assert_eq!(chosen.place(), Some(Place::directory("/r")), "the writers name it");
+
+        chosen.prefix = "mouse1".into();
+        let place = chosen.place().unwrap();
+        let prefix = place.prefix.clone().unwrap();
+        assert!(prefix.starts_with("mouse1_20"), "with when it starts, so as not to write over the last: {prefix}");
+        chosen.recording_started(&place);
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        assert_eq!(chosen.place().as_ref(), Some(&place), "whatever the time");
+        chosen.recording_stopped();
+        assert_ne!(chosen.place().as_ref(), Some(&place), "the next one's its own");
+
+        let saved = chosen.save();
+        assert_eq!(saved, serde_json::json!({ "directory": "/r", "prefix": "mouse1" }));
+        assert_eq!(Chosen::from_saved(Some(&serde_json::json!({ "directory": "/r" }))).prefix, "", "saved before");
     }
 }

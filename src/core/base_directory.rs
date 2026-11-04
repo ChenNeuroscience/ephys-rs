@@ -3,8 +3,8 @@
 //! A program offers base directory types (see `Components::BASE_DIRECTORIES`), of which one's in use: the first,
 //! unless another's chosen (in advanced mode, from its section's settings). Each draws its own section of the main
 //! toolbar, as wide as it likes, and says where recordings go (a `Place`): for the next recording, or the one going
-//! on. That's a directory, and perhaps a name for the recording (a subject's trial, say), which writers name what
-//! they write after (a file prefix, say) rather than their own.
+//! on. That's a directory, and perhaps a prefix for what's written there (a subject's trial, say), which writers use
+//! rather than their own.
 //! When recording's asked for, the GUI asks it, and hands that to every node preparing to record
 //! (`Node::prepare_to_record`, then `Pass::base_directory`); writers decide what to do with it (write in it, say,
 //! or in a subdirectory of it). It's told when recordings start and stop. What each type keeps (the directory chosen,
@@ -17,24 +17,25 @@ use eframe::egui;
 
 use crate::core::theme::Colours;
 
-/// Where a recording goes: the base directory, and the name to give it, if there's one (otherwise writers name it
-/// themselves).
+/// Where a recording goes: the base directory, and a prefix, if there's one (otherwise writers name things themselves).
+/// The prefix is the whole of what's written's name but its extension, whatever a writer makes of it (its files, or a
+/// folder for them), so it should be different for each recording: nothing stops one writing over the last.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Place {
     pub directory: PathBuf,
-    pub name: Option<String>,
+    pub prefix: Option<String>,
 }
 
 impl Place {
     /// Just a directory.
     pub fn directory(directory: impl Into<PathBuf>) -> Self {
-        Place { directory: directory.into(), name: None }
+        Place { directory: directory.into(), prefix: None }
     }
 
-    /// The directory and name, as a path (the directory, if there's no name).
+    /// The directory and prefix, as a path (the directory, if there's no prefix).
     pub fn path(&self) -> PathBuf {
-        match &self.name {
-            Some(name) => self.directory.join(name),
+        match &self.prefix {
+            Some(prefix) => self.directory.join(prefix),
             None => self.directory.clone(),
         }
     }
