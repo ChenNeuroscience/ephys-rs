@@ -9,6 +9,7 @@ mod basic;
 mod canvas;
 mod create_menu;
 mod dev_tools;
+mod dialog;
 mod disk_space;
 mod docking;
 mod frame_times;
@@ -749,27 +750,24 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
 
     /// Says where the report of the last time's crash is, until it's dismissed.
     fn crash_window(&mut self, ctx: &egui::Context) {
+        let colours = self.colours();
         let Some(report) = &self.last_crash else { return };
         let mut close = false;
-        let modal = egui::Modal::new(egui::Id::unique("last crash")).show(ctx, |ui| {
-            ui.set_max_width(560.0);
-            ui.heading("ephys-rs crashed last time");
+        let body = |ui: &mut egui::Ui| {
             ui.label("A report of what happened, to send to whoever looks after it, is in:");
             ui.add(egui::Label::new(egui::RichText::new(report.display().to_string()).monospace()).selectable(true));
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                if ui.button("Show the report").clicked() {
-                    ctx.open_url(egui::OpenUrl::new_tab(crate::core::crash::file_url(report)));
-                }
-                if ui.button("Copy where it is").clicked() {
-                    ctx.copy_text(report.display().to_string());
-                }
-                if ui.button("OK").clicked() {
-                    close = true;
-                }
-            });
-        });
-        if close || modal.should_close() {
+        };
+        let footer = |ui: &mut egui::Ui| {
+            if ui.button("Show the report").clicked() {
+                ctx.open_url(egui::OpenUrl::new_tab(crate::core::crash::file_url(report)));
+            }
+            if ui.button("Copy where it is").clicked() {
+                ctx.copy_text(report.display().to_string());
+            }
+            close = dialog::at_right(ui, |ui| ui.button("OK").clicked());
+        };
+        let dismissed = dialog::show(ctx, "ephys-rs crashed last time", 560.0, colours, body, footer);
+        if close || dismissed {
             self.last_crash = None;
         }
     }
@@ -905,7 +903,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                 self.menu = Some(CreateMenu::new(screen, at, None));
             }
             Action::ToggleDevTools => self.layout.toggle_dev_tools(),
-            Action::About => self.about = Some(about::About::new(ctx)),
+            Action::About => self.about = Some(about::About::default()),
             Action::Source => ctx.open_url(egui::OpenUrl::new_tab(self.source)),
             Action::Play => {
                 if self.runner.is_some() {
