@@ -39,6 +39,44 @@ const LIBRARY_NAME: &str = "libSpinnaker_C.so";
 /// again doesn't wait, but the SDK gives everyone the same camera: closing it under a new run's feet would crash.
 static IN_USE: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 
+/// Whether what's asked for is taken, by what's `in_use`: `serial`, or with none, any camera, as it can't be told which
+/// would be found without asking the SDK, which shouldn't be touched while a camera's closing. (So having two cameras
+/// takes their serial numbers.)
+fn taken(in_use: &BTreeSet<String>, serial: Option<&str>) -> bool {
+    serial.map_or(!in_use.is_empty(), |serial| in_use.contains(serial.trim()))
+}
+
+/// The SDK's system, and how many are using it. There's one between all the cameras, let go of when the last has
+/// finished with it: letting go of it with a camera still open crashes the SDK.
+struct System {
+    handle: usize,
+    users: usize,
+}
+
+static SYSTEM: Mutex<System> = Mutex::new(System { handle: 0, users: 0 });
+
+impl System {
+    fn get(api: &Api) -> io::Result<Handle> {
+        let mut system = SYSTEM.lock().unwrap();
+        if system.users == 0 {
+            let mut handle: Handle = std::ptr::null_mut();
+            unsafe { api.check((api.spinSystemGetInstance)(&mut handle), "getting the system")? };
+            system.handle = handle as usize;
+        }
+        system.users += 1;
+        Ok(system.handle as Handle)
+    }
+
+    fn let_go(api: &Api) {
+        let mut system = SYSTEM.lock().unwrap();
+        system.users -= 1;
+        if system.users == 0 {
+            step("Camera: letting go of the Spinnaker system");
+            unsafe { (api.spinSystemReleaseInstance)(system.handle as Handle) };
+        }
+    }
+}
+
 /// Says what's about to be done to the camera, somewhere that survives the SDK crashing while it's done.
 fn step(text: &str) {
     crate::core::crash::note(text);
@@ -331,9 +369,11 @@ impl SpinnakerCamera {
         library: Option<&str>,
         note: &mut dyn FnMut(String),
     ) -> io::Result<Self> {
+        if taken(&IN_USE.lock().unwrap(), serial) {
+            return Err(io::Error::new(io::ErrorKind::ResourceBusy, "it's in use, or still closing"));
+        }
         let api = Api::get(library)?;
-        let mut system: Handle = std::ptr::null_mut();
-        unsafe { api.check((api.spinSystemGetInstance)(&mut system), "getting the system")? };
+        let system = System::get(api)?;
         // From here on, Drop cleans up whatever has been set up.
         let mut cam = SpinnakerCamera {
             api,
@@ -565,9 +605,8 @@ impl Drop for SpinnakerCamera {
                 (api.spinCameraDeInit)(self.camera);
                 (api.spinCameraRelease)(self.camera);
             }
-            step("Camera: letting go of the Spinnaker system");
-            (api.spinSystemReleaseInstance)(self.system);
         }
+        System::let_go(api);
         if let Some(serial) = &self.serial {
             IN_USE.lock().unwrap().remove(serial);
             step("Camera: closed");
@@ -578,6 +617,15 @@ impl Drop for SpinnakerCamera {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_camera_in_use_is_left_alone() {
+        let in_use = BTreeSet::from(["123".to_string()]);
+        assert!(taken(&in_use, Some("123")) && taken(&in_use, Some(" 123 ")));
+        assert!(!taken(&in_use, Some("456")), "another camera");
+        assert!(taken(&in_use, None), "the first found might be it");
+        assert!(!taken(&BTreeSet::new(), None));
+    }
 
     #[test]
     fn missing_sdk_is_a_clear_error() {

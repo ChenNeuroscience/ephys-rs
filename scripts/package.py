@@ -76,9 +76,11 @@ def package(exe, output, platform):
         shutil.copy2(name, output / name)
     commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     compiler = subprocess.check_output(["rustc", "-vV"], text=True)
-    version = tomllib.loads(Path("Cargo.toml").read_text(encoding="utf-8"))["package"]["version"]
-    minor = version.split(".")[1]
-    (output / "BUILD.txt").write_text(f"Version: v0.{minor}\nSource commit: {commit}\n\n{compiler}", encoding="utf-8")
+    def minor(manifest):
+        return tomllib.loads(Path(manifest).read_text(encoding="utf-8"))["package"]["version"].split(".")[1]
+
+    versions = f"Version: v0.{minor('example/Cargo.toml')}\nCore version: ephys-rs v0.{minor('Cargo.toml')}"
+    (output / "BUILD.txt").write_text(f"{versions}\nSource commit: {commit}\n\n{compiler}", encoding="utf-8")
     (output / "THIRD_PARTY_NOTICES.txt").write_text(notices(), encoding="utf-8")
     checksums = [f"{hashlib.sha256(item.read_bytes()).hexdigest()}  {item.name}\n"
                  for item in sorted(output.iterdir()) if item.is_file()]
