@@ -40,6 +40,10 @@ each is defined beside the nodes that make it (`ephys`, `spikes`, `tracking`).
 
 ## Settings
 
+Settings edges can be hidden, to clear up the graph, with the eye by Settings in the legend. Their ports stay, and they're
+only hidden: nothing changes, and they come back while a new one's being dragged out. Hiding them deselects any that was
+selected, so Delete can't remove something out of sight.
+
 A settings edge runs from a node's **control** to another node's **setting**, letting it edit (or, if the control's
 read-only, just see) the setting: a viewer setting a detector's thresholds, a writer reading the gains to record them.
 They carry no data, so can point anywhere, upstream included; a setting can have several controls, a control one

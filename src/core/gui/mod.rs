@@ -23,6 +23,7 @@ mod toolbar;
 /// Pieces of the GUI for components to draw with, so they look of a piece with it.
 pub mod widgets {
     pub use super::icons::Icon;
+    pub use super::icons::eye;
     pub use super::toolbar::toolbar_button;
 }
 
@@ -1606,6 +1607,31 @@ mod tests {
         harness.run_steps(2);
         assert!(!harness.state().canvas.legend_open);
         harness.snapshot("graph_legend_collapsed");
+    }
+
+    #[test]
+    fn the_legends_eye_hides_settings_edges() {
+        use crate::core::engine::Dimension;
+        let mut harness = harness();
+        let edge = |h: &Harness<TestApp>, dimension: Dimension| {
+            *h.state().graph.edges().iter().find(|e| e.dimension == dimension).unwrap()
+        };
+        let (settings, data) = (edge(&harness, Dimension::Settings), edge(&harness, Dimension::Data));
+        harness.state_mut().selection.edge = Some(settings);
+        harness.get_by_label("Hide settings edges").click();
+        harness.run_steps(2);
+        assert!(!harness.state().canvas.settings_edges_shown);
+        assert_eq!(harness.state().selection.edge, None, "nothing hidden stays selected, for Delete to remove");
+        harness.snapshot("graph_settings_edges_hidden");
+        assert!(harness.state().graph.edges().contains(&settings), "only hidden");
+
+        // A data edge stays selected.
+        harness.state_mut().selection.edge = Some(data);
+        harness.get_by_label("Show settings edges").click();
+        harness.run_steps(2);
+        harness.get_by_label("Hide settings edges").click();
+        harness.run_steps(2);
+        assert_eq!(harness.state().selection.edge, Some(data));
     }
 
     #[test]

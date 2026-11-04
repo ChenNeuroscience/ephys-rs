@@ -4,6 +4,7 @@ use eframe::egui;
 
 use crate::DataStream;
 use crate::core::engine::EdgeSet;
+pub use crate::core::gui::widgets::eye;
 
 /// Two-column grid of labelled settings.
 pub fn settings_grid(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
@@ -113,36 +114,6 @@ pub fn icon_toggle(ui: &mut egui::Ui, value: &mut bool, paint: PaintToggle, tool
         paint(ui.painter(), rect.shrink(3.0), visuals.fg_stroke.color, background, on);
     }
     response.on_hover_text(tooltip)
-}
-
-/// An open eye when `visible`, otherwise the same eye struck through.
-pub fn eye(
-    painter: &egui::Painter,
-    rect: egui::Rect,
-    colour: egui::Color32,
-    _background: egui::Color32,
-    visible: bool,
-) {
-    let c = rect.center();
-    let (w, h) = (rect.width() / 2.0, rect.height() * 0.3);
-    let stroke = egui::Stroke::new(1.5, colour);
-    let lid = |sign: f32| -> Vec<egui::Pos2> {
-        (0..=16)
-            .map(|i| {
-                let x = -1.0 + 2.0 * i as f32 / 16.0;
-                c + egui::vec2(x * w, sign * h * (1.0 - x * x))
-            })
-            .collect()
-    };
-    painter.add(egui::Shape::line(lid(-1.0), stroke));
-    painter.add(egui::Shape::line(lid(1.0), stroke));
-    if visible {
-        painter.circle_filled(c, h * 0.6, colour);
-    } else {
-        painter.circle_stroke(c, h * 0.6, stroke);
-        let inset = egui::vec2(2.0, 1.0);
-        painter.line_segment([rect.left_top() + inset, rect.right_bottom() - inset], stroke);
-    }
 }
 
 /// A closed padlock when `locked`, otherwise with the shackle raised and swung open.

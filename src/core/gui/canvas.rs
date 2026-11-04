@@ -21,6 +21,7 @@ use eframe::egui::{
 };
 
 use super::Event;
+use super::icons::eye;
 use super::style;
 use crate::core::annotation::{Annotation, AnnotationId, AnnotationSet, AnnotationUi, Annotations, Pasted};
 use crate::core::engine::{
@@ -333,6 +334,8 @@ pub struct Canvas {
     drawing: Option<Pos2>,
     /// Whether the legend is expanded (rather than just its title).
     pub legend_open: bool,
+    /// Whether settings edges are shown, from the eye in the legend: without them there's less clutter.
+    pub settings_edges_shown: bool,
 }
 
 impl Canvas {
@@ -351,6 +354,7 @@ impl Canvas {
             tool: Tool::default(),
             drawing: None,
             legend_open: true,
+            settings_edges_shown: true,
         }
     }
 }
@@ -526,6 +530,7 @@ impl Canvas {
                 graph
                     .edges()
                     .iter()
+                    .filter(|e| self.shows(e))
                     .filter_map(|e| {
                         let points = bezier_points(edge_points(e, &layouts, zoom)?);
                         Some((*e, points.iter().map(|q| q.distance(p)).fold(f32::INFINITY, f32::min)))
@@ -603,7 +608,7 @@ impl Canvas {
                 StrokeKind::Inside,
             );
         }
-        self.legend::<N>(ui, &painter, resolved);
+        self.legend::<N>(ui, &painter, resolved, selection);
         if let Some(m) = marquee {
             let stroke = Stroke::new(1.0, self.colours.text_secondary);
             painter.rect(m, 0.0, self.colours.text_primary.gamma_multiply(0.12), stroke, StrokeKind::Inside);
@@ -664,7 +669,13 @@ impl Canvas {
 
     /// A key to the edge types on the graph (on an edge or a port), in the bottom-right corner of the canvas
     /// (not of the scene, so it stays put as the graph pans and zooms). Click its title to collapse or expand it.
-    fn legend<N: NodeSet>(&mut self, ui: &mut egui::Ui, painter: &Painter, resolved: &Resolved<N::Edges>) {
+    fn legend<N: NodeSet>(
+        &mut self,
+        ui: &mut egui::Ui,
+        painter: &Painter,
+        resolved: &Resolved<N::Edges>,
+        selection: &mut Selection,
+    ) {
         const WIDTH: f32 = 160.0;
         const ROW: f32 = 18.0;
         const PAD: f32 = 8.0;
@@ -724,6 +735,10 @@ impl Canvas {
                 FontId::proportional(10.5),
                 colours.text_disabled,
             );
+            if dimension == Dimension::Settings {
+                let at = egui::pos2(title.right() - 8.0, y + ROW / 2.0);
+                self.settings_edges_eye(ui, painter, Rect::from_center_size(at, egui::Vec2::splat(16.0)), selection);
+            }
             y += ROW;
             for info in kinds {
                 let mid = y + ROW / 2.0;
@@ -758,6 +773,31 @@ impl Canvas {
             let label = egui::pos2(title.left() + 36.0, mid);
             painter.text(label, Align2::LEFT_CENTER, "read only", font.clone(), colours.text_primary);
         }
+    }
+
+    /// The eye that shows and hides settings edges. Nothing hidden stays selected, for Delete to remove unseen.
+    fn settings_edges_eye(&mut self, ui: &egui::Ui, painter: &Painter, rect: Rect, selection: &mut Selection) {
+        let tip = if self.settings_edges_shown { "Hide settings edges" } else { "Show settings edges" };
+        let eye_button = ui.interact(rect, Id::unique("legend-settings-edges"), Sense::click());
+        eye_button.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tip));
+        let hovered = eye_button.hovered();
+        if eye_button.on_hover_text(tip).clicked() {
+            self.settings_edges_shown = !self.settings_edges_shown;
+            if !self.settings_edges_shown {
+                selection.edge = selection.edge.filter(|e| e.dimension != Dimension::Settings);
+                self.menu_edge = self.menu_edge.filter(|e| e.dimension != Dimension::Settings);
+            }
+            ui.ctx().request_repaint();
+        }
+        let colours = self.colours;
+        let colour = if hovered { colours.text_primary } else { colours.text_secondary };
+        eye(painter, rect.shrink(1.0), colour, colours.surface, self.settings_edges_shown);
+    }
+
+    /// Whether `edge` is on show: settings edges can be hidden, but not while one's being connected.
+    fn shows(&self, edge: &Edge) -> bool {
+        let connecting = self.wire.is_some_and(|port| port.role.dimension() == Dimension::Settings);
+        edge.dimension != Dimension::Settings || self.settings_edges_shown || connecting
     }
 
     /// Clicks and drags on empty canvas (middle and right drags pan, in `pan_and_zoom`).
@@ -1120,7 +1160,7 @@ impl Canvas {
         let width = 2.0 * zoom.sqrt();
         // Nodes are drawn over the wires, hiding parts of some.
         let covers: Vec<Rect> = layouts.values().map(|l| l.rect).collect();
-        for edge in graph.edges() {
+        for edge in graph.edges().iter().filter(|e| self.shows(e)) {
             let Some(points) = edge_points(edge, layouts, zoom) else { continue };
             let source = edge.source();
             let Some(state) = resolved.get(&source.node) else { continue };
