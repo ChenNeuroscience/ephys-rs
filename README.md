@@ -9,7 +9,9 @@ Electrophysiology software derived from [Open Ephys](https://github.com/open-eph
 
 ## A quick tour
 
-![A tour of ephys-rs: live spikes, LFP and tracking, recording, the graph, and the developer tools](assets/tour.gif)
+![A tour of the chen-neuro build of ephys-rs: live spikes, LFP and tracking, recording, the graph, and the developer tools](assets/tour.gif)
+
+This is the Chen lab's build, [chen-neuro](examples/chen-neuro), so its quick actions and the way it names recordings are specific to that lab. Yours can differ: see [a build for your lab](#a-build-for-your-lab).
 
 Start from a quick action, or build your own graph of sources, processing, viewers and writers, then press Play. It acquires from Open Ephys and Intan boards and FLIR cameras, and records [LTX format](https://github.com/ChenNeuroscience/ltx-format) or Open Ephys binary.
 
@@ -51,11 +53,12 @@ To run without real hardware, `synthetic_streams/` has stand-ins, which nodes us
 - **Start with the docs.** Ask it to read the [developer docs](docs/README.md) first, then describe what you want in terms of your experiment, not the code.
 - **Keep lab-specific work in your build.** Ask before changing `src/core`, as changes there make it harder to take updates.
 - **Give it evidence.** Paste the console output or a crash report, or point it at a recording, rather than describing what went wrong.
-- **Ask what's been tested.** An agent can't touch your rig, so have it say what has and hasn't run on real hardware.
+- **Ask what's been tested.** Have it say what has and hasn't run on real hardware, and whether it could run things on the rig itself or only you could.
+- **Say what it may touch.** If it's on the machine with the hardware attached, it can run the app and read the logs itself, which makes debugging much quicker. Tell it when a device is in use, and where it mustn't write, so it doesn't disturb an experiment or your recordings.
 
 ### Levels of testing and debugging
 
-Each level catches things the one before can't, and an agent can run the first two by itself:
+Each level catches things the one before can't. An agent can run the first two anywhere, and the last only if it's on the machine with the hardware attached. Otherwise you run that one, and bring back what happened:
 
 1. **Tests:** `cargo test` covers the engine and nodes, and renders the GUI without a window. It compares each render with an image in `tests/snapshots`, which an agent can look at too.
 2. **Synthetic data:** the fake board and camera above run the whole app with no hardware. `cargo test -- --ignored` runs the end-to-end tests against them.
