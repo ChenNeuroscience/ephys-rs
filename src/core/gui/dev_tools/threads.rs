@@ -1,16 +1,22 @@
 //! The dev tools' picture of the threads: each thread as a container, with links between them where they hand
-//! things over.
+//! things over. It reads left to right, as the graph does, the way data goes: what starts passes and brings data in, then
+//! the passes, then what the data goes to.
 //!
 //! - The GUI (the main thread), which makes snapshots of the graph, and shows what nodes' passes share with their
-//!   windows: each pool of buffers they share (see `Shared::pool`), on the link from the node's step.
-//! - The pass dispatcher, sending a pass to the workers' queue every `PASS_DURATION`.
+//!   windows: each pool of buffers they share (see `Shared::pool`), linked from the node's step.
+//! - The pass dispatcher, sending a pass to the workers' queue every `PASS_DURATION`, with the queue in it.
 //! - The pass workers: one container, stacked to show there are several, holding the plan each pass runs
 //!   through, step by step: each node with the buffers it reads and fills, where it waits for the pass before
 //!   (to hand over its state: a sync point), which buffers it takes (to swap away) and where the plan copies data for
 //!   a node taking it that can't be the last to read it (a copy point). Then the memory each worker has for the plan.
 //! - Threads nodes run of their own (acquiring from a board, say), each drawn by its node (see
-//!   `Node::thread_ui`), linked to the node's step: the link points the way data goes, and on it is the pool of
-//!   buffers the thread swaps with the passes, if it has one (see `Node::thread_pool`).
+//!   `Node::thread_ui`), linked to the node's step: the link points the way data goes. In it is the pool of buffers
+//!   the thread swaps with the passes, if it has one (see `Node::thread_pool`).
+//!
+//! - Short-lived helpers, out of the way below the rest, which do what the threads above mustn't wait for.
+//!
+//! A pool's always shown the same way (`pool_row`), in the thread at the other end from the passes. Each thread's info
+//! icon says why it's a thread.
 //!
 //! While running, it shows the plan being run, and what each worker is up to; otherwise, the plan of the latest
 //! snapshot, as it would run.
@@ -30,29 +36,57 @@ use crate::core::theme::Colours;
 type DataStream<N> = <<N as NodeSet>::Edges as Edges>::DataStream;
 
 /// Room between the columns of threads, for the links between them.
-const GAP: f32 = 150.0;
+const GAP: f32 = 80.0;
 /// Room to the left of the threads, one above another, for the links between them.
 const GUTTER: f32 = 60.0;
 /// The width it takes to show the threads side by side.
-const WIDE: f32 = 220.0 + 450.0 + 250.0 + 2.0 * GAP + 20.0;
+const WIDE: f32 = 250.0 + 450.0 + 250.0 + 2.0 * GAP + 20.0;
 const ROW: f32 = 20.0;
 
-/// A node's thread, as drawn: its node, where, how and which way it hands data to the node's passes, and the pool of
-/// buffers it swaps with them, if it does (with its buffers' streams' colours).
+const WHY_GUI: &str = "The main thread, as windows have to be drawn from one thread. It never waits on the passes, nor \
+                       they on it, so a slow frame can't lose data, and slow passes can't freeze the window.";
+const WHY_DISPATCHER: &str = "On a thread of its own so passes start on time, whatever the workers are doing: all it \
+                              does is wait until each is due, and queue it.";
+const WHY_WORKERS: &str = "Several, so a pass can start while the one before is still running: one slow pass doesn't \
+                           hold up the next, and the work's spread over the cores. Each runs whole passes.";
+
+/// Helpers that come and go, and why each is a thread.
+const HELPERS: [(&str, &str); 4] = [
+    (
+        "Measuring the disk",
+        "Finds how much room's left, for the toolbar, now and then. On a thread of its own as a disk can take a while \
+         to answer, and the GUI mustn't wait for it.",
+    ),
+    (
+        "Dropping node state",
+        "Lets go of what an old epoch's nodes held, closing their files and stopping their capture threads. On a \
+         thread of its own as that can take a while, and passes and the GUI mustn't wait for it.",
+    ),
+    (
+        "Preparing to record",
+        "Opens a recording's files and so on before it starts. On a thread of its own so the GUI carries on meanwhile, \
+         and the first pass recording doesn't have to wait for the disk.",
+    ),
+    (
+        "Saving settings with a recording",
+        "Writes the graph beside a recording's files. On a thread of its own so the disk can't hold up the GUI.",
+    ),
+];
+
+/// A node's thread, as drawn: its node, where, how and which way it hands data to the node's passes, and whether it
+/// swaps buffers with them through a pool.
 struct NodeThreadAnchor {
     node: NodeId,
     rect: Rect,
     link: &'static str,
     flow: Flow,
-    pool: Option<(PoolStatus, Vec<Color32>)>,
+    pooled: bool,
 }
 
 /// Where things were drawn, to link them up once everything is.
 #[derive(Default)]
 struct Anchors {
     dispatcher: Option<Rect>,
-    /// Passes waiting on the queue, and how many can.
-    queue_status: Option<(usize, usize)>,
     /// The workers' first step, taking a pass off the queue.
     queue: Option<Rect>,
     steps: HashMap<NodeId, Rect>,
@@ -86,30 +120,39 @@ pub fn show<N: NodeSet>(
                 add(ui);
             });
         };
-        let gui_and_dispatcher = |ui: &mut egui::Ui, anchors: &mut Anchors| {
+        // Where data comes from, and what starts passes.
+        let before_passes = |ui: &mut egui::Ui, anchors: &mut Anchors| {
+            dispatcher(ui, colours, info.as_ref(), anchors);
+            ui.add_space(16.0);
+            node_threads(ui, graph, colours, runner, &plan, Flow::ToPasses, anchors);
+        };
+        // Where it goes.
+        let after_passes = |ui: &mut egui::Ui, anchors: &mut Anchors| {
             gui_thread(ui, graph, colours, runner, &plan, anchors);
             ui.add_space(16.0);
-            dispatcher(ui, colours, info.as_ref(), anchors);
+            node_threads(ui, graph, colours, runner, &plan, Flow::FromPasses, anchors);
+            ui.add_space(4.0);
+            helpers(ui, colours);
         };
         if wide {
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = GAP;
-                column(ui, 220.0, &mut |ui| gui_and_dispatcher(ui, &mut anchors));
+                column(ui, 250.0, &mut |ui| before_passes(ui, &mut anchors));
                 column(ui, 450.0, &mut |ui| {
                     workers_ui(ui, graph, resolved, colours, info.as_ref(), snapshot, &plan, &mut anchors, workers)
                 });
-                column(ui, 250.0, &mut |ui| node_threads(ui, graph, colours, runner, &plan, &mut anchors));
+                column(ui, 250.0, &mut |ui| after_passes(ui, &mut anchors));
             });
         } else {
             ui.horizontal_top(|ui| {
                 ui.add_space(GUTTER);
                 let width = (ui.available_width() - 12.0).clamp(320.0, 480.0);
                 column(ui, width, &mut |ui| {
-                    gui_and_dispatcher(ui, &mut anchors);
-                    ui.add_space(16.0);
+                    before_passes(ui, &mut anchors);
+                    ui.add_space(4.0);
                     workers_ui(ui, graph, resolved, colours, info.as_ref(), snapshot, &plan, &mut anchors, workers);
                     ui.add_space(16.0);
-                    node_threads(ui, graph, colours, runner, &plan, &mut anchors);
+                    after_passes(ui, &mut anchors);
                 });
             });
         }
@@ -117,11 +160,23 @@ pub fn show<N: NodeSet>(
     });
 }
 
-/// A thread: a framed box with a title, and `stacked` > 1 drawn as a stack of that many. Returns its rect.
+/// An icon saying `why`, when hovered.
+fn info_icon(ui: &mut egui::Ui, colours: &Colours, why: &str) {
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::hover());
+    let colour = if response.hovered() { colours.text_primary } else { colours.text_disabled };
+    ui.painter().circle_stroke(rect.center(), 5.5, Stroke::new(1.0, colour));
+    ui.painter().text(rect.center(), Align2::CENTER_CENTER, "i", FontId::proportional(9.0), colour);
+    response.on_hover_cursor(egui::CursorIcon::Help).on_hover_text(why);
+}
+
+/// A thread: a framed box with a title, saying `why` it's a thread, and `stacked` > 1 drawn as a stack of that many.
+/// Returns its rect.
+#[allow(clippy::too_many_arguments)]
 fn container(
     ui: &mut egui::Ui,
     colours: &Colours,
     title: &str,
+    why: &str,
     detail: &str,
     stacked: usize,
     active: bool,
@@ -142,6 +197,7 @@ fn container(
                     let fill = if active { colours.success } else { colours.text_disabled };
                     ui.painter().circle_filled(dot.center(), 4.0, fill);
                     text(ui, title, FontId::proportional(13.5), colours.text_primary);
+                    info_icon(ui, colours, why);
                 })
                 .response
                 .rect;
@@ -312,24 +368,17 @@ fn gui_thread<N: NodeSet>(
 ) {
     // The nodes sharing pools of buffers with their windows (the latest to show, say), while running: each with
     // where its buffers are.
-    container(ui, colours, "GUI", "main thread", 1, true, |ui| {
+    container(ui, colours, "GUI", WHY_GUI, "main thread", 1, true, |ui| {
         let Some(exchange) = runner.map(|r| r.exchange()) else {
             ui.label(small("Shows what nodes' passes share with their windows, while running.", colours.text_disabled));
             return;
         };
         for step in plan.steps() {
-            for (name, pool) in exchange.pools(step.id) {
-                let row = ui
-                    .horizontal(|ui| {
-                        ui.set_height(ROW);
-                        node_chip(ui, graph, step.id, None);
-                        ui.label(small(name, colours.text_secondary));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            pool_squares(ui, colours, pool);
-                        });
-                    })
-                    .response;
-                anchors.displays.push((step.id, row.rect.with_max_x(ui.max_rect().right())));
+            for (_, pool) in exchange.pools(step.id) {
+                let row = pool_row(ui, colours, window_pool(pool), |ui| {
+                    node_chip(ui, graph, step.id, None);
+                });
+                anchors.displays.push((step.id, row.with_max_x(ui.max_rect().right())));
             }
         }
     });
@@ -337,7 +386,7 @@ fn gui_thread<N: NodeSet>(
 
 fn dispatcher<N: NodeSet>(ui: &mut egui::Ui, colours: &Colours, info: Option<&RunInfo<N>>, anchors: &mut Anchors) {
     let period = format!("every {:.0} ms", PASS_DURATION * 1000.0);
-    let rect = container(ui, colours, "Pass dispatcher", &period, 1, info.is_some(), |ui| {
+    let rect = container(ui, colours, "Pass dispatcher", WHY_DISPATCHER, &period, 1, info.is_some(), |ui| {
         let Some(info) = info else {
             ui.label(small("Stopped. Press Play to run.", colours.text_secondary));
             return;
@@ -346,9 +395,24 @@ fn dispatcher<N: NodeSet>(ui: &mut egui::Ui, colours: &Colours, info: Option<&Ru
         let dropped = info.stats.dropped;
         let colour = if dropped > 0 { colours.warning } else { colours.text_secondary };
         ui.label(small(format!("{dropped} dropped (queue full)"), colour));
+        let queued = info.running.as_ref().map_or(0, |e| e.queued);
+        pool_row(ui, colours, pass_queue(queued, info.queue_capacity), |ui| {
+            ui.label(small("Queue", colours.text_secondary));
+        });
     });
     anchors.dispatcher = Some(rect);
-    anchors.queue_status = info.map(|i| (i.running.as_ref().map_or(0, |e| e.queued), i.queue_capacity));
+}
+
+/// The helpers: only a quiet list, as they aren't part of how passes run, and come and go.
+fn helpers(ui: &mut egui::Ui, colours: &Colours) {
+    ui.label(small("Helper threads, as they're needed", colours.text_disabled));
+    for (name, why) in HELPERS {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            ui.label(small(name, colours.text_disabled));
+            info_icon(ui, colours, why);
+        });
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -370,7 +434,7 @@ fn workers_ui<N: NodeSet>(
         Some(epoch) => format!("epoch {} · plan {} · version {}", epoch.number, plan_id(plan), epoch.version),
         None => format!("plan {} · version {}", plan_id(plan), snapshot.version),
     };
-    container(ui, colours, &title, &detail, count, info.is_some(), |ui| {
+    container(ui, colours, &title, WHY_WORKERS, &detail, count, info.is_some(), |ui| {
         match info {
             Some(info) => {
                 worker_chips(ui, colours, info);
@@ -696,7 +760,6 @@ fn memory<N: NodeSet>(
         .on_hover_cursor(egui::CursorIcon::PointingHand);
 }
 
-/// Halfway between two points.
 /// The curve of a link across from one column to another, from `from` to `to`: leaving and arriving level.
 fn across_points(from: Pos2, to: Pos2) -> [Pos2; 4] {
     let bend = ((to.x - from.x).abs() * 0.5).max(30.0);
@@ -719,59 +782,80 @@ fn parallel(curve: [Pos2; 4], by: f32) -> Vec<Pos2> {
         .collect()
 }
 
-fn pos2_between(a: Pos2, b: Pos2) -> Pos2 {
-    a + (b - a) * 0.5
+/// What a row of squares shows: a pool of buffers, or a queue.
+struct Pooled<'a> {
+    /// How many places there are, how many are full, whether one's being filled (or written), and how many are empty.
+    /// Any others are elsewhere for now, with the passes or a window.
+    size: usize,
+    full: usize,
+    filling: bool,
+    empty: usize,
+    /// How many, as words (how big's in the tip, as a window's pool doesn't know).
+    text: String,
+    /// Its buffers' streams' colours, if they're known.
+    dots: &'a [Color32],
+    tip: String,
+    /// Whether it's run out, and lost something.
+    lost: bool,
 }
 
-/// A pool of buffers a node's thread swaps with the passes (see `PoolStatus`), as a box at `at`: each buffer's
-/// streams (dots in their colours, as the workers' buffers are shown), its size and how many; then a square for each
-/// buffer, full ones first, then the one being filled (or written), then the empty ones (the rest being the
-/// workers', for now). Hover for the counts.
-fn pool_ui(
-    ui: &egui::Ui,
-    colours: &Colours,
-    pool: PoolStatus,
-    dots: &[Color32],
-    at: (Pos2, Align2),
-    id: egui::Id,
-) -> Rect {
-    const ACROSS: usize = 10;
-    const SQUARE: f32 = 5.0;
-    const STEP: f32 = 6.0;
+/// How many squares go across, before a pool takes another line.
+const SQUARES_ACROSS: usize = 10;
+const SQUARE_STEP: f32 = 6.0;
+
+/// A square for each place, full ones first, then the one being filled (or written), then the empty ones (the rest
+/// being elsewhere).
+fn squares(ui: &mut egui::Ui, colours: &Colours, pooled: &Pooled) -> egui::Response {
+    let across = pooled.size.clamp(1, SQUARES_ACROSS);
+    let lines = pooled.size.div_ceil(SQUARES_ACROSS).max(1);
+    let size = vec2(across as f32 * SQUARE_STEP - 1.0, lines as f32 * SQUARE_STEP - 1.0);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
     let painter = ui.painter();
-    // Its buffers' size, if it's known.
-    let text = if pool.bytes > 0 {
-        format!("{} × {}", megabytes(pool.bytes), pool.size)
-    } else {
-        format!("× {}", pool.size)
-    };
-    let galley = painter.layout_no_wrap(text, FontId::monospace(9.5), colours.text_secondary);
-    let dots_width = dots.len() as f32 * 8.0;
-    let grid = vec2(ACROSS as f32 * STEP - 1.0, pool.size.div_ceil(ACROSS).max(1) as f32 * STEP - 1.0);
-    let inner = vec2((dots_width + 3.0 + galley.size().x).max(grid.x), galley.size().y + 4.0 + grid.y);
-    let rect = at.1.anchor_size(at.0, inner + vec2(10.0, 10.0));
-    painter.rect(rect, 4.0, colours.surface_raised, Stroke::new(1.0, colours.border), egui::StrokeKind::Inside);
-    let top = rect.min + vec2(5.0, 5.0);
-    for (i, colour) in dots.iter().enumerate() {
-        painter.circle_filled(top + vec2(3.5 + i as f32 * 8.0, galley.size().y / 2.0), 3.5, *colour);
-    }
-    painter.galley(top + vec2(dots_width + 3.0, 0.0), galley.clone(), colours.text_secondary);
-    let grid_top = top + vec2(0.0, galley.size().y + 4.0);
-    let filling = pool.filling as usize;
-    for i in 0..pool.size {
-        let min = grid_top + vec2((i % ACROSS) as f32 * STEP, (i / ACROSS) as f32 * STEP);
-        let square = Rect::from_min_size(min, Vec2::splat(SQUARE));
-        if i < pool.full {
+    let filling = pooled.filling as usize;
+    for i in 0..pooled.size {
+        let at = vec2((i % SQUARES_ACROSS) as f32, (i / SQUARES_ACROSS) as f32) * SQUARE_STEP;
+        let square = Rect::from_min_size(rect.min + at, Vec2::splat(SQUARE_STEP - 1.0));
+        if i < pooled.full {
             painter.rect_filled(square, 1.0, colours.accent);
-        } else if i < pool.full + filling {
+        } else if i < pooled.full + filling {
             painter.rect_filled(square, 1.0, colours.warning);
-        } else if i < pool.full + filling + pool.empty {
+        } else if i < pooled.full + filling + pooled.empty {
             painter.rect_stroke(square, 1.0, Stroke::new(1.0, colours.text_disabled), egui::StrokeKind::Inside);
         }
     }
+    response
+}
+
+/// A pool or queue, however it's used, in a thread: `lead` says whose, then its streams, how many, and a square for each
+/// place. Outlined in red if it's lost anything. Hover for the counts. Returns where it is.
+fn pool_row(ui: &mut egui::Ui, colours: &Colours, pooled: Pooled, lead: impl FnOnce(&mut egui::Ui)) -> Rect {
+    let lines = pooled.size.div_ceil(SQUARES_ACROSS).max(1) as f32;
+    let row = ui
+        .horizontal(|ui| {
+            ui.set_height(ROW.max(lines * SQUARE_STEP + 2.0));
+            lead(ui);
+            for colour in pooled.dots {
+                let (dot, _) = ui.allocate_exact_size(Vec2::splat(7.0), Sense::hover());
+                ui.painter().circle_filled(dot.center(), 3.5, *colour);
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                squares(ui, colours, &pooled).on_hover_text(&pooled.tip);
+                ui.label(small(&pooled.text, colours.text_secondary)).on_hover_text(&pooled.tip);
+            });
+        })
+        .response
+        .rect;
+    if pooled.lost {
+        ui.painter().rect_stroke(row.expand(2.0), 3.0, Stroke::new(1.5, colours.error), egui::StrokeKind::Inside);
+    }
+    row
+}
+
+/// A pool of buffers a node's thread swaps with the passes (see `PoolStatus`).
+fn thread_pool(pool: PoolStatus, dots: &[Color32]) -> Pooled<'_> {
     let mut tip = format!(
         "A pool of {} buffers of {} each ({} in all), swapped with the passes rather than copied: {} full, waiting{}, \
-         {} empty; the rest with the workers (or the window), for now. {} swaps so far.",
+         {} empty; the rest with the workers, for now. {} swaps so far.",
         pool.size,
         megabytes(pool.bytes),
         megabytes(pool.bytes * pool.size),
@@ -782,27 +866,13 @@ fn pool_ui(
     );
     if pool.overflows > 0 {
         tip += &format!("\n\nRan out {} times: data was lost.", pool.overflows);
-        painter.rect_stroke(rect, 4.0, Stroke::new(1.5, colours.error), egui::StrokeKind::Inside);
     }
-    let _ = ui.interact(rect, id, Sense::hover()).on_hover_text(tip);
-    rect
+    let (size, full, filling, empty) = (pool.size, pool.full, pool.filling, pool.empty);
+    Pooled { size, full, filling, empty, text: format!("× {size}"), dots, tip, lost: pool.overflows > 0 }
 }
 
-/// A pool a node shares with its window, in a row: a square for each buffer, filled for those queued (the newest
-/// to be read), outlined for the empty ones (the rest being filled by passes, or read). Hover for the counts.
-fn pool_squares(ui: &mut egui::Ui, colours: &Colours, pool: PoolStatus) {
-    const STEP: f32 = 6.0;
-    let (rect, response) = ui.allocate_exact_size(vec2(pool.size as f32 * STEP, ROW), Sense::hover());
-    let painter = ui.painter();
-    for i in 0..pool.size {
-        let square =
-            Rect::from_min_size(egui::pos2(rect.left() + i as f32 * STEP, rect.center().y - 2.5), Vec2::splat(5.0));
-        if i < pool.full {
-            painter.rect_filled(square, 1.0, colours.accent);
-        } else if i < pool.full + pool.empty {
-            painter.rect_stroke(square, 1.0, Stroke::new(1.0, colours.text_disabled), egui::StrokeKind::Inside);
-        }
-    }
+/// A pool a node shares with its window. Passes skipping sending doesn't lose anything that's recorded.
+fn window_pool(pool: PoolStatus) -> Pooled<'static> {
     let mut tip = format!(
         "A pool of {} buffers the node's passes fill (or swap their own into) for its window, which reads the newest \
          and gives the rest back: {} queued, {} empty; the rest being filled, or read. Neither waits on the other. {} \
@@ -812,35 +882,19 @@ fn pool_squares(ui: &mut egui::Ui, colours: &Colours, pool: PoolStatus) {
     if pool.overflows > 0 {
         tip += &format!("\n\nRan out {} times: passes skipped sending.", pool.overflows);
     }
-    response.on_hover_text(tip);
+    let (size, full, filling, empty) = (pool.size, pool.full, pool.filling, pool.empty);
+    Pooled { size, full, filling, empty, text: format!("× {size}"), dots: &[], tip, lost: false }
 }
 
-/// The pass queue, between the dispatcher and the workers, as a box at `at`: a square for each place in it, filled for
-/// each pass waiting.
-fn queue_ui(ui: &egui::Ui, colours: &Colours, queued: usize, capacity: usize, at: Pos2) {
-    const STEP: f32 = 7.0;
-    let painter = ui.painter();
-    let galley =
-        painter.layout_no_wrap(format!("{queued} of {capacity}"), FontId::monospace(9.5), colours.text_secondary);
-    let squares = vec2(capacity.max(1) as f32 * STEP - 1.0, 6.0);
-    let inner = vec2(galley.size().x.max(squares.x), galley.size().y + 4.0 + squares.y);
-    let rect = Rect::from_center_size(at, inner + vec2(10.0, 10.0));
-    painter.rect(rect, 4.0, colours.surface_raised, Stroke::new(1.0, colours.border), egui::StrokeKind::Inside);
-    painter.galley(rect.min + vec2(5.0, 5.0), galley.clone(), colours.text_secondary);
-    let top = rect.min + vec2(5.0, 5.0 + galley.size().y + 4.0);
-    for i in 0..capacity {
-        let square = Rect::from_min_size(top + vec2(i as f32 * STEP, 0.0), Vec2::splat(STEP - 1.0));
-        if i < queued {
-            painter.rect_filled(square, 1.0, colours.accent);
-        } else {
-            painter.rect_stroke(square, 1.0, Stroke::new(1.0, colours.text_disabled), egui::StrokeKind::Inside);
-        }
-    }
+/// The pass queue, between the dispatcher and the workers.
+fn pass_queue(queued: usize, capacity: usize) -> Pooled<'static> {
     let tip = format!(
         "The pass queue: the dispatcher puts each pass on it when its time's up, and a free worker takes it off. {queued} \
          waiting, of the {capacity} that can: beyond that, passes are dropped. Each epoch has its own."
     );
-    let _ = ui.interact(rect, ui.scope_id().with("pass queue box"), Sense::hover()).on_hover_text(tip);
+    let empty = capacity.saturating_sub(queued);
+    let text = format!("{queued} of {capacity}");
+    Pooled { size: capacity, full: queued, filling: false, empty, text, dots: &[], tip, lost: false }
 }
 
 fn legend(ui: &mut egui::Ui, colours: &Colours) {
@@ -860,19 +914,19 @@ fn legend(ui: &mut egui::Ui, colours: &Colours) {
     });
 }
 
+/// The nodes' threads that data goes `flow` from.
 fn node_threads<N: NodeSet>(
     ui: &mut egui::Ui,
     graph: &Graph<N>,
     colours: &Colours,
     runner: Option<&Runner<N>>,
     plan: &Plan<N>,
+    flow: Flow,
     anchors: &mut Anchors,
 ) {
-    let mut any = false;
     for step in plan.steps() {
         let Some(entry) = graph.get(step.id) else { continue };
-        for (index, thread) in entry.node.threads().iter().enumerate() {
-            any = true;
+        for (index, thread) in entry.node.threads().iter().enumerate().filter(|(_, t)| t.flow == flow) {
             let exchange = runner.map(|r| r.exchange());
             let context = ThreadContext { theme: colours, node: step.id, exchange };
             {
@@ -886,28 +940,32 @@ fn node_threads<N: NodeSet>(
                     let pooled = ports.iter().enumerate().filter(|(i, _)| *i < 64 && p.ports & (1 << i) != 0);
                     let colour =
                         |b: usize| plan.buffers().get(b).map_or(colours.text_disabled, |s| stream_info::<N>(s).colour);
-                    (p, pooled.filter_map(|(_, b)| b.map(colour)).collect())
+                    (p, pooled.filter_map(|(_, b)| b.map(colour)).collect::<Vec<Color32>>())
                 });
-                let rect = container(ui, colours, thread.name, "", 1, runner.is_some(), |ui| {
-                    node_chip(ui, graph, step.id, None);
+                let rect = container(ui, colours, thread.name, thread.why, "", 1, runner.is_some(), |ui| {
+                    match &pool {
+                        Some((pool, dots)) => {
+                            pool_row(ui, colours, thread_pool(*pool, dots), |ui| {
+                                node_chip(ui, graph, step.id, None);
+                            });
+                        }
+                        None => {
+                            node_chip(ui, graph, step.id, None);
+                        }
+                    }
                     ui.add_space(2.0);
                     entry.node.thread_ui(index, ui, &context);
-                    ui.add_space(2.0);
-                    ui.label(small(thread.why, colours.text_disabled));
                 });
                 anchors.node_threads.push(NodeThreadAnchor {
                     node: step.id,
                     rect,
                     link: thread.link,
                     flow: thread.flow,
-                    pool,
+                    pooled: pool.is_some(),
                 });
                 ui.add_space(12.0);
             }
         }
-    }
-    if !any {
-        ui.label(small("No node runs threads of its own.", colours.text_secondary));
     }
 }
 
@@ -942,13 +1000,35 @@ fn links(ui: &egui::Ui, colours: &Colours, anchors: &Anchors, wide: bool) {
         arrow(to, true);
     };
 
+    // A line along `path`, with an arrow at its end.
+    let along = |path: Vec<Pos2>, dashed: bool| {
+        let [.., before, end] = path[..] else { return };
+        let stroke = Stroke::new(if dashed { 1.0 } else { 1.2 }, colour);
+        if dashed {
+            painter.extend(Shape::dashed_line(&path, stroke, 3.0, 3.0));
+        } else {
+            painter.add(Shape::line(path, stroke));
+        }
+        let (forward, side) = ((end - before).normalized(), (end - before).normalized().rot90());
+        let tip = vec![end, end - forward * 6.0 + side * 3.5, end - forward * 6.0 - side * 3.5];
+        painter.add(Shape::convex_polygon(tip, colour, Stroke::NONE));
+    };
+    // Through a pool: the data from `from` to `to`, and the empty buffers going back the other way (the passes give back
+    // their own old ones as they swap in a source's; a writer's thread and a window, those they're done with, for passes
+    // to use), dashed. The two are either side of where a link would be, so there's room for both.
+    let through_pool = |from: Pos2, to: Pos2| {
+        along(parallel(across_points(from, to), -3.0), false);
+        let mut empties = parallel(across_points(from, to), 3.0);
+        empties.reverse();
+        along(empties, true);
+    };
+
     let ends = |rect: Rect| (rect.left_center() - vec2(4.0, 0.0), rect.right_center() + vec2(4.0, 0.0));
     let mut depth = 14.0;
     let mut deeper = || {
         depth = if depth >= GUTTER - 8.0 { 14.0 } else { depth + 9.0 };
         depth
     };
-    let mut queue_box = None;
     if let (Some(dispatcher), Some(queue)) = (anchors.dispatcher, anchors.queue) {
         let (from, to) =
             if wide { (dispatcher.right_center(), ends(queue).0) } else { (dispatcher.left_center(), ends(queue).0) };
@@ -959,38 +1039,37 @@ fn links(ui: &egui::Ui, colours: &Colours, anchors: &Anchors, wide: bool) {
             round(from, to, deeper());
             label(from - vec2(6.0, 10.0), Align2::RIGHT_CENTER, "pass queue");
         }
-        // Belonging to neither thread, but between them (drawn last, over the other links).
-        queue_box = anchors.queue_status.filter(|_| wide).map(|status| (status, pos2_between(from, to)));
     }
     // To the windows, through the pools the passes share with them (the GUI reading the latest, say).
     for (index, (id, display)) in anchors.displays.iter().enumerate() {
         let Some(step) = anchors.steps.get(id) else { continue };
         if wide {
-            let to = ends(*display).1;
-            across(ends(*step).0, to);
+            let to = ends(*display).0;
+            through_pool(ends(*step).1, to);
             if index == 0 {
-                label(to + vec2(8.0, -6.0), Align2::LEFT_BOTTOM, "shared pool");
+                label(to + vec2(-8.0, -6.0), Align2::RIGHT_BOTTOM, "buffer pool");
             }
         } else {
             round(ends(*step).0, ends(*display).0, deeper());
         }
     }
     // Pointing the way the data goes: to the passes from a board, say, or from them to a writer.
-    for (index, NodeThreadAnchor { node: id, rect: thread, link: how, flow, pool }) in
-        anchors.node_threads.iter().enumerate()
-    {
+    for NodeThreadAnchor { node: id, rect: thread, link: how, flow, pooled } in &anchors.node_threads {
         let Some(step) = anchors.steps.get(id) else { continue };
         let to_passes = *flow == Flow::ToPasses;
-        // The pool's buffers, between the thread and the passes: below the link, or inside the thread's top right.
-        let pool_at = if wide {
-            let (at_thread, at_step) = (thread.left_center(), ends(*step).1);
-            if to_passes {
-                across(at_thread, at_step)
+        if wide {
+            let (from, to) =
+                if to_passes { (thread.right_center(), ends(*step).0) } else { (ends(*step).1, thread.left_center()) };
+            if *pooled {
+                through_pool(from, to);
             } else {
-                across(at_step, at_thread)
+                across(from, to);
             }
-            label(at_thread + vec2(-6.0, -4.0), Align2::RIGHT_BOTTOM, how);
-            (pos2_between(at_step, at_thread), Align2::CENTER_CENTER)
+            if to_passes {
+                label(from + vec2(6.0, -4.0), Align2::LEFT_BOTTOM, how);
+            } else {
+                label(to + vec2(-6.0, -4.0), Align2::RIGHT_BOTTOM, how);
+            }
         } else {
             let (at_thread, at_step, depth) = (thread.left_center(), ends(*step).0, deeper());
             if to_passes {
@@ -999,31 +1078,6 @@ fn links(ui: &egui::Ui, colours: &Colours, anchors: &Anchors, wide: bool) {
                 round(at_step, at_thread, depth)
             }
             label(thread.left_top() + vec2(10.0, -2.0), Align2::LEFT_BOTTOM, how);
-            (thread.right_top() + vec2(-10.0, 10.0), Align2::RIGHT_TOP)
-        };
-        if let Some((pool, dots)) = pool {
-            let rect = pool_ui(ui, colours, *pool, dots, pool_at, ui.scope_id().with(("pool", index)));
-            // Buffers freed back to the pool, by whoever's done with them (the passes give back their own old ones as
-            // they swap in a source's; a writer's thread, those it's written): dashed, along the same path as the link
-            // a few points below it, from where the data goes back to the pool's box.
-            if wide {
-                let (at_thread, at_step) = (thread.left_center(), ends(*step).1);
-                let (from, to) = if to_passes { (at_thread, at_step) } else { (at_step, at_thread) };
-                let mut freed = parallel(across_points(from, to), 6.0);
-                freed.reverse();
-                let outside = rect.expand(1.5);
-                let inside = freed.iter().position(|p| outside.contains(*p)).unwrap_or(freed.len());
-                freed.truncate(inside);
-                if let [.., before, end] = freed[..] {
-                    painter.extend(Shape::dashed_line(&freed, Stroke::new(1.0, colour), 3.0, 3.0));
-                    let (along, across) = ((end - before).normalized(), (end - before).normalized().rot90());
-                    let tip = vec![end, end - along * 6.0 + across * 3.5, end - along * 6.0 - across * 3.5];
-                    painter.add(Shape::convex_polygon(tip, colour, Stroke::NONE));
-                }
-            }
         }
-    }
-    if let Some(((queued, capacity), at)) = queue_box {
-        queue_ui(ui, colours, queued, capacity, at);
     }
 }

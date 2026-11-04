@@ -1058,9 +1058,8 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                 ui.label(RichText::new(&status.message).color(colour))
             }
             (_, Some(hint)) if self.layout.mode == Mode::Advanced => ui.label(hint),
-            _ if !self.layout.is_shown(Pane::Home) => {
-                ui.weak("Home, at the left of the toolbar, brings back the basic view or the graph")
-            }
+            // The rest are about the home pane.
+            _ if !self.layout.is_shown(Pane::Home) => return,
             _ if self.layout.mode == Mode::Basic => {
                 ui.weak("Open a component, or add some with a quick action · the graph shows how it all fits together")
             }

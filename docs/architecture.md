@@ -97,9 +97,10 @@ straight into a pass's buffers, and each pass swaps whatever's arrived for its o
 fill). A writer's pass swaps the buffers it takes into a chunk from its pool, and its thread gives the chunk back
 once written. Pools hold about a second, so a slow pass or a stalling disk is absorbed. Passes never wait on a pool:
 its queues are lock-free (crossbeam's), and a pass finding a source's thread filling a buffer just then leaves it for
-the next pass. The dev tools show each pool on its thread's link: its buffers' streams and sizes, and where each is,
-with a dashed arrow back to it from whoever frees buffers into it; steps that swap rather than copy show a swap icon.
-The pass queue is shown the same way, on the link between the dispatcher and the workers, which it's between.
+the next pass. The dev tools show a pool in the thread at the other end from the passes: its buffers' streams, how many
+there are, and where each is (hover for their size), with a dashed arrow for empty buffers going back the other way to the
+data; steps that swap rather than copy show a swap icon. A writer's pool is only there while recording. The pass queue's
+shown the same way, in the dispatcher.
 
 ## Between the GUI and the passes
 
