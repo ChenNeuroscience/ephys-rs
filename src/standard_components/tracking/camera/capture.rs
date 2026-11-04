@@ -3,10 +3,14 @@
 //! Camera node's passes swap for the workers' own (see `crate::standard_components::pool`): each pass takes the
 //! frames that have come since the last, and nothing more's copied. The thread's status (what it's doing, the frame
 //! rate, drops) is shared for display. If the camera can't be opened, or fails, it keeps trying.
+//!
+//! Opening a camera takes a couple of seconds, so a new epoch doesn't: its `Capture` carries on with the camera that's
+//! capturing (new state's made before the old's let go of), changing only the pool if the frame size has changed. It's
+//! closed once nothing's using it, when the run stops. Two Camera nodes with the same source and rate share it too.
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -72,37 +76,86 @@ struct Shared {
     /// What to apply to the camera; exposure and gain take effect as they change.
     settings: Mutex<CameraSettings>,
     status: Mutex<Status>,
+    /// The video the passes expect, and the pool frames go into for them.
+    target: Mutex<(Video, Pool<VideoBuffer>)>,
 }
 
-/// A camera capturing on its own thread, until dropped.
-pub struct Capture {
+/// A camera capturing on its own thread, until the last `Capture` using it lets go.
+struct Running {
     shared: Arc<Shared>,
-    pool: Pool<VideoBuffer>,
     thread: Option<JoinHandle<()>>,
 }
 
+impl Running {
+    /// The pool for passes expecting `video`: the one in use, or if that's another size, a new one, from now on.
+    fn pool_for(&self, video: Video) -> Pool<VideoBuffer> {
+        let mut target = self.shared.target.lock().unwrap();
+        if target.0 != video {
+            *target = (video, new_pool(video));
+            let mut status = self.shared.status.lock().unwrap();
+            (status.wrong_size, status.last_wrong_size) = (0, None);
+        }
+        target.1.clone()
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        self.shared.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// The cameras capturing, by source and frame rate (as bits). Weak, so a camera closes once nothing's using it.
+static RUNNING: Mutex<Vec<(Source, u64, Weak<Running>)>> = Mutex::new(Vec::new());
+
+fn new_pool(video: Video) -> Pool<VideoBuffer> {
+    let bytes = video.buffer(PASS_DURATION).pixels.len();
+    let size = (POOL_BYTES / bytes.max(1)).clamp(4, SLACK_PASSES);
+    Pool::new((0..size).map(|_| video.buffer(PASS_DURATION)), bytes)
+}
+
+/// An epoch's use of a camera capturing.
+pub struct Capture {
+    running: Arc<Running>,
+    pool: Pool<VideoBuffer>,
+}
+
 impl Capture {
-    /// Starts opening `source` at `settings` (its frame rate fixed from now on), for passes' `video`.
+    /// Uses `source` at `settings` (its frame rate fixed from now on), for passes' `video`: carrying on with it, if
+    /// it's capturing already, otherwise opening it.
     pub fn start(source: Source, settings: CameraSettings, video: Video) -> Self {
+        let rate = settings.frame_rate.to_bits();
+        let mut running = RUNNING.lock().unwrap();
+        running.retain(|(_, _, capture)| capture.strong_count() > 0);
+        let same = |(s, r, _): &&(Source, u64, Weak<Running>)| *s == source && *r == rate;
+        if let Some(capture) = running.iter().find(same).and_then(|(_, _, capture)| capture.upgrade()) {
+            log::info!("Camera: carrying on with it, for {}×{} frames", video.width, video.height);
+            let pool = capture.pool_for(video);
+            return Capture { running: capture, pool };
+        }
+        let pool = new_pool(video);
         let shared = Arc::new(Shared {
             stop: AtomicBool::new(false),
             settings: Mutex::new(settings),
             status: Mutex::new(Status::default()),
+            target: Mutex::new((video, pool.clone())),
         });
-        let bytes = video.buffer(PASS_DURATION).pixels.len();
-        let size = (POOL_BYTES / bytes.max(1)).clamp(4, SLACK_PASSES);
-        let pool = Pool::new((0..size).map(|_| video.buffer(PASS_DURATION)), bytes);
-        let (thread_shared, thread_pool) = (shared.clone(), pool.clone());
+        let (thread_shared, thread_source) = (shared.clone(), source.clone());
         let thread = std::thread::Builder::new()
             .name("camera capture".into())
-            .spawn(move || capture(&thread_shared, &source, &thread_pool))
+            .spawn(move || capture(&thread_shared, &thread_source))
             .expect("capture thread");
-        Capture { shared, pool, thread: Some(thread) }
+        let capture = Arc::new(Running { shared, thread: Some(thread) });
+        running.push((source, rate, Arc::downgrade(&capture)));
+        Capture { running: capture, pool }
     }
 
     /// Changes the exposure and gain (the frame rate only takes effect on restarting).
     pub fn apply(&self, settings: &CameraSettings) {
-        *self.shared.settings.lock().unwrap() = *settings;
+        *self.running.shared.settings.lock().unwrap() = *settings;
     }
 
     /// The buffers the passes swap with.
@@ -112,21 +165,12 @@ impl Capture {
 
     /// The size frames are coming at, if it isn't the size the passes expect.
     pub fn wrong_size(&self) -> Option<[u32; 2]> {
-        self.shared.status.lock().unwrap().last_wrong_size
+        self.running.shared.status.lock().unwrap().last_wrong_size
     }
 
     /// Copies the status into `status`, reusing its memory.
     pub fn status_into(&self, status: &mut Status) {
-        status.copy_from(&self.shared.status.lock().unwrap());
-    }
-}
-
-impl Drop for Capture {
-    fn drop(&mut self) {
-        self.shared.stop.store(true, Ordering::Relaxed);
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
+        status.copy_from(&self.running.shared.status.lock().unwrap());
     }
 }
 
@@ -144,7 +188,7 @@ impl Notes {
     }
 }
 
-fn capture(shared: &Shared, source: &Source, pool: &Pool<VideoBuffer>) {
+fn capture(shared: &Shared, source: &Source) {
     let stopping = || shared.stop.load(Ordering::Relaxed);
     let set_state = |state: State| {
         let mut status = shared.status.lock().unwrap();
@@ -219,6 +263,7 @@ fn capture(shared: &Shared, source: &Source, pool: &Pool<VideoBuffer>) {
             }
             (latest_frame, quiet) = (Instant::now(), false);
             let mut expected = [0, 0];
+            let pool = shared.target.lock().unwrap().1.clone();
             // Into the next slot of the buffer being filled, if it's the size the passes expect.
             let into_pool = pool.fill(
                 |video| video.frames = 0,
@@ -284,7 +329,6 @@ mod tests {
 
     use super::*;
 
-    /// End to end with synthetic_streams/fake_camera.py, so needs python3: `cargo test -- --ignored`.
     /// Takes from `capture`'s pool as passes do, until `wanted` frames or `seconds`: each frame's size and time.
     fn take_like_passes(capture: &Capture, wanted: usize, seconds: u64) -> Vec<(usize, usize, f64)> {
         let mut frames = Vec::new();
@@ -328,6 +372,43 @@ mod tests {
         assert!(take_like_passes(&capture, 1, 1).is_empty());
         capture.status_into(&mut status);
         assert_eq!(status.last_wrong_size, Some([320, 240]));
+    }
+
+    #[test]
+    fn epochs_carry_on_with_the_camera_and_the_last_closes_it() {
+        // The test scene takes one connection, so frames coming later show it wasn't opened again.
+        let source = Source::Fake { address: camera::serve_test_scene(320, 240) };
+        let settings = CameraSettings::default();
+        let (right, wrong) =
+            (Video { width: 320, height: 240, fps: 50.0 }, Video { width: 640, height: 480, fps: 50.0 });
+        let first = Capture::start(source.clone(), settings, wrong);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while first.wrong_size().is_none() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(first.wrong_size(), Some([320, 240]));
+
+        // The next epoch, with the right size.
+        let second = Capture::start(source.clone(), settings, right);
+        assert!(Arc::ptr_eq(&first.running, &second.running), "the same camera");
+        drop(first);
+        assert!(take_like_passes(&second, 5, 5).len() >= 5, "its frames, in the new size");
+        assert_eq!(second.wrong_size(), None);
+
+        // Epochs of the same size share the pool, so neither loses frames when they change over.
+        let third = Capture::start(source.clone(), settings, right);
+        assert!(Arc::ptr_eq(&second.running, &third.running));
+        drop(second);
+        assert!(take_like_passes(&third, 5, 5).len() >= 5);
+
+        let other_rate = CameraSettings { frame_rate: 25.0, ..settings };
+        let fourth = Capture::start(source, other_rate, right);
+        assert!(!Arc::ptr_eq(&third.running, &fourth.running), "a frame rate's set as a camera opens");
+        drop(fourth);
+
+        let camera = Arc::downgrade(&third.running);
+        drop(third);
+        assert!(camera.upgrade().is_none(), "closed, and its thread finished");
     }
 
     /// End to end with synthetic_streams/fake_camera.py, so needs python3: `cargo test -- --ignored`.

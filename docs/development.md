@@ -47,7 +47,12 @@ incomplete, or stop coming, or aren't the size set.
 
 The video stream's size has to be known before running, for its buffers, so it's a setting: the Camera node's Frame
 size, one of its camera settings. Frames of any other size are skipped. When they come, the camera proposes the size
-they are (`Pass::propose`, like other auto-detected settings), which restarts the run as changing the frame rate does.
+they are (`Pass::propose`, like other auto-detected settings), which starts a new epoch.
+
+A new epoch doesn't open the camera again, as that takes a couple of seconds: it carries on with the one capturing, only
+changing the buffers if the frame size has. Stopping closes it, so other programs can use it. Changing the frame rate or
+source opens it afresh. See [`capture.rs`](../src/standard_components/tracking/camera/capture.rs).
+
 While recording, settings are locked, so it logs an error instead, and proposes the size once recording stops.
 
 ## Errors and warnings

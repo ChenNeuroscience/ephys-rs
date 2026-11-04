@@ -744,6 +744,37 @@ mod tests {
     }
 
     #[test]
+    fn a_new_frame_size_carries_on_with_the_camera() {
+        // The test scene takes one connection, so LEDs found after the change show it wasn't opened again.
+        let mut graph = Graph::default();
+        let camera = add(&mut graph, "Camera");
+        let address = super::super::camera::serve_test_scene(640, 480);
+        if let Some(Nodes::Camera(c)) = graph.get_mut(camera).map(|e| &mut e.node) {
+            c.source = super::super::camera::Source::Fake { address };
+            c.settings.frame_size = [320, 240];
+        }
+        let detector = add(&mut graph, "Position Detector");
+        let view = add(&mut graph, "Tracker View");
+        let port = |node, role, index| Port { node, role, index };
+        graph.connect(port(camera, Role::Output, 0), port(detector, Role::Input, 0)).unwrap();
+        graph.connect(port(camera, Role::Output, 0), port(view, Role::Input, 0)).unwrap();
+        graph.connect(port(detector, Role::Output, 0), port(view, Role::Input, 1)).unwrap();
+        let first = Snapshot::new(0, graph.clone(), None);
+        let runner = Runner::start(&first, 2);
+
+        let mut proposal = None;
+        assert!(wait_for(|| {
+            proposal = runner.exchange().take_proposals().into_iter().next();
+            proposal.is_some()
+        }));
+        let (_, setting, value) = proposal.unwrap();
+        let value = value.downcast::<crate::Setting>().unwrap();
+        graph.get_mut(camera).unwrap().node.set_setting(setting, *value);
+        assert!(!runner.update(&Snapshot::new(1, graph, Some(&first))), "a new epoch");
+        assert!(wait_for(|| leds_shown(&runner, view) == Some(2)), "both LEDs: {:?}", leds_shown(&runner, view));
+    }
+
+    #[test]
     fn the_camera_proposes_the_size_its_sending_unless_recording() {
         let mut graph = Graph::default();
         let camera = add(&mut graph, "Camera");
