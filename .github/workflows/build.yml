@@ -60,10 +60,15 @@ jobs:
         run: cargo build --release --locked
       - name: Package
         run: python scripts/package.py --exe ${{ matrix.executable }} --output dist/ephys-rs-${{ matrix.platform }} --platform ${{ matrix.package_platform }}
+      - name: Ask the build its version
+        if: matrix.package_platform == 'macos'
+        run: ${{ matrix.executable }} --version > dist/version.txt
       - uses: actions/upload-artifact@v7
         with:
           name: ephys-rs-${{ matrix.platform }}
-          path: dist/ephys-rs-${{ matrix.platform }}.zip*
+          path: |
+            dist/ephys-rs-${{ matrix.platform }}.zip*
+            dist/version.txt
           if-no-files-found: error
 
   release:
@@ -82,11 +87,11 @@ jobs:
           pattern: ephys-rs-*
           path: release
           merge-multiple: true
-      - name: Select version tag
+      - name: Select version and tag
         id: package
         run: |
-          # The version the app shows, v0.x: Cargo.toml's minor version, counted up by the pre-commit hook.
-          minor=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"].split(".")[1])')
+          # The tag is the build's own version, v0.x: example/Cargo.toml's minor version, counted up by the pre-commit hook.
+          minor=$(python3 -c 'import tomllib; print(tomllib.load(open("example/Cargo.toml", "rb"))["package"]["version"].split(".")[1])')
           tag="v0.$minor"
           # Each version is one commit: a commit made without the hook would otherwise replace its release.
           tagged=$(git ls-remote --tags origin "refs/tags/$tag" | cut -f1)
@@ -94,16 +99,20 @@ jobs:
             echo "::error::$tag is already released from $tagged: commit with the pre-commit hook on, so the version's counted up"
             exit 1
           fi
+          # The release is named with the whole version, as the app shows it.
+          version=$(cat release/version.txt)
+          test -n "$version"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
           test "$(ls release/*.zip | wc -l)" -eq 2
       - name: Publish GitHub release
         uses: ncipollo/release-action@v1
         with:
           tag: ${{ steps.package.outputs.tag }}
           commit: ${{ github.sha }}
-          name: ephys-rs ${{ steps.package.outputs.tag }}
+          name: ${{ steps.package.outputs.version }}
           body: |
-            Version ${{ steps.package.outputs.tag }}, built and tested from commit ${{ github.sha }}. In alpha testing, for use with LTX format recordings: https://github.com/ChenNeuroscience/ltx-format
+            Version ${{ steps.package.outputs.version }}, built and tested from commit ${{ github.sha }}. In alpha testing, for use with LTX format recordings: https://github.com/ChenNeuroscience/ltx-format
 
             Windows: download the windows zip, extract it, and run ephys-rs.exe.
             macOS (Apple silicon): download the macos zip and move ephys-rs.app to Applications. It isn't notarised, so the first time, right-click it and choose Open.

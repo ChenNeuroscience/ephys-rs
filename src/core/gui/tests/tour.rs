@@ -158,7 +158,8 @@ fn make_tour() {
     let (_camera, camera) = Fake::start("fake_camera.py");
     let app = TestApp::open(None, THEMES)
         .with_quick_actions(crate::components::quick_actions::QUICK_ACTIONS)
-        .with_base_directories(crate::components::BASE_DIRECTORIES);
+        .with_base_directories(crate::components::BASE_DIRECTORIES)
+        .with_version(<crate::components::Example as crate::core::Components>::version());
     let harness = Harness::builder().with_size(SIZE).with_pixels_per_point(SCALE).wgpu().build_ui_state(
         |ui, app: &mut TestApp| {
             app.show(ui);

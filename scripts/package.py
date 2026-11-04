@@ -28,7 +28,7 @@ def macos_app(exe, output):
                                check=True, capture_output=True)
         subprocess.run(["iconutil", "-c", "icns", str(iconset), "-o", str(contents / "Resources" / "icon.icns")],
                        check=True)
-    version = tomllib.loads(Path("Cargo.toml").read_text())["package"]["version"]
+    version = tomllib.loads(Path("example/Cargo.toml").read_text())["package"]["version"]
     with (contents / "Info.plist").open("wb") as stream:
         plistlib.dump({
             "CFBundleExecutable": "ephys-rs",

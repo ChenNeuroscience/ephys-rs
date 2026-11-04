@@ -24,6 +24,10 @@ A build lists its types with `node_set!` (node types, in the order the add-node 
 directories, and calls `core::gui::run`. Each macro makes an enum with a variant per type, which forwards the traits'
 methods to the variant's type, so the core works with one concrete type (`Nodes`, say) without trait objects.
 
+A build can also say what its version is, with `Components::version`. It's shown in the status bar, and `--version`
+prints it. The recommendation, for a build for a whole lab, is `core::build_version`: the lab's name, the build's
+version, and the core's in brackets, `chen-neuro v0.900 (ephys-rs v0.55)`. Without it, it's just the core's.
+
 So a build can add nodes, annotations, themes, quick actions and base directories of its own. The kinds of data stream
 and setting are the exception: they're declared once, with `edge_types!` in [`lib.rs`](../src/lib.rs), as the standard
 components are written against them, and adding one means adding it there. There's no loading of code at run time, and

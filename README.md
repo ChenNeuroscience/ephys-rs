@@ -26,7 +26,7 @@ cargo test                                     # includes GUI tests, rendered he
 UPDATE_SNAPSHOTS=1 cargo test                  # accept changes to how the GUI looks
 ```
 
-**[Developer docs](docs/README.md)** describes the architecture (the graph, plans, passes and epochs, threads and buffers), and how to write nodes, edges, annotations and quick actions. Turn on the hook that counts the version up with each commit: `git config core.hooksPath .githooks`.
+**[Developer docs](docs/README.md)** describes the architecture (the graph, plans, passes and epochs, threads and buffers), and how to write nodes, edges, annotations and quick actions. Turn on the hook that counts the versions up with each commit: `git config core.hooksPath .githooks`.
 
 The code is in three parts:
 

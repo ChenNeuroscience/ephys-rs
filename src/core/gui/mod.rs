@@ -46,13 +46,20 @@ use create_menu::{Choice, CreateMenu};
 use docking::Panes;
 
 /// Runs the app built from `C`'s components, opening the file at `path` (or an empty graph).
+///
+/// With `--version` as the first argument, says the version and stops.
 pub fn run<C: Components>(path: Option<PathBuf>) -> eframe::Result {
+    if std::env::args().nth(1).as_deref() == Some("--version") {
+        println!("{}", C::version());
+        return Ok(());
+    }
     crate::core::console::init(true);
     crate::core::crash::install();
     crate::core::crash::test_if_asked();
     let mut app = App::<C::Nodes, C::Annotations>::open(None, C::THEMES)
         .with_quick_actions(C::QUICK_ACTIONS)
-        .with_base_directories(C::BASE_DIRECTORIES);
+        .with_base_directories(C::BASE_DIRECTORIES)
+        .with_version(C::version());
     app.last_crash = crate::core::crash::take_latest();
     if let Some(report) = &app.last_crash {
         log::warn!("The last time ephys-rs ran, it crashed: a report is in {}", report.display());
@@ -94,16 +101,6 @@ pub fn run<C: Components>(path: Option<PathBuf>) -> eframe::Result {
     // Writers finishing their files, say.
     crate::core::background::wait();
     result
-}
-
-/// The program's version, "v0.12": each commit counts the minor version up (see docs/development.md). Tests show
-/// "v0.x", so their snapshots don't change with it.
-pub fn version() -> String {
-    if cfg!(test) {
-        "v0.x".into()
-    } else {
-        format!("v{}.{}", env!("CARGO_PKG_VERSION_MAJOR"), env!("CARGO_PKG_VERSION_MINOR"))
-    }
 }
 
 /// Where the theme (by name) is kept among the app's preferences (which eframe saves, separately from graph files).
@@ -227,6 +224,8 @@ pub struct App<N: NodeSet, A: AnnotationSet> {
     dev_tools: dev_tools::DevTools,
     /// Offered in the basic view.
     quick_actions: &'static [crate::core::quick_action::QuickAction<N>],
+    /// The program's version (see `Components::version`).
+    version: String,
     /// Where recordings go: the one in use, in a section of the toolbar.
     base_directories: BaseDirectories,
     /// How full the disk the base directory is on is.
@@ -276,6 +275,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             ran: None,
             last_crash: None,
             quick_actions: &[],
+            version: crate::core::version(),
             base_directories: BaseDirectories::new(&[], None),
             disk_space: Default::default(),
         };
@@ -624,6 +624,11 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
 
     pub fn with_quick_actions(mut self, quick_actions: &'static [crate::core::quick_action::QuickAction<N>]) -> Self {
         self.quick_actions = quick_actions;
+        self
+    }
+
+    pub fn with_version(mut self, version: String) -> Self {
+        self.version = version;
         self
     }
 
@@ -987,7 +992,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         let mut clicked = false;
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.weak(version()).on_hover_text("The version: each change to the program counts it up");
+                ui.weak(&self.version).on_hover_text("The version of this build, and of ephys-rs in it");
                 if let Some(runner) = &self.runner {
                     ui.separator();
                     let stats = ui.scope(|ui| self.run_stats(ui, &runner.stats())).response.rect;
@@ -1526,7 +1531,8 @@ mod tests {
     fn harness() -> Harness<'static, TestApp> {
         let mut app = TestApp::open(Some(example()), THEMES)
             .with_quick_actions(crate::components::quick_actions::QUICK_ACTIONS)
-            .with_base_directories(crate::components::BASE_DIRECTORIES);
+            .with_base_directories(crate::components::BASE_DIRECTORIES)
+            .with_version(<crate::components::Example as Components>::version());
         // Most tests work on the graph.
         app.layout.mode = Mode::Advanced;
         assert!(app.status.is_none(), "the example opens");
@@ -1853,6 +1859,11 @@ mod tests {
         harness.key_press(Key::Enter);
         harness.run_steps(3);
         assert!(next(&harness).ends_with(" b"), "{}", next(&harness));
+    }
+
+    #[test]
+    fn the_status_bar_shows_the_builds_version() {
+        harness().get_by_label("chen-neuro v0.x (ephys-rs v0.y)");
     }
 
     #[test]

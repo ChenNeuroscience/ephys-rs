@@ -4,10 +4,10 @@ pub mod china;
 pub mod quick_actions;
 pub mod trials;
 
-use ephys_rs::core::Components;
 use ephys_rs::core::base_directory::BaseDirectoryType;
 use ephys_rs::core::quick_action::QuickAction;
 use ephys_rs::core::theme::Theme;
+use ephys_rs::core::{Components, build_version};
 use ephys_rs::standard_components::annotations::{arrow, group_box, heading, image, markdown, sticky_note};
 use ephys_rs::standard_components::base_directories::A_DIRECTORY;
 use ephys_rs::standard_components::ephys::{
@@ -70,6 +70,10 @@ impl Components for Example {
     const THEMES: &'static [Theme] = THEMES;
     const QUICK_ACTIONS: &'static [QuickAction<Nodes>] = quick_actions::QUICK_ACTIONS;
     const BASE_DIRECTORIES: &'static [BaseDirectoryType] = BASE_DIRECTORIES;
+
+    fn version() -> String {
+        build_version("chen-neuro", env!("CARGO_PKG_VERSION"))
+    }
 }
 
 /// The graph in tests/rig.json, for tests.
