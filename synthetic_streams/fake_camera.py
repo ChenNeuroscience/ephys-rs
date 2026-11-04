@@ -13,9 +13,10 @@ Scene (world coordinates in metres, origin at the centre of the arena floor, x r
   * a mouse with a headstage carrying a big and a small LED
   * a tether cable rising from the headstage towards a commutator 2 m up, off to the left of the frame;
     it gets thicker as it approaches the camera
-  * a laptop on the room floor outside the arena, seen from above with its bright screen tilted back (something for
-    the crop to exclude)
-  * a timing LED on the room floor just outside the arena, which flashes for 300 ms every 3-6 s
+  * a laptop on the room floor outside the arena, its lid open past upright so its bright screen tips up towards the
+    camera (something for the crop to exclude)
+  * a timing LED on a small board on the room floor just outside the arena, with a cable running off to the left, which
+    flashes for 300 ms every 3-6 s
   * a little noise on every frame, and a tiny shimmer on a couple of the walls
 
 Wire format per frame, little-endian (must match src/standard_components/tracking/camera/fake.rs):
@@ -38,8 +39,9 @@ WALL_THICKNESS = 0.015
 COMMUTATOR = (-1.1, -0.15, 2.0)
 CABLE_DIAMETER = 0.005
 NOISE_VARIANTS = 8
+ROOM_FLOOR = 0x26
 WALL_JITTER = 0.08  # the most the top and bottom walls move, as a fraction of a pixel
-LAPTOP = (0.73, 0.22, 0.12)  # x, y and angle
+LAPTOP = (0.71, -0.16, 0.12)  # x, y and angle
 TIMING_LED = (-0.70, 0.30, 0.02)
 TIMING_LED_ON = 0.3  # seconds
 TIMING_LED_GAP = (3.0, 6.0)  # seconds between flashes
@@ -123,37 +125,95 @@ def draw_glow(buf, w, h, cx, cy, core, value):
 
 
 def draw_laptop(buf, cam):
-    """A laptop from above: its base, keys and trackpad, and past them its screen, tilted back and lit."""
+    """A laptop on the floor, facing down the image, with its lid open past upright. That tips the screen up towards the
+    camera, foreshortened, with its top edge nearer the camera, so wider and further from the middle of the image, as
+    the wall tops are. Being in front of the screen as the camera sees it, the camera sees more of it. The screen's light
+    falls on the keys and the floor in front."""
     w, h = cam.w, cam.h
     x, y, angle = LAPTOP
     ca, sa = math.cos(angle), math.sin(angle)
+    half, depth = 0.075, 0.06  # the base's half width and half depth
+    lean, lid = math.radians(25), 0.19  # from upright, and the lid's length
 
-    def box(x0, y0, x1, y1, value, z=0.02):
-        corners = ((x0, y0), (x1, y0), (x1, y1), (x0, y1))
-        fill_polygon(buf, w, h, [cam.project(x + u * ca - v * sa, y + u * sa + v * ca, z) for u, v in corners], value)
+    def at(u, v, z):
+        return cam.project(x + u * ca - v * sa, y + u * sa + v * ca, z)
 
-    box(-0.085, -0.098, 0.085, -0.058, 225, 0.1)  # screen
-    box(-0.085, -0.06, 0.085, 0.06, 58)  # base
-    columns, rows, pitch = 13, 5, 0.0125
+    def box(u0, v0, u1, v1, value, z=0.02):
+        fill_polygon(buf, w, h, [at(u, v, z) for u, v in ((u0, v0), (u1, v0), (u1, v1), (u0, v1))], value)
+
+    def on_lid(u, t):
+        """A point on the lid: `t` is from the hinge (0) to its top edge (1)."""
+        return at(u, -depth - t * lid * math.sin(lean), 0.02 + t * lid * math.cos(lean))
+
+    def lid_box(u0, t0, u1, t1, value):
+        fill_polygon(buf, w, h, [on_lid(u0, t0), on_lid(u1, t0), on_lid(u1, t1), on_lid(u0, t1)], value)
+
+    # The light on the floor around it, fading away, and only on the floor.
+    cx, cy = at(0, 0, 0)
+    reach = 0.13 * cam.scale(0)
+    for py in range(max(0, int(cy - 2 * reach)), min(h, int(cy + 2 * reach))):
+        for px in range(max(0, int(cx - 2 * reach)), min(w, int(cx + 2 * reach))):
+            if buf[py * w + px] == ROOM_FLOOR:
+                distance = ((px - cx) ** 2 + (py - cy) ** 2) / reach**2
+                buf[py * w + px] = ROOM_FLOOR + int(16 * math.exp(-distance))
+
+    box(-half, -depth, half, depth, 58)  # base
+    columns, rows = 12, 5
+    pitch = 2 * (half - 0.004) / columns
     for row in range(rows):
+        lit = 44 * (1 - row / rows)  # the nearer the screen, the brighter
         for column in range(columns):
-            u, v = -0.08 + column * pitch, -0.052 + row * pitch
-            box(u, v, u + pitch - 0.003, v + pitch - 0.003, 88)
-    box(-0.03, 0.017, 0.03, 0.054, 72)  # trackpad
+            u, v = -half + 0.005 + column * pitch, -depth + 0.009 + row * pitch
+            box(u, v, u + pitch - 0.003, v + pitch - 0.003, int(84 + lit))
+    box(-0.03, 0.017, 0.03, 0.054, 74)  # trackpad
+
+    lid_box(-half, 0, half, 1, 44)  # the lid, whose edge is left showing round the screen
+    lid_box(-half + 0.006, 0.05, half - 0.006, 0.95, 236)  # screen
+    lid_box(-half + 0.006, 0.84, half - 0.006, 0.95, 205)  # a menu bar along its top
+    lid_box(-0.056, 0.14, -0.006, 0.76, 212)  # a window
+    for line in range(5):
+        t = 0.2 + line * 0.11
+        lid_box(-0.05, t, -0.05 + 0.03 + 0.012 * (line % 2), t + 0.05, 150)
+    lid_box(0.006, 0.14, 0.056, 0.48, 212)  # another
+    box(-half, -depth - 0.002, half, -depth + 0.002, 30)  # the hinge
 
 
-def draw_timing_led_housing(buf, cam):
+def draw_timing_led_board(buf, cam):
+    """The little board the timing LED's on, with a cable running off to the left of the frame."""
     w, h = cam.w, cam.h
-    k = cam.scale(TIMING_LED[2])
-    u, v = cam.project(*TIMING_LED)
-    draw_disc(buf, w, h, u, v, 0.014 * k, 50)
-    draw_disc(buf, w, h, u, v, 0.006 * k, 95)
+    x, y, z = TIMING_LED
+    half_width, half_height = 0.034, 0.024
+
+    def box(x0, y0, x1, y1, value):
+        fill_polygon(buf, w, h, [cam.project(x + u, y + v, z) for u, v in ((x0, y0), (x1, y0), (x1, y1), (x0, y1))], value)
+
+    # The cable first, so it comes out from under the board: sagging a little, then off the edge.
+    points = []
+    for i in range(61):
+        s = i / 60
+        points.append(cam.project(x - half_width + 0.004 - 0.45 * s, y + 0.03 * math.sin(s * math.pi * 1.5), 0.005))
+    for (u0, v0), (u1, v1) in zip(points, points[1:]):
+        steps = max(1, int(math.hypot(u1 - u0, v1 - v0)))
+        for j in range(steps):
+            draw_disc(buf, w, h, u0 + (u1 - u0) * j / steps, v0 + (v1 - v0) * j / steps, 1.0, 66)
+
+    box(-half_width, -half_height, half_width, half_height, 72)  # the board
+    box(-half_width, -0.008, -half_width + 0.009, 0.008, 112)  # the cable's connector
+    box(-0.016, -0.016, -0.004 - 0.002, -0.004, 34)  # a chip
+    box(0.014, 0.006, 0.026, 0.016, 34)  # and another
+    for i in range(4):  # a row of pins
+        u = -0.014 + i * 0.009
+        box(u, 0.015, u + 0.004, 0.019, 120)
+    k = cam.scale(z)
+    u, v = cam.project(x, y, z)
+    draw_disc(buf, w, h, u, v, 0.009 * k, 44)  # the LED's holder
+    draw_disc(buf, w, h, u, v, 0.005 * k, 95)  # and its lens
 
 
 def render_background(cam):
     w, h = cam.w, cam.h
 
-    buf = bytearray(b"\x26" * (w * h))  # room floor
+    buf = bytearray(bytes([ROOM_FLOOR]) * (w * h))
 
     def floor_square(half, z):
         return [cam.project(sx * half, sy * half, z) for sx, sy in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
@@ -184,7 +244,7 @@ def render_background(cam):
     fill_polygon(buf, w, h, floor_square(ARENA_HALF, 0), 0x0C)  # arena floor
 
     draw_laptop(buf, cam)
-    draw_timing_led_housing(buf, cam)
+    draw_timing_led_board(buf, cam)
     return buf
 
 
