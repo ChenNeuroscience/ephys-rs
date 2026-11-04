@@ -930,7 +930,8 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                 self.canvas.edit_annotation(id);
             }
         }
-        if key(Key::Escape) {
+        // Not consumed: egui's already taken the focus from what was being typed in, which goes by this to cancel.
+        if ctx.input(|i| i.key_pressed(Key::Escape)) {
             self.selection.clear();
             self.canvas.tool = Tool::Select;
         }
@@ -1799,6 +1800,51 @@ mod tests {
         harness.get_by_label("A directory").click();
         harness.run_steps(2);
         assert_eq!(harness.state().base_directories.chosen(), Some(0));
+    }
+
+    #[test]
+    fn the_paths_pieces_say_what_they_are_at_once_and_change_in_place() {
+        let mut harness = harness();
+        let saved = serde_json::json!({
+            "chosen": "Subject, date and trial",
+            "types": { "Subject, date and trial": { "directory": "/nowhere/recordings", "subject": "r2405" } },
+        });
+        let types = harness.state().base_directories.types();
+        harness.state_mut().base_directories = BaseDirectories::new(types, Some(&saved));
+        harness.run_steps(2);
+        let next = |h: &Harness<TestApp>| h.state().base_directories.place().unwrap().name.unwrap();
+        harness.get_by_label("r2405").hover();
+        harness.run_steps(2);
+        assert!(harness.query_by_label_contains("a directory of its own").is_some(), "with no wait");
+        harness.snapshot("toolbar_base_directory_hovered");
+
+        // The subject, in place: Esc leaves it, and Enter changes it.
+        let subject = |h: &Harness<TestApp>| h.state().base_directories.place().unwrap().directory;
+        let before = subject(&harness);
+        harness.get_by_label("r2405").click();
+        harness.run_steps(3);
+        harness.event(egui::Event::Text("6".into()));
+        harness.run_steps(3);
+        harness.key_press(Key::Escape);
+        harness.run_steps(3);
+        assert_eq!(subject(&harness), before, "cancelled");
+        harness.get_by_label("r2405").click();
+        harness.run_steps(3);
+        harness.event(egui::Event::Text("6".into()));
+        harness.run_steps(3);
+        harness.key_press(Key::Enter);
+        harness.run_steps(3);
+        assert_ne!(subject(&harness), before, "applied");
+
+        // The trial: stepped, and for the next recording.
+        harness.get_by_label("a").click();
+        harness.run_steps(3);
+        harness.key_press(Key::ArrowUp);
+        harness.key_press(Key::ArrowUp);
+        harness.key_press(Key::ArrowDown);
+        harness.key_press(Key::Enter);
+        harness.run_steps(3);
+        assert!(next(&harness).ends_with(" b"), "{}", next(&harness));
     }
 
     #[test]

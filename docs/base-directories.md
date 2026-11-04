@@ -31,18 +31,21 @@ A kind of base directory is a [`BaseDirectoryType`](../src/core/base_directory.r
   counts as changed when this does, so a count of recordings, say, would mark it changed after each one.
 
 The standard one, in [`base_directories.rs`](../src/standard_components/base_directories.rs), is **A directory**: a
-button to choose a directory, and the directory. `directory_ui` there draws that, for others to use.
+button to open it, and the directory, clicked to choose another. The pieces are there for others to use:
+`directory_ui`, `path_chip` (a pale piece of a path, saying what it is right below it when hovered), `path_separator`
+(this system's) and `open_button` (opening a directory, or as much of it as there is, in the file manager).
 
 The example adds another, in [`trials.rs`](../example/src/components/trials.rs):
 
 - **Subject, date and trial**: a directory to keep them in, the subject (an animal's id, say), the day and the
-  trial, shown as a path: `~/recordings / r2405 / 2026-11-03 / 2026-11-03 a`. The subject and the day are
+  trial, shown as a flat path: `~/recordings/r2405/2026-11-03/2026-11-03 a`. The subject and the day are
   directories; the day and trial, again, are the recording's name, which writers name what they write after: Write
   LTX its files (`2026-11-03 a.set`...), Write Raw its folder. Trials are lettered a to z, then 1a to 1z, 2a, and so
   on. The next is the one after the last on disk in the day's directory, so an empty directory, or a new day, starts
   at a, gaps aren't filled, and trials stay in the order they were made. Nothing's counted or stored: what's on disk
-  is looked at once a second at most, and after each recording. Before a recording the trial is the next one, which you can change for that recording;
-  during one, it's the current one, in red.
+  is looked at once a second at most, and after each recording. Before a recording the trial is the next one; during one, it's the current one, in red. The
+  directory, subject and trial are clicked to change them: in place, for the subject and trial (Enter or clicking
+  elsewhere applies it, Esc cancels, up and down step a trial), and a trial changed is for the next recording.
 
 ## Writers
 

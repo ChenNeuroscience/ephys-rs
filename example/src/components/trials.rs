@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, RichText};
 use ephys_rs::core::base_directory::{BaseDirectory, BaseDirectoryContext, BaseDirectoryType, Place};
-use ephys_rs::standard_components::base_directories::directory_ui;
+use ephys_rs::standard_components::base_directories::{directory_ui, open_button, path_chip, path_separator};
 use ephys_rs::standard_components::recording::{NO_BASE, expand};
 use serde::{Deserialize, Serialize};
 
@@ -34,9 +34,27 @@ pub struct Trials {
     /// Where the recording going on is, while there is one.
     #[serde(skip)]
     recording: Option<Place>,
+    /// The piece of the path being changed, if one is.
+    #[serde(skip)]
+    editing: Option<Editing>,
     /// What was last seen on disk (`place` is asked for every frame, so it isn't looked at every time).
     #[serde(skip)]
     looked: RefCell<Option<Looked>>,
+}
+
+/// A piece of the path that can be changed.
+#[derive(Clone, Copy, PartialEq)]
+enum Piece {
+    Subject,
+    Trial,
+}
+
+/// A piece being changed, in place.
+struct Editing {
+    piece: Piece,
+    text: String,
+    /// Whether it's been given the focus yet.
+    focused: bool,
 }
 
 /// The trials on disk for `day`, as of `at`.
@@ -56,6 +74,7 @@ impl Default for Trials {
             subject: String::new(),
             chosen: None,
             recording: None,
+            editing: None,
             looked: RefCell::new(None),
         }
     }
@@ -148,59 +167,131 @@ impl Trials {
     }
 }
 
-impl BaseDirectory for Trials {
-    /// As a path: the directory, the subject, the day, then the day and trial:
-    /// "~/recordings / r2405 / 2026-11-03 / 2026-11-03 a".
-    fn toolbar_ui(&mut self, ui: &mut egui::Ui, context: &BaseDirectoryContext) {
-        let separator = |ui: &mut egui::Ui| {
-            ui.label(RichText::new(std::path::MAIN_SEPARATOR_STR).color(context.theme.text_disabled));
-        };
-        let mut changed = directory_ui(ui, &mut self.directory, context, "The directory the subjects' are in");
-        separator(ui);
-        let subject = egui::TextEdit::singleline(&mut self.subject).hint_text("subject").desired_width(60.0);
-        let response = ui.add_enabled(!context.recording, subject);
-        changed |= response.changed();
-        response.on_hover_text("The subject (an animal's id, say): a directory of its own");
-        if changed {
-            self.start_again();
+impl Trials {
+    /// The subject, or the trial, as a piece of the path: clicked to change it, in place.
+    fn piece_ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        piece: Piece,
+        text: RichText,
+        info: impl Into<egui::WidgetText>,
+        context: &BaseDirectoryContext,
+    ) {
+        if self.editing.as_ref().is_some_and(|editing| editing.piece == piece) {
+            return self.editing_ui(ui);
         }
-        separator(ui);
+        if path_chip(ui, text, info, !context.recording, context).clicked() {
+            let text = match piece {
+                Piece::Subject => self.subject.clone(),
+                Piece::Trial => trial_letters(self.next()),
+            };
+            self.editing = Some(Editing { piece, text, focused: false });
+        }
+    }
+
+    /// The piece being changed: Enter or clicking elsewhere applies it, Esc cancels, and up and down step a trial.
+    fn editing_ui(&mut self, ui: &mut egui::Ui) {
+        let next = self.next();
+        let Some(editing) = &mut self.editing else { return };
+        let id = ui.scope_id().with("changing a piece of the path");
+        if editing.piece == Piece::Trial && ui.memory(|m| m.has_focus(id)) {
+            for (key, step) in [(egui::Key::ArrowUp, 1), (egui::Key::ArrowDown, -1)] {
+                while ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, key)) {
+                    let trial = trial_number(&editing.text).unwrap_or(next);
+                    editing.text = trial_letters(trial.saturating_add_signed(step));
+                }
+            }
+        }
+        let width = 8.0 * (editing.text.chars().count() + 1) as f32;
+        let edit = egui::TextEdit::singleline(&mut editing.text)
+            .id(id)
+            .frame(egui::Frame::NONE)
+            .margin(egui::Margin::symmetric(3, 1))
+            .desired_width(width.max(24.0))
+            .lock_focus(true);
+        let response = ui.add(edit);
+        if !editing.focused {
+            response.request_focus();
+            editing.focused = true;
+        }
+        if response.lost_focus() {
+            let cancelled = ui.input(|i| i.key_pressed(egui::Key::Escape));
+            if let (Some(editing), false) = (self.editing.take(), cancelled) {
+                match editing.piece {
+                    Piece::Subject => {
+                        self.subject = editing.text.trim().into();
+                        self.start_again();
+                    }
+                    Piece::Trial => {
+                        if let Some(trial) = trial_number(&editing.text) {
+                            self.chosen = (trial != self.after_last()).then_some((today(), trial));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl BaseDirectory for Trials {
+    /// As a flat path, of pale pieces: the directory, the subject, the day, then the day and trial:
+    /// "~/recordings/r2405/2026-11-03/2026-11-03 a".
+    fn toolbar_ui(&mut self, ui: &mut egui::Ui, context: &BaseDirectoryContext) {
+        if context.recording {
+            self.editing = None;
+        }
+        let theme = context.theme;
         let now = self.recording.as_ref().and_then(|place| place.name.as_deref()?.split_once(' '));
         let now = now.map(|(day, letters)| (day.to_owned(), letters.to_owned()));
         let day = now.as_ref().map_or_else(today, |(day, _)| day.clone());
-        let label = RichText::new(&day).color(context.theme.text_secondary);
-        ui.label(label.clone()).on_hover_text("The day: a directory of its own");
-        separator(ui);
-        ui.spacing_mut().item_spacing.x = 4.0;
-        ui.label(label)
-            .on_hover_text("Each recording's named after the day and trial (the writers' files, or folders, are)");
-        match (&self.recording, now) {
-            (Some(place), Some((_, letters))) => {
-                let text = RichText::new(letters).strong().color(context.theme.error);
-                ui.label(text).on_hover_text(format!("The trial recording now: {place}"));
+        let place = self.recording.clone().unwrap_or_else(|| self.place_of(&day, self.next()));
+        open_button(ui, &place.directory);
+        ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            if directory_ui(ui, &mut self.directory, context, "The directory the subjects are in") {
+                self.start_again();
             }
-            _ => {
-                let mut trial = self.next();
-                let taken = self.on_disk().contains(&trial);
-                let field = egui::DragValue::new(&mut trial)
-                    .range(1..=9999)
-                    .custom_formatter(|n, _| trial_letters(n as u32))
-                    .custom_parser(|text| trial_number(text).map(f64::from));
-                let field = if taken { field.prefix("⚠ ") } else { field };
-                ui.spacing_mut().interact_size.x = 20.0; // as narrow as its letters
-                let response = ui.add(field);
-                let place = self.place_of(&day, trial);
-                if response.changed() {
-                    self.chosen = (trial != self.after_last()).then_some((day, trial));
+            path_separator(ui, context);
+
+            let subject = self.subject.trim();
+            let text = if subject.is_empty() {
+                RichText::new("subject").color(theme.text_disabled)
+            } else {
+                RichText::new(subject).color(theme.text_primary)
+            };
+            let info = "The subject (an animal's id, say): a directory of its own\nClick to change it";
+            let info = if context.recording { info.lines().next().unwrap_or(info) } else { info };
+            self.piece_ui(ui, Piece::Subject, text, info, context);
+            path_separator(ui, context);
+
+            let text = RichText::new(&day).color(theme.text_secondary);
+            path_chip(ui, text.clone(), "The day: a directory of its own", false, context);
+            path_separator(ui, context);
+            let info = "The recording's name, the day and trial: what the writers name their files, or folders, after";
+            path_chip(ui, text, info, false, context);
+            ui.add_space(3.0);
+
+            match now {
+                Some((_, letters)) => {
+                    let text = RichText::new(letters).strong().color(theme.error);
+                    path_chip(ui, text, format!("The trial recording now: {place}"), false, context);
                 }
-                if taken {
-                    let tip = format!("The next trial: {place} is there already, and would be added to");
-                    response.on_hover_text(RichText::new(tip).color(context.theme.warning));
-                } else {
-                    response.on_hover_text(format!("The next trial: {place}"));
+                None => {
+                    let trial = self.next();
+                    let letters = trial_letters(trial);
+                    if self.on_disk().contains(&trial) {
+                        let tip = format!("The next trial: {place} is there already, and would be added to");
+                        let text = RichText::new(format!("⚠ {letters}")).color(theme.warning);
+                        let info = RichText::new(tip).color(theme.warning);
+                        self.piece_ui(ui, Piece::Trial, text, info, context);
+                    } else {
+                        let text = RichText::new(letters).color(theme.text_primary);
+                        let info = format!("The next trial: {place}\nClick to change it, for this recording");
+                        self.piece_ui(ui, Piece::Trial, text, info, context);
+                    }
                 }
             }
-        }
+        });
     }
 
     fn place(&self) -> Option<Place> {
