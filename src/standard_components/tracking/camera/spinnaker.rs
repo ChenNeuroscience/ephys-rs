@@ -114,6 +114,7 @@ spinnaker_api! {
     spinFloatGetMin(Handle, *mut f64);
     spinFloatGetMax(Handle, *mut f64);
     spinStringGetValue(Handle, *mut c_char, *mut usize);
+    spinNodeToString(Handle, *mut c_char, *mut usize);
 }
 
 impl Api {
@@ -133,7 +134,11 @@ impl Api {
         let mut errors = Vec::new();
         for candidate in &candidates {
             match unsafe { open_library(candidate) } {
-                Ok(library) => return unsafe { Api::from_library(library) },
+                Ok(library) => {
+                    let api = unsafe { Api::from_library(library) }?;
+                    log::info!("Camera: Spinnaker SDK loaded from {}", candidate.display());
+                    return Ok(api);
+                }
                 Err(e) => errors.push(format!("{}: {e}", candidate.display())),
             }
         }
@@ -225,6 +230,17 @@ impl Api {
         }
     }
 
+    /// The named setting's value, of any type, as text.
+    fn as_text(&self, map: Handle, name: &str) -> Option<String> {
+        let node = self.node(map, name).filter(|&n| self.flag(self.spinNodeIsReadable, n))?;
+        let mut buf = [0 as c_char; 256];
+        let mut len = buf.len();
+        unsafe {
+            ((self.spinNodeToString)(node, buf.as_mut_ptr(), &mut len) == SUCCESS)
+                .then(|| CStr::from_ptr(buf.as_ptr()).to_string_lossy().into_owned())
+        }
+    }
+
     fn get_string(&self, map: Handle, name: &str) -> Option<String> {
         let node = self.node(map, name).filter(|&n| self.flag(self.spinNodeIsReadable, n))?;
         let mut buf = [0 as c_char; 256];
@@ -235,6 +251,25 @@ impl Api {
         }
     }
 }
+
+/// What's worth knowing about how a camera's set up, when working out why it isn't working.
+const REPORTED: [&str; 15] = [
+    "WidthMax",
+    "HeightMax",
+    "Width",
+    "Height",
+    "OffsetX",
+    "OffsetY",
+    "PixelFormat",
+    "AcquisitionMode",
+    "TriggerMode",
+    "TriggerSource",
+    "AcquisitionFrameRate",
+    "ExposureAuto",
+    "ExposureTime",
+    "GainAuto",
+    "Gain",
+];
 
 unsafe fn open_library(path: &std::path::Path) -> Result<Library, libloading::Error> {
     #[cfg(windows)]
@@ -260,6 +295,8 @@ pub struct SpinnakerCamera {
     /// The camera accepted the requested frame rate.
     frame_rate_set: bool,
     description: String,
+    /// How many frames have come incomplete.
+    incomplete: u64,
     /// Things that didn't go to plan when configuring the camera, for the window to show.
     warnings: Vec<String>,
     /// The frame fetched, until it's copied out: the SDK's image, where its pixels are, and their width, height
@@ -273,7 +310,13 @@ unsafe impl Send for SpinnakerCamera {}
 impl SpinnakerCamera {
     /// Opens the camera with the given serial number, or the first one found. `fps` sets the camera's frame
     /// rate where it allows that; `library` overrides where the SDK is loaded from.
-    pub fn open(serial: Option<&str>, fps: f64, library: Option<&str>) -> io::Result<Self> {
+    /// `note` is told how it's getting on.
+    pub fn open(
+        serial: Option<&str>,
+        fps: f64,
+        library: Option<&str>,
+        note: &mut dyn FnMut(String),
+    ) -> io::Result<Self> {
         let api = Api::get(library)?;
         let mut system: Handle = std::ptr::null_mut();
         unsafe { api.check((api.spinSystemGetInstance)(&mut system), "getting the system")? };
@@ -286,16 +329,20 @@ impl SpinnakerCamera {
             chunk_timestamps: false,
             frame_rate_set: false,
             description: String::new(),
+            incomplete: 0,
             warnings: Vec::new(),
             fetched: None,
         };
-        cam.camera = cam.find(serial)?;
+        cam.camera = cam.find(serial, note)?;
+        note(format!("Camera: opening {}", cam.description));
         cam.configure(fps)?;
+        let reported = REPORTED.iter().filter_map(|name| Some(format!("{name} {}", api.as_text(cam.map, name)?)));
+        note(format!("Camera: configured: {}", reported.collect::<Vec<_>>().join(", ")));
         unsafe { api.check((api.spinCameraBeginAcquisition)(cam.camera), "starting acquisition")? };
         Ok(cam)
     }
 
-    fn find(&mut self, serial: Option<&str>) -> io::Result<Handle> {
+    fn find(&mut self, serial: Option<&str>, note: &mut dyn FnMut(String)) -> io::Result<Handle> {
         let api = self.api;
         let mut list: Handle = std::ptr::null_mut();
         let mut found: Handle = std::ptr::null_mut();
@@ -323,7 +370,7 @@ impl SpinnakerCamera {
                     } else {
                         (api.spinCameraRelease)(camera);
                     }
-                    seen.push(this_serial);
+                    seen.push(format!("{model} (serial {this_serial})"));
                 }
                 Ok(())
             })();
@@ -331,12 +378,13 @@ impl SpinnakerCamera {
             (api.spinCameraListDestroy)(list);
             result?;
         }
+        note(format!("Camera: Spinnaker sees {} camera(s): {}", seen.len(), seen.join(", ")));
         if found.is_null() {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
                 match serial {
                     Some(s) => format!("no Spinnaker camera with serial {s} (found: {})", seen.join(", ")),
-                    None => "no Spinnaker cameras found".into(),
+                    None => "no Spinnaker cameras found (is it plugged in, and powered?)".into(),
                 },
             ));
         }
@@ -347,7 +395,7 @@ impl SpinnakerCamera {
         let api = self.api;
         let mut map: Handle = std::ptr::null_mut();
         unsafe {
-            api.check((api.spinCameraInit)(self.camera), "initialising the camera")?;
+            api.check((api.spinCameraInit)(self.camera), "initialising the camera (is it open in another program?)")?;
             api.check((api.spinCameraGetNodeMap)(self.camera, &mut map), "getting camera settings")?;
         }
         self.map = map;
@@ -402,7 +450,15 @@ impl Camera for SpinnakerCamera {
         let image = Image(api, handle);
 
         if api.flag(api.spinImageIsIncomplete, image.1) {
-            return Ok(None); // a dropped frame; the gap in frame ids is counted by the caller
+            // A dropped frame; the gap in frame ids is counted by the caller.
+            self.incomplete += 1;
+            if self.incomplete.is_power_of_two() {
+                let count = self.incomplete;
+                log::warn!(
+                    "Camera: {count} incomplete frame(s) so far: is it getting enough USB or network bandwidth?"
+                );
+            }
+            return Ok(None);
         }
         let (mut width, mut height, mut stride, mut bits) = (0usize, 0usize, 0usize, 0usize);
         let mut data: *mut c_void = std::ptr::null_mut();

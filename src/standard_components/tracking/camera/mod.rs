@@ -190,16 +190,24 @@ impl Default for Source {
 /// Where `fake_camera.py` serves frames by default.
 pub const FAKE_ADDRESS: &str = "127.0.0.1:27030";
 
-/// Opens the camera.
-pub fn open(source: &Source, settings: &CameraSettings) -> io::Result<Box<dyn Camera>> {
+/// Opens the camera, telling `note` how it's getting on, for the console.
+pub fn open(source: &Source, settings: &CameraSettings, note: &mut dyn FnMut(String)) -> io::Result<Box<dyn Camera>> {
     let blank_as_none = |s: &str| Some(s.trim()).filter(|s| !s.is_empty()).map(str::to_string);
     Ok(match source {
         // The fake camera's rate is set by fake_camera.py --fps.
-        Source::Fake { address } => Box::new(FakeCamera::connect(address)?),
-        Source::Spinnaker { serial, library } => Box::new(SpinnakerCamera::open(
-            blank_as_none(serial).as_deref(),
-            settings.frame_rate,
-            blank_as_none(library).as_deref(),
-        )?),
+        Source::Fake { address } => {
+            note(format!("Camera: connecting to the fake camera at {address}"));
+            Box::new(FakeCamera::connect(address)?)
+        }
+        Source::Spinnaker { serial, library } => {
+            let (serial, library) = (blank_as_none(serial), blank_as_none(library));
+            note(format!(
+                "Camera: looking for a FLIR camera ({}, Spinnaker library {}), at {} fps",
+                serial.as_ref().map_or("the first found".into(), |s| format!("serial {s}")),
+                library.as_deref().unwrap_or("found automatically"),
+                settings.frame_rate,
+            ));
+            Box::new(SpinnakerCamera::open(serial.as_deref(), settings.frame_rate, library.as_deref(), note)?)
+        }
     })
 }

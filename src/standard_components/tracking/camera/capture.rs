@@ -4,7 +4,7 @@
 //! frames that have come since the last, and nothing more's copied. The thread's status (what it's doing, the frame
 //! rate, drops) is shared for display. If the camera can't be opened, or fails, it keeps trying.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -17,6 +17,9 @@ use crate::standard_components::tracking::{Video, VideoBuffer};
 
 /// About the most memory a camera's pool takes (it's at least a few passes' buffers, though).
 const POOL_BYTES: usize = 32 << 20;
+/// How long without a frame before the console's told.
+const QUIET_AFTER: Duration = Duration::from_secs(5);
+
 /// Seconds of frames the measured frame rate is over.
 const RATE_WINDOW: f64 = 2.0;
 
@@ -122,6 +125,19 @@ impl Drop for Capture {
     }
 }
 
+/// What's been said about connecting, as it's tried again and again: each thing's said once, until it's connected.
+#[derive(Default)]
+struct Notes(HashSet<String>);
+
+impl Notes {
+    fn say(&mut self, text: String) {
+        if !self.0.contains(&text) {
+            log::info!("{text}");
+            self.0.insert(text);
+        }
+    }
+}
+
 fn capture(shared: &Shared, source: &Source, pool: &Pool<VideoBuffer>) {
     let stopping = || shared.stop.load(Ordering::Relaxed);
     let set_state = |state: State| {
@@ -132,9 +148,10 @@ fn capture(shared: &Shared, source: &Source, pool: &Pool<VideoBuffer>) {
         }
         status.state = state;
     };
+    let mut notes = Notes::default();
     while !stopping() {
         let settings = *shared.settings.lock().unwrap();
-        let mut camera = match camera::open(source, &settings) {
+        let mut camera = match camera::open(source, &settings, &mut |text| notes.say(text)) {
             Ok(camera) => camera,
             Err(e) => {
                 set_state(State::Problem(format!("waiting for camera: {e}")));
@@ -151,7 +168,12 @@ fn capture(shared: &Shared, source: &Source, pool: &Pool<VideoBuffer>) {
             status.state = State::Running;
             log::info!("Capturing from {}", status.description);
         }
+        notes = Notes::default();
+        for warning in camera.warnings() {
+            log::warn!("Camera: {warning}");
+        }
         let (mut applied, mut last) = (None, None::<u64>);
+        let (mut latest_frame, mut quiet) = (Instant::now(), false);
         let mut recent = VecDeque::new(); // camera timestamps within RATE_WINDOW
         while !stopping() {
             let settings = *shared.settings.lock().unwrap();
@@ -167,18 +189,36 @@ fn capture(shared: &Shared, source: &Source, pool: &Pool<VideoBuffer>) {
             }
             let frame = match camera.fetch() {
                 Ok(Some(frame)) => frame,
-                Ok(None) => continue,
+                Ok(None) => {
+                    if !quiet && latest_frame.elapsed() > QUIET_AFTER {
+                        log::warn!(
+                            "Camera: no frames for {} s. If it's FLIR, check its TriggerMode, logged as it opened, isn't \
+                             waiting for a trigger, and that nothing's said about incomplete frames",
+                            QUIET_AFTER.as_secs()
+                        );
+                        quiet = true;
+                    }
+                    continue;
+                }
                 Err(e) => {
                     set_state(State::Problem(format!("camera error, reconnecting: {e}")));
                     break;
                 }
             };
             let (id, timestamp) = (frame.id, frame.timestamp);
+            if last.is_none() {
+                log::info!("Camera: first frame, {}×{}", frame.width, frame.height);
+            } else if quiet {
+                log::info!("Camera: frames are coming again");
+            }
+            (latest_frame, quiet) = (Instant::now(), false);
+            let mut expected = [0, 0];
             // Into the next slot of the buffer being filled, if it's the size the passes expect.
             let into_pool = pool.fill(
                 |video| video.frames = 0,
                 |video| {
                     if (frame.width as usize, frame.height as usize) != (video.width, video.height) {
+                        expected = [video.width, video.height];
                         return None;
                     }
                     let index = video.frames;
@@ -201,6 +241,13 @@ fn capture(shared: &Shared, source: &Source, pool: &Pool<VideoBuffer>) {
             match into_pool {
                 Some(None) => {
                     status.wrong_size += 1;
+                    if status.last_wrong_size != [frame.width, frame.height] {
+                        let ([w, h], [set_w, set_h]) = ([frame.width, frame.height], expected);
+                        log::warn!(
+                            "Camera: frames are {w}×{h}, but its Frame size is set to {set_w}×{set_h}, so they're being \
+                             skipped and nothing will show. Set Frame size to {w}×{h}"
+                        );
+                    }
                     status.last_wrong_size = [frame.width, frame.height];
                 }
                 None => {
@@ -248,6 +295,17 @@ mod tests {
             }
         }
         frames
+    }
+
+    #[test]
+    fn what_was_tried_is_said_once() {
+        let mut notes = Notes::default();
+        let source = Source::Fake { address: "127.0.0.1:1".into() };
+        for _ in 0..3 {
+            let _ = camera::open(&source, &CameraSettings::default(), &mut |text| notes.say(text));
+        }
+        assert_eq!(notes.0.len(), 1, "however many times it's tried");
+        assert!(notes.0.iter().all(|text| text.contains("127.0.0.1:1")), "and says where");
     }
 
     #[test]

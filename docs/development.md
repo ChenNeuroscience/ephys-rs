@@ -38,6 +38,16 @@ Markdown alone, publishes a release, titled with the whole version (below), whic
 `--version`. It's tagged `chen-neuro-v0.x`, and the first with a new core version is tagged `ephys-rs-v0.y` too (tags
 can't have spaces). Releases before these two versions were split are tagged `v0.x`.
 
+## Cameras
+
+The console says how a camera's getting on: what's being looked for, where the Spinnaker SDK was loaded from, which
+cameras it sees, how the one opened is set up (its size, pixel format, trigger mode, frame rate, exposure and gain), and
+the size of the first frame. Connecting's tried twice a second, so each of those is said once. It warns if frames are
+incomplete, or stop coming, or aren't the size set.
+
+The frame size isn't detected: it's the Camera node's Frame size setting, as the video stream's size has to be known
+before running, for its buffers. Frames of any other size are skipped.
+
 ## Versions
 
 There are two versions, shown together at the right of the status bar: `chen-neuro v0.x (ephys-rs v0.y)`. A build says
