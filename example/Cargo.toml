@@ -1,6 +1,6 @@
 [package]
 name = "ephys-rs-example"
-version = "0.912.0"
+version = "0.913.0"
 edition = "2024"
 description = "The example program built on ephys-rs, which is what this repository releases"
 publish = false

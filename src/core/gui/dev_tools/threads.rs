@@ -293,7 +293,9 @@ fn small(text: impl Into<String>, colour: Color32) -> RichText {
 
 /// A short name for a plan, from where it is in memory: the same plan, the same name.
 fn plan_id<N: NodeSet>(plan: &Arc<Plan<N>>) -> String {
-    format!("@{:06x}", Arc::as_ptr(plan) as usize & 0xff_ffff)
+    // Where it is in memory changes from run to run, which snapshots can't have.
+    let address = if cfg!(test) { 0 } else { Arc::as_ptr(plan) as usize & 0xff_ffff };
+    format!("@{address:06x}")
 }
 
 fn megabytes(bytes: usize) -> String {

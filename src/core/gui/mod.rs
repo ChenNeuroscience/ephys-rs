@@ -2066,9 +2066,7 @@ mod tests {
         harness.state_mut().dev_tools.hide_console_lines();
         harness.run_steps(3);
         assert!(harness.state().layout.is_shown(Pane::DevTools));
-        // The plan's name is where it is in memory, which changes from run to run.
-        let options = egui_kittest::SnapshotOptions::new().max_failed_pixels(400);
-        harness.snapshot_options("dev_tools", &options);
+        harness.snapshot("dev_tools");
         // Each section collapses.
         assert!(harness.query_by_label("Clear").is_some());
         harness.get_by_role_and_label(egui::accesskit::Role::DisclosureTriangle, "Console").click();
