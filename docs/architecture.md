@@ -139,3 +139,9 @@ Stopping lets writers finish their files in the background ([`background.rs`](..
 A crash, anywhere, writes a report (the thread, the pass and node it was running, a backtrace, the log) and ends the
 program; the next start says where the report is. See [`crash.rs`](../src/core/crash.rs) and
 [Development](development.md#crash-reports).
+
+Not every crash can be caught as it happens: a native library can end the program itself, and outside Windows native
+crashes aren't caught at all. So each run keeps a session file beside the reports, of the log as it goes, locked while it
+runs and emptied when it ends properly. If the next run finds something in it, it makes a report of that, saying what
+the program last said. What's logged reaches it from the GUI's frames, so before calling something that might crash,
+`crash::note` puts a line there straight away, as Spinnaker's opening and closing do.

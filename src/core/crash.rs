@@ -2,14 +2,21 @@
 //! starts, it says where the report is. Crashes aren't recovered from: a crash in the middle of an experiment
 //! likely means stopping it anyway, and the report is what's needed to fix it.
 //!
-//! Panics are caught by a panic hook, wherever they happen. On Windows, so are crashes in native code (the board's
+//! Panics are caught by a panic hook, wherever they happen. On Windows, so are most crashes in native code (the board's
 //! and camera's libraries, say), by an unhandled exception filter, which also says which library it happened in.
+//!
+//! Not everything can be caught: a library can end the program itself (C++'s `abort`, say), and on other systems native
+//! crashes aren't caught at all. So each run also keeps a session file, of the log as it goes, and locked while it
+//! runs, which a run that ends properly empties. Finding one left over, the next run makes a report of it.
 //!
 //! A report says which thread crashed, and which pass and node it was running, if it was a worker; the message, or
 //! the exception; a backtrace; and the last of the log.
 
 use std::fmt::Write as _;
-use std::path::PathBuf;
+use std::fs::File;
+use std::io::{Read, Seek, Write as _};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use crate::core::console;
 
@@ -17,6 +24,11 @@ use crate::core::console;
 const LOG_LINES: usize = 300;
 /// Names the latest report, until the program next starts and says where it is.
 const LATEST: &str = "latest-crash.txt";
+/// What the run going on has logged.
+const SESSION: &str = "session.log";
+
+/// The session file, in this run, unless another copy of the program has it.
+static SESSION_FILE: Mutex<Option<File>> = Mutex::new(None);
 
 /// Where reports go: beside the app's saved preferences.
 pub fn folder() -> Option<PathBuf> {
@@ -34,6 +46,70 @@ pub fn install() {
     }));
     #[cfg(windows)]
     native::install();
+}
+
+/// Catches crashes in native code again, after loading a library, which may have taken over from us. Does nothing where
+/// they're not caught.
+pub fn catch_native_again() {
+    #[cfg(windows)]
+    native::install();
+}
+
+/// Opens the session file at `path`, for this run, returning what's left in it from the last, if anything. `None` if
+/// it can't be opened, or is locked, by another copy of the program.
+fn open_session(path: &Path) -> Option<(File, String)> {
+    let mut file = File::options().read(true).write(true).create(true).truncate(false).open(path).ok()?;
+    file.try_lock().ok()?;
+    let mut left = Vec::new();
+    file.read_to_end(&mut left).ok()?;
+    file.set_len(0).ok()?;
+    file.rewind().ok()?;
+    Some((file, String::from_utf8_lossy(&left).into_owned()))
+}
+
+/// Starts keeping this run's session file, and if the last run didn't end properly, reports that. Call before
+/// `take_latest`.
+pub fn start_session() {
+    let Some(folder) = folder() else { return };
+    if std::fs::create_dir_all(&folder).is_err() {
+        return;
+    }
+    let Some((file, left)) = open_session(&folder.join(SESSION)) else { return };
+    *SESSION_FILE.lock().unwrap() = Some(file);
+    note(&format!("{} started, {}", crate::core::full_version(), chrono::Local::now().to_rfc2822()));
+    if !left.is_empty() {
+        write_report(&ended_unexpectedly(&left));
+    }
+}
+
+/// A report of a run that ended without saying so, from its session file.
+fn ended_unexpectedly(session: &str) -> String {
+    let lines: Vec<&str> = session.lines().collect();
+    let last = lines[lines.len().saturating_sub(LOG_LINES)..].join("\n");
+    format!(
+        "The program ended unexpectedly, with no report of why: most likely in native code (a camera's or board's \
+         library), or it was forced to quit, or the computer stopped.\n\nThe last it said:\n{last}\n"
+    )
+}
+
+/// The run's ended properly, or its crash has been reported.
+pub fn end_session() {
+    // Not waiting: this might be a crash while it's being written to.
+    if let Ok(mut session) = SESSION_FILE.try_lock()
+        && let Some(file) = session.take()
+    {
+        let _ = file.set_len(0);
+    }
+}
+
+/// Writes `line` to the session file, straight away: so it's there, whatever happens next. For saying what's being
+/// tried, before calling something that might crash, as what's logged only gets there once the GUI's taken it.
+pub fn note(line: &str) {
+    if let Ok(mut session) = SESSION_FILE.lock()
+        && let Some(file) = session.as_mut()
+    {
+        let _ = writeln!(file, "{line}");
+    }
 }
 
 /// To try the reports: with `EPHYS_RS_TEST_CRASH` set to `panic`, or (to crash in native code) `native`, crashes
@@ -90,10 +166,16 @@ fn report(what: &str) {
     }
 
     eprintln!("\n{what}");
+    write_report(&text);
+    end_session();
+}
+
+/// Writes `text` to a new report, for the next run to say where it is.
+fn write_report(text: &str) {
     let Some(folder) = folder() else { return eprintln!("{text}") };
     let path = folder.join(format!("crash-{}.txt", chrono::Local::now().format("%Y-%m-%d-%H%M%S")));
     let written = std::fs::create_dir_all(&folder)
-        .and_then(|()| std::fs::write(&path, &text))
+        .and_then(|()| std::fs::write(&path, text))
         .and_then(|()| std::fs::write(folder.join(LATEST), path.display().to_string()));
     match written {
         Ok(()) => eprintln!("A report of the crash is in {}", path.display()),
@@ -178,6 +260,27 @@ mod native {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_run_that_doesnt_end_properly_leaves_its_session_for_the_next() {
+        let path = std::env::temp_dir().join(format!("ephys-rs-session-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        let (mut file, left) = open_session(&path).unwrap();
+        assert_eq!(left, "", "the first run");
+        assert!(open_session(&path).is_none(), "another copy, while it's running");
+        writeln!(file, "Camera: closing").unwrap();
+        drop(file); // as when a process dies
+
+        let (file, left) = open_session(&path).unwrap();
+        assert_eq!(left, "Camera: closing\n", "what it said last");
+        assert!(ended_unexpectedly(&left).contains("Camera: closing"));
+        file.set_len(0).unwrap(); // ending properly
+        drop(file);
+
+        assert_eq!(open_session(&path).unwrap().1, "", "nothing to say");
+        std::fs::remove_file(&path).unwrap();
+    }
 
     #[test]
     fn urls_of_files() {

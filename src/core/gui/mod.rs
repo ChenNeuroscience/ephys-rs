@@ -58,6 +58,7 @@ pub fn run<C: Components>(path: Option<PathBuf>) -> eframe::Result {
     }
     crate::core::console::init(true);
     crate::core::crash::install();
+    crate::core::crash::start_session();
     crate::core::crash::test_if_asked();
     let mut app = App::<C::Nodes, C::Annotations>::open(None, C::THEMES)
         .with_quick_actions(C::QUICK_ACTIONS)
@@ -103,6 +104,7 @@ pub fn run<C: Components>(path: Option<PathBuf>) -> eframe::Result {
     );
     // Writers finishing their files, say.
     crate::core::background::wait();
+    crate::core::crash::end_session();
     result
 }
 

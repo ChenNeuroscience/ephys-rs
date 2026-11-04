@@ -148,9 +148,11 @@ impl Logger {
         }
         let mut kept = self.kept.lock().unwrap();
         for message in self.incoming.try_iter() {
+            let thread = message.thread.name().unwrap_or("?");
+            let line = format!("{:9.3} {:5} [{thread}] {}", message.time, message.level, message.text);
+            crate::core::crash::note(&line);
             if self.echo && message.level <= Level::Info {
-                let thread = message.thread.name().unwrap_or("?");
-                eprintln!("{:9.3} {:5} [{thread}] {}", message.time, message.level, message.text);
+                eprintln!("{line}");
             }
             for (i, text) in message.text.lines().enumerate() {
                 kept.lines.push_back(Line {

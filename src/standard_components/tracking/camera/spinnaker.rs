@@ -9,9 +9,10 @@
 // Written before unsafe calls within `unsafe fn`s needed their own `unsafe` blocks (Rust 2024).
 #![allow(unsafe_op_in_unsafe_fn)]
 
+use std::collections::BTreeSet;
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::io;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use libloading::Library;
 
@@ -33,6 +34,16 @@ const LIBRARY_NAME: &str = "SpinnakerC_v140.dll";
 const LIBRARY_NAME: &str = "libSpinnaker_C.dylib";
 #[cfg(all(unix, not(target_os = "macos")))]
 const LIBRARY_NAME: &str = "libSpinnaker_C.so";
+
+/// The serial numbers of the cameras open, or still closing. Stopping lets go of a camera in the background, and playing
+/// again doesn't wait, but the SDK gives everyone the same camera: closing it under a new run's feet would crash.
+static IN_USE: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+
+/// Says what's about to be done to the camera, somewhere that survives the SDK crashing while it's done.
+fn step(text: &str) {
+    crate::core::crash::note(text);
+    log::info!("{text}");
+}
 
 /// Where the SDK installers put the library, tried after the system search path.
 fn install_dirs() -> Vec<std::path::PathBuf> {
@@ -137,6 +148,7 @@ impl Api {
                 Ok(library) => {
                     let api = unsafe { Api::from_library(library) }?;
                     log::info!("Camera: Spinnaker SDK loaded from {}", candidate.display());
+                    crate::core::crash::catch_native_again();
                     return Ok(api);
                 }
                 Err(e) => errors.push(format!("{}: {e}", candidate.display())),
@@ -295,6 +307,8 @@ pub struct SpinnakerCamera {
     /// The camera accepted the requested frame rate.
     frame_rate_set: bool,
     description: String,
+    /// Its serial number, in `IN_USE`, once it's found.
+    serial: Option<String>,
     /// How many frames have come incomplete.
     incomplete: u64,
     /// Things that didn't go to plan when configuring the camera, for the window to show.
@@ -329,6 +343,7 @@ impl SpinnakerCamera {
             chunk_timestamps: false,
             frame_rate_set: false,
             description: String::new(),
+            serial: None,
             incomplete: 0,
             warnings: Vec::new(),
             fetched: None,
@@ -338,6 +353,7 @@ impl SpinnakerCamera {
         cam.configure(fps)?;
         let reported = REPORTED.iter().filter_map(|name| Some(format!("{name} {}", api.as_text(cam.map, name)?)));
         note(format!("Camera: configured: {}", reported.collect::<Vec<_>>().join(", ")));
+        note("Camera: starting acquisition".into());
         unsafe { api.check((api.spinCameraBeginAcquisition)(cam.camera), "starting acquisition")? };
         Ok(cam)
     }
@@ -364,9 +380,11 @@ impl SpinnakerCamera {
                         } else {
                             Default::default()
                         };
-                    if found.is_null() && serial.is_none_or(|s| s.trim() == this_serial) {
+                    let wanted = serial.is_none_or(|s| s.trim() == this_serial);
+                    if found.is_null() && wanted && IN_USE.lock().unwrap().insert(this_serial.clone()) {
                         found = camera;
                         self.description = format!("{model} (serial {this_serial})");
+                        self.serial = Some(this_serial.clone());
                     } else {
                         (api.spinCameraRelease)(camera);
                     }
@@ -380,9 +398,12 @@ impl SpinnakerCamera {
         }
         note(format!("Camera: Spinnaker sees {} camera(s): {}", seen.len(), seen.join(", ")));
         if found.is_null() {
+            let in_use = IN_USE.lock().unwrap();
+            let closing = !in_use.is_empty() && serial.is_none_or(|s| in_use.contains(s.trim()));
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
                 match serial {
+                    _ if closing => format!("it's in use, or still closing (found: {})", seen.join(", ")),
                     Some(s) => format!("no Spinnaker camera with serial {s} (found: {})", seen.join(", ")),
                     None => "no Spinnaker cameras found (is it plugged in, and powered?)".into(),
                 },
@@ -538,11 +559,18 @@ impl Drop for SpinnakerCamera {
         let api = self.api;
         unsafe {
             if !self.camera.is_null() {
+                step("Camera: stopping acquisition");
                 (api.spinCameraEndAcquisition)(self.camera);
+                step("Camera: closing");
                 (api.spinCameraDeInit)(self.camera);
                 (api.spinCameraRelease)(self.camera);
             }
+            step("Camera: letting go of the Spinnaker system");
             (api.spinSystemReleaseInstance)(self.system);
+        }
+        if let Some(serial) = &self.serial {
+            IN_USE.lock().unwrap().remove(serial);
+            step("Camera: closed");
         }
     }
 }

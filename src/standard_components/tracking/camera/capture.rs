@@ -132,6 +132,7 @@ struct Notes(HashSet<String>);
 impl Notes {
     fn say(&mut self, text: String) {
         if !self.0.contains(&text) {
+            crate::core::crash::note(&text);
             log::info!("{text}");
             self.0.insert(text);
         }
