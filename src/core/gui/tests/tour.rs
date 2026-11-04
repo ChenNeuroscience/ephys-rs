@@ -17,6 +17,7 @@ use crate::core::annotation::Annotation;
 use crate::standard_components::annotations::heading::Heading;
 use crate::standard_components::annotations::sticky_note::StickyNote;
 use crate::standard_components::ephys::board::Source as BoardSource;
+use crate::standard_components::tracking::Crop;
 use crate::standard_components::tracking::camera::Source as CameraSource;
 
 /// The window, in points, drawn at `SCALE` pixels a point (for smooth text, once it's scaled to `WIDTH`).
@@ -25,7 +26,7 @@ const SCALE: f32 = 1.5;
 /// The GIF's width, in pixels.
 const WIDTH: u32 = 960;
 /// How long each frame's shown.
-const SHOWN_MS: u32 = 2000;
+const SHOWN_MS: u32 = 3000;
 
 /// What's written over a frame, and the part of the window the frame shows.
 #[derive(Clone)]
@@ -186,6 +187,10 @@ fn make_tour() {
         match tour.app().graph.get_mut(id).map(|e| &mut e.node) {
             Some(Nodes::AcquisitionBoard(b)) => b.source = BoardSource::Fake { address: board.clone() },
             Some(Nodes::Camera(c)) => c.source = CameraSource::Fake { address: camera.clone() },
+            // The arena, so it's the mouse that's tracked, not the laptop beside it.
+            Some(Nodes::PositionDetector(d)) => {
+                d.detection.crop = Crop::Square { center: [320.0, 240.0], size: 440.0, angle: 0.0 };
+            }
             _ => {}
         }
     }
