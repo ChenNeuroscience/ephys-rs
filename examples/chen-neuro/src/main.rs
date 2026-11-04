@@ -1,4 +1,4 @@
-//! The example: ephys-rs as the Chen lab's LTX rig uses it, and what this repository builds.
+//! chen-neuro: ephys-rs as the Chen lab's LTX rig uses it, and what this repository builds.
 //!
 //!     python3 synthetic_streams/fake_acquisition_board.py   # in other terminals: a fake board...
 //!     python3 synthetic_streams/fake_camera.py              # ...and camera
@@ -12,5 +12,5 @@
 mod components;
 
 fn main() -> eframe::Result {
-    ephys_rs::core::gui::run::<components::Example>(std::env::args().nth(1).map(Into::into))
+    ephys_rs::core::gui::run::<components::ChenNeuro>(std::env::args().nth(1).map(Into::into))
 }

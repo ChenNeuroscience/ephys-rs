@@ -26,4 +26,4 @@ count_up() {
 if ! git diff --cached --quiet -- src Cargo.toml; then
     count_up Cargo.toml ephys-rs
 fi
-count_up example/Cargo.toml ephys-rs-example
+count_up examples/chen-neuro/Cargo.toml chen-neuro

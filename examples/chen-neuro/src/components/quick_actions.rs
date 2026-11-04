@@ -1,4 +1,4 @@
-//! The example's quick actions, offered in the basic view:
+//! chen-neuro's quick actions, offered in the basic view:
 //!
 //! - The standard LTX graph (v0.5): an Open Ephys acquisition board (generation 1 or 2) giving spikes, EEG and digital
 //!   inputs, and a FLIR camera giving positions, all viewed, and recorded by Write LTX. It reuses what the graph

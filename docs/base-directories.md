@@ -18,7 +18,7 @@ while to answer ([`disk_space.rs`](../src/core/gui/disk_space.rs)).
 
 A kind of base directory is a [`BaseDirectoryType`](../src/core/base_directory.rs): a name, a description, and
 `make`, which makes a `BaseDirectory` from whatever it saved last time (or nothing). The program lists them in
-`Components::BASE_DIRECTORIES` (the [example's](../example/src/components/mod.rs), say). A `BaseDirectory`:
+`Components::BASE_DIRECTORIES` ([chen-neuro's](../examples/chen-neuro/src/components/mod.rs), say). A `BaseDirectory`:
 
 - `toolbar_ui`: draws its section of the main toolbar, as wide as it likes. `BaseDirectoryContext::recording` says
   whether it's recording, when what decides where a recording goes shouldn't change. To match the toolbar's
@@ -39,7 +39,7 @@ over the last; with no prefix, the writers name them. The pieces are there for o
 chip), `name_piece` (text made safe for a file's name), `path_separator` (this system's) and `open_button` (opening a
 directory, or as much of it as there is, in the file manager).
 
-The example adds another, in [`trials.rs`](../example/src/components/trials.rs):
+chen-neuro adds another, in [`trials.rs`](../examples/chen-neuro/src/components/trials.rs):
 
 - **Subject, date and trial**: a directory to keep them in, the subject (an animal's id, say), the day and the
   trial, shown as a flat path: `~/recordings/r2405/2026-11-03/r2405 2026-11-03 a`. The subject and the day are

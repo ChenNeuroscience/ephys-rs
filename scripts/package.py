@@ -28,7 +28,7 @@ def macos_app(exe, output):
                                check=True, capture_output=True)
         subprocess.run(["iconutil", "-c", "icns", str(iconset), "-o", str(contents / "Resources" / "icon.icns")],
                        check=True)
-    version = tomllib.loads(Path("example/Cargo.toml").read_text())["package"]["version"]
+    version = tomllib.loads(Path("examples/chen-neuro/Cargo.toml").read_text())["package"]["version"]
     with (contents / "Info.plist").open("wb") as stream:
         plistlib.dump({
             "CFBundleExecutable": "ephys-rs",
@@ -79,7 +79,7 @@ def package(exe, output, platform):
     def minor(manifest):
         return tomllib.loads(Path(manifest).read_text(encoding="utf-8"))["package"]["version"].split(".")[1]
 
-    versions = f"Version: v0.{minor('example/Cargo.toml')}\nCore version: ephys-rs v0.{minor('Cargo.toml')}"
+    versions = f"Version: v0.{minor('examples/chen-neuro/Cargo.toml')}\nCore version: ephys-rs v0.{minor('Cargo.toml')}"
     (output / "BUILD.txt").write_text(f"{versions}\nSource commit: {commit}\n\n{compiler}", encoding="utf-8")
     (output / "THIRD_PARTY_NOTICES.txt").write_text(notices(), encoding="utf-8")
     checksums = [f"{hashlib.sha256(item.read_bytes()).hexdigest()}  {item.name}\n"

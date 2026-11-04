@@ -15,13 +15,18 @@ Start from a quick action, or build your own graph of sources, processing, viewe
 
 ## Downloads
 
-Each push to `main` is tested and built on Windows and macOS by GitHub Actions, and published as a [release](https://github.com/ChenNeuroscience/ephys-rs/releases). On macOS the app isn't notarised, so the first time, right-click it and choose Open.
+Each push to `main` is tested and built on Windows and macOS by GitHub Actions, and published as a [release](https://github.com/ChenNeuroscience/ephys-rs/releases). These are the Chen lab's build. On macOS the app isn't notarised, so the first time, right-click it and choose Open.
 
+## A build for your lab
+
+We expect each lab to need its own build, because everyone is doing something a bit special: a different rig, different file names, or a processing step of your own. Our build is in [`examples/chen-neuro`](examples/chen-neuro).
+
+This isn't hard to do, especially with today's AI. Point an agent at this repository, tell it you want a build for your own lab, and describe what's different about your experiments. Your build is a small program that picks the components it needs and adds its own, so most of the work is already done.
 
 ## Developing
 
 ```bash
-cargo run --release                            # the example program, starting with an empty graph
+cargo run --release                            # the chen-neuro build, starting with an empty graph
 cargo test                                     # includes GUI tests, rendered headless against tests/snapshots
 UPDATE_SNAPSHOTS=1 cargo test                  # accept changes to how the GUI looks
 ```
@@ -32,11 +37,27 @@ The code is in three parts:
 
 1. `src/core`: the graph engine, the GUI, and the traits for nodes, annotations and themes. It knows nothing about particular node, edge or annotation types.
 2. `src/standard_components`: the components most labs will need, grouped by feature (`ephys`, `spikes`, `tracking`...).
-3. `example/`: a custom build, and what this repository releases. It declares which components it's built with, and adds its own: the LTX quick actions, and the subject, date and trial base directory.
+3. `examples/chen-neuro/`: the Chen lab's build, and what this repository releases. It declares which components it's built with, and adds its own: the LTX quick actions, and the subject, date and trial base directory.
 
-The first two are the `ephys-rs` library. To make your own build, add it to a new program with `cargo add --git https://github.com/ChenNeuroscience/ephys-rs ephys-rs`, and use `example/` as a starting point: [custom builds](docs/architecture.md#core-standard-components-and-custom-builds) says what you can add.
+The first two are the `ephys-rs` library. To make your own build, add it to a new program with `cargo add --git https://github.com/ChenNeuroscience/ephys-rs ephys-rs`, and use `examples/chen-neuro/` as a starting point: [custom builds](docs/architecture.md#core-standard-components-and-custom-builds) says what you can add.
 
 To run without real hardware, `synthetic_streams/` has stand-ins, which nodes use by default:
 
 - `python3 synthetic_streams/fake_acquisition_board.py` streams an acquisition board's headstage channels (tetrodes picking up spiking units over theta LFP), accelerometers, analogue inputs and digital inputs.
 - `python3 synthetic_streams/fake_camera.py` streams video of a mouse with two head LEDs in an arena.
+
+### Working with an agent
+
+- **Start with the docs.** Ask it to read the [developer docs](docs/README.md) first, then describe what you want in terms of your experiment, not the code.
+- **Keep lab-specific work in your build.** Ask before changing `src/core`, as changes there make it harder to take updates.
+- **Give it evidence.** Paste the console output or a crash report, or point it at a recording, rather than describing what went wrong.
+- **Ask what's been tested.** An agent can't touch your rig, so have it say what has and hasn't run on real hardware.
+
+### Levels of testing and debugging
+
+Each level catches things the one before can't, and an agent can run the first two by itself:
+
+1. **Tests:** `cargo test` covers the engine and nodes, and renders the GUI without a window. It compares each render with an image in `tests/snapshots`, which an agent can look at too.
+2. **Synthetic data:** the fake board and camera above run the whole app with no hardware. `cargo test -- --ignored` runs the end-to-end tests against them.
+3. **Dev tools:** Ctrl/⌘ Alt I opens the console, and shows each step's time, the threads and the buffers.
+4. **Your rig:** real devices behave differently from the stand-ins, so only this shows that a device works. Connecting logs what it's doing to the console, and [crash reports](docs/development.md#crash-reports) say what was running. Before trusting a new build, make a short recording and check it in [Waveform](https://chenneuroscience.github.io/waveform/).

@@ -19,8 +19,8 @@ A `QuickChange` is:
   recording), as the standard LTX graph chooses subject, date and trial.
 - `summary`: what it did, in a line, which is logged. By convention it says what was added, connected, or changed.
 
-A program supplies its own through `Components`. The example's are in
-[`quick_actions.rs`](../example/src/components/quick_actions.rs), listed in `QUICK_ACTIONS`. Its `Change` helper
+A program supplies its own through `Components`. chen-neuro's are in
+[`quick_actions.rs`](../examples/chen-neuro/src/components/quick_actions.rs), listed in `QUICK_ACTIONS`. Its `Change` helper
 reuses what the graph already has (`find`, `upsert`), adds what's missing beside what it follows (`add`), connects
 ports that are free (`link`), and sums up what it did (`finish`), so an action applies to a graph that's half there,
 and isn't offered once it's all there. `finish` opens the windows it's given in the layout (those not open already),

@@ -416,6 +416,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "chen-neuro"
+version = "0.914.0"
+dependencies = [
+ "chrono",
+ "eframe",
+ "ephys-rs",
+ "serde",
+ "serde_json",
+ "winresource",
+]
+
+[[package]]
 name = "chrono"
 version = "0.4.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -982,7 +994,7 @@ checksum = "cfc1cc505827f4c23eedc297975a0fd038268d41293f389dd8ff3b574aefab19"
 
 [[package]]
 name = "ephys-rs"
-version = "0.69.0"
+version = "0.70.0"
 dependencies = [
  "arboard",
  "base64",
@@ -1008,18 +1020,6 @@ dependencies = [
  "sci-rs",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "ephys-rs-example"
-version = "0.913.0"
-dependencies = [
- "chrono",
- "eframe",
- "ephys-rs",
- "serde",
- "serde_json",
- "winresource",
 ]
 
 [[package]]

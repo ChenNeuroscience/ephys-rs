@@ -1,4 +1,4 @@
-//! Where the example's recordings go: a directory for each subject, within one chosen, and in it, one for each day, with
+//! Where chen-neuro's recordings go: a directory for each subject, within one chosen, and in it, one for each day, with
 //! a file prefix mirroring them: the subject, day and trial ("r2405 2026-11-03 a"). See
 //! `ephys_rs::core::base_directory`.
 

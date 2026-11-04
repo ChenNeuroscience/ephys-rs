@@ -1586,8 +1586,8 @@ mod tests {
             .with_quick_actions(crate::components::quick_actions::QUICK_ACTIONS)
             .with_base_directories(crate::components::BASE_DIRECTORIES)
             .with_about(
-                <crate::components::Example as Components>::ABOUT,
-                <crate::components::Example as Components>::SOURCE,
+                <crate::components::ChenNeuro as Components>::ABOUT,
+                <crate::components::ChenNeuro as Components>::SOURCE,
             );
         // Most tests work on the graph.
         app.layout.mode = Mode::Advanced;
@@ -1781,7 +1781,7 @@ mod tests {
         harness.run_steps(2);
         let app = harness.state();
         assert_eq!(app.graph.edges().len(), edges + 1);
-        // Named after the example's own.
+        // Named after chen-neuro's own.
         let gain = Port { node: node_named(app, "Continuous Gain 2"), role: Role::Input, index: 0 };
         let board = node_named(app, "Acquisition Board");
         assert_eq!(app.graph.edge_into(gain).map(|e| e.from.node), Some(board));

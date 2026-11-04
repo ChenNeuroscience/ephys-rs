@@ -11,13 +11,13 @@ There are three parts:
 - [`src/standard_components`](../src/standard_components/mod.rs): the node, edge and annotation types, themes and base
   directory most labs will need, grouped by feature (`ephys`, `spikes`, `tracking`, `recording`...).
 - A custom build: a program that declares which components it's made of, including any of its own, and runs them.
-  [`example/`](../example/src/components/mod.rs) is one, and what this repository builds and releases: the standard
+  [`examples/chen-neuro/`](../examples/chen-neuro/src/components/mod.rs) is one, and what this repository builds and releases: the standard
   components, with quick actions for the LTX rig and a base directory for subjects, dates and trials.
 
-The first two are the `ephys-rs` library, at the root of the repository; `example/` is a program in the same workspace,
+The first two are the `ephys-rs` library, at the root of the repository; `examples/chen-neuro/` is a program in the same workspace,
 so `cargo run` runs it, and its binary is called `ephys-rs` too. A build of your own starts with
 `cargo add --git https://github.com/ChenNeuroscience/ephys-rs ephys-rs`, as well as `serde` and `eframe`, which the
-macros below use. (`cargo install --git` installs programs, so here that's the example.)
+macros below use. (`cargo install --git` installs programs, so here that's chen-neuro.)
 
 A build lists its types with `node_set!` (node types, in the order the add-node menu offers them) and
 `annotation_set!`, then implements [`Components`](../src/core/mod.rs) with them, its themes, quick actions and base
@@ -36,8 +36,8 @@ and setting are the exception: they're declared once, with `edge_types!` in [`li
 components are written against them, and adding one means adding it there. There's no loading of code at run time, and
 no stable interface between versions.
 
-The app's tests are in the library, as they use its internals, but they're of the whole program: `lib.rs` compiles the
-example's components into them. The example's own tests run there too.
+The app's tests are in the library, as they use its internals, but they're of the whole program: `lib.rs` compiles
+chen-neuro's components into them. Its own tests run there too.
 
 ## The graph and snapshots
 

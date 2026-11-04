@@ -2,7 +2,7 @@
 //! handing things from passes to windows (`exchange`), threads finishing in the background (`background`), how plots
 //! over time lay out time (`time_axis`), quick actions (`quick_action`), and the GUI (`gui`).
 //! None of it knows about particular node, edge or annotation types, or themes: the program supplies those
-//! (see `example/`), declared with `edge_types!`, `node_set!` and `annotation_set!`, through `Components`.
+//! (see `examples/chen-neuro/`), declared with `edge_types!`, `node_set!` and `annotation_set!`, through `Components`.
 
 pub mod annotation;
 pub mod background;
@@ -30,7 +30,7 @@ static FULL_VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 /// the core's alone, for what wants only that. Until `gui::run` has started, it's just the core's.
 pub fn full_version() -> String {
     #[cfg(test)]
-    return <crate::components::Example as Components>::version();
+    return <crate::components::ChenNeuro as Components>::version();
     #[cfg(not(test))]
     FULL_VERSION.get().cloned().unwrap_or_else(version)
 }

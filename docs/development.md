@@ -3,7 +3,7 @@
 ## Building and running
 
 ```bash
-cargo run --release                            # the example program, with an empty graph
+cargo run --release                            # chen-neuro, with an empty graph
 cargo run --release -- my-graph.json           # opening a graph file
 ```
 
@@ -66,9 +66,9 @@ one log, so they fix what's shown (`App::problems`), rather than showing each ot
 
 There are two versions, shown together at the right of the status bar: `chen-neuro v0.x (ephys-rs v0.y)`. A build says
 what it shows, with `Components::version` (see [custom builds](architecture.md#core-standard-components-and-custom-builds)),
-and this one's in [`example/`](../example/src/components/mod.rs).
+and this one's in [`examples/chen-neuro/`](../examples/chen-neuro/src/components/mod.rs).
 
-- `x` is the build's: example/Cargo.toml's minor version, from 900. It's what's released, so every commit counts it up,
+- `x` is the build's: examples/chen-neuro/Cargo.toml's minor version, from 900. It's what's released, so every commit counts it up,
   including those that only change the core. Commits of nothing but Markdown (the README, these docs) count up neither.
 - `y` is the core's: the root Cargo.toml's minor version. Only commits that change the library (`src/`, or the root
   Cargo.toml) count it up.
@@ -102,6 +102,11 @@ a caption. To change what's in it, edit [`tour.rs`](../src/core/gui/tests/tour.r
 ignored test only because the test harness is what draws the app without a window. It starts its own fake board and
 camera, on ports of their own, and writes nothing but the GIF, and the frames in `target/tour`. As in tests, the date,
 the versions and the disk's free space are fixed.
+
+## The icon
+
+`scripts/export_icon.js` makes the icons from `assets/icon.svg`. In `icon.ico`, only the 256 pixel image is a PNG, and
+the smaller ones are bitmaps, as Windows doesn't reliably read PNGs at small sizes.
 
 ## Crash reports
 

@@ -34,7 +34,7 @@ pub fn path_separator(ui: &mut egui::Ui, context: &BaseDirectoryContext) {
 }
 
 /// A piece of a path in the toolbar: pale, just enough to hint that it's a piece, and clicked if `clickable`. Hovering
-/// it says what it is, right below it. See the toolbar's other pieces in `Trials` (in the example), say.
+/// it says what it is, right below it. See the toolbar's other pieces in `Trials` (in chen-neuro), say.
 pub fn path_chip(
     ui: &mut egui::Ui,
     text: RichText,

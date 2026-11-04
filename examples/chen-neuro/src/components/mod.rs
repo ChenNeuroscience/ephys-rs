@@ -1,4 +1,4 @@
-//! What the example's made of: the standard components, its quick actions and its base directory.
+//! What chen-neuro's made of: the standard components, its quick actions and its base directory.
 
 pub mod china;
 pub mod quick_actions;
@@ -62,9 +62,9 @@ pub const BASE_DIRECTORIES: &[BaseDirectoryType] = &[A_DIRECTORY, trials::TRIALS
 
 /// The program's parts, for the core.
 #[cfg_attr(test, allow(dead_code))]
-pub struct Example;
+pub struct ChenNeuro;
 
-impl Components for Example {
+impl Components for ChenNeuro {
     type Nodes = Nodes;
     type Annotations = AnnotationTypes;
     const THEMES: &'static [Theme] = THEMES;
@@ -83,6 +83,6 @@ impl Components for Example {
 /// The graph in tests/rig.json, for tests.
 #[cfg(test)]
 pub fn example_graph() -> ephys_rs::core::engine::Graph<Nodes> {
-    let file: serde_json::Value = serde_json::from_str(include_str!("../../../tests/rig.json")).unwrap();
+    let file: serde_json::Value = serde_json::from_str(include_str!("../../../../tests/rig.json")).unwrap();
     serde_json::from_value(file["graph"].clone()).unwrap()
 }

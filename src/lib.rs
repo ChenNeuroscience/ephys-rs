@@ -2,7 +2,7 @@
 //!
 //! The core (engine, annotations, themes, GUI) and the standard components (edge, node and annotation types, and
 //! themes). A program lists the parts it's made of, including any of its own, and runs them: see `core::Components`,
-//! `core::gui::run`, and `example/` for one. The kinds of data and settings the standard components share are declared
+//! `core::gui::run`, and `examples/chen-neuro/` for one. The kinds of data and settings the standard components share are declared
 //! here.
 
 pub mod core;
@@ -33,11 +33,11 @@ edge_types! {
     }
 }
 
-// The tests are of the whole program: the example's.
+// The tests are of the whole program: chen-neuro's.
 #[cfg(test)]
 extern crate self as ephys_rs;
 #[cfg(test)]
-#[path = "../example/src/components/mod.rs"]
+#[path = "../examples/chen-neuro/src/components/mod.rs"]
 mod components;
 #[cfg(test)]
 use components::{AnnotationTypes, Nodes, example_graph};

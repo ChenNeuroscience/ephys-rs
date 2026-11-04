@@ -1,8 +1,8 @@
 [package]
-name = "ephys-rs-example"
-version = "0.913.0"
+name = "chen-neuro"
+version = "0.914.0"
 edition = "2024"
-description = "The example program built on ephys-rs, which is what this repository releases"
+description = "The Chen lab's build of ephys-rs, which is what this repository releases"
 publish = false
 
 [[bin]]
@@ -12,7 +12,7 @@ path = "src/main.rs"
 test = false
 
 [dependencies]
-ephys-rs = { path = ".." }
+ephys-rs = { path = "../.." }
 chrono = "^0.4.40"
 eframe = { version = "0.37", default-features = false }
 serde = { version = "1", features = ["derive"] }
