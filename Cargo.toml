@@ -1,6 +1,6 @@
 [package]
 name = "ephys-rs"
-version = "0.73.0"
+version = "0.74.0"
 edition = "2024"
 description = "Electrophysiology acquisition, processing and recording, built around a node graph"
 publish = false
@@ -32,6 +32,7 @@ dugong = "0.9.3"
 arboard = { version = "3.7", default-features = false }
 realfft = "3.5.1"
 fs4 = { version = "1.1.0", default-features = false, features = ["sync"] }
+cpal = "0.18.2"
 
 [dev-dependencies]
 egui_kittest = { version = "0.37", features = ["wgpu", "snapshot"] }

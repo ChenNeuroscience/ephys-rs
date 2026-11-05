@@ -8,6 +8,7 @@ use ephys_rs::core::base_directory::BaseDirectoryType;
 use ephys_rs::core::quick_action::QuickAction;
 use ephys_rs::core::theme::Theme;
 use ephys_rs::core::{Components, build_version};
+use ephys_rs::standard_components::alarms::{detector, viewer};
 use ephys_rs::standard_components::annotations::{arrow, group_box, heading, image, markdown, sticky_note};
 use ephys_rs::standard_components::base_directories::A_DIRECTORY;
 use ephys_rs::standard_components::ephys::{
@@ -33,11 +34,13 @@ node_set! {
         SpikeDetector(spike_detector::SpikeDetector),
         SpikeGain(spike_gain::SpikeGain),
         PositionDetector(position_detector::PositionDetector),
+        AlarmDetector(detector::AlarmDetector),
         LfpViewer(lfp_viewer::LfpViewer),
         SpikeViewer(spike_viewer::SpikeViewer),
         TtlViewer(ttl_viewer::TtlViewer),
         VideoViewer(video_viewer::VideoViewer),
         TrackerView(tracker_view::TrackerView),
+        AlarmViewer(viewer::AlarmViewer),
         WriteLtx(ltx::WriteLtx),
         WriteRaw(raw::WriteRaw),
     }

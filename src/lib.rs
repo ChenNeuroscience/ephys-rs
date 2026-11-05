@@ -8,6 +8,7 @@
 pub mod core;
 pub mod standard_components;
 
+use standard_components::alarms;
 use standard_components::ephys::{self, reference, spectrum};
 use standard_components::spikes;
 use standard_components::tracking::{self, camera};
@@ -22,6 +23,7 @@ edge_types! {
         Positions(tracking::Positions),
         CameraStats(camera::CameraStats),
         Spectra(spectrum::Spectra),
+        AlarmStates(alarms::AlarmStates),
     }
     settings: pub enum Setting, SettingKind {
         Thresholds(spikes::Thresholds),
@@ -30,6 +32,7 @@ edge_types! {
         Reference(reference::Reference),
         Camera(camera::CameraSettings),
         Detection(tracking::Detection),
+        Alarms(alarms::Alarms),
     }
 }
 

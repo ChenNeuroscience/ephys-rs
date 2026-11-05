@@ -4,8 +4,8 @@
 //!   inputs, and a FLIR camera giving positions, all viewed, and recorded by Write LTX. It reuses what the graph
 //!   already has, adding only what's missing (and connecting only ports that are free), so it's offered until the
 //!   graph has it all. It arranges the panes: the tracker view in a column at the left (with home as a tab behind
-//!   it); the spike viewer filling the rest above (with any panes open before as tabs behind it), and the LFP viewer
-//!   below that (with the TTL viewer as a tab behind it).
+//!   it) above the alarms; the spike viewer filling the rest above (with any panes open before as tabs behind it), and
+//!   the LFP viewer below that (with the TTL viewer as a tab behind it).
 //! - Disabling position tracking (the camera, position detector and tracker view), while it's all enabled; and
 //!   enabling it, while any of it isn't.
 //! - Using synthetic data (the fake board and camera in `synthetic_streams`), while any board or camera is real; and
@@ -14,6 +14,7 @@
 use super::Nodes;
 use ephys_rs::core::engine::{Graph, NodeId, NodeSet, Port, Role};
 use ephys_rs::core::quick_action::{Arrangement, QuickAction, QuickChange, QuickState, Tab};
+use ephys_rs::standard_components::alarms::detector::AlarmDetector;
 use ephys_rs::standard_components::ephys::band_pass::BandPassFilter;
 use ephys_rs::standard_components::ephys::board::{self, node::AcquisitionBoard, opal_kelly::OpalKellyKind};
 use ephys_rs::standard_components::tracking::camera::{self, node::Camera};
@@ -161,7 +162,8 @@ fn real_camera() -> camera::Source {
 /// inputs → TTL Viewer; Camera → Position Detector → Tracker View (setting the camera's and detector's settings).
 /// Write LTX records the spikes (at their gains), the LFP branch's data as EEG (the channels selected, band-passed,
 /// through a Continuous Gain), the positions (with the detector's settings), the digital inputs and the timing LED, if
-/// there is one. New boards and cameras
+/// there is one. An Alarm Detector watches the spikes, the channels selected (before they're filtered, where the
+/// headstages' rails are), the positions and the timing LED, for an Alarms viewer that sets it. New boards and cameras
 /// are real. Recordings go in a directory for each subject, day and trial.
 fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
     let mut change = Change::new(state.graph);
@@ -243,14 +245,37 @@ fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
     change.link((ltx, Control, 2), (selector, Setting, 0));
     change.link((ltx, Control, 3), (continuous_gain, Setting, 0));
 
-    let mut result = change.finish(state, &[spike_viewer, lfp_viewer, ttl_viewer, tracker])?;
+    // Alarms: on the spikes, the channels selected, the positions and the timing LED.
+    let alarm_detector = match change.find(|n| matches!(n, Nodes::AlarmDetector(_))) {
+        Some(alarm_detector) => alarm_detector,
+        None => {
+            // A rig without a timing LED has no TTLs to expect from it.
+            let timing_led = matches!(change.graph.get(positions).map(|e| &e.node),
+                Some(Nodes::PositionDetector(p)) if p.detection.timing_led.enabled);
+            let mut node = AlarmDetector::default();
+            node.alarms.ttl.on = timing_led;
+            change.add(Nodes::AlarmDetector(node), Some(gain))
+        }
+    };
+    change.link((gain, Output, 0), (alarm_detector, Input, 0));
+    change.link((selector, Output, 0), (alarm_detector, Input, 1));
+    change.link((positions, Output, 0), (alarm_detector, Input, 2));
+    change.link((positions, Output, 1), (alarm_detector, Input, 3));
+    let alarm_viewer = change.upsert("Alarms", Some(alarm_detector));
+    change.link((alarm_detector, Output, 0), (alarm_viewer, Input, 0));
+    change.link((alarm_viewer, Control, 0), (alarm_detector, Setting, 0));
+
+    let mut result = change.finish(state, &[spike_viewer, lfp_viewer, ttl_viewer, tracker, alarm_viewer])?;
     // A new graph, laid out tidily; recording each subject's trials.
     result.arrange = empty;
     result.base_directory = Some("Subject, date and trial");
-    // The default layout: the tracker (with home behind it) on the left, the spikes and the EEG (with the TTLs) on the
-    // right; the panes there were before behind the spikes.
+    // The default layout: the tracker (with home behind it) above the alarms on the left, where they're always in view;
+    // the spikes and the EEG (with the TTLs) on the right, the panes there were before behind the spikes.
     result.layout.arrange(&Arrangement::default_layout(
-        Arrangement::Tabs { tabs: vec![Tab::Home, Tab::Window(tracker)], active: 1 },
+        Arrangement::Column(vec![
+            (0.7, Arrangement::Tabs { tabs: vec![Tab::Home, Tab::Window(tracker)], active: 1 }),
+            (0.3, Arrangement::tabs(vec![Tab::Window(alarm_viewer)])),
+        ]),
         Arrangement::tabs(vec![Tab::Window(spike_viewer), Tab::Others]),
         Arrangement::tabs(vec![Tab::Window(lfp_viewer), Tab::Window(ttl_viewer)]),
     ));
@@ -361,7 +386,7 @@ mod tests {
         assert!(change.arrange, "a new graph is laid out");
         assert_eq!(change.base_directory, Some("Subject, date and trial"));
         assert!(change.summary.starts_with("added Acquisition Board, "), "{}", change.summary);
-        assert_eq!(change.layout.open_windows().len(), 4, "the four viewers");
+        assert_eq!(change.layout.open_windows().len(), 5, "the five viewers");
         let graph = change.graph;
         let resolved = graph.resolve();
         assert!(graph.iter().all(|(id, e)| e.node.warnings(&resolved[&id].input_streams).is_empty()), "all connected");
@@ -380,8 +405,13 @@ mod tests {
             .collect();
         let lfp =
             graph.iter().find(|(_, e)| matches!(&e.node, Nodes::BandPassFilter(f) if f.high_hz <= 500.0)).unwrap().0;
-        assert_eq!(fed, vec![lfp], "only the LFP branch");
+        assert_eq!(fed, vec![lfp, named("Alarm Detector")], "only the LFP branch, and its alarm");
         assert_eq!(feeding(named("Continuous Gain")), lfp, "the EEG written is the LFP branch's, after the selection");
+        // The alarms watch all but the TTLs, with no timing LED to expect them from.
+        let inputs = &resolved[&named("Alarm Detector")].input_streams;
+        assert!(inputs.iter().all(Option::is_some), "all connected");
+        let Nodes::AlarmDetector(alarms) = &graph.get(named("Alarm Detector")).unwrap().node else { panic!() };
+        assert!(alarms.alarms.spikes.on && !alarms.alarms.ttl.on);
         // The LFP Viewer sets the EEG's gains, the selection and the spikes' reference.
         let lfp_viewer = named("LFP Viewer");
         let controls = |port| {

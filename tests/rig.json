@@ -407,9 +407,75 @@
           "node": 17,
           "port": 0
         }
+      },
+      {
+        "dimension": "Data",
+        "from": {
+          "node": 15,
+          "port": 0
+        },
+        "to": {
+          "node": 18,
+          "port": 0
+        }
+      },
+      {
+        "dimension": "Data",
+        "from": {
+          "node": 13,
+          "port": 0
+        },
+        "to": {
+          "node": 18,
+          "port": 1
+        }
+      },
+      {
+        "dimension": "Data",
+        "from": {
+          "node": 8,
+          "port": 0
+        },
+        "to": {
+          "node": 18,
+          "port": 2
+        }
+      },
+      {
+        "dimension": "Data",
+        "from": {
+          "node": 8,
+          "port": 1
+        },
+        "to": {
+          "node": 18,
+          "port": 3
+        }
+      },
+      {
+        "dimension": "Data",
+        "from": {
+          "node": 18,
+          "port": 0
+        },
+        "to": {
+          "node": 19,
+          "port": 0
+        }
+      },
+      {
+        "dimension": "Settings",
+        "from": {
+          "node": 19,
+          "port": 0
+        },
+        "to": {
+          "node": 18,
+          "port": 0
+        }
       }
     ],
-    "next_id": 18,
+    "next_id": 20,
     "nodes": {
       "1": {
         "label": "Acquisition Board",
@@ -732,6 +798,28 @@
         "pos": [
           560.0,
           694.0
+        ]
+      },
+      "18": {
+        "label": "Alarm Detector",
+        "node": {
+          "settings": {},
+          "type": "AlarmDetector"
+        },
+        "pos": [
+          1680.0,
+          720.0
+        ]
+      },
+      "19": {
+        "label": "Alarms",
+        "node": {
+          "settings": {},
+          "type": "AlarmViewer"
+        },
+        "pos": [
+          1960.0,
+          720.0
         ]
       }
     }
