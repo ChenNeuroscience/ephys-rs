@@ -686,8 +686,11 @@ impl Canvas {
         }
         // Whether to explain read-only settings edges too.
         let read_only = resolved.values().any(|s| s.controls.iter().any(|c| c.read_only));
+        // Data's types are listed; settings are all edged alike, so there's just the one row for them.
+        let rows_of = |dimension: Dimension, kinds: usize| if dimension == Dimension::Data { kinds } else { 1 };
         let rows: usize = if self.legend_open {
-            sections.iter().map(|(_, _, kinds)| 1 + kinds.len()).sum::<usize>() + read_only as usize
+            sections.iter().map(|(_, dimension, kinds)| 1 + rows_of(*dimension, kinds.len())).sum::<usize>()
+                + read_only as usize
         } else {
             0
         };
@@ -740,36 +743,41 @@ impl Canvas {
                 self.settings_edges_eye(ui, painter, Rect::from_center_size(at, egui::Vec2::splat(16.0)), selection);
             }
             y += ROW;
-            for info in kinds {
-                let mid = y + ROW / 2.0;
-                let (start, end) = (egui::pos2(title.left(), mid), egui::pos2(title.left() + 26.0, mid));
-                let stroke = Stroke::new(2.0, wire_colour(dimension, info.colour, colours));
-                match dimension {
-                    Dimension::Data => {
+            let label_at = |mid: f32| egui::pos2(title.left() + 36.0, mid);
+            let ends = |mid: f32| (egui::pos2(title.left(), mid), egui::pos2(title.left() + 26.0, mid));
+            match dimension {
+                Dimension::Data => {
+                    for info in kinds {
+                        let mid = y + ROW / 2.0;
+                        let (start, end) = ends(mid);
+                        let stroke = Stroke::new(2.0, wire_colour(dimension, info.colour, colours));
                         painter.line_segment([start, end], stroke);
                         arrowhead(painter, start.lerp(end, 0.5), egui::vec2(1.0, 0.0), 7.0, info.colour);
-                    }
-                    // A grey edge into a port of the type's colour, as on the graph.
-                    Dimension::Settings => {
-                        painter.extend(Shape::dashed_line(&[start, end], stroke, 5.0, 3.0));
-                        both_ways(painter, start.lerp(end, 0.45), egui::vec2(1.0, 0.0), 6.0, stroke.color);
-                        painter.add(Shape::convex_polygon(diamond(end, 5.0), info.colour, Stroke::NONE));
-                        painter.add(Shape::convex_polygon(diamond(end, 2.0), stroke.color, Stroke::NONE));
+                        painter.text(label_at(mid), Align2::LEFT_CENTER, info.name, font.clone(), colours.text_primary);
+                        y += ROW;
                     }
                 }
-                let label = egui::pos2(title.left() + 36.0, mid);
-                painter.text(label, Align2::LEFT_CENTER, info.name, font.clone(), colours.text_primary);
-                y += ROW;
+                // A dashed edge both ways into a port, as on the graph, where the port has its setting's colour.
+                Dimension::Settings => {
+                    let mid = y + ROW / 2.0;
+                    let (start, end) = ends(mid);
+                    let stroke = Stroke::new(2.0, colours.text_secondary);
+                    painter.extend(Shape::dashed_line(&[start, end], stroke, 5.0, 3.0));
+                    both_ways(painter, start.lerp(end, 0.45), egui::vec2(1.0, 0.0), 6.0, stroke.color);
+                    painter.add(Shape::convex_polygon(diamond(end, 5.0), stroke.color, Stroke::NONE));
+                    painter.text(label_at(mid), Align2::LEFT_CENTER, "read/write", font.clone(), colours.text_primary);
+                    y += ROW;
+                }
             }
         }
         if read_only {
-            // A dotted edge into a hollow port, as a control that only reads a setting has.
+            // A dotted edge into a hollow port, as a control that only reads a setting has: left to right, as they mostly go.
             let mid = y + ROW / 2.0;
             let (start, end) = (egui::pos2(title.left(), mid), egui::pos2(title.left() + 26.0, mid));
             painter.extend(Shape::dotted_line(&[start, end], colours.text_secondary, 4.0, 1.2));
             let outline = Stroke::new(1.5, colours.text_secondary);
-            painter.add(Shape::convex_polygon(diamond(start, 4.5), colours.surface, outline));
-            arrowhead(painter, start.lerp(end, 0.5), egui::vec2(-1.0, 0.0), 6.0, colours.text_secondary);
+            painter.add(Shape::convex_polygon(diamond(end, 4.5), colours.surface, outline));
+            arrowhead(painter, start.lerp(end, 0.5), egui::vec2(1.0, 0.0), 6.0, colours.text_secondary);
             let label = egui::pos2(title.left() + 36.0, mid);
             painter.text(label, Align2::LEFT_CENTER, "read only", font.clone(), colours.text_primary);
         }
