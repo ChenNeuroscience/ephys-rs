@@ -121,11 +121,15 @@ next pass.
 ## The GUI
 
 [`gui`](../src/core/gui/mod.rs) is an egui app: menus and a toolbar, a dockable layout of panes, and a status bar.
-The app is in **basic** or **advanced** mode: in basic mode, the home pane shows the components (viewers, to begin
-with) and [quick actions](quick-actions.md); in advanced mode, the graph, and each pane has a settings menu. What a
+The app is in **basic** or **advanced** mode: in basic mode, the home pane shows the version, with a link to the About
+window, the components (viewers, to begin with) and [quick actions](quick-actions.md); in advanced mode, the graph, and each pane has a settings menu. What a
 pane shows in each mode is up to it (`Context::advanced`). Where panes go when they're opened is the
 [layout](quick-actions.md#the-layout)'s to say ([`layout.rs`](../src/core/layout.rs)): windows take steps towards a
 default layout, a column on the left and two groups one above another on the right.
+
+What's kept between runs, whatever file's open, is in the app's preferences: the `eframe::Storage` that `App::save`
+writes to (the theme, the base directories and the recent files, under the `*_KEY`s in
+[`gui`](../src/core/gui/mod.rs)). File › Open Recent lists the last 10 files opened or saved, as does the basic view while the graph's empty.
 
 ![Basic mode, after the standard LTX quick action](../tests/snapshots/standard_ltx_layout.png)
 

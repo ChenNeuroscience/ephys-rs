@@ -89,6 +89,7 @@ pub fn run<C: Components>(path: Option<PathBuf>) -> eframe::Result {
             app.themes[app.theme].apply(&cc.egui_ctx);
             let saved: Option<serde_json::Value> = cc.storage.and_then(|s| eframe::get_value(s, BASE_DIRECTORY_KEY));
             app.base_directories = BaseDirectories::new(app.base_directories.types(), saved.as_ref());
+            app.recent = cc.storage.and_then(|s| eframe::get_value(s, RECENT_KEY)).unwrap_or_default();
             // After the preferences: what a file has comes first.
             if let Some(path) = path {
                 app.open_path(path);
@@ -113,6 +114,13 @@ pub fn run<C: Components>(path: Option<PathBuf>) -> eframe::Result {
 const THEME_KEY: &str = "theme";
 /// Where the base directories are kept with the app's preferences (see `BaseDirectories::save`).
 const BASE_DIRECTORY_KEY: &str = "base directory";
+/// Where the recent files are kept with the app's preferences.
+const RECENT_KEY: &str = "recent files";
+/// How many recent files are kept.
+const RECENT_FILES: usize = 10;
+
+/// What's in a file: its graph and annotations.
+type Saved<N, A> = (Arc<Graph<N>>, Arc<Annotations<A>>);
 
 /// Something a pane asked for, handled once the panes are drawn.
 pub enum Event {
@@ -196,11 +204,13 @@ struct Status {
 pub struct App<N: NodeSet, A: AnnotationSet> {
     /// The file being edited, if it's been saved.
     path: Option<PathBuf>,
-    /// The version in the file, if any: anything else has unsaved changes.
-    saved: Option<u64>,
+    /// What's in the file, if any: anything else has unsaved changes.
+    saved: Option<Saved<N, A>>,
     /// The base directories as they are in the file (they aren't part of the graph's versions), if it's been saved or
     /// opened.
     saved_base_directory: Option<serde_json::Value>,
+    /// The files last opened or saved, latest first (kept with the app's preferences).
+    recent: Vec<PathBuf>,
     /// The user has said to close despite unsaved changes.
     closing: bool,
     /// The themes to choose from, and the one in use.
@@ -260,6 +270,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             path: None,
             saved: None,
             saved_base_directory: None,
+            recent: Vec::new(),
             closing: false,
             themes,
             theme: 0,
@@ -330,10 +341,23 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         self.status = Some(Status { message: message.into(), until: ctx.input(|i| i.time) + 5.0, ok: true });
     }
 
+    /// Whether there's anything to lose: an empty graph has nothing, whatever's in the file (which stays as it is).
     fn unsaved(&self) -> bool {
+        let (graph, annotations) = (&self.history.current.snapshot.graph, &self.history.current.annotations);
+        if graph.iter().next().is_none() && annotations.iter().next().is_none() {
+            return false;
+        }
         let base_directory = self.saved_base_directory.as_ref();
-        self.saved != Some(self.history.current.snapshot.version)
+        self.saved.as_ref().is_none_or(|saved| *saved.0 != **graph || *saved.1 != **annotations)
             || base_directory.is_some_and(|saved| *saved != self.base_directories.save())
+    }
+
+    /// Puts `path` at the top of the recent files.
+    fn remember(&mut self, path: &Path) {
+        let path = std::path::absolute(path).unwrap_or_else(|_| path.to_owned());
+        self.recent.retain(|recent| *recent != path);
+        self.recent.insert(0, path);
+        self.recent.truncate(RECENT_FILES);
     }
 
     fn file_name(&self) -> String {
@@ -368,12 +392,14 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         self.canvas.frame_all();
         self.path = Some(path.to_owned());
         self.mark_saved();
+        self.remember(path);
         Ok(())
     }
 
     /// What there is now is what's in the file.
     fn mark_saved(&mut self) {
-        self.saved = Some(self.history.current.snapshot.version);
+        let current = &self.history.current;
+        self.saved = Some((current.snapshot.graph.clone(), current.annotations.clone()));
         self.saved_base_directory = Some(self.base_directories.save());
     }
 
@@ -434,6 +460,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         match result {
             Ok(()) => {
                 self.set_done(ctx, format!("Saved {}", path.display()));
+                self.remember(&path);
                 self.path = Some(path);
                 self.mark_saved();
                 true
@@ -483,6 +510,18 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         if let Some(path) = self.file_dialog().pick_file()
             && let Err(e) = self.load(&path)
         {
+            self.set_status(ctx, format!("Couldn't open {}: {e}", path.display()));
+        }
+    }
+
+    /// Opens one of the recent files, by index. One that can't be opened is taken off the list.
+    fn open_recent(&mut self, ctx: &egui::Context, index: usize) {
+        let Some(path) = self.recent.get(index).cloned() else { return };
+        if !self.confirm_discard(ctx, "opening another") {
+            return;
+        }
+        if let Err(e) = self.load(&path) {
+            self.recent.retain(|recent| *recent != path);
             self.set_status(ctx, format!("Couldn't open {}: {e}", path.display()));
         }
     }
@@ -545,9 +584,8 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
     fn set_recording(&mut self, recording: Option<Arc<engine::Recording>>) {
         let on = recording.is_some();
         let place = recording.as_ref().and_then(|r| r.base_directory().cloned());
-        let Some((old, new)) = self.history.set_recording(recording) else { return };
-        if self.saved == Some(old) {
-            self.saved = Some(new);
+        if !self.history.set_recording(recording) {
+            return;
         }
         let clock = self.runner.as_ref().map_or(0.0, |r| r.clock());
         if let Some(base) = self.base_directories.current() {
@@ -845,6 +883,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         match action {
             Action::New => self.new_file(ctx),
             Action::Open => self.open_file(ctx),
+            Action::OpenRecent(index) => self.open_recent(ctx, index),
             Action::Save => {
                 self.save(ctx);
             }
@@ -1049,22 +1088,13 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         (clicked, problems_clicked)
     }
 
-    /// What's just happened, or a hint.
+    /// What's just happened.
     fn status_message(&self, ui: &mut egui::Ui, now: f64) {
-        match (&self.status, self.canvas.hint()) {
-            (Some(status), _) if now < status.until => {
-                let colours = self.colours();
-                let colour = if status.ok { colours.success } else { colours.warning };
-                ui.label(RichText::new(&status.message).color(colour))
-            }
-            (_, Some(hint)) if self.layout.mode == Mode::Advanced => ui.label(hint),
-            // The rest are about the home pane.
-            _ if !self.layout.is_shown(Pane::Home) => return,
-            _ if self.layout.mode == Mode::Basic => {
-                ui.weak("Open a component, or add some with a quick action · the graph shows how it all fits together")
-            }
-            _ => ui.weak("Double-click, right-click or Tab on the canvas to add a node · drag from a port to connect"),
-        };
+        if let Some(status) = self.status.as_ref().filter(|status| now < status.until) {
+            let colours = self.colours();
+            let colour = if status.ok { colours.success } else { colours.warning };
+            ui.label(RichText::new(&status.message).color(colour));
+        }
     }
 
     /// How the run is going: workers, passes and their timing, and memory.
@@ -1278,6 +1308,10 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         if let Some(menu) = &self.mac_menu {
             menu.sync(|a| self.checked(a) == Some(true));
         }
+        #[cfg(target_os = "macos")]
+        if let Some(menu) = &mut self.mac_menu {
+            menu.show_recent(&self.recent);
+        }
         self.graph.prune_edges();
         self.selection.retain_existing(&self.graph, &self.annotations);
         self.layout.retain_nodes(&self.graph);
@@ -1339,6 +1373,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                 canvas: &mut self.canvas,
                 selection: &mut self.selection,
                 open_windows: &open_windows,
+                recent: &self.recent,
                 events: &mut events,
                 frame_times: &self.frame_times,
                 timings: &mut timings,
@@ -1453,6 +1488,7 @@ impl<N: NodeSet, A: AnnotationSet> eframe::App for App<N, A> {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, THEME_KEY, &self.themes[self.theme].name);
         eframe::set_value(storage, BASE_DIRECTORY_KEY, &self.base_directories.save());
+        eframe::set_value(storage, RECENT_KEY, &self.recent);
     }
 }
 
@@ -1535,20 +1571,18 @@ impl<N: NodeSet, A: AnnotationSet> History<N, A> {
         Some(self.restored())
     }
 
-    /// Makes the current version recording or not, as a new version (not one to undo to). Returns the old version
-    /// and the new, if it changed.
-    fn set_recording(&mut self, recording: Option<Arc<engine::Recording>>) -> Option<(u64, u64)> {
-        let old = self.current.snapshot.version;
+    /// Makes the current version recording or not, as a new version (not one to undo to). Returns whether it changed.
+    fn set_recording(&mut self, recording: Option<Arc<engine::Recording>>) -> bool {
         let same = match (&self.current.snapshot.recording, &recording) {
             (Some(a), Some(b)) => Arc::ptr_eq(a, b),
             (a, b) => a.is_none() && b.is_none(),
         };
         if same {
-            return None;
+            return false;
         }
         self.versions += 1;
         self.current.snapshot = self.current.snapshot.with_recording(self.versions, recording);
-        Some((old, self.versions))
+        true
     }
 
     fn redo(&mut self) -> Option<(Graph<N>, Annotations<A>)> {
@@ -1974,8 +2008,115 @@ mod tests {
     }
 
     #[test]
+    fn only_what_would_be_lost_counts_as_unsaved() {
+        let mut harness = harness();
+        // The harness gives the app its base directories after opening the file, not before as `run` does.
+        harness.state_mut().saved_base_directory = Some(harness.state().base_directories.save());
+        harness.run_steps(3);
+        let opened = |h: &Harness<TestApp>| !h.state().unsaved();
+        assert!(opened(&harness), "as it was opened, after being shown");
+
+        // Changed, then changed back.
+        let id = harness.state().graph.iter().next().unwrap().0;
+        let was = harness.state().graph.get(id).unwrap().pos;
+        harness.state_mut().graph.get_mut(id).unwrap().pos = [was[0] + 10.0, was[1]];
+        harness.run_steps(2);
+        assert!(!opened(&harness));
+        harness.state_mut().graph.get_mut(id).unwrap().pos = was;
+        harness.run_steps(2);
+        assert!(opened(&harness), "the same as the file, though not by undoing");
+
+        // Nothing there: the file's still there, and a new graph has nothing to save.
+        harness.state_mut().graph = Graph::default();
+        harness.state_mut().annotations = Annotations::default();
+        harness.run_steps(2);
+        assert!(opened(&harness));
+
+        let fresh = TestApp::open(None, THEMES);
+        assert!(!fresh.unsaved(), "just started");
+    }
+
+    #[test]
+    fn opening_and_saving_files_lists_them_as_recent() {
+        let mut harness = harness();
+        let context = harness.ctx.clone();
+        let directory = std::env::temp_dir().join(format!("ephys-rs-recent-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = |i: usize| directory.join(format!("{i}.json"));
+        harness.state_mut().recent.clear();
+        for i in 0..RECENT_FILES + 2 {
+            assert!(harness.state_mut().save_to(&context, path(i)));
+        }
+        assert_eq!(harness.state().recent.len(), RECENT_FILES, "the oldest go");
+        assert_eq!(harness.state().recent[0], path(RECENT_FILES + 1), "latest first");
+
+        // Opening one moves it to the top, without listing it twice.
+        harness.state_mut().open_recent(&context, 3);
+        assert_eq!(harness.state().path, Some(path(RECENT_FILES - 2)));
+        assert_eq!(harness.state().recent[0], path(RECENT_FILES - 2));
+        assert_eq!(harness.state().recent.len(), RECENT_FILES);
+
+        // One that's gone comes off the list, and what's open stays open.
+        std::fs::remove_file(path(RECENT_FILES + 1)).unwrap();
+        harness.state_mut().open_recent(&context, 1);
+        assert_eq!(harness.state().recent.len(), RECENT_FILES - 1);
+        assert!(!harness.state().recent.contains(&path(RECENT_FILES + 1)));
+        assert_eq!(harness.state().path, Some(path(RECENT_FILES - 2)));
+
+        // In the File menu.
+        harness.get_by_label("File").click();
+        harness.run_steps(2);
+        harness.get_by_label("Open Recent").hover();
+        harness.run_steps(3);
+        let name = crate::core::gui::actions::recent_name(&path(RECENT_FILES));
+        harness.get_by_label(&name).click();
+        harness.run_steps(3);
+        assert_eq!(harness.state().path, Some(path(RECENT_FILES)));
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn the_basic_view_lists_recent_files_while_the_graph_is_empty() {
+        let mut harness = harness();
+        harness.state_mut().layout.mode = Mode::Basic;
+        let context = harness.ctx.clone();
+        let path = std::env::temp_dir().join(format!("ephys-rs-basic-recent-{}.json", std::process::id()));
+        assert!(harness.state_mut().save_to(&context, path.clone()));
+        harness.run_steps(2);
+        assert!(harness.query_by_label("Recent files").is_none(), "not with a graph");
+
+        harness.state_mut().new_file(&context);
+        harness.run_steps(2);
+        let file = path.file_name().unwrap().to_string_lossy().into_owned();
+        harness.get_by_label(&file).click();
+        harness.run_steps(3);
+        assert_eq!(harness.state().path, Some(path.clone()), "it opens");
+        assert!(harness.state().graph.iter().next().is_some());
+        std::fs::remove_file(&path).unwrap();
+
+        harness.state_mut().new_file(&context);
+        let shown = vec![PathBuf::from("/rigs/ltx/rig.json"), PathBuf::from("/rigs/old/tetrodes.json")];
+        harness.state_mut().recent = shown;
+        harness.state_mut().status = None; // it says the temporary file's name
+        harness.run_steps(3);
+        assert!(harness.query_by_label("Components").is_none(), "none to show");
+        harness.snapshot("basic_recent_files");
+    }
+
+    #[test]
     fn the_status_bar_shows_the_builds_version() {
         harness().get_by_label("chen-neuro v0.x (ephys-rs v0.y)");
+    }
+
+    #[test]
+    fn the_basic_view_is_titled_with_the_version_and_links_to_about() {
+        let mut harness = harness();
+        harness.state_mut().layout.mode = Mode::Basic;
+        harness.run_steps(2);
+        assert_eq!(harness.get_all_by_label("chen-neuro v0.x (ephys-rs v0.y)").count(), 2, "and in the status bar");
+        harness.get_by_label("About").click();
+        harness.run_steps(3);
+        assert!(harness.state().about.is_some());
     }
 
     #[test]

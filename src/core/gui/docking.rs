@@ -2,6 +2,7 @@
 //! and what dragging and closing tabs does.
 
 use std::collections::HashSet;
+use std::path::PathBuf;
 
 use eframe::egui;
 use egui_tiles::{SimplificationOptions, TileId, Tiles, UiResponse};
@@ -54,6 +55,8 @@ pub struct Panes<'a, N: NodeSet, A: AnnotationSet> {
     pub canvas: &'a mut Canvas,
     pub selection: &'a mut Selection,
     pub open_windows: &'a HashSet<NodeId>,
+    /// The files last opened or saved, latest first.
+    pub recent: &'a [PathBuf],
     pub events: &'a mut Vec<Event>,
     /// For the dev tools' chart; and each pane's time this frame, as it's drawn.
     pub frame_times: &'a FrameTimes,
@@ -219,6 +222,7 @@ impl<N: NodeSet, A: AnnotationSet> Panes<'_, N, A> {
                 self.quick_actions,
                 self.offered,
                 self.open_windows,
+                self.recent,
                 self.locked,
                 self.events,
             ),

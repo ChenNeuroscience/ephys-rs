@@ -1,13 +1,17 @@
-//! The basic view, the home pane's first mode, for people who'd rather not work with the graph: the components shown
-//! in it (viewers, unless set otherwise: see `NodeEntry::in_basic`), large, to open their windows (beside it); and the
+//! The basic view, the home pane's first mode, for people who'd rather not work with the graph: the program's version
+//! as a title, with a link to the About window; while the graph's empty, the recent files, and otherwise the components
+//! shown in it (viewers, unless set otherwise: see `NodeEntry::in_basic`), large, to open their windows (beside it); and the
 //! quick actions that apply to the graph, in grey (blue is for processing). Disabled components are faded, as on the
 //! graph. The graph is in advanced mode (the toolbar's graph button), a click away.
 
 use std::collections::HashSet;
+use std::path::PathBuf;
 
 use eframe::egui::{self, Color32, CornerRadius, RichText, Sense, Stroke};
 
 use super::Event;
+use super::actions::Action;
+use super::icons::Icon;
 use super::style;
 use crate::core::engine::{Category, EdgeSet, Graph, NodeId, NodeSet, Resolved};
 use crate::core::quick_action::QuickAction;
@@ -28,71 +32,98 @@ pub fn show<N: NodeSet>(
     // Those offered, by index (see `App::offered`).
     offered: &[usize],
     open_windows: &HashSet<NodeId>,
+    recent: &[PathBuf],
     locked: bool,
     events: &mut Vec<Event>,
 ) {
     egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         egui::Frame::new().inner_margin(egui::Margin::symmetric(20, 16)).show(ui, |ui| {
             ui.set_max_width(WIDTH.min(ui.available_width()));
-            ui.label(RichText::new("Components").size(22.0).color(colours.text_primary));
-            ui.add_space(8.0);
-            let mut views: Vec<(NodeId, &str, Category)> = graph
-                .iter()
-                .filter(|(_, e)| e.in_basic())
-                .map(|(id, e)| (id, e.label.as_str(), e.node.info().category))
-                .collect();
-            views.sort_by_key(|(id, label, _)| (graph.get(*id).map(|e| e.pos[1] as i64), *label));
-            if views.is_empty() {
-                ui.label(RichText::new("None yet: add some with a quick action below.").color(colours.text_secondary));
+            ui.label(RichText::new(crate::core::full_version()).size(26.0).color(colours.text_primary));
+            if ui.link(RichText::new("About").size(12.0)).clicked() {
+                events.push(Event::Perform(Action::About, None));
             }
-            for (id, label, category) in views {
-                let open = open_windows.contains(&id);
-                let detail = resolved.get(&id).map(|state| {
-                    let connected: Vec<String> = state
-                        .inputs
-                        .iter()
-                        .zip(&state.input_streams)
-                        .filter_map(|(input, stream)| {
-                            let summary = EdgeSet::summary(stream.as_ref()?);
-                            Some(if summary.is_empty() {
-                                input.name.to_string()
-                            } else {
-                                format!("{}: {summary}", input.name)
-                            })
-                        })
-                        .collect();
-                    if connected.is_empty() { None } else { Some(connected.join(" · ")) }
-                });
-                let disabled = graph.get(id).is_some_and(|e| e.disabled);
-                let (detail, detail_colour) = match detail.flatten() {
-                    _ if disabled => ("Disabled".to_owned(), colours.text_secondary),
-                    Some(detail) => (detail, colours.text_secondary),
-                    None => ("Nothing connected yet".to_owned(), colours.warning),
-                };
-                let colour = style::category_colour(category);
-                // Faded, as on the graph.
-                let card = ui
-                    .scope(|ui| {
-                        if disabled {
-                            ui.multiply_opacity(DISABLED_OPACITY);
-                        }
-                        card(ui, colours, colour, label, &detail, detail_colour, None)
-                    })
-                    .inner;
-                let tip = if open { "Its window's open" } else { "Open its window beside this view" };
-                let card = card.on_hover_text(format!("{tip} (right-click to hide it from here)"));
-                if card.clicked() {
-                    events.push(Event::OpenWindow(id, Some(crate::core::layout::Pane::Home)));
-                }
-                card.context_menu(|ui| {
-                    if ui.button("Hide from the basic view").clicked() {
-                        events.push(Event::InBasic(id, false));
-                    }
-                });
-                ui.add_space(6.0);
-            }
-
             ui.add_space(18.0);
+            let empty = graph.iter().next().is_none();
+            if empty && !recent.is_empty() {
+                ui.label(RichText::new("Recent files").size(22.0).color(colours.text_primary));
+                ui.add_space(8.0);
+                for (index, path) in recent.iter().enumerate() {
+                    let name = path.file_name().unwrap_or(path.as_os_str()).to_string_lossy();
+                    ui.horizontal(|ui| {
+                        let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(14.0), Sense::hover());
+                        Icon::New.paint(ui.painter(), rect, colours.text_secondary, true);
+                        let link = ui.link(name).on_hover_text(path.display().to_string());
+                        if link.clicked() {
+                            events.push(Event::Perform(Action::OpenRecent(index), None));
+                        }
+                    });
+                }
+                ui.add_space(18.0);
+            }
+            if !empty {
+                ui.label(RichText::new("Components").size(22.0).color(colours.text_primary));
+                ui.add_space(8.0);
+                let mut views: Vec<(NodeId, &str, Category)> = graph
+                    .iter()
+                    .filter(|(_, e)| e.in_basic())
+                    .map(|(id, e)| (id, e.label.as_str(), e.node.info().category))
+                    .collect();
+                views.sort_by_key(|(id, label, _)| (graph.get(*id).map(|e| e.pos[1] as i64), *label));
+                if views.is_empty() {
+                    ui.label(
+                        RichText::new("None yet: add some with a quick action below.").color(colours.text_secondary),
+                    );
+                }
+                for (id, label, category) in views {
+                    let open = open_windows.contains(&id);
+                    let detail = resolved.get(&id).map(|state| {
+                        let connected: Vec<String> = state
+                            .inputs
+                            .iter()
+                            .zip(&state.input_streams)
+                            .filter_map(|(input, stream)| {
+                                let summary = EdgeSet::summary(stream.as_ref()?);
+                                Some(if summary.is_empty() {
+                                    input.name.to_string()
+                                } else {
+                                    format!("{}: {summary}", input.name)
+                                })
+                            })
+                            .collect();
+                        if connected.is_empty() { None } else { Some(connected.join(" · ")) }
+                    });
+                    let disabled = graph.get(id).is_some_and(|e| e.disabled);
+                    let (detail, detail_colour) = match detail.flatten() {
+                        _ if disabled => ("Disabled".to_owned(), colours.text_secondary),
+                        Some(detail) => (detail, colours.text_secondary),
+                        None => ("Nothing connected yet".to_owned(), colours.warning),
+                    };
+                    let colour = style::category_colour(category);
+                    // Faded, as on the graph.
+                    let card = ui
+                        .scope(|ui| {
+                            if disabled {
+                                ui.multiply_opacity(DISABLED_OPACITY);
+                            }
+                            card(ui, colours, colour, label, &detail, detail_colour)
+                        })
+                        .inner;
+                    let tip = if open { "Its window's open" } else { "Open its window beside this view" };
+                    let card = card.on_hover_text(format!("{tip} (right-click to hide it from here)"));
+                    if card.clicked() {
+                        events.push(Event::OpenWindow(id, Some(crate::core::layout::Pane::Home)));
+                    }
+                    card.context_menu(|ui| {
+                        if ui.button("Hide from the basic view").clicked() {
+                            events.push(Event::InBasic(id, false));
+                        }
+                    });
+                    ui.add_space(6.0);
+                }
+
+                ui.add_space(18.0);
+            }
             ui.label(RichText::new("Quick actions").size(22.0).color(colours.text_primary));
             ui.add_space(8.0);
             let offered: Vec<(usize, &QuickAction<N>)> =
@@ -109,7 +140,6 @@ pub fn show<N: NodeSet>(
                         action.name,
                         action.description,
                         colours.text_secondary,
-                        Some("Apply"),
                     );
                     if card.on_disabled_hover_text("Not while recording").clicked() {
                         events.push(Event::QuickAction(index));
@@ -121,8 +151,7 @@ pub fn show<N: NodeSet>(
     });
 }
 
-/// A large, clickable card: a stripe of `colour` at the left, a title, a line of detail, and what clicking does at
-/// the right.
+/// A large, clickable card: a stripe of `colour` at the left, a title and a line of detail.
 fn card(
     ui: &mut egui::Ui,
     colours: &Colours,
@@ -130,7 +159,6 @@ fn card(
     title: &str,
     detail: &str,
     detail_colour: Color32,
-    action: Option<&str>,
 ) -> egui::Response {
     let enabled = ui.is_enabled();
     let width = ui.available_width();
@@ -141,18 +169,9 @@ fn card(
         .inner_margin(egui::Margin { left: 18, right: 14, top: 12, bottom: 12 })
         .show(ui, |ui| {
             ui.set_width(width - 34.0);
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    let ink = if enabled { colours.text_primary } else { colours.text_disabled };
-                    ui.label(RichText::new(title).size(17.0).color(ink));
-                    ui.label(RichText::new(detail).size(12.0).color(detail_colour));
-                });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if let Some(action) = action {
-                        ui.label(RichText::new(action).color(colours.text_primary));
-                    }
-                });
-            });
+            let ink = if enabled { colours.text_primary } else { colours.text_disabled };
+            ui.label(RichText::new(title).size(17.0).color(ink));
+            ui.label(RichText::new(detail).size(12.0).color(detail_colour));
         })
         .response;
     let response = ui.interact(response.rect, response.id.with("card"), Sense::click());

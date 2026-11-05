@@ -1,6 +1,8 @@
 //! The app's commands, with their names, shortcuts and place in the menus. The menu bar (in the window, or
 //! on macOS the system's), the toolbar and the keyboard shortcuts all work from these.
 
+use std::path::Path;
+
 use eframe::egui::{Key, KeyboardShortcut, Modifiers};
 
 use crate::core::annotation::AnnotationInfo;
@@ -10,6 +12,8 @@ use crate::core::theme::Theme;
 pub enum Action {
     New,
     Open,
+    /// Opens one of the recent files, by index.
+    OpenRecent(usize),
     Save,
     SaveAs,
     Quit,
@@ -60,9 +64,23 @@ pub enum MenuEntry {
     DrawTools,
     /// Each theme the program has.
     Themes,
+    /// The files last opened or saved.
+    RecentFiles,
 }
 
-use MenuEntry::{Action as Item, DrawTools, Separator, Submenu, Themes};
+use MenuEntry::{Action as Item, DrawTools, RecentFiles, Separator, Submenu, Themes};
+
+/// A recent file, as the menu has it: its name, then where it is.
+pub fn recent_name(path: &Path) -> String {
+    let name = path.file_name().unwrap_or(path.as_os_str()).to_string_lossy();
+    match path.parent() {
+        Some(directory) => format!("{name} — {}", directory.display()),
+        None => name.into_owned(),
+    }
+}
+
+/// What the recent files' menu says when there aren't any.
+pub const NO_RECENT_FILES: &str = "No recent files";
 
 /// The menus, in order.
 pub const MENUS: &[(&str, &[MenuEntry])] = &[
@@ -71,6 +89,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
         &[
             Item(Action::New),
             Item(Action::Open),
+            Submenu("Open Recent", &[RecentFiles]),
             Separator,
             Item(Action::Save),
             Item(Action::SaveAs),
@@ -144,6 +163,7 @@ impl Action {
         match self {
             Action::New => "New",
             Action::Open => "Open…",
+            Action::OpenRecent(_) => "Open Recent",
             Action::Save => "Save",
             Action::SaveAs => "Save As…",
             Action::Quit => {

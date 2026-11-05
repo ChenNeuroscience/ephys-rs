@@ -391,26 +391,6 @@ impl Canvas {
         self.editing = Some(id);
     }
 
-    /// What the user can do in the middle of a gesture, for the status bar.
-    pub fn hint(&self) -> Option<&'static str> {
-        if let Tool::Draw(_) = self.tool {
-            Some("Drag out the annotation, or click for the default size. Escape to cancel")
-        } else if let Some(port) = self.wire {
-            Some(match port.role.dimension() {
-                Dimension::Data => "Release on a highlighted port to connect, or on empty space to add a node there",
-                Dimension::Settings => {
-                    "Release on a highlighted setting or control to link them, or on empty space to add a node"
-                }
-            })
-        } else if self.marquee.is_some() {
-            Some("Hold shift to add to the selection")
-        } else if self.editing.is_some() {
-            Some("Editing an annotation. Click outside it or press Escape to finish")
-        } else {
-            None
-        }
-    }
-
     fn framing<N: NodeSet, A: AnnotationSet>(
         &self,
         graph: &Graph<N>,

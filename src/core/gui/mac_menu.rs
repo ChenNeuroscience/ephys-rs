@@ -1,12 +1,14 @@
 //! The menu bar at the top of the screen on macOS, where apps are expected to have one, in place of the
 //! window's own. Built from the same menus. Shortcuts are left to the app (as on other platforms), except Quit.
 
+use std::path::PathBuf;
 use std::sync::mpsc;
 
 use eframe::egui;
 use muda::{CheckMenuItem, IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 
-use super::actions::{Action, MENUS, MenuEntry};
+use super::RECENT_FILES;
+use super::actions::{self, Action, MENUS, MenuEntry};
 use crate::core::annotation::AnnotationInfo;
 use crate::core::theme::Theme;
 
@@ -16,6 +18,9 @@ pub struct MacMenu {
     actions: mpsc::Receiver<Action>,
     /// Items with a checkmark, to keep in step with the app.
     checks: Vec<(Action, CheckMenuItem)>,
+    /// The recent files' submenu, and the files in it (none shown yet, if `None`).
+    recent: Option<Submenu>,
+    recent_shown: Option<Vec<PathBuf>>,
 }
 
 fn id(action: Action) -> String {
@@ -26,6 +31,7 @@ fn id(action: Action) -> String {
 struct Builder<'a> {
     actions: Vec<Action>,
     checks: Vec<(Action, CheckMenuItem)>,
+    recent: Option<Submenu>,
     checkable: &'a dyn Fn(Action) -> bool,
     annotations: &'static [AnnotationInfo],
     themes: &'static [Theme],
@@ -48,6 +54,8 @@ impl Builder<'_> {
                     items.extend((0..self.annotations.len()).map(|i| self.action(Action::DrawTool(i))));
                 }
                 MenuEntry::Themes => items.extend((0..self.themes.len()).map(|i| self.action(Action::Theme(i)))),
+                // Filled in by `show_recent`.
+                MenuEntry::RecentFiles => self.actions.extend((0..RECENT_FILES).map(Action::OpenRecent)),
                 MenuEntry::Separator => items.push(Box::new(PredefinedMenuItem::separator())),
                 MenuEntry::Submenu(title, inner) => items.push(Box::new(self.submenu(title, inner)?)),
             }
@@ -72,6 +80,9 @@ impl Builder<'_> {
         let items = self.items(entries)?;
         let refs: Vec<&dyn IsMenuItem> = items.iter().map(|i| i.as_ref()).collect();
         submenu.append_items(&refs).ok()?;
+        if entries.iter().any(|entry| matches!(entry, MenuEntry::RecentFiles)) {
+            self.recent = Some(submenu.clone());
+        }
         Some(submenu)
     }
 }
@@ -84,7 +95,8 @@ impl MacMenu {
         annotations: &'static [AnnotationInfo],
         themes: &'static [Theme],
     ) -> Option<Self> {
-        let mut builder = Builder { actions: vec![Action::Quit], checks: Vec::new(), checkable, annotations, themes };
+        let mut builder =
+            Builder { actions: vec![Action::Quit], checks: Vec::new(), recent: None, checkable, annotations, themes };
         let app = Submenu::with_items(
             "ephys-rs",
             true,
@@ -114,12 +126,29 @@ impl MacMenu {
                 ctx.request_repaint();
             }
         }));
-        Some(MacMenu { _menu: menu, actions, checks: builder.checks })
+        Some(MacMenu { _menu: menu, actions, checks: builder.checks, recent: builder.recent, recent_shown: None })
     }
 
     /// Actions chosen from the menu since last asked.
     pub fn actions(&self) -> Vec<Action> {
         self.actions.try_iter().collect()
+    }
+
+    /// Shows these recent files, if they aren't what's shown already.
+    pub fn show_recent(&mut self, recent: &[PathBuf]) {
+        if self.recent_shown.as_deref() == Some(recent) {
+            return;
+        }
+        self.recent_shown = Some(recent.to_vec());
+        let Some(submenu) = &self.recent else { return };
+        while submenu.remove_at(0).is_some() {}
+        for (index, path) in recent.iter().enumerate() {
+            let name = actions::recent_name(path);
+            let _ = submenu.append(&MenuItem::with_id(id(Action::OpenRecent(index)), name, true, None));
+        }
+        if recent.is_empty() {
+            let _ = submenu.append(&MenuItem::new(actions::NO_RECENT_FILES, false, None));
+        }
     }
 
     /// Updates the checkmarks to match the app. (The menu toggles an item's checkmark itself when it's

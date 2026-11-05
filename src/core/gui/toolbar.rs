@@ -4,7 +4,7 @@
 
 use eframe::egui::{self, Rect, Sense, Stroke, StrokeKind};
 
-use super::actions::{Action, MENUS, MenuEntry};
+use super::actions::{self, Action, MENUS, MenuEntry};
 use super::canvas::Tool;
 use super::icons::{self, Icon};
 use super::{App, Event};
@@ -161,6 +161,16 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                 MenuEntry::Themes => {
                     for index in 0..self.themes.len() {
                         self.menu_item(ui, Action::Theme(index), chosen);
+                    }
+                }
+                MenuEntry::RecentFiles => {
+                    if self.recent.is_empty() {
+                        ui.add_enabled(false, egui::Button::new(actions::NO_RECENT_FILES));
+                    }
+                    for (index, path) in self.recent.iter().enumerate() {
+                        if ui.button(actions::recent_name(path)).clicked() {
+                            *chosen = Some(Action::OpenRecent(index));
+                        }
                     }
                 }
             }
