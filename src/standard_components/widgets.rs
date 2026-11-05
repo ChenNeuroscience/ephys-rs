@@ -46,6 +46,21 @@ pub fn require_input(inputs: &[Option<DataStream>], what: &str) -> Vec<String> {
     if inputs.iter().all(|i| i.is_none()) { vec![format!("Connect {what}")] } else { Vec::new() }
 }
 
+/// A checkbox for all of a list of `count` checkboxes, `selected` of which are ticked: a dash if it's only some. Returns
+/// whether to tick them all, or none, if it's clicked: some ticked, that's all.
+pub fn all_checkbox(ui: &mut egui::Ui, selected: usize, count: usize) -> Option<bool> {
+    let mut all = selected == count && count > 0;
+    let some = selected > 0 && !all;
+    ui.add(egui::Checkbox::new(&mut all, "All").indeterminate(some)).changed().then_some(all)
+}
+
+/// Shows a toggle for all of a list as on for only some of it: an outline, between off and the fill of on. It's for icons
+/// and other buttons, as the dash is for checkboxes.
+pub fn mark_mixed(ui: &egui::Ui, button: &egui::Response) {
+    let stroke = egui::Stroke::new(1.0, ui.visuals().selection.bg_fill);
+    ui.painter().rect_stroke(button.rect, 3.0, stroke, egui::StrokeKind::Inside);
+}
+
 /// A settings button, in the part of a view it's about, that opens the window of the node control `control` connects to:
 /// `what` is that node. It's greyed out while the control's not connected.
 pub fn open_settings_button(ui: &mut egui::Ui, context: &mut Context<Edges>, control: usize, what: &str) {

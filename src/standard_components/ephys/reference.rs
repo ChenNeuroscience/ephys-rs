@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::engine::{Category, Context, EdgeInfo, EdgeType, Input, Node, NodeInfo, Output, Pass, SettingPort};
 use crate::standard_components::ephys::Continuous;
-use crate::standard_components::widgets::{input_summary, require_input, setting, settings_grid};
+use crate::standard_components::widgets::{all_checkbox, input_summary, require_input, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
 
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
@@ -373,16 +373,15 @@ impl Node<Edges> for Reference {
     }
 }
 
-/// The channels the reference is of, a checkbox each, in rows as wide as fit; and all or none of them.
+/// The channels the reference is of, a checkbox each, in rows as wide as fit; and one for all of them.
 fn reference_channels_ui(ui: &mut egui::Ui, text: &mut String, count: u32) {
     let mut chosen: Vec<u32> = parse_channels(text, count).unwrap_or_default();
     ui.horizontal(|ui| {
         ui.label(RichText::new(format!("Of {} of the {count} channels", chosen.len())).strong());
-        if ui.small_button("All").clicked() {
-            *text = "all".into();
-        }
-        if ui.small_button("None").clicked() {
-            *text = "none".into();
+        match all_checkbox(ui, chosen.len(), count as usize) {
+            Some(true) => *text = "all".into(),
+            Some(false) => *text = "none".into(),
+            None => {}
         }
     });
     let across = ((ui.available_width() / 48.0) as u32).clamp(4, 16);

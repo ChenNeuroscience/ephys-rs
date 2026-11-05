@@ -28,7 +28,7 @@ use crate::standard_components::pool::{Pool, SharedPool};
 use crate::standard_components::preview;
 use crate::standard_components::spikes::{Channels, GainScope, Gains};
 use crate::standard_components::widgets::{
-    open_settings_button, require_input, setting, settings_grid, toolbar_section,
+    mark_mixed, open_settings_button, require_input, setting, settings_grid, toolbar_section,
 };
 use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
 
@@ -845,11 +845,18 @@ fn column_toggles(
         }
     }
     let reference = reference.filter(|r| averaged(r))?;
-    let all = (0..channels).all(|channel| in_reference(reference, channel));
+    let count = (0..channels).filter(|channel| in_reference(reference, *channel)).count();
+    let all = count == channels as usize;
+    let mixed = count > 0 && !all;
     let button = egui::Button::selectable(all, egui::RichText::new("R").size(10.0)).min_size(egui::vec2(18.0, 16.0));
     let place = at(REFERENCE_X, egui::vec2(18.0, 16.0));
     let response = ui.add_enabled_ui(!locked, |ui| ui.put(place, button)).inner;
-    let clicked = response.on_hover_text("Put all the channels in the reference, or none").clicked();
+    if mixed {
+        mark_mixed(ui, &response);
+    }
+    let tip =
+        if mixed { "Some in the reference: click for all" } else { "Put all the channels in the reference, or none" };
+    let clicked = response.on_hover_text(tip).clicked();
     clicked.then_some(if all { "none" } else { "all" })
 }
 

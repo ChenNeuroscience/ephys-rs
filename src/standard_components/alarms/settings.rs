@@ -5,7 +5,7 @@ use eframe::egui;
 
 use super::{Alarm, AlarmKind, AlarmStates, Alarms, PERIODS, Selection};
 use crate::core::gui::widgets::{Icon, small_toggle_button};
-use crate::standard_components::widgets::settings_grid;
+use crate::standard_components::widgets::{all_checkbox, mark_mixed, settings_grid};
 
 /// Between the buttons at the right of an alarm.
 pub const BUTTON_GAP: f32 = 2.0;
@@ -14,6 +14,25 @@ pub const BUTTON_GAP: f32 = 2.0;
 pub fn power(ui: &mut egui::Ui, on: &mut bool, label: &str) -> egui::Response {
     let tip = if *on { "On: click to switch off, keeping the settings" } else { "Off: click to switch on" };
     toggle(ui, Icon::Power, on, label, tip)
+}
+
+/// The power button for all the alarms, with `some` of them on, of `count`. Returns whether to switch them all on, or off,
+/// if it's clicked.
+pub fn all_power(ui: &mut egui::Ui, some: usize, count: usize) -> Option<bool> {
+    let mut all = some == count && count > 0;
+    let mixed = some > 0 && !all;
+    let tip = if mixed {
+        "Some on: click to switch them all on"
+    } else if all {
+        "All on: click to switch them off"
+    } else {
+        "All off: click to switch them on"
+    };
+    let button = toggle(ui, Icon::Power, &mut all, "All alarms", tip);
+    if mixed {
+        mark_mixed(ui, &button);
+    }
+    button.changed().then_some(all)
 }
 
 /// A small icon button for `on`.
@@ -84,8 +103,8 @@ fn all_row(ui: &mut egui::Ui, alarms: &mut Alarms) {
                 if small_toggle_button(ui, Icon::Delete, "Delete all", "Delete all the alarms", false).clicked() {
                     alarms.list.clear();
                 }
-                let mut all = alarms.all_on();
-                if power(ui, &mut all, "All alarms").changed() {
+                let on = alarms.list.iter().filter(|alarm| alarm.on).count();
+                if let Some(all) = all_power(ui, on, alarms.list.len()) {
                     alarms.list.iter_mut().for_each(|alarm| alarm.on = all);
                 }
             });
@@ -191,13 +210,13 @@ fn settings(ui: &mut egui::Ui, alarm: &mut Alarm, stream: AlarmStates) {
 }
 
 /// Which groups, channels or lines it watches.
-fn selection_ui(ui: &mut egui::Ui, selection: &mut Selection, items: u32, name: &str) {
+pub fn selection_ui(ui: &mut egui::Ui, selection: &mut Selection, items: u32, name: &str) {
     ui.horizontal_wrapped(|ui| {
-        if ui.small_button("All").clicked() {
-            selection.left_out.clear();
-        }
-        if ui.small_button("None").clicked() {
-            selection.left_out = (0..items).collect();
+        let selected = (0..items).filter(|item| selection.selected(*item)).count();
+        match all_checkbox(ui, selected, items as usize) {
+            Some(true) => selection.left_out.clear(),
+            Some(false) => selection.left_out = (0..items).collect(),
+            None => {}
         }
         for item in 0..items {
             let mut selected = selection.selected(item);

@@ -658,6 +658,20 @@ mod tests {
         harness.run_steps(3);
         assert_eq!(on(&harness), vec![false, false], "and all off");
 
+        // A list's own checkbox for all of it: a dash, for some.
+        let mut selection = Selection { left_out: vec![1], together: false };
+        let mut harness2 = egui_kittest::Harness::builder().with_size([300.0, 60.0]).wgpu().build_ui_state(
+            |ui, selection: &mut Selection| super::super::settings::selection_ui(ui, selection, 3, "line"),
+            std::mem::take(&mut selection),
+        );
+        harness2.run_steps(2);
+        harness2.get_by_label("All").click();
+        harness2.run_steps(2);
+        assert!(harness2.state().left_out.is_empty(), "some, so it's all");
+        harness2.get_by_label("All").click();
+        harness2.run_steps(2);
+        assert_eq!(harness2.state().left_out, vec![0, 1, 2], "then none");
+
         harness.get_by_label("Delete all").click();
         harness.run_steps(3);
         assert!(harness.state().list.is_empty());
