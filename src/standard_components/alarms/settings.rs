@@ -1,89 +1,211 @@
-//! The alarms' settings, in the Alarm Processor's window: when each goes off, and what it watches.
+//! The alarms' settings, in the Alarm Processor's window: a row for all of them, then each with what's healthy, over how
+//! long and what it watches, and what can be added.
 
 use eframe::egui;
 
-use super::{Alarm, AlarmStates, Alarms, PERIODS, Source};
+use super::{Alarm, AlarmKind, AlarmStates, Alarms, PERIODS, Selection};
+use crate::core::gui::widgets::{Icon, small_toggle_button};
+use crate::standard_components::widgets::settings_grid;
 
-/// Every alarm's settings. Those with nothing connected have only a note.
+/// Between the buttons at the right of an alarm.
+pub const BUTTON_GAP: f32 = 2.0;
+
+/// The button that switches alarms on and off, with `label` as its accessible name.
+pub fn power(ui: &mut egui::Ui, on: &mut bool, label: &str) -> egui::Response {
+    let tip = if *on { "On: click to switch off, keeping the settings" } else { "Off: click to switch on" };
+    toggle(ui, Icon::Power, on, label, tip)
+}
+
+/// A small icon button for `on`.
+pub fn toggle(ui: &mut egui::Ui, icon: Icon, on: &mut bool, label: &str, tip: &str) -> egui::Response {
+    let mut button = small_toggle_button(ui, icon, label, tip, *on);
+    if button.clicked() {
+        *on = !*on;
+        button.mark_changed();
+    }
+    button
+}
+
+/// An alarm's title, faded while it's off.
+pub fn title(ui: &mut egui::Ui, on: bool, name: &str) {
+    let text = egui::RichText::new(name).size(15.0).strong();
+    ui.label(if on { text } else { text.weak() });
+}
+
+/// The alarms, to change or remove, and a menu to add one.
 pub fn alarms_ui(ui: &mut egui::Ui, alarms: &mut Alarms, stream: AlarmStates) {
-    ui.checkbox(&mut alarms.on, "Alarms on");
-    for source in Source::ALL {
+    ui.weak("An alarm goes off when its healthy condition isn't met over a complete period.");
+    ui.add_space(6.0);
+    if alarms.list.is_empty() {
+        ui.weak("No alarms yet");
         ui.add_space(6.0);
-        ui.separator();
-        if stream.items(source) == 0 {
-            ui.strong(source.name());
-            ui.weak("Not connected");
-            continue;
-        }
-        ui.checkbox(&mut alarms.alarm_mut(source).on, egui::RichText::new(source.name()).strong());
-        settings(ui, source, alarms, stream);
+    } else {
+        all_row(ui, alarms);
+        ui.add_space(2.0);
     }
-}
-
-/// An alarm's settings: "Alarm when the average rate is outside 5 to 400 Hz, evaluated over 20 s".
-fn settings(ui: &mut egui::Ui, source: Source, alarms: &mut Alarms, stream: AlarmStates) {
-    let saturation = &mut alarms.saturation_uv;
-    let alarm = match source {
-        Source::Spikes => &mut alarms.spikes,
-        Source::Lfp => &mut alarms.lfp,
-        Source::Positions => &mut alarms.positions,
-        Source::Ttl => &mut alarms.ttl,
-    };
-    ui.horizontal_wrapped(|ui| {
-        let most = if matches!(source, Source::Lfp | Source::Positions) { 100.0 } else { f32::MAX };
-        let suffix = source.unit();
-        let bound = |value| egui::DragValue::new(value).range(0.0..=most).speed(0.2).suffix(suffix);
-        let label = ui.label(format!("Alarm when {}", source.measured()));
-        match source {
-            // The range is of the samples: it's how much of the time they're outside it that has a limit.
-            Source::Lfp => {
-                let field = egui::DragValue::new(saturation).range(1.0..=10_000.0).speed(5.0).prefix("±").suffix(" µV");
-                ui.add(field).labelled_by(label.id);
-                let label = ui.label("is greater than");
-                ui.add(bound(&mut alarm.high)).labelled_by(label.id);
+    let mut removed = None;
+    for alarm in &mut alarms.list {
+        ui.push_id(alarm.id, |ui| {
+            if card(ui, alarm, stream) {
+                removed = Some(alarm.id);
             }
-            Source::Positions => {
-                ui.add(bound(&mut alarm.low)).labelled_by(label.id);
+        });
+        ui.add_space(6.0);
+    }
+    if let Some(id) = removed {
+        alarms.remove(id);
+    }
+    // Only what there's something connected for.
+    let library = AlarmKind::library();
+    let offered: Vec<&AlarmKind> = library.iter().filter(|kind| stream.items(kind.source()) > 0).collect();
+    ui.add_enabled_ui(!offered.is_empty(), |ui| {
+        let menu = ui.menu_button("Add alarm", |ui| {
+            for kind in offered {
+                if ui.button(kind.name()).on_hover_text(kind.description()).clicked() {
+                    alarms.add(kind.clone());
+                    ui.close();
+                }
             }
-            Source::Spikes | Source::Ttl => {
-                ui.add(bound(&mut alarm.low)).labelled_by(label.id);
-                let label = ui.label("to");
-                ui.add(bound(&mut alarm.high)).labelled_by(label.id);
-            }
-        }
-        let label = ui.label("evaluated over");
-        let field = egui::DragValue::new(&mut alarm.seconds).range(PERIODS).speed(0.2).suffix(" s");
-        ui.add(field).labelled_by(label.id);
+        });
+        menu.response.on_disabled_hover_text("Connect something to this node's inputs to watch");
     });
-    if source != Source::Positions {
-        selection(ui, source, alarm, stream);
-    }
 }
 
-/// Which groups, channels or lines it watches, and whether they're taken together.
-fn selection(ui: &mut egui::Ui, source: Source, alarm: &mut Alarm, stream: AlarmStates) {
+/// Buttons for all the alarms, lined up with each alarm's.
+fn all_row(ui: &mut egui::Ui, alarms: &mut Alarms) {
+    // A stroke there's nothing to see of, so it's as wide as the cards and the buttons line up.
+    let stroke =
+        egui::Stroke::new(ui.style().visuals.widgets.noninteractive.bg_stroke.width, egui::Color32::TRANSPARENT);
+    egui::Frame::group(ui.style()).stroke(stroke).show(ui, |ui| {
+        ui.set_min_width(ui.available_width());
+        ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = BUTTON_GAP;
+                if small_toggle_button(ui, Icon::Delete, "Delete all", "Delete all the alarms", false).clicked() {
+                    alarms.list.clear();
+                }
+                let mut all = alarms.all_on();
+                if power(ui, &mut all, "All alarms").changed() {
+                    alarms.list.iter_mut().for_each(|alarm| alarm.on = all);
+                }
+            });
+        });
+    });
+}
+
+/// An alarm: its title and buttons, and its settings. Returns whether its delete button was clicked.
+fn card(ui: &mut egui::Ui, alarm: &mut Alarm, stream: AlarmStates) -> bool {
+    let mut remove = false;
+    egui::Frame::group(ui.style()).show(ui, |ui| {
+        ui.set_min_width(ui.available_width());
+        ui.horizontal(|ui| {
+            title(ui, alarm.on, alarm.kind.name());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = BUTTON_GAP;
+                remove = small_toggle_button(ui, Icon::Delete, "Delete", "Delete this alarm", false).clicked();
+                power(ui, &mut alarm.on, alarm.kind.name());
+            });
+        });
+        settings(ui, alarm, stream);
+    });
+    remove
+}
+
+/// A field for one end of a range.
+fn bound<'a>(value: &'a mut f32, most: f32, suffix: &str) -> egui::DragValue<'a> {
+    egui::DragValue::new(value).range(0.0..=most).speed(0.2).suffix(suffix.to_owned())
+}
+
+/// A row of the settings: a label, and what's added after it, which is given the label to name its fields with.
+fn line(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui, egui::Id)) {
+    let label = ui.label(label);
+    ui.horizontal(|ui| add(ui, label.id));
+    ui.end_row();
+}
+
+/// A kind's settings: what's healthy, and over how long; then what it watches.
+fn settings(ui: &mut egui::Ui, alarm: &mut Alarm, stream: AlarmStates) {
+    let Alarm { seconds, kind, .. } = alarm;
+    let source = kind.source();
     let items = stream.items(source);
+    let has_period = kind.has_period();
+    let together = if matches!(kind, AlarmKind::LfpSaturation { .. }) { "Their mean" } else { "Their total" };
     let name = stream.item_name(source);
-    let together = if source == Source::Lfp { "Their mean" } else { "Their total" };
-    ui.horizontal(|ui| {
-        ui.label("Measure");
-        ui.selectable_value(&mut alarm.together, false, format!("Any one {name}"));
-        ui.selectable_value(&mut alarm.together, true, together);
+    settings_grid(ui, |ui| {
+        match kind {
+            AlarmKind::SpikeRate { low, high, .. } => line(ui, "Healthy", |ui, id| {
+                ui.add(bound(low, f32::MAX, " Hz")).labelled_by(id);
+                ui.label("to");
+                ui.add(bound(high, f32::MAX, " Hz")).labelled_by(id);
+            }),
+            AlarmKind::LfpSaturation { level_uv, low, .. } => line(ui, "Healthy", |ui, id| {
+                ui.label("at least");
+                ui.add(bound(low, 100.0, " %")).labelled_by(id);
+                ui.label("of samples within");
+                let field = egui::DragValue::new(level_uv).range(1.0..=10_000.0).speed(5.0).prefix("±").suffix(" µV");
+                ui.add(field).labelled_by(id);
+            }),
+            AlarmKind::MissingPositions { low } => line(ui, "Healthy", |ui, id| {
+                ui.label("at least");
+                ui.add(bound(low, 100.0, " %")).labelled_by(id);
+                ui.label("of samples contain data");
+            }),
+            AlarmKind::TtlCount { low, high, .. } => line(ui, "Healthy", |ui, id| {
+                ui.add(bound(low, f32::MAX, "")).labelled_by(id);
+                ui.label("to");
+                ui.add(bound(high, f32::MAX, "")).labelled_by(id);
+                ui.label("TTLs");
+            }),
+            AlarmKind::TtlUp { line: chosen } => line(ui, "Healthy", |ui, _| {
+                ui.label("line");
+                for item in 0..items {
+                    ui.selectable_value(chosen, item, (item + 1).to_string());
+                }
+                ui.label("is down");
+            }),
+        }
+        if has_period {
+            line(ui, "Over", |ui, id| {
+                let field = egui::DragValue::new(seconds).range(PERIODS).speed(0.2).suffix(" s");
+                ui.add(field).labelled_by(id);
+            });
+        }
+        if let (true, Some(selection)) = (items > 0, kind.selection_mut()) {
+            line(ui, "Measure", |ui, _| {
+                ui.selectable_value(&mut selection.together, false, format!("Any one {name}"));
+                ui.selectable_value(&mut selection.together, true, together);
+            });
+        }
     });
+    if items == 0 {
+        ui.weak("Not connected");
+        return;
+    }
+    if let Some(selection) = kind.selection_mut() {
+        selection_ui(ui, selection, items, name);
+    }
+    if !has_period {
+        let note = "⚠ Taken as down until it first changes. Pulses under 20 ms can be missed.";
+        ui.colored_label(ui.visuals().warn_fg_color, egui::RichText::new(note).small());
+    }
+}
+
+/// Which groups, channels or lines it watches.
+fn selection_ui(ui: &mut egui::Ui, selection: &mut Selection, items: u32, name: &str) {
     ui.horizontal_wrapped(|ui| {
         if ui.small_button("All").clicked() {
-            alarm.left_out.clear();
+            selection.left_out.clear();
         }
         if ui.small_button("None").clicked() {
-            alarm.left_out = (0..items).collect();
+            selection.left_out = (0..items).collect();
         }
         for item in 0..items {
-            let mut selected = alarm.selected(item);
+            let mut selected = selection.selected(item);
             let checkbox = ui.checkbox(&mut selected, (item + 1).to_string());
             if checkbox.on_hover_text(format!("{name} {}", item + 1)).changed() {
-                alarm.left_out.retain(|left_out| *left_out != item);
+                selection.left_out.retain(|left_out| *left_out != item);
                 if !selected {
-                    alarm.left_out.push(item);
+                    selection.left_out.push(item);
                 }
             }
         }

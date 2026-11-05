@@ -26,7 +26,7 @@ mod toolbar;
 pub mod widgets {
     pub use super::icons::Icon;
     pub use super::icons::eye;
-    pub use super::toolbar::toolbar_button;
+    pub use super::toolbar::{small_icon_button, small_toggle_button, toolbar_button};
 }
 
 use std::collections::HashMap;

@@ -1,23 +1,21 @@
-//! The pips the Alarm Viewer can sound as an alarm goes off: a couple, at a pitch for each alarm, from the default
+//! The pips the Alarm Viewer can sound as an alarm goes off: a few, at a pitch for what it watches, from the default
 //! output device. It's on a thread of its own, started the first time it's needed, as finding a device takes a while
 //! and passes can't wait. Alarms going off together pip one after another. A machine with no sound just stays quiet,
 //! with a warning.
 
 use std::f32::consts::{PI, TAU};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::thread::JoinHandle;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
-/// Each alarm's pitch, by `Source`.
+/// Alarms' pitches, by `Source`.
 const PITCHES_HZ: [f32; 4] = [880.0, 660.0, 1100.0, 1320.0];
 const VOLUME: f32 = 0.2;
 /// Seconds a pip lasts, and the gap after each.
 const PIP: f32 = 0.1;
 const GAP: f32 = 0.08;
-/// Seconds two pips and their gaps take.
-const PIPS: f32 = 2.0 * (PIP + GAP);
 
 /// The pips at `pitch`, `seconds` in: each swelling and fading, so as not to click.
 fn wave(pitch: f32, seconds: f32) -> f32 {
@@ -25,10 +23,10 @@ fn wave(pitch: f32, seconds: f32) -> f32 {
     if within < PIP { VOLUME * (PI * within / PIP).sin() * (TAU * pitch * seconds).sin() } else { 0.0 }
 }
 
-/// Which alarms have pips waiting, and whether to stop, for the thread.
+/// How many pips are waiting at each pitch, and whether to stop, for the thread.
 #[derive(Default)]
 struct Flags {
-    waiting: [AtomicBool; 4],
+    waiting: [AtomicU8; 4],
     stop: AtomicBool,
 }
 
@@ -40,9 +38,9 @@ pub struct Tone {
 }
 
 impl Tone {
-    /// Sounds alarm `index`'s pips, without waiting.
-    pub fn pips(&mut self, index: usize) {
-        self.flags.waiting[index].store(true, Ordering::Relaxed);
+    /// Sounds `count` pips at the pitch of `Source` `index`, without waiting.
+    pub fn pips(&mut self, index: usize, count: u8) {
+        self.flags.waiting[index].fetch_max(count, Ordering::Relaxed);
         if self.thread.is_none() {
             let flags = self.flags.clone();
             self.thread = std::thread::Builder::new().name("Alarm tone".into()).spawn(move || play(&flags)).ok();
@@ -71,20 +69,23 @@ fn play(flags: &Arc<Flags>) {
     drop(stream);
 }
 
-/// What's sounding: its pitch, and how many samples in.
-type Sounding = Option<(f32, u32)>;
+/// What's sounding: its pitch, how many pips, and how many samples in.
+type Sounding = Option<(f32, u8, u32)>;
 
 /// The next sample, moving on to whatever's waiting once what's sounding has finished.
 fn next(sounding: &mut Sounding, flags: &Flags, rate: f32) -> f32 {
     if sounding.is_none() {
-        let waiting = flags.waiting.iter().position(|waiting| waiting.swap(false, Ordering::Relaxed));
-        *sounding = waiting.map(|index| (PITCHES_HZ[index], 0));
+        let waiting = flags.waiting.iter().zip(PITCHES_HZ).find_map(|(waiting, pitch)| {
+            let count = waiting.swap(0, Ordering::Relaxed);
+            (count > 0).then_some((pitch, count, 0))
+        });
+        *sounding = waiting;
     }
-    let Some((pitch, sample)) = sounding else { return 0.0 };
+    let Some((pitch, count, sample)) = sounding else { return 0.0 };
     let seconds = *sample as f32 / rate;
     *sample += 1;
     let value = wave(*pitch, seconds);
-    if seconds >= PIPS {
+    if seconds >= *count as f32 * (PIP + GAP) {
         *sounding = None;
     }
     value
@@ -115,12 +116,14 @@ mod tests {
     use super::*;
 
     const RATE: f32 = 48_000.0;
+    /// Seconds two pips and their gaps take.
+    const PIPS: f32 = 2.0 * (PIP + GAP);
 
     #[test]
     fn two_pips_then_quiet_and_each_alarm_in_turn() {
         let flags = Flags::default();
-        flags.waiting[1].store(true, Ordering::Relaxed);
-        flags.waiting[3].store(true, Ordering::Relaxed);
+        flags.waiting[1].store(2, Ordering::Relaxed);
+        flags.waiting[3].store(2, Ordering::Relaxed);
         let mut sounding = None;
         let samples: Vec<f32> = (0..(RATE * PIPS * 3.0) as usize).map(|_| next(&mut sounding, &flags, RATE)).collect();
         // How many times each stretch rises through zero, for its pitch; and how many runs of sound there are.
@@ -136,6 +139,27 @@ mod tests {
         };
         assert!(quiet(PIP, PIP + GAP), "a gap between the pips");
         assert!(quiet(2.0 * PIPS + 0.01, 3.0 * PIPS), "quiet after");
+    }
+
+    #[test]
+    fn there_can_be_more_pips() {
+        let flags = Flags::default();
+        flags.waiting[0].store(4, Ordering::Relaxed);
+        let mut sounding = None;
+        let samples: Vec<f32> = (0..(RATE * 1.0) as usize).map(|_| next(&mut sounding, &flags, RATE)).collect();
+        // Runs of sound, however long the gaps within a pip's own zero crossings.
+        let quiet_for = (GAP * RATE * 0.8) as usize;
+        let mut runs = 0;
+        let mut quiet = quiet_for;
+        for sample in samples {
+            if sample != 0.0 {
+                runs += (quiet >= quiet_for) as u32;
+                quiet = 0;
+            } else {
+                quiet += 1;
+            }
+        }
+        assert_eq!(runs, 4);
     }
 
     #[test]

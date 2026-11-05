@@ -1,5 +1,6 @@
 //! The Alarm Processor: measures spikes, LFP, positions and TTLs over each alarm's period, and says whether each is
-//! within its range. An alarm that's off doesn't need its input (see `Node::needs`). Each measure's counted in bins, a
+//! within its range. An input's only needed while an alarm that's on watches it (see `Node::needs`). Each measure's
+//! counted in bins, a
 //! small fraction of the period each, so however long the period, a window is the same small size, and what's selected
 //! can change without waiting for a new period. An alarm doesn't go off until it's seen a whole period.
 
@@ -9,7 +10,7 @@ use eframe::egui;
 use serde::{Deserialize, Serialize};
 
 use super::settings::alarms_ui;
-use super::{Alarm, AlarmState, AlarmStates, Alarms, Phase, Source};
+use super::{Alarm, AlarmKind, AlarmState, AlarmStates, Alarms, Phase, Source};
 use crate::core::engine::{Category, Context, Input, Node, NodeInfo, Output, Pass, PassState, SettingPort};
 use crate::standard_components::widgets::require_input;
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
@@ -39,6 +40,8 @@ struct Window {
     /// The seconds and counts of all the bins.
     seconds: f64,
     totals: Vec<u64>,
+    /// Whether the line's up, for an alarm that goes by that: as of its last change, whatever the period.
+    up: bool,
 }
 
 impl Window {
@@ -49,6 +52,7 @@ impl Window {
             spare: (0..BINS + 2).map(|_| Bin { seconds: 0.0, counts: vec![0; items] }).collect(),
             seconds: 0.0,
             totals: vec![0; items],
+            up: false,
         }
     }
 
@@ -98,16 +102,35 @@ impl Window {
     }
 }
 
-/// Each alarm's window, and the rates its counts are out of.
+/// Each alarm's window (by id, in the alarms' order), and what its counts are out of.
 pub struct Watching {
-    windows: [Window; 4],
+    windows: Vec<(u32, Window)>,
+    stream: AlarmStates,
     lfp_rate: f64,
     fps: f64,
 }
 
 impl Default for Watching {
     fn default() -> Self {
-        Watching { windows: std::array::from_fn(|_| Window::new(0)), lfp_rate: 1.0, fps: 1.0 }
+        Watching { windows: Vec::new(), stream: AlarmStates::default(), lfp_rate: 1.0, fps: 1.0 }
+    }
+}
+
+impl Watching {
+    /// Keeps a window for each of `alarms`, those there already carrying on. Adding one needn't change the plan, so can
+    /// happen in a run; it's only then that this allocates.
+    fn keep_up(&mut self, alarms: &[Alarm]) {
+        if self.windows.iter().map(|(id, _)| *id).eq(alarms.iter().map(|alarm| alarm.id)) {
+            return;
+        }
+        let mut old = std::mem::take(&mut self.windows);
+        for alarm in alarms {
+            let window = match old.iter().position(|(id, _)| *id == alarm.id) {
+                Some(index) => old.swap_remove(index).1,
+                None => Window::new(self.stream.items(alarm.kind.source()) as usize),
+            };
+            self.windows.push((alarm.id, window));
+        }
     }
 }
 
@@ -121,7 +144,8 @@ fn measure(source: Source, total: u64, seconds: f64, lfp_rate: f64, fps: f64) ->
     let seconds = seconds.max(f64::EPSILON);
     let value = match source {
         Source::Spikes => total / seconds,
-        Source::Lfp => (100.0 * total / (lfp_rate * seconds)).min(100.0),
+        // Those saturated are what's counted.
+        Source::Lfp => 100.0 - (100.0 * total / (lfp_rate * seconds)).min(100.0),
         // Frames with an LED, of those there should have been: a camera that's stopped has no data either.
         Source::Positions => (100.0 * total / (fps * seconds)).min(100.0),
         Source::Ttl => total,
@@ -130,55 +154,62 @@ fn measure(source: Source, total: u64, seconds: f64, lfp_rate: f64, fps: f64) ->
 }
 
 /// How `alarm` stands, given what's counted.
-fn judge(source: Source, alarm: &Alarm, window: &Window, lfp_rate: f64, fps: f64) -> AlarmState {
+fn judge(alarm: &Alarm, window: &Window, lfp_rate: f64, fps: f64) -> AlarmState {
+    let source = alarm.kind.source();
+    let off = AlarmState { id: alarm.id, source, ..Default::default() };
+    if !alarm.kind.has_period() {
+        let phase = if window.up { Phase::Alarm } else { Phase::Clear };
+        return AlarmState { phase, value: window.up as u8 as f32, ..off };
+    }
     if !window.full() {
         let waited = (window.seconds / window.period.max(f64::EPSILON)) as f32;
-        return AlarmState { phase: Phase::Waiting(waited), ..Default::default() };
+        return AlarmState { phase: Phase::Waiting(waited), ..off };
     }
-    let selected = || (0..window.totals.len() as u32).filter(|item| alarm.selected(*item));
+    let selection = alarm.kind.selection();
+    let selected = || (0..window.totals.len() as u32).filter(|item| selection.is_none_or(|s| s.selected(*item)));
     let value = |total: u64| measure(source, total, window.seconds, lfp_rate, fps);
-    let (value, item) = if alarm.together {
+    let (low, high) = alarm.kind.range();
+    let (value, item) = if selection.is_some_and(|s| s.together) {
         let total: u64 = selected().map(|item| window.totals[item as usize]).sum();
         let count = selected().count();
         if count == 0 {
-            return AlarmState::default();
+            return off;
         }
         // Rates and counts add up; fractions are of the time of each.
         let shared = if matches!(source, Source::Lfp) { total / count as u64 } else { total };
         (value(shared), None)
     } else {
         // How far an item's outside the range, or if it's inside, how near its edge.
-        let outside = |value: f32| (alarm.low - value).max(value - alarm.high);
+        let outside = |value: f32| (low - value).max(value - high);
         let worst = selected()
             .map(|item| (value(window.totals[item as usize]), item))
             .max_by(|a, b| outside(a.0).total_cmp(&outside(b.0)));
-        let Some((value, item)) = worst else { return AlarmState::default() };
+        let Some((value, item)) = worst else { return off };
         (value, Some(item))
     };
-    let phase = if value < alarm.low || value > alarm.high { Phase::Alarm } else { Phase::Clear };
-    AlarmState { phase, value, item }
+    let phase = if value < low || value > high { Phase::Alarm } else { Phase::Clear };
+    AlarmState { phase, value, item, ..off }
 }
 
 /// Adds a pass's data to `window`.
-fn count(alarms: &Alarms, input: &Buffer, window: &mut Window) {
-    match input {
-        Buffer::Spikes(spikes) => {
+fn count(kind: &AlarmKind, input: &Buffer, window: &mut Window) {
+    match (kind, input) {
+        (AlarmKind::SpikeRate { .. }, Buffer::Spikes(spikes)) => {
             for spike in &spikes.spikes {
                 window.count(spike.group as usize, 1);
             }
         }
-        Buffer::Continuous(continuous) => {
-            let level = alarms.saturation_uv;
+        (AlarmKind::LfpSaturation { level_uv, .. }, Buffer::Continuous(continuous)) => {
             for channel in 0..continuous.channels {
-                let saturated = continuous.channel(channel).iter().filter(|x| x.abs() >= level).count();
+                let saturated = continuous.channel(channel).iter().filter(|x| x.abs() >= *level_uv).count();
                 window.count(channel, saturated as u32);
             }
         }
-        Buffer::Positions(positions) => {
+        (AlarmKind::MissingPositions { .. }, Buffer::Positions(positions)) => {
             let found = positions.samples.iter().filter(|s| s.leds[0].is_some()).count();
             window.count(0, found as u32);
         }
-        Buffer::Events(events) => {
+        (AlarmKind::TtlCount { .. }, Buffer::Events(events)) => {
             for event in events.events.iter().filter(|e| e.high) {
                 window.count(event.line as usize, 1);
             }
@@ -210,8 +241,8 @@ impl Node<Edges> for AlarmProcessor {
     const INFO: NodeInfo = NodeInfo {
         name: "Alarm Processor",
         category: Category::Processing,
-        description: "Watches spikes, LFP, positions and TTLs for rates and fractions outside their ranges, over a \
-                      period chosen for each: for the Alarm Viewer, which shows them.",
+        description: "Alarms you add, watching spikes, LFP, positions or TTLs for what's outside a range, over a period \
+                      chosen for each: for the Alarm Viewer, which shows them.",
     };
 
     fn inputs(&self) -> Vec<Input<Edges>> {
@@ -224,7 +255,7 @@ impl Node<Edges> for AlarmProcessor {
     }
 
     fn needs(&self, input: usize) -> bool {
-        Source::ALL.get(input).is_some_and(|source| self.alarms.watching(*source))
+        Source::ALL.get(input).is_some_and(|source| self.alarms.watches(*source))
     }
 
     fn outputs(&self, inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {
@@ -256,30 +287,36 @@ impl Node<Edges> for AlarmProcessor {
             Some(DataStream::Positions(positions)) => Some(positions.fps as f64),
             _ => None,
         });
-        Watching {
-            windows: Source::ALL.map(|source| Window::new(stream.items(source) as usize)),
+        let mut watching = Watching {
+            windows: Vec::new(),
+            stream,
             lfp_rate: lfp_rate.unwrap_or(1.0).max(1.0),
             fps: fps.unwrap_or(1.0).max(1.0),
-        }
+        };
+        watching.keep_up(&self.alarms.list);
+        watching
     }
 
     fn process(&self, pass: &mut Pass<Edges>, watching: &mut Watching) {
-        let mut states = [AlarmState::default(); 4];
-        let Watching { windows, lfp_rate, fps } = watching;
-        for (index, source) in Source::ALL.into_iter().enumerate() {
-            let alarm = self.alarms.alarm(source);
-            let input = pass.inputs.get(index).copied().flatten().filter(|_| self.alarms.watching(source));
-            let window = &mut windows[index];
-            let Some(input) = input else {
+        watching.keep_up(&self.alarms.list);
+        let Some(Buffer::AlarmStates(output)) = pass.outputs.first_mut() else { return };
+        output.states.clear();
+        for (alarm, (_, window)) in self.alarms.list.iter().zip(&mut watching.windows) {
+            let source = alarm.kind.source();
+            let input = pass.inputs.get(source.index()).copied().flatten();
+            // Whether it's on or not: the line stays where it is, and it's only its changes that come.
+            if let (AlarmKind::TtlUp { line }, Some(Buffer::Events(events))) = (&alarm.kind, input) {
+                let mut changes = events.events.iter().filter(|event| event.line as u32 == *line);
+                window.up = changes.next_back().map_or(window.up, |event| event.high);
+            }
+            let Some(input) = input.filter(|_| alarm.on) else {
                 window.clear();
+                output.states.push(AlarmState { id: alarm.id, source, ..Default::default() });
                 continue;
             };
             window.advance(alarm.period(), pass.duration);
-            count(&self.alarms, input, window);
-            states[index] = judge(source, alarm, window, *lfp_rate, *fps);
-        }
-        if let Some(Buffer::AlarmStates(output)) = pass.outputs.first_mut() {
-            output.states = states;
+            count(&alarm.kind, input, window);
+            output.states.push(judge(alarm, window, watching.lfp_rate, watching.fps));
         }
     }
 
@@ -292,6 +329,7 @@ impl Node<Edges> for AlarmProcessor {
 mod tests {
     use super::*;
     use crate::core::engine::{DataStreamType, PASS_DURATION};
+    use crate::standard_components::alarms::Selection;
     use crate::standard_components::ephys::{Continuous, Event, Events, EventsBuffer};
     use crate::standard_components::spikes::{Polarity, Spike, Spikes};
     use crate::standard_components::tracking::pipeline::Blob;
@@ -313,8 +351,8 @@ mod tests {
             Run { processor, watching }
         }
 
-        /// Passes for `seconds`, each with `input` as input `index`; how the alarm stands after.
-        fn run(&mut self, index: usize, input: &Buffer, seconds: f64) -> AlarmState {
+        /// Passes for `seconds`, each with `input` as input `index`; how the alarms stand after.
+        fn all(&mut self, index: usize, input: &Buffer, seconds: f64) -> Vec<AlarmState> {
             let mut outputs = [Buffer::AlarmStates(AlarmStates::default().buffer(PASS_DURATION))];
             for sequence in 0..(seconds / PASS_DURATION).round() as u64 {
                 let mut inputs = [None; 4];
@@ -323,8 +361,37 @@ mod tests {
                 self.processor.process(&mut pass, &mut self.watching);
             }
             let Buffer::AlarmStates(output) = &outputs[0] else { unreachable!() };
-            output.states[index]
+            output.states.clone()
         }
+
+        /// The same, for the first alarm.
+        fn run(&mut self, index: usize, input: &Buffer, seconds: f64) -> AlarmState {
+            self.all(index, input, seconds)[0]
+        }
+
+        fn alarm(&mut self) -> &mut Alarm {
+            &mut self.processor.alarms.list[0]
+        }
+
+        fn left_out(&mut self, left_out: Vec<u32>) {
+            let (AlarmKind::SpikeRate { selection, .. } | AlarmKind::TtlCount { selection, .. }) =
+                &mut self.alarm().kind
+            else {
+                panic!("nothing to select");
+            };
+            selection.left_out = left_out;
+        }
+    }
+
+    /// Just an alarm of `kind`, over `seconds`.
+    fn one(kind: AlarmKind, seconds: f32) -> Alarms {
+        let mut alarms = Alarms::default();
+        alarms.add(kind).seconds = seconds;
+        alarms
+    }
+
+    fn spike_rate(low: f32, high: f32, together: bool) -> AlarmKind {
+        AlarmKind::SpikeRate { low, high, selection: Selection { together, ..Default::default() } }
     }
 
     /// `per_pass` spikes on each group of `groups`.
@@ -344,8 +411,7 @@ mod tests {
 
     #[test]
     fn nothing_goes_off_until_a_whole_period_is_seen() {
-        let alarms = Alarms { spikes: Alarm { seconds: 2.0, ..Alarms::default().spikes }, ..Default::default() };
-        let mut run = Run::new(alarms, spike_input());
+        let mut run = Run::new(one(spike_rate(5.0, 400.0, true), 2.0), spike_input());
         let silent = spikes(&[], 0);
         let state = run.run(0, &silent, 1.0);
         assert!(matches!(state.phase, Phase::Waiting(w) if (w - 0.5).abs() < 0.01), "{state:?}");
@@ -354,33 +420,28 @@ mod tests {
 
     #[test]
     fn total_rate_is_of_the_groups_selected() {
-        let spikes_alarm = Alarm { seconds: 1.0, low: 5.0, high: 60.0, together: true, ..Default::default() };
-        let alarms = Alarms { spikes: spikes_alarm, ..Default::default() };
-        let mut run = Run::new(alarms.clone(), spike_input());
+        let mut run = Run::new(one(spike_rate(5.0, 60.0, true), 1.0), spike_input());
         // A spike a pass on each of two groups: 50 Hz each.
         let state = run.run(0, &spikes(&[0, 1], 1), 2.0);
         assert_eq!((state.phase, state.value.round()), (Phase::Alarm, 100.0), "together they're too many");
-        run.processor.alarms.spikes.left_out = vec![1];
+        run.left_out(vec![1]);
         let state = run.run(0, &spikes(&[0, 1], 1), 0.02);
         assert_eq!((state.phase, state.value.round()), (Phase::Clear, 50.0), "at once, without a new period");
     }
 
     #[test]
     fn any_one_group_outside_the_range_sets_it_off() {
-        let spikes_alarm = Alarm { seconds: 1.0, low: 10.0, high: 400.0, together: false, ..Default::default() };
-        let alarms = Alarms { spikes: spikes_alarm, ..Default::default() };
-        let mut run = Run::new(alarms, spike_input());
+        let mut run = Run::new(one(spike_rate(10.0, 400.0, false), 1.0), spike_input());
         let state = run.run(0, &spikes(&[0], 1), 2.0);
         assert_eq!((state.phase, state.item, state.value), (Phase::Alarm, Some(1), 0.0), "the second has none");
         assert_eq!(run.run(0, &spikes(&[0, 1], 1), 2.0).phase, Phase::Clear);
     }
 
     #[test]
-    fn lfp_is_the_fraction_of_time_saturated() {
+    fn lfp_is_the_fraction_of_time_in_range() {
         let stream = Continuous { channels: 2, sample_rate: 1000.0 };
-        let lfp = Alarm { seconds: 1.0, high: 10.0, together: false, ..Default::default() };
-        let alarms = Alarms { lfp, saturation_uv: 100.0, ..Default::default() };
-        let mut run = Run::new(alarms, [None, Some(DataStream::Continuous(stream)), None, None]);
+        let kind = AlarmKind::LfpSaturation { level_uv: 100.0, low: 90.0, selection: Selection::default() };
+        let mut run = Run::new(one(kind, 1.0), [None, Some(DataStream::Continuous(stream)), None, None]);
         let mut buffer = stream.buffer(PASS_DURATION);
         buffer.len = 20;
         // A quarter of each pass on the second channel, either side of zero.
@@ -388,14 +449,13 @@ mod tests {
             *x = if i % 2 == 0 { 100.0 } else { -150.0 };
         }
         let state = run.run(1, &Buffer::Continuous(buffer), 2.0);
-        assert_eq!((state.phase, state.item, state.value.round()), (Phase::Alarm, Some(1), 25.0));
+        assert_eq!((state.phase, state.item, state.value.round()), (Phase::Alarm, Some(1), 75.0));
     }
 
     #[test]
     fn positions_are_the_fraction_of_samples_with_leds() {
         let stream = Positions { fps: 50.0, width: 100, height: 100 };
-        let positions = Alarm { seconds: 1.0, low: 80.0, ..Default::default() };
-        let alarms = Alarms { positions, ..Default::default() };
+        let alarms = one(AlarmKind::MissingPositions { low: 80.0 }, 1.0);
         let mut run = Run::new(alarms, [None, None, Some(DataStream::Positions(stream)), None]);
         let sample = |leds| PositionSample { frame: 0, time: 0.0, leds, timing_led: None, pixels_per_metre: f32::NAN };
         let found = Buffer::Positions(PositionsBuffer {
@@ -413,57 +473,227 @@ mod tests {
     #[test]
     fn ttls_are_counted_by_their_ups_over_the_period() {
         let stream = Events { lines: 2, sample_rate: 1000.0 };
-        let ttl = Alarm { seconds: 1.0, low: 40.0, high: 60.0, together: true, ..Default::default() };
-        let alarms = Alarms { ttl, ..Default::default() };
+        let selection = Selection { together: true, ..Default::default() };
+        let alarms = one(AlarmKind::TtlCount { low: 40.0, high: 60.0, selection }, 1.0);
         let mut run = Run::new(alarms, [None, None, None, Some(DataStream::Events(stream))]);
         let change = |high| Event { sample: 0, line: 0, high, time: None };
         let events = EventsBuffer { events: vec![change(true), change(false)], pass_samples: 20 };
         let state = run.run(3, &Buffer::Events(events), 2.0);
         assert_eq!((state.phase, state.value), (Phase::Clear, 50.0), "a pass's up, and not its down");
-        run.processor.alarms.ttl.left_out = vec![0];
+        run.left_out(vec![0]);
         let events = EventsBuffer { events: Vec::new(), pass_samples: 20 };
         assert_eq!(run.run(3, &Buffer::Events(events), 0.02).phase, Phase::Alarm, "the other line has none");
     }
 
     #[test]
-    fn an_alarm_off_needs_no_input_and_starts_again_when_on() {
+    fn a_ttl_up_alarm_follows_its_line_at_once() {
+        let stream = Events { lines: 2, sample_rate: 1000.0 };
+        let mut run =
+            Run::new(one(AlarmKind::TtlUp { line: 1 }, 1.0), [None, None, None, Some(DataStream::Events(stream))]);
+        let pass = |events: Vec<Event>| Buffer::Events(EventsBuffer { events, pass_samples: 20 });
+        let change = |line, high| Event { sample: 0, line, high, time: None };
+        assert_eq!(run.run(3, &pass(Vec::new()), 0.02).phase, Phase::Clear, "with no period to wait for");
+        assert_eq!(run.run(3, &pass(vec![change(0, true)]), 0.02).phase, Phase::Clear, "the other line");
+        let state = run.run(3, &pass(vec![change(1, true)]), 0.02);
+        assert_eq!((state.phase, state.value), (Phase::Alarm, 1.0));
+        assert_eq!(run.run(3, &pass(Vec::new()), 5.0).phase, Phase::Alarm, "for as long as it's up");
+
+        // It goes down while the alarm's off, which it still sees.
+        run.alarm().on = false;
+        assert_eq!(run.run(3, &pass(vec![change(1, false)]), 0.02).phase, Phase::Off);
+        run.alarm().on = true;
+        assert_eq!(run.run(3, &pass(Vec::new()), 0.02).phase, Phase::Clear);
+
+        let pulse = pass(vec![change(1, true), change(1, false)]);
+        assert_eq!(run.run(3, &pulse, 0.02).phase, Phase::Clear, "the last change in a pass is where it's left");
+    }
+
+    #[test]
+    fn only_inputs_with_an_alarm_on_are_needed() {
         let mut processor = AlarmProcessor::default();
-        assert!((0..4).all(|input| processor.needs(input)));
-        processor.alarms.spikes.on = false;
-        assert!(!processor.needs(0) && processor.needs(1));
-        processor.alarms.on = false;
-        assert!((0..4).all(|input| !processor.needs(input)), "off altogether");
+        assert!((0..4).all(|input| !processor.needs(input)), "none to begin with");
+        let first = processor.alarms.add(spike_rate(5.0, 400.0, true)).id;
+        let second = processor.alarms.add(spike_rate(0.0, 100.0, false)).id;
+        assert!(processor.needs(0) && !processor.needs(1));
+        processor.alarms.list[0].on = false;
+        assert!(processor.needs(0), "the other's still on");
+        processor.alarms.remove(second);
+        assert!(!processor.needs(0), "and now there's only one, that's off");
+        processor.alarms.list[0].on = true;
+        assert!(processor.needs(0));
+        assert!(processor.alarms.get(first).is_some());
     }
 
     #[test]
     fn a_changed_period_starts_again() {
-        let alarms = Alarms { spikes: Alarm { seconds: 1.0, ..Alarms::default().spikes }, ..Default::default() };
-        let mut run = Run::new(alarms, spike_input());
+        let mut run = Run::new(one(spike_rate(5.0, 400.0, true), 1.0), spike_input());
         assert_eq!(run.run(0, &spikes(&[], 0), 1.0).phase, Phase::Alarm);
-        run.processor.alarms.spikes.seconds = 2.0;
+        run.alarm().seconds = 2.0;
         assert!(matches!(run.run(0, &spikes(&[], 0), 1.0).phase, Phase::Waiting(_)));
     }
 
-    /// All four connected, as in its window. See tests/snapshots/.
     #[test]
-    fn settings_read_as_when_to_alarm() {
+    fn alarms_can_come_and_go_in_a_run_and_the_rest_carry_on() {
+        let mut run = Run::new(one(spike_rate(5.0, 400.0, true), 1.0), spike_input());
+        let silent = spikes(&[], 0);
+        assert_eq!(run.run(0, &silent, 1.0).phase, Phase::Alarm);
+
+        // Two of a kind, each with its own settings.
+        let added = run.processor.alarms.add(spike_rate(0.0, 400.0, true));
+        added.seconds = 1.0;
+        let added = added.id;
+        let states = run.all(0, &silent, 0.5);
+        assert_eq!(states[0].phase, Phase::Alarm, "without starting again");
+        assert!(matches!(states[1].phase, Phase::Waiting(_)));
+        assert_eq!(states[1].id, added);
+        assert_eq!(run.all(0, &silent, 0.5)[1].phase, Phase::Clear);
+
+        // The first goes, the second keeps what it's counted, and its id is its own.
+        let first = run.processor.alarms.list[0].id;
+        run.processor.alarms.remove(first);
+        let states = run.all(0, &silent, 0.02);
+        assert_eq!((states.len(), states[0].id, states[0].phase), (1, added, Phase::Clear));
+        assert_ne!(run.processor.alarms.add(spike_rate(0.0, 1.0, true)).id, first, "ids aren't reused");
+    }
+
+    #[test]
+    fn an_alarm_off_stays_on_the_list_with_nothing_to_say() {
+        let mut run = Run::new(one(spike_rate(5.0, 400.0, true), 1.0), spike_input());
+        assert_eq!(run.run(0, &spikes(&[], 0), 1.0).phase, Phase::Alarm);
+        run.alarm().on = false;
+        let state = run.run(0, &spikes(&[], 0), 0.02);
+        assert_eq!((state.id, state.source, state.phase), (0, Source::Spikes, Phase::Off));
+        run.alarm().on = true;
+        assert!(matches!(run.run(0, &spikes(&[], 0), 0.02).phase, Phase::Waiting(_)), "from the start of a period");
+    }
+
+    #[test]
+    fn a_file_from_before_alarms_were_added_one_at_a_time_opens_with_none() {
+        let old = serde_json::json!({
+            "on": true,
+            "spikes": { "on": true, "seconds": 20.0, "low": 5.0, "high": 400.0, "left_out": [], "together": true },
+            "saturation_uv": 6300.0,
+        });
+        let alarms: Alarms = serde_json::from_value(old).unwrap();
+        assert!(alarms.list.is_empty());
+    }
+
+    #[test]
+    fn saved_alarms_keep_their_settings_and_their_ids_stay_unique() {
+        let mut alarms = Alarms::default();
+        for kind in AlarmKind::library() {
+            alarms.add(kind);
+        }
+        alarms.list[1].on = false;
+        let saved = serde_json::to_string(&alarms).unwrap();
+        let mut opened: Alarms = serde_json::from_str(&saved).unwrap();
+        assert_eq!(opened, alarms);
+        assert_eq!(opened.add(AlarmKind::MissingPositions { low: 1.0 }).id, 5);
+    }
+
+    const CONNECTED: AlarmStates = AlarmStates { groups: 8, group_size: 4, channels: 4, positions: true, lines: 2 };
+
+    fn settings_window(alarms: Alarms, stream: AlarmStates) -> egui_kittest::Harness<'static, Alarms> {
         use crate::standard_components::themes::THEMES;
-        let stream = AlarmStates { groups: 8, group_size: 4, channels: 4, positions: true, lines: 1 };
         let mut harness = egui_kittest::Harness::builder()
-            .with_size([460.0, 560.0])
+            .with_size([460.0, 900.0])
             .wgpu()
-            .build_ui_state(move |ui, alarms: &mut Alarms| alarms_ui(ui, alarms, stream), Alarms::default());
+            .build_ui_state(move |ui, alarms: &mut Alarms| alarms_ui(ui, alarms, stream), alarms);
         THEMES[0].apply(&harness.ctx);
         harness.run_steps(3);
-        harness.snapshot("alarm_processor_settings");
+        harness
+    }
+
+    /// One of each, all connected, as in its window. See tests/snapshots/.
+    #[test]
+    fn settings_read_as_when_to_alarm() {
+        let mut alarms = Alarms::default();
+        for kind in AlarmKind::library() {
+            alarms.add(kind);
+        }
+        settings_window(alarms, CONNECTED).snapshot("alarm_processor_settings");
+    }
+
+    #[test]
+    fn alarms_are_added_from_the_library_and_can_be_switched_off_or_removed() {
+        use egui_kittest::kittest::Queryable;
+        let mut harness = settings_window(Alarms::default(), CONNECTED);
+        harness.get_by_label("No alarms yet");
+        harness.get_by_label("Add alarm").click();
+        harness.run_steps(3);
+        harness.snapshot("alarm_processor_adding");
+        harness.get_by_label("Position data available").click();
+        harness.run_steps(3);
+        harness.get_by_label("Add alarm").click();
+        harness.run_steps(3);
+        harness.get_by_label("TTL count in range").click();
+        harness.run_steps(3);
+        let names =
+            |h: &egui_kittest::Harness<Alarms>| h.state().list.iter().map(|a| a.kind.name()).collect::<Vec<_>>();
+        assert_eq!(names(&harness), vec!["Position data available", "TTL count in range"]);
+
+        harness.get_by_role_and_label(egui::accesskit::Role::Button, "TTL count in range").click();
+        harness.run_steps(3);
+        assert!(!harness.state().list[1].on, "off, and still there");
+
+        harness.get_all_by_label("Delete").next().unwrap().click();
+        harness.run_steps(3);
+        assert_eq!(names(&harness), vec!["TTL count in range"]);
+    }
+
+    #[test]
+    fn the_buttons_for_all_set_each_alarm() {
+        use egui_kittest::kittest::Queryable;
+        let button = egui::accesskit::Role::Button;
+        let mut alarms = Alarms::default();
+        alarms.add(spike_rate(5.0, 400.0, true));
+        alarms.add(AlarmKind::MissingPositions { low: 80.0 }).on = false;
+        let mut harness = settings_window(alarms, CONNECTED);
+        let on = |h: &egui_kittest::Harness<Alarms>| h.state().list.iter().map(|a| a.on).collect::<Vec<_>>();
+
+        harness.get_by_role_and_label(button, "All alarms").click();
+        harness.run_steps(3);
+        assert_eq!(on(&harness), vec![true, true], "some off, so it's all on");
+        harness.get_by_role_and_label(button, "All alarms").click();
+        harness.run_steps(3);
+        assert_eq!(on(&harness), vec![false, false], "and all off");
+
+        harness.get_by_label("Delete all").click();
+        harness.run_steps(3);
+        assert!(harness.state().list.is_empty());
+        harness.get_by_label("No alarms yet");
+    }
+
+    #[test]
+    fn only_kinds_with_their_input_connected_are_offered() {
+        use egui_kittest::kittest::Queryable;
+        let ttl_only = AlarmStates { lines: 2, ..Default::default() };
+        let mut harness = settings_window(Alarms::default(), ttl_only);
+        harness.get_by_label("Add alarm").click();
+        harness.run_steps(3);
+        assert!(
+            harness.query_by_label("TTL count in range").is_some() && harness.query_by_label("TTL line down").is_some()
+        );
+        assert!(harness.query_by_label("Spike rate in range").is_none(), "nothing's connected for it");
+        assert!(harness.query_by_label("Position data available").is_none());
+
+        let mut nothing = settings_window(Alarms::default(), AlarmStates::default());
+        nothing.get_by_label("Add alarm").click();
+        nothing.run_steps(3);
+        assert!(nothing.query_by_label("TTL count in range").is_none(), "it can't be opened");
+
+        // One already there stays, for when it's connected again.
+        let mut alarms = Alarms::default();
+        alarms.add(spike_rate(5.0, 400.0, true));
+        let harness = settings_window(alarms, ttl_only);
+        harness.get_by_label("Not connected");
     }
 
     #[test]
     fn a_long_run_keeps_to_the_bins_it_was_given() {
-        let alarms = Alarms { spikes: Alarm { seconds: 1.0, ..Alarms::default().spikes }, ..Default::default() };
-        let mut run = Run::new(alarms, spike_input());
+        let mut run = Run::new(one(spike_rate(5.0, 400.0, true), 1.0), spike_input());
         run.run(0, &spikes(&[0], 1), 30.0);
-        let window = &run.watching.windows[0];
+        let window = &run.watching.windows[0].1;
         assert!(window.bins.len() + window.spare.len() == BINS + 2, "none made, none lost");
         assert!((window.seconds - 1.0).abs() < 0.05, "{}", window.seconds);
     }

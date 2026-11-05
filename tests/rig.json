@@ -803,7 +803,53 @@
       "18": {
         "label": "Alarm Processor",
         "node": {
-          "settings": {},
+          "settings": {
+            "alarms": {
+              "list": [
+                {
+                  "id": 0,
+                  "on": true,
+                  "seconds": 20.0,
+                  "kind": {
+                    "SpikeRate": {
+                      "low": 5.0,
+                      "high": 400.0,
+                      "selection": {
+                        "left_out": [],
+                        "together": true
+                      }
+                    }
+                  }
+                },
+                {
+                  "id": 1,
+                  "on": true,
+                  "seconds": 20.0,
+                  "kind": {
+                    "LfpSaturation": {
+                      "level_uv": 6300.0,
+                      "low": 95.0,
+                      "selection": {
+                        "left_out": [],
+                        "together": false
+                      }
+                    }
+                  }
+                },
+                {
+                  "id": 2,
+                  "on": true,
+                  "seconds": 20.0,
+                  "kind": {
+                    "MissingPositions": {
+                      "low": 80.0
+                    }
+                  }
+                }
+              ],
+              "next_id": 3
+            }
+          },
           "type": "AlarmProcessor"
         },
         "pos": [

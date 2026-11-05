@@ -74,20 +74,35 @@ only takes it off the video.
 
 ## Alarms
 
-The [Alarm Processor](../src/standard_components/alarms/processor.rs) sits with the data, with the alarms' settings in its
-window. The [Alarm Viewer](../src/standard_components/alarms/viewer.rs) shows how they stand, and has their on and off
-switches, which edit the processor's settings through a control; it gets back a few numbers a pass (`AlarmStates`), so
-nothing bulky goes to the window. Each alarm counts in bins, a fiftieth of its period each, and doesn't go off until it's
+Alarms are added one at a time in the [Alarm Processor](../src/standard_components/alarms/processor.rs)'s window, from
+a library of kinds: `AlarmKind` has a variant for each, holding the settings it needs, so a new kind is a variant there
+(and in `AlarmKind::library`), and the `match`es the compiler then points to. There can be several kinds for one input,
+and several of one kind; only the kinds with their input connected are offered. Most are evaluated over a period, but
+one with `AlarmKind::has_period` false goes by what's happening now: the TTL up alarm follows its line's changes, so it
+takes a line to be down until it's seen it change. An alarm has an `id` that isn't reused, and states are matched to
+alarms by it. The stream
+(`AlarmStates`) is only what there is to choose from, so adding an alarm doesn't change it; how they stand comes each
+pass (`AlarmStatesBuffer`), a few numbers for each alarm.
+
+The processor sits with the data. The [Alarm Viewer](../src/standard_components/alarms/viewer.rs) shows how the alarms
+stand, and has their on and off switches, which edit the processor's settings through a control, so nothing bulky goes to
+the window. Each alarm counts in bins, a fiftieth of its period each, and doesn't go off until it's
 seen a whole period, so a new period, or epoch, starts it waiting again. Time is counted in passes, not samples, so a
 source that stops looks like a low rate.
 
-An alarm that's off isn't needed (`Node::needs`), so switching one changes the plan, and starts a new epoch. While
+The buttons for all the alarms are only shortcuts, setting each one, so there's no separate on or off to go out of step.
+
+An input's only needed while an alarm that's on watches it (`Node::needs`), so switching the last one off changes the
+plan, and starts a new epoch. While
 recording the graph can't change, so the viewer only ignores what it's switched off, and saves that in the settings
 once recording's stopped, if its window's open by then (otherwise it's lost when the run stops). An alarm off when
 recording started has no data coming, so it can't come on until then.
 
 The pips are the viewer's own, on a thread started the first time they sound, from
-[`tone.rs`](../src/standard_components/alarms/tone.rs) with `cpal`: a couple as an alarm goes off, at its own pitch. Passes
+[`tone.rs`](../src/standard_components/alarms/tone.rs) with `cpal`: a couple as an alarm goes off, at a pitch for what it
+watches, and more if it's still going off after 30 and 60 s, then no more. The viewer times how long each
+has been going off, by adding up the passes, and shows it on the alarm. A change to the plan starts that again, as it
+does the alarm itself. Which alarms pip is in the viewer's own settings. Passes
 start them, so they work with the window closed, and they need nothing from the core. On Linux, `cpal` needs ALSA's
 headers (`libasound2-dev`) to build.
 

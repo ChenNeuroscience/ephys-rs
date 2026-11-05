@@ -32,6 +32,8 @@ pub enum Icon {
     Home,
     /// On or off: the power symbol.
     Power,
+    /// Sound on or off: a speaker.
+    Sound,
     /// Copy settings: two sheets.
     Copy,
     /// Paste settings: a clipboard.
@@ -219,6 +221,21 @@ impl Icon {
                     .collect();
                 painter.add(Shape::line(arc, stroke));
                 painter.line_segment([p(8.0, 2.0), p(8.0, 8.5)], stroke);
+            }
+            Icon::Sound => {
+                painter.rect_filled(r(1.5, 6.0, 5.0, 10.0), 0.0, ink);
+                let cone = vec![p(4.5, 6.0), p(8.5, 2.5), p(8.5, 13.5), p(4.5, 10.0)];
+                painter.add(Shape::convex_polygon(cone, ink, Stroke::NONE));
+                // Two waves coming off it.
+                for radius in [2.6, 5.2] {
+                    let wave: Vec<Pos2> = (0..=12)
+                        .map(|i| {
+                            let a = -0.8 + 1.6 * i as f32 / 12.0;
+                            p(9.0, 8.0) + vec2(a.cos(), a.sin()) * radius * s
+                        })
+                        .collect();
+                    painter.add(Shape::line(wave, Stroke::new(1.4 * s, ink)));
+                }
             }
             Icon::Theme => {
                 // A circle, half light and half dark.
