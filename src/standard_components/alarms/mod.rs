@@ -43,28 +43,30 @@ impl Source {
         }
     }
 
-    /// What's measured, as the alarm's settings say it: "Alarm when the average rate is outside...".
+    /// What goes wrong, as the alarm's settings say it: "Alarm when the average rate is outside...". Positions can only
+    /// have too little data, so have just the low end of their range, and LFP too much time saturated, so the high end.
     pub fn measured(self) -> &'static str {
         match self {
-            Source::Spikes => "the average rate is",
-            Source::Lfp => "the time saturated is",
-            Source::Positions => "the time with no data is",
-            Source::Ttl => "the TTLs counted are",
+            Source::Spikes => "the average rate is outside",
+            Source::Lfp => "the fraction of time outside",
+            Source::Positions => "the samples with data fall below",
+            Source::Ttl => "the TTLs counted are outside",
         }
     }
 
-    /// A value as it's shown: "12.5 Hz", "3% saturated".
+    /// A value as it's shown: "12.5 Hz", "3% outside range".
     pub fn value(self, value: f32) -> String {
         match self {
             Source::Spikes => format!("{value:.1} Hz"),
-            Source::Lfp => format!("{value:.1}% saturated"),
-            Source::Positions => format!("{value:.1}% no data"),
+            Source::Lfp => format!("{value:.1}% outside range"),
+            Source::Positions => format!("{value:.1}% with data"),
             Source::Ttl => format!("{value:.0} TTLs"),
         }
     }
 }
 
-/// One alarm's settings: it goes off when what it measures, over the last `seconds`, is outside `low` to `high`.
+/// One alarm's settings: it goes off when what it measures, over the last `seconds`, is outside `low` to `high`. (For
+/// LFP that's the percentage of samples beyond `Alarms::saturation_uv`, and for positions, of samples with data.)
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Alarm {
@@ -122,7 +124,7 @@ impl Default for Alarms {
             on: true,
             spikes: Alarm { low: 5.0, high: 400.0, together: true, ..Default::default() },
             lfp: Alarm { high: 5.0, ..Default::default() },
-            positions: Alarm { high: 20.0, ..Default::default() },
+            positions: Alarm { low: 80.0, ..Default::default() },
             ttl: Alarm { seconds: 30.0, low: 1.0, high: 3.0, together: true, ..Default::default() },
             saturation_uv: DEFAULT_SATURATION_UV,
         }

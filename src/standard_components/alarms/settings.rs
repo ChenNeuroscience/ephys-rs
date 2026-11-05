@@ -32,23 +32,29 @@ fn settings(ui: &mut egui::Ui, source: Source, alarms: &mut Alarms, stream: Alar
     ui.horizontal_wrapped(|ui| {
         let most = if matches!(source, Source::Lfp | Source::Positions) { 100.0 } else { f32::MAX };
         let suffix = source.unit();
-        let label = ui.label(format!("Alarm when {} outside", source.measured()));
-        let field = egui::DragValue::new(&mut alarm.low).range(0.0..=most).speed(0.2).suffix(suffix);
-        ui.add(field).labelled_by(label.id);
-        let label = ui.label("to");
-        let field = egui::DragValue::new(&mut alarm.high).range(0.0..=most).speed(0.2).suffix(suffix);
-        ui.add(field).labelled_by(label.id);
+        let bound = |value| egui::DragValue::new(value).range(0.0..=most).speed(0.2).suffix(suffix);
+        let label = ui.label(format!("Alarm when {}", source.measured()));
+        match source {
+            // The range is of the samples: it's how much of the time they're outside it that has a limit.
+            Source::Lfp => {
+                let field = egui::DragValue::new(saturation).range(1.0..=10_000.0).speed(5.0).prefix("±").suffix(" µV");
+                ui.add(field).labelled_by(label.id);
+                let label = ui.label("is greater than");
+                ui.add(bound(&mut alarm.high)).labelled_by(label.id);
+            }
+            Source::Positions => {
+                ui.add(bound(&mut alarm.low)).labelled_by(label.id);
+            }
+            Source::Spikes | Source::Ttl => {
+                ui.add(bound(&mut alarm.low)).labelled_by(label.id);
+                let label = ui.label("to");
+                ui.add(bound(&mut alarm.high)).labelled_by(label.id);
+            }
+        }
         let label = ui.label("evaluated over");
         let field = egui::DragValue::new(&mut alarm.seconds).range(PERIODS).speed(0.2).suffix(" s");
         ui.add(field).labelled_by(label.id);
     });
-    if source == Source::Lfp {
-        ui.horizontal(|ui| {
-            let label = ui.label("Saturated at");
-            let field = egui::DragValue::new(saturation).range(1.0..=10_000.0).speed(5.0).prefix("±").suffix(" µV");
-            ui.add(field).labelled_by(label.id).on_hover_text("How far from zero a sample counts as saturated");
-        });
-    }
     if source != Source::Positions {
         selection(ui, source, alarm, stream);
     }

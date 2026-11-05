@@ -236,6 +236,9 @@ fn item_text(source: Source, stream: AlarmStates, item: Option<u32>) -> String {
 
 /// "5–400 Hz over 20 s".
 fn range_text(source: Source, alarm: &Alarm) -> String {
+    if source == Source::Lfp {
+        return format!("Outside range over {}{} of {} s", alarm.high, source.unit(), alarm.period());
+    }
     format!("{}–{}{} over {} s", alarm.low, alarm.high, source.unit(), alarm.period())
 }
 
@@ -337,7 +340,9 @@ fn detail(source: Source, alarm: &Alarm, stream: AlarmStates) -> String {
     let name = stream.item_name(source);
     let plural = if selected == 1 { "" } else { "s" };
     let what = match source {
-        Source::Positions => "no data".to_owned(),
+        Source::Positions => {
+            return format!("Samples with data below {}{} over {} s", alarm.low, source.unit(), alarm.period());
+        }
         _ if alarm.together => format!("{selected} {name}{plural} together"),
         _ => format!("each of {selected} {name}{plural}"),
     };

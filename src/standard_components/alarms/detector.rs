@@ -122,8 +122,8 @@ fn measure(source: Source, total: u64, seconds: f64, lfp_rate: f64, fps: f64) ->
     let value = match source {
         Source::Spikes => total / seconds,
         Source::Lfp => (100.0 * total / (lfp_rate * seconds)).min(100.0),
-        // Frames with an LED, of those there should have been: a camera that's stopped counts as no data too.
-        Source::Positions => (100.0 * (1.0 - total / (fps * seconds))).max(0.0),
+        // Frames with an LED, of those there should have been: a camera that's stopped has no data either.
+        Source::Positions => (100.0 * total / (fps * seconds)).min(100.0),
         Source::Ttl => total,
     };
     value as f32
@@ -392,21 +392,22 @@ mod tests {
     }
 
     #[test]
-    fn positions_are_the_fraction_of_time_with_no_leds() {
+    fn positions_are_the_fraction_of_samples_with_leds() {
         let stream = Positions { fps: 50.0, width: 100, height: 100 };
-        let positions = Alarm { seconds: 1.0, high: 20.0, ..Default::default() };
+        let positions = Alarm { seconds: 1.0, low: 80.0, ..Default::default() };
         let alarms = Alarms { positions, ..Default::default() };
         let mut run = Run::new(alarms, [None, None, Some(DataStream::Positions(stream)), None]);
         let sample = |leds| PositionSample { frame: 0, time: 0.0, leds, timing_led: None, pixels_per_metre: f32::NAN };
         let found = Buffer::Positions(PositionsBuffer {
             samples: vec![sample([Some(Blob { x: 1.0, y: 1.0, area: 1 }), None])],
         });
-        assert_eq!(run.run(2, &found, 2.0).phase, Phase::Clear);
+        let state = run.run(2, &found, 2.0);
+        assert_eq!((state.phase, state.value.round()), (Phase::Clear, 100.0));
         let lost = Buffer::Positions(PositionsBuffer { samples: vec![sample([None, None])] });
         let state = run.run(2, &lost, 2.0);
-        assert_eq!((state.phase, state.value), (Phase::Alarm, 100.0), "frames, but no LED");
+        assert_eq!((state.phase, state.value), (Phase::Alarm, 0.0), "frames, but no LED");
         let stopped = Buffer::Positions(PositionsBuffer { samples: Vec::new() });
-        assert_eq!(run.run(2, &stopped, 2.0).value, 100.0, "no frames at all");
+        assert_eq!(run.run(2, &stopped, 2.0).value, 0.0, "no frames at all");
     }
 
     #[test]
