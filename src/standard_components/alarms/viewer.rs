@@ -237,7 +237,7 @@ fn item_text(source: Source, stream: AlarmStates, item: Option<u32>) -> String {
 /// "5–400 Hz over 20 s".
 fn range_text(source: Source, alarm: &Alarm) -> String {
     if source == Source::Lfp {
-        return format!("Outside range over {}{} of {} s", alarm.high, source.unit(), alarm.period());
+        return format!("Samples outside range above {}{} over {} s", alarm.high, source.unit(), alarm.period());
     }
     format!("{}–{}{} over {} s", alarm.low, alarm.high, source.unit(), alarm.period())
 }
