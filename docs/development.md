@@ -74,9 +74,9 @@ only takes it off the video.
 
 ## Alarms
 
-The [Alarm Detector](../src/standard_components/alarms/detector.rs) sits with the data, with the alarms' settings in its
-window. The [Alarms viewer](../src/standard_components/alarms/viewer.rs) shows how they stand, and has their on and off
-switches, which edit the detector's settings through a control; it gets back a few numbers a pass (`AlarmStates`), so
+The [Alarm Processor](../src/standard_components/alarms/processor.rs) sits with the data, with the alarms' settings in its
+window. The [Alarm Viewer](../src/standard_components/alarms/viewer.rs) shows how they stand, and has their on and off
+switches, which edit the processor's settings through a control; it gets back a few numbers a pass (`AlarmStates`), so
 nothing bulky goes to the window. Each alarm counts in bins, a fiftieth of its period each, and doesn't go off until it's
 seen a whole period, so a new period, or epoch, starts it waiting again. Time is counted in passes, not samples, so a
 source that stops looks like a low rate.

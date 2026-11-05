@@ -801,10 +801,10 @@
         ]
       },
       "18": {
-        "label": "Alarm Detector",
+        "label": "Alarm Processor",
         "node": {
           "settings": {},
-          "type": "AlarmDetector"
+          "type": "AlarmProcessor"
         },
         "pos": [
           1680.0,
@@ -813,7 +813,7 @@
         "basic": true
       },
       "19": {
-        "label": "Alarms",
+        "label": "Alarm Viewer",
         "node": {
           "settings": {},
           "type": "AlarmViewer"

@@ -1,4 +1,4 @@
-//! The Alarm Detector: measures spikes, LFP, positions and TTLs over each alarm's period, and says whether each is
+//! The Alarm Processor: measures spikes, LFP, positions and TTLs over each alarm's period, and says whether each is
 //! within its range. An alarm that's off doesn't need its input (see `Node::needs`). Each measure's counted in bins, a
 //! small fraction of the period each, so however long the period, a window is the same small size, and what's selected
 //! can change without waiting for a new period. An alarm doesn't go off until it's seen a whole period.
@@ -19,7 +19,7 @@ const BINS: usize = 50;
 
 #[derive(Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
-pub struct AlarmDetector {
+pub struct AlarmProcessor {
     pub alarms: Alarms,
 }
 
@@ -187,7 +187,7 @@ fn count(alarms: &Alarms, input: &Buffer, window: &mut Window) {
     }
 }
 
-/// What the alarms have to choose from, given the detector's inputs.
+/// What the alarms have to choose from, given the processor's inputs.
 pub fn streams(inputs: &[Option<DataStream>]) -> AlarmStates {
     let mut states = AlarmStates::default();
     for input in inputs {
@@ -204,14 +204,14 @@ pub fn streams(inputs: &[Option<DataStream>]) -> AlarmStates {
     states
 }
 
-impl Node<Edges> for AlarmDetector {
+impl Node<Edges> for AlarmProcessor {
     type State = Watching;
 
     const INFO: NodeInfo = NodeInfo {
-        name: "Alarm Detector",
+        name: "Alarm Processor",
         category: Category::Processing,
         description: "Watches spikes, LFP, positions and TTLs for rates and fractions outside their ranges, over a \
-                      period chosen for each: for the Alarms viewer, which shows them.",
+                      period chosen for each: for the Alarm Viewer, which shows them.",
     };
 
     fn inputs(&self) -> Vec<Input<Edges>> {
@@ -300,17 +300,17 @@ mod tests {
     const SPIKES: Spikes =
         Spikes { channels: 8, sample_rate: 1000.0, group_size: 4, pre: 2, post: 2, polarity: Polarity::Negative };
 
-    /// A detector of `alarms`, watching only what `inputs` has.
+    /// A processor of `alarms`, watching only what `inputs` has.
     struct Run {
-        detector: AlarmDetector,
+        processor: AlarmProcessor,
         watching: Watching,
     }
 
     impl Run {
         fn new(alarms: Alarms, inputs: [Option<DataStream>; 4]) -> Self {
-            let detector = AlarmDetector { alarms };
-            let watching = detector.initial_state(&inputs);
-            Run { detector, watching }
+            let processor = AlarmProcessor { alarms };
+            let watching = processor.initial_state(&inputs);
+            Run { processor, watching }
         }
 
         /// Passes for `seconds`, each with `input` as input `index`; how the alarm stands after.
@@ -320,7 +320,7 @@ mod tests {
                 let mut inputs = [None; 4];
                 inputs[index] = Some(input);
                 let mut pass = Pass::new(sequence, PASS_DURATION, &inputs, &mut outputs);
-                self.detector.process(&mut pass, &mut self.watching);
+                self.processor.process(&mut pass, &mut self.watching);
             }
             let Buffer::AlarmStates(output) = &outputs[0] else { unreachable!() };
             output.states[index]
@@ -360,7 +360,7 @@ mod tests {
         // A spike a pass on each of two groups: 50 Hz each.
         let state = run.run(0, &spikes(&[0, 1], 1), 2.0);
         assert_eq!((state.phase, state.value.round()), (Phase::Alarm, 100.0), "together they're too many");
-        run.detector.alarms.spikes.left_out = vec![1];
+        run.processor.alarms.spikes.left_out = vec![1];
         let state = run.run(0, &spikes(&[0, 1], 1), 0.02);
         assert_eq!((state.phase, state.value.round()), (Phase::Clear, 50.0), "at once, without a new period");
     }
@@ -420,19 +420,19 @@ mod tests {
         let events = EventsBuffer { events: vec![change(true), change(false)], pass_samples: 20 };
         let state = run.run(3, &Buffer::Events(events), 2.0);
         assert_eq!((state.phase, state.value), (Phase::Clear, 50.0), "a pass's up, and not its down");
-        run.detector.alarms.ttl.left_out = vec![0];
+        run.processor.alarms.ttl.left_out = vec![0];
         let events = EventsBuffer { events: Vec::new(), pass_samples: 20 };
         assert_eq!(run.run(3, &Buffer::Events(events), 0.02).phase, Phase::Alarm, "the other line has none");
     }
 
     #[test]
     fn an_alarm_off_needs_no_input_and_starts_again_when_on() {
-        let mut detector = AlarmDetector::default();
-        assert!((0..4).all(|input| detector.needs(input)));
-        detector.alarms.spikes.on = false;
-        assert!(!detector.needs(0) && detector.needs(1));
-        detector.alarms.on = false;
-        assert!((0..4).all(|input| !detector.needs(input)), "off altogether");
+        let mut processor = AlarmProcessor::default();
+        assert!((0..4).all(|input| processor.needs(input)));
+        processor.alarms.spikes.on = false;
+        assert!(!processor.needs(0) && processor.needs(1));
+        processor.alarms.on = false;
+        assert!((0..4).all(|input| !processor.needs(input)), "off altogether");
     }
 
     #[test]
@@ -440,7 +440,7 @@ mod tests {
         let alarms = Alarms { spikes: Alarm { seconds: 1.0, ..Alarms::default().spikes }, ..Default::default() };
         let mut run = Run::new(alarms, spike_input());
         assert_eq!(run.run(0, &spikes(&[], 0), 1.0).phase, Phase::Alarm);
-        run.detector.alarms.spikes.seconds = 2.0;
+        run.processor.alarms.spikes.seconds = 2.0;
         assert!(matches!(run.run(0, &spikes(&[], 0), 1.0).phase, Phase::Waiting(_)));
     }
 
@@ -455,7 +455,7 @@ mod tests {
             .build_ui_state(move |ui, alarms: &mut Alarms| alarms_ui(ui, alarms, stream), Alarms::default());
         THEMES[0].apply(&harness.ctx);
         harness.run_steps(3);
-        harness.snapshot("alarm_detector_settings");
+        harness.snapshot("alarm_processor_settings");
     }
 
     #[test]

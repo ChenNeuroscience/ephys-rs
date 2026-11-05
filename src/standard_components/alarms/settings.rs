@@ -1,4 +1,4 @@
-//! The alarms' settings, in the Alarm Detector's window: when each goes off, and what it watches.
+//! The alarms' settings, in the Alarm Processor's window: when each goes off, and what it watches.
 
 use eframe::egui;
 

@@ -1,4 +1,4 @@
-//! The pips the Alarms viewer can sound as an alarm goes off: a couple, at a pitch for each alarm, from the default
+//! The pips the Alarm Viewer can sound as an alarm goes off: a couple, at a pitch for each alarm, from the default
 //! output device. It's on a thread of its own, started the first time it's needed, as finding a device takes a while
 //! and passes can't wait. Alarms going off together pip one after another. A machine with no sound just stays quiet,
 //! with a warning.

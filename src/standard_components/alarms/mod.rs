@@ -1,9 +1,9 @@
-//! Alarms: whether what's coming in looks wrong, over a period chosen for each. The Alarm Detector (`detector`) watches
+//! Alarms: whether what's coming in looks wrong, over a period chosen for each. The Alarm Processor (`processor`) watches
 //! spikes, LFP, positions and TTLs where the data is, with the alarms' settings in its window (`settings`); the Alarms
 //! viewer (`viewer`) shows how they stand, with switches for them, and can pip as they go off (`tone`). Between them go
 //! only those settings, along a settings edge, and a few numbers a pass, as `AlarmStates`.
 
-pub mod detector;
+pub mod processor;
 mod settings;
 mod tone;
 pub mod viewer;
@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::engine::{DataStreamType, EdgeInfo, EdgeType};
 
-/// What an alarm watches: each is an input of the Alarm Detector, in this order.
+/// What an alarm watches: each is an input of the Alarm Processor, in this order.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Source {
     Spikes,
@@ -104,7 +104,7 @@ impl Alarm {
     }
 }
 
-/// All the alarms' settings: the Alarm Detector's, which the Alarms viewer edits.
+/// All the alarms' settings: the Alarm Processor's, which the Alarm Viewer edits.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Alarms {

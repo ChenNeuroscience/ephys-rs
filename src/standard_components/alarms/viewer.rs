@@ -1,8 +1,8 @@
-//! The Alarms viewer: how the alarms stand, prominently, with switches for them and for sound, in basic mode too. The
-//! switches edit the Alarm Detector's settings through a control; the rest of its settings are in its own window. The
-//! detector's data stays with it: this only gets the alarms' states.
+//! The Alarm Viewer: how the alarms stand, prominently, with switches for them and for sound, in basic mode too. The
+//! switches edit the Alarm Processor's settings through a control; the rest are in its own window, which it has a button
+//! for, in basic mode too. The processor's data stays with it: this only gets the alarms' states.
 //!
-//! Switching an alarm off changes what the detector needs, and so the plan. While recording, the graph can't change, so
+//! Switching an alarm off changes what the processor needs, and so the plan. While recording, the graph can't change, so
 //! an alarm switched off is only ignored here (`Overrides`); that's saved in the settings once recording's stopped, if
 //! the window's open by then. And an alarm off when recording started has no data coming, so can't come on until then.
 //!
@@ -27,7 +27,7 @@ use crate::standard_components::preview;
 use crate::standard_components::widgets::require_input;
 use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
 
-/// Its one control: the detector's alarms.
+/// Its one control: the processor's alarms.
 const ALARMS: usize = 0;
 
 #[derive(Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -102,9 +102,9 @@ impl Node<Edges> for AlarmViewer {
     type State = Showing;
 
     const INFO: NodeInfo = NodeInfo {
-        name: "Alarms",
+        name: "Alarm Viewer",
         category: Category::Visualisation,
-        description: "How an Alarm Detector's alarms stand, with switches for them and for sound.",
+        description: "How an Alarm Processor's alarms stand, with switches for them and for sound.",
     };
     const HAS_VIEW: bool = true;
 
@@ -121,7 +121,7 @@ impl Node<Edges> for AlarmViewer {
     }
 
     fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
-        require_input(inputs, "an Alarm Detector")
+        require_input(inputs, "an Alarm Processor")
     }
 
     fn threads(&self) -> Vec<NodeThread> {
@@ -155,7 +155,7 @@ impl Node<Edges> for AlarmViewer {
     }
 
     fn settings_ui(&mut self, ui: &mut egui::Ui, _context: &mut Context<Edges>) {
-        ui.weak("The Alarm Detector has the alarms' settings.");
+        ui.weak("The Alarm Processor has the alarms' settings.");
     }
 
     fn view_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
@@ -163,7 +163,7 @@ impl Node<Edges> for AlarmViewer {
             (context.inputs[0], context.controls[ALARMS].as_ref())
         else {
             ui.horizontal(|ui| context.node_toolbar(ui));
-            return preview::unconnected(ui, context.theme, "Connect an Alarm Detector's alarms and its setting");
+            return preview::unconnected(ui, context.theme, "Connect an Alarm Processor's alarms and its setting");
         };
         let mut alarms = alarms.clone();
         let overrides = context.shared::<Overrides>();
@@ -186,6 +186,10 @@ impl Node<Edges> for AlarmViewer {
                 (true, Some(overrides)) if locked => overrides.sound.store(1 + sound as u8, Ordering::Relaxed),
                 (true, _) => self.sound = sound,
                 _ => {}
+            }
+            let button = ui.button("Alarm Processor").on_hover_text("Open it, for the alarms' settings");
+            if button.clicked() {
+                context.open_control_target(ALARMS);
             }
             context.node_toolbar(ui);
         });
@@ -355,14 +359,14 @@ mod tests {
     use crate::Nodes;
     use crate::core::engine::{Graph, NodeSet, Port, Role};
     use crate::core::exchange::Exchange;
-    use crate::standard_components::alarms::detector::AlarmDetector;
+    use crate::standard_components::alarms::processor::AlarmProcessor;
     use crate::standard_components::themes::THEMES;
     use egui_kittest::kittest::Queryable;
 
     const CHECK: egui::accesskit::Role = egui::accesskit::Role::CheckBox;
     const STREAM: AlarmStates = AlarmStates { groups: 8, group_size: 4, channels: 4, positions: true, lines: 1 };
 
-    /// The viewer's window, with `states` from a run, and connected to a detector of `alarms`.
+    /// The viewer's window, with `states` from a run, and connected to a processor of `alarms`.
     fn window(
         alarms: Alarms,
         states: [AlarmState; 4],
@@ -375,13 +379,13 @@ mod tests {
             let index = Nodes::TYPES.iter().position(|t| t.name == name).unwrap();
             graph.add(Nodes::create(index), [0.0, 0.0])
         };
-        let (detector, viewer) = (add(&mut graph, "Alarm Detector"), add(&mut graph, "Alarms"));
-        if let Some(Nodes::AlarmDetector(node)) = graph.get_mut(detector).map(|e| &mut e.node) {
-            *node = AlarmDetector { alarms };
+        let (processor, viewer) = (add(&mut graph, "Alarm Processor"), add(&mut graph, "Alarm Viewer"));
+        if let Some(Nodes::AlarmProcessor(node)) = graph.get_mut(processor).map(|e| &mut e.node) {
+            *node = AlarmProcessor { alarms };
         }
         let (from, to) = (
             Port { node: viewer, role: Role::Control, index: 0 },
-            Port { node: detector, role: Role::Setting, index: 0 },
+            Port { node: processor, role: Role::Setting, index: 0 },
         );
         graph.connect(from, to).unwrap();
         let exchange = Arc::new(Exchange::default());
@@ -405,13 +409,13 @@ mod tests {
             },
             graph,
         );
-        (harness, exchange, detector)
+        (harness, exchange, processor)
     }
 
-    fn detector_alarms(graph: &Graph<Nodes>, id: crate::core::engine::NodeId) -> Alarms {
+    fn processor_alarms(graph: &Graph<Nodes>, id: crate::core::engine::NodeId) -> Alarms {
         match graph.get(id).map(|e| &e.node) {
-            Some(Nodes::AlarmDetector(node)) => node.alarms.clone(),
-            _ => panic!("not a detector"),
+            Some(Nodes::AlarmProcessor(node)) => node.alarms.clone(),
+            _ => panic!("not a processor"),
         }
     }
 
@@ -440,30 +444,30 @@ mod tests {
     }
 
     #[test]
-    fn the_switches_edit_the_detector() {
-        let (mut harness, _, detector) =
+    fn the_switches_edit_the_processor() {
+        let (mut harness, _, processor) =
             window(Alarms::default(), [clear(10.0); 4], Overrides::default(), false, [460.0, 420.0]);
         harness.run_steps(2);
         harness.get_by_role_and_label(CHECK, "Spikes").click();
         harness.run_steps(2);
-        let alarms = detector_alarms(harness.state(), detector);
+        let alarms = processor_alarms(harness.state(), processor);
         assert!(!alarms.spikes.on && alarms.lfp.on);
         harness.get_by_role_and_label(CHECK, "Alarms on").click();
         harness.run_steps(2);
-        assert!(!detector_alarms(harness.state(), detector).on);
+        assert!(!processor_alarms(harness.state(), processor).on);
     }
 
     #[test]
     fn while_recording_a_switch_only_ignores_until_recording_stops() {
         let mut off = Alarms::default();
         off.ttl.on = false;
-        let (mut harness, exchange, detector) =
+        let (mut harness, exchange, processor) =
             window(off, [clear(10.0); 4], Overrides::default(), true, [460.0, 420.0]);
         harness.run_steps(2);
         harness.get_by_role_and_label(CHECK, "Spikes").click();
         harness.get_by_role_and_label(CHECK, "TTLs").click();
         harness.run_steps(2);
-        let alarms = detector_alarms(harness.state(), detector);
+        let alarms = processor_alarms(harness.state(), processor);
         assert!(alarms.spikes.on, "the graph's left alone");
         let viewer = crate::core::engine::NodeId(2);
         let overrides = exchange.shared(viewer, Overrides::default);
@@ -478,7 +482,7 @@ mod tests {
         assert!(!saved.spikes.on && saved.lfp.on && !overrides.ignores(0), "saved once recording's over");
     }
 
-    /// A real run: the fake board's first line goes up twice a second, into a detector and on to the window's pool.
+    /// A real run: the fake board's first line goes up twice a second, into a processor and on to the window's pool.
     #[test]
     fn a_run_gets_from_the_board_to_the_window() {
         use crate::core::engine::{Runner, Snapshot};
@@ -489,19 +493,19 @@ mod tests {
             let index = Nodes::TYPES.iter().position(|t| t.name == name).unwrap();
             graph.add(Nodes::create(index), [0.0, 0.0])
         };
-        let (board, detector, viewer) =
-            (add(&mut graph, "Acquisition Board"), add(&mut graph, "Alarm Detector"), add(&mut graph, "Alarms"));
+        let (board, processor, viewer) =
+            (add(&mut graph, "Acquisition Board"), add(&mut graph, "Alarm Processor"), add(&mut graph, "Alarm Viewer"));
         if let Some(Nodes::AcquisitionBoard(b)) = graph.get_mut(board).map(|e| &mut e.node) {
             b.source = Board::Fake { address: serve_test_board() };
         }
         let ttl = Alarm { seconds: 1.0, low: 1.0, high: 100.0, together: true, ..Default::default() };
         let alarms = Alarms { ttl, ..Default::default() };
-        if let Some(Nodes::AlarmDetector(node)) = graph.get_mut(detector).map(|e| &mut e.node) {
+        if let Some(Nodes::AlarmProcessor(node)) = graph.get_mut(processor).map(|e| &mut e.node) {
             node.alarms = alarms;
         }
         let port = |node, role, index| Port { node, role, index };
-        graph.connect(port(board, Role::Output, 1), port(detector, Role::Input, 3)).unwrap();
-        graph.connect(port(detector, Role::Output, 0), port(viewer, Role::Input, 0)).unwrap();
+        graph.connect(port(board, Role::Output, 1), port(processor, Role::Input, 3)).unwrap();
+        graph.connect(port(processor, Role::Output, 0), port(viewer, Role::Input, 0)).unwrap();
 
         let snapshot = Snapshot::new(0, graph, None);
         let runner = Runner::start(&snapshot, 2);

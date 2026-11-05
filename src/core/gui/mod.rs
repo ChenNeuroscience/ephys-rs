@@ -2328,6 +2328,16 @@ mod tests {
         harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
         harness.run_steps(2);
         assert!(offered(&harness, "Disable position tracking"));
+        // The Alarm Viewer opens its processor, in basic mode too (without its card there, to be sure it's the button).
+        let (viewer, processor) =
+            (node_named(harness.state(), "Alarm Viewer"), node_named(harness.state(), "Alarm Processor"));
+        harness.state_mut().graph.get_mut(processor).unwrap().basic = Some(false);
+        harness.state_mut().layout.show(Pane::Node(viewer));
+        harness.run_steps(2);
+        assert_eq!(harness.state().layout.window(processor), WindowState::Closed);
+        harness.get_by_role_and_label(button, "Alarm Processor").click();
+        harness.run_steps(2);
+        assert_eq!(harness.state().layout.window(processor), WindowState::Docked);
         // Advanced mode, with the graph, and back.
         harness.get_by_label_contains("Advanced mode").click();
         harness.run_steps(2);
