@@ -107,25 +107,34 @@ struct Layout {
     badge: Rect,
 }
 
+/// A node's size on the graph (unzoomed), with its settings showing.
+pub fn node_size<E: Edges>(state: &NodeState<E>) -> egui::Vec2 {
+    size_with(state, true)
+}
+
+/// How many rows of settings and controls a node has, if `settings` are showing.
+fn settings_rows<E: Edges>(state: &NodeState<E>, settings: bool) -> usize {
+    if settings { state.count(Role::Setting) + state.count(Role::Control) } else { 0 }
+}
+
 /// A node's size on the graph (unzoomed): its header and a row per port, with a divider between the data and
 /// settings ports, if it has both.
-pub fn node_size<E: Edges>(state: &NodeState<E>) -> egui::Vec2 {
-    let count = |role| state.count(role);
-    let data_rows = count(Role::Output) + count(Role::Input);
-    let settings_rows = count(Role::Setting) + count(Role::Control);
+fn size_with<E: Edges>(state: &NodeState<E>, settings: bool) -> egui::Vec2 {
+    let data_rows = state.count(Role::Output) + state.count(Role::Input);
+    let settings_rows = settings_rows(state, settings);
     let divider = if settings_rows > 0 && data_rows > 0 { DIVIDER } else { 0.0 };
     egui::vec2(NODE_WIDTH, HEADER + 2.0 * PAD + ROW * (data_rows + settings_rows) as f32 + divider)
 }
 
 impl Layout {
-    /// One row per port: outputs, inputs, then settings and controls.
-    fn new<E: Edges>(pos: [f32; 2], state: &NodeState<E>, to_screen: &TSTransform) -> Self {
+    /// One row per port: outputs, inputs, then settings and controls, if they're showing.
+    fn new<E: Edges>(pos: [f32; 2], state: &NodeState<E>, to_screen: &TSTransform, settings: bool) -> Self {
         let zoom = to_screen.scaling;
         let count = |role| state.count(role);
         let data_rows = count(Role::Output) + count(Role::Input);
-        let settings_rows = count(Role::Setting) + count(Role::Control);
+        let settings_rows = settings_rows(state, settings);
         let divider = if settings_rows > 0 && data_rows > 0 { DIVIDER } else { 0.0 };
-        let height = node_size(state).y;
+        let height = size_with(state, settings).y;
         let min = *to_screen * Pos2::from(pos);
         let rect = Rect::from_min_size(min, egui::vec2(NODE_WIDTH, height) * zoom);
         let header = Rect::from_min_size(min, egui::vec2(NODE_WIDTH, HEADER) * zoom);
@@ -134,6 +143,9 @@ impl Layout {
         let mut ports = HashMap::new();
         let mut row = 0;
         for role in [Role::Output, Role::Input, Role::Setting, Role::Control] {
+            if role.dimension() == Dimension::Settings && !settings {
+                continue;
+            }
             let extra = if role.dimension() == Dimension::Settings { divider } else { 0.0 };
             let x = if on_right(role) { rect.right() } else { rect.left() };
             for index in 0..count(role) {
@@ -334,8 +346,9 @@ pub struct Canvas {
     drawing: Option<Pos2>,
     /// Whether the legend is expanded (rather than just its title).
     pub legend_open: bool,
-    /// Whether settings edges are shown, from the eye in the legend: without them there's less clutter.
-    pub settings_edges_shown: bool,
+    /// Whether settings are shown, on the nodes and as edges, from the eye in the legend: without them there's less
+    /// clutter.
+    pub settings_shown: bool,
 }
 
 impl Canvas {
@@ -354,7 +367,7 @@ impl Canvas {
             tool: Tool::default(),
             drawing: None,
             legend_open: true,
-            settings_edges_shown: true,
+            settings_shown: true,
         }
     }
 }
@@ -397,7 +410,7 @@ impl Canvas {
         annotations: &Annotations<A>,
         resolved: &Resolved<N::Edges>,
     ) -> TSTransform {
-        let nodes = layouts(graph, resolved, &TSTransform::IDENTITY).into_values().map(|l| l.rect);
+        let nodes = layouts(graph, resolved, &TSTransform::IDENTITY, self.settings_shown).into_values().map(|l| l.rect);
         let notes = annotations.iter().map(|(_, a)| a.rect());
         let bounds = nodes
             .chain(notes)
@@ -465,7 +478,7 @@ impl Canvas {
         let mut order: Vec<NodeId> = graph.ids().filter(|id| !selection.nodes.contains(id)).collect();
         order.extend(selection.nodes.iter().filter(|id| graph.contains(**id)));
 
-        let mut layouts = layouts(graph, resolved, &self.to_screen);
+        let mut layouts = layouts(graph, resolved, &self.to_screen, self.settings_shown);
         let mut moved = false;
         for &id in &order {
             if let (Some(layout), Some(state)) = (layouts.get(&id), resolved.get(&id)) {
@@ -474,7 +487,7 @@ impl Canvas {
             }
         }
         if moved {
-            layouts = self::layouts(graph, resolved, &self.to_screen);
+            layouts = self::layouts(graph, resolved, &self.to_screen, self.settings_shown);
         }
 
         let drawn = match self.tool {
@@ -665,9 +678,11 @@ impl Canvas {
             return; // nothing on the graph to explain
         }
         // Whether to explain read-only settings edges too.
-        let read_only = resolved.values().any(|s| s.controls.iter().any(|c| c.read_only));
-        // Data's types are listed; settings are all edged alike, so there's just the one row for them.
-        let rows_of = |dimension: Dimension, kinds: usize| if dimension == Dimension::Data { kinds } else { 1 };
+        let shown = self.settings_shown;
+        let read_only = shown && resolved.values().any(|s| s.controls.iter().any(|c| c.read_only));
+        // Data's types are listed; settings are all edged alike, so there's just the one row for them, if they're showing.
+        let rows_of =
+            |dimension: Dimension, kinds: usize| if dimension == Dimension::Data { kinds } else { shown as usize };
         let rows: usize = if self.legend_open {
             sections.iter().map(|(_, dimension, kinds)| 1 + rows_of(*dimension, kinds.len())).sum::<usize>()
                 + read_only as usize
@@ -720,7 +735,7 @@ impl Canvas {
             );
             if dimension == Dimension::Settings {
                 let at = egui::pos2(title.right() - 8.0, y + ROW / 2.0);
-                self.settings_edges_eye(ui, painter, Rect::from_center_size(at, egui::Vec2::splat(16.0)), selection);
+                self.settings_eye(ui, painter, Rect::from_center_size(at, egui::Vec2::splat(16.0)), selection);
             }
             y += ROW;
             let label_at = |mid: f32| egui::pos2(title.left() + 36.0, mid);
@@ -737,6 +752,7 @@ impl Canvas {
                         y += ROW;
                     }
                 }
+                Dimension::Settings if !shown => {}
                 // A dashed edge both ways into a port, as on the graph, where the port has its setting's colour.
                 Dimension::Settings => {
                     let mid = y + ROW / 2.0;
@@ -763,15 +779,15 @@ impl Canvas {
         }
     }
 
-    /// The eye that shows and hides settings edges. Nothing hidden stays selected, for Delete to remove unseen.
-    fn settings_edges_eye(&mut self, ui: &egui::Ui, painter: &Painter, rect: Rect, selection: &mut Selection) {
-        let tip = if self.settings_edges_shown { "Hide settings edges" } else { "Show settings edges" };
-        let eye_button = ui.interact(rect, Id::unique("legend-settings-edges"), Sense::click());
+    /// The eye that shows and hides settings, on the nodes and as edges. Nothing hidden stays selected, for Delete to remove unseen.
+    fn settings_eye(&mut self, ui: &egui::Ui, painter: &Painter, rect: Rect, selection: &mut Selection) {
+        let tip = if self.settings_shown { "Hide settings" } else { "Show settings" };
+        let eye_button = ui.interact(rect, Id::unique("legend-settings"), Sense::click());
         eye_button.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tip));
         let hovered = eye_button.hovered();
         if eye_button.on_hover_text(tip).clicked() {
-            self.settings_edges_shown = !self.settings_edges_shown;
-            if !self.settings_edges_shown {
+            self.settings_shown = !self.settings_shown;
+            if !self.settings_shown {
                 selection.edge = selection.edge.filter(|e| e.dimension != Dimension::Settings);
                 self.menu_edge = self.menu_edge.filter(|e| e.dimension != Dimension::Settings);
             }
@@ -779,13 +795,12 @@ impl Canvas {
         }
         let colours = self.colours;
         let colour = if hovered { colours.text_primary } else { colours.text_secondary };
-        eye(painter, rect.shrink(1.0), colour, colours.surface, self.settings_edges_shown);
+        eye(painter, rect.shrink(1.0), colour, colours.surface, self.settings_shown);
     }
 
-    /// Whether `edge` is on show: settings edges can be hidden, but not while one's being connected.
+    /// Whether `edge` is on show: settings edges can be hidden.
     fn shows(&self, edge: &Edge) -> bool {
-        let connecting = self.wire.is_some_and(|port| port.role.dimension() == Dimension::Settings);
-        edge.dimension != Dimension::Settings || self.settings_edges_shown || connecting
+        edge.dimension != Dimension::Settings || self.settings_shown
     }
 
     /// Clicks and drags on empty canvas (middle and right drags pan, in `pan_and_zoom`).
@@ -1237,8 +1252,12 @@ fn layouts<N: NodeSet>(
     graph: &Graph<N>,
     resolved: &Resolved<N::Edges>,
     to_screen: &TSTransform,
+    settings: bool,
 ) -> HashMap<NodeId, Layout> {
-    graph.iter().filter_map(|(id, entry)| Some((id, Layout::new(entry.pos, resolved.get(&id)?, to_screen)))).collect()
+    graph
+        .iter()
+        .filter_map(|(id, entry)| Some((id, Layout::new(entry.pos, resolved.get(&id)?, to_screen, settings))))
+        .collect()
 }
 
 fn port_pos(layouts: &HashMap<NodeId, Layout>, port: Port) -> Option<Pos2> {

@@ -1707,7 +1707,7 @@ mod tests {
     }
 
     #[test]
-    fn the_legends_eye_hides_settings_edges() {
+    fn the_legends_eye_hides_settings() {
         use crate::core::engine::Dimension;
         let mut harness = harness();
         let edge = |h: &Harness<TestApp>, dimension: Dimension| {
@@ -1715,18 +1715,18 @@ mod tests {
         };
         let (settings, data) = (edge(&harness, Dimension::Settings), edge(&harness, Dimension::Data));
         harness.state_mut().selection.edge = Some(settings);
-        harness.get_by_label("Hide settings edges").click();
+        harness.get_by_label("Hide settings").click();
         harness.run_steps(2);
-        assert!(!harness.state().canvas.settings_edges_shown);
+        assert!(!harness.state().canvas.settings_shown);
         assert_eq!(harness.state().selection.edge, None, "nothing hidden stays selected, for Delete to remove");
-        harness.snapshot("graph_settings_edges_hidden");
+        harness.snapshot("graph_settings_hidden");
         assert!(harness.state().graph.edges().contains(&settings), "only hidden");
 
         // A data edge stays selected.
         harness.state_mut().selection.edge = Some(data);
-        harness.get_by_label("Show settings edges").click();
+        harness.get_by_label("Show settings").click();
         harness.run_steps(2);
-        harness.get_by_label("Hide settings edges").click();
+        harness.get_by_label("Hide settings").click();
         harness.run_steps(2);
         assert_eq!(harness.state().selection.edge, Some(data));
     }
