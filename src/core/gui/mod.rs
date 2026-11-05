@@ -2080,7 +2080,10 @@ mod tests {
         let mut harness = harness();
         harness.state_mut().layout.mode = Mode::Basic;
         let context = harness.ctx.clone();
-        let path = std::env::temp_dir().join(format!("ephys-rs-basic-recent-{}.json", std::process::id()));
+        // The same name every time: the pointer's left where it's clicked, in the snapshot.
+        let directory = std::env::temp_dir().join(format!("ephys-rs-basic-recent-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("recent.json");
         assert!(harness.state_mut().save_to(&context, path.clone()));
         harness.run_steps(2);
         assert!(harness.query_by_label("Recent files").is_none(), "not with a graph");
@@ -2092,7 +2095,7 @@ mod tests {
         harness.run_steps(3);
         assert_eq!(harness.state().path, Some(path.clone()), "it opens");
         assert!(harness.state().graph.iter().next().is_some());
-        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir_all(&directory).unwrap();
 
         harness.state_mut().new_file(&context);
         let shown = vec![PathBuf::from("/rigs/ltx/rig.json"), PathBuf::from("/rigs/old/tetrodes.json")];
