@@ -43,10 +43,10 @@ impl Source {
         }
     }
 
-    /// What's measured, as the alarm's settings say it: "Alarm when the rate is outside...".
+    /// What's measured, as the alarm's settings say it: "Alarm when the average rate is outside...".
     pub fn measured(self) -> &'static str {
         match self {
-            Source::Spikes => "the rate is",
+            Source::Spikes => "the average rate is",
             Source::Lfp => "the time saturated is",
             Source::Positions => "the time with no data is",
             Source::Ttl => "the TTLs counted are",

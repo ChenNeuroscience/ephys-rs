@@ -20,7 +20,7 @@ pub fn alarms_ui(ui: &mut egui::Ui, alarms: &mut Alarms, stream: AlarmStates) {
     }
 }
 
-/// An alarm's settings: "Alarm when the rate is outside 5 to 400 Hz, evaluated over 20 s".
+/// An alarm's settings: "Alarm when the average rate is outside 5 to 400 Hz, evaluated over 20 s".
 fn settings(ui: &mut egui::Ui, source: Source, alarms: &mut Alarms, stream: AlarmStates) {
     let saturation = &mut alarms.saturation_uv;
     let alarm = match source {
