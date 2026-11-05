@@ -216,31 +216,23 @@ impl Node<Edges> for ContinuousGain {
                 setting(ui, "Fit to", |ui| {
                     let field =
                         egui::DragValue::new(&mut self.gains.output_range).range(1e-6..=1e9).speed(1.0).prefix("±");
-                    ui.add(field).on_hover_text(
-                        "Gains chosen from the data have the level below reach this, in the units of what takes it: \
-                         ±128 for Write LTX's int8 values, say (or less, for room above them), ±32768 for int16, ±1 \
-                         for floats",
-                    )
+                    ui.add(field)
+                        .on_hover_text("The output range to fill: ±128 for int8, ±32768 for int16, ±1 for floats")
                 });
-                setting(ui, "At", |ui| {
+                setting(ui, "Level", |ui| {
                     self.level.ui(
                         ui,
-                        "What reaches the range above: each channel's mean, plus this multiple of how far from it, either \
-                         way, this much of the data is within",
+                        "The percentile of the samples' distances from the mean, either way",
+                        "That distance, times this, fills the output range",
                     )
                 });
                 setting(ui, "Sampling for", |ui| {
                     ui.add(egui::DragValue::new(&mut self.sampling).range(SAMPLING).speed(0.2).suffix(" s"))
-                        .on_hover_text("How long to sample the data for")
+                        .on_hover_text("How long to sample for")
                 });
             });
         });
-        let tip = format!(
-            "Sample the data, then set the gains so {} of it reaches ±{}, sharing them out as above",
-            self.level.summary(),
-            self.gains.output_range
-        );
-        auto_detect_ui(ui, context, None, &tip);
+        auto_detect_ui(ui, context, None, "Sample each channel, then set its gain");
         ui.add_space(4.0);
         input_summary(ui, context.inputs);
     }

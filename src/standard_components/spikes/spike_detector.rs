@@ -299,21 +299,20 @@ impl Node<Edges> for SpikeDetector {
         ui.strong("Auto detect");
         ui.add_enabled_ui(!detecting(context), |ui| {
             named_settings_grid(ui, "auto detect", |ui| {
-                setting(ui, "At", |ui| {
+                setting(ui, "Level", |ui| {
                     self.level.ui(
                         ui,
-                        "Thresholds chosen from the data: the mean of the samples as they're plotted, plus this multiple of \
-                         how far above it this much of them are at or below",
+                        "The percentile of the samples to use",
+                        "Its distance from the mean, times this, sets the threshold",
                     )
                 });
                 setting(ui, "Sampling for", |ui| {
                     ui.add(egui::DragValue::new(&mut self.sampling).range(SAMPLING).speed(0.2).suffix(" s"))
-                        .on_hover_text("How long to sample the data for")
+                        .on_hover_text("How long to sample for")
                 });
             });
         });
-        let tip = format!("Sample the data, then set each channel's threshold to {} of it", self.level.summary());
-        auto_detect_ui(ui, context, None, &tip);
+        auto_detect_ui(ui, context, None, "Sample each channel, then set its threshold");
         if channels > 0 {
             self.channels_ui(ui, channels);
         }

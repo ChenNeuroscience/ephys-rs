@@ -214,31 +214,24 @@ impl Node<Edges> for SpikeGain {
                 setting(ui, "Fit to", |ui| {
                     let mut output_range = self.gains.output_range;
                     let field = egui::DragValue::new(&mut output_range).range(1e-6..=1e9).speed(1.0).prefix("±");
-                    let response = ui.add(field).on_hover_text(
-                        "Gains chosen from the data have the level below reach this, in the units of what takes them: \
-                     ±128 for Write LTX's int8 values, say (or less, for room above them), ±32768 for int16, ±1 for \
-                     floats",
-                    );
+                    let response = ui
+                        .add(field)
+                        .on_hover_text("The output range to fill: ±128 for int8, ±32768 for int16, ±1 for floats");
                     self.gains.output_range = output_range;
                     response
                 });
                 setting(ui, "Biggest spike ×", |ui| {
                     ui.add(egui::DragValue::new(&mut self.multiple).range(0.1..=20.0).speed(0.01)).on_hover_text(
-                        "What reaches the range above: each channel's biggest spike, times this. It leaves room for its \
-                         threshold",
+                        "The biggest spike times this fills the output range. It's never less than 1.5 × the threshold",
                     )
                 });
                 setting(ui, "Sampling for", |ui| {
                     ui.add(egui::DragValue::new(&mut self.sampling).range(SAMPLING).speed(0.2).suffix(" s"))
-                        .on_hover_text("How long to sample the spikes for")
+                        .on_hover_text("How long to sample for")
                 });
             })
         });
-        let tip = format!(
-            "Sample the spikes, then set the gains so the biggest, times {}, reaches ±{}, sharing them out as above",
-            self.multiple, self.gains.output_range
-        );
-        auto_detect_ui(ui, context, None, &tip);
+        auto_detect_ui(ui, context, None, "Sample each channel's spikes, then set its gain");
         ui.add_space(4.0);
         input_summary(ui, context.inputs);
     }

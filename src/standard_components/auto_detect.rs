@@ -111,18 +111,13 @@ impl PercentMultiple {
         data.mean().abs() + data.from_mean(self.percent) * self.multiple
     }
 
-    /// "98% × 2.5".
-    pub fn summary(self) -> String {
-        format!("{}% × {}", self.percent, self.multiple)
-    }
-
     /// Its two fields, for a row of a settings grid.
-    pub fn ui(&mut self, ui: &mut egui::Ui, tip: &str) -> egui::Response {
+    pub fn ui(&mut self, ui: &mut egui::Ui, percent_tip: &str, multiple_tip: &str) -> egui::Response {
         ui.horizontal(|ui| {
             ui.add(egui::DragValue::new(&mut self.percent).range(50.0..=100.0).speed(0.1).suffix(" %"))
-                .on_hover_text(tip);
+                .on_hover_text(percent_tip);
             ui.label("×");
-            ui.add(egui::DragValue::new(&mut self.multiple).range(0.1..=20.0).speed(0.05)).on_hover_text(tip);
+            ui.add(egui::DragValue::new(&mut self.multiple).range(0.1..=20.0).speed(0.05)).on_hover_text(multiple_tip);
         })
         .response
     }

@@ -367,7 +367,7 @@ impl SpikeViewer {
                     "Only while acquiring: it needs data".into()
                 };
                 let tip = format!(
-                    "Sample the data for a while, then set the {}",
+                    "Sample each channel, then set its {}",
                     controls.iter().map(|c| c.1).collect::<Vec<_>>().join(" and ")
                 );
                 let run = ui.add_enabled(can, egui::Button::new("Run").small());
