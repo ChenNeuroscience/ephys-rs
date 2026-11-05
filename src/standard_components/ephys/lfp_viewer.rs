@@ -27,7 +27,9 @@ use crate::standard_components::ephys::{ChannelSelection, Continuous, Continuous
 use crate::standard_components::pool::{Pool, SharedPool};
 use crate::standard_components::preview;
 use crate::standard_components::spikes::{Channels, GainScope, Gains};
-use crate::standard_components::widgets::{require_input, setting, settings_grid, toolbar_section};
+use crate::standard_components::widgets::{
+    open_settings_button, require_input, setting, settings_grid, toolbar_section,
+};
 use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
 
 /// Columns across the view.
@@ -354,28 +356,24 @@ impl LfpViewer {
                         .labelled_by(label.id);
                 });
                 if let Some(gains) = gains {
-                    toolbar_section(ui, "gains", true, |ui| gains_ui(ui, context, gains, stream.channels));
+                    toolbar_section(ui, "gains", true, |ui| {
+                        gains_ui(ui, context, gains, stream.channels);
+                        if context.advanced() {
+                            open_settings_button(ui, context, GAINS, "Continuous Gain");
+                        }
+                    });
                 }
                 if let Some(reference) = reference {
                     toolbar_section(ui, "reference", true, |ui| {
                         let shown = ui.add_enabled_ui(!applied, |ui| reference_ui(ui, reference));
                         shown.response.on_disabled_hover_text("Disable the selection to change it");
+                        if context.advanced() {
+                            open_settings_button(ui, context, REFERENCE, "Reference");
+                        }
                     });
                 }
                 if let Some(selection) = selection.filter(|s| has_selection(s, stream.channels)) {
                     toolbar_section(ui, "selection", true, |ui| selection_ui(ui, selection, stream.channels));
-                }
-                if context.advanced() {
-                    toolbar_section(ui, "open", true, |ui| {
-                        for (control, what) in [(GAINS, "Continuous Gain"), (REFERENCE, "Reference")] {
-                            let tip = format!("Open the {what}, for the rest of its settings");
-                            let button =
-                                ui.add_enabled(context.control_connected(control), egui::Button::new(what).small());
-                            if button.on_hover_text(tip).clicked() {
-                                context.open_control_target(control);
-                            }
-                        }
-                    });
                 }
                 let tip = match context.inputs[1] {
                     Some(DataStream::Spectra(s)) => format!("Show each channel's spectrum, {}", s.summary()),

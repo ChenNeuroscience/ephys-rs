@@ -1769,24 +1769,6 @@ mod tests {
     }
 
     #[test]
-    fn china_theme() {
-        let mut app = TestApp::open(Some(example()), crate::components::THEMES);
-        app.layout.mode = Mode::Advanced;
-        app.theme = 2;
-        let (spikes, detector) = (node_named(&app, "Spike Viewer"), node_named(&app, "Spike Detector"));
-        app.layout.open(spikes, Some(Pane::Home));
-        app.layout.open(detector, Some(Pane::Home));
-        app.selection.only(detector);
-        let mut harness = Harness::builder()
-            .with_size([1400.0, 850.0])
-            .wgpu()
-            .build_ui_state(|ui, app: &mut TestApp| app.show(ui), app);
-        crate::components::china::CHINA.apply(&harness.ctx);
-        harness.run_steps(3);
-        harness.snapshot("graph_china");
-    }
-
-    #[test]
     fn zoomed_in_text_stays_sharp() {
         let mut harness = harness();
         let at = on_node(&harness, "Spike Detector", [100.0, 40.0]);

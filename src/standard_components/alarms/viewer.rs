@@ -29,7 +29,7 @@ use crate::core::gui::widgets::Icon;
 use crate::core::theme::Colours;
 use crate::standard_components::pool::{Pool, SharedPool};
 use crate::standard_components::preview;
-use crate::standard_components::widgets::require_input;
+use crate::standard_components::widgets::{open_settings_button, require_input};
 use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
 
 /// Its one control: the processor's alarms.
@@ -226,20 +226,14 @@ impl Node<Edges> for AlarmViewer {
         let states = display.as_ref().map(|d| d.states.as_slice());
         let going_off = display.as_ref().map_or(&[][..], |d| d.going_off.as_slice());
 
-        ui.horizontal(|ui| {
-            let button = ui.button("Alarm Processor").on_hover_text("Open it, for the alarms' settings");
-            if button.clicked() {
-                context.open_control_target(ALARMS);
-            }
-            context.node_toolbar(ui);
-        });
+        ui.horizontal(|ui| context.node_toolbar(ui));
         banner(ui, theme, &alarms, stream, states);
         ui.add_space(6.0);
         egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-            if !alarms.list.is_empty() {
-                all_row(ui, &mut alarms, overrides, locked, &mut self.sounding);
-                ui.add_space(2.0);
-            }
+            all_row(ui, &mut alarms, overrides, locked, &mut self.sounding, |ui| {
+                open_settings_button(ui, context, ALARMS, "Alarm Processor");
+            });
+            ui.add_space(2.0);
             for alarm in &mut alarms.list {
                 let state = states.and_then(|states| states.iter().find(|state| state.id == alarm.id).copied());
                 let off_for = going_off.iter().find(|(id, _)| *id == alarm.id).map(|(_, seconds)| *seconds);
@@ -324,44 +318,48 @@ fn switch_sound(overrides: Option<&Overrides>, id: u32, locked: bool, sounding: 
     }
 }
 
-/// Buttons for all the alarms, lined up with each alarm's: they set each one. While recording, one that was off when it
-/// started can't come on, so doesn't count.
+/// Buttons for all the alarms, lined up with each alarm's, if there are any: they set each one. While recording, one that
+/// was off when it started can't come on, so doesn't count. To their left, `settings`, there with or without alarms.
 fn all_row(
     ui: &mut egui::Ui,
     alarms: &mut Alarms,
     overrides: Option<&Overrides>,
     locked: bool,
     sounding: &mut Vec<u32>,
+    settings: impl FnOnce(&mut egui::Ui),
 ) {
     egui::Frame::new().inner_margin(8).show(ui, |ui| {
         ui.set_min_width(ui.available_width());
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add_enabled_ui(!locked || overrides.is_some(), |ui| {
-                    ui.spacing_mut().item_spacing.x = BUTTON_GAP;
-                    let ignored = |id| overrides.is_some_and(|o| o.ignored(id));
-                    let can_switch = |alarm: &&mut Alarm| !locked || alarm.on;
-                    let mut all = alarms.list.iter().filter(|a| !locked || a.on).all(|a| a.on && !ignored(a.id));
-                    if power(ui, &mut all, "All alarms").changed() {
-                        for alarm in alarms.list.iter_mut().filter(can_switch) {
-                            match overrides {
-                                Some(overrides) if locked => overrides.set_ignored(alarm.id, !all),
-                                _ => alarm.on = all,
+                ui.spacing_mut().item_spacing.x = BUTTON_GAP;
+                if !alarms.list.is_empty() {
+                    ui.add_enabled_ui(!locked || overrides.is_some(), |ui| {
+                        let ignored = |id| overrides.is_some_and(|o| o.ignored(id));
+                        let can_switch = |alarm: &&mut Alarm| !locked || alarm.on;
+                        let mut all = alarms.list.iter().filter(|a| !locked || a.on).all(|a| a.on && !ignored(a.id));
+                        if power(ui, &mut all, "All alarms").changed() {
+                            for alarm in alarms.list.iter_mut().filter(can_switch) {
+                                match overrides {
+                                    Some(overrides) if locked => overrides.set_ignored(alarm.id, !all),
+                                    _ => alarm.on = all,
+                                }
                             }
                         }
-                    }
-                    let mut on = alarms.list.iter().filter(|alarm| active(alarm, overrides)).peekable();
-                    let any = on.peek().is_some();
-                    let mut all = any && on.all(|a| sounds(overrides, a.id, sounding));
-                    let button = ui.add_enabled_ui(any, |ui| sound_button(ui, &mut all, "All sound")).inner;
-                    if button.changed() {
-                        for alarm in &alarms.list {
-                            if sounds(overrides, alarm.id, sounding) != all {
-                                switch_sound(overrides, alarm.id, locked, sounding);
+                        let mut on = alarms.list.iter().filter(|alarm| active(alarm, overrides)).peekable();
+                        let any = on.peek().is_some();
+                        let mut all = any && on.all(|a| sounds(overrides, a.id, sounding));
+                        let button = ui.add_enabled_ui(any, |ui| sound_button(ui, &mut all, "All sound")).inner;
+                        if button.changed() {
+                            for alarm in &alarms.list {
+                                if sounds(overrides, alarm.id, sounding) != all {
+                                    switch_sound(overrides, alarm.id, locked, sounding);
+                                }
                             }
                         }
-                    }
-                });
+                    });
+                }
+                settings(ui);
             });
         });
     });

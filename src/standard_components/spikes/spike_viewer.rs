@@ -19,7 +19,7 @@ use crate::standard_components::preview;
 use crate::standard_components::spikes::{
     Channels, DEFAULT_RANGE_UV, DEFAULT_THRESHOLD_UV, Gains, Polarity, Spikes, Thresholds, range_step, threshold_step,
 };
-use crate::standard_components::widgets::require_input;
+use crate::standard_components::widgets::{open_settings_button, require_input};
 use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
 
 /// A channel's plot's width, for its height.
@@ -379,13 +379,10 @@ impl SpikeViewer {
             }
             if context.advanced() {
                 ui.separator();
-                for (control, what) in [(GAINS_CONTROL, "Spike Gain"), (THRESHOLDS, "Spike Detector")] {
-                    let tip = format!("Open the {what}, to change how it detects them, or set each channel's by hand");
-                    let button = ui.add_enabled(context.control_connected(control), egui::Button::new(what).small());
-                    if button.on_hover_text(tip).clicked() {
-                        context.open_control_target(control);
-                    }
-                }
+                ui.label("Gains");
+                open_settings_button(ui, context, GAINS_CONTROL, "Spike Gain");
+                ui.label("Thresholds");
+                open_settings_button(ui, context, THRESHOLDS, "Spike Detector");
                 ui.separator();
                 ui.weak("Over a channel: G to type its gain, T its threshold. Drag a threshold to move it.");
             }

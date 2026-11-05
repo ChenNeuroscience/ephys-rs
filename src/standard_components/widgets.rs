@@ -2,8 +2,10 @@
 
 use eframe::egui;
 
-use crate::DataStream;
-use crate::core::engine::EdgeSet;
+use crate::core::engine::{Context, EdgeSet};
+use crate::core::gui::widgets::{Icon, small_icon_button};
+use crate::{DataStream, Edges};
+
 pub use crate::core::gui::widgets::eye;
 
 /// Two-column grid of labelled settings.
@@ -42,6 +44,17 @@ pub fn combo<T: PartialEq + Copy>(
 
 pub fn require_input(inputs: &[Option<DataStream>], what: &str) -> Vec<String> {
     if inputs.iter().all(|i| i.is_none()) { vec![format!("Connect {what}")] } else { Vec::new() }
+}
+
+/// A settings button, in the part of a view it's about, that opens the window of the node control `control` connects to:
+/// `what` is that node. It's greyed out while the control's not connected.
+pub fn open_settings_button(ui: &mut egui::Ui, context: &mut Context<Edges>, control: usize, what: &str) {
+    let tip = format!("Open the {what}'s settings");
+    let connected = context.control_connected(control);
+    let button = ui.add_enabled_ui(connected, |ui| small_icon_button(ui, Icon::Settings, what, &tip)).inner;
+    if button.clicked() {
+        context.open_control_target(control);
+    }
 }
 
 /// A section of a wrapping toolbar, kept together like an inline block: if it won't fit on what's left of the row, it all
