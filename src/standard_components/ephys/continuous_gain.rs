@@ -1,8 +1,8 @@
 //! The Continuous Gain: multiplies each channel of continuous data (µV) by its gain, a dumb multiplier, into whatever units
 //! what takes it wants (as floats): int8 values for Write LTX's EEG, say, or int16, or 0 to 1. Gains can be one for
 //! all channels, or one each (see `Gains`). They can be chosen from the data when it's triggered ("auto detect", from
-//! its window): its passes sample each channel for a while, then have its mean plus a multiple of how far from it, either
-//! way, so much of the data is within reach the output range, which is the only thing that range is for.
+//! its window): its passes sample each channel for a while, then have its mean, plus a multiple of a percentile's distance
+//! from it, reach the output range, which is the only thing that range is for. Sign doesn't count.
 
 use eframe::egui;
 use serde::{Deserialize, Serialize};
@@ -222,8 +222,8 @@ impl Node<Edges> for ContinuousGain {
                 setting(ui, "Level", |ui| {
                     self.level.ui(
                         ui,
-                        "The percentile of the samples' distances from the mean, either way",
-                        "That distance, times this, fills the output range",
+                        "The percentile of the samples, ignoring sign",
+                        "Its distance from the mean, times this, fills the output range",
                     )
                 });
                 setting(ui, "Sampling for", |ui| {

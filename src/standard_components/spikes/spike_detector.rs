@@ -2,7 +2,7 @@
 //! channel's threshold (µV past zero, the way the spikes go), on any of a group's channels, then the waveform on all
 //! of them around the peak that follows. Each channel's threshold is a setting, set by hand, from a Spike Viewer,
 //! or chosen from the data when it's triggered ("auto detect"): the mean of the channel's samples over a while, the way a
-//! Spike Viewer plots them (spikes going up), plus a multiple of how far above it so much of them are at or below.
+//! Spike Viewer plots them (spikes going up), plus a multiple of a percentile's distance from it.
 //!
 //! A group can't spike again until its last spike's waveform has ended, so spikes don't overlap, and a pass's
 //! spikes always fit the buffer (see `Spikes`). A spike is only found once its whole waveform has come, so

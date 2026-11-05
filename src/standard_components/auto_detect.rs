@@ -79,21 +79,20 @@ impl Distribution {
         last
     }
 
-    /// How far above the mean `percent` of the values are at or below.
-    pub fn above_mean(&self, percent: f32) -> f32 {
-        self.percentile(percent, self.bins()) - self.mean()
+    /// What `percent` of the values are at or below.
+    fn signed_percentile(&self, percent: f32) -> f32 {
+        self.percentile(percent, self.bins())
     }
 
-    /// How far from the mean, either way, `percent` of the values are within.
-    pub fn from_mean(&self, percent: f32) -> f32 {
-        let mean = self.mean();
-        let mut distances: Vec<(f32, u32)> = self.bins().map(|(value, count)| ((value - mean).abs(), count)).collect();
-        distances.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
-        self.percentile(percent, distances.into_iter())
+    /// What `percent` of the values are at or below, ignoring their sign.
+    fn unsigned_percentile(&self, percent: f32) -> f32 {
+        let mut values: Vec<(f32, u32)> = self.bins().map(|(value, count)| (value.abs(), count)).collect();
+        values.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+        self.percentile(percent, values.into_iter())
     }
 }
 
-/// A level chosen from the data: its mean, plus the distance from it that takes in so much of the data, multiplied.
+/// A level chosen from the data: its mean, plus a multiple of a percentile's distance from it.
 #[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
 pub struct PercentMultiple {
     pub percent: f32,
@@ -101,14 +100,16 @@ pub struct PercentMultiple {
 }
 
 impl PercentMultiple {
-    /// The level, given data that goes one way: `percent` of it is at or below that distance above the mean.
+    /// The level, given data that goes one way.
     pub fn above(self, data: &Distribution) -> f32 {
-        data.mean() + data.above_mean(self.percent) * self.multiple
+        let mean = data.mean();
+        mean + (data.signed_percentile(self.percent) - mean) * self.multiple
     }
 
-    /// The level, given data that can go either way: `percent` of it is within that distance of the mean.
+    /// The level, given data that can go either way: its percentile ignores sign, and so does its mean.
     pub fn either_way(self, data: &Distribution) -> f32 {
-        data.mean().abs() + data.from_mean(self.percent) * self.multiple
+        let mean = data.mean().abs();
+        mean + (data.unsigned_percentile(self.percent) - mean) * self.multiple
     }
 
     /// Its two fields, for a row of a settings grid.
@@ -168,12 +169,12 @@ mod tests {
     }
 
     #[test]
-    fn a_level_is_the_mean_plus_the_distance_taking_in_so_much_of_the_data_multiplied() {
+    fn a_level_is_the_mean_plus_a_multiple_of_a_percentiles_distance_from_it() {
         let level = PercentMultiple { percent: 98.0, multiple: 2.0 };
         // A mean of 500.5: 98% are at or below 980, which is 479.5 above it.
         let data = of(1..=1000);
         near(data.mean(), 500.5, 0.001);
-        near(data.above_mean(98.0), 479.5, 15.0);
+        near(data.signed_percentile(98.0), 980.0, 15.0);
         near(level.above(&data), 500.5 + 2.0 * 479.5, 30.0);
     }
 
@@ -182,22 +183,22 @@ mod tests {
         let level = PercentMultiple { percent: 98.0, multiple: 2.0 };
         let data = of(-1000..=1000);
         near(data.mean(), 0.0, 0.001);
-        near(data.from_mean(98.0), 980.0, 15.0);
+        near(data.unsigned_percentile(98.0), 980.0, 15.0);
         near(level.either_way(&data), 1960.0, 30.0);
 
         // Below zero, it's as far from zero.
         let data = of((-1000..=-1).map(|value| value - 1000));
         near(data.mean(), -1500.5, 0.001);
-        near(data.from_mean(98.0), 490.0, 30.0);
-        near(level.either_way(&data), 1500.5 + 980.0, 60.0);
+        near(data.unsigned_percentile(98.0), 1980.0, 30.0);
+        near(level.either_way(&data), 1500.5 + 2.0 * 479.5, 60.0);
     }
 
     #[test]
-    fn what_goes_above_the_mean_is_what_counts_one_way() {
+    fn one_way_it_is_the_percentile_that_counts() {
         // Mostly at 10, with a tail of 100s: 3% of them, so the 98th percentile's in it.
         let data = of((0..1000).map(|i| if i < 970 { 10 } else { 100 }));
-        near(data.above_mean(50.0), 10.0 - 12.7, 0.5);
-        near(data.above_mean(98.0), 100.0 - 12.7, 2.0);
+        near(data.signed_percentile(50.0), 10.0, 0.5);
+        near(data.signed_percentile(98.0), 100.0, 2.0);
     }
 
     #[test]
