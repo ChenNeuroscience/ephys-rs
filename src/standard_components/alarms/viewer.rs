@@ -1,12 +1,13 @@
-//! The Alarms viewer: how the alarms stand, prominently, and switches for them, in basic mode too; in advanced mode,
-//! their settings, which it edits on the Alarm Detector through a control. The detector's data stays with it: this only
-//! gets the alarms' states.
+//! The Alarms viewer: how the alarms stand, prominently, with switches for them and for sound, in basic mode too. The
+//! switches edit the Alarm Detector's settings through a control; the rest of its settings are in its own window. The
+//! detector's data stays with it: this only gets the alarms' states.
 //!
 //! Switching an alarm off changes what the detector needs, and so the plan. While recording, the graph can't change, so
 //! an alarm switched off is only ignored here (`Overrides`); that's saved in the settings once recording's stopped, if
 //! the window's open by then. And an alarm off when recording started has no data coming, so can't come on until then.
 //!
-//! It can also sound a tone (see `tone`), which passes start and stop, so it sounds with its window closed.
+//! It can also pip as an alarm goes off, each at its own pitch (see `tone`), from the passes, so with its window closed
+//! too.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -15,7 +16,7 @@ use eframe::egui::{self, Color32, CornerRadius, RichText, Stroke};
 use serde::{Deserialize, Serialize};
 
 use super::tone::Tone;
-use super::{Alarm, AlarmState, AlarmStates, Alarms, PERIODS, Phase, Source};
+use super::{Alarm, AlarmState, AlarmStates, Alarms, Phase, Source};
 use crate::core::engine::{
     Category, Context, Control, Flow, Input, Node, NodeInfo, NodeThread, Output, Pass, PassState,
 };
@@ -32,7 +33,7 @@ const ALARMS: usize = 0;
 #[derive(Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AlarmViewer {
-    /// Whether an alarm going off sounds a tone. Off to begin with, as it'd be a surprise in a quiet room.
+    /// Whether an alarm going off pips. Off to begin with, as it'd be a surprise in a quiet room.
     pub sound: bool,
 }
 
@@ -83,6 +84,8 @@ pub struct Showing {
     shown: SharedPool<AlarmsDisplay>,
     overrides: Option<Arc<Overrides>>,
     tone: Tone,
+    /// Which alarms were going off as of the last pass.
+    going_off: [bool; 4],
 }
 
 impl PassState for Showing {
@@ -101,7 +104,7 @@ impl Node<Edges> for AlarmViewer {
     const INFO: NodeInfo = NodeInfo {
         name: "Alarms",
         category: Category::Visualisation,
-        description: "How an Alarm Detector's alarms stand, with switches for them and their settings.",
+        description: "How an Alarm Detector's alarms stand, with switches for them and for sound.",
     };
     const HAS_VIEW: bool = true;
 
@@ -141,13 +144,18 @@ impl Node<Edges> for AlarmViewer {
                 *state = AlarmState::default();
             }
         }
-        let sounding = states.iter().any(|state| state.phase == Phase::Alarm);
-        showing.tone.set(sounding && overrides.sound(self.sound));
+        let going_off = states.map(|state| state.phase == Phase::Alarm);
+        for index in newly_off(showing.going_off, going_off) {
+            if overrides.sound(self.sound) {
+                showing.tone.pips(index);
+            }
+        }
+        showing.going_off = going_off;
         showing.shown.send_newest(pass, |display| display.states = states);
     }
 
     fn settings_ui(&mut self, ui: &mut egui::Ui, _context: &mut Context<Edges>) {
-        ui.weak("Its window has the alarms' settings.");
+        ui.weak("The Alarm Detector has the alarms' settings.");
     }
 
     fn view_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
@@ -160,7 +168,7 @@ impl Node<Edges> for AlarmViewer {
         let mut alarms = alarms.clone();
         let overrides = context.shared::<Overrides>();
         let overrides = overrides.as_deref();
-        let (locked, theme, advanced) = (context.locked, context.theme, context.advanced());
+        let (locked, theme) = (context.locked, context.theme);
         if let (false, Some(overrides)) = (locked, overrides) {
             overrides.save(&mut alarms, &mut self.sound);
         }
@@ -171,7 +179,9 @@ impl Node<Edges> for AlarmViewer {
         ui.horizontal(|ui| {
             switch(ui, &mut alarms.on, overrides.map(|o| &o.all), locked, "Alarms on");
             let mut sound = overrides.map_or(self.sound, |o| o.sound(self.sound));
-            let checkbox = ui.checkbox(&mut sound, "Sound").on_hover_text("Beep while an alarm's going off");
+            let checkbox = ui
+                .checkbox(&mut sound, "Sound")
+                .on_hover_text("A couple of pips as an alarm goes off, each at its own pitch");
             match (checkbox.changed(), overrides) {
                 (true, Some(overrides)) if locked => overrides.sound.store(1 + sound as u8, Ordering::Relaxed),
                 (true, _) => self.sound = sound,
@@ -185,13 +195,18 @@ impl Node<Edges> for AlarmViewer {
             for (index, source) in Source::ALL.into_iter().enumerate() {
                 let ignored = overrides.map(|o| &o.ignored[index]);
                 let state = states.map(|states| states[index]);
-                row(ui, theme, source, &mut alarms, stream, state, ignored, locked, advanced);
+                row(ui, theme, source, &mut alarms, stream, state, ignored, locked);
                 ui.add_space(4.0);
             }
         });
         context.controls[ALARMS] = Some(Setting::Alarms(alarms));
         preview::repaint_with_data(ui);
     }
+}
+
+/// The alarms that have just gone off.
+fn newly_off(before: [bool; 4], now: [bool; 4]) -> impl Iterator<Item = usize> {
+    (0..4).filter(move |index| now[*index] && !before[*index])
 }
 
 /// A switch for a setting. While recording the setting's locked, so it only ignores what's coming in (`ignored`), and
@@ -267,7 +282,7 @@ fn banner(ui: &mut egui::Ui, theme: &Colours, alarms: &Alarms, stream: AlarmStat
     });
 }
 
-/// An alarm: its switch and how it stands, what it's looking for, and in advanced mode, its settings.
+/// An alarm: its switch and how it stands, and what it's looking for.
 #[allow(clippy::too_many_arguments)]
 fn row(
     ui: &mut egui::Ui,
@@ -278,7 +293,6 @@ fn row(
     state: Option<AlarmState>,
     ignored: Option<&AtomicBool>,
     locked: bool,
-    advanced: bool,
 ) {
     let connected = stream.items(source) > 0;
     let period = alarms.alarm(source).period();
@@ -313,11 +327,6 @@ fn row(
                 });
             });
             ui.weak(detail(source, alarms.alarm(source), stream));
-            if advanced && connected {
-                egui::CollapsingHeader::new("Settings").id_salt(source.name()).show(ui, |ui| {
-                    ui.add_enabled_ui(!locked, |ui| settings(ui, source, alarms, stream));
-                });
-            }
         });
 }
 
@@ -333,80 +342,6 @@ fn detail(source: Source, alarm: &Alarm, stream: AlarmStates) -> String {
         _ => format!("each of {selected} {name}{plural}"),
     };
     format!("{} · {what}", range_text(source, alarm))
-}
-
-/// An alarm's settings.
-fn settings(ui: &mut egui::Ui, source: Source, alarms: &mut Alarms, stream: AlarmStates) {
-    let saturation = &mut alarms.saturation_uv;
-    let alarm = match source {
-        Source::Spikes => &mut alarms.spikes,
-        Source::Lfp => &mut alarms.lfp,
-        Source::Positions => &mut alarms.positions,
-        Source::Ttl => &mut alarms.ttl,
-    };
-    ui.horizontal_wrapped(|ui| {
-        let label = ui.label("Over");
-        let field = egui::DragValue::new(&mut alarm.seconds).range(PERIODS).speed(0.2).suffix(" s");
-        ui.add(field).labelled_by(label.id);
-        let label = ui.label("From");
-        let most = if source == Source::Lfp || source == Source::Positions { 100.0 } else { f32::MAX };
-        let suffix = source.unit();
-        let field = egui::DragValue::new(&mut alarm.low).range(0.0..=most).speed(0.2).suffix(suffix);
-        ui.add(field).labelled_by(label.id);
-        let label = ui.label("to");
-        let field = egui::DragValue::new(&mut alarm.high).range(0.0..=most).speed(0.2).suffix(suffix);
-        ui.add(field).labelled_by(label.id);
-    });
-    if source == Source::Lfp {
-        ui.horizontal(|ui| {
-            let label = ui.label("Saturated at");
-            let field = egui::DragValue::new(saturation).range(1.0..=10_000.0).speed(5.0).prefix("±").suffix(" µV");
-            ui.add(field).labelled_by(label.id).on_hover_text("How far from zero a sample counts as saturated");
-        });
-    }
-    if source != Source::Positions {
-        selection(ui, source, alarm, stream);
-    }
-}
-
-/// Which groups, channels or lines it watches, and whether they're taken together.
-fn selection(ui: &mut egui::Ui, source: Source, alarm: &mut Alarm, stream: AlarmStates) {
-    let items = stream.items(source);
-    let name = stream.item_name(source);
-    let together = if source == Source::Lfp { "Their mean" } else { "Their total" };
-    ui.horizontal(|ui| {
-        ui.label("Measure");
-        ui.selectable_value(&mut alarm.together, false, format!("Any one {name}"));
-        ui.selectable_value(&mut alarm.together, true, together);
-    });
-    ui.horizontal_wrapped(|ui| {
-        if ui.small_button("All").clicked() {
-            alarm.left_out.clear();
-        }
-        if ui.small_button("None").clicked() {
-            alarm.left_out = (0..items).collect();
-        }
-        for item in 0..items {
-            let mut selected = alarm.selected(item);
-            let checkbox = ui.checkbox(&mut selected, (item + 1).to_string());
-            if checkbox.on_hover_text(format!("{name} {}", item + 1)).changed() {
-                alarm.left_out.retain(|left_out| *left_out != item);
-                if !selected {
-                    alarm.left_out.push(item);
-                }
-            }
-        }
-    });
-}
-
-/// Every alarm's settings, for the detector's own window.
-pub fn alarms_ui(ui: &mut egui::Ui, alarms: &mut Alarms, stream: AlarmStates) {
-    for source in Source::ALL {
-        ui.add_space(6.0);
-        ui.strong(source.name());
-        ui.checkbox(&mut alarms.alarm_mut(source).on, "On");
-        settings(ui, source, alarms, stream);
-    }
 }
 
 #[cfg(test)]
@@ -489,6 +424,14 @@ mod tests {
         THEMES[0].apply(&harness.ctx);
         harness.run_steps(3);
         harness.snapshot("alarms");
+    }
+
+    #[test]
+    fn pips_are_only_for_going_off() {
+        let newly = |before, now| newly_off(before, now).collect::<Vec<_>>();
+        assert_eq!(newly([false; 4], [true, false, true, false]), vec![0, 2]);
+        assert_eq!(newly([true, false, false, false], [true, false, false, false]), Vec::<usize>::new(), "still off");
+        assert_eq!(newly([true, false, false, false], [false; 4]), Vec::<usize>::new(), "clear again");
     }
 
     #[test]

@@ -2318,12 +2318,7 @@ mod tests {
         assert!(!offered(&harness, "Standard LTX graph v0.5"), "not offered once done");
         assert!(offered(&harness, "Disable position tracking") && offered(&harness, "Use synthetic data"));
         harness.snapshot("basic_after_quick_actions");
-        // Below the fold, with the alarms taking some of the column.
-        harness.set_size(egui::vec2(1400.0, 1300.0));
-        harness.run_steps(2);
         harness.get_by_role_and_label(button, "Disable position tracking").click();
-        harness.run_steps(2);
-        harness.set_size(egui::vec2(1400.0, 850.0));
         harness.run_steps(2);
         assert!(offered(&harness, "Enable position tracking") && !offered(&harness, "Disable position tracking"));
         let tracker = node_named(harness.state(), "Tracker View");

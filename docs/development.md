@@ -74,20 +74,22 @@ only takes it off the video.
 
 ## Alarms
 
-The [Alarm Detector](../src/standard_components/alarms/detector.rs) sits with the data, and the
-[Alarms viewer](../src/standard_components/alarms/viewer.rs) only shows it: the viewer edits the detector's settings
-through a control, and gets back a few numbers a pass (`AlarmStates`), so nothing bulky goes to the window. Each alarm
-counts in bins, a fiftieth of its period each, and doesn't go off until it's seen a whole period, so a new period, or
-epoch, starts it waiting again. Time is counted in passes, not samples, so a source that stops looks like a low rate.
+The [Alarm Detector](../src/standard_components/alarms/detector.rs) sits with the data, with the alarms' settings in its
+window. The [Alarms viewer](../src/standard_components/alarms/viewer.rs) shows how they stand, and has their on and off
+switches, which edit the detector's settings through a control; it gets back a few numbers a pass (`AlarmStates`), so
+nothing bulky goes to the window. Each alarm counts in bins, a fiftieth of its period each, and doesn't go off until it's
+seen a whole period, so a new period, or epoch, starts it waiting again. Time is counted in passes, not samples, so a
+source that stops looks like a low rate.
 
 An alarm that's off isn't needed (`Node::needs`), so switching one changes the plan, and starts a new epoch. While
 recording the graph can't change, so the viewer only ignores what it's switched off, and saves that in the settings
 once recording's stopped, if its window's open by then (otherwise it's lost when the run stops). An alarm off when
 recording started has no data coming, so it can't come on until then.
 
-The tone is the viewer's own, on a thread started the first time it sounds, from
-[`tone.rs`](../src/standard_components/alarms/tone.rs) with `cpal`. It's started and stopped by passes, so it works with
-the window closed, and needs nothing from the core. On Linux, `cpal` needs ALSA's headers (`libasound2-dev`) to build.
+The pips are the viewer's own, on a thread started the first time they sound, from
+[`tone.rs`](../src/standard_components/alarms/tone.rs) with `cpal`: a couple as an alarm goes off, at its own pitch. Passes
+start them, so they work with the window closed, and they need nothing from the core. On Linux, `cpal` needs ALSA's
+headers (`libasound2-dev`) to build.
 
 ## Errors and warnings
 

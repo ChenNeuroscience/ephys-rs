@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 
-use super::viewer::alarms_ui;
+use super::settings::alarms_ui;
 use super::{Alarm, AlarmState, AlarmStates, Alarms, Phase, Source};
 use crate::core::engine::{Category, Context, Input, Node, NodeInfo, Output, Pass, PassState, SettingPort};
 use crate::standard_components::widgets::require_input;
@@ -211,7 +211,7 @@ impl Node<Edges> for AlarmDetector {
         name: "Alarm Detector",
         category: Category::Processing,
         description: "Watches spikes, LFP, positions and TTLs for rates and fractions outside their ranges, over a \
-                      period chosen for each: for the Alarms viewer, which also sets them.",
+                      period chosen for each: for the Alarms viewer, which shows them.",
     };
 
     fn inputs(&self) -> Vec<Input<Edges>> {
@@ -284,7 +284,6 @@ impl Node<Edges> for AlarmDetector {
     }
 
     fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
-        ui.checkbox(&mut self.alarms.on, "Alarms on");
         alarms_ui(ui, &mut self.alarms, streams(context.inputs));
     }
 }
@@ -442,6 +441,20 @@ mod tests {
         assert_eq!(run.run(0, &spikes(&[], 0), 1.0).phase, Phase::Alarm);
         run.detector.alarms.spikes.seconds = 2.0;
         assert!(matches!(run.run(0, &spikes(&[], 0), 1.0).phase, Phase::Waiting(_)));
+    }
+
+    /// All four connected, as in its window. See tests/snapshots/.
+    #[test]
+    fn settings_read_as_when_to_alarm() {
+        use crate::standard_components::themes::THEMES;
+        let stream = AlarmStates { groups: 8, group_size: 4, channels: 4, positions: true, lines: 1 };
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size([460.0, 560.0])
+            .wgpu()
+            .build_ui_state(move |ui, alarms: &mut Alarms| alarms_ui(ui, alarms, stream), Alarms::default());
+        THEMES[0].apply(&harness.ctx);
+        harness.run_steps(3);
+        harness.snapshot("alarm_detector_settings");
     }
 
     #[test]

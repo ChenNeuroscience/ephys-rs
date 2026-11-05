@@ -422,7 +422,7 @@
       {
         "dimension": "Data",
         "from": {
-          "node": 13,
+          "node": 14,
           "port": 0
         },
         "to": {
@@ -809,7 +809,8 @@
         "pos": [
           1680.0,
           720.0
-        ]
+        ],
+        "basic": true
       },
       "19": {
         "label": "Alarms",

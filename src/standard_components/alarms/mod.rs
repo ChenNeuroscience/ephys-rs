@@ -1,8 +1,10 @@
 //! Alarms: whether what's coming in looks wrong, over a period chosen for each. The Alarm Detector (`detector`) watches
-//! spikes, LFP, positions and TTLs where the data is; the Alarms viewer (`viewer`) shows how they stand. Between them
-//! go only their settings, along a settings edge, and a few numbers a pass, as `AlarmStates`.
+//! spikes, LFP, positions and TTLs where the data is, with the alarms' settings in its window (`settings`); the Alarms
+//! viewer (`viewer`) shows how they stand, with switches for them, and can pip as they go off (`tone`). Between them go
+//! only those settings, along a settings edge, and a few numbers a pass, as `AlarmStates`.
 
 pub mod detector;
+mod settings;
 mod tone;
 pub mod viewer;
 
@@ -41,6 +43,16 @@ impl Source {
         }
     }
 
+    /// What's measured, as the alarm's settings say it: "Alarm when the rate is outside...".
+    pub fn measured(self) -> &'static str {
+        match self {
+            Source::Spikes => "the rate is",
+            Source::Lfp => "the time saturated is",
+            Source::Positions => "the time with no data is",
+            Source::Ttl => "the TTLs counted are",
+        }
+    }
+
     /// A value as it's shown: "12.5 Hz", "3% saturated".
     pub fn value(self, value: f32) -> String {
         match self {
@@ -76,7 +88,8 @@ impl Default for Alarm {
 /// The periods an alarm can be over, in seconds.
 pub const PERIODS: std::ops::RangeInclusive<f32> = 1.0..=3600.0;
 const DEFAULT_SECONDS: f32 = 20.0;
-/// How near the rails an LFP sample counts as saturated until it's set, in µV: a headstage's rails are at ±6389 µV.
+/// How far from zero an LFP sample counts as saturated until it's set, in µV: a headstage's rails are at ±6389 µV,
+/// though filtering takes the peaks of what reaches them down a little.
 const DEFAULT_SATURATION_UV: f32 = 6300.0;
 
 impl Alarm {
@@ -110,7 +123,7 @@ impl Default for Alarms {
             spikes: Alarm { low: 5.0, high: 400.0, together: true, ..Default::default() },
             lfp: Alarm { high: 5.0, ..Default::default() },
             positions: Alarm { high: 20.0, ..Default::default() },
-            ttl: Alarm { low: 1.0, high: 10_000.0, together: true, ..Default::default() },
+            ttl: Alarm { seconds: 30.0, low: 1.0, high: 3.0, together: true, ..Default::default() },
             saturation_uv: DEFAULT_SATURATION_UV,
         }
     }
