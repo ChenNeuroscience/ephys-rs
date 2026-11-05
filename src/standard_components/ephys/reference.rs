@@ -378,7 +378,7 @@ fn reference_channels_ui(ui: &mut egui::Ui, text: &mut String, count: u32) {
     let mut chosen: Vec<u32> = parse_channels(text, count).unwrap_or_default();
     ui.horizontal(|ui| {
         ui.label(RichText::new(format!("Of {} of the {count} channels", chosen.len())).strong());
-        match all_checkbox(ui, chosen.len(), count as usize) {
+        match all_checkbox(ui, chosen.len(), count as usize, "All") {
             Some(true) => *text = "all".into(),
             Some(false) => *text = "none".into(),
             None => {}

@@ -194,14 +194,12 @@ fn settings(ui: &mut egui::Ui, alarm: &mut Alarm, stream: AlarmStates) {
                 ui.selectable_value(&mut selection.together, false, format!("Any one {name}"));
                 ui.selectable_value(&mut selection.together, true, together);
             });
+            selection_ui(ui, selection, items, name);
         }
     });
     if items == 0 {
         ui.weak("Not connected");
         return;
-    }
-    if let Some(selection) = kind.selection_mut() {
-        selection_ui(ui, selection, items, name);
     }
     if !has_period {
         let note = "⚠ Taken as down until it first changes. Pulses under 20 ms can be missed.";
@@ -209,24 +207,31 @@ fn settings(ui: &mut egui::Ui, alarm: &mut Alarm, stream: AlarmStates) {
     }
 }
 
-/// Which groups, channels or lines it watches.
+/// A row of the settings: which groups, channels or lines it watches, with a checkbox for all of them in the labels' column.
 pub fn selection_ui(ui: &mut egui::Ui, selection: &mut Selection, items: u32, name: &str) {
-    ui.horizontal_wrapped(|ui| {
-        let selected = (0..items).filter(|item| selection.selected(*item)).count();
-        match all_checkbox(ui, selected, items as usize) {
-            Some(true) => selection.left_out.clear(),
-            Some(false) => selection.left_out = (0..items).collect(),
-            None => {}
-        }
-        for item in 0..items {
-            let mut selected = selection.selected(item);
-            let checkbox = ui.checkbox(&mut selected, (item + 1).to_string());
-            if checkbox.on_hover_text(format!("{name} {}", item + 1)).changed() {
-                selection.left_out.retain(|left_out| *left_out != item);
-                if !selected {
-                    selection.left_out.push(item);
+    // Grid cells are centred, so a tall one wants pinning to the top.
+    let top = egui::Layout::top_down(egui::Align::Min);
+    let selected = (0..items).filter(|item| selection.selected(*item)).count();
+    let right = egui::Layout::right_to_left(egui::Align::Min);
+    let all = ui.with_layout(right, |ui| all_checkbox(ui, selected, items as usize, "")).inner;
+    match all {
+        Some(true) => selection.left_out.clear(),
+        Some(false) => selection.left_out = (0..items).collect(),
+        None => {}
+    }
+    ui.with_layout(top, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            for item in 0..items {
+                let mut selected = selection.selected(item);
+                let checkbox = ui.checkbox(&mut selected, (item + 1).to_string());
+                if checkbox.on_hover_text(format!("{name} {}", item + 1)).changed() {
+                    selection.left_out.retain(|left_out| *left_out != item);
+                    if !selected {
+                        selection.left_out.push(item);
+                    }
                 }
             }
-        }
+        });
     });
+    ui.end_row();
 }

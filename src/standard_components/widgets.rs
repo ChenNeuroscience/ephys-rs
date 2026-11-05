@@ -48,17 +48,20 @@ pub fn require_input(inputs: &[Option<DataStream>], what: &str) -> Vec<String> {
 
 /// A checkbox for all of a list of `count` checkboxes, `selected` of which are ticked: a dash if it's only some. Returns
 /// whether to tick them all, or none, if it's clicked: some ticked, that's all.
-pub fn all_checkbox(ui: &mut egui::Ui, selected: usize, count: usize) -> Option<bool> {
+pub fn all_checkbox(ui: &mut egui::Ui, selected: usize, count: usize, text: &str) -> Option<bool> {
     let mut all = selected == count && count > 0;
     let some = selected > 0 && !all;
-    ui.add(egui::Checkbox::new(&mut all, "All").indeterminate(some)).changed().then_some(all)
+    ui.add(egui::Checkbox::new(&mut all, text).indeterminate(some))
+        .on_hover_text("All or none")
+        .changed()
+        .then_some(all)
 }
 
-/// Shows a toggle for all of a list as on for only some of it: an outline, between off and the fill of on. It's for icons
-/// and other buttons, as the dash is for checkboxes.
+/// Shows a toggle for all of a list as on for only some of it: a dash, as on a checkbox, for icons and other buttons.
 pub fn mark_mixed(ui: &egui::Ui, button: &egui::Response) {
-    let stroke = egui::Stroke::new(1.0, ui.visuals().selection.bg_fill);
-    ui.painter().rect_stroke(button.rect, 3.0, stroke, egui::StrokeKind::Inside);
+    let (rect, stroke) = (button.rect, egui::Stroke::new(2.0, ui.visuals().strong_text_color()));
+    let y = rect.bottom() - 1.5;
+    ui.painter().line_segment([egui::pos2(rect.center().x - 6.0, y), egui::pos2(rect.center().x + 6.0, y)], stroke);
 }
 
 /// A settings button, in the part of a view it's about, that opens the window of the node control `control` connects to:
