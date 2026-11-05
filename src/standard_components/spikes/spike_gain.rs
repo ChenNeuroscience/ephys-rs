@@ -2,19 +2,18 @@
 //! what takes them wants (as floats): int8 values for Write LTX, say, or int16, or 0 to 1. Gains can be one for all
 //! channels, one for each group (a tetrode's, say), or one each (see `Gains`). They can be chosen from the data when
 //! it's triggered ("auto detect", from its window or a Spike Viewer's): its passes sample each channel's spikes for a
-//! while, then have the bigger of them reach the output range, which is the only thing that range is for.
+//! while, then have a multiple of the biggest reach the output range, which is the only thing that range is for.
 
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 
 use crate::core::engine::{Category, Context, Input, Node, NodeInfo, Output, Pass, SettingPort};
 use crate::standard_components::auto_detect::{AUTO_DETECT, SAMPLING, auto_detect_ui, detecting};
-use crate::standard_components::spikes::{Channels, DEFAULT_RANGE_UV, GainScope, Gains, RANGES_UV, SpikesBuffer};
+use crate::standard_components::spikes::{
+    Channels, DEFAULT_RANGE_UV, GainScope, Gains, Polarity, RANGES_UV, SpikesBuffer,
+};
 use crate::standard_components::widgets::{input_summary, named_settings_grid, require_input, setting};
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
-
-/// The most spikes sampled on each channel.
-const SAMPLED_SPIKES: usize = 4000;
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -22,11 +21,13 @@ pub struct SpikeGain {
     pub gains: Gains,
     /// Seconds to sample the data for, to choose the gains from.
     pub sampling: f32,
+    /// What's to reach the output range, when choosing them: each channel's biggest spike, times this.
+    pub multiple: f32,
 }
 
 impl Default for SpikeGain {
     fn default() -> Self {
-        SpikeGain { gains: Gains::default(), sampling: 10.0 }
+        SpikeGain { gains: Gains::default(), sampling: 10.0, multiple: 1.3 }
     }
 }
 
@@ -34,21 +35,21 @@ impl Default for SpikeGain {
 #[derive(Default)]
 pub struct Gaining {
     sampling: Option<Sampling>,
+    /// Which way the spikes go.
+    polarity: Polarity,
 }
 
 impl crate::core::engine::PassState for Gaining {
-    const WHY: &'static str = "While choosing the gains from the data: each channel's spikes and noise sampled so \
-                               far, which each pass adds to.";
+    const WHY: &'static str = "While choosing the gains from the data: each channel's spikes sampled so far, which \
+                               each pass adds to.";
 }
 
 /// What's been sampled so far, to choose the gains from.
 struct Sampling {
     elapsed: f64,
     seconds: f64,
-    /// For each channel: its noise summed over the passes so far, and each spike's biggest excursion on it.
-    noise: Vec<f64>,
-    passes: u32,
-    peaks: Vec<Vec<f32>>,
+    /// Each channel's biggest excursion, the way spikes go.
+    peaks: Vec<f32>,
 }
 
 impl Node<Edges> for SpikeGain {
@@ -93,6 +94,14 @@ impl Node<Edges> for SpikeGain {
 
     /// Multiplies each channel's waveforms by its gain (saying so on the spikes); and, when triggered, samples the
     /// spikes (in µV, before that) for a while, then proposes gains from them.
+    fn initial_state(&self, inputs: &[Option<DataStream>]) -> Gaining {
+        let polarity = match inputs.first() {
+            Some(Some(DataStream::Spikes(spikes))) => spikes.polarity,
+            _ => Polarity::default(),
+        };
+        Gaining { sampling: None, polarity }
+    }
+
     fn process(&self, pass: &mut Pass<Edges>, gaining: &mut Gaining) {
         if let Some(Some(Buffer::Spikes(input))) = pass.inputs.first()
             && let Some(Buffer::Spikes(output)) = pass.outputs.get_mut(0)
@@ -104,23 +113,17 @@ impl Node<Edges> for SpikeGain {
         let layout = Channels { count: channels, group_size: spikes.group_size };
         if pass.triggered(AUTO_DETECT) {
             let seconds = self.sampling.clamp(*SAMPLING.start(), *SAMPLING.end()) as f64;
-            gaining.sampling = Some(Sampling {
-                elapsed: 0.0,
-                seconds,
-                noise: vec![0.0; channels],
-                passes: 0,
-                peaks: (0..channels).map(|_| Vec::with_capacity(SAMPLED_SPIKES)).collect(),
-            });
+            gaining.sampling = Some(Sampling { elapsed: 0.0, seconds, peaks: vec![0.0; channels] });
         }
         if gaining.sampling.is_some() && pass.trigger_cancelled(AUTO_DETECT) {
             gaining.sampling = None;
         }
         if let Some(sampling) = &mut gaining.sampling {
-            sampling.add(spikes, pass.duration);
+            sampling.add(spikes, gaining.polarity, pass.duration);
             pass.trigger_progress(AUTO_DETECT, (sampling.elapsed / sampling.seconds) as f32);
             if sampling.elapsed >= sampling.seconds {
                 let mut gains = self.gains.clone();
-                gains.set_ranges(&sampling.choose(&spikes.thresholds), layout);
+                gains.set_ranges(&sampling.choose(self.multiple, &spikes.thresholds), layout);
                 pass.propose(0, Setting::Gains(gains));
                 pass.trigger_done(AUTO_DETECT);
                 gaining.sampling = None;
@@ -212,12 +215,18 @@ impl Node<Edges> for SpikeGain {
                     let mut output_range = self.gains.output_range;
                     let field = egui::DragValue::new(&mut output_range).range(1e-6..=1e9).speed(1.0).prefix("±");
                     let response = ui.add(field).on_hover_text(
-                        "Gains chosen from the data have each channel's bigger spikes (the 98th percentile's biggest \
-                     excursion) reach this, in the units of what takes them: ±128 for Write LTX's int8 values, say \
-                     (or less, for room above them), ±32768 for int16, ±1 for floats",
+                        "Gains chosen from the data have the level below reach this, in the units of what takes them: \
+                     ±128 for Write LTX's int8 values, say (or less, for room above them), ±32768 for int16, ±1 for \
+                     floats",
                     );
                     self.gains.output_range = output_range;
                     response
+                });
+                setting(ui, "Biggest spike ×", |ui| {
+                    ui.add(egui::DragValue::new(&mut self.multiple).range(0.1..=20.0).speed(0.01)).on_hover_text(
+                        "What reaches the range above: each channel's biggest spike, times this. It leaves room for its \
+                         threshold",
+                    )
                 });
                 setting(ui, "Sampling for", |ui| {
                     ui.add(egui::DragValue::new(&mut self.sampling).range(SAMPLING).speed(0.2).suffix(" s"))
@@ -226,8 +235,8 @@ impl Node<Edges> for SpikeGain {
             })
         });
         let tip = format!(
-            "Sample the spikes, then set the gains so the bigger ones reach ±{}, sharing them out as above",
-            self.gains.output_range
+            "Sample the spikes, then set the gains so the biggest, times {}, reaches ±{}, sharing them out as above",
+            self.multiple, self.gains.output_range
         );
         auto_detect_ui(ui, context, None, &tip);
         ui.add_space(4.0);
@@ -236,44 +245,27 @@ impl Node<Edges> for SpikeGain {
 }
 
 impl Sampling {
-    fn add(&mut self, spikes: &SpikesBuffer, duration: f64) {
-        for (sum, noise) in self.noise.iter_mut().zip(&spikes.noise) {
-            *sum += *noise as f64;
-        }
-        self.passes += 1;
+    fn add(&mut self, spikes: &SpikesBuffer, polarity: Polarity, duration: f64) {
         let (k, samples) = (spikes.group_size, spikes.samples);
         for (i, spike) in spikes.spikes.iter().enumerate() {
             let waveform = spikes.waveform(i);
             for c in 0..k {
-                let channel = spike.group as usize * k + c;
-                let Some(peaks) = self.peaks.get_mut(channel) else { continue };
-                let peak = waveform[c * samples..(c + 1) * samples].iter().fold(0.0f32, |m, v| m.max(v.abs()));
-                if peaks.len() < SAMPLED_SPIKES {
-                    peaks.push(peak);
-                }
+                let Some(peak) = self.peaks.get_mut(spike.group as usize * k + c) else { continue };
+                let waveform = &waveform[c * samples..(c + 1) * samples];
+                *peak = waveform.iter().fold(*peak, |peak, x| peak.max(polarity.extremity(*x)));
             }
         }
         self.elapsed += duration;
     }
 
-    /// Each channel's range (µV), given its threshold: the bigger of its spikes (the 98th percentile's biggest
-    /// excursion) reach it, with room for its threshold (at most two-thirds of the way up); with too few spikes to
-    /// tell, it's eight standard deviations of its noise.
-    fn choose(&mut self, thresholds: &[f32]) -> Vec<f32> {
-        let passes = self.passes.max(1) as f64;
+    /// Each channel's range (µV), given its threshold: its biggest spike times `multiple`, with room for its threshold
+    /// (at most two-thirds of the way up).
+    fn choose(&self, multiple: f32, thresholds: &[f32]) -> Vec<f32> {
         self.peaks
-            .iter_mut()
-            .zip(&self.noise)
+            .iter()
             .zip(thresholds)
-            .map(|((peaks, &noise), &threshold)| {
-                let noise = (noise / passes) as f32;
-                let biggest = if peaks.len() >= 10 {
-                    peaks.sort_unstable_by(f32::total_cmp);
-                    peaks[(peaks.len() - 1) * 98 / 100]
-                } else {
-                    8.0 * noise
-                };
-                let range = biggest.max(1.5 * threshold);
+            .map(|(&peak, &threshold)| {
+                let range = (multiple * peak).max(1.5 * threshold);
                 if range > 0.0 { range.clamp(*RANGES_UV.start(), *RANGES_UV.end()) } else { DEFAULT_RANGE_UV }
             })
             .collect()
@@ -317,10 +309,11 @@ mod tests {
         for sequence in 0..passes {
             let Buffer::Spikes(spikes) = &mut outputs[0] else { unreachable!() };
             spikes.clear();
-            // A spike each pass, peaking at 100 µV on the first channel, 500 µV on the second (now and then).
+            // Negative-going: peaking at 100 µV on the first channel, 300 on the second (now and then). What goes the
+            // other way isn't how spikes go.
             if let Some(waveform) = spikes.push(Spike { sample: 0, group: 0, channel: 0 }) {
-                waveform[8] = -100.0;
-                waveform[40 + 8] = if sequence % 4 == 0 { -500.0 } else { -50.0 };
+                (waveform[8], waveform[9]) = (-100.0, 900.0);
+                waveform[40 + 8] = if sequence % 4 == 0 { -300.0 } else { -50.0 };
             }
             let mut pass = Pass::new(sequence, PASS_DURATION, &[], &mut outputs);
             pass.exchange = exchange;
@@ -331,10 +324,10 @@ mod tests {
         let proposals = exchange.take_proposals();
         let Some(Setting::Gains(gains)) = proposals[0].2.downcast_ref::<Setting>() else { panic!() };
         let close = |a: f32, b: f32| (a - b).abs() < 0.01;
-        assert!(close(gains.range_uv(0), 100.0), "the first channel's spikes reach the output range");
-        assert!(close(gains.range_uv(1), 500.0), "the second's biggest");
-        assert!(close(gains.range_uv(2), 120.0), "spikes no bigger than 0: room for its threshold");
-        assert!(close(gains.range_uv(3), 75.0), "and for the default threshold, with no noise");
+        assert!(close(gains.range_uv(0), 130.0), "the first channel's biggest, times 1.3");
+        assert!(close(gains.range_uv(1), 390.0), "and the second's");
+        assert!(close(gains.range_uv(2), 120.0), "no spikes on it: room for its threshold");
+        assert!(close(gains.range_uv(3), 75.0), "and for the default threshold");
         assert_eq!(gains.output_range, 128.0, "for 8-bit samples, to begin with");
     }
 

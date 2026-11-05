@@ -40,6 +40,11 @@ pub enum Polarity {
 }
 
 impl Polarity {
+    /// A value as it's plotted: spikes go up, so negative-going ones are shown upside down.
+    pub fn plotted(self, x: f32) -> f32 {
+        if self == Polarity::Negative { -x } else { x }
+    }
+
     /// How far a value is past zero, the way spikes go.
     pub fn extremity(self, x: f32) -> f32 {
         match self {

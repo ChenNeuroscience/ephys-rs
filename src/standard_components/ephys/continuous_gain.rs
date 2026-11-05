@@ -1,14 +1,16 @@
 //! The Continuous Gain: multiplies each channel of continuous data (µV) by its gain, a dumb multiplier, into whatever units
 //! what takes it wants (as floats): int8 values for Write LTX's EEG, say, or int16, or 0 to 1. Gains can be one for
 //! all channels, or one each (see `Gains`). They can be chosen from the data when it's triggered ("auto detect", from
-//! its window): its passes take each channel's biggest excursion in each pass for a while, then have the bigger of
-//! those reach the output range, which is the only thing that range is for.
+//! its window): its passes sample each channel for a while, then have its mean plus a multiple of how far from it, either
+//! way, so much of the data is within reach the output range, which is the only thing that range is for.
 
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 
 use crate::core::engine::{Category, Context, Input, Node, NodeInfo, Output, Pass, SettingPort};
-use crate::standard_components::auto_detect::{AUTO_DETECT, SAMPLING, auto_detect_ui, detecting};
+use crate::standard_components::auto_detect::{
+    AUTO_DETECT, Distribution, PercentMultiple, SAMPLING, auto_detect_ui, detecting,
+};
 use crate::standard_components::spikes::{Channels, DEFAULT_RANGE_UV, GainScope, Gains, RANGES_UV};
 use crate::standard_components::widgets::{input_summary, named_settings_grid, require_input, setting};
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
@@ -19,42 +21,45 @@ pub struct ContinuousGain {
     pub gains: Gains,
     /// Seconds to sample the data for, to choose the gains from.
     pub sampling: f32,
+    /// What's to reach the output range, when choosing them: this, of each channel's samples.
+    pub level: PercentMultiple,
 }
 
 impl Default for ContinuousGain {
     fn default() -> Self {
-        ContinuousGain { gains: Gains { scope: GainScope::All, ..Default::default() }, sampling: 10.0 }
+        ContinuousGain {
+            gains: Gains { scope: GainScope::All, ..Default::default() },
+            sampling: 10.0,
+            level: PercentMultiple { percent: 98.0, multiple: 2.0 },
+        }
     }
 }
 
-/// While choosing the gains from the data: each channel's biggest excursion in each pass so far.
+/// While choosing the gains from the data: what's been added up of each channel so far.
 #[derive(Default)]
 pub struct Gaining {
     sampling: Option<Sampling>,
 }
 
 impl crate::core::engine::PassState for Gaining {
-    const WHY: &'static str = "While choosing the gains from the data: each channel's biggest excursion in each pass \
-                               so far, which each pass adds to.";
+    const WHY: &'static str = "While choosing the gains from the data: each channel's samples added up so far, which \
+                               each pass adds to.";
 }
 
 struct Sampling {
     elapsed: f64,
     seconds: f64,
-    peaks: Vec<Vec<f32>>,
+    /// Each channel's samples.
+    data: Vec<Distribution>,
 }
 
 impl Sampling {
-    /// Each channel's range (µV): the bigger of its passes' biggest excursions (the 98th percentile's) reach it.
-    fn choose(&mut self) -> Vec<f32> {
-        self.peaks
-            .iter_mut()
-            .map(|peaks| {
-                if peaks.is_empty() {
-                    return DEFAULT_RANGE_UV;
-                }
-                peaks.sort_unstable_by(f32::total_cmp);
-                let range = peaks[(peaks.len() - 1) * 98 / 100];
+    /// Each channel's range (µV): `level` of what's sampled.
+    fn choose(&self, level: PercentMultiple) -> Vec<f32> {
+        self.data
+            .iter()
+            .map(|data| {
+                let range = level.either_way(data);
                 if range > 0.0 { range.clamp(*RANGES_UV.start(), *RANGES_UV.end()) } else { DEFAULT_RANGE_UV }
             })
             .collect()
@@ -101,8 +106,8 @@ impl Node<Edges> for ContinuousGain {
         &[AUTO_DETECT]
     }
 
-    /// When triggered, samples each channel's biggest excursion in each pass (in µV) for a while, then proposes gains
-    /// from them; and multiplies each channel by its gain.
+    /// When triggered, samples each channel (in µV) for a while, then proposes gains from it; and multiplies each
+    /// channel by its gain.
     fn process(&self, pass: &mut Pass<Edges>, gaining: &mut Gaining) {
         let input = match pass.inputs[0] {
             Some(Buffer::Continuous(input)) => Some(input),
@@ -113,17 +118,15 @@ impl Node<Edges> for ContinuousGain {
         let channels = output.channels;
         if pass.triggered(AUTO_DETECT) {
             let seconds = self.sampling.clamp(*SAMPLING.start(), *SAMPLING.end()) as f64;
-            gaining.sampling = Some(Sampling { elapsed: 0.0, seconds, peaks: vec![Vec::new(); channels] });
+            gaining.sampling = Some(Sampling { elapsed: 0.0, seconds, data: vec![Distribution::default(); channels] });
         }
         if gaining.sampling.is_some() && pass.trigger_cancelled(AUTO_DETECT) {
             gaining.sampling = None;
         }
         let Some(Buffer::Continuous(output)) = pass.outputs.get_mut(0) else { return };
         if let Some(sampling) = &mut gaining.sampling {
-            if output.len > 0 {
-                for (channel, peaks) in sampling.peaks.iter_mut().enumerate() {
-                    peaks.push(output.channel(channel).iter().fold(0.0f32, |m, x| m.max(x.abs())));
-                }
+            for (channel, data) in sampling.data.iter_mut().enumerate() {
+                output.channel(channel).iter().for_each(|x| data.add(*x));
             }
             sampling.elapsed += pass.duration;
             let progress = (sampling.elapsed / sampling.seconds) as f32;
@@ -131,7 +134,7 @@ impl Node<Edges> for ContinuousGain {
             let layout = Channels { count: channels, group_size: 1 };
             let chosen = done.then(|| {
                 let mut gains = self.gains.clone();
-                gains.set_ranges(&sampling.choose(), layout);
+                gains.set_ranges(&sampling.choose(self.level), layout);
                 gains
             });
             pass.trigger_progress(AUTO_DETECT, progress);
@@ -214,9 +217,16 @@ impl Node<Edges> for ContinuousGain {
                     let field =
                         egui::DragValue::new(&mut self.gains.output_range).range(1e-6..=1e9).speed(1.0).prefix("±");
                     ui.add(field).on_hover_text(
-                        "Gains chosen from the data have each channel's bigger excursions (the 98th percentile of each \
-                         pass's biggest) reach this, in the units of what takes it: ±128 for Write LTX's int8 values, \
-                         say (or less, for room above them), ±32768 for int16, ±1 for floats",
+                        "Gains chosen from the data have the level below reach this, in the units of what takes it: \
+                         ±128 for Write LTX's int8 values, say (or less, for room above them), ±32768 for int16, ±1 \
+                         for floats",
+                    )
+                });
+                setting(ui, "At", |ui| {
+                    self.level.ui(
+                        ui,
+                        "What reaches the range above: each channel's mean, plus this multiple of how far from it, either \
+                         way, this much of the data is within",
                     )
                 });
                 setting(ui, "Sampling for", |ui| {
@@ -226,7 +236,8 @@ impl Node<Edges> for ContinuousGain {
             });
         });
         let tip = format!(
-            "Sample the data, then set the gains so its bigger excursions reach ±{}, sharing them out as above",
+            "Sample the data, then set the gains so {} of it reaches ±{}, sharing them out as above",
+            self.level.summary(),
             self.gains.output_range
         );
         auto_detect_ui(ui, context, None, &tip);
@@ -243,19 +254,20 @@ mod tests {
 
     #[test]
     fn multiplies_and_chooses_gains_from_the_data() {
-        let gain = ContinuousGain { sampling: 4.0, ..Default::default() };
+        let level = PercentMultiple { percent: 98.0, multiple: 3.0 };
+        let gain = ContinuousGain { sampling: 4.0, level, ..Default::default() };
         let stream = Continuous { channels: 2, sample_rate: 1000.0 };
         let mut state = gain.initial_state(&[Some(DataStream::Continuous(stream))]);
         let exchange = Pass::<Edges>::new(0, PASS_DURATION, &[], &mut []).exchange;
         exchange.fire(NodeId(0), AUTO_DETECT);
         let passes = (4.0 / PASS_DURATION).round() as u64;
         for sequence in 0..passes {
-            // Peaks of 100 µV on the first channel, 400 on the second.
+            // 100 µV either side of zero on the first channel, 400 on the second.
             let mut input = stream.buffer(PASS_DURATION);
             input.len = 20;
             for (c, size) in [(0, 100.0), (1, 400.0)] {
                 for (t, x) in input.channel_mut(c).iter_mut().enumerate() {
-                    *x = if t == 10 { -size } else { 0.0 };
+                    *x = if t % 2 == 0 { -size } else { size };
                 }
             }
             let input = Buffer::Continuous(input);
@@ -271,6 +283,6 @@ mod tests {
         let proposals = exchange.take_proposals();
         let Some(Setting::Gains(gains)) = proposals[0].2.downcast_ref::<Setting>() else { panic!() };
         // One for all, to begin with: the widest of theirs, so neither clips.
-        assert!((gains.range_uv(0) - 400.0).abs() < 1e-3 && (gains.range_uv(1) - 400.0).abs() < 1e-3);
+        assert!((gains.range_uv(0) - 1200.0).abs() < 20.0 && (gains.range_uv(1) - 1200.0).abs() < 20.0);
     }
 }

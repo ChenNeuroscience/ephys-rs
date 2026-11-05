@@ -662,7 +662,10 @@
             "post": 32,
             "pre": 8,
             "sampling": 10.0,
-            "threshold_sd": 4.0,
+            "level": {
+              "percent": 98.0,
+              "multiple": 2.5
+            },
             "thresholds": []
           },
           "type": "SpikeDetector"

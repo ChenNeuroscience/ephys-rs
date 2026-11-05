@@ -738,7 +738,7 @@ fn gains_ui(ui: &mut egui::Ui, context: &mut Context<Edges>, gains: &mut Gains, 
     } else {
         ui.label("each channel's");
     }
-    let tip = format!("Sample the data, then set the gains so its bigger excursions reach ±{}", gains.output_range);
+    let tip = format!("Sample the data, then set the gains from its spread, to reach ±{}", gains.output_range);
     auto_detect_ui(ui, context, Some(GAINS), &tip);
 }
 
