@@ -57,6 +57,7 @@ name, warnings and ports. Both get a [`Context`](../src/core/engine/node.rs):
 - `node_toolbar` / `node_toolbar_with`: the buttons every node has (copy and paste settings; in advanced mode, its
   settings menu, enabling and deleting it), for a view to put where it likes, with options of its own added to the
   settings menu.
+- `node_toolbar_buttons`: the same, with buttons of the pane's own beside them, at the right of the toolbar.
 - `trigger`, `can_trigger`, `trigger_progress`, `open_control_target`: see below.
 
 The [Spike Viewer](../src/standard_components/spikes/spike_viewer.rs) and [LFP Viewer](../src/standard_components/ephys/lfp_viewer.rs)

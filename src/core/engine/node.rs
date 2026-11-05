@@ -99,6 +99,17 @@ impl<E: Edges> Context<'_, E> {
         self.node_toolbar_with(ui, &mut |_| {});
     }
 
+    /// The node's toolbar, with `buttons` of the pane's own at its left end, so at the right of the pane with the rest.
+    /// They're laid out right to left. They're shown whether there's a toolbar here or not.
+    pub fn node_toolbar_buttons(&mut self, ui: &mut egui::Ui, buttons: &mut dyn FnMut(&mut egui::Ui)) {
+        match &mut self.tools {
+            Some(tools) => tools.toolbar_buttons(ui, buttons, &mut |_| {}),
+            None => {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), buttons);
+            }
+        }
+    }
+
     /// The node's toolbar, with `settings` added to its settings menu (in advanced mode): options of the pane's own,
     /// such as what it offers in basic mode.
     pub fn node_toolbar_with(&mut self, ui: &mut egui::Ui, settings: &mut dyn FnMut(&mut egui::Ui)) {
@@ -186,6 +197,16 @@ pub trait NodeToolbar {
 
     /// All of them, with `settings` added to the settings menu.
     fn toolbar_with(&mut self, ui: &mut egui::Ui, settings: &mut dyn FnMut(&mut egui::Ui)) {
+        self.toolbar_buttons(ui, &mut |_| {}, settings);
+    }
+
+    /// All of them, with `settings` added to the settings menu, and `buttons` at the left end.
+    fn toolbar_buttons(
+        &mut self,
+        ui: &mut egui::Ui,
+        buttons: &mut dyn FnMut(&mut egui::Ui),
+        settings: &mut dyn FnMut(&mut egui::Ui),
+    ) {
         let width_id = ui.scope_id().with("node toolbar width");
         let width: f32 = ui.data(|d| d.get_temp(width_id)).unwrap_or(0.0);
         if ui.available_size_before_wrap().x < width {
@@ -202,6 +223,7 @@ pub trait NodeToolbar {
             }
             self.paste_button(ui);
             self.copy_button(ui);
+            buttons(ui);
             let width = ui.min_rect().width();
             ui.data_mut(|d| d.insert_temp(width_id, width));
         });

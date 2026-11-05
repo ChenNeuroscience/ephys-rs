@@ -44,6 +44,22 @@ pub fn require_input(inputs: &[Option<DataStream>], what: &str) -> Vec<String> {
     if inputs.iter().all(|i| i.is_none()) { vec![format!("Connect {what}")] } else { Vec::new() }
 }
 
+/// A section of a wrapping toolbar, kept together like an inline block: if it won't fit on what's left of the row, it all
+/// goes on the next. `separated` puts a line before it, unless it's starting a row.
+pub fn toolbar_section(ui: &mut egui::Ui, salt: &str, separated: bool, add: impl FnOnce(&mut egui::Ui)) {
+    let width_id = ui.scope_id().with(("toolbar section", salt));
+    let width: f32 = ui.data(|d| d.get_temp(width_id)).unwrap_or(0.0);
+    // Room for the line too.
+    let line = if separated { 2.0 * ui.spacing().item_spacing.x + 6.0 } else { 0.0 };
+    if ui.available_size_before_wrap().x < width + line {
+        ui.end_row();
+    } else if separated {
+        ui.separator();
+    }
+    let width = ui.horizontal(add).response.rect.width();
+    ui.data_mut(|d| d.insert_temp(width_id, width));
+}
+
 /// Shows the incoming data streams, for settings panels of nodes that pass them on.
 pub fn input_summary(ui: &mut egui::Ui, inputs: &[Option<DataStream>]) {
     for stream in inputs {
@@ -208,4 +224,27 @@ pub fn side_toggle(ui: &mut egui::Ui, label: &str, open: bool) -> egui::Response
         ui.painter().add(text);
     }
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui_kittest::kittest::{NodeT, Queryable};
+
+    #[test]
+    fn a_toolbar_section_wraps_whole() {
+        let mut harness = egui_kittest::Harness::builder().with_size([220.0, 80.0]).wgpu().build_ui(|ui| {
+            ui.horizontal_wrapped(|ui| {
+                toolbar_section(ui, "a", false, |ui| drop(ui.label("A long first section")));
+                toolbar_section(ui, "b", true, |ui| {
+                    ui.label("Second");
+                    ui.label("section");
+                });
+            });
+        });
+        harness.run_steps(3);
+        let top = |label: &str| harness.get_by_label(label).accesskit_node().bounding_box().unwrap().y0;
+        assert_eq!(top("Second"), top("section"), "kept together");
+        assert!(top("Second") > top("A long first section"), "on the next row");
+    }
 }

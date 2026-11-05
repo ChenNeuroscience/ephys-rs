@@ -34,6 +34,8 @@ pub enum Icon {
     Power,
     /// Sound on or off: a speaker.
     Sound,
+    /// A spectrum: bars of power across frequencies.
+    Spectrum,
     /// Copy settings: two sheets.
     Copy,
     /// Paste settings: a clipboard.
@@ -221,6 +223,11 @@ impl Icon {
                     .collect();
                 painter.add(Shape::line(arc, stroke));
                 painter.line_segment([p(8.0, 2.0), p(8.0, 8.5)], stroke);
+            }
+            Icon::Spectrum => {
+                for (x, top) in [(2.5, 10.0), (5.25, 4.0), (8.0, 2.0), (10.75, 7.0), (13.5, 11.0)] {
+                    painter.line_segment([p(x, 14.0), p(x, top)], Stroke::new(1.8 * s, ink));
+                }
             }
             Icon::Sound => {
                 painter.rect_filled(r(1.5, 6.0, 5.0, 10.0), 0.0, ink);
