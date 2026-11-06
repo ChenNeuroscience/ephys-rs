@@ -46,7 +46,7 @@ impl Default for SpikeDetector {
             post: 32,
             thresholds: Thresholds::default(),
             level: PercentMultiple { percent: 98.0, multiple: 2.5 },
-            sampling: 10.0,
+            sampling: 20.0,
         }
     }
 }

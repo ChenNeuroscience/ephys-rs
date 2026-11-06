@@ -595,7 +595,7 @@
               "output_range": 128.0,
               "scope": "Channel"
             },
-            "sampling": 10.0
+            "sampling": 20.0
           },
           "type": "SpikeGain"
         },
@@ -661,7 +661,7 @@
             "polarity": "Negative",
             "post": 32,
             "pre": 8,
-            "sampling": 10.0,
+            "sampling": 20.0,
             "level": {
               "percent": 98.0,
               "multiple": 2.5

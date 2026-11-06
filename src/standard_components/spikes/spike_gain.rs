@@ -27,7 +27,7 @@ pub struct SpikeGain {
 
 impl Default for SpikeGain {
     fn default() -> Self {
-        SpikeGain { gains: Gains::default(), sampling: 10.0, multiple: 1.3 }
+        SpikeGain { gains: Gains::default(), sampling: 20.0, multiple: 2.0 }
     }
 }
 
@@ -317,8 +317,8 @@ mod tests {
         let proposals = exchange.take_proposals();
         let Some(Setting::Gains(gains)) = proposals[0].2.downcast_ref::<Setting>() else { panic!() };
         let close = |a: f32, b: f32| (a - b).abs() < 0.01;
-        assert!(close(gains.range_uv(0), 130.0), "the first channel's biggest, times 1.3");
-        assert!(close(gains.range_uv(1), 390.0), "and the second's");
+        assert!(close(gains.range_uv(0), 200.0), "the first channel's biggest, times 2");
+        assert!(close(gains.range_uv(1), 600.0), "and the second's");
         assert!(close(gains.range_uv(2), 120.0), "no spikes on it: room for its threshold");
         assert!(close(gains.range_uv(3), 75.0), "and for the default threshold");
         assert_eq!(gains.output_range, 128.0, "for 8-bit samples, to begin with");
