@@ -153,6 +153,16 @@ impl Typing {
     }
 }
 
+/// A group's title, saying which channels it is, counting from 1. A channel on its own is its own title.
+fn group_title(kind: &str, group: usize, channels: std::ops::Range<u32>) -> String {
+    let (first, last) = (channels.start + 1, channels.end);
+    match (kind, last - first) {
+        ("Channel", _) => format!("Channel {first}"),
+        (_, 0) => format!("{kind} {} (channel {first})", group + 1),
+        _ => format!("{kind} {} (channels {first}-{last})", group + 1),
+    }
+}
+
 impl Node<Edges> for SpikeViewer {
     type State = Recent;
 
@@ -434,7 +444,7 @@ impl SpikeViewer {
                 let card = Rect::from_min_size(min, tile);
                 painter.rect(card, 6.0, theme.surface_raised, Stroke::new(1.0, theme.border), egui::StrokeKind::Inside);
                 let title_y = min.y + header / 2.0;
-                let title = format!("{kind} {}", group + 1);
+                let title = group_title(kind, group, stream.group_channels(group as u32));
                 let left = egui::pos2(min.x + pad + 2.0, title_y);
                 painter.text(left, Align2::LEFT_CENTER, title, FontId::proportional(13.0), theme.text_primary);
                 if let Some(total) = total {
@@ -637,6 +647,15 @@ mod tests {
 
     use super::*;
     use crate::standard_components::themes::THEMES;
+
+    #[test]
+    fn a_groups_title_says_its_channels() {
+        assert_eq!(group_title("Tetrode", 0, 0..4), "Tetrode 1 (channels 1-4)");
+        assert_eq!(group_title("Tetrode", 2, 8..12), "Tetrode 3 (channels 9-12)");
+        assert_eq!(group_title("Tetrode", 2, 8..10), "Tetrode 3 (channels 9-10)", "a smaller last group");
+        assert_eq!(group_title("Tetrode", 2, 8..9), "Tetrode 3 (channel 9)");
+        assert_eq!(group_title("Channel", 4, 4..5), "Channel 5", "it says it already");
+    }
 
     const STREAM: Spikes =
         Spikes { channels: 8, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32, polarity: Polarity::Negative };
