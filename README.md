@@ -15,6 +15,15 @@ This is the Chen lab's build, [chen-neuro](examples/chen-neuro), so its quick ac
 
 Start from a quick action, or build your own graph of sources, processing, viewers and writers, then press Play. It acquires from Open Ephys and Intan boards and FLIR cameras, and records [LTX format](https://github.com/ChenNeuroscience/ltx-format) or Open Ephys binary.
 
+## Timing and synchronisation
+
+> [!IMPORTANT]
+> ephys-rs doesn't put its data streams on a shared clock. Each source produces its own timing, as regular samples at a specified frequency, as timestamps, or both, so times from different sources can't be compared directly.
+>
+> To line streams up, use TTLs, which can be recorded alongside each stream, and synchronise them in post-processing. We expect to refine this in due course.
+>
+> **For camera tracking, we highly recommend a real timing LED paired with a voltage TTL.** The camera sees the LED, the acquisition board records the TTL, and matching the two in post-processing synchronises video with electrophysiology.
+
 ## Downloads
 
 Each push to `main` is tested and built on Windows and macOS by GitHub Actions, and published as a [release](https://github.com/ChenNeuroscience/ephys-rs/releases). These are the Chen lab's build. On macOS the app isn't notarised, so the first time, right-click it and choose Open.
@@ -47,6 +56,7 @@ To run without real hardware, `synthetic_streams/` has stand-ins, which nodes us
 
 - `python3 synthetic_streams/fake_acquisition_board.py` streams an acquisition board's headstage channels (tetrodes picking up spiking units over theta LFP), accelerometers, analogue inputs and digital inputs.
 - `python3 synthetic_streams/fake_camera.py` streams video of a mouse with two head LEDs in an arena.
+- `python3 synthetic_streams/fake_vr_computer.py` streams positions, TTLs, log lines and settings, as a VR computer does for chen-neuro's VR Computer node.
 
 ### Working with an agent
 
@@ -61,6 +71,6 @@ To run without real hardware, `synthetic_streams/` has stand-ins, which nodes us
 Each level catches things the one before can't. An agent can run the first two anywhere, and the last only if it's on the machine with the hardware attached. Otherwise you run that one, and bring back what happened:
 
 1. **Tests:** `cargo test` covers the engine and nodes, and renders the GUI without a window. It compares each render with an image in `tests/snapshots`, which an agent can look at too.
-2. **Synthetic data:** the fake board and camera above run the whole app with no hardware. `cargo test -- --ignored` runs the end-to-end tests against them.
+2. **Synthetic data:** the fake board, camera and VR computer above run the whole app with no hardware. `cargo test -- --ignored` runs the end-to-end tests against them.
 3. **Dev tools:** Ctrl/⌘ Alt I opens the console, and shows each step's time, the threads and the buffers.
 4. **Your rig:** real devices behave differently from the stand-ins, so only this shows that a device works. Connecting logs what it's doing to the console, and [crash reports](docs/development.md#crash-reports) say what was running. Before trusting a new build, make a short recording and check it in [Waveform](https://chenneuroscience.github.io/waveform/).
