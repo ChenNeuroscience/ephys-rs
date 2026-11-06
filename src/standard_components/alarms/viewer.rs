@@ -7,7 +7,8 @@
 //! the window's open by then. And an alarm off when recording started has no data coming, so can't come on until then.
 //!
 //! It can also pip as an alarm goes off, at a pitch for what it watches (see `tone`), from the passes, so with its window
-//! closed too. An alarm still going off pips again, more each time (`REMINDERS`), in case the first were missed. Which
+//! closed too, but only while recording, as what's wrong before then needn't fill the room. An alarm still going off pips
+//! again, more each time (`REMINDERS`), in case the first were missed, and one going off as recording starts pips then. Which
 //! alarms pip is its own setting, not the processor's. That's locked while recording too, but as nothing depends on it, it
 //! can go either way (`Overrides` again).
 //!
@@ -120,6 +121,9 @@ struct GoingOff {
     seconds: f64,
 }
 
+/// What's said while there's sound to come.
+const SOUND_NOTE: &str = "Alarms will only sound when recording";
+
 /// How many pips an alarm gets as it goes off.
 const FIRST_PIPS: u8 = 2;
 /// How long an alarm's to have been going off for more pips, and how many. After the last it says no more.
@@ -133,6 +137,8 @@ pub struct Showing {
     tone: Tone,
     /// The alarms going off as of the last pass.
     going_off: Vec<GoingOff>,
+    /// Whether the last pass was recording.
+    recording: bool,
 }
 
 impl PassState for Showing {
@@ -189,7 +195,9 @@ impl Node<Edges> for AlarmViewer {
         let overrides = showing.overrides.get_or_insert_with(|| pass.shared(Overrides::default)).clone();
         let states = input.states.iter().map(|state| overrides.apply(*state));
         let tone = &mut showing.tone;
-        keep_time(&mut showing.going_off, states.clone(), pass.duration, |state, pips| {
+        let was_recording = std::mem::replace(&mut showing.recording, pass.recording);
+        let recording = (was_recording, pass.recording);
+        pips_due(&mut showing.going_off, states.clone(), pass.duration, recording, |state, pips| {
             if overrides.sounds(state.id, &self.sounding) {
                 tone.pips(state.source.index(), pips);
             }
@@ -229,8 +237,9 @@ impl Node<Edges> for AlarmViewer {
         ui.horizontal(|ui| context.node_toolbar(ui));
         banner(ui, theme, &alarms, stream, states);
         ui.add_space(6.0);
+        let waiting_to_sound = context.running && !locked && any_sound(&alarms, overrides, &self.sounding);
         egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-            all_row(ui, &mut alarms, overrides, locked, &mut self.sounding, |ui| {
+            all_row(ui, &mut alarms, overrides, locked, &mut self.sounding, waiting_to_sound, |ui| {
                 open_settings_button(ui, context, ALARMS, "Alarm Processor");
             });
             ui.add_space(2.0);
@@ -250,9 +259,9 @@ impl Node<Edges> for AlarmViewer {
 /// A button for whether there's sound.
 fn sound_button(ui: &mut egui::Ui, on: &mut bool, label: &str) -> egui::Response {
     let tip = if *on {
-        "Pips as it goes off, and more at 30 and 60 s if it still is: click for quiet"
+        "While recording, pips as it goes off, and more at 30 and 60 s if it still is: click for quiet"
     } else {
-        "Quiet: click for pips as it goes off"
+        "Quiet: click for pips as it goes off, while recording"
     };
     toggle(ui, Icon::Sound, on, label, tip)
 }
@@ -284,6 +293,26 @@ fn keep_time(
     }
 }
 
+/// As `keep_time`, calling `pip` only while recording, and for those going off as it starts. `recording` is whether it was
+/// on the last pass, and whether it is on this one.
+fn pips_due(
+    going_off: &mut Vec<GoingOff>,
+    states: impl Iterator<Item = AlarmState> + Clone,
+    seconds: f64,
+    recording: (bool, bool),
+    mut pip: impl FnMut(AlarmState, u8),
+) {
+    if recording == (false, true) {
+        let still_off = |state: &AlarmState| state.phase == Phase::Alarm && going_off.iter().any(|g| g.id == state.id);
+        states.clone().filter(still_off).for_each(|state| pip(state, FIRST_PIPS));
+    }
+    keep_time(going_off, states, seconds, |state, pips| {
+        if recording.1 {
+            pip(state, pips);
+        }
+    });
+}
+
 /// A power button for an alarm. While recording its setting's locked, so it only ignores what's coming in (`ignored`, if
 /// it can), and if the setting's off, there's nothing coming in to go back to. Returns whether to ignore it now, if that's
 /// changed.
@@ -310,6 +339,11 @@ fn sounds(overrides: Option<&Overrides>, id: u32, sounding: &[u32]) -> bool {
     overrides.map_or(sounding.contains(&id), |o| o.sounds(id, sounding))
 }
 
+/// Whether any alarm that's on has sound.
+fn any_sound(alarms: &Alarms, overrides: Option<&Overrides>, sounding: &[u32]) -> bool {
+    alarms.list.iter().any(|alarm| active(alarm, overrides) && sounds(overrides, alarm.id, sounding))
+}
+
 /// Switches whether alarm `id` pips: only for now, while recording.
 fn switch_sound(overrides: Option<&Overrides>, id: u32, locked: bool, sounding: &mut Vec<u32>) {
     match overrides {
@@ -319,18 +353,23 @@ fn switch_sound(overrides: Option<&Overrides>, id: u32, locked: bool, sounding: 
 }
 
 /// Buttons for all the alarms, lined up with each alarm's, if there are any: they set each one. While recording, one that
-/// was off when it started can't come on, so doesn't count. To their left, `settings`, there with or without alarms.
+/// was off when it started can't come on, so doesn't count. To their left, `settings`, there with or without alarms; and at
+/// the far left, if alarms with sound are `waiting_to_sound`, a note saying what for.
 fn all_row(
     ui: &mut egui::Ui,
     alarms: &mut Alarms,
     overrides: Option<&Overrides>,
     locked: bool,
     sounding: &mut Vec<u32>,
+    waiting_to_sound: bool,
     settings: impl FnOnce(&mut egui::Ui),
 ) {
     egui::Frame::new().inner_margin(8).show(ui, |ui| {
         ui.set_min_width(ui.available_width());
         ui.horizontal(|ui| {
+            if waiting_to_sound {
+                ui.weak(SOUND_NOTE);
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = BUTTON_GAP;
                 if !alarms.list.is_empty() {
@@ -784,6 +823,59 @@ mod tests {
         let [(id, seconds)] = display.going_off[..] else { panic!("{:?}", display.going_off) };
         assert_eq!(id, 1);
         assert!((seconds - 0.98).abs() < 1e-6, "{seconds}");
+    }
+
+    #[test]
+    fn alarms_only_sound_while_recording() {
+        let off = |id| state(id, Phase::Alarm, 0.0, None);
+        let fine = |id| state(id, Phase::Clear, 0.0, None);
+        let mut going = Vec::new();
+        let mut pass = |states: &[AlarmState], recording| {
+            let mut pips = Vec::new();
+            pips_due(&mut going, states.iter().copied(), 0.02, recording, |state, count| pips.push((state.id, count)));
+            pips
+        };
+        assert_eq!(pass(&[off(0), fine(1)], (false, false)), vec![], "going off, but not recording");
+        // Recording starts: what's going off says so then, and only that.
+        assert_eq!(pass(&[off(0), fine(1)], (false, true)), vec![(0, 2)]);
+        assert_eq!(pass(&[off(0), fine(1)], (true, true)), vec![], "once");
+        assert_eq!(pass(&[off(0), off(1)], (true, true)), vec![(1, 2)], "and what goes off while it is");
+        assert_eq!(pass(&[fine(0), fine(1)], (true, false)), vec![], "over");
+        assert_eq!(pass(&[off(2)], (false, false)), vec![], "not recording again");
+    }
+
+    #[test]
+    fn a_reminder_is_only_heard_while_recording() {
+        let off = state(0, Phase::Alarm, 0.0, None);
+        let mut going = vec![GoingOff { id: 0, seconds: 29.99 }];
+        let mut pips = Vec::new();
+        pips_due(&mut going, [off].into_iter(), 0.02, (false, false), |state, count| pips.push((state.id, count)));
+        assert_eq!(pips, vec![]);
+        let mut going = vec![GoingOff { id: 0, seconds: 29.99 }];
+        pips_due(&mut going, [off].into_iter(), 0.02, (true, true), |state, count| pips.push((state.id, count)));
+        assert_eq!(pips, vec![(0, 3)]);
+    }
+
+    #[test]
+    fn it_says_alarms_will_only_sound_when_recording() {
+        let shown = |locked, sounding: Vec<u32>| {
+            let overrides = Overrides::default();
+            let (mut harness, _, _) = window(one_of_each(), all_clear(), overrides, locked, [700.0, 400.0]);
+            let viewer = harness.state().iter().find(|(_, e)| matches!(e.node, Nodes::AlarmViewer(_))).unwrap().0;
+            if let Some(Nodes::AlarmViewer(node)) = harness.state_mut().get_mut(viewer).map(|e| &mut e.node) {
+                node.sounding = sounding;
+            }
+            harness.run_steps(2);
+            harness.query_by_label(SOUND_NOTE).is_some()
+        };
+        assert!(shown(false, vec![0]), "running, with sound");
+        assert!(!shown(false, vec![]), "nothing to sound");
+        assert!(!shown(true, vec![0]), "recording: it will");
+
+        // Only those on count.
+        let mut alarms = one_of_each();
+        alarms.list.iter_mut().for_each(|alarm| alarm.on = false);
+        assert!(!any_sound(&alarms, None, &[0]));
     }
 
     #[test]

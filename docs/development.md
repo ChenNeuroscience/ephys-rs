@@ -146,7 +146,8 @@ recording started has no data coming, so it can't come on until then.
 
 The pips are the viewer's own, on a thread started the first time they sound, from
 [`tone.rs`](../src/standard_components/alarms/tone.rs) with `cpal`: a couple as an alarm goes off, at a pitch for what it
-watches, and more if it's still going off after 30 and 60 s, then no more. The viewer times how long each
+watches, and more if it's still going off after 30 and 60 s, then no more. They only sound while recording: until then,
+the viewer says so if any alarm has sound on, and an alarm going off as recording starts pips then. The viewer times how long each
 has been going off, by adding up the passes, and shows it on the alarm. A change to the plan starts that again, as it
 does the alarm itself. Which alarms pip is in the viewer's own settings. Passes
 start them, so they work with the window closed, and they need nothing from the core. On Linux, `cpal` needs ALSA's
