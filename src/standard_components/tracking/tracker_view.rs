@@ -1104,6 +1104,7 @@ mod tests {
             ("window_min_y", "0"),
             ("window_max_y", "400"),
             ("pixels_per_metre", "400"),
+            ("timing_led.enabled", "false"),
         ];
         let custom = window.iter().chain(&[("task", "linear")]).map(|(k, v)| (k.to_string(), v.to_string())).collect();
         if let Some(Nodes::VrComputer(node)) = graph.get_mut(vr).map(|e| &mut e.node) {

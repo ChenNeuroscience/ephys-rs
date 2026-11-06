@@ -7,8 +7,7 @@
 //! - `name.pos`: LED positions, a 4-byte timestamp then 8 two-byte values (x1, y1, x2, y2, and the LEDs' sizes).
 //! - `name.ttl`: digital input changes, as text.
 //! - `name.pos.ttl`: the timing LED's changes, likewise, from its `pos ttl` input, if there's a timing LED. They're timed
-//!   by the camera's clock, as positions are, counting from the same first position. Positions from elsewhere than a
-//!   camera (see `Positions::source`) have no timing LED: what's on the input is written whatever the detection says.
+//!   by the camera's clock, as positions are, counting from the same first position.
 //! - `name.txt`: log lines, with no headers: each as `<seconds> <line>`, its time counting from the same first position.
 //!
 //! Each file but `name.txt` is `key value` header lines, then the data between `data_start` and `data_end`; counts and the
@@ -45,7 +44,7 @@ use crate::standard_components::ephys::{ChannelSelection, Continuous, Event, Eve
 use crate::standard_components::logs::{LINES_PER_PASS, LogLines};
 use crate::standard_components::pool::{Pool, SharedPool};
 use crate::standard_components::spikes::{Gains, Spikes};
-use crate::standard_components::tracking::{CAMERA_TRACKER, Crop, Detection, PositionSample, Positions};
+use crate::standard_components::tracking::{Crop, Detection, PositionSample, Positions};
 use crate::standard_components::widgets::{require_input, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
 
@@ -658,14 +657,12 @@ impl LtxFiles {
             Some(_) => Some(open_ttl(file(".ttl")?, "digital_inputs", "recording_start")?),
             None => None,
         };
-        // Connected, a camera's only has anything to say if there's a timing LED, as far as we can tell.
-        let elsewhere = streams.positions.map(|p| p.source).filter(|source| *source != CAMERA_TRACKER);
-        let detection = recorded.detection.as_ref().filter(|_| elsewhere.is_none());
-        let timing_led = detection.map(|d| d.timing_led);
+        // Connected, it only has anything to say if there's a timing LED, as far as we can tell.
+        let timing_led = recorded.detection.as_ref().map(|d| d.timing_led);
         let pos_ttl = match streams.position_events {
             Some(_) if timing_led.is_none_or(|led| led.enabled) => {
-                let mut f = open_ttl(file(".pos.ttl")?, elsewhere.unwrap_or("timing_led"), "first_position")?;
-                if let Some(detection) = detection {
+                let mut f = open_ttl(file(".pos.ttl")?, "timing_led", "first_position")?;
+                if let Some(detection) = recorded.detection.as_ref().filter(|_| timing_led.is_some()) {
                     let led = detection.timing_led;
                     f.header("timing_led_x", led.center[0])?;
                     f.header("timing_led_y", led.center[1])?;
@@ -901,8 +898,8 @@ impl Files<Chunk> for LtxFiles {
 mod tests {
     use super::*;
     use crate::standard_components::spikes::Spike;
-    use crate::standard_components::tracking::TimingLed;
     use crate::standard_components::tracking::pipeline::Blob;
+    use crate::standard_components::tracking::{CAMERA_TRACKER, TimingLed};
 
     fn read(path: &Path, extension: &str) -> Vec<u8> {
         let mut path = path.to_path_buf();
@@ -1007,8 +1004,9 @@ mod tests {
         };
         let custom = [("maze.arm length", "3"), ("note", "two\r\nlines")].map(|(k, v)| (k.to_string(), v.to_string()));
         let crop = Crop::Rectangle { center: [100.0, 50.0], width: 200.0, height: 100.0, angle: 0.0 };
-        let detection = Some(Detection { crop, custom: custom.into(), ..Default::default() });
-        let recorded = Recorded { detection, ..Default::default() };
+        let timing_led = TimingLed { enabled: true, radius: 0.0, ..Default::default() };
+        let detection = Detection { crop, timing_led, custom: custom.into(), ..Default::default() };
+        let recorded = Recorded { detection: Some(detection.clone()), ..Default::default() };
         let mut files = Box::new(LtxFiles::open(&base, Local::now(), streams, recorded).unwrap());
         let mut chunk = Chunk::default();
         chunk.positions.push(PositionSample {
@@ -1032,10 +1030,18 @@ mod tests {
         assert_eq!(header(&pos, "position_coordinate_scale"), "1", "pixels, as a camera's are");
         assert_eq!((header(&pos, "window_max_x"), header(&pos, "window_max_y")), ("200".into(), "100".into()));
         let pos_ttl = read(&base, ".pos.ttl");
-        assert_eq!(header(&pos_ttl, "ttl_source"), "vr_computer", "with no timing LED to say otherwise");
-        assert!(!String::from_utf8_lossy(&pos_ttl).contains("timing_led_x"));
+        assert_eq!(header(&pos_ttl, "timing_led_radius"), "0", "as the detection says");
         assert_eq!(data(&pos_ttl), b"ttl_1 0.500000 1\r\n", "from the first position");
         assert_eq!(read(&base, ".txt"), b"0.250000 first line\r\n2.500000 second\r\n", "no headers, and from it too");
+
+        // Saying there's no TTL coming, there's no file, as with a camera's timing LED.
+        let base = dir.join("no ttl");
+        let detection = Detection { timing_led: TimingLed { enabled: false, ..timing_led }, ..detection };
+        let recorded = Recorded { detection: Some(detection), ..Default::default() };
+        Box::new(LtxFiles::open(&base, Local::now(), streams, recorded).unwrap()).finish().unwrap();
+        let mut path = base.clone();
+        path.as_mut_os_string().push(".pos.ttl");
+        assert!(!path.exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

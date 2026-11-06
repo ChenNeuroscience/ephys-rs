@@ -2718,7 +2718,7 @@ mod tests {
         harness.run_steps(1);
         let (mut stream, _) = listener.accept().unwrap();
         stream
-            .write_all(b"{\"type\": \"settings\", \"settings\": {\"task\": \"first\", \"maze\": {\"arms\": 8}, \"window_min_x\": 0, \"window_max_x\": 1000, \"window_min_y\": 0, \"window_max_y\": 800, \"pixels_per_metre\": 400}}\n")
+            .write_all(b"{\"type\": \"settings\", \"settings\": {\"task\": \"first\", \"maze\": {\"arms\": 8}, \"window_min_x\": 0, \"window_max_x\": 1000, \"window_min_y\": 0, \"window_max_y\": 800, \"pixels_per_metre\": 400, \"timing_led\": {\"enabled\": true}}}\n")
             .unwrap();
         until(&mut harness, "the settings", &|app| task(app).as_deref() == Some("first"));
 
@@ -2727,7 +2727,7 @@ mod tests {
         stream.write_all(b"{\"type\": \"pos\", \"time\": 1000, \"x\": 100, \"y\": 200}\n").unwrap();
         stream.write_all(b"{\"type\": \"ttl\", \"time\": 1000.25, \"value\": 1}\n").unwrap();
         stream.write_all(b"{\"type\": \"log\", \"time\": 1000.5, \"line\": \"trial 1\"}\n").unwrap();
-        stream.write_all(b"{\"type\": \"settings\", \"settings\": {\"task\": \"second\", \"window_min_x\": 0, \"window_max_x\": 1, \"window_min_y\": 0, \"window_max_y\": 1, \"pixels_per_metre\": 1}}\n").unwrap();
+        stream.write_all(b"{\"type\": \"settings\", \"settings\": {\"task\": \"second\", \"window_min_x\": 0, \"window_max_x\": 1, \"window_min_y\": 0, \"window_max_y\": 1, \"pixels_per_metre\": 1, \"timing_led\": {\"enabled\": true}}}\n").unwrap();
         for _ in 0..30 {
             harness.run_steps(1);
             std::thread::sleep(std::time::Duration::from_millis(10));
@@ -2766,7 +2766,7 @@ mod tests {
         assert_eq!((coordinate(4), coordinate(6)), (100, 200), "as they came");
         assert_eq!(coordinate(8), 1023, "no second LED");
         let ttl = String::from_utf8_lossy(&file(".pos.ttl")).into_owned();
-        assert!(ttl.contains("ttl_source vr_computer") && ttl.contains("ttl_1 0.250000 1\r\n"), "{ttl}");
+        assert!(ttl.contains("timing_led_radius 0\r\n") && ttl.contains("ttl_1 0.250000 1\r\n"), "{ttl}");
         assert_eq!(file(".txt"), b"0.500000 trial 1\r\n", "by the VR computer's clock, from the first position");
         std::fs::remove_dir_all(&directory).unwrap();
     }

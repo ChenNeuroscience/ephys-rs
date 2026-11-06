@@ -65,8 +65,7 @@ by the other LEDs' threshold and min area, or its own. The spot isn't looked at 
 
 Its changes come out of the detector's `pos ttl` output as ordinary `Events`, one line, ups and downs, so anything that
 takes TTLs can take them. Each carries the camera's time (`Event::time`), as positions do. Write LTX puts them in
-`.pos.ttl`, counting from the first position, and only makes the file if there's a timing LED (or the positions aren't a
-camera's: see [the VR Computer](#the-vr-computer)).
+`.pos.ttl`, counting from the first position, and only makes the file if there's a timing LED.
 
 Telling a change means remembering the last frame, so the detector's state is carried over, and it's a sync point.
 
@@ -84,16 +83,19 @@ to date with any changes here. This is how it's handled.
 The VR computer is expected to send its settings on being connected to, and whenever they change: nothing asks for them.
 The VR computer sends positions as a camera would, in pixels of a made-up frame, so that a recording suits whatever reads a
 camera's, and nothing here scales them. So settings have to have the four `window_*` values, the window positions range
-over (each min below its max), and `pixels_per_metre`: otherwise they're refused, with an error logged, and the node warns
+over (each min below its max), `pixels_per_metre`, and `timing_led.enabled`, each named as a camera's are: otherwise they're refused, with an error logged, and the node warns
 until it's had them. To keep full resolution, the window needs to span about 1022 pixels; any more is scaled down, as
 a camera's frame is.
 Nested keys are joined with dots (`maze.arms`), and they reach Write LTX through `Detection::custom`, on the node's
 setting, connected to Write LTX's `detection` control. They're written to the `.pos` file as headers of their own, keys as
 they are: one could have a space in it, or be the same as another header, which is for the reader to make sense of. The
-exceptions are the `window_*` values and `pixels_per_metre`, which aren't repeated, as Write LTX has headers of its own for them.
+exceptions are the required values above, which aren't repeated, as they reach Write LTX as settings of its own.
 
 The window goes to Write LTX as `Detection::crop`, a rectangle, and the calibration as a ruler a metre long, so they're
-handled as a camera's are, in the `.pos` file's `window_*`, `position_coordinate_*` and `pixels_per_metre` headers.
+handled as a camera's are, in the `.pos` file's `window_*`, `position_coordinate_*` and `pixels_per_metre` headers. `timing_led.enabled`
+goes as `Detection::timing_led`, with a radius of 0 as it has no spot in any video. Write LTX has no code
+for any of this: it makes `.pos.ttl` as for a camera's timing LED, so the file's `ttl_source` is `timing_led`, and its
+`timing_led_*` headers are the defaults, with the radius 0 saying there's no real spot.
 
 Headers are written as recording starts, so settings can't change while recording. Ones that differ log an error and wait:
 only the latest is kept, in the connection's inbox, so it survives a new epoch, and it's proposed once recording stops,

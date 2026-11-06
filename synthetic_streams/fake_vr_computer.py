@@ -76,6 +76,7 @@ def settings(changes):
         "window_min_y": 0,
         "window_max_y": size,
         "pixels_per_metre": PIXELS_PER_METRE,
+        "timing_led": {"enabled": True},
     }
     return {"type": "settings", "settings": {**required, "task": "open field", "arena": {"changes": changes}}}
 

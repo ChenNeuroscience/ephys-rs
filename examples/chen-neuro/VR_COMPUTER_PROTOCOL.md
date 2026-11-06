@@ -14,7 +14,7 @@ How a computer running a virtual reality task sends its data to chen-neuro's VR 
 - Every `pos`, `ttl` and `log` message has a `time`, from a clock of your own.
 
 ```json
-{"type": "settings", "settings": {"window_min_x": 0, "window_max_x": 1000, "window_min_y": 0, "window_max_y": 1000, "pixels_per_metre": 500, "task": "linear"}}
+{"type": "settings", "settings": {"window_min_x": 0, "window_max_x": 1000, "window_min_y": 0, "window_max_y": 1000, "pixels_per_metre": 500, "timing_led": {"enabled": true}, "task": "linear"}}
 {"type": "pos", "time": 1520.24, "x": 412.5, "y": 87.0}
 {"type": "log", "time": 1520.25, "line": "trial 3 started"}
 {"type": "ttl", "time": 1520.25, "value": 1}
@@ -49,7 +49,7 @@ ephys-rs keeps these times as they are, and only moves zero when writing files.
 ### `settings`
 
 ```json
-{"type": "settings", "settings": {"window_min_x": 0, "window_max_x": 1000, "window_min_y": 0, "window_max_y": 1000, "pixels_per_metre": 500, "task": "linear", "maze": {"arms": 8}}}
+{"type": "settings", "settings": {"window_min_x": 0, "window_max_x": 1000, "window_min_y": 0, "window_max_y": 1000, "pixels_per_metre": 500, "timing_led": {"enabled": true}, "task": "linear", "maze": {"arms": 8}}}
 ```
 
 Each `settings` message is a **complete snapshot**, replacing the last. Send everything each time, not just what's changed. It has no `time`.
@@ -61,6 +61,7 @@ These are required, at the top level, and a message without all of them is refus
 | `window_min_x`, `window_max_x` | The range of `x`, with min below max |
 | `window_min_y`, `window_max_y` | The range of `y`, with min below max |
 | `pixels_per_metre` | How many of your made-up pixels there are in a metre: more than 0 |
+| `timing_led`: `enabled` | `true` or `false`: whether this task sends `ttl` messages. It's named after the setting a camera has, for a real timing LED |
 
 Anything else is yours to add, and is written to the headers of the `.pos` file, as `key value` on a line of its own. Nested objects have their keys joined with dots, so `"maze": {"arms": 8}` becomes `maze.arms 8`. Text is written as it is, and other values as JSON. Keys are written as they come, so a reader has to cope with any spaces in them, or with one matching another header.
 
@@ -88,6 +89,8 @@ Send positions at a steady rate, and set the same rate on the node ("Position ra
 
 A TTL line going up (`value` 1) or down (0), with `value` a whole number. There's one line. Each message is recorded as a change, so only send them when it changes.
 
+TTLs are only recorded if `settings` say `"timing_led": {"enabled": true}`. If it's `false`, there's no `.pos.ttl` file, and any that come are logged as an error.
+
 ### `log`
 
 ```json
@@ -103,7 +106,7 @@ For a recording called `name`:
 | File | Has |
 | --- | --- |
 | `name.pos` | Positions, with the window, `pixels_per_metre` and your settings in its headers |
-| `name.pos.ttl` | TTL changes |
+| `name.pos.ttl` | TTL changes, if `timing_led` is enabled. Its headers are a camera's timing LED's: `timing_led_radius 0` says there's no real LED |
 | `name.txt` | Log lines, as `<seconds> <line>`, with no headers |
 
 All three count from the same zero: the first thing recorded, normally a position. So they can be compared directly.

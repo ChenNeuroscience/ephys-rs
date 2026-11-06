@@ -4,7 +4,8 @@
 //!
 //! ```json
 //! {"type": "settings", "settings": {"window_min_x": 0, "window_max_x": 800, "window_min_y": 0, "window_max_y": 600,
-//!                                    "pixels_per_metre": 400, "maze": {"arms": 8}, "task": "linear"}}
+//!                                    "pixels_per_metre": 400, "timing_led": {"enabled": true},
+//!                                    "maze": {"arms": 8}, "task": "linear"}}
 //! {"type": "ttl", "time": 1520.25, "value": 1}
 //! {"type": "log", "time": 1520.25, "line": "trial 3 started"}
 //! {"type": "pos", "time": 1520.26, "x": 412.5, "y": 87.0}
@@ -12,9 +13,9 @@
 //!
 //! `settings` is a complete snapshot of the custom settings Write LTX records with the positions, nested keys joined
 //! with dots (`maze.arms`), replacing the last. Positions are as a camera's would be, in pixels of a made-up frame, so
-//! that what's recorded suits whatever reads a camera's. So settings have to say the window they range over and the
-//! pixels in a metre (see `WINDOW_KEYS` and `CALIBRATION_KEY`), which go to Write LTX as a crop and a ruler: otherwise
-//! they're refused, and an error logged. The VR computer should send them on being connected to, and whenever they
+//! that what's recorded suits whatever reads a camera's. So settings have to say the window they range over, the pixels
+//! in a metre, and whether there'll be TTLs (see `WINDOW_KEYS`, `CALIBRATION_KEY` and `TIMING_LED_KEY`), which go to Write
+//! LTX as a crop, a ruler and a timing LED, named as a camera's settings have them: otherwise they're refused, and an error logged. The VR computer should send them on being connected to, and whenever they
 //! change. They can't change
 //! while recording, as they're in headers already: ones that differ log an error, and wait until it stops, so the
 //! node ends up with the latest it was sent. `ttl` is an up (1) or a down (0). `log` is a line of text, cut short to fit
@@ -41,7 +42,9 @@ use ephys_rs::standard_components::ephys::{Event, Events, EventsBuffer};
 use ephys_rs::standard_components::logs::{LogLines, LogLinesBuffer};
 use ephys_rs::standard_components::pool::{Pool, SharedPool};
 use ephys_rs::standard_components::tracking::pipeline::Blob;
-use ephys_rs::standard_components::tracking::{Crop, Detection, PositionSample, Positions, PositionsBuffer, Ruler};
+use ephys_rs::standard_components::tracking::{
+    Crop, Detection, PositionSample, Positions, PositionsBuffer, Ruler, TimingLed,
+};
 use ephys_rs::{Buffer, DataStream, Edges, Kind, Setting};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -54,6 +57,8 @@ const AREA: u32 = 1;
 const WINDOW_KEYS: [&str; 4] = ["window_min_x", "window_max_x", "window_min_y", "window_max_y"];
 /// The setting saying how many of the positions' pixels there are in a metre.
 const CALIBRATION_KEY: &str = "pixels_per_metre";
+/// The setting saying whether there'll be TTLs, as it's a timing LED that says so for a camera.
+const TIMING_LED_KEY: &str = "timing_led.enabled";
 /// The frame the positions are declared in until there's a window.
 const FRAME_SIZE: u32 = 1000;
 /// The rate the TTLs are declared at, which only matters to what goes by their samples: they carry their times.
@@ -135,9 +140,14 @@ fn calibration(custom: &Custom) -> Option<f32> {
     custom.get(CALIBRATION_KEY)?.parse().ok().filter(|ppm: &f32| *ppm > 0.0 && ppm.is_finite())
 }
 
+/// Whether there'll be TTLs, if custom settings say.
+fn timing_led(custom: &Custom) -> Option<bool> {
+    custom.get(TIMING_LED_KEY)?.parse().ok()
+}
+
 /// Whether custom settings say all they have to.
 fn complete(custom: &Custom) -> bool {
-    window(custom).is_some() && calibration(custom).is_some()
+    window(custom).is_some() && calibration(custom).is_some() && timing_led(custom).is_some()
 }
 
 /// What's arrived since the passes last took any.
@@ -270,8 +280,8 @@ impl Shared {
                 status.refused += 1;
                 let keys = WINDOW_KEYS.join(", ");
                 log::error!(
-                    "VR Computer: settings refused: they have to have numbers for {keys} (with min below max), and a \
-                     positive {CALIBRATION_KEY}"
+                    "VR Computer: settings refused: they have to have numbers for {keys} (with min below max), a \
+                     positive {CALIBRATION_KEY}, and true or false for {TIMING_LED_KEY}"
                 );
             }
             Ok(message) => {
@@ -408,6 +418,8 @@ impl Connection {
 #[derive(Default)]
 pub struct Receiving {
     connection: Option<Connection>,
+    /// Whether it's been said that TTLs are coming that settings said wouldn't.
+    told: bool,
     shown: SharedPool<Status>,
 }
 
@@ -455,10 +467,13 @@ impl Node<Edges> for VrComputer {
         let ruler = |ppm| Ruler { a: [0.0, 0.0], b: [ppm, 0.0], length_cm: 100.0 };
         let rulers = calibration(&self.custom).map(ruler).into_iter().collect();
         // What's gone as those: as custom settings, they'd clash with the headers Write LTX makes of them.
-        let others =
-            self.custom.iter().filter(|(key, _)| !WINDOW_KEYS.contains(&key.as_str()) && *key != CALIBRATION_KEY);
+        let required = |key: &str| WINDOW_KEYS.contains(&key) || key == CALIBRATION_KEY || key == TIMING_LED_KEY;
+        let others = self.custom.iter().filter(|(key, _)| !required(key));
         let custom = others.map(|(key, value)| (key.clone(), value.clone())).collect();
-        let detection = Detection { crop, rulers, custom, ..Default::default() };
+        // There's no spot in any video to say where it is: Write LTX records it as it is.
+        let enabled = timing_led(&self.custom) == Some(true);
+        let timing_led = TimingLed { enabled, radius: 0.0, ..Default::default() };
+        let detection = Detection { crop, rulers, timing_led, custom, ..Default::default() };
         vec![SettingPort { name: "settings", value: Setting::Detection(detection) }]
     }
 
@@ -509,6 +524,14 @@ impl Node<Edges> for VrComputer {
             inbox.take(positions, ttls, logs);
             inbox.settings_to_propose(&self.custom, pass.recording)
         });
+        if !ttls.events.is_empty()
+            && timing_led(&self.custom) == Some(false)
+            && !std::mem::replace(&mut receiving.told, true)
+        {
+            log::error!(
+                "VR Computer: TTLs are coming, but its settings say {TIMING_LED_KEY} is false, so they won't be recorded"
+            );
+        }
         let pixels_per_metre = calibration(&self.custom).unwrap_or(f32::NAN);
         for sample in &mut positions.samples {
             sample.pixels_per_metre = pixels_per_metre;
@@ -663,12 +686,18 @@ mod tests {
         custom.insert(CALIBRATION_KEY.into(), "0".into());
         assert!(!complete(&custom), "no use");
         custom.insert(CALIBRATION_KEY.into(), "250".into());
+        assert!(!complete(&custom), "not saying if there'll be TTLs");
+        custom.insert(TIMING_LED_KEY.into(), "1".into());
+        assert!(!complete(&custom), "true or false");
+        custom.insert(TIMING_LED_KEY.into(), "true".into());
         assert!(complete(&custom));
         let node = VrComputer { custom, ..node };
         assert!(node.warnings(&[]).is_empty());
         let [SettingPort { value: Setting::Detection(detection), .. }] = &node.settings()[..] else { panic!() };
         assert_eq!(detection.crop, crop, "for Write LTX");
         assert_eq!(detection.pixels_per_metre(), Some(250.0));
+        assert!(detection.timing_led.enabled, "there'll be TTLs");
+        assert_eq!(detection.timing_led.radius, 0.0, "and they've no spot");
         assert!(detection.custom.is_empty(), "and not twice");
     }
 
