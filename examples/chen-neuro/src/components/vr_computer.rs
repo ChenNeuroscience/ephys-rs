@@ -1,5 +1,6 @@
 //! The VR Computer: positions, TTLs, log lines and settings from the computer running a virtual reality task, instead
-//! of a camera's. It connects to the VR computer over TCP, keeping trying, and reads a JSON object a line:
+//! of a camera's. It connects to the VR computer over TCP, keeping trying, and reads a JSON object a line (see
+//! VR_COMPUTER_PROTOCOL.md, in this build's directory, which is to be kept up to date with this):
 //!
 //! ```json
 //! {"type": "settings", "settings": {"window_min_x": 0, "window_max_x": 800, "window_min_y": 0, "window_max_y": 600,
@@ -597,6 +598,25 @@ mod tests {
             panic!("its streams")
         };
         (p.buffer(PASS_DURATION), e.buffer(PASS_DURATION), l.buffer(PASS_DURATION))
+    }
+
+    #[test]
+    fn what_the_protocol_document_says_about_edge_cases() {
+        let ok = |line: &str| serde_json::from_str::<Message>(line).is_ok();
+        assert!(ok(r#"{"type": "ttl", "time": 1, "value": 1, "extra": "ignored"}"#), "other fields are ignored");
+        assert!(ok(r#"{"time": 1, "value": 0, "type": "ttl"}"#), "in any order");
+        assert!(!ok(r#"{"type": "ttl", "time": 1, "value": true}"#), "a number");
+        assert!(!ok(r#"{"type": "ttl", "time": 1, "value": 1.0}"#), "a whole number");
+        assert!(!ok(r#"{"type": "pos", "time": "1", "x": 1, "y": 2}"#), "a number, not text");
+        assert!(!ok(r#"{"type": "pos", "time": 1, "x": null, "y": 2}"#), "no nulls for a missing position");
+        let Message::Settings { settings } = parse(r#"{"type": "settings", "settings": {"a": null, "b": {"c": [1]}}}"#)
+        else {
+            panic!()
+        };
+        assert_eq!(flatten(&settings).get("a").map(String::as_str), Some("null"));
+        assert_eq!(flatten(&settings).get("b.c").map(String::as_str), Some("[1]"));
+        let nested = Custom::from([("view.window_min_x".to_string(), "0".to_string())]);
+        assert!(!complete(&nested), "the required settings are at the top level");
     }
 
     #[test]

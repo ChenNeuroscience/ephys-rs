@@ -34,4 +34,4 @@ The stand-in script lives with the others, in [`synthetic_streams/`](../../synth
 
 To see settings change, press Enter in the script's terminal. **Use camera** swaps back.
 
-What a real VR computer has to send is in the [developer docs](../../docs/development.md#the-vr-computer).
+What a real VR computer has to send is in the [VR computer protocol](VR_COMPUTER_PROTOCOL.md).

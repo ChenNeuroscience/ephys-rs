@@ -77,14 +77,9 @@ only takes it off the video.
 
 chen-neuro's [VR Computer](../examples/chen-neuro/src/components/vr_computer.rs) node is an alternative to the camera, for
 a virtual reality task running on another computer. The "Use VR computer" and "Use camera" quick actions swap between
-them. It connects to the IP address and port it's set to, and keeps trying. The VR computer sends a JSON object a line:
-
-| Message | Means |
-| --- | --- |
-| `{"type": "settings", "settings": {"window_min_x": 0, "window_max_x": 800, "window_min_y": 0, "window_max_y": 600, "pixels_per_metre": 400, "maze": {"arms": 8}}}` | The custom settings: a complete snapshot, replacing the last |
-| `{"type": "ttl", "time": 1520.25, "value": 1}` | An up (1) or down (0), on the `pos ttl` output |
-| `{"type": "log", "time": 1520.25, "line": "trial 3 started"}` | A log line, cut short to the node's limit |
-| `{"type": "pos", "time": 1520.26, "x": 412.5, "y": 87.0}` | A position, in made-up pixels, within the window |
+them. It connects to the IP address and port it's set to, and keeps trying. What it reads is described in the
+[VR computer protocol](../examples/chen-neuro/VR_COMPUTER_PROTOCOL.md), which is for whoever's writing the VR side: keep it up
+to date with any changes here. This is how it's handled.
 
 The VR computer is expected to send its settings on being connected to, and whenever they change: nothing asks for them.
 The VR computer sends positions as a camera would, in pixels of a made-up frame, so that a recording suits whatever reads a
