@@ -1,45 +1,128 @@
-//! The Reference node: re-references every channel, subtracting from each a reference made from other channels.
+//! The Reference node: makes any number of references, each the mean or median of some channels, and subtracts from each
+//! channel the one it uses, if any.
 //!
-//! As in Open Ephys: its common average reference (the average of some channels), and its channel map's reference
-//! channels (each channel referenced to one other). Besides those: the median rather than the average (a common
-//! median reference: a spike on one reference channel hardly moves it).
+//! As in Open Ephys's common average reference; besides that, the median rather than the mean (a common median reference:
+//! a spike on one reference channel hardly moves it). One channel on its own is a reference of one channel.
 //!
 //! Its settings are one setting (`reference`), which another node can edit through a settings edge. Besides the
-//! referenced data, it outputs the references themselves: a channel each (one, for an average, a median or a single
-//! channel; for each its own, each channel referenced to).
+//! referenced data, it outputs the references themselves: a channel each.
 
 use eframe::egui::{self, Color32, RichText};
 use serde::{Deserialize, Serialize};
 
 use crate::core::engine::{Category, Context, EdgeInfo, EdgeType, Input, Node, NodeInfo, Output, Pass, SettingPort};
-use crate::standard_components::ephys::Continuous;
+use crate::standard_components::ephys::{Continuous, ContinuousBuffer};
 use crate::standard_components::widgets::{all_checkbox, input_summary, require_input, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
 
-#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+/// How a reference is made from its channels.
+#[derive(Clone, Copy, PartialEq, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Method {
-    /// Every channel referenced to one channel (counting from 1).
-    Channel { channel: u32 },
-    /// The average of the reference channels.
-    Average,
-    /// The median of the reference channels.
+    #[default]
+    Mean,
     Median,
-    /// Each channel referenced to a channel of its own (counting from 1), or not at all (0).
-    PerChannel { references: Vec<u32> },
+}
+
+impl Method {
+    pub fn name(self) -> &'static str {
+        match self {
+            Method::Mean => "mean",
+            Method::Median => "median",
+        }
+    }
+}
+
+/// A reference: which channels it's made from, and which channels use it. Each of those is a set such as "all" or "1-4, 9".
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Computation {
+    /// Which it is, whatever's added and removed around it.
+    pub id: u32,
+    pub method: Method,
+    pub channels: String,
+    /// A channel uses one reference at most: if two have it here, the first.
+    pub used_by: String,
+}
+
+impl Default for Computation {
+    fn default() -> Self {
+        Computation { id: 0, method: Method::Mean, channels: "none".into(), used_by: "none".into() }
+    }
+}
+
+impl Computation {
+    /// What it is, in a few words: "mean of 8 channels".
+    pub fn summary(&self) -> String {
+        format!("{} of {}", self.method.name(), channels_summary(&self.channels))
+    }
 }
 
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(from = "Saved")]
 pub struct Reference {
-    pub method: Method,
-    /// For an average or median: the channels it's of, such as "all" or "1-4, 9".
-    pub reference_channels: String,
+    pub list: Vec<Computation>,
+    pub next_id: u32,
 }
 
 impl Default for Reference {
     fn default() -> Self {
-        Reference { method: Method::Average, reference_channels: "all".into() }
+        let mean = Computation { channels: "all".into(), used_by: "all".into(), ..Default::default() };
+        Reference { list: vec![mean], next_id: 1 }
+    }
+}
+
+/// What graphs have saved: as it is now, or before a Reference could make several.
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct Saved {
+    list: Option<Vec<Computation>>,
+    next_id: u32,
+    method: Option<OldMethod>,
+    reference_channels: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum OldMethod {
+    Channel { channel: u32 },
+    Average,
+    Median,
+    PerChannel { references: Vec<u32> },
+}
+
+impl From<Saved> for Reference {
+    fn from(saved: Saved) -> Self {
+        if let Some(list) = saved.list {
+            return Reference { list, next_id: saved.next_id };
+        }
+        let everyone = |method, channels: String| (method, channels, "all".to_string());
+        let channels = saved.reference_channels.unwrap_or_else(|| "all".into());
+        let made = match saved.method {
+            None => return Reference::default(),
+            Some(OldMethod::Average) => vec![everyone(Method::Mean, channels)],
+            Some(OldMethod::Median) => vec![everyone(Method::Median, channels)],
+            Some(OldMethod::Channel { channel }) => vec![everyone(Method::Mean, channel.to_string())],
+            // A reference for each channel referenced to, used by those that were.
+            Some(OldMethod::PerChannel { references }) => {
+                let mut sources: Vec<u32> = references.iter().copied().filter(|r| *r > 0).collect();
+                sources.sort_unstable();
+                sources.dedup();
+                let users = |source: u32| -> Vec<u32> {
+                    (0..references.len() as u32).filter(|c| references[*c as usize] == source).collect()
+                };
+                let made = sources
+                    .iter()
+                    .map(|&source| (Method::Mean, source.to_string(), format_channels(&users(source), u32::MAX)));
+                made.collect()
+            }
+        };
+        let list: Vec<Computation> = made
+            .into_iter()
+            .enumerate()
+            .map(|(id, (method, channels, used_by))| Computation { id: id as u32, method, channels, used_by })
+            .collect();
+        Reference { next_id: list.len() as u32, list }
     }
 }
 
@@ -48,25 +131,119 @@ impl EdgeType for Reference {
     const INFO: EdgeInfo = EdgeInfo {
         name: "reference",
         colour: Color32::from_rgb(150, 200, 120),
-        description: "How channels are re-referenced: the method, and which channels the reference is made of.",
+        description: "How channels are re-referenced: the references made, of which channels, and which channels use each.",
     };
 
     fn summary(&self) -> String {
-        match &self.method {
-            Method::Channel { channel } => format!("channel {channel}"),
-            Method::Average => format!("average of {}", channels_summary(&self.reference_channels)),
-            Method::Median => format!("median of {}", channels_summary(&self.reference_channels)),
-            Method::PerChannel { .. } => "each its own".into(),
+        match &self.list[..] {
+            [] => "no references".into(),
+            [only] => only.summary(),
+            list => format!("{} references", list.len()),
         }
     }
 }
 
+/// The references' colours, in turn: none of them blue, which traces and what's selected are.
+pub const REFERENCE_COLOURS: [Color32; 6] = [
+    Color32::from_rgb(240, 160, 60),
+    Color32::from_rgb(235, 110, 190),
+    Color32::from_rgb(70, 205, 185),
+    Color32::from_rgb(225, 205, 80),
+    Color32::from_rgb(175, 145, 255),
+    Color32::from_rgb(130, 210, 110),
+];
+
+/// Reference `index`'s colour, wherever it's to be told from the others.
+pub fn reference_colour(index: usize) -> Color32 {
+    REFERENCE_COLOURS[index % REFERENCE_COLOURS.len()]
+}
+
+/// Whether `set` (as `parse_channels` reads it) has channel `number` (from 0).
+pub fn has_channel(set: &str, number: u32) -> bool {
+    let set = set.trim();
+    set.is_empty()
+        || set.eq_ignore_ascii_case("all")
+        || parse_channels(set, u32::MAX / 2).is_ok_and(|channels| channels.contains(&number))
+}
+
+/// `set`, of `count` channels, with `number` (from 0) in it or out of it.
+fn with_channel(set: &str, number: u32, count: u32, wanted: bool) -> String {
+    let mut channels: Vec<u32> = (0..count).filter(|&c| c != number && has_channel(set, c)).collect();
+    if wanted {
+        channels.push(number);
+    }
+    format_channels(&channels, count)
+}
+
 impl Reference {
-    /// How many references it makes, of `channels` (at least one, for its output: of zeros, if there are none).
-    pub fn references(&self, channels: u32) -> usize {
-        let mut referencing = Referencing::default();
-        referencing.plan(self, channels as usize);
-        referencing.references.len().max(1)
+    /// How many channels its reference output has: one each (and one of zeros if there are none, to be a stream at all).
+    pub fn references(&self) -> usize {
+        self.list.len().max(1)
+    }
+
+    /// Adds a reference, of the channels using none, of the `count` there are, which they use.
+    pub fn add(&mut self, count: u32) {
+        let free = (0..count).filter(|&c| self.used_by(c).is_none()).collect::<Vec<_>>();
+        let channels = format_channels(&free, count);
+        self.list.push(Computation { id: self.next_id, used_by: channels.clone(), channels, ..Default::default() });
+        self.next_id += 1;
+    }
+
+    /// Which reference channel `number` (from 0) uses, if any: the first that says so.
+    pub fn used_by(&self, number: u32) -> Option<usize> {
+        self.list.iter().position(|reference| has_channel(&reference.used_by, number))
+    }
+
+    /// Whether channel `number` is in the reference it uses and no other, or uses none and is in none. Then it's simple
+    /// enough to be one choice (see `toggle_channel`): settings can say otherwise.
+    pub fn agrees(&self, number: u32) -> bool {
+        let of = |set: fn(&Computation) -> &String| -> Vec<usize> {
+            (0..self.list.len()).filter(|&i| has_channel(set(&self.list[i]), number)).collect()
+        };
+        let (made_from, using) = (of(|r| &r.channels), of(|r| &r.used_by));
+        made_from == using && using.len() <= 1
+    }
+
+    /// Has channel `number` be in reference `index` and use it, and no other; or, if it is, none.
+    pub fn toggle_channel(&mut self, index: usize, number: u32, count: u32) {
+        let wanted = self.used_by(number) != Some(index);
+        for (i, reference) in self.list.iter_mut().enumerate() {
+            reference.channels = with_channel(&reference.channels, number, count, i == index && wanted);
+            reference.used_by = with_channel(&reference.used_by, number, count, i == index && wanted);
+        }
+    }
+
+    /// Has all the channels that agree (see `agrees`) be in reference `index`, or, if not `all`, none.
+    pub fn set_all(&mut self, index: usize, all: bool, count: u32) {
+        for number in (0..count).filter(|&c| self.agrees(c)).collect::<Vec<_>>() {
+            if (self.used_by(number) == Some(index)) != all {
+                self.toggle_channel(index, number, count);
+            }
+        }
+    }
+
+    /// Has no channel use any reference.
+    pub fn clear_use(&mut self) {
+        self.list.iter_mut().for_each(|reference| reference.used_by = "none".into());
+    }
+
+    /// Has channel `number` use reference `index`, or, if it does, none.
+    pub fn toggle_use(&mut self, index: usize, number: u32, count: u32) {
+        let using = self.used_by(number) == Some(index);
+        for (i, reference) in self.list.iter_mut().enumerate() {
+            reference.used_by = with_channel(&reference.used_by, number, count, i == index && !using);
+        }
+    }
+
+    /// Has every channel use reference `index`, or, if not `all`, none of them.
+    pub fn set_all_use(&mut self, index: usize, all: bool) {
+        for (i, reference) in self.list.iter_mut().enumerate() {
+            if i == index {
+                reference.used_by = if all { "all" } else { "none" }.into();
+            } else if all {
+                reference.used_by = "none".into();
+            }
+        }
     }
 }
 
@@ -142,18 +319,16 @@ pub struct Referencing {
     count: usize,
     /// For each channel: the reference subtracted from it, if any (an index into `references`).
     reference_of: Vec<Option<usize>>,
-    /// Each reference: the channels it's made from.
-    references: Vec<Vec<usize>>,
-    median: bool,
-    /// This pass's samples as they came, and each reference's value at a sample.
-    original: Vec<f32>,
+    /// Each reference: the channels it's made from, and whether it's their median.
+    references: Vec<(Vec<usize>, bool)>,
+    /// Each reference's value at each sample.
     values: Vec<f32>,
     scratch: Vec<f32>,
 }
 
 impl crate::core::engine::PassState for Referencing {
-    const WHY: &'static str = "Only working memory (what the settings work out to, and room for a copy of the \
-                               samples), kept so it isn't remade every pass: each worker has its own.";
+    const WHY: &'static str = "Only working memory (what the settings work out to, and room for the references' \
+                               values), kept so it isn't remade every pass: each worker has its own.";
     const CARRIED_OVER: bool = false;
 }
 
@@ -162,44 +337,19 @@ impl Referencing {
         if self.settings.as_ref() == Some(settings) && self.count == count {
             return;
         }
-        let all = count as u32;
-        let (mut reference_of, mut references) = (vec![None; count], Vec::new());
-        let mut refer = |channel: u32, sources: Vec<usize>, references: &mut Vec<Vec<usize>>| {
+        let mut reference_of = vec![None; count];
+        let mut references = Vec::new();
+        for (index, reference) in settings.list.iter().enumerate() {
+            let set = |text: &str| parse_channels(text, count as u32).unwrap_or_default();
+            let sources: Vec<usize> = set(&reference.channels).into_iter().map(|c| c as usize).collect();
+            // A reference of nothing has nothing to subtract.
             if !sources.is_empty() {
-                let index = references.iter().position(|r| *r == sources).unwrap_or_else(|| {
-                    references.push(sources);
-                    references.len() - 1
-                });
-                reference_of[channel as usize] = Some(index);
-            }
-        };
-        match &settings.method {
-            Method::Channel { channel } => {
-                for c in 0..all {
-                    if (1..=all).contains(channel) {
-                        refer(c, vec![*channel as usize - 1], &mut references);
-                    }
+                for channel in set(&reference.used_by) {
+                    reference_of[channel as usize].get_or_insert(index);
                 }
             }
-            Method::PerChannel { references: chosen } => {
-                for c in 0..all {
-                    if let Some(&r) = chosen.get(c as usize).filter(|r| (1..=all).contains(r)) {
-                        refer(c, vec![r as usize - 1], &mut references);
-                    }
-                }
-            }
-            Method::Average | Method::Median => {
-                let sources: Vec<usize> = parse_channels(&settings.reference_channels, all)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|s| s as usize)
-                    .collect();
-                for c in 0..all {
-                    refer(c, sources.clone(), &mut references);
-                }
-            }
+            references.push((sources, reference.method == Method::Median));
         }
-        self.median = settings.method == Method::Median;
         (self.reference_of, self.references, self.count) = (reference_of, references, count);
         self.settings = Some(settings.clone());
     }
@@ -209,8 +359,8 @@ impl Node<Edges> for Reference {
     const INFO: NodeInfo = NodeInfo {
         name: "Reference",
         category: Category::Processing,
-        description: "Re-references every channel: to one channel, to the average or median of some, or each to a \
-                      channel of its own.",
+        description: "Makes references, each the mean or median of some channels, and subtracts from each channel the one \
+                      it uses, if any.",
     };
 
     type State = Referencing;
@@ -238,31 +388,21 @@ impl Node<Edges> for Reference {
         output.transform(input, |_, x| x); // the samples as they came, to change below
         state.plan(self, output.channels);
         let (n, channels) = (output.len, output.channels);
-        state.original.resize(channels * n, 0.0);
-        for channel in 0..channels {
-            state.original[channel * n..(channel + 1) * n].copy_from_slice(output.channel(channel));
-        }
-        // Each reference's value at each sample.
+        // Each reference's value at each sample, from the samples as they came: nothing's subtracted until they're all made.
         state.values.resize(state.references.len() * n, 0.0);
-        for (r, sources) in state.references.iter().enumerate() {
+        for (r, (sources, median)) in state.references.iter().enumerate() {
             let values = &mut state.values[r * n..(r + 1) * n];
-            for (t, value) in values.iter_mut().enumerate() {
-                *value = if state.median {
-                    state.scratch.clear();
-                    state.scratch.extend(sources.iter().map(|&s| state.original[s * n + t]));
-                    let middle = state.scratch.len() / 2;
-                    *state.scratch.select_nth_unstable_by(middle, |a, b| a.total_cmp(b)).1
-                } else {
-                    sources.iter().map(|&s| state.original[s * n + t]).sum::<f32>() / sources.len() as f32
-                };
+            if sources.is_empty() {
+                values.fill(0.0);
+            } else if *median {
+                medians(values, sources, output, &mut state.scratch);
+            } else {
+                means(values, sources, output);
             }
         }
         for channel in 0..channels {
             let Some(r) = state.reference_of.get(channel).copied().flatten() else { continue };
-            let reference = &state.values[r * n..(r + 1) * n];
-            for (y, reference) in output.channel_mut(channel).iter_mut().zip(reference) {
-                *y -= reference;
-            }
+            subtract(output.channel_mut(channel), &state.values[r * n..(r + 1) * n]);
         }
         // The references themselves (none: a channel of zeros).
         if let Some(Buffer::Continuous(references)) = pass.outputs.get_mut(1) {
@@ -284,7 +424,7 @@ impl Node<Edges> for Reference {
     fn outputs(&self, inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {
         let references = match inputs[0] {
             Some(DataStream::Continuous(c)) => {
-                Some(DataStream::Continuous(Continuous { channels: self.references(c.channels) as u32, ..c }))
+                Some(DataStream::Continuous(Continuous { channels: self.references() as u32, ..c }))
             }
             _ => None,
         };
@@ -297,17 +437,12 @@ impl Node<Edges> for Reference {
     fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
         let mut warnings = require_input(inputs, "a continuous data stream");
         if let Some(DataStream::Continuous(c)) = inputs[0] {
-            let mut check = |what: &str, text: &str| {
-                if let Err(e) = parse_channels(text, c.channels) {
-                    warnings.push(format!("{what}: {e}"));
+            for (index, reference) in self.list.iter().enumerate() {
+                for (what, text) in [("channels", &reference.channels), ("users", &reference.used_by)] {
+                    if let Err(e) = parse_channels(text, c.channels) {
+                        warnings.push(format!("Reference {}'s {what}: {e}", index + 1));
+                    }
                 }
-            };
-            match &self.method {
-                Method::Average | Method::Median => check("Reference channels", &self.reference_channels),
-                Method::Channel { channel } if *channel == 0 || *channel > c.channels => {
-                    warnings.push(format!("The reference channel must be from 1 to {}", c.channels));
-                }
-                _ => {}
             }
         }
         warnings
@@ -318,66 +453,135 @@ impl Node<Edges> for Reference {
             Some(DataStream::Continuous(c)) => c.channels,
             _ => 64,
         };
-        let names = ["One channel", "Average (CAR)", "Median (CMR)", "Each its own"];
-        let current = match self.method {
-            Method::Channel { .. } => 0,
-            Method::Average => 1,
-            Method::Median => 2,
-            Method::PerChannel { .. } => 3,
-        };
-        settings_grid(ui, |ui| {
-            setting(ui, "Reference", |ui| {
-                egui::ComboBox::from_id_salt("method")
-                    .selected_text(names[current])
-                    .show_ui(ui, |ui| {
-                        for (i, name) in names.iter().enumerate() {
-                            if ui.selectable_label(i == current, *name).clicked() && i != current {
-                                self.method = match i {
-                                    0 => Method::Channel { channel: 1 },
-                                    1 => Method::Average,
-                                    2 => Method::Median,
-                                    _ => Method::PerChannel { references: vec![0; count as usize] },
-                                };
-                            }
-                        }
-                    })
-                    .response
-            });
-            match &mut self.method {
-                Method::Channel { channel } => {
-                    setting(ui, "Channel", |ui| ui.add(egui::DragValue::new(channel).range(1..=count)));
-                }
-                Method::Average | Method::Median | Method::PerChannel { .. } => {}
-            }
-        });
-        if matches!(self.method, Method::Average | Method::Median) {
-            ui.add_space(4.0);
-            reference_channels_ui(ui, &mut self.reference_channels, count);
-        }
-        if let Method::PerChannel { references } = &mut self.method {
-            references.resize(count as usize, 0);
-            ui.label(RichText::new("Each channel's reference (0 for none)").small().weak());
-            egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
-                egui::Grid::new("references").num_columns(4).spacing([10.0, 4.0]).show(ui, |ui| {
-                    for (channel, reference) in references.iter_mut().enumerate() {
-                        let label = ui.label(format!("{}", channel + 1));
-                        ui.add(egui::DragValue::new(reference).range(0..=count)).labelled_by(label.id);
-                        if channel % 2 == 1 {
-                            ui.end_row();
-                        }
+        let mut remove = None;
+        for index in 0..self.list.len() {
+            let reference = &mut self.list[index];
+            let title = RichText::new(format!("Reference {}: {}", index + 1, reference.summary()))
+                .strong()
+                .color(reference_colour(index));
+            ui.push_id(reference.id, |ui| {
+                egui::CollapsingHeader::new(title).default_open(true).show(ui, |ui| {
+                    settings_grid(ui, |ui| {
+                        setting(ui, "Method", |ui| method_ui(ui, &mut reference.method));
+                    });
+                    ui.add_space(4.0);
+                    channels_ui(ui, &mut reference.channels, count);
+                    if ui.small_button(format!("Remove reference {}", index + 1)).clicked() {
+                        remove = Some(index);
                     }
                 });
             });
         }
+        if let Some(index) = remove {
+            self.list.remove(index);
+        }
+        if ui.button("Add reference").on_hover_text("Channels using none will use it").clicked() {
+            self.add(count);
+        }
+        ui.add_space(6.0);
+        uses_ui(ui, self, count);
+        ui.add_space(4.0);
         input_summary(ui, context.inputs);
     }
 }
 
-/// The channels the reference is of, a checkbox each, in rows as wide as fit; and one for all of them.
-fn reference_channels_ui(ui: &mut egui::Ui, text: &mut String, count: u32) {
+/// Which reference each channel uses, or none, a row each, with a row for all of them at the top.
+fn uses_ui(ui: &mut egui::Ui, reference: &mut Reference, count: u32) {
+    ui.strong("Which each channel uses");
+    let references = reference.list.len();
+    if references == 0 {
+        ui.weak("There are no references to use.");
+        return;
+    }
+    let using = |reference: &Reference| (0..count).map(|c| reference.used_by(c)).collect::<Vec<_>>();
+    let chosen = using(reference);
+    // Clicked: a channel and what it's to use, or for all of them.
+    let mut picked: Option<(Option<u32>, Option<usize>)> = None;
+    egui::ScrollArea::vertical().max_height(240.0).id_salt("uses").show(ui, |ui| {
+        egui::Grid::new("uses").num_columns(references + 2).striped(true).spacing([14.0, 2.0]).show(ui, |ui| {
+            ui.label("");
+            ui.weak("None");
+            for index in 0..references {
+                ui.label(RichText::new((index + 1).to_string()).color(reference_colour(index)));
+            }
+            ui.end_row();
+            let row = |ui: &mut egui::Ui, on: &dyn Fn(Option<usize>) -> bool, channel, name: String| {
+                let mut clicked = None;
+                let label = ui.label(name);
+                for option in std::iter::once(None).chain((0..references).map(Some)) {
+                    if ui.radio(on(option), "").labelled_by(label.id).clicked() {
+                        clicked = Some((channel, option));
+                    }
+                }
+                ui.end_row();
+                clicked
+            };
+            let all = |option: Option<usize>| chosen.iter().all(|used| *used == option);
+            picked = row(ui, &all, None, "All".into());
+            for channel in 0..count {
+                let on = |option: Option<usize>| chosen[channel as usize] == option;
+                picked = row(ui, &on, Some(channel), (channel + 1).to_string()).or(picked);
+            }
+        });
+    });
+    match picked {
+        Some((None, Some(index))) => reference.set_all_use(index, true),
+        Some((None, None)) => reference.clear_use(),
+        Some((Some(channel), option)) => match (option, chosen[channel as usize]) {
+            (Some(index), used) if used != Some(index) => reference.toggle_use(index, channel, count),
+            (None, Some(used)) => reference.toggle_use(used, channel, count),
+            _ => {}
+        },
+        None => {}
+    }
+}
+
+/// Each sample's mean over the channels `sources`, a channel at a time, so it's over whole slices, and vectorises.
+fn means(values: &mut [f32], sources: &[usize], data: &ContinuousBuffer) {
+    values.fill(0.0);
+    for &source in sources {
+        add(values, data.channel(source));
+    }
+    let count = sources.len() as f32;
+    values.iter_mut().for_each(|value| *value /= count);
+}
+
+fn add(sums: &mut [f32], samples: &[f32]) {
+    sums.iter_mut().zip(samples).for_each(|(sum, sample)| *sum += *sample);
+}
+
+fn subtract(samples: &mut [f32], reference: &[f32]) {
+    samples.iter_mut().zip(reference).for_each(|(sample, reference)| *sample -= *reference);
+}
+
+/// Each sample's median over the channels `sources`.
+fn medians(values: &mut [f32], sources: &[usize], data: &ContinuousBuffer, scratch: &mut Vec<f32>) {
+    for (t, value) in values.iter_mut().enumerate() {
+        scratch.clear();
+        scratch.extend(sources.iter().map(|&source| data.channel(source)[t]));
+        let middle = scratch.len() / 2;
+        *value = *scratch.select_nth_unstable_by(middle, |a, b| a.total_cmp(b)).1;
+    }
+}
+
+/// Mean or median.
+pub fn method_ui(ui: &mut egui::Ui, method: &mut Method) -> egui::Response {
+    egui::ComboBox::from_id_salt("reference method")
+        .selected_text(method.name())
+        .width(70.0)
+        .show_ui(ui, |ui| {
+            ui.selectable_value(method, Method::Mean, "mean").on_hover_text("A common average reference");
+            ui.selectable_value(method, Method::Median, "median")
+                .on_hover_text("A common median reference: a spike on one of its channels hardly moves it");
+        })
+        .response
+}
+
+/// The channels a reference is made from, a checkbox each, in rows as wide as fit; and one for all of them.
+fn channels_ui(ui: &mut egui::Ui, text: &mut String, count: u32) {
     let mut chosen: Vec<u32> = parse_channels(text, count).unwrap_or_default();
     ui.horizontal(|ui| {
-        ui.label(RichText::new(format!("Of {} of the {count} channels", chosen.len())).strong());
+        ui.label(RichText::new(format!("Made from {} of the {count} channels", chosen.len())).strong());
         match all_checkbox(ui, chosen.len(), count as usize, "All") {
             Some(true) => *text = "all".into(),
             Some(false) => *text = "none".into(),
@@ -386,8 +590,8 @@ fn reference_channels_ui(ui: &mut egui::Ui, text: &mut String, count: u32) {
     });
     let across = ((ui.available_width() / 48.0) as u32).clamp(4, 16);
     let mut changed = false;
-    egui::ScrollArea::vertical().max_height(240.0).id_salt("reference channels").show(ui, |ui| {
-        egui::Grid::new("reference channels").spacing([6.0, 2.0]).show(ui, |ui| {
+    egui::ScrollArea::vertical().max_height(240.0).id_salt("made from").show(ui, |ui| {
+        egui::Grid::new("made from").spacing([6.0, 2.0]).show(ui, |ui| {
             for channel in 0..count {
                 let mut on = chosen.contains(&channel);
                 if ui.checkbox(&mut on, format!("{:>2}", channel + 1)).changed() {
@@ -413,7 +617,6 @@ fn reference_channels_ui(ui: &mut egui::Ui, text: &mut String, count: u32) {
 mod tests {
     use super::*;
     use crate::core::engine::{DataStreamType, PASS_DURATION};
-    use crate::standard_components::ephys::Continuous;
 
     /// Runs one pass of `channels` (each a few samples) through `reference`.
     fn run(reference: &Reference, channels: &[Vec<f32>]) -> Vec<Vec<f32>> {
@@ -446,28 +649,58 @@ mod tests {
         assert!(parse_channels("x", 4).is_err());
     }
 
+    /// A reference of `channels`, used by `used_by`.
+    fn made(id: u32, method: Method, channels: &str, used_by: &str) -> Computation {
+        Computation { id, method, channels: channels.into(), used_by: used_by.into() }
+    }
+
+    fn of(list: Vec<Computation>) -> Reference {
+        Reference { next_id: list.len() as u32, list }
+    }
+
     #[test]
     fn references_as_asked() {
         let data = vec![vec![1.0, 2.0], vec![3.0, 4.0], vec![5.0, 9.0], vec![10.0, 0.0]];
-        let channel = Reference { method: Method::Channel { channel: 2 }, ..Default::default() };
-        assert_eq!(run(&channel, &data)[0], vec![-2.0, -2.0]);
-        assert_eq!(run(&channel, &data)[1], vec![0.0, 0.0], "the reference itself, referenced, is flat");
+        let one = of(vec![made(0, Method::Mean, "2", "all")]);
+        assert_eq!(run(&one, &data)[0], vec![-2.0, -2.0], "one channel's a reference too");
+        assert_eq!(run(&one, &data)[1], vec![0.0, 0.0], "the reference itself, referenced, is flat");
 
-        let average = Reference { method: Method::Average, ..Default::default() };
-        assert_eq!(run(&average, &data)[3], vec![10.0 - 4.75, 0.0 - 3.75]);
+        let mean = Reference::default();
+        assert_eq!(run(&mean, &data)[3], vec![10.0 - 4.75, 0.0 - 3.75]);
 
-        let median = Reference { method: Method::Median, ..Default::default() };
+        let median = of(vec![made(0, Method::Median, "all", "all")]);
         assert_eq!(run(&median, &data)[0], vec![1.0 - 5.0, 2.0 - 4.0], "the upper middle of an even count");
 
-        let some = Reference { method: Method::Average, reference_channels: "1-2".into() };
+        let some = of(vec![made(0, Method::Mean, "1-2", "all")]);
         assert_eq!(run(&some, &data)[3], vec![10.0 - 2.0, 0.0 - 3.0], "of some channels, every channel referenced");
+    }
 
-        // And the references themselves: a channel each (each channel referenced to, here).
+    #[test]
+    fn each_channel_uses_the_reference_it_says_or_none() {
+        let data = vec![vec![1.0, 2.0], vec![3.0, 4.0], vec![5.0, 9.0], vec![10.0, 0.0]];
+        let two = of(vec![made(0, Method::Mean, "1-2", "1-2"), made(1, Method::Median, "3", "3")]);
+        let out = run(&two, &data);
+        assert_eq!(out[0], vec![1.0 - 2.0, 2.0 - 3.0], "the first");
+        assert_eq!(out[2], vec![0.0, 0.0], "the second");
+        assert_eq!(out[3], data[3], "none");
+        assert_eq!(run(&of(vec![]), &data), data, "no references at all");
+        assert_eq!(run(&of(vec![made(0, Method::Median, "none", "all")]), &data), data, "one of nothing: no panic");
+        let both = of(vec![made(0, Method::Mean, "1", "all"), made(1, Method::Mean, "2", "all")]);
+        assert_eq!(run(&both, &data)[3], vec![9.0, -2.0], "said twice: the first");
+    }
+
+    #[test]
+    fn the_references_are_output_a_channel_each_in_order() {
+        let data = [vec![1.0, 2.0], vec![3.0, 4.0], vec![5.0, 9.0], vec![10.0, 0.0]];
         let stream = Continuous { channels: 4, sample_rate: 30000.0 };
-        let own = Reference { method: Method::PerChannel { references: vec![0, 1, 1, 3] }, ..Default::default() };
-        assert_eq!((own.references(4), average.references(4)), (2, 1));
-        let outputs = own.outputs(&[Some(DataStream::Continuous(stream))]);
-        assert_eq!(outputs[1].stream, Some(DataStream::Continuous(Continuous { channels: 2, ..stream })));
+        let reference = of(vec![
+            made(0, Method::Mean, "1", "none"),
+            made(1, Method::Mean, "none", "all"),
+            made(2, Method::Mean, "3", "all"),
+        ]);
+        assert_eq!((reference.references(), of(vec![]).references()), (3, 1));
+        let outputs = reference.outputs(&[Some(DataStream::Continuous(stream))]);
+        assert_eq!(outputs[1].stream, Some(DataStream::Continuous(Continuous { channels: 3, ..stream })));
         let mut input = stream.buffer(PASS_DURATION);
         input.len = 2;
         for (c, samples) in data.iter().enumerate() {
@@ -475,18 +708,81 @@ mod tests {
         }
         let input = Buffer::Continuous(input);
         let inputs = [Some(&input)];
-        let references = Continuous { channels: 2, ..stream };
+        let references = Continuous { channels: 3, ..stream };
         let mut outputs =
             [Buffer::Continuous(stream.buffer(PASS_DURATION)), Buffer::Continuous(references.buffer(PASS_DURATION))];
-        own.process(&mut Pass::new(0, PASS_DURATION, &inputs, &mut outputs), &mut Referencing::default());
+        reference.process(&mut Pass::new(0, PASS_DURATION, &inputs, &mut outputs), &mut Referencing::default());
         let Buffer::Continuous(references) = &outputs[1] else { unreachable!() };
-        assert_eq!((references.channel(0), references.channel(1)), (&[1.0, 2.0][..], &[5.0, 9.0][..]));
+        assert_eq!(references.channel(0), &[1.0, 2.0][..], "even if nothing uses it");
+        assert_eq!(references.channel(1), &[0.0, 0.0][..], "of nothing");
+        assert_eq!(references.channel(2), &[5.0, 9.0][..]);
+    }
 
-        let out = run(&own, &data);
-        assert_eq!(
-            (out[0].clone(), out[2].clone(), out[3].clone()),
-            (data[0].clone(), vec![4.0, 7.0], vec![5.0, -9.0])
-        );
+    #[test]
+    fn a_channel_uses_one_reference_at_most() {
+        let mut reference = of(vec![made(0, Method::Mean, "all", "1-3"), made(1, Method::Mean, "all", "4")]);
+        reference.toggle_use(1, 0, 4);
+        assert_eq!((reference.list[0].used_by.as_str(), reference.list[1].used_by.as_str()), ("2-3", "1, 4"));
+        assert_eq!(reference.used_by(0), Some(1));
+        reference.toggle_use(1, 0, 4);
+        assert_eq!(reference.used_by(0), None, "clicked again: none");
+        reference.set_all_use(1, true);
+        assert_eq!((reference.list[0].used_by.as_str(), reference.list[1].used_by.as_str()), ("none", "all"));
+        reference.set_all_use(1, false);
+        assert_eq!(reference.used_by(2), None);
+    }
+
+    #[test]
+    fn a_new_reference_is_of_the_channels_with_none() {
+        let mut reference = of(vec![made(0, Method::Mean, "1-3", "1-3")]);
+        reference.add(8);
+        assert_eq!((reference.list[1].channels.as_str(), reference.list[1].used_by.as_str()), ("4-8", "4-8"));
+        assert_eq!(reference.list[1].id, 1);
+        reference.list.remove(0);
+        reference.add(8);
+        assert_eq!(reference.list[1].id, 2, "an id isn't used again");
+        assert_eq!(reference.list[1].used_by, "1-3");
+    }
+
+    #[test]
+    fn a_channel_can_be_in_a_reference_and_use_it_in_one_go() {
+        let mut reference = of(vec![made(0, Method::Mean, "1-2", "1-2"), made(1, Method::Mean, "3", "3")]);
+        reference.toggle_channel(1, 0, 4);
+        assert_eq!((reference.list[0].channels.as_str(), reference.list[1].channels.as_str()), ("2", "1, 3"));
+        assert_eq!(reference.used_by(0), Some(1));
+        reference.toggle_channel(1, 0, 4);
+        assert_eq!((reference.used_by(0), has_channel(&reference.list[1].channels, 0)), (None, false));
+        assert!((0..4).all(|c| reference.agrees(c)));
+    }
+
+    #[test]
+    fn settings_can_say_what_a_row_of_rs_can_not() {
+        // Made from channels 1-2, used by 2-3; channel 4's in the second, and uses none.
+        let reference = of(vec![made(0, Method::Mean, "1-2", "2-3"), made(1, Method::Mean, "4", "none")]);
+        assert_eq!((0..5).map(|c| reference.agrees(c)).collect::<Vec<_>>(), [false, true, false, false, true]);
+        let twice = of(vec![made(0, Method::Mean, "1", "1"), made(1, Method::Mean, "1", "1")]);
+        assert!(!twice.agrees(0), "in two");
+        let mut some = of(vec![made(0, Method::Mean, "1-2", "2-3"), made(1, Method::Mean, "5", "5")]);
+        some.set_all(1, true, 5);
+        assert_eq!(some.list[1].channels, "2, 4-5", "only those that agree");
+        assert_eq!(some.list[0].used_by, "3");
+    }
+
+    #[test]
+    fn saved_graphs_keep_their_reference() {
+        let opened = |json: serde_json::Value| serde_json::from_value::<Reference>(json).unwrap();
+        let mean = opened(serde_json::json!({"method": {"kind": "average"}, "reference_channels": "1-4"}));
+        assert_eq!(mean.list, vec![made(0, Method::Mean, "1-4", "all")]);
+        let median = opened(serde_json::json!({"method": {"kind": "median"}, "reference_channels": "all"}));
+        assert_eq!(median.list, vec![made(0, Method::Median, "all", "all")]);
+        let one = opened(serde_json::json!({"method": {"kind": "channel", "channel": 3}}));
+        assert_eq!(one.list, vec![made(0, Method::Mean, "3", "all")]);
+        let own = opened(serde_json::json!({"method": {"kind": "per_channel", "references": [0, 1, 1, 3]}}));
+        assert_eq!(own.list, vec![made(0, Method::Mean, "1", "2-3"), made(1, Method::Mean, "3", "4")]);
+        assert_eq!(own.next_id, 2);
+        assert_eq!(opened(serde_json::json!({})), Reference::default());
+        let now = of(vec![made(4, Method::Median, "2", "1")]);
+        assert_eq!(opened(serde_json::to_value(&now).unwrap()), now, "and as they are now");
     }
 
     #[test]
@@ -499,7 +795,7 @@ mod tests {
         let index = Nodes::TYPES.iter().position(|t| t.name == "Reference").unwrap();
         let id = graph.add(Nodes::create(index), [0.0, 0.0]);
         if let Some(Nodes::Reference(reference)) = graph.get_mut(id).map(|e| &mut e.node) {
-            reference.reference_channels = "1-3, 5-8, 13".into();
+            reference.list[0].channels = "1-3, 5-8, 13".into();
         }
         let inputs = [Some(DataStream::Continuous(Continuous { channels: 16, sample_rate: 30000.0 }))];
         let mut harness = egui_kittest::Harness::builder().with_size([360.0, 300.0]).wgpu().build_ui_state(
@@ -516,10 +812,38 @@ mod tests {
         // Ticking a channel puts it in the reference.
         harness.get_by_label(" 4").click();
         harness.run_steps(2);
-        let reference = match harness.state().get(id).map(|e| &e.node) {
-            Some(Nodes::Reference(reference)) => reference.reference_channels.clone(),
+        let reference = |harness: &egui_kittest::Harness<Graph<Nodes>>| match harness.state().get(id).map(|e| &e.node) {
+            Some(Nodes::Reference(reference)) => reference.clone(),
             _ => unreachable!(),
         };
-        assert_eq!(reference, "1-8, 13");
+        assert_eq!(reference(&harness).list[0].channels, "1-8, 13");
+        harness.set_size(egui::vec2(360.0, 1100.0));
+        harness.run_steps(2);
+        harness.get_by_label("Add reference").click();
+        harness.run_steps(2);
+        assert_eq!(reference(&harness).list.len(), 2);
+        harness.snapshot("reference_settings_uses");
+
+        // A row each, of None, 1 and 2, below All's. Channel 3 to the second, of 1-16 using the first.
+        let radio = |harness: &egui_kittest::Harness<Graph<Nodes>>, row: usize, column: usize| {
+            let radios: Vec<_> = harness.get_all_by_role(egui::accesskit::Role::RadioButton).collect();
+            radios[row * 3 + column].click();
+        };
+        radio(&harness, 3, 2);
+        harness.run_steps(2);
+        assert_eq!(reference(&harness).used_by(2), Some(1));
+        assert_eq!(reference(&harness).used_by(1), Some(0), "the rest as they were");
+        radio(&harness, 3, 0);
+        harness.run_steps(2);
+        assert_eq!(reference(&harness).used_by(2), None, "none");
+        radio(&harness, 0, 2);
+        harness.run_steps(2);
+        assert!((0..16).all(|c| reference(&harness).used_by(c) == Some(1)), "all of them");
+        radio(&harness, 0, 0);
+        harness.run_steps(2);
+        assert!((0..16).all(|c| reference(&harness).used_by(c).is_none()));
+        harness.get_by_label("Remove reference 2").click();
+        harness.run_steps(2);
+        assert_eq!(reference(&harness).list.len(), 1);
     }
 }

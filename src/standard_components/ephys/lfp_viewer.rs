@@ -9,9 +9,12 @@
 //! - an Continuous Gain's gains (what the continuous data's recorded at): each row shows the range they fit, and their
 //!   auto-detect can be run from here;
 //! - a Channel Selector's selection, upstream: tick the channels to keep, while all are shown, then apply it;
-//! - a Reference's reference (the spikes' re-referencing, from the same channels): R on a row puts its channel in the
-//!   reference, or takes it out. The traces themselves aren't referenced. Connected to the Reference's reference
-//!   output too, it shows the references themselves, in rows of their own at the top.
+//! - a Reference's references (the spikes' re-referencing, from the same channels): a column of Rs for each, an R putting
+//!   its channel in that reference and having it use it, as a channel's in one at most here. Settings can say otherwise
+//!   (see `Reference::agrees`), when its Rs can't be changed. The traces themselves aren't referenced. Connected to the
+//!   Reference's reference output too, it shows the references themselves, in rows of their own at the top, with what's
+//!   particular to each: otherwise that's in the toolbar. Each reference has a colour, for telling which row's which
+//!   column: the channels are neutral, to leave the colours to them.
 
 use eframe::egui::{self, Align2, FontId, Pos2, Rect, Sense, Shape, Stroke};
 use serde::{Deserialize, Serialize};
@@ -20,7 +23,7 @@ use crate::core::engine::{Category, Context, Control, EdgeType, Input, Node, Nod
 use crate::core::gui::widgets::{Icon, small_toggle_button};
 use crate::standard_components::auto_detect::auto_detect_ui;
 use crate::standard_components::ephys::reference::{
-    Method, Reference, channels_summary, format_channels, parse_channels,
+    Computation, Method, Reference, format_channels, parse_channels, reference_colour,
 };
 use crate::standard_components::ephys::spectrum::{Spectra, SpectraBuffer};
 use crate::standard_components::ephys::{ChannelSelection, Continuous, ContinuousBuffer};
@@ -28,7 +31,7 @@ use crate::standard_components::pool::{Pool, SharedPool};
 use crate::standard_components::preview;
 use crate::standard_components::spikes::{Channels, GainScope, Gains};
 use crate::standard_components::widgets::{
-    mark_mixed, open_settings_button, require_input, setting, settings_grid, toolbar_section,
+    open_settings_button, require_input, setting, settings_grid, toolbar_section,
 };
 use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
 
@@ -162,6 +165,8 @@ struct Rows<'a> {
     spectra: Option<(&'a SpectraBuffer, Spectra)>,
     gains: Option<&'a Gains>,
     reference: Option<&'a Reference>,
+    /// Whether the app's in advanced mode, where the Reference's settings can be got to.
+    advanced: bool,
 }
 
 impl Node<Edges> for LfpViewer {
@@ -287,11 +292,12 @@ impl Node<Edges> for LfpViewer {
             Some(Setting::Gains(g)) => Some(g.clone()),
             _ => None,
         };
-        self.toolbar(ui, context, stream, selection.as_mut(), reference.as_mut(), gains.as_mut());
-
         let pool = context.shared::<Pool<TracesDisplay>>();
+        let display = pool.as_deref().and_then(Pool::newest);
+        let reference_rows = display.is_some() && context.inputs[2].is_some();
+        self.toolbar(ui, context, stream, selection.as_mut(), reference.as_mut(), gains.as_mut(), reference_rows);
 
-        let Some(display) = pool.as_deref().and_then(Pool::newest) else {
+        let Some(display) = display else {
             let message = format!("{} · press Play to see the traces", stream.summary());
             return preview::unconnected(ui, context.theme, &message);
         };
@@ -299,13 +305,12 @@ impl Node<Edges> for LfpViewer {
             (Some(buffer), Some(DataStream::Spectra(stream))) => Some((buffer, stream)),
             _ => None,
         };
-        let rows = Rows { display: &display, stream, spectra, gains: gains.as_ref(), reference: reference.as_ref() };
+        let advanced = context.advanced();
+        let rows =
+            Rows { display: &display, stream, spectra, gains: gains.as_ref(), reference: reference.as_ref(), advanced };
         let edit = self.rows_ui(ui, context.theme, rows, selection.as_mut(), locked);
         if let (Some(edit), Some(reference)) = (edit, reference.as_mut()) {
-            match edit {
-                ReferenceEdit::Toggle(channel) => toggle_reference(reference, channel, stream.channels),
-                ReferenceEdit::Set(channels) => reference.reference_channels = channels.into(),
-            }
+            edit.apply(reference, stream.channels);
         }
         if let Some(selection) = selection {
             context.controls[SELECTION] = Some(Setting::ChannelSelection(selection));
@@ -331,6 +336,7 @@ impl LfpViewer {
 
     /// The span, scale and rows' height, the spectrum, and (if they're connected) the gains, the reference and the
     /// channel selection.
+    #[allow(clippy::too_many_arguments)]
     fn toolbar(
         &mut self,
         ui: &mut egui::Ui,
@@ -339,6 +345,7 @@ impl LfpViewer {
         selection: Option<&mut ChannelSelection>,
         reference: Option<&mut Reference>,
         gains: Option<&mut Gains>,
+        reference_rows: bool,
     ) {
         // While a selection's applied, only that can be changed: the reference can't be told from what's shown.
         let applied = selection.as_deref().is_some_and(|s| s.apply);
@@ -365,7 +372,9 @@ impl LfpViewer {
                 }
                 if let Some(reference) = reference {
                     toolbar_section(ui, "reference", true, |ui| {
-                        let shown = ui.add_enabled_ui(!applied, |ui| reference_ui(ui, reference));
+                        let shown = ui.add_enabled_ui(!applied, |ui| {
+                            reference_ui(ui, reference, stream.channels, reference_rows);
+                        });
                         shown.response.on_disabled_hover_text("Disable the selection to change it");
                         if context.advanced() {
                             open_settings_button(ui, context, REFERENCE, "Reference");
@@ -401,10 +410,9 @@ impl LfpViewer {
         mut selection: Option<&mut ChannelSelection>,
         locked: bool,
     ) -> Option<ReferenceEdit> {
-        let Rows { display, stream, spectra, gains, reference } = rows_of;
+        let Rows { display, stream, spectra, gains, reference, advanced } = rows_of;
         let area = ui.available_rect_before_wrap();
         ui.painter().rect_filled(area, 2.0, theme.surface_sunken);
-        let height = self.row_height.clamp(12.0, 400.0);
         // Which channel upstream each row is, once a selection's applied.
         let numbers = selection.as_deref().map(|s| upstream(s, stream.channels));
         // While a selection's applied, there's no ticking, or changing the reference: that takes every channel upstream
@@ -415,40 +423,58 @@ impl LfpViewer {
         let mut reference_toggled = None;
         // The references first, at the top, then the channels.
         let rows_shown = display.references + display.shown;
-        // Above them, scrolling with them, the toggles for each column, if there are any.
-        let toggles = !applied && (selection.is_some() || reference.is_some_and(averaged));
+        // Its rows' colours, whatever can be changed.
+        let computations =
+            reference.map(|reference| &reference.list[..]).filter(|list| list.len() == display.references);
+        let reference = reference.filter(|_| !applied);
+        let columns = reference.map_or(0, |reference| reference.list.len());
+        let height = self.row_height.clamp(12.0, 400.0);
+        // A reference's row has room for what's particular to it, however short the channels' are.
+        let reference_height = if columns > 0 { height.max(REFERENCE_ROW_HEIGHT) } else { height };
+        // Then, scrolling with them, a little space, the toggles for the channels' columns if there are any, and the channels.
+        let toggles = !applied && (selection.is_some() || columns > 0);
         let toggles_height = if toggles { TOGGLES_HEIGHT } else { 0.0 };
+        let gap = if display.references > 0 { REFERENCES_GAP } else { 0.0 };
+        let references_height = reference_height * display.references as f32 + gap;
+        let channels_top = references_height + toggles_height;
+        let row_top = |row: usize| match row.checked_sub(display.references) {
+            None => reference_height * row as f32,
+            Some(channel) => channels_top + height * channel as f32,
+        };
         egui::ScrollArea::vertical().auto_shrink(false).show_viewport(ui, |ui, viewport| {
-            ui.set_height(toggles_height + height * rows_shown as f32);
+            ui.set_height(channels_top + height * display.shown as f32);
             let body = ui.max_rect();
-            if toggles && viewport.min.y < toggles_height {
-                let place = Rect::from_min_size(body.min, egui::vec2(body.width(), toggles_height));
+            if toggles && viewport.min.y < channels_top && viewport.max.y > references_height {
+                let place = Rect::from_min_size(
+                    body.min + egui::vec2(0.0, references_height),
+                    egui::vec2(body.width(), toggles_height),
+                );
                 let set = column_toggles(ui, place, selection.as_deref_mut(), reference, stream.channels, locked);
-                if let Some(channels) = set {
-                    reference_toggled = Some(ReferenceEdit::Set(channels));
-                }
+                reference_toggled = reference_toggled.or(set);
             }
             // Only the rows in view.
-            let last = (((viewport.max.y - toggles_height) / height).ceil().max(0.0) as usize + 1).min(rows_shown);
-            let first = (((viewport.min.y - toggles_height) / height).floor().max(0.0) as usize).min(last);
+            let channel_at = |y: f32| ((y - channels_top) / height).max(0.0);
+            let last = (display.references + channel_at(viewport.max.y).ceil() as usize + 1).min(rows_shown);
+            let first = match viewport.min.y < channels_top {
+                true => 0,
+                false => (display.references + channel_at(viewport.min.y).floor() as usize).min(last),
+            };
             let rows = first..last;
-            let top = body.top() + toggles_height + first as f32 * height;
-            let shown = Rect::from_x_y_ranges(body.x_range(), top..=top + height * rows.len() as f32);
-            ui.scope_builder(egui::UiBuilder::new().max_rect(shown), |ui| {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| {
                 ui.skip_ahead_auto_ids(first);
-                let width = ui.available_width();
-                let label = 64.0 + AXIS_WIDTH;
+                let (rect, width) = (body, body.width());
+                let label = 64.0 + AXIS_WIDTH + columns.saturating_sub(1) as f32 * COLUMN_PITCH;
                 let spectra = spectra.filter(|_| self.spectrum && width > SPECTRUM_WIDTH * 2.0);
                 let spectrum = if spectra.is_some() { SPECTRUM_WIDTH } else { 0.0 };
-                let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height * rows.len() as f32), Sense::hover());
-                let painter = ui.painter_at(rect);
+                let painter = ui.painter().clone();
                 // Filling from the left, then scrolling, with room for the future at the right (see `time_axis`).
                 let future = 1.0 + crate::core::time_axis::FUTURE as f32;
                 let column = (width - label - spectrum) / (COLUMNS as f32 * future);
                 // The columns filled so far are the last of each row's.
                 let start = COLUMNS - display.columns;
-                for (r, shown_row) in rows.enumerate() {
-                    let top = rect.top() + r as f32 * height;
+                for shown_row in rows {
+                    let top = rect.top() + row_top(shown_row);
+                    let height = if shown_row < display.references { reference_height } else { height };
                     let row = Rect::from_min_size(egui::pos2(rect.left(), top), egui::vec2(width, height));
                     if shown_row > 0 {
                         painter.hline(row.x_range(), top, Stroke::new(1.0, theme.divider.gamma_multiply(0.3)));
@@ -472,23 +498,40 @@ impl LfpViewer {
                     };
                     let text_y = top + (height * 0.5).min(9.0);
                     if shown_row < display.references {
-                        let name = if display.references > 1 { format!("ref {}", shown_row + 1) } else { "ref".into() };
+                        // Its colour, if it's sure to be the reference in that column.
+                        let computation = computations.and_then(|list| list.get(shown_row));
+                        let colour = computation.map(|_| reference_colour(shown_row));
                         painter.text(
                             egui::pos2(rect.left() + 4.0, text_y),
                             Align2::LEFT_CENTER,
-                            name,
+                            format!("ref {}", shown_row + 1),
                             FontId::monospace(10.0),
-                            theme.text_primary,
+                            colour.unwrap_or(theme.text_primary),
                         );
                         let hover = Rect::from_min_size(row.min, egui::vec2(label, height));
-                        let tip = match reference {
-                            Some(reference) => format!("The reference: the {}", reference.summary()),
+                        let tip = match computation {
+                            Some(computation) => format!("The reference: the {}", computation.summary()),
                             None => "The reference".into(),
                         };
                         let _ = ui
                             .interact(hover, ui.scope_id().with(("reference row", shown_row)), Sense::hover())
                             .on_hover_text(tip);
-                        trace(display.shown + shown_row, theme.text_secondary);
+                        // What's particular to it: its method below its name, and removing it, above its column.
+                        if let Some(computation) = computation.filter(|_| columns > 0) {
+                            let method = Rect::from_min_size(
+                                egui::pos2(rect.left() + 4.0, top + 16.0),
+                                egui::vec2(REFERENCE_X - 12.0, 14.0),
+                            );
+                            let remove =
+                                Rect::from_center_size(egui::pos2(rect.left() + REFERENCE_X, text_y), TOGGLE_SIZE);
+                            let edit = ui
+                                .add_enabled_ui(!locked, |ui| {
+                                    reference_buttons(ui, method, remove, computation, shown_row)
+                                })
+                                .inner;
+                            reference_toggled = reference_toggled.take().or(edit);
+                        }
+                        trace(display.shown + shown_row, colour.unwrap_or(theme.text_secondary));
                         continue;
                     }
                     let i = shown_row - display.references;
@@ -504,36 +547,42 @@ impl LfpViewer {
                     // Whether it's selected (to pass on, from a Channel Selector upstream).
                     if let Some(ticked) = &ticked {
                         let mut on = ticked.contains(&number);
-                        let tick =
-                            Rect::from_center_size(egui::pos2(rect.left() + TICK_X, text_y), egui::vec2(16.0, 16.0));
+                        let tick = Rect::from_center_size(egui::pos2(rect.left() + TICK_X, text_y), tick_size(ui));
                         let tip = format!("Select channel {}, to pass on (once the selection's applied)", number + 1);
                         if ui.put(tick, egui::Checkbox::without_text(&mut on)).on_hover_text(tip).changed() && !locked {
                             toggled = Some(number);
                         }
                     }
-                    // Whether it's in the reference (a Reference's).
-                    if let Some(reference) = reference.filter(|r| averaged(r) && !applied) {
-                        let on = in_reference(reference, number);
-                        let place = Rect::from_center_size(
-                            egui::pos2(rect.left() + REFERENCE_X, text_y),
-                            egui::vec2(18.0, 16.0),
-                        );
-                        let tip = if on {
-                            format!("Channel {} is in the reference: click to take it out", number + 1)
-                        } else {
-                            format!("Put channel {} in the reference", number + 1)
-                        };
-                        let button =
-                            egui::Button::selectable(on, egui::RichText::new("R").size(10.0)).min_size(place.size());
-                        if ui.put(place, button).on_hover_text(tip).clicked() && !locked {
-                            reference_toggled = Some(ReferenceEdit::Toggle(number));
+                    // Which reference it's in, and uses, if any (a Reference's).
+                    if let Some(reference) = reference {
+                        let (agrees, using) = (reference.agrees(number), reference.used_by(number));
+                        for k in 0..reference.list.len() {
+                            let x = rect.left() + REFERENCE_X + k as f32 * COLUMN_PITCH;
+                            let (name, channel, on) = (k + 1, number + 1, using == Some(k));
+                            let place = Rect::from_center_size(egui::pos2(x, text_y), TOGGLE_SIZE);
+                            let label = format!("Channel {channel} in reference {name}");
+                            let colour = reference_colour(k);
+                            let response = ui
+                                .add_enabled_ui(agrees, |ui| {
+                                    r_toggle(ui, place, (on, false), "R".into(), colour, &label)
+                                })
+                                .inner;
+                            let tip = if on {
+                                format!("Channel {channel} is in reference group {name}: click to take it out")
+                            } else {
+                                format!("Put channel {channel} in reference group {name}")
+                            };
+                            let response =
+                                response.on_hover_text(tip).on_disabled_hover_text(mismatch(channel, advanced));
+                            if response.clicked() && !locked {
+                                reference_toggled = Some(ReferenceEdit::Toggle(k, number));
+                            }
                         }
                     }
 
                     // The trace: not selected (with a selection to apply), dimmed, as it won't be passed on.
                     let unselected = ticked.as_ref().is_some_and(|t| !t.contains(&number));
-                    let colour =
-                        if unselected { Continuous::INFO.colour.gamma_multiply(0.3) } else { Continuous::INFO.colour };
+                    let colour = if unselected { theme.text_primary.gamma_multiply(0.3) } else { theme.text_primary };
                     trace(i, colour);
                     // The range its gain fits (what's recorded), if it's within the row: beyond it, it's clipped.
                     if let Some(gains) = gains {
@@ -640,7 +689,7 @@ fn spectrum_ui(
     let span = (stream.last_hz() - first_hz).max(0.1);
     let x = |hz: f32| place.left() + ((hz - first_hz) / span).clamp(0.0, 1.0) * place.width();
     let y = |p: f32| place.bottom() - if most > 0.0 { p / most } else { 0.0 } * place.height();
-    let colour = Continuous::INFO.colour;
+    let colour = theme.text_primary;
     let points: Vec<Pos2> =
         power.iter().enumerate().map(|(b, &p)| egui::pos2(x(first_hz + b as f32 * step), y(p))).collect();
     // Filled beneath (as quads: the outline needn't be convex).
@@ -662,56 +711,76 @@ fn spectrum_ui(
     }
 }
 
-/// Whether channel `number` (upstream, from 0) is in the reference.
-fn in_reference(reference: &Reference, number: u32) -> bool {
-    let text = reference.reference_channels.trim();
-    text.is_empty()
-        || text.eq_ignore_ascii_case("all")
-        || parse_channels(text, u32::MAX / 2).is_ok_and(|channels| channels.contains(&number))
-}
-
-/// Puts channel `number` (upstream, from 0) in the reference, or takes it out, of the `channels` there are (all of
-/// them shown, so "all" can be told).
-fn toggle_reference(reference: &mut Reference, number: u32, channels: u32) {
-    let mut members: Vec<u32> = (0..channels).filter(|&c| in_reference(reference, c)).collect();
-    match members.iter().position(|&c| c == number) {
-        Some(at) => {
-            members.remove(at);
-        }
-        None => members.push(number),
-    }
-    reference.reference_channels = format_channels(&members, channels);
-}
-
-/// The reference (a Reference's, for the spikes), compactly: the mean or median of which channels (each chosen on its
-/// row, with R), and all or none of them. Other methods are set in the Reference itself.
-fn reference_ui(ui: &mut egui::Ui, reference: &mut Reference) {
-    let label = ui.strong("Reference").on_hover_text(
-        "The reference: R on a row puts its channel in it, or takes it out. The traces here aren't referenced",
-    );
-    let median = match reference.method {
-        Method::Average => false,
-        Method::Median => true,
-        _ => {
-            ui.label(reference.summary()).on_hover_text("Set in the Reference");
-            return;
+/// What's particular to reference `index`, as words in `method` and `remove` that light up: whether it's a mean or a median,
+/// which clicking swaps, and removing it.
+fn reference_buttons(
+    ui: &mut egui::Ui,
+    method: Rect,
+    remove: Rect,
+    computation: &Computation,
+    index: usize,
+) -> Option<ReferenceEdit> {
+    let (tip, other) = match computation.method {
+        Method::Mean => ("A common average reference: click for the median", Method::Median),
+        Method::Median => {
+            ("A common median reference, which a spike on a channel hardly moves: click for the mean", Method::Mean)
         }
     };
-    let mut chosen = median;
-    egui::ComboBox::from_id_salt("reference method")
-        .selected_text(if median { "median" } else { "mean" })
-        .width(70.0)
-        .show_ui(ui, |ui| {
-            ui.selectable_value(&mut chosen, false, "mean").on_hover_text("A common average reference");
-            ui.selectable_value(&mut chosen, true, "median")
-                .on_hover_text("A common median reference: a spike on one of its channels hardly moves it");
-        })
-        .response
-        .labelled_by(label.id);
-    if chosen != median {
-        reference.method = if chosen { Method::Median } else { Method::Average };
+    let name = computation.method.name();
+    let at = (method.left_center(), Align2::LEFT_CENTER, FontId::monospace(10.0));
+    if word_button(ui, method, name, at, ui.visuals().text_color(), name, index).on_hover_text(tip).clicked() {
+        return Some(ReferenceEdit::Method(index, other));
     }
-    ui.label(format!("of {}", channels_summary(&reference.reference_channels)));
+    let label = format!("Remove reference {}", index + 1);
+    let at = (remove.center(), Align2::CENTER_CENTER, FontId::proportional(13.0));
+    let hovered = ui.visuals().error_fg_color;
+    let response = word_button(ui, remove, "×", at, hovered, &label, index).on_hover_text(&label);
+    response.clicked().then_some(ReferenceEdit::Remove(index))
+}
+
+/// `text`, in `rect`, as a button with no frame: quiet until it's hovered, when it's `hovered`.
+fn word_button(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    text: &str,
+    (at, align, font): (Pos2, Align2, FontId),
+    hovered: egui::Color32,
+    label: &str,
+    index: usize,
+) -> egui::Response {
+    let response = ui.interact(rect, ui.scope_id().with((label, index)), Sense::click());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label));
+    let ink = if response.hovered() { hovered } else { ui.visuals().weak_text_color() };
+    ui.painter().text(at, align, text, font, ink);
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// The references (a Reference's, for the spikes), compactly: adding one, and, if they've no rows of their own to have it
+/// on, what's particular to each.
+fn reference_ui(ui: &mut egui::Ui, reference: &mut Reference, channels: u32, rows: bool) {
+    ui.strong("Reference").on_hover_text(
+        "What each channel has subtracted: its reference group's mean or median. R puts a channel in a group, and a \
+         channel's in one at most. The traces here aren't referenced",
+    );
+    if reference.list.is_empty() {
+        ui.weak("none");
+    }
+    if !rows {
+        let mut edit = None;
+        for (index, computation) in reference.list.iter().enumerate() {
+            ui.label(egui::RichText::new((index + 1).to_string()).color(reference_colour(index)));
+            let (method, _) = ui.allocate_exact_size(egui::vec2(REFERENCE_X - 12.0, 14.0), Sense::hover());
+            let (remove, _) = ui.allocate_exact_size(TOGGLE_SIZE, Sense::hover());
+            let buttons = reference_buttons(ui, method, remove, computation, index);
+            edit = edit.or(buttons);
+        }
+        if let Some(edit) = edit {
+            edit.apply(reference, channels);
+        }
+    }
+    if ui.small_button("+").on_hover_text("Add a reference group, of the channels in none").clicked() {
+        reference.add(channels);
+    }
 }
 
 /// The gains (a Continuous Gain's: what the continuous data's recorded at), compactly: the range one for all
@@ -807,22 +876,85 @@ const REFERENCE_X: f32 = 52.0;
 
 /// How high the toggles at the top of the rows' columns are.
 const TOGGLES_HEIGHT: f32 = 22.0;
+/// The room a tick takes: as high as it'll be, whatever it's given, or it won't be centred where it's put.
+fn tick_size(ui: &egui::Ui) -> egui::Vec2 {
+    egui::vec2(16.0, ui.spacing().interact_size.y)
+}
 
-/// A change to the reference from among the rows.
+/// How high a reference's row has to be, for what's particular to it.
+const REFERENCE_ROW_HEIGHT: f32 = 32.0;
+/// The space between the references' rows and the channels'.
+const REFERENCES_GAP: f32 = 8.0;
+/// From one reference's column to the next: an R's width, and little between them, so a good few fit.
+const COLUMN_PITCH: f32 = 18.0;
+const TOGGLE_SIZE: egui::Vec2 = egui::vec2(16.0, 14.0);
+
+/// Why channel `channel` (from 1) can't be changed here.
+fn mismatch(channel: u32, advanced: bool) -> String {
+    let there = if advanced { "the Reference's settings" } else { "the Reference's settings, in advanced mode" };
+    format!("Channel {channel} can't be changed here: it isn't simply in one reference group. Fix that in {there}")
+}
+
+/// A change to the references from among the rows.
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum ReferenceEdit {
-    /// Put this channel (upstream, from 0) in it, or take it out.
-    Toggle(u32),
-    /// Make its channels these.
-    Set(&'static str),
+    /// Put this channel (upstream, from 0) in this reference, or take it out.
+    Toggle(usize, u32),
+    /// Put all the channels in this reference, or, if not, none of them.
+    All(usize, bool),
+    Method(usize, Method),
+    Remove(usize),
 }
 
-/// Whether the reference is of chosen channels.
-fn averaged(reference: &Reference) -> bool {
-    matches!(reference.method, Method::Average | Method::Median)
+impl ReferenceEdit {
+    fn apply(self, reference: &mut Reference, channels: u32) {
+        match self {
+            ReferenceEdit::Toggle(index, channel) => reference.toggle_channel(index, channel, channels),
+            ReferenceEdit::All(index, all) => reference.set_all(index, all, channels),
+            ReferenceEdit::Method(index, method) => {
+                if let Some(computation) = reference.list.get_mut(index) {
+                    computation.method = method;
+                }
+            }
+            ReferenceEdit::Remove(index) => {
+                if index < reference.list.len() {
+                    reference.list.remove(index);
+                }
+            }
+        }
+    }
 }
 
-/// What heads the rows' columns of ticks and Rs, in `rect`: a tick for all of them, or none, and an R likewise. Returns the
-/// reference's channels, if they're to change.
+/// An R in `rect`, exactly that size however little room there is, filled with its reference's `colour` if it's on, and
+/// with a dash if some of what it's for is.
+fn r_toggle(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    (on, mixed): (bool, bool),
+    text: String,
+    colour: egui::Color32,
+    label: &str,
+) -> egui::Response {
+    let response = ui.interact(rect, ui.scope_id().with(label), Sense::click());
+    response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), on, label));
+    let visuals = ui.visuals();
+    let fade = if ui.is_enabled() { 1.0 } else { 0.4 };
+    let (fill, ink) = match (on, response.hovered()) {
+        (true, _) => (colour, egui::Color32::BLACK),
+        (false, true) => (visuals.widgets.hovered.weak_bg_fill, colour),
+        (false, false) => (visuals.widgets.inactive.weak_bg_fill, colour),
+    };
+    let painter = ui.painter();
+    painter.rect_filled(rect, 3.0, fill.gamma_multiply(fade));
+    painter.text(rect.center(), Align2::CENTER_CENTER, text, FontId::proportional(9.5), ink.gamma_multiply(fade));
+    if mixed {
+        painter.hline(rect.shrink(4.0).x_range(), rect.bottom() - 1.5, Stroke::new(1.0, ink));
+    }
+    response
+}
+
+/// What heads the channels' columns of ticks and Rs, in `rect`: a tick for all of them, or none, and an R likewise for each
+/// reference (going by the channels that can be changed: see `Reference::agrees`). Returns any change to the references.
 fn column_toggles(
     ui: &mut egui::Ui,
     rect: Rect,
@@ -830,33 +962,41 @@ fn column_toggles(
     reference: Option<&Reference>,
     channels: u32,
     locked: bool,
-) -> Option<&'static str> {
+) -> Option<ReferenceEdit> {
     let at = |x: f32, size: egui::Vec2| Rect::from_center_size(egui::pos2(rect.left() + x, rect.center().y), size);
     if let Some(selection) = selection {
         let count = ticked(selection, channels).len();
         let mut all = count == channels as usize;
         let some = count > 0 && !all;
         let checkbox = egui::Checkbox::without_text(&mut all).indeterminate(some);
-        let place = at(TICK_X, egui::vec2(16.0, 16.0));
+        let place = at(TICK_X, tick_size(ui));
         let response = ui.add_enabled_ui(!locked, |ui| ui.put(place, checkbox)).inner;
         if response.on_hover_text("Select all the channels, or none").changed() {
             selection.channels = if all { "all".into() } else { format_channels(&[], channels) };
         }
     }
-    let reference = reference.filter(|r| averaged(r))?;
-    let count = (0..channels).filter(|channel| in_reference(reference, *channel)).count();
-    let all = count == channels as usize;
-    let mixed = count > 0 && !all;
-    let button = egui::Button::selectable(all, egui::RichText::new("R").size(10.0)).min_size(egui::vec2(18.0, 16.0));
-    let place = at(REFERENCE_X, egui::vec2(18.0, 16.0));
-    let response = ui.add_enabled_ui(!locked, |ui| ui.put(place, button)).inner;
-    if mixed {
-        mark_mixed(ui, &response);
+    let reference = reference?;
+    let able: Vec<u32> = (0..channels).filter(|&channel| reference.agrees(channel)).collect();
+    let mut edit = None;
+    for k in 0..reference.list.len() {
+        let name = k + 1;
+        let count = able.iter().filter(|&&channel| reference.used_by(channel) == Some(k)).count();
+        let (all, mixed) = (!able.is_empty() && count == able.len(), count > 0 && count < able.len());
+        let place = at(REFERENCE_X + k as f32 * COLUMN_PITCH, TOGGLE_SIZE);
+        let text = format!("R{name}");
+        let colour = reference_colour(k);
+        let response =
+            ui.add_enabled_ui(!locked, |ui| r_toggle(ui, place, (all, mixed), text.clone(), colour, &text)).inner;
+        let tip = if mixed {
+            format!("Some in reference group {name}: click for all")
+        } else {
+            format!("Put all the channels in reference group {name}, or none")
+        };
+        if response.on_hover_text(tip).clicked() {
+            edit = Some(ReferenceEdit::All(k, !all));
+        }
     }
-    let tip =
-        if mixed { "Some in the reference: click for all" } else { "Put all the channels in the reference, or none" };
-    let clicked = response.on_hover_text(tip).clicked();
-    clicked.then_some(if all { "none" } else { "all" })
+    edit
 }
 
 #[cfg(test)]
@@ -892,7 +1032,7 @@ mod tests {
         let stream = Continuous { channels: 3, sample_rate: 30000.0 };
         let mut harness = egui_kittest::Harness::builder().with_size([700.0, 260.0]).wgpu().build_ui(|ui| {
             let viewer = LfpViewer { row_height: 60.0, ..Default::default() };
-            let rows = Rows { display: &display, stream, spectra: None, gains: None, reference: None };
+            let rows = Rows { display: &display, stream, spectra: None, gains: None, reference: None, advanced: true };
             viewer.rows_ui(ui, &THEMES[0].colours, rows, None, false);
         });
         THEMES[0].apply(&harness.ctx);
@@ -912,7 +1052,14 @@ mod tests {
         let mut selection = ChannelSelection { apply: false, channels: "1-2".into() };
         let mut harness = egui_kittest::Harness::builder().with_size([400.0, 160.0]).wgpu().build_ui(|ui| {
             let viewer = LfpViewer { row_height: 40.0, ..Default::default() };
-            let rows = Rows { display: &display, stream, spectra: None, gains: None, reference: Some(&reference) };
+            let rows = Rows {
+                display: &display,
+                stream,
+                spectra: None,
+                gains: None,
+                reference: Some(&reference),
+                advanced: true,
+            };
             viewer.rows_ui(ui, &THEMES[0].colours, rows, Some(&mut selection), false);
         });
         THEMES[0].apply(&harness.ctx);
@@ -931,7 +1078,14 @@ mod tests {
         let mut selection = ChannelSelection { apply: true, channels: "1, 3".into() };
         let mut harness = egui_kittest::Harness::builder().with_size([400.0, 160.0]).wgpu().build_ui(|ui| {
             let viewer = LfpViewer { row_height: 40.0, ..Default::default() };
-            let rows = Rows { display: &display, stream, spectra: None, gains: None, reference: Some(&reference) };
+            let rows = Rows {
+                display: &display,
+                stream,
+                spectra: None,
+                gains: None,
+                reference: Some(&reference),
+                advanced: true,
+            };
             let colours = &crate::standard_components::themes::THEMES[0].colours;
             viewer.rows_ui(ui, colours, rows, Some(&mut selection), false);
         });
@@ -969,19 +1123,155 @@ mod tests {
         }
     }
 
+    /// Several references, their rows matching their columns, with channels in each of them, or none, and one that's been
+    /// set otherwise.
     #[test]
-    fn rows_put_their_channels_in_the_reference_or_take_them_out() {
-        let mut reference = Reference { reference_channels: "all".into(), ..Default::default() };
-        assert!(in_reference(&reference, 7));
-        toggle_reference(&mut reference, 2, 4);
-        assert_eq!(reference.reference_channels, "1-2, 4");
-        assert!(!in_reference(&reference, 2) && in_reference(&reference, 3));
-        toggle_reference(&mut reference, 2, 4);
-        assert_eq!(reference.reference_channels, "all");
-        reference.reference_channels = "none".into();
-        assert!(!in_reference(&reference, 0));
-        toggle_reference(&mut reference, 0, 4);
-        assert_eq!(reference.reference_channels, "1");
+    fn references_have_a_column_each_matching_their_rows() {
+        use crate::standard_components::ephys::reference::has_channel;
+        use crate::standard_components::themes::THEMES;
+        use egui_kittest::kittest::NodeT as _;
+        use egui_kittest::kittest::Queryable as _;
+        let (shown, references) = (5, 3);
+        let wave = |i: usize, c: usize| 120.0 * ((c as f32 / 40.0) + i as f32).sin() / (i % 3 + 1) as f32;
+        let columns = |offset: f32| -> Vec<f32> {
+            (0..shown + references).flat_map(|i| (0..COLUMNS).map(move |c| wave(i, c) + offset)).collect()
+        };
+        let display = TracesDisplay {
+            shown,
+            references,
+            columns: COLUMNS,
+            lows: columns(-5.0),
+            highs: columns(5.0),
+            ..Default::default()
+        };
+        let stream = Continuous { channels: 5, sample_rate: 30000.0 };
+        let made = |id, method, channels: &str, used_by: &str| Computation {
+            id,
+            method,
+            channels: channels.into(),
+            used_by: used_by.into(),
+        };
+        let reference = Reference {
+            list: vec![
+                made(0, Method::Mean, "1-2", "1-2"),
+                made(1, Method::Median, "3-4", "3"),
+                made(2, Method::Mean, "none", "none"),
+            ],
+            next_id: 3,
+        };
+        let mut harness = egui_kittest::Harness::builder().with_size([700.0, 330.0]).wgpu().build_ui_state(
+            move |ui, reference: &mut Reference| {
+                let viewer = LfpViewer { row_height: 24.0, ..Default::default() };
+                let reference_shown = Some(&*reference);
+                let rows = Rows {
+                    display: &display,
+                    stream,
+                    spectra: None,
+                    gains: None,
+                    reference: reference_shown,
+                    advanced: false,
+                };
+                if let Some(edit) = viewer.rows_ui(ui, &THEMES[0].colours, rows, None, false) {
+                    edit.apply(reference, 5);
+                }
+            },
+            reference,
+        );
+        THEMES[0].apply(&harness.ctx);
+        harness.run_steps(3);
+        harness.snapshot("lfp_viewer_references");
+        harness.get_by_label("Channel 5 in reference 3").click();
+        harness.run_steps(3);
+        assert_eq!(harness.state().used_by(4), Some(2));
+        assert!(has_channel(&harness.state().list[2].channels, 4), "in it, and using it");
+        // One at most, and clicked off.
+        harness.get_by_label("Channel 1 in reference 3").click();
+        harness.run_steps(3);
+        assert_eq!(harness.state().used_by(0), Some(2));
+        assert!(!has_channel(&harness.state().list[0].channels, 0), "out of the other");
+        harness.get_by_label("Channel 1 in reference 3").click();
+        harness.run_steps(3);
+        assert_eq!(harness.state().used_by(0), None);
+        // Channel 4's in the second, but uses none: that's for the settings.
+        assert!(harness.get_by_label("Channel 4 in reference 2").accesskit_node().is_disabled());
+        // On a reference's own row: its method, and removing it.
+        harness.get_by_label("median").click();
+        harness.run_steps(3);
+        assert_eq!(harness.state().list[1].method, Method::Mean);
+        harness.get_by_label("Remove reference 3").click();
+        harness.run_steps(3);
+        assert_eq!(harness.state().list.len(), 2);
+    }
+
+    /// With a selection applied, nothing can be changed, but what's what can still be told.
+    #[test]
+    fn references_keep_their_colours_with_a_selection_applied() {
+        use crate::standard_components::themes::THEMES;
+        let (shown, references) = (2, 2);
+        let columns = |offset: f32| -> Vec<f32> {
+            (0..shown + references)
+                .flat_map(|i| (0..COLUMNS).map(move |c| 100.0 * ((c as f32 / 40.0) + i as f32).sin() + offset))
+                .collect()
+        };
+        let display = TracesDisplay {
+            shown,
+            references,
+            columns: COLUMNS,
+            lows: columns(-5.0),
+            highs: columns(5.0),
+            ..Default::default()
+        };
+        let stream = Continuous { channels: 2, sample_rate: 30000.0 };
+        let mut reference = reference_of("1");
+        reference.add(2);
+        let mut selection = ChannelSelection { apply: true, channels: "1-2".into() };
+        let mut harness = egui_kittest::Harness::builder().with_size([500.0, 200.0]).wgpu().build_ui(|ui| {
+            let viewer = LfpViewer { row_height: 40.0, ..Default::default() };
+            let rows = Rows {
+                display: &display,
+                stream,
+                spectra: None,
+                gains: None,
+                reference: Some(&reference),
+                advanced: true,
+            };
+            viewer.rows_ui(ui, &THEMES[0].colours, rows, Some(&mut selection), false);
+        });
+        THEMES[0].apply(&harness.ctx);
+        harness.run_steps(3);
+        harness.snapshot("lfp_viewer_references_applied");
+    }
+
+    #[test]
+    fn what_cannot_be_changed_says_where_it_can() {
+        assert!(mismatch(4, true).starts_with("Channel 4 can't"));
+        assert!(mismatch(4, true).ends_with("in the Reference's settings"));
+        assert!(mismatch(4, false).ends_with("in advanced mode"), "which it takes to get to them");
+    }
+
+    #[test]
+    fn edits_from_the_rows_change_the_references() {
+        let mut reference = reference_of("1");
+        ReferenceEdit::Toggle(0, 1).apply(&mut reference, 4);
+        assert_eq!((reference.list[0].channels.as_str(), reference.list[0].used_by.as_str()), ("1-2", "1-2"));
+        ReferenceEdit::All(0, true).apply(&mut reference, 4);
+        assert_eq!(reference.list[0].channels, "all");
+        ReferenceEdit::All(0, false).apply(&mut reference, 4);
+        assert_eq!((reference.list[0].channels.as_str(), reference.list[0].used_by.as_str()), ("none", "none"));
+        ReferenceEdit::Method(0, Method::Median).apply(&mut reference, 4);
+        assert_eq!(reference.list[0].method, Method::Median);
+        ReferenceEdit::Remove(0).apply(&mut reference, 4);
+        assert!(reference.list.is_empty());
+        ReferenceEdit::Remove(0).apply(&mut reference, 4);
+    }
+
+    #[test]
+    fn each_reference_has_a_colour_of_its_own_and_none_is_blue() {
+        use crate::standard_components::ephys::reference::REFERENCE_COLOURS;
+        let colours: Vec<_> = (0..REFERENCE_COLOURS.len()).map(reference_colour).collect();
+        assert!(colours.iter().enumerate().all(|(i, c)| !colours[..i].contains(c)));
+        assert_eq!(reference_colour(REFERENCE_COLOURS.len()), colours[0], "they go round");
+        assert!(!colours.contains(&Continuous::INFO.colour));
     }
 
     /// The toggles at the top of the columns, and the selection's own line.
@@ -997,8 +1287,8 @@ mod tests {
                 }
                 if !selection.apply {
                     let (rect, _) = ui.allocate_exact_size(egui::vec2(400.0, TOGGLES_HEIGHT), Sense::hover());
-                    if let Some(channels) = column_toggles(ui, rect, Some(selection), Some(&*reference), 8, false) {
-                        reference.reference_channels = channels.into();
+                    if let Some(edit) = column_toggles(ui, rect, Some(selection), Some(&*reference), 8, false) {
+                        edit.apply(reference, 8);
                     }
                 }
             },
@@ -1009,7 +1299,8 @@ mod tests {
     }
 
     fn reference_of(channels: &str) -> Reference {
-        Reference { method: Method::Average, reference_channels: channels.into() }
+        let reference = Computation { channels: channels.into(), used_by: channels.into(), ..Default::default() };
+        Reference { list: vec![reference], next_id: 1 }
     }
 
     #[test]
@@ -1019,6 +1310,15 @@ mod tests {
         let mut harness = toggles(selection, reference_of("1-2"));
         harness.get_by_label("Selection pending");
         harness.snapshot("lfp_viewer_column_toggles");
+        // The tick and the R are level.
+        use egui_kittest::kittest::NodeT as _;
+        let middle = |node: egui_kittest::Node| {
+            let area = node.accesskit_node().bounding_box().unwrap();
+            (area.y0 + area.y1) / 2.0
+        };
+        let (tick, r) =
+            (middle(harness.get_by_role(egui::accesskit::Role::CheckBox)), middle(harness.get_by_label("R1")));
+        assert!((tick - r).abs() < 0.6, "tick at {tick}, R at {r}");
         harness.get_by_role(egui::accesskit::Role::CheckBox).click();
         harness.run_steps(3);
         assert_eq!(harness.state().0.channels, "all", "some ticked, so it's all");
@@ -1029,12 +1329,12 @@ mod tests {
         assert_eq!(ticked(&harness.state().0, 8), Vec::<u32>::new());
         harness.get_by_label("Nothing selected");
 
-        harness.get_by_label("R").click();
+        harness.get_by_label("R1").click();
         harness.run_steps(3);
-        assert_eq!(harness.state().1.reference_channels, "all");
-        harness.get_by_label("R").click();
+        assert_eq!(harness.state().1.list[0].channels, "all");
+        harness.get_by_label("R1").click();
         harness.run_steps(3);
-        assert_eq!(harness.state().1.reference_channels, "none");
+        assert_eq!(harness.state().1.list[0].used_by, "none");
 
         // Applied, the selection can only be disabled.
         let selection = ChannelSelection { apply: true, channels: "1-3".into() };
