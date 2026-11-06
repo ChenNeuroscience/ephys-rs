@@ -1,7 +1,7 @@
 # Quick actions
 
 Quick actions are ready-made changes to the graph, offered in basic mode to people who'd rather not build it node by
-node: "Standard LTX graph v0.5", "Disable position tracking", "Use synthetic data".
+node: "Standard LTX graph v0.5", "Use VR computer", "Use synthetic data".
 
 ![Basic mode, with quick actions](../tests/snapshots/basic_after_quick_actions.png)
 

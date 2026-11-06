@@ -2,6 +2,9 @@
 //! and the crop and calibration rulers over it to drag; beside it, collapsible sections of the camera's and the
 //! detector's settings (which it edits through its controls), with eye and padlock toggles in their headers for
 //! what's shown over the video and whether it can be changed; below it, a chart of the LEDs' sizes.
+//!
+//! Without video, given positions from elsewhere, it shows where they are in the window they range over (the detection's
+//! crop). There's nothing there to adjust, so its settings are only shown, and nothing's edited.
 
 use std::sync::{Arc, Mutex};
 
@@ -42,6 +45,8 @@ pub struct Tracking {
     history: History,
     path: Arc<Mutex<Path>>,
     recording: bool,
+    /// The LEDs in the latest position, for showing without video, when a pass might have none.
+    latest: [Option<Blob>; 2],
     shown: SharedPool<TrackerDisplay>,
 }
 
@@ -104,7 +109,8 @@ impl Node<Edges> for TrackerView {
         name: "Tracker View",
         category: Category::Visualisation,
         description: "The camera's video with the LEDs found, and the crop and calibration rulers over it to \
-                      adjust. Through its controls, adjusts the camera and the position detector too.",
+                      adjust. Through its controls, adjusts the camera and the position detector too. Without video, \
+                      shows where the positions are.",
     };
     const HAS_VIEW: bool = true;
 
@@ -123,7 +129,7 @@ impl Node<Edges> for TrackerView {
     }
 
     fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
-        if inputs[0].is_none() { vec!["Connect video".into()] } else { Vec::new() }
+        if inputs[0].is_none() && inputs[1].is_none() { vec!["Connect video or positions".into()] } else { Vec::new() }
     }
 
     fn controls(&self) -> Vec<Control<Edges>> {
@@ -146,7 +152,7 @@ impl Node<Edges> for TrackerView {
     /// Records the LEDs' sizes, and keeps the pass's last frame, the LEDs found in it and the camera's stats. A
     /// pass without a frame is only shown if the camera isn't running, to say why.
     fn process(&self, pass: &mut Pass<Edges>, tracking: &mut Tracking) {
-        let Tracking { history, path, recording, shown } = tracking;
+        let Tracking { history, path, recording, latest, shown } = tracking;
         if pass.recording && !*recording {
             path.lock().unwrap().clear();
         }
@@ -156,6 +162,7 @@ impl Node<Edges> for TrackerView {
                 let area = |led: Option<Blob>| led.map_or(0, |b| b.area);
                 let timing_on = sample.timing_led == Some(true);
                 led_chart::record(history, sample.time, [area(sample.leds[0]), area(sample.leds[1])], timing_on);
+                *latest = sample.leds;
             }
             if pass.recording && !positions.samples.is_empty() {
                 let mut path = path.lock().unwrap();
@@ -170,7 +177,8 @@ impl Node<Edges> for TrackerView {
             Some(Buffer::CameraStats(stats)) => Some(stats),
             _ => None,
         };
-        if video.is_none() && !stats.is_some_and(|s| s.status.state != State::Running) {
+        let positions_only = pass.inputs[0].is_none() && pass.inputs[1].is_some();
+        if video.is_none() && !positions_only && !stats.is_some_and(|s| s.status.state != State::Running) {
             return;
         }
         let positions = match pass.inputs[1] {
@@ -188,7 +196,10 @@ impl Node<Edges> for TrackerView {
                     display.leds.extend(found.into_iter().flat_map(|s| s.leds).flatten());
                     display.timing_led = found.and_then(|s| s.timing_led);
                 }
-                None => display.frame.width = 0,
+                None => {
+                    display.frame.width = 0;
+                    display.leds.extend(latest.iter().flatten());
+                }
             }
             match (stats, &mut display.stats) {
                 (Some(stats), Some(shown)) => shown.copy_from(stats),
@@ -274,6 +285,9 @@ impl TrackerView {
         {
             led_panel(ui, &display.history, arrangement);
         }
+        if positions_only(context) {
+            return positions_ui(ui, context, display);
+        }
 
         let Some(display) = display.filter(|d| d.frame.width > 0) else {
             let state = display.and_then(|d| d.stats.as_ref()).map(|s| &s.status.state);
@@ -310,7 +324,11 @@ impl TrackerView {
                 Some(Setting::Detection(detection)) => detection.pixels_per_metre(),
                 _ => None,
             };
-            path_ui(ui, rect, xf, path, calibration, context.theme);
+            let length = |length: f32| match calibration {
+                Some(ppm) => format!("{:.2} m", length / ppm),
+                None => format!("{length:.0} px"),
+            };
+            path_ui(ui, rect, xf, path, length, context.theme);
         }
         preview::repaint_with_data(ui);
     }
@@ -318,6 +336,9 @@ impl TrackerView {
     /// The camera's and the detector's settings (through the controls), in sections whose headers say what's
     /// shown over the video and lock what can be changed.
     fn controls_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>, size: [f32; 2]) {
+        if positions_only(context) {
+            return positions_settings_ui(ui, context);
+        }
         let pool = context.shared::<Pool<TrackerDisplay>>();
         let reading = pool.as_deref().and_then(Pool::newest);
         let stats = reading.as_deref().and_then(|d| d.stats.as_ref());
@@ -450,6 +471,88 @@ impl TrackerView {
     }
 }
 
+/// Whether it's only got positions to show, with no video.
+fn positions_only(context: &Context<Edges>) -> bool {
+    context.inputs[0].is_none() && context.inputs[1].is_some()
+}
+
+/// The window the positions range over: the crop's, if there's one, otherwise a frame's. Sized so it's never empty.
+fn positions_window(context: &Context<Edges>) -> [f32; 4] {
+    let crop = match &context.controls[1] {
+        Some(Setting::Detection(detection)) => detection.crop.bounds(),
+        _ => None,
+    };
+    let size = match context.inputs[1] {
+        Some(DataStream::Positions(positions)) => [positions.width as f32, positions.height as f32],
+        _ => [1.0, 1.0],
+    };
+    crop.unwrap_or([0.0, 0.0, size[0], size[1]])
+}
+
+/// Where positions are in their window, with the path recorded, looking as they do over video.
+fn positions_ui(ui: &mut egui::Ui, context: &Context<Edges>, display: Option<&TrackerDisplay>) {
+    let Some(display) = display else {
+        return preview::unconnected(ui, context.theme, "Press Play to see the positions");
+    };
+    let [min_x, min_y, max_x, max_y] = positions_window(context);
+    let (width, height) = (max_x - min_x, max_y - min_y);
+    let room = ui.available_size() - egui::vec2(16.0, 16.0);
+    let scale = (room.x / width).min(room.y / height).max(f32::MIN_POSITIVE);
+    let rect = Rect::from_center_size(ui.available_rect_before_wrap().center(), egui::vec2(width, height) * scale);
+    let painter = ui.painter_at(rect.expand(2.0));
+    painter.rect_filled(rect, 0.0, Color32::BLACK);
+    let xf = Xform { origin: rect.min - egui::vec2(min_x, min_y) * scale, scale };
+    let detection = match &context.controls[1] {
+        Some(Setting::Detection(detection)) => detection.clone(),
+        _ => Detection::default(),
+    };
+    // The calibration has rulers, but nobody laid them over anything.
+    let shown = Overlay { visible: true, locked: true };
+    let hidden = Overlay { visible: false, locked: true };
+    let overlays = Overlays { crop: shown, detection: shown, rulers: hidden, timing: hidden };
+    overlay::draw(&painter, xf, &detection, &overlays, &display.leds, false);
+    let range = format!("x {min_x} to {max_x}, y {min_y} to {max_y}");
+    let corner = rect.left_bottom() + egui::vec2(8.0, -8.0);
+    painter.text(
+        corner,
+        egui::Align2::LEFT_BOTTOM,
+        range,
+        egui::FontId::proportional(11.0),
+        context.theme.text_secondary,
+    );
+    if let Some(path) = &display.path {
+        let length = |length: f32| match detection.pixels_per_metre() {
+            Some(ppm) => format!("{:.2} m", length / ppm),
+            None => format!("{length:.0} px"),
+        };
+        path_ui(ui, rect, xf, path, length, context.theme);
+    }
+    preview::repaint_with_data(ui);
+}
+
+/// What's known of positions without video, which there's nothing to adjust of.
+fn positions_settings_ui(ui: &mut egui::Ui, context: &Context<Edges>) {
+    let source = match context.inputs[1] {
+        Some(DataStream::Positions(positions)) => positions.source,
+        _ => "",
+    };
+    ui.label(RichText::new("Positions").strong());
+    ui.weak(format!("From {}, without video: there's nothing to adjust here.", source.replace('_', " ")));
+    let Some(Setting::Detection(detection)) = &context.controls[1] else { return };
+    if detection.custom.is_empty() {
+        return;
+    }
+    ui.add_space(6.0);
+    ui.label(RichText::new("Settings").strong());
+    egui::Grid::new("custom settings").num_columns(2).striped(true).show(ui, |ui| {
+        for (key, value) in &detection.custom {
+            ui.label(key);
+            ui.label(value);
+            ui.end_row();
+        }
+    });
+}
+
 /// How the camera's doing, from its stats: what it is, frames, rate and drops, and problems.
 fn stats_ui(ui: &mut egui::Ui, stats: Option<&CaptureStats>, connected: bool, declared: Option<f64>, theme: &Colours) {
     let Some(stats) = stats else {
@@ -527,7 +630,14 @@ fn middle(leds: &[Option<Blob>; 2]) -> [f32; 2] {
 }
 
 /// The path recorded, over the frame, with a button to clear it and how long it is.
-fn path_ui(ui: &mut egui::Ui, frame: Rect, xf: Xform, path: &Mutex<Path>, calibration: Option<f32>, theme: &Colours) {
+fn path_ui(
+    ui: &mut egui::Ui,
+    frame: Rect,
+    xf: Xform,
+    path: &Mutex<Path>,
+    length_text: impl Fn(f32) -> String,
+    theme: &Colours,
+) {
     let mut path = path.lock().unwrap();
     if path.is_empty() {
         return;
@@ -549,11 +659,7 @@ fn path_ui(ui: &mut egui::Ui, frame: Rect, xf: Xform, path: &Mutex<Path>, calibr
             if ui.small_button("Clear path").clicked() {
                 path.clear();
             }
-            let length = match calibration {
-                Some(ppm) => format!("{:.2} m", length / ppm),
-                None => format!("{length:.0} px"),
-            };
-            let text = RichText::new(format!("path {length}")).small().color(theme.text_secondary);
+            let text = RichText::new(format!("path {}", length_text(length))).small().color(theme.text_secondary);
             ui.label(text).on_hover_text("Where the LEDs have been while recording (cleared when recording starts)");
         });
     });
@@ -980,5 +1086,63 @@ mod tests {
         harness.set_size(egui::vec2(1150.0, 900.0));
         harness.run_steps(3);
         harness.snapshot("tracker_view_timing_led");
+    }
+
+    #[test]
+    fn without_video_it_shows_positions_in_their_window_with_nothing_to_adjust() {
+        use crate::standard_components::themes::THEMES;
+
+        let mut graph = Graph::default();
+        let vr = add(&mut graph, "VR Computer");
+        let view = add(&mut graph, "Tracker View");
+        let port = |node, role, index| Port { node, role, index };
+        graph.connect(port(vr, Role::Output, 0), port(view, Role::Input, 1)).unwrap();
+        graph.connect(port(view, Role::Control, 1), port(vr, Role::Setting, 0)).unwrap();
+        let window = [
+            ("window_min_x", "0"),
+            ("window_max_x", "800"),
+            ("window_min_y", "0"),
+            ("window_max_y", "400"),
+            ("pixels_per_metre", "400"),
+        ];
+        let custom = window.iter().chain(&[("task", "linear")]).map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        if let Some(Nodes::VrComputer(node)) = graph.get_mut(vr).map(|e| &mut e.node) {
+            node.custom = custom;
+        }
+        let resolved = graph.resolve();
+        assert!(graph.get(view).unwrap().node.warnings(&resolved[&view].input_streams).is_empty());
+        let path: Vec<[f32; 2]> = (0..200)
+            .map(|i| [400.0 + 300.0 * (i as f32 / 30.0).cos(), 200.0 + 140.0 * (i as f32 / 20.0).sin()])
+            .collect();
+        let [x, y] = *path.last().unwrap();
+        let display = TrackerDisplay {
+            leds: vec![Blob { x, y, area: 30 }],
+            path: Some(Arc::new(Mutex::new(path))),
+            ..Default::default()
+        };
+        let inputs = resolved[&view].input_streams.clone();
+        let exchange = crate::core::exchange::Exchange::default();
+        exchange.shared(view, || Pool::holding(display));
+        let before = graph.clone();
+        let mut harness = egui_kittest::Harness::builder().with_size([900.0, 500.0]).wgpu().build_ui_state(
+            |ui, graph: &mut Graph<Nodes>| {
+                graph.edit(
+                    view,
+                    &inputs,
+                    &THEMES[0].colours,
+                    Some(&exchange),
+                    None,
+                    true,
+                    false,
+                    None,
+                    |node, context| node.view_ui(ui, context),
+                );
+            },
+            graph,
+        );
+        THEMES[0].apply(&harness.ctx);
+        harness.run_steps(3);
+        harness.snapshot("tracker_view_positions");
+        assert!(harness.state() == &before, "it's only shown");
     }
 }

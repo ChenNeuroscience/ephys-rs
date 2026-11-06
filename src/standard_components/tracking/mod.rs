@@ -13,6 +13,8 @@ pub mod position_detector;
 pub mod tracker_view;
 pub mod video_viewer;
 
+use std::collections::BTreeMap;
+
 use eframe::egui::Color32;
 use serde::{Deserialize, Serialize};
 
@@ -36,7 +38,11 @@ impl EdgeType for Video {
     }
 }
 
-/// The positions of LEDs tracked in video: for each frame, the biggest two found.
+/// Where positions tracked in video come from, as `Positions::source`.
+pub const CAMERA_TRACKER: &str = "camera_tracker";
+
+/// The positions of LEDs tracked in video, for each frame the biggest two found; or positions from elsewhere, as if they
+/// had been.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Positions {
     /// Frames per second.
@@ -44,6 +50,8 @@ pub struct Positions {
     /// The frames' size, in pixels.
     pub width: u32,
     pub height: u32,
+    /// Where they come from, as a name for headers: `CAMERA_TRACKER`, say.
+    pub source: &'static str,
 }
 
 impl EdgeType for Positions {
@@ -182,6 +190,9 @@ pub struct Detection {
     pub rulers: Vec<Ruler>,
     /// An LED of its own for timing, whose spot's left out of finding the others.
     pub timing_led: TimingLed,
+    /// Anything else to record with the positions, by name.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub custom: BTreeMap<String, String>,
 }
 
 impl Default for Detection {
@@ -194,6 +205,7 @@ impl Default for Detection {
             edge: EdgeThreshold::default(),
             rulers: Vec::new(),
             timing_led: TimingLed::default(),
+            custom: BTreeMap::new(),
         }
     }
 }
@@ -324,6 +336,14 @@ impl Crop {
             Crop::Square { size, .. } => Some([size / 2.0, size / 2.0]),
             Crop::Rectangle { width, height, .. } => Some([width / 2.0, height / 2.0]),
         }
+    }
+
+    /// Its bounding box (min x, min y, max x, max y), if it has a shape.
+    pub fn bounds(&self) -> Option<[f32; 4]> {
+        let ([cx, cy], [hx, hy]) = (self.center()?, self.half_extents()?);
+        let (sin, cos) = self.angle().sin_cos();
+        let (ex, ey) = ((hx * cos).abs() + (hy * sin).abs(), (hx * sin).abs() + (hy * cos).abs());
+        Some([cx - ex, cy - ey, cx + ex, cy + ey])
     }
 
     pub fn contains(&self, p: [f32; 2]) -> bool {

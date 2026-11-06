@@ -454,7 +454,7 @@ mod tests {
 
     #[test]
     fn positions_are_the_fraction_of_samples_with_leds() {
-        let stream = Positions { fps: 50.0, width: 100, height: 100 };
+        let stream = Positions { fps: 50.0, width: 100, height: 100, source: "test" };
         let alarms = one(AlarmKind::MissingPositions { low: 80.0 }, 1.0);
         let mut run = Run::new(alarms, [None, None, Some(DataStream::Positions(stream)), None]);
         let sample = |leds| PositionSample { frame: 0, time: 0.0, leds, timing_led: None, pixels_per_metre: f32::NAN };

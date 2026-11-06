@@ -91,7 +91,15 @@ pub fn show<N: NodeSet>(
                                 })
                             })
                             .collect();
-                        if connected.is_empty() { None } else { Some(connected.join(" · ")) }
+                        if !connected.is_empty() {
+                            return Some(connected.join(" · "));
+                        }
+                        // A source has nothing to connect: what it gives is what's worth saying.
+                        let outputs = state.outputs.iter().filter_map(|output| {
+                            let summary = EdgeSet::summary(output.stream.as_ref()?);
+                            Some(format!("{}: {summary}", output.name))
+                        });
+                        state.inputs.is_empty().then(|| outputs.collect::<Vec<_>>().join(" · "))
                     });
                     let disabled = graph.get(id).is_some_and(|e| e.disabled);
                     let (detail, detail_colour) = match detail.flatten() {

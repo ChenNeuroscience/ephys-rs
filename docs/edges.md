@@ -35,8 +35,9 @@ the legend, and a short summary: "64 ch · 30 kHz") and `DataStreamType`:
 Buffers are swapped between passes and threads (see the pools in [Architecture](architecture.md#threads-and-buffers)),
 so a buffer made for a stream must be interchangeable with any other made for it: make them only with `buffer`.
 
-The standard data streams are continuous data, digital events, spikes, video, positions, camera stats, spectra, and
-alarm states; each is defined beside the nodes that make it (`ephys`, `spikes`, `tracking`, `alarms`).
+The standard data streams are continuous data, digital events, spikes, video, positions, camera stats, spectra, alarm
+states and log lines; each is defined beside the nodes that make it (`ephys`, `spikes`, `tracking`, `alarms`), and log
+lines in `logs`.
 
 ## Settings
 

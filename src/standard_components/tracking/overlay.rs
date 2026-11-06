@@ -13,7 +13,7 @@ pub const CROP_COLOUR: Color32 = Color32::YELLOW;
 pub const RULER_COLOUR: Color32 = Color32::from_rgb(0, 200, 255);
 pub const TIMING_COLOUR: Color32 = Color32::from_rgb(120, 180, 255);
 /// The biggest LED, then the second biggest.
-pub const LED_COLOURS: [Color32; 2] = [Color32::from_rgb(80, 220, 120), Color32::from_rgb(255, 110, 200)];
+const LED_COLOURS: [Color32; 2] = [Color32::from_rgb(80, 220, 120), Color32::from_rgb(255, 110, 200)];
 
 // Screen-space sizes, in points.
 const HANDLE_RADIUS: f32 = 5.0;

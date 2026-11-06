@@ -1,6 +1,6 @@
 [package]
 name = "chen-neuro"
-version = "0.954.0"
+version = "0.955.0"
 edition = "2024"
 description = "The Chen lab's build of ephys-rs, which is what this repository releases"
 publish = false
@@ -15,6 +15,7 @@ test = false
 ephys-rs = { path = "../.." }
 chrono = "^0.4.40"
 eframe = { version = "0.37", default-features = false }
+log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

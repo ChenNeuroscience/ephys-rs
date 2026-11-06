@@ -7,9 +7,11 @@
 //! - `name.pos`: LED positions, a 4-byte timestamp then 8 two-byte values (x1, y1, x2, y2, and the LEDs' sizes).
 //! - `name.ttl`: digital input changes, as text.
 //! - `name.pos.ttl`: the timing LED's changes, likewise, from its `pos ttl` input, if there's a timing LED. They're timed
-//!   by the camera's clock, as positions are, counting from the same first position.
+//!   by the camera's clock, as positions are, counting from the same first position. Positions from elsewhere than a
+//!   camera (see `Positions::source`) have no timing LED: what's on the input is written whatever the detection says.
+//! - `name.txt`: log lines, with no headers: each as `<seconds> <line>`, its time counting from the same first position.
 //!
-//! Each file is `key value` header lines, then the data between `data_start` and `data_end`; counts and the
+//! Each file but `name.txt` is `key value` header lines, then the data between `data_start` and `data_end`; counts and the
 //! duration are filled in at the end. Timestamps count 96 kHz ticks from the start of recording, and multi-byte
 //! values are big-endian. Spikes' samples are -128 to 127: their waveforms should come as int8 values (as floats),
 //! multiplied into them by a Spike Gain, whose gains (connected, read-only, to `gains`) are recorded in the `.set`
@@ -21,7 +23,9 @@
 //!
 //! The positions' header records the position detector's settings (connected, read-only, to `detection`): the
 //! crop, whose bounding box positions are measured from (scaled down to fit 0–1022 if need be; 1023 means no LED),
-//! and the calibration.
+//! and the calibration. And it records anything in its `custom` settings as headers of
+//! their own, as they are (whatever a reader makes of a key with a space in it, or one that's the same as another header),
+//! except that line breaks are written as spaces, as a header's a line.
 
 use std::fs::File;
 use std::io::{self, BufWriter, Seek, SeekFrom, Write};
@@ -38,9 +42,10 @@ use crate::core::engine::{
 };
 use crate::standard_components::ephys::reference::parse_channels;
 use crate::standard_components::ephys::{ChannelSelection, Continuous, Event, Events};
+use crate::standard_components::logs::{LINES_PER_PASS, LogLines};
 use crate::standard_components::pool::{Pool, SharedPool};
 use crate::standard_components::spikes::{Gains, Spikes};
-use crate::standard_components::tracking::{Crop, Detection, PositionSample, Positions};
+use crate::standard_components::tracking::{CAMERA_TRACKER, Crop, Detection, PositionSample, Positions};
 use crate::standard_components::widgets::{require_input, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
 
@@ -76,6 +81,7 @@ struct Streams {
     positions: Option<Positions>,
     events: Option<Events>,
     position_events: Option<Events>,
+    log: Option<LogLines>,
 }
 
 /// While running: the writer's thread while recording, and its status for the window.
@@ -109,6 +115,9 @@ pub struct Chunk {
     event_pass_samples: usize,
     position_events: Vec<Event>,
     position_event_pass_samples: usize,
+    /// The log lines, one after another, and each one's time and length.
+    log: Vec<u8>,
+    log_lines: Vec<(f64, u32)>,
 }
 
 impl Chunk {
@@ -128,6 +137,8 @@ impl Chunk {
             position_events: Vec::with_capacity(
                 streams.position_events.map_or(0, |e| e.buffer(PASS_DURATION).events.capacity()),
             ),
+            log: Vec::with_capacity(streams.log.map_or(0, |l| l.width as usize * LINES_PER_PASS)),
+            log_lines: Vec::with_capacity(streams.log.map_or(0, |_| LINES_PER_PASS)),
             ..Default::default()
         }
     }
@@ -138,6 +149,8 @@ impl Chunk {
             + (self.waveforms.capacity() + self.continuous.capacity()) * size_of::<f32>()
             + self.positions.capacity() * size_of::<PositionSample>()
             + (self.events.capacity() + self.position_events.capacity()) * size_of::<Event>()
+            + self.log.capacity()
+            + self.log_lines.capacity() * size_of::<(f64, u32)>()
     }
 
     /// The writer's thread, with a pool of chunks for `streams`: writing to `opened`, or opening the files itself.
@@ -169,8 +182,8 @@ impl Node<Edges> for WriteLtx {
     const INFO: NodeInfo = NodeInfo {
         name: "Write LTX",
         category: Category::Recording,
-        description: "Records tetrode spikes, continuous data (at 5 kHz), positions, digital inputs and a timing LED's \
-                      changes in the LTX format, for legacy tetrode analysis code.",
+        description: "Records tetrode spikes, continuous data (at 5 kHz), positions, digital inputs, a timing LED's \
+                      changes and log lines in the LTX format, for legacy tetrode analysis code.",
     };
 
     fn inputs(&self) -> Vec<Input<Edges>> {
@@ -180,6 +193,7 @@ impl Node<Edges> for WriteLtx {
             Input { name: "positions", kind: Kind::Positions },
             Input { name: "events", kind: Kind::Events },
             Input { name: "pos ttl", kind: Kind::Events },
+            Input { name: "log", kind: Kind::LogLines },
         ]
     }
 
@@ -331,6 +345,7 @@ impl Streams {
                 DataStream::Spikes(s) => streams.spikes = Some(s),
                 DataStream::Continuous(c) => streams.continuous = Some(c),
                 DataStream::Positions(p) => streams.positions = Some(p),
+                DataStream::LogLines(l) => streams.log = Some(l),
                 _ => {}
             }
         }
@@ -422,6 +437,14 @@ fn copy(pass: &Pass<Edges>, chunk: &mut Chunk, step: Option<usize>, continuous_s
     if let Some(Some(Buffer::Events(events))) = pass.inputs.get(4) {
         chunk.position_events.extend_from_slice(&events.events);
         chunk.position_event_pass_samples = events.pass_samples;
+    }
+    chunk.log.clear();
+    chunk.log_lines.clear();
+    if let Some(Some(Buffer::LogLines(log))) = pass.inputs.get(5) {
+        for (time, line) in log.lines() {
+            chunk.log.extend_from_slice(line);
+            chunk.log_lines.push((time, line.len() as u32));
+        }
     }
 }
 
@@ -526,12 +549,7 @@ impl Encoding {
 
 /// The crop's bounding box (min x, min y, max x, max y), or the frame's, in pixels.
 fn window(crop: Option<&Crop>, frame: [u32; 2]) -> [f32; 4] {
-    let frame = [0.0, 0.0, frame[0] as f32, frame[1] as f32];
-    let Some(crop) = crop else { return frame };
-    let (Some([cx, cy]), Some([hx, hy])) = (crop.center(), crop.half_extents()) else { return frame };
-    let (sin, cos) = crop.angle().sin_cos();
-    let (ex, ey) = ((hx * cos).abs() + (hy * sin).abs(), (hx * sin).abs() + (hy * cos).abs());
-    [cx - ex, cy - ey, cx + ex, cy + ey]
+    crop.and_then(Crop::bounds).unwrap_or([0.0, 0.0, frame[0] as f32, frame[1] as f32])
 }
 
 struct Tetrode {
@@ -561,11 +579,12 @@ struct LtxFiles {
     spike_samples: i64,
     event_samples: u64,
     position_event_samples: u64,
-    /// The camera's time of the first position, which positions' times and the timing LED's count from.
+    /// The source's time of the first position, which positions' times, the timing LED's and log lines' count from.
     first_position: Option<f64>,
     pos: Option<Pos>,
     ttl: Option<LtxFile>,
     pos_ttl: Option<LtxFile>,
+    log: Option<BufWriter<File>>,
     /// For each record of `bytes`.
     record: Vec<u8>,
 }
@@ -639,12 +658,14 @@ impl LtxFiles {
             Some(_) => Some(open_ttl(file(".ttl")?, "digital_inputs", "recording_start")?),
             None => None,
         };
-        // Connected, it only has anything to say if there's a timing LED, as far as we can tell.
-        let timing_led = recorded.detection.as_ref().map(|d| d.timing_led);
+        // Connected, a camera's only has anything to say if there's a timing LED, as far as we can tell.
+        let elsewhere = streams.positions.map(|p| p.source).filter(|source| *source != CAMERA_TRACKER);
+        let detection = recorded.detection.as_ref().filter(|_| elsewhere.is_none());
+        let timing_led = detection.map(|d| d.timing_led);
         let pos_ttl = match streams.position_events {
             Some(_) if timing_led.is_none_or(|led| led.enabled) => {
-                let mut f = open_ttl(file(".pos.ttl")?, "timing_led", "first_position")?;
-                if let Some(detection) = recorded.detection.as_ref().filter(|_| timing_led.is_some()) {
+                let mut f = open_ttl(file(".pos.ttl")?, elsewhere.unwrap_or("timing_led"), "first_position")?;
+                if let Some(detection) = detection {
                     let led = detection.timing_led;
                     f.header("timing_led_x", led.center[0])?;
                     f.header("timing_led_y", led.center[1])?;
@@ -655,6 +676,14 @@ impl LtxFiles {
                 Some(f)
             }
             _ => None,
+        };
+        let log = match streams.log {
+            Some(_) => {
+                let mut path = base.to_path_buf();
+                path.as_mut_os_string().push(".txt");
+                Some(BufWriter::new(File::create(path)?))
+            }
+            None => None,
         };
         log::info!("Recording LTX to {}", base.display());
         Ok(LtxFiles {
@@ -670,6 +699,7 @@ impl LtxFiles {
             pos,
             ttl,
             pos_ttl,
+            log,
             record: Vec::new(),
         })
     }
@@ -683,6 +713,11 @@ fn open_ttl(mut f: LtxFile, source: &str, seconds_from: &str) -> io::Result<LtxF
     f.header("ttl_source", source)?;
     f.header("ttl_seconds_from", seconds_from)?;
     Ok(f)
+}
+
+/// `text`, with any line breaks as spaces.
+fn on_one_line(text: &str) -> String {
+    text.replace(['\r', '\n'], " ")
 }
 
 /// The position file's headers: what's needed to read the positions, and the detector's settings.
@@ -703,7 +738,8 @@ fn open_pos(mut f: LtxFile, positions: Positions, detection: Option<&Detection>)
     for (i, bearing) in [330, 150, 0, 0].into_iter().enumerate() {
         f.header(&format!("bearing_colour_{}", i + 1), bearing)?;
     }
-    f.header("position_metadata_source", "camera_tracker")?;
+    let source = positions.source;
+    f.header("position_metadata_source", source)?;
     f.header("data_source", crate::core::full_version())?;
     f.header("pixels_per_metre", ppm.map_or(f32::NAN, |p| p * scale))?;
     let (right, bottom) = ((width * scale).round(), (height * scale).round());
@@ -714,13 +750,13 @@ fn open_pos(mut f: LtxFile, positions: Positions, detection: Option<&Detection>)
         f.header(key, value)?;
     }
     if let Some(ppm) = ppm {
-        f.header("camera_tracker.pixels_per_metre", ppm)?;
+        f.header(&format!("{source}.pixels_per_metre"), ppm)?;
     }
-    f.header("camera_tracker.window", format!("{min_x} {min_y} {max_x} {max_y}"))?;
+    f.header(&format!("{source}.window"), format!("{min_x} {min_y} {max_x} {max_y}"))?;
     if let Some(crop) = crop {
-        f.header("camera_tracker.crop", format!("{crop:?}"))?;
+        f.header(&format!("{source}.crop"), format!("{crop:?}"))?;
     }
-    f.header("camera_tracker.frame_size", format!("{} {}", positions.width, positions.height))?;
+    f.header(&format!("{source}.frame_size"), format!("{} {}", positions.width, positions.height))?;
     let transformed = scale < 1.0 || min_x != 0.0 || min_y != 0.0;
     f.header("position_coordinate_transform", if transformed { "crop_relative_uniform_scale" } else { "identity" })?;
     f.header("position_coordinate_origin_x", min_x)?;
@@ -728,6 +764,9 @@ fn open_pos(mut f: LtxFile, positions: Positions, detection: Option<&Detection>)
     f.header("position_coordinate_scale", scale)?;
     f.header("position_missing_coordinate", MISSING)?;
     f.header("position_area_units", "camera_pixels_saturated_uint16")?;
+    for (key, value) in detection.iter().flat_map(|d| &d.custom) {
+        f.header(&on_one_line(key), on_one_line(value))?;
+    }
     f.count_header("num_pos_samples")?;
     Ok(Pos { file: f, encoding: Encoding { origin: [min_x, min_y], scale }, samples: 0 })
 }
@@ -818,6 +857,21 @@ impl Files<Chunk> for LtxFiles {
             }
             self.position_event_samples += chunk.position_event_pass_samples as u64;
         }
+
+        if let Some(log) = &mut self.log {
+            let mut text = chunk.log.as_slice();
+            for &(time, length) in &chunk.log_lines {
+                let (line, rest) = text.split_at(length as usize);
+                text = rest;
+                let seconds = time - *self.first_position.get_or_insert(time);
+                self.record.clear();
+                write!(self.record, "{seconds:.6} ")?;
+                self.record.extend_from_slice(line);
+                self.record.extend_from_slice(b"\r\n");
+                log.write_all(&self.record)?;
+                bytes += self.record.len() as u64;
+            }
+        }
         Ok(bytes)
     }
 
@@ -835,6 +889,9 @@ impl Files<Chunk> for LtxFiles {
         }
         for ttl in [self.ttl, self.pos_ttl].into_iter().flatten() {
             ttl.finish(seconds, 0)?;
+        }
+        if let Some(mut log) = self.log {
+            log.flush()?;
         }
         Ok(())
     }
@@ -885,7 +942,7 @@ mod tests {
         let base = dir.join("test");
         let events = Events { lines: 8, sample_rate: 1000.0 };
         let streams = Streams {
-            positions: Some(Positions { fps: 50.0, width: 640, height: 480 }),
+            positions: Some(Positions { fps: 50.0, width: 640, height: 480, source: CAMERA_TRACKER }),
             events: Some(events),
             position_events: Some(Events { lines: 1, sample_rate: 50.0 }),
             ..Default::default()
@@ -939,6 +996,50 @@ mod tests {
     }
 
     #[test]
+    fn positions_from_elsewhere_say_so_with_their_custom_settings_ttls_and_log() {
+        let dir = std::env::temp_dir().join(format!("ephys-rs-ltx-elsewhere-{}", std::process::id()));
+        let base = dir.join("test");
+        let streams = Streams {
+            positions: Some(Positions { fps: 50.0, width: 1000, height: 1000, source: "vr_computer" }),
+            position_events: Some(Events { lines: 1, sample_rate: 1000.0 }),
+            log: Some(LogLines { width: 32 }),
+            ..Default::default()
+        };
+        let custom = [("maze.arm length", "3"), ("note", "two\r\nlines")].map(|(k, v)| (k.to_string(), v.to_string()));
+        let crop = Crop::Rectangle { center: [100.0, 50.0], width: 200.0, height: 100.0, angle: 0.0 };
+        let detection = Some(Detection { crop, custom: custom.into(), ..Default::default() });
+        let recorded = Recorded { detection, ..Default::default() };
+        let mut files = Box::new(LtxFiles::open(&base, Local::now(), streams, recorded).unwrap());
+        let mut chunk = Chunk::default();
+        chunk.positions.push(PositionSample {
+            frame: 0,
+            time: 1.5,
+            leds: [None, None],
+            timing_led: None,
+            pixels_per_metre: f32::NAN,
+        });
+        chunk.position_events.push(Event { sample: 0, line: 0, high: true, time: Some(2.0) });
+        chunk.log.extend_from_slice(b"first linesecond");
+        chunk.log_lines.extend([(1.75, 10), (4.0, 6)]);
+        files.write(&chunk).unwrap();
+        files.finish().unwrap();
+
+        let pos = read(&base, ".pos");
+        assert_eq!(header(&pos, "maze.arm length"), "3", "a key as it came");
+        assert_eq!(header(&pos, "note"), "two  lines", "a value on one line");
+        assert_eq!(header(&pos, "position_metadata_source"), "vr_computer");
+        assert_eq!(header(&pos, "vr_computer.window"), "0 0 200 100");
+        assert_eq!(header(&pos, "position_coordinate_scale"), "1", "pixels, as a camera's are");
+        assert_eq!((header(&pos, "window_max_x"), header(&pos, "window_max_y")), ("200".into(), "100".into()));
+        let pos_ttl = read(&base, ".pos.ttl");
+        assert_eq!(header(&pos_ttl, "ttl_source"), "vr_computer", "with no timing LED to say otherwise");
+        assert!(!String::from_utf8_lossy(&pos_ttl).contains("timing_led_x"));
+        assert_eq!(data(&pos_ttl), b"ttl_1 0.500000 1\r\n", "from the first position");
+        assert_eq!(read(&base, ".txt"), b"0.250000 first line\r\n2.500000 second\r\n", "no headers, and from it too");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn writes_spikes_eeg_and_positions() {
         let dir = std::env::temp_dir().join(format!("ephys-rs-ltx-{}", std::process::id()));
         let base = dir.join("test");
@@ -947,9 +1048,10 @@ mod tests {
         let streams = Streams {
             spikes: Some(spikes),
             continuous: Some(Continuous { channels: 2, sample_rate: 30000.0 }),
-            positions: Some(Positions { fps: 50.0, width: 640, height: 480 }),
+            positions: Some(Positions { fps: 50.0, width: 640, height: 480, source: CAMERA_TRACKER }),
             events: None,
             position_events: None,
+            log: None,
         };
         // Gains recorded: a µV a step on the first channel, half a µV on the second.
         let mut gains = Gains::default();

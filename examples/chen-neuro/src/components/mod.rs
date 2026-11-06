@@ -3,6 +3,7 @@
 pub mod china;
 pub mod quick_actions;
 pub mod trials;
+pub mod vr_computer;
 
 use ephys_rs::core::base_directory::BaseDirectoryType;
 use ephys_rs::core::quick_action::QuickAction;
@@ -14,6 +15,7 @@ use ephys_rs::standard_components::base_directories::A_DIRECTORY;
 use ephys_rs::standard_components::ephys::{
     band_pass, board, channel_selector, continuous_gain, lfp_viewer, reference, spectrum, ttl_viewer,
 };
+use ephys_rs::standard_components::logs::log_viewer;
 use ephys_rs::standard_components::recording::{ltx, raw};
 use ephys_rs::standard_components::spikes::{spike_detector, spike_gain, spike_viewer};
 use ephys_rs::standard_components::themes::{DARK, LIGHT};
@@ -26,6 +28,7 @@ node_set! {
     pub enum Nodes {
         AcquisitionBoard(board::node::AcquisitionBoard),
         Camera(camera::node::Camera),
+        VrComputer(vr_computer::VrComputer),
         Reference(reference::Reference),
         ChannelSelector(channel_selector::ChannelSelector),
         BandPassFilter(band_pass::BandPassFilter),
@@ -38,6 +41,7 @@ node_set! {
         LfpViewer(lfp_viewer::LfpViewer),
         SpikeViewer(spike_viewer::SpikeViewer),
         TtlViewer(ttl_viewer::TtlViewer),
+        LogViewer(log_viewer::LogViewer),
         VideoViewer(video_viewer::VideoViewer),
         TrackerView(tracker_view::TrackerView),
         AlarmViewer(viewer::AlarmViewer),
@@ -76,6 +80,7 @@ impl Components for ChenNeuro {
     const ABOUT: &'static str = "The Chen lab's build, for its LTX rig:\n\n\
         - **Quick actions** for setting up the rig, in the basic view\n\
         - **Subject, date and trial**: recordings filed by subject and day, and numbered for you\n\
+        - **VR Computer**: positions, TTLs, log lines and settings from a VR task, instead of a camera\n\
         - [LTX format](https://github.com/ChenNeuroscience/ltx-format) recording, in alpha testing";
 
     fn version() -> String {

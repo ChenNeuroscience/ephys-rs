@@ -6,19 +6,24 @@
 //!   graph has it all. It arranges the panes: the tracker view in a column at the left (with home as a tab behind
 //!   it); the spike viewer filling the rest above (with any panes open before as tabs behind it), and the LFP viewer
 //!   below that (with the TTL viewer and the alarms as tabs behind it).
-//! - Disabling position tracking (the camera, position detector and tracker view), while it's all enabled; and
-//!   enabling it, while any of it isn't.
+//! - Swapping the positions' source between the camera (with its position detector) and the VR Computer. What's unused
+//!   is disabled, and whatever took the positions, their TTLs and the settings (the tracker view among them, which shows
+//!   positions without video) takes them from the other, as an input has the one edge. The VR Computer's added the first
+//!   time, and from then on kept, disabled, with no edges; likewise a Log Viewer, showing its log lines.
 //! - Using synthetic data (the fake board and camera in `synthetic_streams`), while any board or camera is real; and
 //!   real devices, while any is synthetic.
 
 use super::Nodes;
 use ephys_rs::core::engine::{Graph, NodeId, NodeSet, Port, Role};
+use ephys_rs::core::layout::{Pane, WindowState};
 use ephys_rs::core::quick_action::{Arrangement, QuickAction, QuickChange, QuickState, Tab};
 use ephys_rs::standard_components::alarms::processor::AlarmProcessor;
 use ephys_rs::standard_components::alarms::{AlarmKind, Source};
 use ephys_rs::standard_components::ephys::band_pass::BandPassFilter;
 use ephys_rs::standard_components::ephys::board::{self, node::AcquisitionBoard, opal_kelly::OpalKellyKind};
 use ephys_rs::standard_components::tracking::camera::{self, node::Camera};
+
+use super::vr_computer::VrComputer;
 
 pub const QUICK_ACTIONS: &[QuickAction<Nodes>] = &[
     QuickAction {
@@ -28,14 +33,15 @@ pub const QUICK_ACTIONS: &[QuickAction<Nodes>] = &[
         run: standard,
     },
     QuickAction {
-        name: "Disable position tracking",
-        description: "Run without the camera, position detector and tracker view, keeping them",
-        run: disable_positions,
+        name: "Use VR computer",
+        description: "Positions, TTLs, log lines and settings from the VR computer, keeping the camera and position \
+                      detector disabled",
+        run: use_vr,
     },
     QuickAction {
-        name: "Enable position tracking",
-        description: "Run with the camera, position detector and tracker view again",
-        run: enable_positions,
+        name: "Use camera",
+        description: "Positions from the camera and position detector, keeping the VR computer disabled",
+        run: use_camera,
     },
     QuickAction {
         name: "Use synthetic data",
@@ -284,50 +290,115 @@ fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
     Some(result)
 }
 
-/// The position tracking nodes: cameras, position detectors and tracker views.
+/// The nodes finding positions in video: cameras and position detectors.
 fn position_nodes(graph: &Graph<Nodes>) -> Vec<NodeId> {
     graph
         .iter()
-        .filter(|(_, e)| matches!(e.node, Nodes::Camera(_) | Nodes::PositionDetector(_) | Nodes::TrackerView(_)))
+        .filter(|(_, e)| matches!(e.node, Nodes::Camera(_) | Nodes::PositionDetector(_)))
         .map(|(id, _)| id)
         .collect()
 }
 
-/// Sets whether the position tracking nodes are disabled, if it's offered: disabling while they're all enabled,
-/// enabling while any isn't.
-fn set_positions_disabled(state: &QuickState<Nodes>, disabled: bool) -> Option<QuickChange<Nodes>> {
-    let ids = position_nodes(state.graph);
-    let any_disabled = ids.iter().any(|id| state.graph.get(*id).is_some_and(|e| e.disabled));
-    if ids.is_empty() || any_disabled == disabled {
-        return None;
+/// Whatever takes `from`'s positions, its TTLs and its settings takes `to`'s instead. (The outputs' order is the same on
+/// the VR Computer and the position detector.)
+fn move_positions(graph: &mut Graph<Nodes>, from: NodeId, to: NodeId) {
+    for index in 0..2 {
+        let targets: Vec<Port> = graph.edges_from(port((from, Output, index))).map(|e| e.target()).collect();
+        for target in targets {
+            let _ = graph.connect(port((to, Output, index)), target);
+        }
     }
-    let mut graph = state.graph.clone();
-    for id in &ids {
+    let setting = port((from, Setting, 0));
+    let controls: Vec<Port> = graph.edges().iter().filter(|e| e.target() == setting).map(|e| e.source()).collect();
+    for control in controls {
+        let _ = graph.connect(control, port((to, Setting, 0)));
+    }
+}
+
+/// Sets whether each of `ids` is disabled.
+fn set_disabled(graph: &mut Graph<Nodes>, ids: &[NodeId], disabled: bool) {
+    for id in ids {
         if let Some(entry) = graph.get_mut(*id) {
             entry.disabled = disabled;
         }
     }
-    // Enabled, the tracker view's worth seeing; disabled, it isn't.
-    let trackers: Vec<NodeId> = ids
-        .iter()
-        .copied()
-        .filter(|id| matches!(graph.get(*id).map(|e| &e.node), Some(Nodes::TrackerView(_))))
-        .collect();
-    let mut layout = state.layout.clone();
-    for tracker in trackers {
-        if disabled { layout.close(tracker) } else { layout.open(tracker, None) }
+}
+
+/// The VR Computer that's in use, if there is one.
+fn live_vr(graph: &Graph<Nodes>) -> Option<NodeId> {
+    let live = |e: &ephys_rs::core::engine::NodeEntry<Nodes>| matches!(e.node, Nodes::VrComputer(_)) && !e.disabled;
+    graph.iter().find(|(_, e)| live(e)).map(|(id, _)| id)
+}
+
+/// The VR Computer instead of the camera, adding it if need be, unless it's in use (or there's no camera to swap).
+fn use_vr(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
+    let mut change = Change::new(state.graph);
+    let detector = change.find(|n| matches!(n, Nodes::PositionDetector(_)))?;
+    if live_vr(state.graph).is_some() {
+        return None;
     }
-    let names: Vec<String> = ids.iter().filter_map(|id| graph.get(*id).map(|e| e.label.clone())).collect();
-    let summary = format!("{} {}", if disabled { "disabled" } else { "enabled" }, names.join(", "));
-    Some(QuickChange { graph, layout, arrange: false, summary, base_directory: None })
+    let vr = change.find(|n| matches!(n, Nodes::VrComputer(_))).unwrap_or_else(|| {
+        let added = change.add(Nodes::VrComputer(VrComputer::default()), None);
+        // Its card has the address to connect to.
+        if let Some(entry) = change.graph.get_mut(added) {
+            entry.basic = Some(true);
+        }
+        added
+    });
+    let tracking = position_nodes(&change.graph);
+    move_positions(&mut change.graph, detector, vr);
+    set_disabled(&mut change.graph, &tracking, true);
+    set_disabled(&mut change.graph, &[vr], false);
+    if let Some(ltx) = change.find(|n| matches!(n, Nodes::WriteLtx(_))) {
+        change.link((vr, Output, 2), (ltx, Input, 5));
+    }
+    let log_viewer = change.upsert("Log Viewer", Some(vr));
+    set_disabled(&mut change.graph, &[log_viewer], false);
+    change.link((vr, Output, 2), (log_viewer, Input, 0));
+    change.changed = true;
+    let ttl_viewer = change.find(|n| matches!(n, Nodes::TtlViewer(_)));
+    let mut result = change.finish(state, &[])?;
+    // The first time, with the other small viewers, behind what's in front there; after that, where it was.
+    let beside = ttl_viewer.and_then(|id| result.layout.group_of(Pane::Node(id)));
+    match beside.filter(|_| result.layout.window(log_viewer) == WindowState::Closed) {
+        Some(group) => result.layout.add_tab(group, Pane::Node(log_viewer)),
+        None => result.layout.open(log_viewer, None),
+    }
+    result.summary = "using the VR computer".into();
+    Some(result)
 }
 
-fn disable_positions(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
-    set_positions_disabled(state, true)
-}
-
-fn enable_positions(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
-    set_positions_disabled(state, false)
+/// The camera instead of the VR Computer, which is kept, disabled, with no edges; if it isn't in use already.
+fn use_camera(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
+    let mut change = Change::new(state.graph);
+    let detector = change.find(|n| matches!(n, Nodes::PositionDetector(_)))?;
+    let tracking = position_nodes(&change.graph);
+    let vr = live_vr(state.graph);
+    let mut log_viewers = Vec::new();
+    let in_use = tracking.iter().all(|id| state.graph.get(*id).is_some_and(|e| !e.disabled));
+    if vr.is_none() && in_use {
+        return None;
+    }
+    if let Some(vr) = vr {
+        let fed = change.graph.edges_from(port((vr, Output, 2))).map(|e| e.to.node);
+        let is_viewer = |id: &NodeId| matches!(state.graph.get(*id).map(|e| &e.node), Some(Nodes::LogViewer(_)));
+        log_viewers = fed.filter(is_viewer).collect();
+        move_positions(&mut change.graph, vr, detector);
+        let edges = change.graph.edges().iter().filter(|e| e.from.node == vr || e.to.node == vr);
+        for edge in edges.copied().collect::<Vec<_>>() {
+            change.graph.disconnect(edge);
+        }
+        set_disabled(&mut change.graph, &[vr], true);
+        set_disabled(&mut change.graph, &log_viewers, true);
+    }
+    set_disabled(&mut change.graph, &tracking, false);
+    change.changed = true;
+    let mut result = change.finish(state, &[])?;
+    for log_viewer in log_viewers {
+        result.layout.close(log_viewer);
+    }
+    result.summary = "using the camera".into();
+    Some(result)
 }
 
 /// Sets every board and camera to the synthetic data or to real devices, if any isn't already.
@@ -444,24 +515,80 @@ mod tests {
         assert_eq!(ltx_controls(3).map(|e| e.to.node), Some(named("Continuous Gain")));
         assert!(graph.iter().any(|(_, e)| matches!(&e.node, Nodes::AcquisitionBoard(b)
             if b.source == real_board())));
-        // Then: disabling positions, and using synthetic data, are offered.
-        assert_eq!(offered(&graph), vec!["Disable position tracking", "Use synthetic data"]);
+        // Then: the VR computer, and using synthetic data, are offered.
+        assert_eq!(offered(&graph), vec!["Use VR computer", "Use synthetic data"]);
+    }
+
+    /// What feeds a port, by the label of the node.
+    fn feeding(graph: &Graph<Nodes>, node: NodeId, role: Role, index: usize) -> Option<String> {
+        let edge = graph.edge_into(Port { node, role, index })?;
+        Some(graph.get(edge.from.node)?.label.clone())
+    }
+
+    fn named(graph: &Graph<Nodes>, name: &str) -> NodeId {
+        graph.iter().find(|(_, e)| e.label == name).unwrap().0
     }
 
     #[test]
-    fn positions_are_disabled_and_enabled() {
-        let graph = run("Standard LTX graph v0.5", &Graph::default()).unwrap().graph;
-        let disabled = run("Disable position tracking", &graph).unwrap().graph;
-        assert_eq!(position_nodes(&disabled).len(), 3);
-        assert!(position_nodes(&disabled).iter().all(|id| disabled.get(*id).unwrap().disabled));
-        assert!(run("Disable position tracking", &disabled).is_none());
-        // Any of it disabled, enabling's offered (and disabling isn't).
-        let mut partly = graph.clone();
-        partly.get_mut(position_nodes(&graph)[0]).unwrap().disabled = true;
-        assert!(
-            run("Enable position tracking", &partly).is_some() && run("Disable position tracking", &partly).is_none()
-        );
-        let enabled = run("Enable position tracking", &disabled).unwrap().graph;
+    fn the_positions_swap_between_the_camera_and_the_vr_computer() {
+        let camera = run("Standard LTX graph v0.5", &Graph::default()).unwrap().graph;
+        assert!(run("Use camera", &camera).is_none(), "it's in use");
+        assert!(!camera.iter().any(|(_, e)| matches!(e.node, Nodes::VrComputer(_))), "not until it's asked for");
+
+        let vr = run("Use VR computer", &camera).unwrap().graph;
+        assert_eq!(offered(&vr), vec!["Use camera", "Use synthetic data"], "and not the standard graph again");
+        assert!(position_nodes(&vr).iter().all(|id| vr.get(*id).unwrap().disabled));
+        let (ltx, alarms, computer) =
+            (named(&vr, "Write LTX"), named(&vr, "Alarm Processor"), named(&vr, "VR Computer"));
+        assert!(!vr.get(computer).unwrap().disabled && vr.get(computer).unwrap().in_basic());
+        for (node, input) in [(ltx, 2), (ltx, 4), (ltx, 5), (alarms, 2), (alarms, 3)] {
+            assert_eq!(feeding(&vr, node, Input, input).as_deref(), Some("VR Computer"), "input {input}");
+        }
+        let change = run("Use VR computer", &camera).unwrap();
+        let log_viewer = named(&vr, "Log Viewer");
+        assert_eq!(feeding(&vr, log_viewer, Input, 0).as_deref(), Some("VR Computer"));
+        assert!(change.layout.open_windows().contains(&log_viewer), "its window's opened");
+        let settings = vr.edges_from(port((ltx, Control, 0))).next().unwrap();
+        assert_eq!(settings.to.node, computer, "the custom settings are recorded");
+        let resolved = vr.resolve();
+        let warned = |id| vr.get(id).unwrap().node.warnings(&resolved[&id].input_streams);
+        assert!(warned(ltx).is_empty() && warned(alarms).is_empty(), "all connected");
+        let tracker = named(&vr, "Tracker View");
+        assert!(!vr.get(tracker).unwrap().disabled, "it shows positions without video");
+        assert_eq!(feeding(&vr, tracker, Input, 1).as_deref(), Some("VR Computer"));
+        assert_eq!(vr.edges_from(port((tracker, Control, 1))).next().unwrap().to.node, computer, "for the window");
+        assert!(resolved[&tracker].input_streams[0].is_none(), "no video");
+        assert!(warned(tracker).is_empty());
+
+        let back = run("Use camera", &vr).unwrap().graph;
+        assert_eq!(offered(&back), vec!["Use VR computer", "Use synthetic data"]);
+        let computer_entry = back.get(computer).expect("kept");
+        assert!(computer_entry.disabled);
+        assert!(!back.edges().iter().any(|e| e.from.node == computer || e.to.node == computer), "no edges left");
+        assert!(position_nodes(&back).iter().all(|id| !back.get(*id).unwrap().disabled));
+        for (node, input) in [(ltx, 2), (ltx, 4), (alarms, 2), (alarms, 3)] {
+            assert_eq!(feeding(&back, node, Input, input).as_deref(), Some("Position Detector"), "input {input}");
+        }
+        assert_eq!(feeding(&back, ltx, Input, 5), None, "no log without the VR computer");
+        assert!(back.get(log_viewer).unwrap().disabled, "kept, like the VR computer");
+        assert_eq!(feeding(&back, log_viewer, Input, 0), None);
+        assert_eq!(feeding(&back, tracker, Input, 1).as_deref(), Some("Position Detector"));
+        assert_eq!(feeding(&back, tracker, Input, 0).as_deref(), Some("Camera"), "and the video again");
+        let detector = named(&back, "Position Detector");
+        assert_eq!(back.edges_from(port((ltx, Control, 0))).next().unwrap().to.node, detector);
+        // The same again uses the one there is.
+        let again = run("Use VR computer", &back).unwrap().graph;
+        assert_eq!(again.iter().filter(|(_, e)| matches!(e.node, Nodes::VrComputer(_))).count(), 1);
+        assert_eq!(again.iter().filter(|(_, e)| matches!(e.node, Nodes::LogViewer(_))).count(), 1);
+        assert!(!again.get(log_viewer).unwrap().disabled);
+        assert_eq!(again.edges().len(), vr.edges().len());
+    }
+
+    #[test]
+    fn the_camera_can_be_brought_back_if_any_of_it_was_disabled_by_hand() {
+        let mut graph = run("Standard LTX graph v0.5", &Graph::default()).unwrap().graph;
+        graph.get_mut(position_nodes(&graph)[0]).unwrap().disabled = true;
+        let enabled = run("Use camera", &graph).unwrap().graph;
         assert!(position_nodes(&enabled).iter().all(|id| !enabled.get(*id).unwrap().disabled));
     }
 
@@ -469,7 +596,7 @@ mod tests {
     fn synthetic_and_real_data_swap() {
         let example = super::super::example_graph();
         // The example has all the standard graph has (and more), from the synthetic data.
-        assert_eq!(offered(&example), vec!["Disable position tracking", "Use real devices"]);
+        assert_eq!(offered(&example), vec!["Use VR computer", "Use real devices"]);
         let real = run("Use real devices", &example).unwrap().graph;
         assert!(run("Use real devices", &real).is_none());
         let synthetic = run("Use synthetic data", &real).unwrap().graph;

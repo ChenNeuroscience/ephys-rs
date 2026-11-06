@@ -8,6 +8,7 @@ pub mod annotations;
 pub mod auto_detect;
 pub mod base_directories;
 pub mod ephys;
+pub mod logs;
 pub mod pool;
 mod preview;
 pub mod recording;

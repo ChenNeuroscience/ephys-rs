@@ -2442,18 +2442,18 @@ mod tests {
         harness.run_steps(2);
         assert!(harness.state().layout.is_shown(Pane::Home), "the basic view stays");
         assert!(!offered(&harness, "Standard LTX graph v0.5"), "not offered once done");
-        assert!(offered(&harness, "Disable position tracking") && offered(&harness, "Use synthetic data"));
+        assert!(offered(&harness, "Use VR computer") && offered(&harness, "Use synthetic data"));
         harness.snapshot("basic_after_quick_actions");
-        harness.get_by_role_and_label(button, "Disable position tracking").click();
+        harness.get_by_role_and_label(button, "Use VR computer").click();
         harness.run_steps(2);
-        assert!(offered(&harness, "Enable position tracking") && !offered(&harness, "Disable position tracking"));
+        assert!(offered(&harness, "Use camera") && !offered(&harness, "Use VR computer"));
         let tracker = node_named(harness.state(), "Tracker View");
-        assert_eq!(harness.state().layout.window(tracker), WindowState::Hidden, "the tracker's window closes");
-        harness.snapshot("basic_positions_disabled");
+        assert_ne!(harness.state().layout.window(tracker), WindowState::Hidden, "it shows the positions");
+        harness.snapshot("basic_using_vr");
         // Undone in one step.
         harness.key_press_modifiers(Modifiers::COMMAND, Key::Z);
         harness.run_steps(2);
-        assert!(offered(&harness, "Disable position tracking"));
+        assert!(offered(&harness, "Use VR computer"));
         // The Alarm Viewer opens its processor, in basic mode too (without its card there, to be sure it's the button).
         let (viewer, processor) =
             (node_named(harness.state(), "Alarm Viewer"), node_named(harness.state(), "Alarm Processor"));
@@ -2671,6 +2671,104 @@ mod tests {
         let settings = harness.state().graph.get(gain).unwrap().node.settings();
         assert_eq!(settings[0].value, crate::Setting::Gains(gains), "applied");
         harness.state_mut().perform(&ctx, Action::Play);
+    }
+
+    /// Real TCP, real passes and a real recording: everything a VR computer sends ends up in the LTX files, and settings
+    /// sent while recording wait for it to stop.
+    #[test]
+    fn a_vr_computer_is_recorded_and_its_settings_wait_for_recording_to_stop() {
+        use crate::components::vr_computer::VrComputer;
+        use crate::standard_components::recording::{Location, ltx::WriteLtx};
+        use std::io::Write;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let directory = std::env::temp_dir().join(format!("ephys-rs-vr-{}", std::process::id()));
+        let mut graph = Graph::default();
+        let vr = graph.add(Nodes::VrComputer(VrComputer { port, ..Default::default() }), [0.0, 0.0]);
+        let path = directory.display().to_string();
+        let writer = WriteLtx { location: Location::Directory { path }, prefix: "vr".into() };
+        let ltx = graph.add(Nodes::WriteLtx(writer), [300.0, 0.0]);
+        let link = |graph: &mut Graph<Nodes>, from, to| graph.connect(from, to).unwrap();
+        let port_of = |node, role, index| engine::Port { node, role, index };
+        for (output, input) in [(0, 2), (1, 4), (2, 5)] {
+            link(&mut graph, port_of(vr, Role::Output, output), port_of(ltx, Role::Input, input));
+        }
+        link(&mut graph, port_of(ltx, Role::Control, 0), port_of(vr, Role::Setting, 0));
+        let viewer = graph.add(Nodes::LogViewer(Default::default()), [300.0, 300.0]);
+        link(&mut graph, port_of(vr, Role::Output, 2), port_of(viewer, Role::Input, 0));
+
+        let mut harness = harness();
+        harness.state_mut().graph = graph;
+        harness.run_steps(2);
+        let until = |harness: &mut Harness<TestApp>, what: &str, done: &dyn Fn(&TestApp) -> bool| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !done(harness.state()) {
+                assert!(std::time::Instant::now() < deadline, "timed out waiting for {what}");
+                harness.run_steps(1);
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        };
+        let task = |app: &TestApp| match app.graph.get(vr).map(|e| &e.node) {
+            Some(Nodes::VrComputer(node)) => node.custom.get("task").cloned(),
+            _ => None,
+        };
+        let ctx = harness.ctx.clone();
+        harness.state_mut().perform(&ctx, Action::Play);
+        harness.run_steps(1);
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .write_all(b"{\"type\": \"settings\", \"settings\": {\"task\": \"first\", \"maze\": {\"arms\": 8}, \"window_min_x\": 0, \"window_max_x\": 1000, \"window_min_y\": 0, \"window_max_y\": 800, \"pixels_per_metre\": 400}}\n")
+            .unwrap();
+        until(&mut harness, "the settings", &|app| task(app).as_deref() == Some("first"));
+
+        harness.state_mut().perform(&ctx, Action::Record);
+        until(&mut harness, "recording", &|app| app.history.current.snapshot.recording.is_some());
+        stream.write_all(b"{\"type\": \"pos\", \"time\": 1000, \"x\": 100, \"y\": 200}\n").unwrap();
+        stream.write_all(b"{\"type\": \"ttl\", \"time\": 1000.25, \"value\": 1}\n").unwrap();
+        stream.write_all(b"{\"type\": \"log\", \"time\": 1000.5, \"line\": \"trial 1\"}\n").unwrap();
+        stream.write_all(b"{\"type\": \"settings\", \"settings\": {\"task\": \"second\", \"window_min_x\": 0, \"window_max_x\": 1, \"window_min_y\": 0, \"window_max_y\": 1, \"pixels_per_metre\": 1}}\n").unwrap();
+        for _ in 0..30 {
+            harness.run_steps(1);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(task(harness.state()).as_deref(), Some("first"), "not while recording");
+        let exchange = harness.state().runner.as_ref().unwrap().exchange();
+        let history = exchange.get::<crate::standard_components::logs::log_viewer::LogHistory>(viewer).unwrap();
+        assert_eq!(history.lines(), ["trial 1"], "the Log Viewer has it too");
+        harness.state_mut().perform(&ctx, Action::Record);
+        until(&mut harness, "the settings held back", &|app| task(app).as_deref() == Some("second"));
+        harness.state_mut().perform(&ctx, Action::Play);
+        harness.run_steps(1);
+        crate::core::background::wait();
+
+        let file = |extension: &str| {
+            let found = std::fs::read_dir(&directory).unwrap().map(|f| f.unwrap().path());
+            let found: Vec<PathBuf> = found.filter(|p| p.to_string_lossy().ends_with(extension)).collect();
+            assert_eq!(found.len(), 1, "{extension}");
+            std::fs::read(&found[0]).unwrap()
+        };
+        let pos = String::from_utf8_lossy(&file(".pos")).into_owned();
+        for header in ["task first\r\n", "maze.arms 8\r\n", "position_metadata_source vr_computer\r\n"] {
+            assert!(pos.contains(header), "{header:?} in {pos}");
+        }
+        assert!(pos.contains("num_pos_samples 1 "), "{pos}");
+        // Just like a camera's.
+        for header in ["window_max_x 1000\r\n", "pixels_per_metre 400\r\n", "position_coordinate_scale 1\r\n"] {
+            assert!(pos.contains(header), "{header:?} in {pos}");
+        }
+        for repeated in ["\r\nwindow_min_x ", "\r\npixels_per_metre "] {
+            assert_eq!(pos.matches(repeated).count(), 1, "{repeated:?} isn't repeated: {pos}");
+        }
+        let bytes = file(".pos");
+        let start = bytes.windows(10).position(|w| w == b"data_start").unwrap() + 10;
+        let coordinate = |at: usize| u16::from_be_bytes([bytes[start + at], bytes[start + at + 1]]);
+        assert_eq!((coordinate(4), coordinate(6)), (100, 200), "as they came");
+        assert_eq!(coordinate(8), 1023, "no second LED");
+        let ttl = String::from_utf8_lossy(&file(".pos.ttl")).into_owned();
+        assert!(ttl.contains("ttl_source vr_computer") && ttl.contains("ttl_1 0.250000 1\r\n"), "{ttl}");
+        assert_eq!(file(".txt"), b"0.500000 trial 1\r\n", "by the VR computer's clock, from the first position");
+        std::fs::remove_dir_all(&directory).unwrap();
     }
 
     #[test]

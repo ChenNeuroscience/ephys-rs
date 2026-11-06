@@ -10,8 +10,8 @@ cargo run --release -- my-graph.json           # opening a graph file
 Debug builds compile the app without optimisation but its dependencies with it (egui and the rest are many times
 slower otherwise), so they're usable; release builds are what to measure performance with.
 
-Without hardware, [`synthetic_streams/`](../synthetic_streams) has a fake acquisition board and a fake camera (Python,
-standard library only), which nodes use by default. Use the "Use synthetic data" quick action to switch a graph to
+Without hardware, [`synthetic_streams/`](../synthetic_streams) has a fake acquisition board, a fake camera and a fake VR
+computer (Python, standard library only), which nodes use by default. Use the "Use synthetic data" quick action to switch a graph to
 them.
 
 ## Testing
@@ -65,12 +65,61 @@ by the other LEDs' threshold and min area, or its own. The spot isn't looked at 
 
 Its changes come out of the detector's `pos ttl` output as ordinary `Events`, one line, ups and downs, so anything that
 takes TTLs can take them. Each carries the camera's time (`Event::time`), as positions do. Write LTX puts them in
-`.pos.ttl`, counting from the first position, and only makes the file if there's a timing LED.
+`.pos.ttl`, counting from the first position, and only makes the file if there's a timing LED (or the positions aren't a
+camera's: see [the VR Computer](#the-vr-computer)).
 
 Telling a change means remembering the last frame, so the detector's state is carried over, and it's a sync point.
 
 The Tracker View's LED sizes chart shows when it was on as pale blue bars, whether or not its section's hidden: hiding
 only takes it off the video.
+
+## The VR Computer
+
+chen-neuro's [VR Computer](../examples/chen-neuro/src/components/vr_computer.rs) node is an alternative to the camera, for
+a virtual reality task running on another computer. The "Use VR computer" and "Use camera" quick actions swap between
+them. It connects to the IP address and port it's set to, and keeps trying. The VR computer sends a JSON object a line:
+
+| Message | Means |
+| --- | --- |
+| `{"type": "settings", "settings": {"window_min_x": 0, "window_max_x": 800, "window_min_y": 0, "window_max_y": 600, "pixels_per_metre": 400, "maze": {"arms": 8}}}` | The custom settings: a complete snapshot, replacing the last |
+| `{"type": "ttl", "time": 1520.25, "value": 1}` | An up (1) or down (0), on the `pos ttl` output |
+| `{"type": "log", "time": 1520.25, "line": "trial 3 started"}` | A log line, cut short to the node's limit |
+| `{"type": "pos", "time": 1520.26, "x": 412.5, "y": 87.0}` | A position, in made-up pixels, within the window |
+
+The VR computer is expected to send its settings on being connected to, and whenever they change: nothing asks for them.
+The VR computer sends positions as a camera would, in pixels of a made-up frame, so that a recording suits whatever reads a
+camera's, and nothing here scales them. So settings have to have the four `window_*` values, the window positions range
+over (each min below its max), and `pixels_per_metre`: otherwise they're refused, with an error logged, and the node warns
+until it's had them. To keep full resolution, the window needs to span about 1022 pixels; any more is scaled down, as
+a camera's frame is.
+Nested keys are joined with dots (`maze.arms`), and they reach Write LTX through `Detection::custom`, on the node's
+setting, connected to Write LTX's `detection` control. They're written to the `.pos` file as headers of their own, keys as
+they are: one could have a space in it, or be the same as another header, which is for the reader to make sense of. The
+exceptions are the `window_*` values and `pixels_per_metre`, which aren't repeated, as Write LTX has headers of its own for them.
+
+The window goes to Write LTX as `Detection::crop`, a rectangle, and the calibration as a ruler a metre long, so they're
+handled as a camera's are, in the `.pos` file's `window_*`, `position_coordinate_*` and `pixels_per_metre` headers.
+
+Headers are written as recording starts, so settings can't change while recording. Ones that differ log an error and wait:
+only the latest is kept, in the connection's inbox, so it survives a new epoch, and it's proposed once recording stops,
+until the node has it. So a connection's last settings aren't lost, though the recording has the ones it started with.
+
+`time` is required on all but `settings`, in seconds by the VR computer's own clock, which has to be consistent for as long
+as it's connected. It's carried as it came all the way downstream, and when messages arrived plays no part: `PositionSample::time`,
+`Event::time` and each log line's time are the VR computer's values. Only Write LTX moves zero, to the first position
+recorded, for `.pos`, `.pos.ttl` and `.txt` alike, so the three can be compared; they have no known relation to the
+board's samples. The `.txt` file has no headers, and each line is `<seconds> <line>`.
+
+The Tracker View stays on, with the VR Computer's positions and setting connected in place of the detector's. With no
+video input it shows the current position and the recording's path in the window, and the settings, only to read: there's
+nothing to adjust, so it doesn't need telling it's locked, and it edits nothing. It looks as it does with a camera as far
+as it can: the window's drawn as the crop, the position as the first LED, and the LED sizes chart shows the dummy size.
+
+The [Log Viewer](../src/standard_components/logs/log_viewer.rs) shows the log lines with their times, as the VR computer
+sent them, so not counted from anything: it's added and removed with the VR Computer by the quick actions.
+
+`Positions::source` says where positions come from, and is `position_metadata_source` in the `.pos` file, and the prefix of
+its other source-specific headers (`vr_computer.window`). The second LED is always missing, and the first has a size of 1.
 
 ## Alarms
 

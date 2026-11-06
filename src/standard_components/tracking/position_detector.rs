@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use crate::core::engine::{Category, Context, Input, Node, NodeInfo, Output, Pass, SettingPort};
 use crate::standard_components::ephys::{Event, Events};
 use crate::standard_components::tracking::pipeline::{Pipeline, timing_led_on};
+use crate::standard_components::tracking::{CAMERA_TRACKER, PositionSample, Positions};
 use crate::standard_components::tracking::{Crop, Detection, Ruler, TimingLed};
-use crate::standard_components::tracking::{PositionSample, Positions};
 use crate::standard_components::widgets::{named_settings_grid, require_input, setting};
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
 
@@ -52,7 +52,12 @@ impl Node<Edges> for PositionDetector {
     fn outputs(&self, inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {
         let (positions, ttl) = match inputs[0] {
             Some(DataStream::Video(video)) => (
-                Some(DataStream::Positions(Positions { fps: video.fps, width: video.width, height: video.height })),
+                Some(DataStream::Positions(Positions {
+                    fps: video.fps,
+                    width: video.width,
+                    height: video.height,
+                    source: CAMERA_TRACKER,
+                })),
                 Some(DataStream::Events(Events { lines: 1, sample_rate: video.fps })),
             ),
             _ => (None, None),

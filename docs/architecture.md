@@ -84,7 +84,7 @@ buffers made in place or taken, and the threads.
 Besides the GUI, the dispatcher and the workers, nodes can run threads of their own (`Node::threads`), shown in the
 dev tools with why they're needed:
 
-- **Sources** (the board, the camera) capture on a thread, so samples are taken as they come, whatever the passes are
+- **Sources** (the board, the camera, chen-neuro's VR computer) capture on a thread, so samples are taken as they come, whatever the passes are
   doing. Opening one takes a while, so its connection lasts the run rather than an epoch: a new epoch's state joins the
   capture that's running, found in a table of weak references in its module, and the last to let go closes it. A board
   is only opened again for a new configuration, once the old one's closed.
