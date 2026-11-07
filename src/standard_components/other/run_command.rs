@@ -246,11 +246,17 @@ fn shell_script(folder: &Path, pid_file: &Path, status_file: &Path, runs: &[Run]
     script + "exit 0\n"
 }
 
-/// `text`, as a single word on a line of a batch file run with `call`. `call` reads a line twice, so a `%` needs doubling
-/// twice.
+/// `text`, as a single word on a line of a batch file run with `call`: in quotes only if it has to be, as some programs
+/// (`cmd` itself) read their own command line, and a quoted `/C` isn't `/C` to it. `call` reads a line twice, so a `%`
+/// needs doubling twice.
 #[cfg(any(windows, test))]
 fn batch_quoted(text: &str) -> String {
-    format!("\"{}\"", text.replace('"', "\\\"").replace('%', "%%%%"))
+    let text = text.replace('%', "%%%%");
+    let special = |c: char| c.is_whitespace() || "\"&|<>^(),;=".contains(c);
+    if !text.is_empty() && !text.chars().any(special) {
+        return text;
+    }
+    format!("\"{}\"", text.replace('"', "\\\""))
 }
 
 /// A batch file running `runs` from `folder`, in turn, or all at once if `together`, then waiting for a key, so what
@@ -271,11 +277,11 @@ fn batch_script(folder: &Path, status_file: &Path, runs: &[Run], together: bool,
         };
     }
     if together {
-        let count = runs.len();
-        script += &format!(
-            ":waiting\r\n@ping -n 2 127.0.0.1 >nul\r\n@for /f %%n in ('type \"{status_file}\" ^| find /c \"end \"') do \
-             @if %%n LSS {count} goto waiting\r\n"
-        );
+        // Each run's end, in turn: `findstr` says if it's not there yet.
+        script += ":waiting\r\n@ping -n 2 127.0.0.1 >nul\r\n";
+        for index in 0..runs.len() {
+            script += &format!("@findstr /b /c:\"end {index} \" \"{status_file}\" >nul || goto waiting\r\n");
+        }
     }
     if close {
         // Something failed if an end has an exit code other than 0.
@@ -1776,17 +1782,24 @@ mod script_tests {
         let lines: Vec<&str> = script.split("\r\n").collect();
         assert_eq!(lines[1], "@cd /d \"C:\\here 100%%\"");
         assert!(lines.contains(&"@call :run0"), "{script}");
-        assert!(lines.contains(&"call \"C:\\Program Files\\klusta.exe\" \"100%%%%.set\" \"a b\""), "{script}");
+        assert!(lines.contains(&"call \"C:\\Program Files\\klusta.exe\" 100%%%%.set \"a b\""), "{script}");
         assert!(lines.contains(&"@>>\"C:\\status\" echo end 0 %errorlevel%"), "{script}");
         let pause = lines.iter().position(|line| *line == "@pause").unwrap();
         assert!(pause < lines.iter().position(|line| *line == ":run0").unwrap(), "runs are called, not fallen into");
     }
 
     #[test]
+    fn a_batch_file_quotes_only_what_has_to_be() {
+        let run = Run { program: "cmd".into(), arguments: vec!["/C".into(), "exit 3".into(), "a&b".into()] };
+        let script = batch_script(Path::new("C:\\here"), Path::new("C:\\status"), &[run], false, false);
+        assert!(script.contains("call cmd /C \"exit 3\" \"a&b\"\r\n"), "a quoted /C isn't one to cmd: {script}");
+    }
+
+    #[test]
     fn a_batch_file_starts_copies_of_itself_to_run_them_together() {
         let script = batch_script(Path::new("C:\\here"), Path::new("C:\\status"), &[run(), run()], true, false);
         assert!(script.contains("@start \"\" /b cmd /c call \"%~f0\" 1\r\n"), "{script}");
-        assert!(script.contains("@if %%n LSS 2 goto waiting"), "{script}");
+        assert!(script.contains("@findstr /b /c:\"end 1 \" \"C:\\status\" >nul || goto waiting"), "{script}");
         assert!(script.contains("goto run%~1"), "{script}");
         let closing = batch_script(Path::new("C:\\here"), Path::new("C:\\status"), &[run()], false, true);
         let lines: Vec<&str> = closing.split("\r\n").collect();
