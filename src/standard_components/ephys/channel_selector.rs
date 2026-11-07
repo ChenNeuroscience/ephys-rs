@@ -56,6 +56,11 @@ impl Node<Edges> for ChannelSelector {
                       all the channels are passed on.",
     };
 
+    /// Only while it's given something, and something needs what it makes.
+    fn runs_given(&self, inputs: &[bool], outputs: &[bool]) -> bool {
+        inputs.iter().any(|&used| used) && outputs.iter().any(|&used| used)
+    }
+
     type State = Passed;
 
     fn inputs(&self) -> Vec<Input<Edges>> {

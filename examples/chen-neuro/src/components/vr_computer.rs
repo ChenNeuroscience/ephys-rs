@@ -436,8 +436,8 @@ impl Node<Edges> for VrComputer {
                       object a line.",
     };
 
-    /// A source: it runs, with nothing upstream.
-    fn would_run(&self, _inputs: &[bool]) -> bool {
+    /// A source: it runs, with nothing upstream, whether or not anything's using what it makes.
+    fn runs_given(&self, _inputs: &[bool], _outputs: &[bool]) -> bool {
         true
     }
 

@@ -62,6 +62,11 @@ impl Node<Edges> for SpikeGain {
                       values for Write LTX, say): set by hand, or chosen from the data.",
     };
 
+    /// Only while it's given something, and something needs what it makes.
+    fn runs_given(&self, inputs: &[bool], outputs: &[bool]) -> bool {
+        inputs.iter().any(|&used| used) && outputs.iter().any(|&used| used)
+    }
+
     fn inputs(&self) -> Vec<Input<Edges>> {
         vec![Input { name: "spikes", kind: Kind::Spikes }]
     }

@@ -133,6 +133,11 @@ impl Node<Edges> for SpikeDetector {
                       on each of the group's channels around the peak.",
     };
 
+    /// Only while it's given something, and something needs what it makes.
+    fn runs_given(&self, inputs: &[bool], outputs: &[bool]) -> bool {
+        inputs.iter().any(|&used| used) && outputs.iter().any(|&used| used)
+    }
+
     type State = Detector;
 
     fn initial_state(&self, inputs: &[Option<DataStream>]) -> Detector {

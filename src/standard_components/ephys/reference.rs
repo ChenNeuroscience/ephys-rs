@@ -367,6 +367,11 @@ impl Node<Edges> for Reference {
                       it uses, if any.",
     };
 
+    /// Only while it's given something, and something needs what it makes.
+    fn runs_given(&self, inputs: &[bool], outputs: &[bool]) -> bool {
+        inputs.iter().any(|&used| used) && outputs.iter().any(|&used| used)
+    }
+
     type State = Referencing;
 
     fn in_place(&self, _output: usize) -> Option<usize> {

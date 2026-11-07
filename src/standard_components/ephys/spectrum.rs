@@ -118,6 +118,11 @@ impl Node<Edges> for Spectrum {
                       only while something needs it.",
     };
 
+    /// Only while it's given something, and something needs what it makes.
+    fn runs_given(&self, inputs: &[bool], outputs: &[bool]) -> bool {
+        inputs.iter().any(|&used| used) && outputs.iter().any(|&used| used)
+    }
+
     fn inputs(&self) -> Vec<Input<Edges>> {
         vec![Input { name: "continuous", kind: Kind::Continuous }]
     }

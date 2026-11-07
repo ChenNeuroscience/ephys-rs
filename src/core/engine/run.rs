@@ -222,50 +222,110 @@ pub struct Plan<N: NodeSet> {
     bytes: OnceLock<Vec<usize>>,
 }
 
+/// A data edge, as `settle` sees it: from an output to an input, and whether the node it goes to needs it.
+struct Link {
+    from: super::PortRef,
+    to: super::PortRef,
+    needed: bool,
+}
+
+/// How many times a node's asked whether it runs before its answer's taken as it stands (see `settle`).
+const SETTLE_ASKS: usize = 8;
+
+/// Which of `nodes` (each with how many inputs and outputs it has, upstream first) run, as each `answer`s, given which
+/// of its inputs have something running into them that it needs, and which of its outputs have something running
+/// that needs them (see `Node::runs_given`). Everything starts out running, and each is asked in turn; when one's
+/// answer changes, its neighbours are asked again, if what they'd be told has changed, until nothing does.
+///
+/// A node's answer can keep changing, if more in use can make it stop: so after `SETTLE_ASKS`, it's asked once more,
+/// and runs if either of its last two answers was yes, for good. Running when it needn't is better than not when it
+/// should. That's warned of, by its `label`.
+fn settle(
+    nodes: &[(NodeId, usize, usize)],
+    links: &[Link],
+    answer: impl Fn(NodeId, &[bool], &[bool]) -> bool,
+    label: impl Fn(NodeId) -> String,
+) -> Vec<NodeId> {
+    let mut runs: Vec<NodeId> = nodes.iter().map(|(id, _, _)| *id).collect();
+    let mut told: HashMap<NodeId, (Vec<bool>, Vec<bool>)> = HashMap::new();
+    let mut asks: HashMap<NodeId, usize> = HashMap::new();
+    let mut queue: VecDeque<(NodeId, usize, usize)> = nodes.iter().copied().collect();
+    while let Some((id, input_count, output_count)) = queue.pop_front() {
+        let asked = asks.get(&id).copied().unwrap_or(0);
+        if asked > SETTLE_ASKS {
+            continue;
+        }
+        let port = |port| super::PortRef { node: id, port };
+        let inputs: Vec<bool> = (0..input_count)
+            .map(|i| links.iter().any(|l| l.to == port(i) && l.needed && runs.contains(&l.from.node)))
+            .collect();
+        let outputs: Vec<bool> = (0..output_count)
+            .map(|o| links.iter().any(|l| l.from == port(o) && l.needed && runs.contains(&l.to.node)))
+            .collect();
+        if told.get(&id) == Some(&(inputs.clone(), outputs.clone())) {
+            continue;
+        }
+        let was = runs.contains(&id);
+        let mut runs_now = answer(id, &inputs, &outputs);
+        if asked == SETTLE_ASKS {
+            runs_now |= was;
+            log::warn!(
+                "{} kept changing its mind about whether to run, given what it's connected to: it {}",
+                label(id),
+                if runs_now { "runs" } else { "doesn't run" }
+            );
+        }
+        asks.insert(id, asked + 1);
+        told.insert(id, (inputs, outputs));
+        if runs_now == was {
+            continue;
+        }
+        if runs_now {
+            runs.push(id);
+        } else {
+            runs.retain(|r| *r != id);
+        }
+        // What it's connected to is told something different now.
+        for link in links.iter().filter(|l| l.from.node == id || l.to.node == id) {
+            let other = if link.from.node == id { link.to.node } else { link.from.node };
+            if let Some(node) = nodes.iter().find(|(n, _, _)| *n == other)
+                && !queue.iter().any(|(n, _, _)| *n == other)
+            {
+                queue.push_back(*node);
+            }
+        }
+    }
+    // In the order they were given.
+    nodes.iter().map(|(id, _, _)| *id).filter(|id| runs.contains(id)).collect()
+}
+
 impl<N: NodeSet> Plan<N> {
     pub fn new(graph: &Graph<N>) -> Self {
         let resolved = graph.resolve();
         let topological = graph.topological_order();
-        // Each node, upstream first, says whether it would run, given which of its inputs have something running
-        // connected (see `Node::would_run`). Not if it's disabled, or some output can't be known.
-        let mut runs: Vec<NodeId> = Vec::new();
-        for &id in &topological {
-            let (Some(entry), Some(state)) = (graph.get(id), resolved.get(&id)) else { continue };
-            if entry.disabled || state.outputs.iter().any(|o| o.stream.is_none()) {
-                continue;
-            }
-            let running = |input| {
-                graph.edges().iter().any(|e| {
-                    e.dimension == super::Dimension::Data
-                        && e.to == super::PortRef { node: id, port: input }
-                        && graph.is_live(e)
-                        && runs.contains(&e.from.node)
-                })
-            };
-            let inputs: Vec<bool> = (0..state.inputs.len()).map(running).collect();
-            if entry.node.would_run(&inputs) {
-                runs.push(id);
-            }
-        }
-        // Data edges to inputs their nodes need now.
-        let needed_edge = |e: &&super::Edge, runs: &[NodeId]| {
-            e.dimension == super::Dimension::Data
-                && graph.is_live(e)
-                && runs.contains(&e.from.node)
-                && runs.contains(&e.to.node)
-                && graph.get(e.to.node).is_some_and(|n| n.node.needs(e.to.port))
-        };
-        // Only nodes something needs the outputs of run, besides those without inputs or outputs, whose effect is
-        // beyond the graph (sources, viewers, writers): from the last back, as needing passes back along the edges.
-        for &id in topological.iter().rev() {
-            let Some(state) = resolved.get(&id) else { continue };
-            let always = state.inputs.is_empty() || state.outputs.is_empty();
-            let needed = always || graph.edges().iter().any(|e| e.from.node == id && needed_edge(&e, &runs));
-            if !needed {
-                runs.retain(|r| *r != id);
-            }
-        }
-        let data_edges: Vec<_> = graph.edges().iter().filter(|e| needed_edge(e, &runs)).collect();
+        // Which nodes run is up to them (see `settle`): of those that can, not disabled, with every output known.
+        let data: Vec<&super::Edge> =
+            graph.edges().iter().filter(|e| e.dimension == super::Dimension::Data && graph.is_live(e)).collect();
+        let needed = |e: &super::Edge| graph.get(e.to.node).is_some_and(|n| n.node.needs(e.to.port));
+        let can_run: Vec<(NodeId, usize, usize)> = topological
+            .iter()
+            .filter(|id| graph.get(**id).is_some_and(|e| !e.disabled))
+            .filter_map(|id| resolved.get(id).map(|s| (*id, s)))
+            .filter(|(_, s)| s.outputs.iter().all(|o| o.stream.is_some()))
+            .map(|(id, s)| (id, s.inputs.len(), s.outputs.len()))
+            .collect();
+        let links: Vec<Link> = data.iter().map(|e| Link { from: e.from, to: e.to, needed: needed(e) }).collect();
+        let runs = settle(
+            &can_run,
+            &links,
+            |id, inputs, outputs| graph.get(id).is_some_and(|e| e.node.runs_given(inputs, outputs)),
+            |id| graph.get(id).map_or_else(|| format!("{id:?}"), |e| e.label.clone()),
+        );
+        let data_edges: Vec<&super::Edge> = data
+            .iter()
+            .copied()
+            .filter(|e| runs.contains(&e.from.node) && runs.contains(&e.to.node) && needed(e))
+            .collect();
         // Which nodes must run before which: those feeding them, and those reading data another edits in place.
         let mut before: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
         for edge in &data_edges {
@@ -1328,6 +1388,47 @@ pub mod tests {
         let fed = add(&mut graph, "LFP Viewer");
         link(&mut graph, filter, 0, fed, 0);
         assert!(!runs(&graph, filter) && !runs(&graph, fed), "connected, but to nothing running");
+    }
+
+    #[test]
+    fn a_node_that_keeps_changing_its_mind_ends_up_running() {
+        use std::cell::Cell;
+        let (a, b) = (NodeId(1), NodeId(2));
+        let links = [Link {
+            from: super::super::PortRef { node: a, port: 0 },
+            to: super::super::PortRef { node: b, port: 0 },
+            needed: true,
+        }];
+        let asked = Cell::new(0);
+        // a runs only while nothing uses what it makes, and b only while it's given something: round they'd go.
+        let answer = |id, inputs: &[bool], outputs: &[bool]| {
+            asked.set(asked.get() + 1);
+            if id == a { !outputs[0] } else { inputs[0] }
+        };
+        let runs = settle(&[(a, 0, 1), (b, 1, 0)], &links, answer, |id| format!("{id:?}"));
+        assert_eq!(runs, [a, b], "running, when in doubt, and what it feeds with it");
+        assert!(asked.get() <= 2 * (SETTLE_ASKS + 1), "{} asks", asked.get());
+
+        let steady = |_, inputs: &[bool], _: &[bool]| inputs.is_empty() || inputs[0];
+        assert_eq!(settle(&[(a, 0, 1), (b, 1, 0)], &links, steady, |_| String::new()), [a, b]);
+    }
+
+    #[test]
+    fn what_a_node_does_not_need_counts_for_neither_it_nor_what_feeds_it() {
+        let mut graph = Graph::default();
+        let board = add(&mut graph, "Acquisition Board");
+        let spectrum = add(&mut graph, "Spectrum");
+        let viewer = add(&mut graph, "LFP Viewer");
+        link(&mut graph, board, 0, spectrum, 0);
+        link(&mut graph, spectrum, 0, viewer, 1);
+        let runs = |graph: &Graph<Nodes>, id| Plan::new(graph).steps.iter().any(|s| s.id == id);
+        assert!(runs(&graph, spectrum) && runs(&graph, viewer), "it shows the spectra");
+        if let Some(Nodes::LfpViewer(v)) = graph.get_mut(viewer).map(|e| &mut e.node) {
+            v.spectrum = false;
+        }
+        assert!(!runs(&graph, viewer), "the spectra are all it's given, and it doesn't need them");
+        assert!(!runs(&graph, spectrum), "so nothing needs them");
+        assert!(runs(&graph, board), "which needn't stop a source");
     }
 
     #[test]

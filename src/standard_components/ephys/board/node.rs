@@ -90,8 +90,8 @@ impl Node<Edges> for AcquisitionBoard {
                       an Open Ephys board, Intan's RHD USB board, or the fake board in synthetic_streams/.",
     };
 
-    /// A source: it runs, with nothing upstream.
-    fn would_run(&self, _inputs: &[bool]) -> bool {
+    /// A source: it runs, with nothing upstream, whether or not anything's using what it makes.
+    fn runs_given(&self, _inputs: &[bool], _outputs: &[bool]) -> bool {
         true
     }
 

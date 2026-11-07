@@ -44,6 +44,11 @@ impl Node<Edges> for PositionDetector {
                       their positions. A timing LED, in a spot of its own, can be output as a TTL.",
     };
 
+    /// Only while it's given something, and something needs what it makes.
+    fn runs_given(&self, inputs: &[bool], outputs: &[bool]) -> bool {
+        inputs.iter().any(|&used| used) && outputs.iter().any(|&used| used)
+    }
+
     type State = Finding;
 
     fn inputs(&self) -> Vec<Input<Edges>> {

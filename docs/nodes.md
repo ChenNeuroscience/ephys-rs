@@ -38,12 +38,17 @@ settings: the latest, as of the pass.
   `Pass::take_input` always gives the node a buffer: the input's own, if no one edits that data in place and every
   other reader can run first, otherwise a copy the plan makes as soon as the data's made (a copy point, in the dev
   tools). A node that only reads an input doesn't take it.
-- **Whether it runs.** The plan asks each node, upstream first, `would_run(inputs)`: given which of its inputs have
-  something running connected, whether it would. By default, if any has. A node without inputs (a source) has nothing
-  to go by, so says it would for itself. It runs if it would, all its outputs are known, and something needs them
-  (below), unless it has no inputs or no outputs: then its effect is beyond the graph (a source, a viewer, a writer).
+- **Whether it runs.** It's up to the node: `runs_given(inputs, outputs)`, given which of its inputs have something
+  running into them that it needs, and which of its outputs have something running that needs them. The plan starts
+  with everything that can run running, asks each node in turn, upstream first, and whenever one's answer changes, asks
+  its neighbours again, if what they're told has changed, until nothing does. So the answer must depend only on what
+  it's told; and if more in use never makes a node stop, it always settles. A node whose answer keeps changing is asked
+  only so many times, then runs if either of its last two answers was yes, with a warning in the console. By default, a node runs if any input's in use, whether or not its outputs are, as what it does may
+  matter beyond the graph (a viewer, a writer). A node without inputs (a source) says so for itself. A node that only
+  makes data for others runs only while they're in use, as the processing nodes do. A node with an output that can't
+  be known doesn't run.
 - **Needs.** `needs(input)`: whether it needs an input's data now, given its settings. If not, the plan doesn't pass it,
-  and doesn't run a node whose outputs nothing needs (the LFP viewer's spectrum, switched off, stops the
+  and it doesn't count as in use, for it or what feeds it (the LFP viewer's spectrum, switched off, stops the
   [Spectrum](../src/standard_components/ephys/spectrum.rs) node). Changing it changes the plan, so it's for what's
   switched on and off.
 

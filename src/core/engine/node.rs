@@ -378,18 +378,23 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
         None
     }
 
-    /// Whether the node would run, given which of its inputs have something running connected to them (by index).
-    /// The plan asks each node in turn, upstream first, so what runs follows from what's upstream. By default, it runs
-    /// if any input has. A node without inputs (a source) says so for itself: it isn't run otherwise.
-    fn would_run(&self, inputs: &[bool]) -> bool {
-        inputs.iter().any(|&running| running)
+    /// Whether the node runs, given which of its inputs (by index) have something running into them that it needs, and
+    /// which of its outputs have something running that needs them. The plan starts with everything that can run
+    /// running, and asks again whenever what a node would be told changes, until nothing does; so the answer must
+    /// depend on nothing else. It settles as long as more in use never makes a node stop; one that keeps changing its
+    /// mind runs (see `settle`, in `run`).
+    ///
+    /// By default, it runs if any input's in use, whether or not its outputs are: what it does may matter beyond the
+    /// graph (a viewer, a writer). A node without inputs (a source) says so for itself: it isn't run otherwise. A node
+    /// that only makes data for others runs only while they're in use, as the processing nodes do.
+    fn runs_given(&self, inputs: &[bool], _outputs: &[bool]) -> bool {
+        inputs.iter().any(|&used| used)
     }
 
     /// Whether the node needs an input's data now, given its settings (a viewer with part of its view hidden might
-    /// not). If not, the plan doesn't give it the data; and a node whose outputs nothing needs doesn't run at all
-    /// (unless it has no inputs, or no outputs, so its effect is beyond the graph: a source, a viewer or a writer).
-    /// Changing what's needed changes the plan (a new epoch), so it's for what's switched on and off, not what changes
-    /// pass to pass.
+    /// not). If not, the plan doesn't give it the data, and it doesn't count, for either it or what feeds it, in
+    /// deciding whether they run. Changing what's needed changes the plan (a new epoch), so it's for what's switched
+    /// on and off, not what changes pass to pass.
     fn needs(&self, _input: usize) -> bool {
         true
     }
@@ -480,7 +485,7 @@ pub trait NodeSet: Clone + PartialEq + Serialize + DeserializeOwned + Send + Syn
     fn view_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Self::Edges>);
     fn in_place(&self, output: usize) -> Option<usize>;
     fn takes(&self, input: usize) -> bool;
-    fn would_run(&self, inputs: &[bool]) -> bool;
+    fn runs_given(&self, inputs: &[bool], outputs: &[bool]) -> bool;
     fn needs(&self, input: usize) -> bool;
     fn triggers(&self, setting: usize) -> &'static [&'static str];
     fn direct_triggers(&self, setting: usize) -> &'static [&'static str];
@@ -616,8 +621,8 @@ macro_rules! node_set {
                 match self { $($name::$variant(n) => $crate::core::engine::Node::in_place(n, output)),+ }
             }
 
-            fn would_run(&self, inputs: &[bool]) -> bool {
-                match self { $($name::$variant(n) => $crate::core::engine::Node::would_run(n, inputs)),+ }
+            fn runs_given(&self, inputs: &[bool], outputs: &[bool]) -> bool {
+                match self { $($name::$variant(n) => $crate::core::engine::Node::runs_given(n, inputs, outputs)),+ }
             }
 
             fn needs(&self, input: usize) -> bool {
