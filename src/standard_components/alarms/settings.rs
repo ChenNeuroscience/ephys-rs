@@ -5,16 +5,10 @@ use eframe::egui;
 
 use super::{Alarm, AlarmKind, AlarmStates, Alarms, PERIODS, Selection};
 use crate::core::gui::widgets::{Icon, small_toggle_button};
-use crate::standard_components::widgets::{all_checkbox, mark_mixed, settings_grid};
+use crate::standard_components::widgets::{all_checkbox, mark_mixed, power, settings_grid, small_toggle};
 
 /// Between the buttons at the right of an alarm.
 pub const BUTTON_GAP: f32 = 2.0;
-
-/// The button that switches alarms on and off, with `label` as its accessible name.
-pub fn power(ui: &mut egui::Ui, on: &mut bool, label: &str) -> egui::Response {
-    let tip = if *on { "On: click to switch off, keeping the settings" } else { "Off: click to switch on" };
-    toggle(ui, Icon::Power, on, label, tip)
-}
 
 /// The power button for all the alarms, with `some` of them on, of `count`. Returns whether to switch them all on, or off,
 /// if it's clicked.
@@ -28,21 +22,11 @@ pub fn all_power(ui: &mut egui::Ui, some: usize, count: usize) -> Option<bool> {
     } else {
         "All off: click to switch them on"
     };
-    let button = toggle(ui, Icon::Power, &mut all, "All alarms", tip);
+    let button = small_toggle(ui, Icon::Power, &mut all, "All alarms", tip);
     if mixed {
         mark_mixed(ui, &button);
     }
     button.changed().then_some(all)
-}
-
-/// A small icon button for `on`.
-pub fn toggle(ui: &mut egui::Ui, icon: Icon, on: &mut bool, label: &str, tip: &str) -> egui::Response {
-    let mut button = small_toggle_button(ui, icon, label, tip, *on);
-    if button.clicked() {
-        *on = !*on;
-        button.mark_changed();
-    }
-    button
 }
 
 /// An alarm's title, faded while it's off.

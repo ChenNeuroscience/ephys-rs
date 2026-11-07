@@ -1,14 +1,14 @@
-//! The Channel Selector: passes on some of a continuous stream's channels (such as "1-4, 9"), or, until the
-//! selection's applied, all of them. The selection's a setting, which an LFP Viewer downstream can choose: look
-//! through all the channels, tick the ones to keep, then apply it.
+//! The Channel Selector: selects some of a continuous stream's channels (such as "1-4, 9"), perhaps none, and passes on
+//! those while the selection's on, or all of them while it's off. The selection's a setting, which an LFP Viewer downstream
+//! can choose: look through all the channels, click the numbers of the ones to keep, then apply it.
 
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 
 use crate::core::engine::{Category, Context, Input, Node, NodeInfo, Output, Pass, PassState, SettingPort};
-use crate::standard_components::ephys::reference::parse_channels;
+use crate::standard_components::ephys::reference::{channels_ui, parse_channels};
 use crate::standard_components::ephys::{ChannelSelection, Continuous};
-use crate::standard_components::widgets::{input_summary, require_input, setting, settings_grid};
+use crate::standard_components::widgets::{inline_block, input_summary, power, require_input};
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -27,10 +27,10 @@ impl Default for ChannelSelector {
 }
 
 impl ChannelSelector {
-    /// The channels passed on, of `count`: the selection, if it's applied and makes sense, else all.
+    /// The channels passed on, of `count`: the selection, perhaps none, if it's applied and makes sense, else all.
     pub fn passed(&self, count: u32) -> Vec<u32> {
         match parse_channels(&self.channels, count) {
-            Ok(channels) if self.apply && !channels.is_empty() => channels,
+            Ok(channels) if self.apply => channels,
             _ => (0..count).collect(),
         }
     }
@@ -52,7 +52,8 @@ impl Node<Edges> for ChannelSelector {
     const INFO: NodeInfo = NodeInfo {
         name: "Channel Selector",
         category: Category::Processing,
-        description: "Passes on some of the channels: all of them until the selection's applied.",
+        description: "Select individual channels, then switch the selection on or off as a whole: while it's off, \
+                      all the channels are passed on.",
     };
 
     type State = Passed;
@@ -74,14 +75,10 @@ impl Node<Edges> for ChannelSelector {
 
     fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
         let mut warnings = require_input(inputs, "a continuous data stream");
-        if let Some(DataStream::Continuous(c)) = inputs[0] {
-            match parse_channels(&self.channels, c.channels) {
-                Err(e) => warnings.push(format!("{e}: passing on all the channels")),
-                Ok(channels) if channels.is_empty() && self.apply => {
-                    warnings.push("No channels selected: passing on all of them".into())
-                }
-                _ => {}
-            }
+        if let Some(DataStream::Continuous(c)) = inputs[0]
+            && let Err(e) = parse_channels(&self.channels, c.channels)
+        {
+            warnings.push(format!("{e}: passing on all the channels"));
         }
         warnings
     }
@@ -117,12 +114,24 @@ impl Node<Edges> for ChannelSelector {
     }
 
     fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
-        settings_grid(ui, |ui| {
-            setting(ui, "Channels", |ui| {
-                ui.text_edit_singleline(&mut self.channels).on_hover_text("Such as \"all\" or \"1-4, 9\"")
+        let count = match context.inputs[0] {
+            Some(DataStream::Continuous(c)) => c.channels,
+            _ => 64,
+        };
+        let apply = &mut self.apply;
+        channels_ui(ui, "Selected", &mut self.channels, count, |ui, selected| {
+            // Together, on the next line if they won't fit on this one.
+            inline_block(ui, "apply", false, |ui| {
+                power(ui, apply, "Apply selection");
+                if *apply {
+                    ui.label("Selection applied");
+                } else if selected < count as usize {
+                    let text = if selected == 0 { "Nothing selected" } else { "Selection pending" };
+                    ui.colored_label(ui.visuals().error_fg_color, text);
+                }
             });
-            setting(ui, "Apply", |ui| ui.checkbox(&mut self.apply, "pass on only these"));
         });
+        ui.add_space(4.0);
         input_summary(ui, context.inputs);
     }
 }
@@ -157,5 +166,142 @@ mod tests {
         assert_eq!(run(&selector), vec![0.0, 1.0, 2.0, 3.0], "all, until applied");
         selector.apply = true;
         assert_eq!(run(&selector), vec![1.0, 3.0]);
+        selector.channels = "none".into();
+        assert_eq!(run(&selector), Vec::<f32>::new(), "nothing, if that's what's selected");
+        assert!(selector.warnings(&[Some(DataStream::Continuous(stream))]).is_empty());
+    }
+
+    /// The rig with nothing selected, and every kind of node that takes continuous data taking that, and every kind that
+    /// takes what those make of it: all of it runs on real samples, records and draws, with no channels at all.
+    #[test]
+    fn nothing_selected_runs_records_and_draws_everything_after_it() {
+        use crate::core::base_directory::Place;
+        use crate::core::engine::{Graph, NodeSet, Port, Recording, Role, Runner, Snapshot};
+        use crate::standard_components::ephys::board::{Source, serve_test_board};
+        use crate::standard_components::themes::THEMES;
+        use crate::{Nodes, example_graph};
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+
+        let mut graph = example_graph();
+        let ids: Vec<_> = graph.ids().collect();
+        let of_type = |graph: &Graph<Nodes>, name: &str| {
+            ids.iter().copied().find(|id| graph.get(*id).is_some_and(|e| e.node.info().name == name)).unwrap()
+        };
+        let selector = of_type(&graph, "Channel Selector");
+        if let Some(Nodes::ChannelSelector(s)) = graph.get_mut(selector).map(|e| &mut e.node) {
+            (s.apply, s.channels) = (true, "none".into());
+        }
+        let board = of_type(&graph, "Acquisition Board");
+        if let Some(Nodes::AcquisitionBoard(b)) = graph.get_mut(board).map(|e| &mut e.node) {
+            b.source = Source::Fake { address: serve_test_board() };
+        }
+        // A node of each type taking what `from` has, of the kinds in `kinds`.
+        let takers = |graph: &mut Graph<Nodes>, from: &[(Kind, Port)]| {
+            let mut added = Vec::new();
+            for index in 0..Nodes::TYPES.len() {
+                let node = Nodes::create(index);
+                let inputs: Vec<_> = (node.inputs().iter().enumerate())
+                    .filter_map(|(input, i)| from.iter().find(|(kind, _)| *kind == i.kind).map(|f| (input, f.1)))
+                    .collect();
+                if !inputs.is_empty() {
+                    let id = graph.add(node, [0.0, 0.0]);
+                    added.push(id);
+                    for (input, port) in inputs {
+                        graph.connect(port, Port { node: id, role: Role::Input, index: input }).unwrap();
+                    }
+                }
+            }
+            added
+        };
+        let selected = Port { node: selector, role: Role::Output, index: 0 };
+        let first = takers(&mut graph, &[(Kind::Continuous, selected)]);
+        let resolved = graph.resolve();
+        let made: Vec<(Kind, Port)> = (first.iter())
+            .flat_map(|&node| {
+                let outputs = resolved[&node].outputs.iter().enumerate();
+                outputs.map(move |(index, o)| (o.kind, Port { node, role: Role::Output, index }))
+            })
+            .filter(|(kind, _)| matches!(kind, Kind::Spikes | Kind::Spectra))
+            .collect();
+        assert!(made.len() >= 2, "some spikes and spectra, of no channels");
+        takers(&mut graph, &made);
+        let resolved = graph.resolve();
+        let stream = &resolved[&selector].outputs[0].stream;
+        assert!(matches!(stream, Some(DataStream::Continuous(c)) if c.channels == 0));
+
+        let dir = std::env::temp_dir().join(format!("ephys-rs-nothing-selected-{}", std::process::id()));
+        let snapshot = Snapshot::new(0, graph.clone(), None);
+        let runner = Runner::start(&snapshot, 2);
+        let place = Place { directory: dir.clone(), prefix: Some("trial a".into()) };
+        let recording = snapshot.with_recording(1, Some(Arc::new(Recording::prepare(&snapshot, Some(place)))));
+        assert!(runner.update(&recording), "recording carries on the same run");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while runner.clock() < 0.5 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(runner.clock() >= 0.5, "samples came through, to {} s", runner.clock());
+
+        for id in graph.ids().collect::<Vec<_>>() {
+            let inputs = resolved[&id].input_streams.clone();
+            let mut graph = graph.clone();
+            let exchange = Some(runner.exchange());
+            let mut harness = egui_kittest::Harness::builder().with_size([800.0, 600.0]).build_ui(|ui| {
+                graph.edit(id, &inputs, &THEMES[0].colours, exchange, None, true, false, None, |node, context| {
+                    node.settings_ui(ui, context);
+                    if node.has_view() {
+                        node.view_ui(ui, context);
+                    }
+                });
+            });
+            harness.run_steps(2);
+        }
+
+        runner.update(&recording.with_recording(2, None));
+        drop(runner);
+        crate::core::background::wait();
+        let mut files = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path());
+        let tetrode = files.find(|p| p.extension().is_some_and(|x| x == "1")).expect("the spikes' file");
+        assert!(std::fs::metadata(tetrode).unwrap().len() > 400, "the spikes, not selected, have been recorded");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The channels are chosen from a checkbox each, and one for all of them, as a Reference's are.
+    #[test]
+    fn its_settings_are_a_checkbox_for_each_channel() {
+        use crate::core::engine::{Graph, NodeSet};
+        use crate::standard_components::themes::THEMES;
+        use egui_kittest::kittest::Queryable as _;
+        let mut harness = egui_kittest::Harness::builder().with_size([340.0, 220.0]).wgpu().build_ui_state(
+            |ui, selector: &mut ChannelSelector| {
+                let mut graph = Graph::<crate::Nodes>::default();
+                let index = crate::Nodes::TYPES.iter().position(|t| t.name == "Channel Selector").unwrap();
+                let id = graph.add(crate::Nodes::create(index), [0.0, 0.0]);
+                let stream = Continuous { channels: 16, sample_rate: 30000.0 };
+                let inputs = [Some(DataStream::Continuous(stream))];
+                graph.edit(id, &inputs, &THEMES[0].colours, None, None, false, false, None, |_, context| {
+                    selector.settings_ui(ui, context)
+                });
+            },
+            ChannelSelector { apply: false, channels: "1-4".into() },
+        );
+        THEMES[0].apply(&harness.ctx);
+        harness.run_steps(3);
+        harness.get_by_label("Selected 4 of the 16 channels");
+        harness.get_by_label("Selection pending");
+        harness.snapshot("channel_selector_settings");
+        harness.get_by_label(" 9").click();
+        harness.run_steps(2);
+        assert_eq!(harness.state().channels, "1-4, 9");
+        harness.get_by_label("All").click();
+        harness.run_steps(2);
+        assert_eq!(harness.state().channels, "all");
+        assert!(harness.query_by_label("Selection pending").is_none(), "nothing left out");
+        // Narrower with nothing to say, the power button moves up beside All, which takes a frame more.
+        harness.run_steps(2);
+        harness.get_by_label("Apply selection").click();
+        harness.run_steps(2);
+        assert!(harness.state().apply);
+        harness.get_by_label("Selection applied");
     }
 }

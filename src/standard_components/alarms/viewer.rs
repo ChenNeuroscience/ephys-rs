@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 use eframe::egui::{self, Color32, CornerRadius, RichText, Stroke};
 use serde::{Deserialize, Serialize};
 
-use super::settings::{BUTTON_GAP, all_power, power, title, toggle};
+use super::settings::{BUTTON_GAP, all_power, title};
 use super::tone::Tone;
 use super::{Alarm, AlarmKind, AlarmState, AlarmStates, Alarms, Phase, Source};
 use crate::core::engine::{
@@ -31,6 +31,7 @@ use crate::core::theme::Colours;
 use crate::standard_components::pool::{Pool, SharedPool};
 use crate::standard_components::preview;
 use crate::standard_components::widgets::{mark_mixed, open_settings_button, require_input};
+use crate::standard_components::widgets::{power, small_toggle};
 use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
 
 /// Its one control: the processor's alarms.
@@ -263,7 +264,7 @@ fn sound_button(ui: &mut egui::Ui, on: &mut bool, label: &str) -> egui::Response
     } else {
         "Quiet: click for pips as it goes off, while recording"
     };
-    toggle(ui, Icon::Sound, on, label, tip)
+    small_toggle(ui, Icon::Sound, on, label, tip)
 }
 
 /// Moves on `seconds`, keeping `going_off` up to date with `states`, and calling `pip` with an alarm and how many pips it's
@@ -395,7 +396,7 @@ fn all_row(
                         let button = ui
                             .add_enabled_ui(any, |ui| {
                                 let button = match tip {
-                                    Some(tip) => toggle(ui, Icon::Sound, &mut all, "All sound", tip),
+                                    Some(tip) => small_toggle(ui, Icon::Sound, &mut all, "All sound", tip),
                                     None => sound_button(ui, &mut all, "All sound"),
                                 };
                                 if mixed {

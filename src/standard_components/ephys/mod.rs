@@ -27,7 +27,7 @@ impl EdgeType for Continuous {
     const INFO: EdgeInfo = EdgeInfo {
         name: "continuous",
         colour: Color32::from_rgb(90, 160, 255),
-        description: "Regularly sampled voltages, one or more channels.",
+        description: "Regularly sampled voltages, on any number of channels, even none.",
     };
 
     fn summary(&self) -> String {

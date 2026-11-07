@@ -11,6 +11,7 @@ use eframe::egui::{self, Color32, RichText};
 use serde::{Deserialize, Serialize};
 
 use crate::core::engine::{Category, Context, EdgeInfo, EdgeType, Input, Node, NodeInfo, Output, Pass, SettingPort};
+use crate::core::gui::widgets::{Icon, small_toggle_button};
 use crate::standard_components::ephys::{Continuous, ContinuousBuffer};
 use crate::standard_components::widgets::{all_checkbox, input_summary, require_input, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
@@ -175,10 +176,13 @@ fn with_channel(set: &str, number: u32, count: u32, wanted: bool) -> String {
     format_channels(&channels, count)
 }
 
+/// The space below each reference in the settings, setting them apart.
+const REFERENCES_GAP: f32 = 12.0;
+
 impl Reference {
-    /// How many channels its reference output has: one each (and one of zeros if there are none, to be a stream at all).
+    /// How many channels its reference output has: one each.
     pub fn references(&self) -> usize {
-        self.list.len().max(1)
+        self.list.len()
     }
 
     /// Adds a reference, of the channels using none, of the `count` there are, which they use.
@@ -404,7 +408,7 @@ impl Node<Edges> for Reference {
             let Some(r) = state.reference_of.get(channel).copied().flatten() else { continue };
             subtract(output.channel_mut(channel), &state.values[r * n..(r + 1) * n]);
         }
-        // The references themselves (none: a channel of zeros).
+        // The references themselves.
         if let Some(Buffer::Continuous(references)) = pass.outputs.get_mut(1) {
             references.len = n.min(references.capacity);
             for r in 0..references.channels {
@@ -460,17 +464,26 @@ impl Node<Edges> for Reference {
                 .strong()
                 .color(reference_colour(index));
             ui.push_id(reference.id, |ui| {
-                egui::CollapsingHeader::new(title).default_open(true).show(ui, |ui| {
+                // The line down its left, in its colour, to hold together all that's its.
+                ui.visuals_mut().widgets.noninteractive.bg_stroke = egui::Stroke::new(2.0, reference_colour(index));
+                let section = egui::CollapsingHeader::new(title).default_open(true).show(ui, |ui| {
                     settings_grid(ui, |ui| {
                         setting(ui, "Method", |ui| method_ui(ui, &mut reference.method));
                     });
                     ui.add_space(4.0);
-                    channels_ui(ui, &mut reference.channels, count);
-                    if ui.small_button(format!("Remove reference {}", index + 1)).clicked() {
-                        remove = Some(index);
-                    }
+                    channels_ui(ui, "Made from", &mut reference.channels, count, |_, _| {});
                 });
+                // Right after its title, there whether or not it's open.
+                let title = section.header_response.rect;
+                let place = title.with_min_x(title.right() + 4.0).with_max_x(ui.max_rect().right());
+                let layout = egui::Layout::left_to_right(egui::Align::Center);
+                let mut buttons = ui.new_child(egui::UiBuilder::new().max_rect(place).layout(layout));
+                let label = format!("Delete reference {}", index + 1);
+                if small_toggle_button(&mut buttons, Icon::Delete, &label, "Delete this reference", false).clicked() {
+                    remove = Some(index);
+                }
             });
+            ui.add_space(REFERENCES_GAP);
         }
         if let Some(index) = remove {
             self.list.remove(index);
@@ -485,7 +498,7 @@ impl Node<Edges> for Reference {
     }
 }
 
-/// Which reference each channel uses, or none, a row each, with a row for all of them at the top.
+/// Which reference each channel uses, or none, a row each, with a checkbox for all of them at the top of each column.
 fn uses_ui(ui: &mut egui::Ui, reference: &mut Reference, count: u32) {
     ui.strong("Which each channel uses");
     let references = reference.list.len();
@@ -495,8 +508,10 @@ fn uses_ui(ui: &mut egui::Ui, reference: &mut Reference, count: u32) {
     }
     let using = |reference: &Reference| (0..count).map(|c| reference.used_by(c)).collect::<Vec<_>>();
     let chosen = using(reference);
-    // Clicked: a channel and what it's to use, or for all of them.
-    let mut picked: Option<(Option<u32>, Option<usize>)> = None;
+    // Clicked: a channel and what it's to use.
+    let mut picked: Option<(u32, Option<usize>)> = None;
+    // Clicked at the top of a column: what's to be used by all of them, or (if it's on) by none of them.
+    let mut column: Option<(Option<usize>, bool)> = None;
     egui::ScrollArea::vertical().max_height(240.0).id_salt("uses").show(ui, |ui| {
         egui::Grid::new("uses").num_columns(references + 2).striped(true).spacing([14.0, 2.0]).show(ui, |ui| {
             ui.label("");
@@ -505,34 +520,35 @@ fn uses_ui(ui: &mut egui::Ui, reference: &mut Reference, count: u32) {
                 ui.label(RichText::new((index + 1).to_string()).color(reference_colour(index)));
             }
             ui.end_row();
-            let row = |ui: &mut egui::Ui, on: &dyn Fn(Option<usize>) -> bool, channel, name: String| {
-                let mut clicked = None;
-                let label = ui.label(name);
-                for option in std::iter::once(None).chain((0..references).map(Some)) {
-                    if ui.radio(on(option), "").labelled_by(label.id).clicked() {
-                        clicked = Some((channel, option));
+            let options = || std::iter::once(None).chain((0..references).map(Some));
+            ui.label("");
+            for option in options() {
+                let using = chosen.iter().filter(|used| **used == option).count();
+                if let Some(all) = all_checkbox(ui, using, count as usize, "") {
+                    column = Some((option, all));
+                }
+            }
+            ui.end_row();
+            for channel in 0..count {
+                let label = ui.label((channel + 1).to_string());
+                for option in options() {
+                    if ui.radio(chosen[channel as usize] == option, "").labelled_by(label.id).clicked() {
+                        picked = Some((channel, option));
                     }
                 }
                 ui.end_row();
-                clicked
-            };
-            let all = |option: Option<usize>| chosen.iter().all(|used| *used == option);
-            picked = row(ui, &all, None, "All".into());
-            for channel in 0..count {
-                let on = |option: Option<usize>| chosen[channel as usize] == option;
-                picked = row(ui, &on, Some(channel), (channel + 1).to_string()).or(picked);
             }
         });
     });
-    match picked {
-        Some((None, Some(index))) => reference.set_all_use(index, true),
-        Some((None, None)) => reference.clear_use(),
-        Some((Some(channel), option)) => match (option, chosen[channel as usize]) {
-            (Some(index), used) if used != Some(index) => reference.toggle_use(index, channel, count),
-            (None, Some(used)) => reference.toggle_use(used, channel, count),
-            _ => {}
-        },
-        None => {}
+    match column {
+        Some((Some(index), all)) => reference.set_all_use(index, all),
+        Some((None, true)) => reference.clear_use(),
+        _ => {}
+    }
+    match picked.map(|(channel, option)| (channel, option, chosen[channel as usize])) {
+        Some((channel, Some(index), used)) if used != Some(index) => reference.toggle_use(index, channel, count),
+        Some((channel, None, Some(used))) => reference.toggle_use(used, channel, count),
+        _ => {}
     }
 }
 
@@ -577,16 +593,24 @@ pub fn method_ui(ui: &mut egui::Ui, method: &mut Method) -> egui::Response {
         .response
 }
 
-/// The channels a reference is made from, a checkbox each, in rows as wide as fit; and one for all of them.
-fn channels_ui(ui: &mut egui::Ui, text: &mut String, count: u32) {
+/// A set of channels such as "1-4, 9" (see `parse_channels`), of `count`: a checkbox each, in rows as wide as fit, and one
+/// for all of them, beside a `heading` saying how many it is, then `beside`, given how many that is.
+pub fn channels_ui(
+    ui: &mut egui::Ui,
+    heading: &str,
+    text: &mut String,
+    count: u32,
+    beside: impl FnOnce(&mut egui::Ui, usize),
+) {
     let mut chosen: Vec<u32> = parse_channels(text, count).unwrap_or_default();
-    ui.horizontal(|ui| {
-        ui.label(RichText::new(format!("Made from {} of the {count} channels", chosen.len())).strong());
+    ui.horizontal_wrapped(|ui| {
+        ui.label(RichText::new(format!("{heading} {} of the {count} channels", chosen.len())).strong());
         match all_checkbox(ui, chosen.len(), count as usize, "All") {
             Some(true) => *text = "all".into(),
             Some(false) => *text = "none".into(),
             None => {}
         }
+        beside(ui, chosen.len());
     });
     let across = ((ui.available_width() / 48.0) as u32).clamp(4, 16);
     let mut changed = false;
@@ -698,7 +722,7 @@ mod tests {
             made(1, Method::Mean, "none", "all"),
             made(2, Method::Mean, "3", "all"),
         ]);
-        assert_eq!((reference.references(), of(vec![]).references()), (3, 1));
+        assert_eq!((reference.references(), of(vec![]).references()), (3, 0));
         let outputs = reference.outputs(&[Some(DataStream::Continuous(stream))]);
         assert_eq!(outputs[1].stream, Some(DataStream::Continuous(Continuous { channels: 3, ..stream })));
         let mut input = stream.buffer(PASS_DURATION);
@@ -824,25 +848,36 @@ mod tests {
         assert_eq!(reference(&harness).list.len(), 2);
         harness.snapshot("reference_settings_uses");
 
-        // A row each, of None, 1 and 2, below All's. Channel 3 to the second, of 1-16 using the first.
+        // A row each, of None, 1 and 2. Channel 3 to the second, of 1-16 using the first.
         let radio = |harness: &egui_kittest::Harness<Graph<Nodes>>, row: usize, column: usize| {
             let radios: Vec<_> = harness.get_all_by_role(egui::accesskit::Role::RadioButton).collect();
             radios[row * 3 + column].click();
         };
-        radio(&harness, 3, 2);
+        radio(&harness, 2, 2);
         harness.run_steps(2);
         assert_eq!(reference(&harness).used_by(2), Some(1));
         assert_eq!(reference(&harness).used_by(1), Some(0), "the rest as they were");
-        radio(&harness, 3, 0);
+        radio(&harness, 2, 0);
         harness.run_steps(2);
         assert_eq!(reference(&harness).used_by(2), None, "none");
-        radio(&harness, 0, 2);
+        // The checkboxes at the top of those columns, the last on the page.
+        let column = |harness: &egui_kittest::Harness<Graph<Nodes>>, column: usize| {
+            let checkboxes: Vec<_> = harness.get_all_by_role(egui::accesskit::Role::CheckBox).collect();
+            checkboxes[checkboxes.len() - 3 + column].click();
+        };
+        column(&harness, 2);
         harness.run_steps(2);
         assert!((0..16).all(|c| reference(&harness).used_by(c) == Some(1)), "all of them");
-        radio(&harness, 0, 0);
+        column(&harness, 2);
         harness.run_steps(2);
-        assert!((0..16).all(|c| reference(&harness).used_by(c).is_none()));
-        harness.get_by_label("Remove reference 2").click();
+        assert!((0..16).all(|c| reference(&harness).used_by(c).is_none()), "and none");
+        column(&harness, 1);
+        harness.run_steps(2);
+        assert!((0..16).all(|c| reference(&harness).used_by(c) == Some(0)));
+        column(&harness, 0);
+        harness.run_steps(2);
+        assert!((0..16).all(|c| reference(&harness).used_by(c).is_none()), "None, for all of them");
+        harness.get_by_label("Delete reference 2").click();
         harness.run_steps(2);
         assert_eq!(reference(&harness).list.len(), 1);
     }

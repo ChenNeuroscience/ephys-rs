@@ -10,7 +10,7 @@ use crate::core::engine::{Category, Context, EdgeType, Input, Node, NodeInfo, Ou
 use crate::standard_components::ephys::Events;
 use crate::standard_components::pool::{Pool, SharedPool};
 use crate::standard_components::preview;
-use crate::standard_components::widgets::{require_input, setting, settings_grid};
+use crate::standard_components::widgets::{TIME_AXIS_HEIGHT, require_input, setting, settings_grid, time_axis_ui};
 use crate::{Buffer, DataStream, Edges, Kind};
 
 /// The most changes kept, however many come.
@@ -211,9 +211,9 @@ impl Node<Edges> for TtlViewer {
 }
 
 impl TtlViewer {
-    /// The lines, each `row` high.
+    /// The lines, each `row` high, and below them, the time.
     fn lines_ui(ui: &mut egui::Ui, display: &LinesDisplay, row: f32, theme: &crate::core::theme::Colours) {
-        let size = egui::vec2(ui.available_width(), row * display.lines as f32);
+        let size = egui::vec2(ui.available_width(), row * display.lines as f32 + TIME_AXIS_HEIGHT);
         let (rect, hover) = ui.allocate_exact_size(size, egui::Sense::hover());
         let painter = ui.painter_at(rect);
         // Line numbers on the left, counts on the right.
@@ -223,6 +223,9 @@ impl TtlViewer {
         let (left, right) = crate::core::time_axis::window(0.0, display.now, display.span);
         let x = |time: f64| trace.left() + ((time - left) / (right - left)) as f32 * trace.width();
         let font = FontId::monospace(11.0);
+        let bottom = rect.bottom() - TIME_AXIS_HEIGHT;
+        let axis = egui::Rect::from_x_y_ranges(trace.x_range(), bottom..=rect.bottom());
+        time_axis_ui(&painter, axis, (left, right), theme);
         for line in 0..display.lines {
             let top = rect.top() + row * line as f32;
             let (high, low) = (top + row * 0.25, top + row * 0.75);
@@ -339,5 +342,9 @@ mod tests {
         THEMES[0].apply(&harness.ctx);
         harness.run_steps(3);
         harness.snapshot("ttl_viewer");
+        // With room for them all, the time's below them.
+        harness.set_size(egui::vec2(600.0, 480.0));
+        harness.run_steps(3);
+        harness.snapshot("ttl_viewer_time_axis");
     }
 }

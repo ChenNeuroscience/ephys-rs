@@ -1,6 +1,7 @@
 //! A chart of the two LEDs' sizes over the last few seconds, below the Tracker View's video: steady lines
 //! mean steady tracking; gaps are frames where an LED wasn't found. Pale blue bars are when the timing LED was on.
 
+use crate::standard_components::widgets::nice_step;
 use std::collections::VecDeque;
 
 use eframe::egui::{self, Color32};
@@ -59,12 +60,6 @@ pub fn chart(ui: &mut egui::Ui, history: &History) {
                 }
             }
         });
-}
-
-/// A round tick spacing (1, 2 or 5 times a power of ten) of at least `raw`.
-fn nice_step(raw: f64) -> f64 {
-    let power = 10f64.powf(raw.max(1e-9).log10().floor());
-    [1.0, 2.0, 5.0, 10.0].into_iter().map(|m| m * power).find(|&s| s >= raw).unwrap()
 }
 
 /// Runs of consecutive frames in which LED `i` was found, as (seconds after `start`, area) points.

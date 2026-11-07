@@ -1,6 +1,7 @@
 //! The LFP Viewer: scrolling traces of continuous data, a row per channel, each at a fixed height (scrolled
 //! through), each with a y axis of the scale chosen, and beside each, its spectrum over a band of interest (from a
-//! Spectrum node, which only runs while the spectrum's on: see `Node::needs`).
+//! Spectrum node, which only runs while the spectrum's on: see `Node::needs`). The time's along the bottom, after the last
+//! channel.
 //!
 //! Each pass adds its samples to a few seconds' worth for each channel shown, kept as the lowest and highest
 //! sample in each of the view's columns (so spikes show however far it's zoomed out).
@@ -8,13 +9,14 @@
 //! It sets what's upstream of it and beside it, through its controls (as the Spike Viewer does the spikes'):
 //! - an Continuous Gain's gains (what the continuous data's recorded at): each row shows the range they fit, and their
 //!   auto-detect can be run from here;
-//! - a Channel Selector's selection, upstream: tick the channels to keep, while all are shown, then apply it;
-//! - a Reference's references (the spikes' re-referencing, from the same channels): a column of Rs for each, an R putting
-//!   its channel in that reference and having it use it, as a channel's in one at most here. Settings can say otherwise
-//!   (see `Reference::agrees`), when its Rs can't be changed. The traces themselves aren't referenced. Connected to the
-//!   Reference's reference output too, it shows the references themselves, in rows of their own at the top, with what's
-//!   particular to each: otherwise that's in the toolbar. Each reference has a colour, for telling which row's which
-//!   column: the channels are neutral, to leave the colours to them.
+//! - a Channel Selector's selection, upstream: click the numbers of the channels to keep, while all are shown, then apply
+//!   it, from above the first channel;
+//! - a Reference's references (the spikes' re-referencing, from the same channels): a column of Rs for each, left of the
+//!   channels' numbers, an R putting its channel in that reference and having it use it, as a channel's in one at most
+//!   here. Settings can say otherwise (see `Reference::agrees`), when its Rs can't be changed. The traces themselves aren't
+//!   referenced. Connected to the Reference's reference output too, it shows the references themselves, in rows of their
+//!   own at the top, with what's particular to each: otherwise that's in the toolbar. Each reference has a colour, for
+//!   telling which row's which column: the channels are neutral, to leave the colours to them.
 
 use eframe::egui::{self, Align2, FontId, Pos2, Rect, Sense, Shape, Stroke};
 use serde::{Deserialize, Serialize};
@@ -31,7 +33,7 @@ use crate::standard_components::pool::{Pool, SharedPool};
 use crate::standard_components::preview;
 use crate::standard_components::spikes::{Channels, GainScope, Gains};
 use crate::standard_components::widgets::{
-    open_settings_button, require_input, setting, settings_grid, toolbar_section,
+    TIME_AXIS_HEIGHT, inline_block, open_settings_button, require_input, setting, settings_grid, time_axis_ui,
 };
 use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
 
@@ -81,6 +83,8 @@ pub struct Traces {
     filled: usize,
     /// Columns filled since starting (up to `COLUMNS`).
     columns: usize,
+    /// Samples so far, to tell the time.
+    samples: u64,
     shown: SharedPool<TracesDisplay>,
 }
 
@@ -129,6 +133,7 @@ impl Traces {
             let (_, shown, references, _) = shape;
             *self = Traces {
                 rate: self.rate,
+                samples: self.samples,
                 shape,
                 lows: vec![0.0; (shown + references) * COLUMNS],
                 highs: vec![0.0; (shown + references) * COLUMNS],
@@ -152,6 +157,9 @@ pub struct TracesDisplay {
     /// How many references there are, in rows after the channels'.
     references: usize,
     columns: usize,
+    /// Seconds since acquisition started, at the end of the last pass, and in a column.
+    now: f64,
+    column_seconds: f64,
     lows: Vec<f32>,
     highs: Vec<f32>,
     /// Each channel's spectrum, if it's being worked out.
@@ -167,6 +175,8 @@ struct Rows<'a> {
     reference: Option<&'a Reference>,
     /// Whether the app's in advanced mode, where the Reference's settings can be got to.
     advanced: bool,
+    /// What goes beside the button applying the selection: a button for its settings, in advanced mode.
+    selection_settings: Option<&'a mut dyn FnMut(&mut egui::Ui)>,
 }
 
 impl Node<Edges> for LfpViewer {
@@ -214,7 +224,7 @@ impl Node<Edges> for LfpViewer {
         let Some(Some(Buffer::Continuous(input))) = pass.inputs.first() else { return };
         let rate = traces.rate;
         // Every channel: the view scrolls through them.
-        let (first, shown) = (0, input.channels.max(1));
+        let (first, shown) = (0, input.channels);
         let per_column = ((self.span as f64 * rate as f64) / COLUMNS as f64).round().max(1.0) as usize;
         let references = match pass.inputs.get(2) {
             Some(Some(Buffer::Continuous(references))) => Some(references),
@@ -223,6 +233,9 @@ impl Node<Edges> for LfpViewer {
         let count = references.map_or(0, |r| r.channels);
         traces.reshape((first, shown, count, per_column));
         traces.add(input, first, references);
+        traces.samples += input.len as u64;
+        let now = traces.samples as f64 / rate as f64;
+        let column_seconds = per_column as f64 / rate as f64;
         let spectra = match pass.inputs.get(1) {
             Some(Some(Buffer::Spectra(spectra))) if self.spectrum => Some(spectra),
             _ => None,
@@ -230,6 +243,7 @@ impl Node<Edges> for LfpViewer {
         let Traces { lows, highs, head, columns, shown: sent, .. } = traces;
         sent.send_newest(pass, |display| {
             (display.first, display.shown, display.references, display.columns) = (first, shown, count, *columns);
+            (display.now, display.column_seconds) = (now, column_seconds);
             display.lows.clear();
             display.highs.clear();
             for i in 0..shown + count {
@@ -295,7 +309,8 @@ impl Node<Edges> for LfpViewer {
         let pool = context.shared::<Pool<TracesDisplay>>();
         let display = pool.as_deref().and_then(Pool::newest);
         let reference_rows = display.is_some() && context.inputs[2].is_some();
-        self.toolbar(ui, context, stream, selection.as_mut(), reference.as_mut(), gains.as_mut(), reference_rows);
+        let applied = selection.as_ref().is_some_and(|s| s.apply);
+        self.toolbar(ui, context, stream, applied, reference.as_mut(), gains.as_mut(), reference_rows);
 
         let Some(display) = display else {
             let message = format!("{} · press Play to see the traces", stream.summary());
@@ -306,9 +321,18 @@ impl Node<Edges> for LfpViewer {
             _ => None,
         };
         let advanced = context.advanced();
-        let rows =
-            Rows { display: &display, stream, spectra, gains: gains.as_ref(), reference: reference.as_ref(), advanced };
-        let edit = self.rows_ui(ui, context.theme, rows, selection.as_mut(), locked);
+        let theme = context.theme;
+        let mut settings = |ui: &mut egui::Ui| open_settings_button(ui, context, SELECTION, "Channel Selector");
+        let rows = Rows {
+            display: &display,
+            stream,
+            spectra,
+            gains: gains.as_ref(),
+            reference: reference.as_ref(),
+            advanced,
+            selection_settings: advanced.then_some(&mut settings),
+        };
+        let edit = self.rows_ui(ui, theme, rows, selection.as_mut(), locked);
         if let (Some(edit), Some(reference)) = (edit, reference.as_mut()) {
             edit.apply(reference, stream.channels);
         }
@@ -334,24 +358,22 @@ impl LfpViewer {
         egui::DragValue::new(&mut self.scale_uv).range(10.0..=5000.0).speed(2.0).prefix("±").suffix(" µV")
     }
 
-    /// The span, scale and rows' height, the spectrum, and (if they're connected) the gains, the reference and the
-    /// channel selection.
+    /// The span, scale and rows' height, the spectrum, and (if they're connected) the gains and the reference, which
+    /// can't be changed while a selection's `applied`: it can't be told from what's shown.
     #[allow(clippy::too_many_arguments)]
     fn toolbar(
         &mut self,
         ui: &mut egui::Ui,
         context: &mut Context<Edges>,
         stream: Continuous,
-        selection: Option<&mut ChannelSelection>,
+        applied: bool,
         reference: Option<&mut Reference>,
         gains: Option<&mut Gains>,
         reference_rows: bool,
     ) {
-        // While a selection's applied, only that can be changed: the reference can't be told from what's shown.
-        let applied = selection.as_deref().is_some_and(|s| s.apply);
         ui.add_enabled_ui(!context.locked, |ui| {
             ui.horizontal_wrapped(|ui| {
-                toolbar_section(ui, "view", false, |ui| {
+                inline_block(ui, "view", false, |ui| {
                     let label = ui.label("Span");
                     ui.add(self.span_field()).labelled_by(label.id).on_hover_text("Seconds across the view");
                     let label = ui.label("Scale");
@@ -363,7 +385,7 @@ impl LfpViewer {
                         .labelled_by(label.id);
                 });
                 if let Some(gains) = gains {
-                    toolbar_section(ui, "gains", true, |ui| {
+                    inline_block(ui, "gains", true, |ui| {
                         gains_ui(ui, context, gains, stream.channels);
                         if context.advanced() {
                             open_settings_button(ui, context, GAINS, "Continuous Gain");
@@ -371,7 +393,7 @@ impl LfpViewer {
                     });
                 }
                 if let Some(reference) = reference {
-                    toolbar_section(ui, "reference", true, |ui| {
+                    inline_block(ui, "reference", true, |ui| {
                         let shown = ui.add_enabled_ui(!applied, |ui| {
                             reference_ui(ui, reference, stream.channels, reference_rows);
                         });
@@ -380,9 +402,6 @@ impl LfpViewer {
                             open_settings_button(ui, context, REFERENCE, "Reference");
                         }
                     });
-                }
-                if let Some(selection) = selection.filter(|s| has_selection(s, stream.channels)) {
-                    toolbar_section(ui, "selection", true, |ui| selection_ui(ui, selection, stream.channels));
                 }
                 let tip = match context.inputs[1] {
                     Some(DataStream::Spectra(s)) => format!("Show each channel's spectrum, {}", s.summary()),
@@ -399,9 +418,9 @@ impl LfpViewer {
     }
 
     /// A row for each channel shown, at the row height: its trace, the range its gain fits (if the gains are
-    /// connected), and its spectrum; with a tick to select it if there's a selection to make, and R for the reference
-    /// if there's one. Returns the channel (upstream) whose R was clicked, if one was: to put in the reference, or take
-    /// out.
+    /// connected), and its spectrum; with its number to click to select it if there's a selection to make, and left of
+    /// that an R for each reference if there are any. Above the first channel, scrolling with them, are what heads those
+    /// columns, and the selection, if there's one. Returns any change to the references.
     fn rows_ui(
         &self,
         ui: &mut egui::Ui,
@@ -410,60 +429,78 @@ impl LfpViewer {
         mut selection: Option<&mut ChannelSelection>,
         locked: bool,
     ) -> Option<ReferenceEdit> {
-        let Rows { display, stream, spectra, gains, reference, advanced } = rows_of;
+        let Rows { display, stream, spectra, gains, reference, advanced, mut selection_settings } = rows_of;
+        let references = display.references;
         let area = ui.available_rect_before_wrap();
         ui.painter().rect_filled(area, 2.0, theme.surface_sunken);
         // Which channel upstream each row is, once a selection's applied.
         let numbers = selection.as_deref().map(|s| upstream(s, stream.channels));
-        // While a selection's applied, there's no ticking, or changing the reference: that takes every channel upstream
+        // While a selection's applied, there's no selecting, or changing the reference: that takes every channel upstream
         // being shown (see `toggle_reference`).
         let applied = selection.as_deref().is_some_and(|s| s.apply);
-        let ticked: Option<Vec<u32>> = selection.as_deref().filter(|_| !applied).map(|s| ticked(s, stream.channels));
+        let selected: Option<Vec<u32>> =
+            selection.as_deref().filter(|_| !applied).map(|s| selected(s, stream.channels));
         let mut toggled = None;
         let mut reference_toggled = None;
         // The references first, at the top, then the channels.
-        let rows_shown = display.references + display.shown;
+        let rows_shown = references + display.shown;
         // Its rows' colours, whatever can be changed.
-        let computations =
-            reference.map(|reference| &reference.list[..]).filter(|list| list.len() == display.references);
+        let computations = reference.map(|reference| &reference.list[..]).filter(|list| list.len() == references);
         let reference = reference.filter(|_| !applied);
         let columns = reference.map_or(0, |reference| reference.list.len());
         let height = self.row_height.clamp(12.0, 400.0);
         // A reference's row has room for what's particular to it, however short the channels' are.
         let reference_height = if columns > 0 { height.max(REFERENCE_ROW_HEIGHT) } else { height };
-        // Then, scrolling with them, a little space, the toggles for the channels' columns if there are any, and the channels.
-        let toggles = !applied && (selection.is_some() || columns > 0);
-        let toggles_height = if toggles { TOGGLES_HEIGHT } else { 0.0 };
-        let gap = if display.references > 0 { REFERENCES_GAP } else { 0.0 };
-        let references_height = reference_height * display.references as f32 + gap;
+        // Then, scrolling with them, a little space, the line heading the channels if there's anything for it, and the
+        // channels.
+        let heading = selection.is_some() || columns > 0;
+        let toggles_height = if heading { TOGGLES_HEIGHT } else { 0.0 };
+        let gap = if references > 0 { REFERENCES_GAP } else { 0.0 };
+        let references_height = reference_height * references as f32 + gap;
         let channels_top = references_height + toggles_height;
-        let row_top = |row: usize| match row.checked_sub(display.references) {
+        let row_top = |row: usize| match row.checked_sub(references) {
             None => reference_height * row as f32,
             Some(channel) => channels_top + height * channel as f32,
         };
+        let numbers_at = numbers_x(columns);
+        let label = numbers_at + NUMBERS_WIDTH + AXIS_WIDTH;
         egui::ScrollArea::vertical().auto_shrink(false).show_viewport(ui, |ui, viewport| {
-            ui.set_height(channels_top + height * display.shown as f32);
+            let channels_bottom = channels_top + height * display.shown as f32;
+            ui.set_height(channels_bottom + TIME_AXIS_HEIGHT);
             let body = ui.max_rect();
-            if toggles && viewport.min.y < channels_top && viewport.max.y > references_height {
+            if heading && viewport.min.y < channels_top && viewport.max.y > references_height {
                 let place = Rect::from_min_size(
                     body.min + egui::vec2(0.0, references_height),
                     egui::vec2(body.width(), toggles_height),
                 );
-                let set = column_toggles(ui, place, selection.as_deref_mut(), reference, stream.channels, locked);
-                reference_toggled = reference_toggled.or(set);
+                if !applied {
+                    let set = column_toggles(ui, place, selection.as_deref_mut(), reference, stream.channels, locked);
+                    reference_toggled = reference_toggled.or(set);
+                }
+                // Over the channels' traces, the selection, if there is one.
+                if let Some(selection) = selection.as_deref_mut().filter(|s| has_selection(s, stream.channels)) {
+                    let line = place.with_min_x(place.left() + label);
+                    let layout = egui::Layout::left_to_right(egui::Align::Center);
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(line).layout(layout), |ui| {
+                        ui.add_enabled_ui(!locked, |ui| {
+                            ui.horizontal_centered(|ui| {
+                                selection_ui(ui, selection, stream.channels, selection_settings.take())
+                            });
+                        });
+                    });
+                }
             }
             // Only the rows in view.
             let channel_at = |y: f32| ((y - channels_top) / height).max(0.0);
-            let last = (display.references + channel_at(viewport.max.y).ceil() as usize + 1).min(rows_shown);
+            let last = (references + channel_at(viewport.max.y).ceil() as usize + 1).min(rows_shown);
             let first = match viewport.min.y < channels_top {
                 true => 0,
-                false => (display.references + channel_at(viewport.min.y).floor() as usize).min(last),
+                false => (references + channel_at(viewport.min.y).floor() as usize).min(last),
             };
             let rows = first..last;
             ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| {
                 ui.skip_ahead_auto_ids(first);
                 let (rect, width) = (body, body.width());
-                let label = 64.0 + AXIS_WIDTH + columns.saturating_sub(1) as f32 * COLUMN_PITCH;
                 let spectra = spectra.filter(|_| self.spectrum && width > SPECTRUM_WIDTH * 2.0);
                 let spectrum = if spectra.is_some() { SPECTRUM_WIDTH } else { 0.0 };
                 let painter = ui.painter().clone();
@@ -472,9 +509,19 @@ impl LfpViewer {
                 let column = (width - label - spectrum) / (COLUMNS as f32 * future);
                 // The columns filled so far are the last of each row's.
                 let start = COLUMNS - display.columns;
+                if viewport.max.y > channels_bottom {
+                    let left = display.now - display.columns as f64 * display.column_seconds;
+                    let right = left + (COLUMNS as f64 * future as f64) * display.column_seconds;
+                    let top = rect.top() + channels_bottom;
+                    let axis = Rect::from_min_max(
+                        egui::pos2(rect.left() + label, top),
+                        egui::pos2(rect.right() - spectrum, top + TIME_AXIS_HEIGHT),
+                    );
+                    time_axis_ui(&painter, axis, (left, right), theme);
+                }
                 for shown_row in rows {
                     let top = rect.top() + row_top(shown_row);
-                    let height = if shown_row < display.references { reference_height } else { height };
+                    let height = if shown_row < references { reference_height } else { height };
                     let row = Rect::from_min_size(egui::pos2(rect.left(), top), egui::vec2(width, height));
                     if shown_row > 0 {
                         painter.hline(row.x_range(), top, Stroke::new(1.0, theme.divider.gamma_multiply(0.3)));
@@ -497,12 +544,12 @@ impl LfpViewer {
                         painter.add(Shape::line(points, Stroke::new(1.0, colour)));
                     };
                     let text_y = top + (height * 0.5).min(9.0);
-                    if shown_row < display.references {
+                    if shown_row < references {
                         // Its colour, if it's sure to be the reference in that column.
                         let computation = computations.and_then(|list| list.get(shown_row));
                         let colour = computation.map(|_| reference_colour(shown_row));
                         painter.text(
-                            egui::pos2(rect.left() + 4.0, text_y),
+                            egui::pos2(rect.left() + numbers_at, text_y),
                             Align2::LEFT_CENTER,
                             format!("ref {}", shown_row + 1),
                             FontId::monospace(10.0),
@@ -516,14 +563,16 @@ impl LfpViewer {
                         let _ = ui
                             .interact(hover, ui.scope_id().with(("reference row", shown_row)), Sense::hover())
                             .on_hover_text(tip);
-                        // What's particular to it: its method below its name, and removing it, above its column.
+                        // What's particular to it: its method below its name, and removing it, just left of that.
                         if let Some(computation) = computation.filter(|_| columns > 0) {
                             let method = Rect::from_min_size(
-                                egui::pos2(rect.left() + 4.0, top + 16.0),
-                                egui::vec2(REFERENCE_X - 12.0, 14.0),
+                                egui::pos2(rect.left() + numbers_at, top + 16.0),
+                                egui::vec2(NUMBERS_WIDTH, 14.0),
                             );
-                            let remove =
-                                Rect::from_center_size(egui::pos2(rect.left() + REFERENCE_X, text_y), TOGGLE_SIZE);
+                            let remove = Rect::from_center_size(
+                                egui::pos2(rect.left() + column_x(columns - 1), text_y),
+                                DELETE_SIZE,
+                            );
                             let edit = ui
                                 .add_enabled_ui(!locked, |ui| {
                                     reference_buttons(ui, method, remove, computation, shown_row)
@@ -534,30 +583,33 @@ impl LfpViewer {
                         trace(display.shown + shown_row, colour.unwrap_or(theme.text_secondary));
                         continue;
                     }
-                    let i = shown_row - display.references;
+                    let i = shown_row - references;
                     let channel = display.first + i;
                     let number = numbers.as_ref().and_then(|n| n.get(channel).copied()).unwrap_or(channel as u32);
-                    painter.text(
-                        egui::pos2(rect.left() + 4.0, text_y),
-                        Align2::LEFT_CENTER,
-                        (number + 1).to_string(),
-                        FontId::monospace(10.0),
-                        theme.text_secondary,
-                    );
-                    // Whether it's selected (to pass on, from a Channel Selector upstream).
-                    if let Some(ticked) = &ticked {
-                        let mut on = ticked.contains(&number);
-                        let tick = Rect::from_center_size(egui::pos2(rect.left() + TICK_X, text_y), tick_size(ui));
+                    // Its number, which selects it (to pass on, from a Channel Selector upstream) if that can be done.
+                    let place = number_rect(rect.left() + numbers_at, text_y);
+                    if let Some(selected) = &selected {
+                        let on = selected.contains(&number);
                         let tip = format!("Select channel {}, to pass on (once the selection's applied)", number + 1);
-                        if ui.put(tick, egui::Checkbox::without_text(&mut on)).on_hover_text(tip).changed() && !locked {
+                        let label = format!("Select channel {}", number + 1);
+                        let response = neutral_toggle(ui, place, (on, false), (number + 1).to_string(), &label);
+                        if response.on_hover_text(tip).clicked() && !locked {
                             toggled = Some(number);
                         }
+                    } else {
+                        painter.text(
+                            place.center(),
+                            Align2::CENTER_CENTER,
+                            (number + 1).to_string(),
+                            NUMBER_FONT,
+                            theme.text_secondary,
+                        );
                     }
                     // Which reference it's in, and uses, if any (a Reference's).
                     if let Some(reference) = reference {
                         let (agrees, using) = (reference.agrees(number), reference.used_by(number));
                         for k in 0..reference.list.len() {
-                            let x = rect.left() + REFERENCE_X + k as f32 * COLUMN_PITCH;
+                            let x = rect.left() + column_x(k);
                             let (name, channel, on) = (k + 1, number + 1, using == Some(k));
                             let place = Rect::from_center_size(egui::pos2(x, text_y), TOGGLE_SIZE);
                             let label = format!("Channel {channel} in reference {name}");
@@ -581,7 +633,7 @@ impl LfpViewer {
                     }
 
                     // The trace: not selected (with a selection to apply), dimmed, as it won't be passed on.
-                    let unselected = ticked.as_ref().is_some_and(|t| !t.contains(&number));
+                    let unselected = selected.as_ref().is_some_and(|t| !t.contains(&number));
                     let colour = if unselected { theme.text_primary.gamma_multiply(0.3) } else { theme.text_primary };
                     trace(i, colour);
                     // The range its gain fits (what's recorded), if it's within the row: beyond it, it's clipped.
@@ -608,14 +660,14 @@ impl LfpViewer {
                 }
             });
         });
-        if let (Some(channel), Some(selection), Some(mut ticked)) = (toggled, selection, ticked) {
-            match ticked.iter().position(|&c| c == channel) {
+        if let (Some(channel), Some(selection), Some(mut selected)) = (toggled, selection, selected) {
+            match selected.iter().position(|&c| c == channel) {
                 Some(at) => {
-                    ticked.remove(at);
+                    selected.remove(at);
                 }
-                None => ticked.push(channel),
+                None => selected.push(channel),
             }
-            set_ticked(selection, &ticked, stream.channels);
+            set_selected(selection, &selected, stream.channels);
         }
         reference_toggled
     }
@@ -731,11 +783,11 @@ fn reference_buttons(
     if word_button(ui, method, name, at, ui.visuals().text_color(), name, index).on_hover_text(tip).clicked() {
         return Some(ReferenceEdit::Method(index, other));
     }
-    let label = format!("Remove reference {}", index + 1);
-    let at = (remove.center(), Align2::CENTER_CENTER, FontId::proportional(13.0));
-    let hovered = ui.visuals().error_fg_color;
-    let response = word_button(ui, remove, "×", at, hovered, &label, index).on_hover_text(&label);
-    response.clicked().then_some(ReferenceEdit::Remove(index))
+    let label = format!("Delete reference {}", index + 1);
+    let deleted = ui.scope_builder(egui::UiBuilder::new().max_rect(remove), |ui| {
+        small_toggle_button(ui, Icon::Delete, &label, "Delete this reference", false).clicked()
+    });
+    deleted.inner.then_some(ReferenceEdit::Remove(index))
 }
 
 /// `text`, in `rect`, as a button with no frame: quiet until it's hovered, when it's `hovered`.
@@ -769,8 +821,8 @@ fn reference_ui(ui: &mut egui::Ui, reference: &mut Reference, channels: u32, row
         let mut edit = None;
         for (index, computation) in reference.list.iter().enumerate() {
             ui.label(egui::RichText::new((index + 1).to_string()).color(reference_colour(index)));
-            let (method, _) = ui.allocate_exact_size(egui::vec2(REFERENCE_X - 12.0, 14.0), Sense::hover());
-            let (remove, _) = ui.allocate_exact_size(TOGGLE_SIZE, Sense::hover());
+            let (method, _) = ui.allocate_exact_size(egui::vec2(NUMBERS_WIDTH, 14.0), Sense::hover());
+            let (remove, _) = ui.allocate_exact_size(DELETE_SIZE, Sense::hover());
             let buttons = reference_buttons(ui, method, remove, computation, index);
             edit = edit.or(buttons);
         }
@@ -814,8 +866,8 @@ fn is_all(selection: &ChannelSelection) -> bool {
     text.is_empty() || text.eq_ignore_ascii_case("all")
 }
 
-/// The channels a selection has ticked (upstream), given `channels` coming in.
-fn ticked(selection: &ChannelSelection, channels: u32) -> Vec<u32> {
+/// The channels a selection has selected (upstream), given `channels` coming in.
+fn selected(selection: &ChannelSelection, channels: u32) -> Vec<u32> {
     if is_all(selection) {
         return (0..channels).collect();
     }
@@ -828,58 +880,65 @@ fn ticked(selection: &ChannelSelection, channels: u32) -> Vec<u32> {
 
 /// Which channel upstream each one coming in is.
 fn upstream(selection: &ChannelSelection, channels: u32) -> Vec<u32> {
-    let ticked = ticked(selection, channels);
-    if selection.apply && ticked.len() == channels as usize { ticked } else { (0..channels).collect() }
+    let selected = selected(selection, channels);
+    if selection.apply && selected.len() == channels as usize { selected } else { (0..channels).collect() }
 }
 
-/// Ticks `ticked` (upstream) channels.
-fn set_ticked(selection: &mut ChannelSelection, ticked: &[u32], channels: u32) {
+/// Selects `selected` (upstream) channels.
+fn set_selected(selection: &mut ChannelSelection, selected: &[u32], channels: u32) {
     // Applied, those coming in aren't all there are upstream, so "all" can't be told.
     let count = if selection.apply { u32::MAX } else { channels };
-    selection.channels = format_channels(ticked, count);
+    selection.channels = format_channels(selected, count);
 }
 
 /// Whether there's a selection to speak of: one applied, or some channels left out of one that could be.
 fn has_selection(selection: &ChannelSelection, channels: u32) -> bool {
-    selection.apply || ticked(selection, channels).len() < channels as usize
+    selection.apply || selected(selection, channels).len() < channels as usize
 }
 
-/// The selection, if there is one (see `has_selection`): whether it's applied, or waiting to be, and the button to apply or
-/// disable it.
-fn selection_ui(ui: &mut egui::Ui, selection: &mut ChannelSelection, channels: u32) {
-    let ticked = ticked(selection, channels);
-    if selection.apply {
-        ui.label("Selection applied");
-    } else {
-        let text = if ticked.is_empty() { "Nothing selected" } else { "Selection pending" };
-        ui.colored_label(ui.visuals().error_fg_color, text);
-    }
-    let tip = "Pass on only the ticked channels, here and to everything after the Channel Selector";
-    let can = !ticked.is_empty();
+/// The selection, if there is one (see `has_selection`): the button to apply or disable it, then `settings`, then whether
+/// it's applied, or waiting to be.
+fn selection_ui(
+    ui: &mut egui::Ui,
+    selection: &mut ChannelSelection,
+    channels: u32,
+    settings: Option<&mut dyn FnMut(&mut egui::Ui)>,
+) {
+    let selected = selected(selection, channels);
+    let tip = "Pass on only the selected channels, here and to everything after the Channel Selector";
     let mut apply = selection.apply;
     let text = if apply { "Disable selection" } else { "Apply selection" };
-    if ui.add_enabled(can || apply, egui::Button::new(text).small()).on_hover_text(tip).clicked() {
+    if ui.add(egui::Button::new(text).small()).on_hover_text(tip).clicked() {
         apply = !apply;
     }
     if apply != selection.apply {
         // The same channels, written for what's coming in after the change.
         selection.apply = apply;
         if !apply && !is_all(selection) {
-            selection.channels = format_channels(&ticked, u32::MAX);
+            selection.channels = format_channels(&selected, u32::MAX);
         }
+    }
+    if let Some(settings) = settings {
+        settings(ui);
+    }
+    if selection.apply {
+        ui.label("Selection applied");
+    } else {
+        let text = if selected.is_empty() { "Nothing selected" } else { "Selection pending" };
+        ui.colored_label(ui.visuals().error_fg_color, text);
     }
 }
 
-/// How far across a row its tick is, and its R.
-const TICK_X: f32 = 32.0;
-const REFERENCE_X: f32 = 52.0;
+/// How far across a row the first of its Rs starts.
+const ROW_MARGIN: f32 = 4.0;
+/// The room for a channel's number, or a reference's name or method, right of the Rs.
+const NUMBERS_WIDTH: f32 = 40.0;
+/// A channel's number, as a toggle, and as text.
+const NUMBER_SIZE: egui::Vec2 = egui::vec2(28.0, 14.0);
+const NUMBER_FONT: FontId = FontId::monospace(10.0);
 
-/// How high the toggles at the top of the rows' columns are.
+/// How high the line heading the channels is.
 const TOGGLES_HEIGHT: f32 = 22.0;
-/// The room a tick takes: as high as it'll be, whatever it's given, or it won't be centred where it's put.
-fn tick_size(ui: &egui::Ui) -> egui::Vec2 {
-    egui::vec2(16.0, ui.spacing().interact_size.y)
-}
 
 /// How high a reference's row has to be, for what's particular to it.
 const REFERENCE_ROW_HEIGHT: f32 = 32.0;
@@ -887,7 +946,27 @@ const REFERENCE_ROW_HEIGHT: f32 = 32.0;
 const REFERENCES_GAP: f32 = 8.0;
 /// From one reference's column to the next: an R's width, and little between them, so a good few fit.
 const COLUMN_PITCH: f32 = 18.0;
+/// The space between the Rs and the channels' numbers.
+const COLUMNS_GAP: f32 = 10.0;
 const TOGGLE_SIZE: egui::Vec2 = egui::vec2(16.0, 14.0);
+/// The room a small icon button takes.
+const DELETE_SIZE: egui::Vec2 = egui::vec2(20.0, 20.0);
+
+/// The middle of reference `k`'s column, from a row's left.
+fn column_x(k: usize) -> f32 {
+    ROW_MARGIN + TOGGLE_SIZE.x / 2.0 + k as f32 * COLUMN_PITCH
+}
+
+/// Where the numbers start, from a row's left, right of `columns` columns of Rs.
+fn numbers_x(columns: usize) -> f32 {
+    let gap = if columns > 0 { COLUMNS_GAP } else { 0.0 };
+    ROW_MARGIN + columns as f32 * COLUMN_PITCH + gap
+}
+
+/// Where a number goes, for numbers starting at `left`, with its middle at `y`.
+fn number_rect(left: f32, y: f32) -> Rect {
+    Rect::from_min_size(egui::pos2(left, y - NUMBER_SIZE.y / 2.0), NUMBER_SIZE)
+}
 
 /// Why channel `channel` (from 1) can't be changed here.
 fn mismatch(channel: u32, advanced: bool) -> String {
@@ -925,8 +1004,30 @@ impl ReferenceEdit {
     }
 }
 
-/// An R in `rect`, exactly that size however little room there is, filled with its reference's `colour` if it's on, and
-/// with a dash if some of what it's for is.
+/// A toggle in `rect`, exactly that size however little room there is, with a dash if some of what it's for is on, and
+/// its fill and ink from `look`, given whether it's hovered.
+fn toggle(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    (on, mixed): (bool, bool),
+    (text, font): (String, FontId),
+    label: &str,
+    look: impl FnOnce(&egui::Visuals, bool) -> (egui::Color32, egui::Color32),
+) -> egui::Response {
+    let response = ui.interact(rect, ui.scope_id().with(label), Sense::click());
+    response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), on, label));
+    let fade = if ui.is_enabled() { 1.0 } else { 0.4 };
+    let (fill, ink) = look(ui.visuals(), response.hovered());
+    let painter = ui.painter();
+    painter.rect_filled(rect, 3.0, fill.gamma_multiply(fade));
+    painter.text(rect.center(), Align2::CENTER_CENTER, text, font, ink.gamma_multiply(fade));
+    if mixed {
+        painter.hline(rect.shrink(4.0).x_range(), rect.bottom() - 1.5, Stroke::new(1.0, ink));
+    }
+    response
+}
+
+/// An R, filled with its reference's `colour` if it's on.
 fn r_toggle(
     ui: &mut egui::Ui,
     rect: Rect,
@@ -935,26 +1036,52 @@ fn r_toggle(
     colour: egui::Color32,
     label: &str,
 ) -> egui::Response {
-    let response = ui.interact(rect, ui.scope_id().with(label), Sense::click());
-    response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), on, label));
-    let visuals = ui.visuals();
-    let fade = if ui.is_enabled() { 1.0 } else { 0.4 };
-    let (fill, ink) = match (on, response.hovered()) {
+    toggle(ui, rect, (on, mixed), (text, FontId::proportional(9.5)), label, |visuals, hovered| match (on, hovered) {
         (true, _) => (colour, egui::Color32::BLACK),
         (false, true) => (visuals.widgets.hovered.weak_bg_fill, colour),
         (false, false) => (visuals.widgets.inactive.weak_bg_fill, colour),
-    };
-    let painter = ui.painter();
-    painter.rect_filled(rect, 3.0, fill.gamma_multiply(fade));
-    painter.text(rect.center(), Align2::CENTER_CENTER, text, FontId::proportional(9.5), ink.gamma_multiply(fade));
-    if mixed {
-        painter.hline(rect.shrink(4.0).x_range(), rect.bottom() - 1.5, Stroke::new(1.0, ink));
+    })
+}
+
+/// A toggle without a colour, leaving those to the references: on, it stands out from the background, off, it recedes.
+fn neutral_toggle(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    (on, mixed): (bool, bool),
+    text: String,
+    label: &str,
+) -> egui::Response {
+    toggle(ui, rect, (on, mixed), (text, NUMBER_FONT), label, |visuals, hovered| {
+        let fill = match (on, hovered) {
+            (_, true) => visuals.widgets.hovered.weak_bg_fill,
+            (true, false) => visuals.widgets.inactive.weak_bg_fill,
+            (false, false) => egui::Color32::TRANSPARENT,
+        };
+        (fill, if on { visuals.text_color() } else { visuals.weak_text_color() })
+    })
+}
+
+/// The toggle for all the channels, or none: a check mark on a number's background, as it's over them, a dash if it's only
+/// some, as on a checkbox, and nothing if it's none.
+fn all_toggle(ui: &mut egui::Ui, rect: Rect, (all, some): (bool, bool)) -> egui::Response {
+    let response = toggle(ui, rect, (all, false), (String::new(), NUMBER_FONT), "All", |visuals, hovered| {
+        let widgets = if hovered { &visuals.widgets.hovered } else { &visuals.widgets.inactive };
+        (widgets.weak_bg_fill, visuals.text_color())
+    });
+    let ink = ui.visuals().text_color().gamma_multiply(if ui.is_enabled() { 1.0 } else { 0.4 });
+    let (centre, stroke) = (rect.center(), Stroke::new(1.5, ink));
+    if all {
+        let mark = [(-4.0, 0.0), (-1.0, 3.0), (4.0, -3.0)].map(|(x, y)| centre + egui::vec2(x, y));
+        ui.painter().add(Shape::line(mark.to_vec(), stroke));
+    } else if some {
+        ui.painter().hline(centre.x - 4.0..=centre.x + 4.0, centre.y, stroke);
     }
     response
 }
 
-/// What heads the channels' columns of ticks and Rs, in `rect`: a tick for all of them, or none, and an R likewise for each
-/// reference (going by the channels that can be changed: see `Reference::agrees`). Returns any change to the references.
+/// What heads the channels' columns, in `rect`: a toggle for all of them, or none, over their numbers, and an R likewise
+/// for each reference (going by the channels that can be changed: see `Reference::agrees`). Returns any change to the
+/// references.
 fn column_toggles(
     ui: &mut egui::Ui,
     rect: Rect,
@@ -963,16 +1090,15 @@ fn column_toggles(
     channels: u32,
     locked: bool,
 ) -> Option<ReferenceEdit> {
-    let at = |x: f32, size: egui::Vec2| Rect::from_center_size(egui::pos2(rect.left() + x, rect.center().y), size);
     if let Some(selection) = selection {
-        let count = ticked(selection, channels).len();
-        let mut all = count == channels as usize;
-        let some = count > 0 && !all;
-        let checkbox = egui::Checkbox::without_text(&mut all).indeterminate(some);
-        let place = at(TICK_X, tick_size(ui));
-        let response = ui.add_enabled_ui(!locked, |ui| ui.put(place, checkbox)).inner;
-        if response.on_hover_text("Select all the channels, or none").changed() {
-            selection.channels = if all { "all".into() } else { format_channels(&[], channels) };
+        let count = selected(selection, channels).len();
+        let all = count == channels as usize;
+        let columns = reference.map_or(0, |reference| reference.list.len());
+        let place = number_rect(rect.left() + numbers_x(columns), rect.center().y);
+        let state = (all, count > 0 && !all);
+        let response = ui.add_enabled_ui(!locked, |ui| all_toggle(ui, place, state)).inner;
+        if response.on_hover_text("Select all the channels, or none").clicked() {
+            selection.channels = if all { format_channels(&[], channels) } else { "all".into() };
         }
     }
     let reference = reference?;
@@ -982,7 +1108,7 @@ fn column_toggles(
         let name = k + 1;
         let count = able.iter().filter(|&&channel| reference.used_by(channel) == Some(k)).count();
         let (all, mixed) = (!able.is_empty() && count == able.len(), count > 0 && count < able.len());
-        let place = at(REFERENCE_X + k as f32 * COLUMN_PITCH, TOGGLE_SIZE);
+        let place = Rect::from_center_size(egui::pos2(rect.left() + column_x(k), rect.center().y), TOGGLE_SIZE);
         let text = format!("R{name}");
         let colour = reference_colour(k);
         let response =
@@ -1025,14 +1151,24 @@ mod tests {
             shown,
             references,
             columns: COLUMNS,
+            now: 12.0,
+            column_seconds: 2.0 / COLUMNS as f64,
             lows: columns(-5.0),
             highs: columns(5.0),
             ..Default::default()
         };
         let stream = Continuous { channels: 3, sample_rate: 30000.0 };
-        let mut harness = egui_kittest::Harness::builder().with_size([700.0, 260.0]).wgpu().build_ui(|ui| {
+        let mut harness = egui_kittest::Harness::builder().with_size([700.0, 280.0]).wgpu().build_ui(|ui| {
             let viewer = LfpViewer { row_height: 60.0, ..Default::default() };
-            let rows = Rows { display: &display, stream, spectra: None, gains: None, reference: None, advanced: true };
+            let rows = Rows {
+                display: &display,
+                stream,
+                spectra: None,
+                gains: None,
+                reference: None,
+                advanced: true,
+                selection_settings: None,
+            };
             viewer.rows_ui(ui, &THEMES[0].colours, rows, None, false);
         });
         THEMES[0].apply(&harness.ctx);
@@ -1040,7 +1176,8 @@ mod tests {
         harness.snapshot("lfp_viewer_rows");
     }
 
-    /// The toggles for the columns, in the body of the pane, above the rows' ticks and Rs. See tests/snapshots/.
+    /// The toggles for the columns, in the body of the pane, above the rows' Rs and numbers, and the selection beside
+    /// them. See tests/snapshots/.
     #[test]
     fn toggles_head_their_columns() {
         use crate::standard_components::themes::THEMES;
@@ -1059,6 +1196,7 @@ mod tests {
                 gains: None,
                 reference: Some(&reference),
                 advanced: true,
+                selection_settings: None,
             };
             viewer.rows_ui(ui, &THEMES[0].colours, rows, Some(&mut selection), false);
         });
@@ -1068,7 +1206,7 @@ mod tests {
     }
 
     #[test]
-    fn with_a_selection_applied_there_is_nothing_to_tick_or_put_in_the_reference() {
+    fn with_a_selection_applied_there_is_nothing_to_select_or_put_in_the_reference() {
         use egui_kittest::kittest::Queryable;
         let (shown, columns) = (2, vec![0.0; 2 * COLUMNS]);
         let display =
@@ -1085,13 +1223,106 @@ mod tests {
                 gains: None,
                 reference: Some(&reference),
                 advanced: true,
+                selection_settings: None,
             };
             let colours = &crate::standard_components::themes::THEMES[0].colours;
             viewer.rows_ui(ui, colours, rows, Some(&mut selection), false);
         });
         harness.run_steps(3);
-        assert!(harness.query_by_role(egui::accesskit::Role::CheckBox).is_none());
+        assert!(harness.query_by_label("All").is_none());
+        assert!(harness.query_by_label("Select channel 1").is_none());
         assert!(harness.query_by_label("R").is_none());
+        harness.get_by_label("Selection applied");
+        harness.get_by_label("Disable selection");
+    }
+
+    /// With nothing passed on, there are no rows, but the selection can still be switched off.
+    #[test]
+    fn with_nothing_selected_and_applied_it_can_still_be_disabled() {
+        use egui_kittest::kittest::Queryable as _;
+        let stream = Continuous { channels: 0, sample_rate: 30000.0 };
+        let mut traces = Traces::default();
+        traces.reshape((0, 0, 0, 5));
+        let input = ContinuousBuffer { channels: 0, capacity: 32, len: 32, data: Vec::new() };
+        traces.add(&input, 0, None);
+        let display = TracesDisplay::default();
+        let selection = ChannelSelection { apply: true, channels: "none".into() };
+        let mut harness = egui_kittest::Harness::builder().with_size([400.0, 100.0]).wgpu().build_ui_state(
+            move |ui, selection: &mut ChannelSelection| {
+                let viewer = LfpViewer::default();
+                let rows = Rows {
+                    display: &display,
+                    stream,
+                    spectra: None,
+                    gains: None,
+                    reference: None,
+                    advanced: true,
+                    selection_settings: None,
+                };
+                let colours = &crate::standard_components::themes::THEMES[0].colours;
+                viewer.rows_ui(ui, colours, rows, Some(selection), false);
+            },
+            selection,
+        );
+        harness.run_steps(3);
+        harness.get_by_label("Selection applied");
+        harness.get_by_label("Disable selection").click();
+        harness.run_steps(3);
+        assert!(!harness.state().apply);
+        assert_eq!(harness.state().channels, "none");
+    }
+
+    /// The Rs left of the numbers, each number selecting its channel, and the selection on the line above the first.
+    #[test]
+    fn a_channels_number_selects_it_and_the_selection_is_applied_above_them() {
+        use egui_kittest::kittest::NodeT as _;
+        use egui_kittest::kittest::Queryable as _;
+        let (shown, columns) = (3, vec![0.0; 3 * COLUMNS]);
+        let display =
+            TracesDisplay { shown, columns: COLUMNS, lows: columns.clone(), highs: columns, ..Default::default() };
+        let stream = Continuous { channels: 3, sample_rate: 30000.0 };
+        let reference = reference_of("1");
+        let selection = ChannelSelection { apply: false, channels: "all".into() };
+        let mut harness = egui_kittest::Harness::builder().with_size([500.0, 200.0]).wgpu().build_ui_state(
+            move |ui, selection: &mut ChannelSelection| {
+                let viewer = LfpViewer { row_height: 40.0, ..Default::default() };
+                let mut settings = |ui: &mut egui::Ui| {
+                    let _ = ui.button("Settings");
+                };
+                let rows = Rows {
+                    display: &display,
+                    stream,
+                    spectra: None,
+                    gains: None,
+                    reference: Some(&reference),
+                    advanced: true,
+                    selection_settings: Some(&mut settings),
+                };
+                let colours = &crate::standard_components::themes::THEMES[0].colours;
+                viewer.rows_ui(ui, colours, rows, Some(selection), false);
+            },
+            selection,
+        );
+        harness.run_steps(3);
+        assert!(harness.query_by_label("Apply selection").is_none(), "nothing left out");
+        let area = |node: egui_kittest::Node| node.accesskit_node().bounding_box().unwrap();
+        let (r, number) =
+            (area(harness.get_by_label("Channel 2 in reference 1")), area(harness.get_by_label("Select channel 2")));
+        assert!(r.x1 <= number.x0, "R to {}, number from {}", r.x1, number.x0);
+        assert!(((r.y0 + r.y1) - (number.y0 + number.y1)).abs() < 0.6, "level");
+        harness.get_by_label("Select channel 2").click();
+        harness.run_steps(3);
+        assert_eq!(harness.state().channels, "1, 3");
+        harness.get_by_label("Selection pending");
+        let apply = area(harness.get_by_label("Apply selection"));
+        assert!(apply.y1 <= number.y0, "above the first channel");
+        assert!(apply.x0 >= number.x1, "over the traces");
+        let (settings, said) =
+            (area(harness.get_by_label("Settings")), area(harness.get_by_label("Selection pending")));
+        assert!(apply.x1 <= settings.x0 && settings.x1 <= said.x0, "settings right of the button, before the words");
+        harness.get_by_label("Apply selection").click();
+        harness.run_steps(3);
+        assert!(harness.state().apply);
     }
 
     #[test]
@@ -1170,6 +1401,7 @@ mod tests {
                     gains: None,
                     reference: reference_shown,
                     advanced: false,
+                    selection_settings: None,
                 };
                 if let Some(edit) = viewer.rows_ui(ui, &THEMES[0].colours, rows, None, false) {
                     edit.apply(reference, 5);
@@ -1198,7 +1430,7 @@ mod tests {
         harness.get_by_label("median").click();
         harness.run_steps(3);
         assert_eq!(harness.state().list[1].method, Method::Mean);
-        harness.get_by_label("Remove reference 3").click();
+        harness.get_by_label("Delete reference 3").click();
         harness.run_steps(3);
         assert_eq!(harness.state().list.len(), 2);
     }
@@ -1234,6 +1466,7 @@ mod tests {
                 gains: None,
                 reference: Some(&reference),
                 advanced: true,
+                selection_settings: None,
             };
             viewer.rows_ui(ui, &THEMES[0].colours, rows, Some(&mut selection), false);
         });
@@ -1274,7 +1507,7 @@ mod tests {
         assert!(!colours.contains(&Continuous::INFO.colour));
     }
 
-    /// The toggles at the top of the columns, and the selection's own line.
+    /// The toggles at the top of the columns, and the selection.
     fn toggles(
         selection: ChannelSelection,
         reference: Reference,
@@ -1283,7 +1516,7 @@ mod tests {
         let mut harness = egui_kittest::Harness::builder().with_size([500.0, 80.0]).wgpu().build_ui_state(
             |ui, (selection, reference): &mut State| {
                 if has_selection(selection, 8) {
-                    ui.horizontal(|ui| selection_ui(ui, selection, 8));
+                    ui.horizontal(|ui| selection_ui(ui, selection, 8, None));
                 }
                 if !selection.apply {
                     let (rect, _) = ui.allocate_exact_size(egui::vec2(400.0, TOGGLES_HEIGHT), Sense::hover());
@@ -1310,23 +1543,23 @@ mod tests {
         let mut harness = toggles(selection, reference_of("1-2"));
         harness.get_by_label("Selection pending");
         harness.snapshot("lfp_viewer_column_toggles");
-        // The tick and the R are level.
+        // All and the R are level.
         use egui_kittest::kittest::NodeT as _;
         let middle = |node: egui_kittest::Node| {
             let area = node.accesskit_node().bounding_box().unwrap();
             (area.y0 + area.y1) / 2.0
         };
-        let (tick, r) =
-            (middle(harness.get_by_role(egui::accesskit::Role::CheckBox)), middle(harness.get_by_label("R1")));
-        assert!((tick - r).abs() < 0.6, "tick at {tick}, R at {r}");
-        harness.get_by_role(egui::accesskit::Role::CheckBox).click();
+        let (all, r) = (middle(harness.get_by_label("All")), middle(harness.get_by_label("R1")));
+        assert!((all - r).abs() < 0.6, "All at {all}, R at {r}");
+        harness.get_by_label("All").click();
         harness.run_steps(3);
-        assert_eq!(harness.state().0.channels, "all", "some ticked, so it's all");
+        assert_eq!(harness.state().0.channels, "all", "some selected, so it's all");
         assert!(harness.query_by_label("Selection pending").is_none(), "nothing left out");
         assert!(harness.query_by_label("Apply selection").is_none(), "so nothing to apply");
-        harness.get_by_role(egui::accesskit::Role::CheckBox).click();
+        harness.snapshot("lfp_viewer_all_selected");
+        harness.get_by_label("All").click();
         harness.run_steps(3);
-        assert_eq!(ticked(&harness.state().0, 8), Vec::<u32>::new());
+        assert_eq!(selected(&harness.state().0, 8), Vec::<u32>::new());
         harness.get_by_label("Nothing selected");
 
         harness.get_by_label("R1").click();
@@ -1340,7 +1573,7 @@ mod tests {
         let selection = ChannelSelection { apply: true, channels: "1-3".into() };
         let mut harness = toggles(selection, reference_of("1-2"));
         harness.get_by_label("Selection applied");
-        assert!(harness.query_by_role(egui::accesskit::Role::CheckBox).is_none());
+        assert!(harness.query_by_label("All").is_none());
         harness.get_by_label("Disable selection").click();
         harness.run_steps(3);
         assert!(!harness.state().0.apply);
@@ -1348,15 +1581,15 @@ mod tests {
     }
 
     #[test]
-    fn ticking_and_applying_a_selection() {
+    fn selecting_and_applying_a_selection() {
         let mut selection = ChannelSelection { apply: false, channels: "all".into() };
-        set_ticked(&mut selection, &[0, 1, 2, 5], 8);
+        set_selected(&mut selection, &[0, 1, 2, 5], 8);
         assert_eq!(selection.channels, "1-3, 6");
-        assert_eq!(ticked(&selection, 8), vec![0, 1, 2, 5]);
+        assert_eq!(selected(&selection, 8), vec![0, 1, 2, 5]);
         selection.apply = true;
         // Now four come in: rows are channels 1, 2, 3 and 6 upstream.
         assert_eq!(upstream(&selection, 4), vec![0, 1, 2, 5]);
-        set_ticked(&mut selection, &[0, 5], 4);
+        set_selected(&mut selection, &[0, 5], 4);
         assert_eq!(selection.channels, "1, 6");
     }
 }

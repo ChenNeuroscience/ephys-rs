@@ -3,7 +3,8 @@
 use eframe::egui;
 
 use crate::core::engine::{Context, EdgeSet};
-use crate::core::gui::widgets::{Icon, small_icon_button};
+use crate::core::gui::widgets::{Icon, small_icon_button, small_toggle_button};
+use crate::core::theme::Colours;
 use crate::{DataStream, Edges};
 
 pub use crate::core::gui::widgets::eye;
@@ -46,6 +47,43 @@ pub fn require_input(inputs: &[Option<DataStream>], what: &str) -> Vec<String> {
     if inputs.iter().all(|i| i.is_none()) { vec![format!("Connect {what}")] } else { Vec::new() }
 }
 
+/// A round tick spacing (1, 2 or 5 times a power of ten) of at least `raw`.
+pub fn nice_step(raw: f64) -> f64 {
+    let power = 10f64.powf(raw.max(1e-9).log10().floor());
+    [1.0, 2.0, 5.0, 10.0].into_iter().map(|m| m * power).find(|&s| s >= raw).unwrap()
+}
+
+/// How high a time axis is.
+pub const TIME_AXIS_HEIGHT: f32 = 20.0;
+/// The least room between a time axis's ticks, for their labels.
+const TIME_TICK_GAP: f32 = 70.0;
+
+/// The ticks of a time axis `width` wide from `left` to `right` seconds: where each is, and its label.
+pub fn time_ticks(left: f64, right: f64, width: f32) -> Vec<(f64, String)> {
+    if right <= left || width <= 0.0 {
+        return Vec::new();
+    }
+    let step = nice_step((right - left) * (TIME_TICK_GAP / width) as f64);
+    let decimals = (-step.log10().floor()).max(0.0) as usize;
+    let first = (left / step).ceil() as i64;
+    let last = (right / step).floor() as i64;
+    (first..=last).map(|i| i as f64 * step).map(|at| (at, format!("{at:.decimals$} s"))).collect()
+}
+
+/// A time axis along the top of `rect`, which is the width of the plot above it, from `left` to `right` seconds (see
+/// `crate::core::time_axis`).
+pub fn time_axis_ui(painter: &egui::Painter, rect: egui::Rect, (left, right): (f64, f64), theme: &Colours) {
+    let stroke = egui::Stroke::new(1.0, theme.divider);
+    painter.hline(rect.x_range(), rect.top(), stroke);
+    for (at, text) in time_ticks(left, right, rect.width()) {
+        let x = rect.left() + ((at - left) / (right - left)) as f32 * rect.width();
+        painter.vline(x, rect.top()..=rect.top() + 3.0, stroke);
+        let position = egui::pos2(x, rect.top() + 5.0);
+        let font = egui::FontId::monospace(9.0);
+        painter.text(position, egui::Align2::CENTER_TOP, text, font, theme.text_secondary);
+    }
+}
+
 /// A checkbox for all of a list of `count` checkboxes, `selected` of which are ticked: a dash if it's only some. Returns
 /// whether to tick them all, or none, if it's clicked: some ticked, that's all.
 pub fn all_checkbox(ui: &mut egui::Ui, selected: usize, count: usize, text: &str) -> Option<bool> {
@@ -55,6 +93,22 @@ pub fn all_checkbox(ui: &mut egui::Ui, selected: usize, count: usize, text: &str
         .on_hover_text("All or none")
         .changed()
         .then_some(all)
+}
+
+/// A small icon button for `on`.
+pub fn small_toggle(ui: &mut egui::Ui, icon: Icon, on: &mut bool, label: &str, tip: &str) -> egui::Response {
+    let mut button = small_toggle_button(ui, icon, label, tip, *on);
+    if button.clicked() {
+        *on = !*on;
+        button.mark_changed();
+    }
+    button
+}
+
+/// The button that switches something on and off, keeping its settings, with `label` as its accessible name.
+pub fn power(ui: &mut egui::Ui, on: &mut bool, label: &str) -> egui::Response {
+    let tip = if *on { "On: click to switch off, keeping the settings" } else { "Off: click to switch on" };
+    small_toggle(ui, Icon::Power, on, label, tip)
 }
 
 /// Shows a toggle for all of a list as on for only some of it: a dash, as on a checkbox, for icons and other buttons.
@@ -75,10 +129,10 @@ pub fn open_settings_button(ui: &mut egui::Ui, context: &mut Context<Edges>, con
     }
 }
 
-/// A section of a wrapping toolbar, kept together like an inline block: if it won't fit on what's left of the row, it all
-/// goes on the next. `separated` puts a line before it, unless it's starting a row.
-pub fn toolbar_section(ui: &mut egui::Ui, salt: &str, separated: bool, add: impl FnOnce(&mut egui::Ui)) {
-    let width_id = ui.scope_id().with(("toolbar section", salt));
+/// Widgets kept together in a wrapping row, such as a toolbar's: if they won't fit on what's left of the row, they all go
+/// on the next. `separated` puts a line before them, unless they're starting a row.
+pub fn inline_block(ui: &mut egui::Ui, salt: &str, separated: bool, add: impl FnOnce(&mut egui::Ui)) {
+    let width_id = ui.scope_id().with(("inline block", salt));
     let width: f32 = ui.data(|d| d.get_temp(width_id)).unwrap_or(0.0);
     // Room for the line too.
     let line = if separated { 2.0 * ui.spacing().item_spacing.x + 6.0 } else { 0.0 };
@@ -260,14 +314,24 @@ pub fn side_toggle(ui: &mut egui::Ui, label: &str, open: bool) -> egui::Response
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn time_ticks_are_round_and_have_room_for_their_labels() {
+        let at = |left, right, width| time_ticks(left, right, width).into_iter().map(|t| t.1).collect::<Vec<_>>();
+        assert_eq!(at(10.0, 12.06, 300.0), ["10.0 s", "10.5 s", "11.0 s", "11.5 s", "12.0 s"]);
+        assert_eq!(at(0.0, 61.8, 400.0), ["0 s", "20 s", "40 s", "60 s"]);
+        assert_eq!(at(1.032, 1.052, 200.0), ["1.04 s", "1.05 s"]);
+        assert!(time_ticks(0.0, 0.0, 300.0).is_empty(), "no span yet");
+        assert!(time_ticks(0.0, 2.0, 0.0).is_empty());
+    }
     use egui_kittest::kittest::{NodeT, Queryable};
 
     #[test]
-    fn a_toolbar_section_wraps_whole() {
+    fn a_inline_block_wraps_whole() {
         let mut harness = egui_kittest::Harness::builder().with_size([220.0, 80.0]).wgpu().build_ui(|ui| {
             ui.horizontal_wrapped(|ui| {
-                toolbar_section(ui, "a", false, |ui| drop(ui.label("A long first section")));
-                toolbar_section(ui, "b", true, |ui| {
+                inline_block(ui, "a", false, |ui| drop(ui.label("A long first section")));
+                inline_block(ui, "b", true, |ui| {
                     ui.label("Second");
                     ui.label("section");
                 });
