@@ -383,8 +383,7 @@ impl<N: NodeSet> Graph<N> {
         NodeState::unconnected(&self.nodes.get(&port.node)?.node).kind(port.role, port.index)
     }
 
-    /// The edge that would connect `a` and `b` (in either order), replacing anything already going into
-    /// the input or setting.
+    /// The edge that would connect `a` and `b` (in either order). What it would replace is up to `connect`.
     pub fn check(&self, a: Port, b: Port) -> Result<Edge, ConnectError> {
         if a.role.partner() != b.role {
             return Err(ConnectError::RoleMismatch);
