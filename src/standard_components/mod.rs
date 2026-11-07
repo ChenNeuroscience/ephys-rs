@@ -4,6 +4,10 @@
 //! edge enums they use (`crate::DataStream`, `crate::Setting`...) are in lib.rs.
 
 pub mod alarms;
+
+/// The formats of what the standard components save: their node types' settings, and the base directories' (see
+/// `crate::core::formats`).
+pub const FORMATS: crate::core::formats::Layer = crate::core::formats::Layer { name: "std", oldest: 0, steps: &[] };
 pub mod annotations;
 pub mod auto_detect;
 pub mod base_directories;

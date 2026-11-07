@@ -6,6 +6,7 @@ pub mod trials;
 pub mod vr_computer;
 
 use ephys_rs::core::base_directory::BaseDirectoryType;
+use ephys_rs::core::formats::Layer;
 use ephys_rs::core::quick_action::QuickAction;
 use ephys_rs::core::theme::Theme;
 use ephys_rs::core::{Components, build_version};
@@ -79,6 +80,7 @@ impl Components for ChenNeuro {
     const THEMES: &'static [Theme] = THEMES;
     const QUICK_ACTIONS: &'static [QuickAction<Nodes>] = quick_actions::QUICK_ACTIONS;
     const BASE_DIRECTORIES: &'static [BaseDirectoryType] = BASE_DIRECTORIES;
+    const FORMATS: &'static [Layer] = FORMATS;
     const ABOUT: &'static str = "The Chen lab's build, for its LTX rig:\n\n\
         - **Quick actions** for setting up the rig, in the basic view\n\
         - **Subject, date and trial**: recordings filed by subject and day, and numbered for you\n\
@@ -89,6 +91,10 @@ impl Components for ChenNeuro {
         build_version("chen-neuro", env!("CARGO_PKG_VERSION"))
     }
 }
+
+/// The formats of what's saved: the standard components', and those of this build's own node types.
+pub const FORMATS: &[Layer] =
+    &[ephys_rs::standard_components::FORMATS, Layer { name: "chen-neuro", oldest: 0, steps: &[] }];
 
 /// The graph in tests/rig.json, for tests.
 #[cfg(test)]

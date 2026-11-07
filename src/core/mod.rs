@@ -12,6 +12,7 @@ pub mod console;
 pub mod crash;
 pub mod engine;
 pub mod exchange;
+pub mod formats;
 pub mod gui;
 pub mod layout;
 pub mod quick_action;
@@ -68,6 +69,9 @@ pub trait Components: 'static {
     const QUICK_ACTIONS: &'static [quick_action::QuickAction<Self::Nodes>] = &[];
     /// Where recordings go (see `base_directory`): the first is the default.
     const BASE_DIRECTORIES: &'static [base_directory::BaseDirectoryType] = &[];
+    /// The formats of what's saved by the parts it's built from, besides the core's (see `formats`): the standard
+    /// components' (`standard_components::FORMATS`), and its own, if it has node types of its own, say.
+    const FORMATS: &'static [formats::Layer] = &[];
 
     /// What's special about this build, in markdown, for the About window, under the version.
     const ABOUT: &'static str = "";

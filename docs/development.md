@@ -181,7 +181,24 @@ Anything can ask for them: `core::full_version()` is the whole thing, and `core:
 keeps the whole thing in its headers (`created_by`, `data_source`), Write Raw in `structure.oebin` (`recorded_with`), and
 crash reports start with it.
 
-For now, files and the clipboard are read only as they're written now: nothing is kept to read older versions.
+## Formats
+
+Versions count every change; formats count only changes to what's saved. Everything saved that's read back says which
+format of each part of the program wrote it, so later versions can read it: projects and the settings saved beside
+recordings (`"formats"`), settings copied to the clipboard (`"ephys-rs settings"`), and what the app keeps between runs.
+See [`formats.rs`](../src/core/formats.rs).
+
+Each part is a layer with its own count: the core's (`formats::CORE`: the project's structure), the standard
+components' (`standard_components::FORMATS`: their node types and base directories), and a build's own
+(`Components::FORMATS` lists them all but the core's, as [chen-neuro's](../examples/chen-neuro/src/components/mod.rs)
+does). They're all at 0 for now: what was saved before there were formats.
+
+To change what a layer saves, add a step to its `steps`: a function bringing what's saved from the format before to
+the new one, as JSON (`serde_json::Value`), before anything's read into types. It's told what it's looking at
+(`Saved::Project`, `Saved::Node` with its type's name, `Saved::BaseDirectory`) and leaves alone what it isn't about.
+The same steps run on a project's nodes and on copied ones, so pasting is brought up to date just as opening is. Test
+it with something saved before the change, as the formats tests do. To stop reading a layer's oldest formats, raise
+its `oldest` and drop their steps; what's older is then refused, saying so, as is anything newer than the program.
 
 ## Performance
 

@@ -296,11 +296,13 @@ fn make_tour() {
     tour.app().selection.only(detector);
     tour.wait(1.0);
     tour.shot("Settings beside the graph");
-    let copied = paste_settings::copy(&tour.app().graph, &[detector]);
+    let app = tour.app();
+    let copied = paste_settings::copy(&app.graph, &[detector], &app.formats);
     if let Some(Nodes::SpikeDetector(d)) = tour.app().graph.get_mut(detector).map(|e| &mut e.node) {
         d.thresholds.set(0, 70.0);
     }
-    let paste = paste_settings::PasteSettings::new(&copied, &tour.harness.state().graph).unwrap();
+    let paste = paste_settings::PasteSettings::new(&copied, &tour.harness.state().graph, &tour.harness.state().formats)
+        .unwrap();
     tour.app().paste = Some(paste);
     tour.harness.run_steps(3);
     tour.shot("Review settings before pasting");

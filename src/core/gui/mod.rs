@@ -43,6 +43,7 @@ use crate::core::Components;
 use crate::core::annotation::{Annotation, AnnotationId, AnnotationSet, Annotations};
 use crate::core::base_directory::{BaseDirectories, BaseDirectoryType, Place};
 use crate::core::engine::{self, Graph, NodeId, NodeSet, Port, PortRef, Resolved, Runner, Snapshot, Stats};
+use crate::core::formats::{self, Formats, Layers};
 use crate::core::layout::{Layout, Mode, Pane};
 use crate::core::theme::{Colours, Theme};
 use crate::core::triggers::Triggered;
@@ -67,6 +68,7 @@ pub fn run<C: Components>(path: Option<PathBuf>) -> eframe::Result {
     let mut app = App::<C::Nodes, C::Annotations>::open(None, C::THEMES)
         .with_quick_actions(C::QUICK_ACTIONS)
         .with_base_directories(C::BASE_DIRECTORIES)
+        .with_formats(C::FORMATS)
         .with_about(C::ABOUT, C::SOURCE);
     app.last_crash = crate::core::crash::take_latest();
     if let Some(report) = &app.last_crash {
@@ -90,7 +92,15 @@ pub fn run<C: Components>(path: Option<PathBuf>) -> eframe::Result {
                 app.theme = index;
             }
             app.themes[app.theme].apply(&cc.egui_ctx);
-            let saved: Option<serde_json::Value> = cc.storage.and_then(|s| eframe::get_value(s, BASE_DIRECTORY_KEY));
+            let mut saved: Option<serde_json::Value> =
+                cc.storage.and_then(|s| eframe::get_value(s, BASE_DIRECTORY_KEY));
+            let formats: Formats = cc.storage.and_then(|s| eframe::get_value(s, FORMATS_KEY)).unwrap_or_default();
+            if let Some(Err(problem)) =
+                saved.as_mut().map(|s| app.formats.upgrade(&formats, formats::Saved::BaseDirectory, s))
+            {
+                log::warn!("The base directory kept from last time can't be read: {problem}");
+                saved = None;
+            }
             app.base_directories = BaseDirectories::new(app.base_directories.types(), saved.as_ref());
             app.recent = cc.storage.and_then(|s| eframe::get_value(s, RECENT_KEY)).unwrap_or_default();
             // After the preferences: what a file has comes first.
@@ -119,6 +129,8 @@ const THEME_KEY: &str = "theme";
 const BASE_DIRECTORY_KEY: &str = "base directory";
 /// Where the recent files are kept with the app's preferences.
 const RECENT_KEY: &str = "recent files";
+/// Where it's kept which formats wrote what else is kept (see `crate::core::formats`).
+const FORMATS_KEY: &str = "formats";
 /// How many recent files are kept.
 const RECENT_FILES: usize = 10;
 
@@ -178,6 +190,8 @@ struct SaveFile<N, A> {
 #[derive(Serialize)]
 #[serde(bound = "N: NodeSet, A: AnnotationSet")]
 struct SaveFileRef<'a, N, A> {
+    /// Which formats wrote it (see `crate::core::formats`).
+    formats: Formats,
     graph: &'a Graph<N>,
     annotations: &'a Annotations<A>,
     layout: &'a Layout,
@@ -255,6 +269,8 @@ pub struct App<N: NodeSet, A: AnnotationSet> {
     source: &'static str,
     /// Where recordings go: the one in use, in a section of the toolbar.
     base_directories: BaseDirectories,
+    /// The formats of what's saved (see `crate::core::formats`).
+    formats: Layers,
     /// How full the disk the base directory is on is.
     disk_space: disk_space::DiskSpace,
     /// How many workers runs start with.
@@ -310,6 +326,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             about_text: "",
             source: "",
             base_directories: BaseDirectories::new(&[], None),
+            formats: Layers::default(),
             disk_space: Default::default(),
         };
         if let Some(path) = path {
@@ -385,7 +402,16 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
     /// Replaces everything with the file at `path`. Undo starts afresh.
     fn load(&mut self, path: &Path) -> Result<(), String> {
         let json = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-        let file: SaveFile<N, A> = serde_json::from_str(&json).map_err(|e| e.to_string())?;
+        let mut value: serde_json::Value = serde_json::from_str(&json).map_err(|e| e.to_string())?;
+        let formats: Formats = value
+            .get("formats")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|e| e.to_string())?
+            .unwrap_or_default();
+        self.formats.upgrade(&formats, formats::Saved::Project, &mut value)?;
+        let file: SaveFile<N, A> = serde_json::from_value(value).map_err(|e| e.to_string())?;
         // The mode stays as it is, opening a file (it starts basic, each time the app does).
         let mode = self.layout.mode;
         self.layout = file.layout.unwrap_or_default();
@@ -431,7 +457,9 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
 
     /// What's written to a file.
     fn save_file<'a>(&'a self, base_directory: &'a serde_json::Value) -> SaveFileRef<'a, N, A> {
-        SaveFileRef { graph: &self.graph, annotations: &self.annotations, layout: &self.layout, base_directory }
+        let (graph, annotations, layout, formats) =
+            (&self.graph, &self.annotations, &self.layout, self.formats.current());
+        SaveFileRef { formats, graph, annotations, layout, base_directory }
     }
 
     /// Saves the graph (as File › Save would, but without changing which file is open) beside a recording starting in
@@ -686,6 +714,12 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         self
     }
 
+    /// Reading and writing what's saved in `formats`, besides the core's (see `crate::core::formats`).
+    pub fn with_formats(mut self, formats: &'static [crate::core::formats::Layer]) -> Self {
+        self.formats = Layers::new(formats);
+        self
+    }
+
     pub fn with_quick_actions(mut self, quick_actions: &'static [crate::core::quick_action::QuickAction<N>]) -> Self {
         self.quick_actions = quick_actions;
         self
@@ -714,7 +748,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         if ids.is_empty() {
             return;
         }
-        ctx.copy_text(paste_settings::copy(&self.graph, ids));
+        ctx.copy_text(paste_settings::copy(&self.graph, ids, &self.formats));
         let what = match ids {
             [id] => self.graph.get(*id).map_or("a node".into(), |e| e.label.clone()),
             _ => format!("{} nodes", ids.len()),
@@ -748,7 +782,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
     }
 
     fn paste_text(&mut self, ctx: &egui::Context, text: &str, target: Option<NodeId>) {
-        let paste = match paste_settings::PasteSettings::new(text, &self.graph) {
+        let paste = match paste_settings::PasteSettings::new(text, &self.graph, &self.formats) {
             Ok(paste) => paste,
             Err(problem) => return self.set_status(ctx, problem),
         };
@@ -1515,6 +1549,7 @@ impl<N: NodeSet, A: AnnotationSet> eframe::App for App<N, A> {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, THEME_KEY, &self.themes[self.theme].name);
         eframe::set_value(storage, BASE_DIRECTORY_KEY, &self.base_directories.save());
+        eframe::set_value(storage, FORMATS_KEY, &self.formats.current());
         eframe::set_value(storage, RECENT_KEY, &self.recent);
     }
 }
@@ -1660,6 +1695,7 @@ mod tests {
         let mut app = TestApp::open(Some(example()), THEMES)
             .with_quick_actions(crate::components::quick_actions::QUICK_ACTIONS)
             .with_base_directories(crate::components::BASE_DIRECTORIES)
+            .with_formats(crate::components::FORMATS)
             .with_about(
                 <crate::components::ChenNeuro as Components>::ABOUT,
                 <crate::components::ChenNeuro as Components>::SOURCE,
@@ -2437,7 +2473,7 @@ mod tests {
             if let Some(entry) = app.graph.get_mut(detector) {
                 entry.node.set_setting(0, crate::standard_components::spikes::Thresholds(vec![77.0]).into());
             }
-            let copied = paste_settings::copy(&app.graph, &[detector]);
+            let copied = paste_settings::copy(&app.graph, &[detector], &app.formats);
             app.graph.get_mut(detector).unwrap().node = before;
             copied
         };
@@ -2736,11 +2772,75 @@ mod tests {
         assert!(harness.state().graph.get(detector).unwrap().disabled);
     }
 
+    /// A layer whose one step changes a Spike Detector's waveform, as a node type's step would.
+    fn pre_was_8(what: formats::Saved, value: &mut serde_json::Value) {
+        if what == formats::Saved::Node("SpikeDetector") {
+            value["settings"]["pre"] = 12.into();
+        }
+    }
+    static WITH_A_STEP: [formats::Layer; 1] = [formats::Layer { name: "test", oldest: 0, steps: &[pre_was_8] }];
+
+    fn pre(graph: &Graph<Nodes>) -> u32 {
+        let detector = graph.iter().find_map(|(_, e)| match &e.node {
+            Nodes::SpikeDetector(d) => Some(d.pre),
+            _ => None,
+        });
+        detector.unwrap()
+    }
+
+    #[test]
+    fn what_is_saved_says_which_formats_wrote_it_and_is_brought_up_to_date_when_read() {
+        let mut app = TestApp::open(None, THEMES).with_formats(crate::components::FORMATS);
+        app.load(&example()).unwrap();
+        let path = std::env::temp_dir().join(format!("ephys-rs-formats-{}.json", std::process::id()));
+        let base_directory = serde_json::Value::Null;
+        std::fs::write(&path, serde_json::to_string(&app.save_file(&base_directory)).unwrap()).unwrap();
+        let mut saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved["formats"], serde_json::to_value(app.formats.current()).unwrap());
+        assert_eq!(saved["formats"]["chen-neuro"], 0, "every layer");
+
+        // A step's applied to what was saved before it: the example was saved before there were formats.
+        let mut stepped = TestApp::open(None, THEMES).with_formats(&WITH_A_STEP);
+        stepped.load(&example()).unwrap();
+        assert_eq!((pre(&app.graph), pre(&stepped.graph)), (8, 12));
+        stepped.load(&path).unwrap();
+        assert_eq!(pre(&stepped.graph), 12, "saved without that layer: at 0, so it's applied");
+
+        saved["formats"]["std"] = 99.into();
+        std::fs::write(&path, saved.to_string()).unwrap();
+        let newer = app.load(&path).unwrap_err();
+        assert!(newer.contains("newer version") && newer.contains("std format 99"), "{newer}");
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn copied_settings_say_which_formats_wrote_them_a_line_for_each_node() {
+        let mut app = TestApp::open(None, THEMES).with_formats(&WITH_A_STEP);
+        app.load(&example()).unwrap();
+        let detector = node_named(&app, "Spike Detector");
+        let viewer = node_named(&app, "Spike Viewer");
+        let one = paste_settings::copy(&app.graph, &[detector], &app.formats);
+        assert_eq!(one.lines().count(), 1, "to go in a line of notes: {one}");
+        assert!(one.starts_with(r#"{"ephys-rs settings":{"core":0,"test":1},"nodes":[{"#), "{one}");
+        assert_eq!(paste_settings::copy(&app.graph, &[detector, viewer], &app.formats).lines().count(), 2);
+
+        // Brought up to date as they'd be in a project.
+        let older = one.replace(r#""test":1"#, r#""test":0"#).replace(r#""pre":12"#, r#""pre":8"#);
+        let paste = paste_settings::PasteSettings::new(&older, &app.graph, &app.formats).unwrap();
+        let Some(Ok(pasted)) = paste.onto(detector, &app.graph) else { panic!() };
+        let Nodes::SpikeDetector(d) = pasted.node else { panic!() };
+        assert_eq!(d.pre, 12);
+
+        let newer = one.replace(r#""test":1"#, r#""test":2"#);
+        let Err(problem) = paste_settings::PasteSettings::new(&newer, &app.graph, &app.formats) else { panic!() };
+        assert!(problem.contains("newer version"), "{problem}");
+    }
+
     #[test]
     fn settings_are_copied_and_pasted_after_review() {
         let mut harness = harness();
         let detector = node_named(harness.state(), "Spike Detector");
-        let copied = paste_settings::copy(&harness.state().graph, &[detector]);
+        let copied = paste_settings::copy(&harness.state().graph, &[detector], &harness.state().formats);
         let threshold = |h: &Harness<TestApp>| match h.state().graph.get(detector).map(|e| &e.node) {
             Some(Nodes::SpikeDetector(d)) => d.thresholds.get(0),
             _ => unreachable!(),
@@ -2749,7 +2849,8 @@ mod tests {
         if let Some(Nodes::SpikeDetector(d)) = harness.state_mut().graph.get_mut(detector).map(|e| &mut e.node) {
             d.thresholds.set(0, before + 20.0);
         }
-        let paste = paste_settings::PasteSettings::new(&copied, &harness.state().graph).unwrap();
+        let paste =
+            paste_settings::PasteSettings::new(&copied, &harness.state().graph, &harness.state().formats).unwrap();
         harness.state_mut().paste = Some(paste);
         harness.run_steps(2);
         assert!(harness.query_by_label("thresholds").is_some(), "says what changes");
@@ -2773,7 +2874,7 @@ mod tests {
         harness.state_mut().paste_text(&ctx, &copied, Some(viewer));
         assert!(harness.state().graph == graph_before && harness.state().paste.is_none());
         // Several nodes' settings, it asks.
-        let both = paste_settings::copy(&harness.state().graph, &[detector, viewer]);
+        let both = paste_settings::copy(&harness.state().graph, &[detector, viewer], &harness.state().formats);
         harness.state_mut().paste_text(&ctx, &both, Some(detector));
         assert!(harness.state().paste.is_some());
     }
