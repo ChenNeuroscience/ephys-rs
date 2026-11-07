@@ -56,7 +56,7 @@ impl Node<Edges> for Camera {
     }
 
     fn settings(&self) -> Vec<SettingPort<Edges>> {
-        vec![SettingPort { name: "camera", value: Setting::Camera(self.settings) }]
+        vec![SettingPort { name: "camera", value: Setting::Camera(self.settings), on_right: true }]
     }
 
     fn set_setting(&mut self, _index: usize, value: Setting) {

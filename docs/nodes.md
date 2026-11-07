@@ -58,7 +58,12 @@ name, warnings and ports. Both get a [`Context`](../src/core/engine/node.rs):
   settings menu, enabling and deleting it), for a view to put where it likes, with options of its own added to the
   settings menu.
 - `node_toolbar_buttons`: the same, with buttons of the pane's own beside them, at the right of the toolbar.
+- `controlled_by`: for each setting, the names of the nodes with a control connected to it.
 - `trigger`, `can_trigger`, `trigger_progress`, `open_control_target`: see below.
+
+Help that's more than a tooltip (examples, a cheat sheet) goes behind `widgets::help_link`: dimmed text with a dotted
+underline, its help in a popup while the pointer's over it, or, clicked, until something else is. `widgets::with_help`
+does the same for something else, such as an icon.
 
 The [Spike Viewer](../src/standard_components/spikes/spike_viewer.rs) and [LFP Viewer](../src/standard_components/ephys/lfp_viewer.rs)
 are full examples.
@@ -124,6 +129,23 @@ from a pool, for its thread to write; see [`recording`](../src/standard_componen
 `prepare_to_record` is called on a thread of its own before recording starts (a writer opening its files), and what
 it returns comes back to the first pass that records (`Pass::take_prepared`). Passes see `Pass::recording`. The graph
 can't change while recording, so everything that records has prepared.
+
+A writer has an "after recording" control. Connected to a setting with the `run_command::RUN_ON_FILES` direct trigger,
+it sends the paths of the files once they're finished (not when recording stops, which is sooner), and only if
+something was recorded. The [Run Command](../src/standard_components/other/run_command.rs) node takes it, and neither
+knows what's at the other end: anything can send files to run on.
+
+Settings sit on the right of a node on the graph and controls on the left, unless a port's `on_right` says otherwise: the
+"after recording" control's on the right, and Run Command's setting on the left, as what passes between them flows
+onward, like data.
+
+## Work outside a run
+
+Not everything a node does belongs to a pass. The nodes in the Other category aren't about data as it's acquired: [Run
+Command](../src/standard_components/other/run_command.rs) runs a program in a terminal of its own, with or without a run.
+The terminal's a separate process, which can be stopped from the node, and which carries on if the app quits.
+A node's UI can see what's connected to its settings (`Context::controlled_by`): while a writer's connected, it's all Run
+Command runs on, so it says so and doesn't offer files of its own.
 
 ## Testing
 

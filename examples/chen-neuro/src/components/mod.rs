@@ -16,6 +16,7 @@ use ephys_rs::standard_components::ephys::{
     band_pass, board, channel_selector, continuous_gain, lfp_viewer, reference, spectrum, ttl_viewer,
 };
 use ephys_rs::standard_components::logs::log_viewer;
+use ephys_rs::standard_components::other::run_command;
 use ephys_rs::standard_components::recording::{ltx, raw};
 use ephys_rs::standard_components::spikes::{spike_detector, spike_gain, spike_viewer};
 use ephys_rs::standard_components::themes::{DARK, LIGHT};
@@ -47,6 +48,7 @@ node_set! {
         AlarmViewer(viewer::AlarmViewer),
         WriteLtx(ltx::WriteLtx),
         WriteRaw(raw::WriteRaw),
+        RunCommand(run_command::RunCommand),
     }
 }
 

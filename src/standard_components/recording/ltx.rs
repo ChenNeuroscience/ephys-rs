@@ -34,7 +34,10 @@ use chrono::{DateTime, Local};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 
-use super::{Files, Location, Status, Writing, location_summary, location_ui, recording_name, status_ui};
+use super::{
+    Files, Location, OnFinished, Status, Writing, after_recording, location_summary, location_ui, recording_name,
+    status_ui,
+};
 use crate::core::engine::{
     Category, Context, Control, DataStreamType, EdgeSet, Flow, Input, Node, NodeInfo, NodeThread, Output,
     PASS_DURATION, Pass, PoolStatus, ThreadContext,
@@ -49,6 +52,9 @@ use crate::standard_components::widgets::{require_input, setting, settings_grid}
 use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
 
 /// Ticks a second, for timestamps.
+/// Its control for what runs after a recording.
+const AFTER_RECORDING: usize = 4;
+
 const TIMEBASE: f64 = 96000.0;
 /// The continuous data's rate, once downsampled.
 const EGF_RATE: u32 = 5000;
@@ -153,10 +159,15 @@ impl Chunk {
     }
 
     /// The writer's thread, with a pool of chunks for `streams`, writing to `files`.
-    fn writing(base: &Path, streams: Streams, files: io::Result<LtxFiles>) -> Writing<Chunk> {
+    fn writing(
+        base: &Path,
+        streams: Streams,
+        files: io::Result<LtxFiles>,
+        on_finished: Option<OnFinished>,
+    ) -> Writing<Chunk> {
         let (shown, bytes) = (base.display().to_string(), Chunk::new(streams).bytes());
         let make = move || Chunk::new(streams);
-        Writing::new("LTX writer", shown, files.map(|f| Box::new(f) as Box<_>), make, bytes, None)
+        Writing::new("LTX writer", shown, files.map(|f| Box::new(f) as Box<_>), make, bytes, on_finished)
     }
 }
 
@@ -187,10 +198,11 @@ impl Node<Edges> for WriteLtx {
 
     fn controls(&self) -> Vec<Control<Edges>> {
         vec![
-            Control { name: "detection", kind: SettingKind::Detection, read_only: true },
-            Control { name: "gains", kind: SettingKind::Gains, read_only: true },
-            Control { name: "eeg selection", kind: SettingKind::ChannelSelection, read_only: true },
-            Control { name: "eeg gains", kind: SettingKind::Gains, read_only: true },
+            Control { name: "detection", kind: SettingKind::Detection, read_only: true, on_right: false },
+            Control { name: "gains", kind: SettingKind::Gains, read_only: true, on_right: false },
+            Control { name: "eeg selection", kind: SettingKind::ChannelSelection, read_only: true, on_right: false },
+            Control { name: "eeg gains", kind: SettingKind::Gains, read_only: true, on_right: false },
+            Control { name: "after recording", kind: SettingKind::Command, read_only: true, on_right: true },
         ]
     }
 
@@ -241,12 +253,12 @@ impl Node<Edges> for WriteLtx {
         inputs: &[Option<DataStream>],
         controls: &[Option<Setting>],
         base_directory: Option<&crate::core::base_directory::Place>,
-        _triggers: &crate::core::triggers::ControlTriggers,
+        triggers: &crate::core::triggers::ControlTriggers,
     ) -> Option<Box<dyn std::any::Any + Send>> {
         let (start, base) = self.base(base_directory);
         let (streams, recorded) = (Streams::of(inputs), Recorded::of(controls));
         let files = LtxFiles::open(&base, start, streams, recorded);
-        Some(Box::new(Chunk::writing(&base, streams, files)))
+        Some(Box::new(Chunk::writing(&base, streams, files, after_recording(triggers, AFTER_RECORDING))))
     }
 
     /// While recording, copies the pass's data for the writer's thread.

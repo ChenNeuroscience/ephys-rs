@@ -134,8 +134,8 @@ impl Node<Edges> for TrackerView {
 
     fn controls(&self) -> Vec<Control<Edges>> {
         vec![
-            Control { name: "camera", kind: SettingKind::Camera, read_only: false },
-            Control { name: "detection", kind: SettingKind::Detection, read_only: false },
+            Control { name: "camera", kind: SettingKind::Camera, read_only: false, on_right: false },
+            Control { name: "detection", kind: SettingKind::Detection, read_only: false, on_right: false },
         ]
     }
 

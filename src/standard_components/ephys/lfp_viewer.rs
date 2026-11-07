@@ -270,9 +270,9 @@ impl Node<Edges> for LfpViewer {
 
     fn controls(&self) -> Vec<Control<Edges>> {
         vec![
-            Control { name: "gains", kind: SettingKind::Gains, read_only: false },
-            Control { name: "selection", kind: SettingKind::ChannelSelection, read_only: false },
-            Control { name: "reference", kind: SettingKind::Reference, read_only: false },
+            Control { name: "gains", kind: SettingKind::Gains, read_only: false, on_right: false },
+            Control { name: "selection", kind: SettingKind::ChannelSelection, read_only: false, on_right: false },
+            Control { name: "reference", kind: SettingKind::Reference, read_only: false, on_right: false },
         ]
     }
 

@@ -74,7 +74,7 @@ impl Node<Edges> for PositionDetector {
     }
 
     fn settings(&self) -> Vec<SettingPort<Edges>> {
-        vec![SettingPort { name: "detection", value: Setting::Detection(self.detection.clone()) }]
+        vec![SettingPort { name: "detection", value: Setting::Detection(self.detection.clone()), on_right: true }]
     }
 
     fn set_setting(&mut self, _index: usize, value: Setting) {

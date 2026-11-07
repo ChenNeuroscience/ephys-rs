@@ -93,7 +93,7 @@ impl Node<Edges> for ContinuousGain {
     }
 
     fn settings(&self) -> Vec<SettingPort<Edges>> {
-        vec![SettingPort { name: "gains", value: self.gains.clone().into() }]
+        vec![SettingPort { name: "gains", value: self.gains.clone().into(), on_right: true }]
     }
 
     fn set_setting(&mut self, _index: usize, value: Setting) {

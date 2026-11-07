@@ -188,8 +188,8 @@ impl Node<Edges> for SpikeViewer {
 
     fn controls(&self) -> Vec<Control<Edges>> {
         vec![
-            Control { name: "thresholds", kind: SettingKind::Thresholds, read_only: false },
-            Control { name: "gains", kind: SettingKind::Gains, read_only: false },
+            Control { name: "thresholds", kind: SettingKind::Thresholds, read_only: false, on_right: false },
+            Control { name: "gains", kind: SettingKind::Gains, read_only: false, on_right: false },
         ]
     }
 

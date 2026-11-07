@@ -17,11 +17,13 @@ pub enum Category {
     Processing,
     Visualisation,
     Recording,
+    /// Nodes that aren't about data as it's acquired.
+    Other,
 }
 
 impl Category {
-    pub const ALL: [Category; 4] =
-        [Category::Source, Category::Processing, Category::Visualisation, Category::Recording];
+    pub const ALL: [Category; 5] =
+        [Category::Source, Category::Processing, Category::Visualisation, Category::Recording, Category::Other];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -29,6 +31,7 @@ impl Category {
             Category::Processing => "Processing",
             Category::Visualisation => "Visualisation",
             Category::Recording => "Recording",
+            Category::Other => "Other",
         }
     }
 }
@@ -56,6 +59,8 @@ pub struct Output<E: Edges> {
 pub struct SettingPort<E: Edges> {
     pub name: &'static str,
     pub value: E::Setting,
+    /// Which side of the node it's on, on the graph: usually the right.
+    pub on_right: bool,
 }
 
 /// A setting of some other node that this one can see, and edit unless it's read-only, through a settings edge.
@@ -64,6 +69,8 @@ pub struct Control<E: Edges> {
     pub kind: Kind<E::Setting>,
     /// Only reads the setting (a writer recording it, say): changes the node makes to it are ignored.
     pub read_only: bool,
+    /// Which side of the node it's on, on the graph: usually the left.
+    pub on_right: bool,
 }
 
 /// What a node's UI gets to work with besides its own settings.
@@ -73,6 +80,8 @@ pub struct Context<'a, E: Edges> {
     /// For each control, the current value of the setting it's connected to, if any. Changing a value
     /// edits that setting.
     pub controls: &'a mut [Option<E::Setting>],
+    /// For each setting, the labels of the nodes with a control connected to it, for as long as the edge is live.
+    pub controlled_by: &'a [Vec<String>],
     /// The colours to draw with, by role. A node can derive more of its own from these.
     pub theme: &'a Colours,
     /// The node.

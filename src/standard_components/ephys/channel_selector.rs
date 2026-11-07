@@ -104,7 +104,7 @@ impl Node<Edges> for ChannelSelector {
 
     fn settings(&self) -> Vec<SettingPort<Edges>> {
         let selection = ChannelSelection { apply: self.apply, channels: self.channels.clone() };
-        vec![SettingPort { name: "selection", value: selection.into() }]
+        vec![SettingPort { name: "selection", value: selection.into(), on_right: true }]
     }
 
     fn set_setting(&mut self, _index: usize, value: Setting) {

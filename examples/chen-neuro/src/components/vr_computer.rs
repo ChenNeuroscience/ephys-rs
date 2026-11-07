@@ -474,7 +474,7 @@ impl Node<Edges> for VrComputer {
         let enabled = timing_led(&self.custom) == Some(true);
         let timing_led = TimingLed { enabled, radius: 0.0, ..Default::default() };
         let detection = Detection { crop, rulers, timing_led, custom, ..Default::default() };
-        vec![SettingPort { name: "settings", value: Setting::Detection(detection) }]
+        vec![SettingPort { name: "settings", value: Setting::Detection(detection), on_right: true }]
     }
 
     fn set_setting(&mut self, _index: usize, value: Setting) {

@@ -160,13 +160,16 @@ pub fn show<N: NodeSet>(
     });
 }
 
-/// An icon saying `why`, when hovered.
+/// An icon saying `why`, as help does (see `widgets::with_help`).
 fn info_icon(ui: &mut egui::Ui, colours: &Colours, why: &str) {
-    let (rect, response) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::hover());
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::click());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Link, ui.is_enabled(), "Why"));
     let colour = if response.hovered() { colours.text_primary } else { colours.text_disabled };
     ui.painter().circle_stroke(rect.center(), 5.5, Stroke::new(1.0, colour));
     ui.painter().text(rect.center(), Align2::CENTER_CENTER, "i", FontId::proportional(9.0), colour);
-    response.on_hover_cursor(egui::CursorIcon::Help).on_hover_text(why);
+    crate::core::gui::widgets::with_help(response, |ui| {
+        ui.label(why);
+    });
 }
 
 /// A thread: a framed box with a title, saying `why` it's a thread, and `stacked` > 1 drawn as a stack of that many.

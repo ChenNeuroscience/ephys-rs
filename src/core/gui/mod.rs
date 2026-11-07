@@ -13,6 +13,7 @@ mod dialog;
 mod disk_space;
 mod docking;
 mod frame_times;
+mod help;
 mod icons;
 #[cfg(target_os = "macos")]
 mod mac_menu;
@@ -24,6 +25,7 @@ mod toolbar;
 
 /// Pieces of the GUI for components to draw with, so they look of a piece with it.
 pub mod widgets {
+    pub use super::help::{help_link, with_help};
     pub use super::icons::Icon;
     pub use super::icons::eye;
     pub use super::toolbar::{small_icon_button, small_toggle_button, toolbar_button};
@@ -1274,7 +1276,9 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             Some(Choice::New(type_index)) => {
                 // Beside the port it's connected to, on the side its edge leaves from.
                 let pos = match from {
-                    Some(port) if canvas::on_right(port.role) => [scene.x + 40.0, scene.y - HEADER],
+                    Some(port) if resolved.get(&port.node).is_some_and(|s| s.on_right(port.role, port.index)) => {
+                        [scene.x + 40.0, scene.y - HEADER]
+                    }
                     Some(_) => [scene.x - NODE_WIDTH - 40.0, scene.y - HEADER],
                     None => [scene.x - NODE_WIDTH / 2.0, scene.y - HEADER / 2.0],
                 };
@@ -1893,6 +1897,44 @@ mod tests {
         pointer(&mut harness, grab + egui::vec2(-60.0, 20.0), Some(false));
         let moved = area(&harness).unwrap().min - before.min;
         assert!(moved.x < -50.0 && moved.y > 15.0, "window should follow the drag, moved {moved:?}");
+    }
+
+    /// A recording's files reach what's connected to the writer with nothing running, unless it's disabled.
+    #[cfg(unix)]
+    #[test]
+    fn a_named_direct_trigger_reaches_its_node_with_nothing_running() {
+        use crate::components::Nodes;
+        use crate::core::triggers::ControlTriggers;
+        use crate::standard_components::other::run_command::RUN_ON_FILES;
+        let mut harness = harness();
+        let index = Nodes::TYPES.iter().position(|t| t.name == "Run Command").unwrap();
+        let id = harness.state_mut().graph.add(Nodes::create(index), [0.0, 0.0]);
+        let ran = std::env::temp_dir().join(format!("ephys-rs-direct-trigger-{}", std::process::id()));
+        if let Some(Nodes::RunCommand(node)) = harness.state_mut().graph.get_mut(id).map(|e| &mut e.node) {
+            node.settings.program = "/usr/bin/touch".into();
+            node.settings.arguments = ran.display().to_string();
+            node.settings.mode = crate::standard_components::other::run_command::Mode::Once;
+        }
+        let triggers = harness.state().direct_triggers.clone();
+        let names: &'static [&'static str] = &[RUN_ON_FILES];
+        let controls = ControlTriggers::new(triggers, vec![vec![(id, names)]]);
+
+        harness.state_mut().graph.get_mut(id).unwrap().disabled = true;
+        controls.handle(0, RUN_ON_FILES).unwrap().trigger(Vec::<PathBuf>::new());
+        harness.run_steps(1);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(!ran.exists(), "disabled, it's not for it");
+
+        harness.state_mut().graph.get_mut(id).unwrap().disabled = false;
+        controls.handle(0, RUN_ON_FILES).unwrap().trigger(Vec::<PathBuf>::new());
+        assert!(harness.state().runner.is_none());
+        harness.run_steps(1);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !ran.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(ran.exists());
+        std::fs::remove_file(ran).unwrap();
     }
 
     /// A direct trigger doesn't need a run, so one sent as it stops isn't lost.

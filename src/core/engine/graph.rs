@@ -178,6 +178,16 @@ impl<E: Edges> NodeState<E> {
         }
     }
 
+    /// Whether a port's on the right of the node, so wires leave it rightwards.
+    pub fn on_right(&self, role: Role, index: usize) -> bool {
+        match role {
+            Role::Output => true,
+            Role::Input => false,
+            Role::Setting => self.settings.get(index).is_some_and(|p| p.on_right),
+            Role::Control => self.controls.get(index).is_some_and(|p| p.on_right),
+        }
+    }
+
     /// The node's state with nothing connected.
     pub fn unconnected<N: NodeSet<Edges = E>>(node: &N) -> Self {
         Self::new(node, vec![None; node.inputs().len()])
@@ -356,6 +366,17 @@ impl<N: NodeSet> Graph<N> {
     /// The live edges out of an output or control.
     pub fn live_edges_from(&self, port: Port) -> impl Iterator<Item = Edge> + '_ {
         self.edges.iter().filter(move |e| e.source() == port && self.is_live(e)).copied()
+    }
+
+    /// For each of a node's settings, the labels of the nodes with a live edge from a control to it.
+    fn controlled_by(&self, id: NodeId) -> Vec<Vec<String>> {
+        let count = self.nodes.get(&id).map_or(0, |entry| entry.node.settings().len());
+        let labels = |index| {
+            let port = Port { node: id, role: Role::Setting, index };
+            let edges = self.edges.iter().filter(|e| e.target() == port && self.is_live(e));
+            edges.filter_map(|e| Some(self.nodes.get(&e.from.node)?.label.clone())).collect()
+        };
+        (0..count).map(labels).collect()
     }
 
     fn kind(&self, port: Port) -> Option<KindKey> {
@@ -547,11 +568,13 @@ impl<N: NodeSet> Graph<N> {
     ) -> Option<R> {
         let before = self.control_values(id);
         let mut controls = before.clone();
+        let controlled_by = self.controlled_by(id);
         let entry = self.nodes.get_mut(&id)?;
         let read_only: Vec<bool> = entry.node.controls().iter().map(|c| c.read_only).collect();
         let context = &mut Context {
             inputs,
             controls: &mut controls,
+            controlled_by: &controlled_by,
             theme,
             node: id,
             exchange,
@@ -754,6 +777,22 @@ mod tests {
         graph.connect(port(a, Role::Output, 0), port(gain, Role::Input, 0)).unwrap();
         let edge = graph.connect(port(b, Role::Output, 0), port(gain, Role::Input, 0)).unwrap();
         assert_eq!(graph.edges(), &[edge]);
+    }
+
+    #[test]
+    fn a_node_knows_what_controls_its_settings_while_the_edge_is_live() {
+        let mut graph = Graph::default();
+        let gain = graph.add(create("Spike Gain"), [0.0, 0.0]);
+        let (viewer, writer) =
+            (graph.add(create("Spike Viewer"), [0.0, 0.0]), graph.add(create("Write LTX"), [0.0, 0.0]));
+        assert_eq!(graph.controlled_by(gain), [Vec::<String>::new()]);
+        let edge = graph.connect(port(viewer, Role::Control, 1), port(gain, Role::Setting, 0)).unwrap();
+        graph.connect(port(writer, Role::Control, 1), port(gain, Role::Setting, 0)).unwrap();
+        assert_eq!(graph.controlled_by(gain), [["Spike Viewer", "Write LTX"]]);
+        graph.set_edge_disabled(edge, true);
+        assert_eq!(graph.controlled_by(gain), [["Write LTX"]]);
+        graph.get_mut(writer).unwrap().disabled = true;
+        assert_eq!(graph.controlled_by(gain), [Vec::<String>::new()]);
     }
 
     #[test]

@@ -173,7 +173,7 @@ impl Node<Edges> for AlarmViewer {
     }
 
     fn controls(&self) -> Vec<Control<Edges>> {
-        vec![Control { name: "alarms", kind: SettingKind::Alarms, read_only: false }]
+        vec![Control { name: "alarms", kind: SettingKind::Alarms, read_only: false, on_right: false }]
     }
 
     fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {

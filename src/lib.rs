@@ -11,6 +11,7 @@ pub mod standard_components;
 use standard_components::alarms;
 use standard_components::ephys::{self, reference, spectrum};
 use standard_components::logs;
+use standard_components::other::run_command;
 use standard_components::spikes;
 use standard_components::tracking::{self, camera};
 
@@ -35,6 +36,7 @@ edge_types! {
         Camera(camera::CameraSettings),
         Detection(tracking::Detection),
         Alarms(alarms::Alarms),
+        Command(run_command::CommandSettings),
     }
 }
 

@@ -90,17 +90,13 @@ pub enum Tool {
     Draw(usize),
 }
 
-/// Whether a port sits on the right of its node, so wires leave it rightwards.
-pub fn on_right(role: Role) -> bool {
-    matches!(role, Role::Output | Role::Setting)
-}
-
 /// Where a node and its parts are, on screen.
 struct Layout {
     rect: Rect,
     header: Rect,
     zoom: f32,
-    ports: HashMap<(Role, usize), Pos2>,
+    /// Where each port is, and whether it's on the right.
+    ports: HashMap<(Role, usize), (Pos2, bool)>,
     /// Between the data and settings ports, if it has both.
     divider: Option<f32>,
     /// Where a warning's shown, in the header's right corner.
@@ -147,9 +143,10 @@ impl Layout {
                 continue;
             }
             let extra = if role.dimension() == Dimension::Settings { divider } else { 0.0 };
-            let x = if on_right(role) { rect.right() } else { rect.left() };
             for index in 0..count(role) {
-                ports.insert((role, index), egui::pos2(x, row_y(row, extra)));
+                let on_right = state.on_right(role, index);
+                let x = if on_right { rect.right() } else { rect.left() };
+                ports.insert((role, index), (egui::pos2(x, row_y(row, extra)), on_right));
                 row += 1;
             }
         }
@@ -168,7 +165,11 @@ impl Layout {
     }
 
     fn port(&self, port: Port) -> Option<Pos2> {
-        self.ports.get(&(port.role, port.index)).copied()
+        self.ports.get(&(port.role, port.index)).map(|(pos, _)| *pos)
+    }
+
+    fn on_right(&self, port: Port) -> bool {
+        self.ports.get(&(port.role, port.index)).is_some_and(|(_, on_right)| *on_right)
     }
 }
 
@@ -566,10 +567,11 @@ impl Canvas {
             && let Some(info) = resolved.get(&port.node).and_then(|s| s.info(port.role, port.index))
         {
             let tip = target.and_then(|t| port_pos(&layouts, t)).unwrap_or(p);
+            let right = port_on_right(&layouts, port);
             let points = if port.role.is_source() {
-                bezier(start, on_right(port.role), tip, !on_right(port.role), zoom)
+                bezier(start, right, tip, !right, zoom)
             } else {
-                bezier(tip, !on_right(port.role), start, on_right(port.role), zoom)
+                bezier(tip, !right, start, right, zoom)
             };
             let dimension = port.role.dimension();
             let colour = wire_colour(dimension, info.colour, self.colours);
@@ -1264,10 +1266,14 @@ fn port_pos(layouts: &HashMap<NodeId, Layout>, port: Port) -> Option<Pos2> {
     layouts.get(&port.node)?.port(port)
 }
 
+fn port_on_right(layouts: &HashMap<NodeId, Layout>, port: Port) -> bool {
+    layouts.get(&port.node).is_some_and(|layout| layout.on_right(port))
+}
+
 fn edge_points(edge: &Edge, layouts: &HashMap<NodeId, Layout>, zoom: f32) -> Option<[Pos2; 4]> {
     let (source, target) = (edge.source(), edge.target());
     let (a, b) = (port_pos(layouts, source)?, port_pos(layouts, target)?);
-    Some(bezier(a, on_right(source.role), b, on_right(target.role), zoom))
+    Some(bezier(a, port_on_right(layouts, source), b, port_on_right(layouts, target), zoom))
 }
 
 /// The target port under the pointer: the nearest within reach, or failing that the first on a node it's over.
@@ -1353,7 +1359,8 @@ fn paint_node<N: NodeSet>(
         let name = state.name(port.role, port.index).unwrap_or("?");
         let connected = ports.connected.contains(&port);
         let colour = state.info(port.role, port.index).map_or(Color32::GRAY, |i| i.colour);
-        let (name_pos, align) = if on_right(port.role) {
+        let on_right = layout.on_right(port);
+        let (name_pos, align) = if on_right {
             (pos - egui::vec2(12.0 * z, 0.0), Align2::RIGHT_CENTER)
         } else {
             (pos + egui::vec2(12.0 * z, 0.0), Align2::LEFT_CENTER)
@@ -1362,13 +1369,17 @@ fn paint_node<N: NodeSet>(
             if connected || port.role.is_source() { colours.text_primary } else { colours.text_secondary };
         painter.text(name_pos, align, name, font(12.5), fade(name_colour));
         // Outputs and settings also show what they carry, on the far side.
-        if on_right(port.role) {
+        if matches!(port.role, Role::Output | Role::Setting) {
             let (summary, colour) = match state.summary(port.role, port.index) {
                 Some(summary) => (summary, colours.text_secondary),
                 None => ("—".into(), colours.text_disabled),
             };
-            let at = egui::pos2(rect.left() + 10.0 * z, pos.y);
-            painter.text(at, Align2::LEFT_CENTER, summary, font(11.0), fade(colour));
+            let (at, align) = if on_right {
+                (egui::pos2(rect.left() + 10.0 * z, pos.y), Align2::LEFT_CENTER)
+            } else {
+                (egui::pos2(rect.right() - 10.0 * z, pos.y), Align2::RIGHT_CENTER)
+            };
+            painter.text(at, align, summary, font(11.0), fade(colour));
         }
         let read_only = port.role == Role::Control && state.controls.get(port.index).is_some_and(|c| c.read_only);
         paint_port(painter, port, pos, colour, connected, read_only, ports, z, fade);
@@ -1423,6 +1434,25 @@ fn paint_port(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Which side of its node a port's drawn on.
+    fn drawn_on_right(name: &str, role: Role, index: usize) -> bool {
+        use crate::Nodes;
+        let type_index = Nodes::TYPES.iter().position(|t| t.name == name).unwrap();
+        let state = NodeState::unconnected(&Nodes::create(type_index));
+        let layout = Layout::new([0.0, 0.0], &state, &TSTransform::IDENTITY, true);
+        let port = Port { node: NodeId(0), role, index };
+        assert_eq!(layout.port(port).unwrap().x == layout.rect.right(), layout.on_right(port));
+        layout.on_right(port)
+    }
+
+    #[test]
+    fn a_port_can_be_on_the_other_side_from_others_like_it() {
+        assert!(drawn_on_right("Spike Gain", Role::Setting, 0), "settings are on the right");
+        assert!(!drawn_on_right("Write LTX", Role::Control, 0), "controls on the left");
+        assert!(drawn_on_right("Write LTX", Role::Control, 4), "but what comes after recording flows onward");
+        assert!(!drawn_on_right("Run Command", Role::Setting, 0), "into what it connects to");
+    }
 
     #[test]
     fn a_wire_mostly_hidden_gets_an_arrow_on_each_stretch_that_shows() {

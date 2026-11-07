@@ -12,5 +12,6 @@ pub fn category_colour(category: Category) -> Color32 {
         Category::Processing => Color32::from_rgb(30, 104, 150),
         Category::Visualisation => Color32::from_rgb(34, 116, 72),
         Category::Recording => Color32::from_rgb(158, 44, 44),
+        Category::Other => Color32::from_rgb(112, 84, 150),
     }
 }

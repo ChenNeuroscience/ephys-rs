@@ -268,7 +268,7 @@ impl Node<Edges> for AlarmProcessor {
     }
 
     fn settings(&self) -> Vec<SettingPort<Edges>> {
-        vec![SettingPort { name: "alarms", value: Setting::Alarms(self.alarms.clone()) }]
+        vec![SettingPort { name: "alarms", value: Setting::Alarms(self.alarms.clone()), on_right: true }]
     }
 
     fn set_setting(&mut self, _index: usize, value: Setting) {

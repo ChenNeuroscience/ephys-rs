@@ -374,7 +374,7 @@ impl Node<Edges> for Reference {
     }
 
     fn settings(&self) -> Vec<SettingPort<Edges>> {
-        vec![SettingPort { name: "reference", value: self.clone().into() }]
+        vec![SettingPort { name: "reference", value: self.clone().into(), on_right: true }]
     }
 
     fn set_setting(&mut self, _index: usize, value: Setting) {

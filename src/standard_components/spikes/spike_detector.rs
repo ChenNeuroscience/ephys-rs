@@ -253,7 +253,7 @@ impl Node<Edges> for SpikeDetector {
     }
 
     fn settings(&self) -> Vec<SettingPort<Edges>> {
-        vec![SettingPort { name: "thresholds", value: self.thresholds.clone().into() }]
+        vec![SettingPort { name: "thresholds", value: self.thresholds.clone().into(), on_right: true }]
     }
 
     fn set_setting(&mut self, _index: usize, value: Setting) {

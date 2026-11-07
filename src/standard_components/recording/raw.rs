@@ -23,16 +23,22 @@ use eframe::egui;
 use serde::{Deserialize, Serialize};
 
 use super::npy::Npy;
-use super::{Files, Location, Status, Writing, location_summary, location_ui, recording_name, status_ui};
+use super::{
+    Files, Location, OnFinished, Status, Writing, after_recording, location_summary, location_ui, recording_name,
+    status_ui,
+};
 use crate::core::engine::{
-    Category, Context, DataStreamType, EdgeSet, Flow, Input, Node, NodeInfo, NodeThread, Output, PASS_DURATION, Pass,
-    PoolStatus, ThreadContext,
+    Category, Context, Control, DataStreamType, EdgeSet, Flow, Input, Node, NodeInfo, NodeThread, Output,
+    PASS_DURATION, Pass, PoolStatus, ThreadContext,
 };
 use crate::standard_components::ephys::board::EPHYS_MICROVOLTS_PER_BIT;
 use crate::standard_components::ephys::{Continuous, ContinuousBuffer, Event, Events, EventsBuffer};
 use crate::standard_components::pool::{Pool, SharedPool};
 use crate::standard_components::widgets::{require_input, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind};
+
+/// Its control for what runs after a recording.
+const AFTER_RECORDING: usize = 0;
 
 const CONTINUOUS_FOLDER: &str = "ephys-rs-100.continuous";
 const EVENTS_FOLDER: &str = "ephys-rs-100.events";
@@ -92,10 +98,11 @@ impl Chunk {
         continuous: Option<Continuous>,
         events: Option<Events>,
         files: io::Result<RawFiles>,
+        on_finished: Option<OnFinished>,
     ) -> Writing<Chunk> {
         let (shown, bytes) = (folder.display().to_string(), Chunk::new(continuous, events).bytes());
         let make = move || Chunk::new(continuous, events);
-        Writing::new("Raw writer", shown, files.map(|f| Box::new(f) as Box<_>), make, bytes, None)
+        Writing::new("Raw writer", shown, files.map(|f| Box::new(f) as Box<_>), make, bytes, on_finished)
     }
 }
 
@@ -110,6 +117,10 @@ impl Node<Edges> for WriteRaw {
 
     fn inputs(&self) -> Vec<Input<Edges>> {
         vec![Input { name: "continuous", kind: Kind::Continuous }, Input { name: "events", kind: Kind::Events }]
+    }
+
+    fn controls(&self) -> Vec<Control<Edges>> {
+        vec![Control { name: "after recording", kind: crate::SettingKind::Command, read_only: true, on_right: true }]
     }
 
     fn outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {
@@ -163,12 +174,12 @@ impl Node<Edges> for WriteRaw {
         inputs: &[Option<DataStream>],
         _controls: &[Option<crate::Setting>],
         base_directory: Option<&crate::core::base_directory::Place>,
-        _triggers: &crate::core::triggers::ControlTriggers,
+        triggers: &crate::core::triggers::ControlTriggers,
     ) -> Option<Box<dyn std::any::Any + Send>> {
         let Recorder { continuous, events, .. } = self.initial_state(inputs);
         let folder = self.folder(base_directory);
         let files = RawFiles::open(&folder, continuous, events);
-        Some(Box::new(Chunk::writing(&folder, continuous, events, files)))
+        Some(Box::new(Chunk::writing(&folder, continuous, events, files, after_recording(triggers, AFTER_RECORDING))))
     }
 
     /// While recording, hands the pass's data to the writer's thread, swapping the buffers it's in for a chunk's.

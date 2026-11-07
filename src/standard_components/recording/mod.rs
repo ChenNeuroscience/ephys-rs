@@ -12,16 +12,19 @@
 //! Before recording starts, a writer opens its files and starts its thread (`Node::prepare_to_record`), so passes
 //! only record once it's ready. The graph can't change while recording, so one that hasn't prepared has a problem
 //! to report (`Writing::failed`). Stopping lets the thread write what's queued and finish the files in the background
-//! (see `crate::core::background`), which a writer can ask to hear about (`OnFinished`).
+//! (see `crate::core::background`), which a writer can ask to hear about (`OnFinished`). The writers do, to tell what's
+//! connected to their "after recording" control what they recorded (`after_recording`), once it's all finished.
 
 pub mod ltx;
 mod npy;
 pub mod raw;
 
+use crate::standard_components::other::run_command::RUN_ON_FILES;
 use std::io;
 use std::path::PathBuf;
 
 use crate::core::base_directory::Place;
+use crate::core::triggers::ControlTriggers;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -60,6 +63,17 @@ pub trait Files<C>: Send {
     fn write(&mut self, chunk: &C) -> io::Result<u64>;
     /// Fills in what's only known at the end (counts, durations), and closes the files, returning their paths.
     fn finish(self: Box<Self>) -> io::Result<Vec<PathBuf>>;
+}
+
+/// Sends what's been recorded to what control `control` is connected to, with `RUN_ON_FILES`, if it has that trigger,
+/// once the files are finished. Not if it failed.
+pub fn after_recording(triggers: &ControlTriggers, control: usize) -> Option<OnFinished> {
+    let handle = triggers.handle(control, RUN_ON_FILES)?;
+    Some(Box::new(move |result| {
+        if let Ok(paths) = result {
+            handle.trigger(paths);
+        }
+    }))
 }
 
 /// Told, on the writer's thread, how a recording ended: the paths of the files it finished, or what went wrong. Not told
