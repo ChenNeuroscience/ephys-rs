@@ -553,9 +553,13 @@ impl LfpViewer {
                             Some(computation) => format!("The reference: the {}", computation.summary()),
                             None => "The reference".into(),
                         };
-                        let _ = ui
-                            .interact(hover, ui.scope_id().with(("reference row", shown_row)), Sense::hover())
-                            .on_hover_text(tip);
+                        let whole =
+                            ui.interact(hover, ui.scope_id().with(("reference row", shown_row)), Sense::hover());
+                        // Only with the pointer on it and not on a button on it: egui would keep its tooltip open all over
+                        // its rect, and the buttons' never get a turn.
+                        if whole.hovered() {
+                            whole.on_hover_text(tip);
+                        }
                         // What's particular to it: its method below its name, and removing it, just left of that.
                         if let Some(computation) = computation.filter(|_| columns > 0) {
                             let method = Rect::from_min_size(
@@ -1418,6 +1422,15 @@ mod tests {
         assert_eq!(harness.state().used_by(0), None);
         // Channel 4's in the second, but uses none: that's for the settings.
         assert!(harness.get_by_label("Channel 4 in reference 2").accesskit_node().is_disabled());
+        // Resting on a reference's row, then moving on to a button on it: the button's tooltip takes over.
+        let name = harness.get_by_label("median").rect().center() - egui::vec2(0.0, 14.0);
+        harness.event(egui::Event::PointerMoved(name));
+        harness.run_steps(8);
+        assert!(harness.query_by_label_contains("The reference: the").is_some(), "the row's");
+        harness.get_by_label("Delete reference 2").hover();
+        harness.run_steps(8);
+        assert!(harness.query_by_label("Delete this reference").is_some(), "the button's");
+        assert!(harness.query_by_label_contains("The reference: the").is_none(), "and not the row's");
         // On a reference's own row: its method, and removing it.
         harness.get_by_label("median").click();
         harness.run_steps(3);
