@@ -2014,6 +2014,8 @@ mod tests {
         harness.run_steps(2);
         let second = found(&harness);
         assert!(second.is_some());
+        // Kept, so the next run's can't be made where it was, and look the same.
+        let _kept = harness.state().paused.as_ref().map(|paused| paused.exchange.clone());
         harness.state_mut().perform(&ctx, Action::Play);
         harness.run_steps(2);
         assert!(harness.state().paused.is_none(), "running again");
