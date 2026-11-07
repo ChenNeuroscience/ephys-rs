@@ -219,20 +219,21 @@ impl TtlViewer {
         // Line numbers on the left, counts on the right.
         let (label, counts) = (34.0, 170.0);
         let trace = egui::Rect::from_x_y_ranges(rect.left() + label..=rect.right() - counts, rect.y_range());
-        // Filling from the left, then scrolling, with room for the future at the right (see `time_axis`).
-        let (left, right) = crate::core::time_axis::window(0.0, display.now, display.span);
+        // Up to now, with room for the future at the right (see `time_axis`).
+        let (left, right) = crate::core::time_axis::window(display.now, display.span);
         let x = |time: f64| trace.left() + ((time - left) / (right - left)) as f32 * trace.width();
         let font = FontId::monospace(11.0);
         let bottom = rect.bottom() - TIME_AXIS_HEIGHT;
         let axis = egui::Rect::from_x_y_ranges(trace.x_range(), bottom..=rect.bottom());
-        time_axis_ui(&painter, axis, (left, right), theme);
+        time_axis_ui(&painter, axis, crate::core::time_axis::window(0.0, display.span), theme);
         for line in 0..display.lines {
             let top = rect.top() + row * line as f32;
             let (high, low) = (top + row * 0.25, top + row * 0.75);
             let bit = 1 << line;
             // A step trace: along at the level, and up or down at each change.
             let mut level = display.levels_before & bit != 0;
-            let mut points = vec![Pos2::new(trace.left(), if level { high } else { low })];
+            // From when acquisition started, if that's within the span.
+            let mut points = vec![Pos2::new(x(left.max(0.0)), if level { high } else { low })];
             for change in display.changes.iter().filter(|c| c.line as usize == line) {
                 let at = x(change.time);
                 points.push(Pos2::new(at, if level { high } else { low }));

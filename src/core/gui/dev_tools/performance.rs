@@ -39,10 +39,11 @@ pub fn show(
     passes: Option<&[[f64; 2]]>,
 ) {
     let now = frames.now();
-    let start = frames.frames.front().map_or(now, |f| f.at);
-    let (left, right) = time_axis::window(start, now, SPAN);
-    let shown: Vec<_> = frames.frames.iter().filter(|f| f.at >= left).collect();
-    let marks: Vec<&Mark> = frames.marks.iter().filter(|m| m.at >= left).collect();
+    let oldest = time_axis::window(now, SPAN).0;
+    let shown: Vec<_> = frames.frames.iter().filter(|f| f.at >= oldest).collect();
+    let marks: Vec<&Mark> = frames.marks.iter().filter(|m| m.at >= oldest).collect();
+    // The plots' axes stay put, showing how long ago things were (see `time_axis`).
+    let (left, right) = time_axis::window(0.0, SPAN);
     // Each part, in the order they first come, for the key and the bars.
     let mut parts: Vec<&str> = Vec::new();
     for frame in &shown {
@@ -73,16 +74,9 @@ pub fn show(
     let running = passes.is_some() && frames.run_started.is_some();
     let room = (ui.available_height() - if running { 70.0 } else { 50.0 }).max(80.0);
     let (passes_height, frames_height) = if running { (room * 0.4, room * 0.6) } else { (0.0, room) };
-    // Seconds ago (the future, at the right, has none).
+    // The future, at the right, has no labels.
     let axis = |mark: egui_plot::GridMark, _: &std::ops::RangeInclusive<f64>| {
-        let ago = now - mark.value;
-        if ago < -0.01 {
-            String::new()
-        } else if ago < 0.5 {
-            "now".into()
-        } else {
-            format!("{:.0} s", -ago)
-        }
+        if mark.value > 0.01 { String::new() } else { time_axis::label(mark.value) }
     };
     let plot = |id: &str, height: f32| {
         Plot::new(id)
@@ -99,7 +93,7 @@ pub fn show(
 
     // The workers' passes, while running: each, and their average, against the time each covers.
     if let (Some(passes), Some(run_started)) = (passes, frames.run_started) {
-        let ms: Vec<[f64; 2]> = passes.iter().map(|&[t, d]| [run_started + t, d * 1000.0]).collect();
+        let ms: Vec<[f64; 2]> = passes.iter().map(|&[t, d]| [run_started + t - now, d * 1000.0]).collect();
         let average: Vec<[f64; 2]> = ms
             .iter()
             .enumerate()
@@ -117,7 +111,7 @@ pub fn show(
             let each = Line::new("pass", PlotPoints::from(ms)).color(colours.accent.gamma_multiply(0.45));
             plot.line(each.width(1.0));
             plot.line(Line::new("average", PlotPoints::from(average)).color(colours.accent).width(2.0));
-            show_marks(plot, &marks, colours, top, true)
+            show_marks(plot, &marks, now, colours, top, true)
         });
         let tip = format!(
             "How long each pass took to run (thin), and the average over {SMOOTHING} passes (thick), against the \
@@ -165,7 +159,7 @@ pub fn show(
                 .zip(&mut bases)
                 .filter_map(|(frame, base)| {
                     let ms = frame.parts.iter().find(|p| p.0 == *part)?.1 as f64;
-                    let x = ((frame.at / BIN).floor() + 0.5) * BIN;
+                    let x = ((frame.at / BIN).floor() + 0.5) * BIN - now;
                     let bar = Bar::new(x, ms).base_offset(*base).width(BIN).fill(colour(index, part));
                     *base += ms;
                     Some(bar.stroke(Stroke::NONE))
@@ -173,7 +167,7 @@ pub fn show(
                 .collect();
             plot.bar_chart(BarChart::new(*part, bars).allow_hover(false));
         }
-        show_marks(plot, &marks, colours, top, labelled)
+        show_marks(plot, &marks, now, colours, top, labelled)
     });
     let tip = "How long the GUI took over each frame, part by part: those it builds, then laying it out and painting \
                it; the slowest in each twentieth of a second. Against the 1/60 s a frame can take, at 60 frames a \
@@ -216,10 +210,18 @@ pub fn show(
     });
 }
 
-/// The changes to the run in view, as lines down a plot (labelled, if `labelled`, at its `top`): red for recording
+/// The changes to the run in view, as lines down a plot (labelled, if `labelled`, at its `top`), at how long before `now`
+/// they were: red for recording
 /// starting or stopping, amber for a new epoch, grey for other versions; dashed when it was asked for, solid at the
 /// first pass to use it. Returns what changed at the one under the pointer, if any.
-fn show_marks(plot: &mut PlotUi, marks: &[&Mark], colours: &Colours, top: f64, labelled: bool) -> Option<String> {
+fn show_marks(
+    plot: &mut PlotUi,
+    marks: &[&Mark],
+    now: f64,
+    colours: &Colours,
+    top: f64,
+    labelled: bool,
+) -> Option<String> {
     let colour = |kind: MarkKind| match kind {
         MarkKind::Recording => colours.error,
         MarkKind::Epoch => colours.warning,
@@ -227,17 +229,19 @@ fn show_marks(plot: &mut PlotUi, marks: &[&Mark], colours: &Colours, top: f64, l
     };
     for mark in marks {
         let style = if mark.first_use { LineStyle::Solid } else { LineStyle::dashed_dense() };
-        plot.vline(VLine::new(mark.label.clone(), mark.at).color(colour(mark.kind)).width(1.5).style(style));
+        let at = mark.at - now;
+        plot.vline(VLine::new(mark.label.clone(), at).color(colour(mark.kind)).width(1.5).style(style));
         if labelled && !mark.first_use {
             let text = RichText::new(&mark.label).small().color(colour(mark.kind));
-            plot.text(Text::new(mark.label.clone(), PlotPoint::new(mark.at, top), text).anchor(egui::Align2::LEFT_TOP));
+            plot.text(Text::new(mark.label.clone(), PlotPoint::new(at, top), text).anchor(egui::Align2::LEFT_TOP));
         }
     }
     let pointer = plot.pointer_coordinate()?;
     let reach = plot.transform().dvalue_dpos()[0].abs() * 5.0;
+    let distance = |mark: &Mark| (mark.at - now - pointer.x).abs();
     marks
         .iter()
-        .filter(|m| (m.at - pointer.x).abs() < reach)
-        .min_by(|a, b| (a.at - pointer.x).abs().total_cmp(&(b.at - pointer.x).abs()))
+        .filter(|m| distance(m) < reach)
+        .min_by(|a, b| distance(a).total_cmp(&distance(b)))
         .map(|m| m.detail.clone())
 }

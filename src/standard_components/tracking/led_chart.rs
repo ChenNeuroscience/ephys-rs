@@ -28,17 +28,17 @@ pub fn record(history: &mut History, time: f64, areas: [u32; 2], timing_on: bool
     }
 }
 
-/// The chart, filling the space left: 0 s is the oldest frame kept, so the lines fill from the left and then
-/// scroll (see `time_axis`). Frames where an LED wasn't found leave a gap in its line.
+/// The chart, filling the space left: the newest frame is now, and the older ones go left (see `time_axis`). Frames where
+/// an LED wasn't found leave a gap in its line.
 pub fn chart(ui: &mut egui::Ui, history: &History) {
-    let start = history.front().map_or(0.0, |&(t, ..)| t);
+    let newest = history.back().map_or(0.0, |&(t, ..)| t);
     let top = history.iter().map(|&(_, a, _)| a[0].max(a[1])).max().unwrap_or(0).max(10) as f64 * 1.15;
     let step = nice_step(top / 5.0);
     Plot::new(ui.scope_id().with("led sizes"))
         .width(ui.available_width())
         .height(ui.available_height())
         .x_grid_spacer(uniform_grid_spacer(|_| [1.0, 2.0, 10.0]))
-        .x_axis_formatter(|mark, _| format!("{}s", mark.value.round()))
+        .x_axis_formatter(|mark, _| crate::core::time_axis::label(mark.value))
         .y_grid_spacer(uniform_grid_spacer(move |_| [step / 2.0, step, step * 10.0]))
         .y_axis_formatter(|mark, _| format!("{}px", mark.value.round()))
         .allow_zoom(false)
@@ -47,15 +47,14 @@ pub fn chart(ui: &mut egui::Ui, history: &History) {
         .allow_boxed_zoom(false)
         .allow_double_click_reset(false)
         .show(ui, |plot| {
-            let now = history.back().map_or(0.0, |&(t, ..)| t - start);
-            let (left, right) = crate::core::time_axis::window(0.0, now, SECONDS);
+            let (left, right) = crate::core::time_axis::window(0.0, SECONDS);
             plot.set_plot_bounds(PlotBounds::from_min_max([left, 0.0], [right, top]));
-            for [from, to] in timing_runs(history, start) {
+            for [from, to] in timing_runs(history, newest) {
                 let bar = vec![[from, 0.0], [to, 0.0], [to, top], [from, top]];
                 plot.polygon(Polygon::new("Timing LED", bar).fill_color(TIMING_COLOUR).stroke((0.0, TIMING_COLOUR)));
             }
             for (i, name) in ["Big", "Small"].into_iter().enumerate() {
-                for run in seen_runs(history, i, start) {
+                for run in seen_runs(history, i, newest) {
                     plot.line(Line::new(name, run).color(COLOURS[i]).width(2.0));
                 }
             }

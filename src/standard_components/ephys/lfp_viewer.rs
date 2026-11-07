@@ -83,8 +83,6 @@ pub struct Traces {
     filled: usize,
     /// Columns filled since starting (up to `COLUMNS`).
     columns: usize,
-    /// Samples so far, to tell the time.
-    samples: u64,
     shown: SharedPool<TracesDisplay>,
 }
 
@@ -133,7 +131,6 @@ impl Traces {
             let (_, shown, references, _) = shape;
             *self = Traces {
                 rate: self.rate,
-                samples: self.samples,
                 shape,
                 lows: vec![0.0; (shown + references) * COLUMNS],
                 highs: vec![0.0; (shown + references) * COLUMNS],
@@ -157,8 +154,7 @@ pub struct TracesDisplay {
     /// How many references there are, in rows after the channels'.
     references: usize,
     columns: usize,
-    /// Seconds since acquisition started, at the end of the last pass, and in a column.
-    now: f64,
+    /// The seconds in a column.
     column_seconds: f64,
     lows: Vec<f32>,
     highs: Vec<f32>,
@@ -233,8 +229,6 @@ impl Node<Edges> for LfpViewer {
         let count = references.map_or(0, |r| r.channels);
         traces.reshape((first, shown, count, per_column));
         traces.add(input, first, references);
-        traces.samples += input.len as u64;
-        let now = traces.samples as f64 / rate as f64;
         let column_seconds = per_column as f64 / rate as f64;
         let spectra = match pass.inputs.get(1) {
             Some(Some(Buffer::Spectra(spectra))) if self.spectrum => Some(spectra),
@@ -243,7 +237,7 @@ impl Node<Edges> for LfpViewer {
         let Traces { lows, highs, head, columns, shown: sent, .. } = traces;
         sent.send_newest(pass, |display| {
             (display.first, display.shown, display.references, display.columns) = (first, shown, count, *columns);
-            (display.now, display.column_seconds) = (now, column_seconds);
+            display.column_seconds = column_seconds;
             display.lows.clear();
             display.highs.clear();
             for i in 0..shown + count {
@@ -504,20 +498,19 @@ impl LfpViewer {
                 let spectra = spectra.filter(|_| self.spectrum && width > SPECTRUM_WIDTH * 2.0);
                 let spectrum = if spectra.is_some() { SPECTRUM_WIDTH } else { 0.0 };
                 let painter = ui.painter().clone();
-                // Filling from the left, then scrolling, with room for the future at the right (see `time_axis`).
+                // Up to now, with room for the future at the right (see `time_axis`).
                 let future = 1.0 + crate::core::time_axis::FUTURE as f32;
                 let column = (width - label - spectrum) / (COLUMNS as f32 * future);
                 // The columns filled so far are the last of each row's.
                 let start = COLUMNS - display.columns;
                 if viewport.max.y > channels_bottom {
-                    let left = display.now - display.columns as f64 * display.column_seconds;
-                    let right = left + (COLUMNS as f64 * future as f64) * display.column_seconds;
+                    let span = COLUMNS as f64 * display.column_seconds;
                     let top = rect.top() + channels_bottom;
                     let axis = Rect::from_min_max(
                         egui::pos2(rect.left() + label, top),
                         egui::pos2(rect.right() - spectrum, top + TIME_AXIS_HEIGHT),
                     );
-                    time_axis_ui(&painter, axis, (left, right), theme);
+                    time_axis_ui(&painter, axis, crate::core::time_axis::window(0.0, span), theme);
                 }
                 for shown_row in rows {
                     let top = rect.top() + row_top(shown_row);
@@ -536,7 +529,7 @@ impl LfpViewer {
                         let highs = &display.highs[i * COLUMNS..(i + 1) * COLUMNS];
                         let points: Vec<Pos2> = (start..COLUMNS)
                             .flat_map(|c| {
-                                let x = rect.left() + label + ((c - start) as f32 + 0.5) * column;
+                                let x = rect.left() + label + (c as f32 + 0.5) * column;
                                 let (a, b) = if c % 2 == 0 { (lows[c], highs[c]) } else { (highs[c], lows[c]) };
                                 [egui::pos2(x, y(a)), egui::pos2(x, y(b))]
                             })
@@ -1151,7 +1144,6 @@ mod tests {
             shown,
             references,
             columns: COLUMNS,
-            now: 12.0,
             column_seconds: 2.0 / COLUMNS as f64,
             lows: columns(-5.0),
             highs: columns(5.0),

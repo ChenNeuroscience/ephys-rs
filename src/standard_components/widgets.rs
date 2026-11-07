@@ -64,14 +64,13 @@ pub fn time_ticks(left: f64, right: f64, width: f32) -> Vec<(f64, String)> {
         return Vec::new();
     }
     let step = nice_step((right - left) * (TIME_TICK_GAP / width) as f64);
-    let decimals = (-step.log10().floor()).max(0.0) as usize;
     let first = (left / step).ceil() as i64;
     let last = (right / step).floor() as i64;
-    (first..=last).map(|i| i as f64 * step).map(|at| (at, format!("{at:.decimals$} s"))).collect()
+    (first..=last).map(|i| i as f64 * step).map(|at| (at, crate::core::time_axis::label(at))).collect()
 }
 
-/// A time axis along the top of `rect`, which is the width of the plot above it, from `left` to `right` seconds (see
-/// `crate::core::time_axis`).
+/// A time axis along the top of `rect`, which is the width of the plot above it, from `left` to `right` seconds, as
+/// `crate::core::time_axis` says: how long ago, so what's up to now.
 pub fn time_axis_ui(painter: &egui::Painter, rect: egui::Rect, (left, right): (f64, f64), theme: &Colours) {
     let stroke = egui::Stroke::new(1.0, theme.divider);
     painter.hline(rect.x_range(), rect.top(), stroke);
@@ -318,8 +317,8 @@ mod tests {
     #[test]
     fn time_ticks_are_round_and_have_room_for_their_labels() {
         let at = |left, right, width| time_ticks(left, right, width).into_iter().map(|t| t.1).collect::<Vec<_>>();
-        assert_eq!(at(10.0, 12.06, 300.0), ["10.0 s", "10.5 s", "11.0 s", "11.5 s", "12.0 s"]);
-        assert_eq!(at(0.0, 61.8, 400.0), ["0 s", "20 s", "40 s", "60 s"]);
+        assert_eq!(at(-2.0, 0.06, 300.0), ["−2 s", "−1.5 s", "−1 s", "−0.5 s", "now"]);
+        assert_eq!(at(-60.0, 1.8, 400.0), ["−60 s", "−40 s", "−20 s", "now"]);
         assert_eq!(at(1.032, 1.052, 200.0), ["1.04 s", "1.05 s"]);
         assert!(time_ticks(0.0, 0.0, 300.0).is_empty(), "no span yet");
         assert!(time_ticks(0.0, 2.0, 0.0).is_empty());
