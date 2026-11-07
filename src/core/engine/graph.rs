@@ -516,6 +516,20 @@ impl<N: NodeSet> Graph<N> {
             .collect()
     }
 
+    /// What node `id`'s controls can trigger directly, sent to `triggers`.
+    pub fn control_triggers(
+        &self,
+        id: NodeId,
+        triggers: &Arc<crate::core::triggers::DirectTriggers>,
+    ) -> crate::core::triggers::ControlTriggers {
+        let count = self.get(id).map_or(0, |entry| entry.node.controls().len());
+        let control = |index| {
+            let edges = self.live_edges_from(Port { node: id, role: Role::Control, index });
+            edges.filter_map(|e| Some((e.to.node, self.get(e.to.node)?.node.direct_triggers(e.to.port)))).collect()
+        };
+        crate::core::triggers::ControlTriggers::new(triggers.clone(), (0..count).map(control).collect())
+    }
+
     /// Runs `f` (a node's UI, say) on a node, then applies any changes it made through its controls to the
     /// settings they're connected to.
     #[allow(clippy::too_many_arguments)]
@@ -586,6 +600,7 @@ impl Recording {
     pub fn prepare<N: NodeSet>(
         snapshot: &Snapshot<N>,
         base_directory: Option<crate::core::base_directory::Place>,
+        triggers: &Arc<crate::core::triggers::DirectTriggers>,
     ) -> Self {
         let resolved = snapshot.graph.resolve();
         let mut prepared = HashMap::new();
@@ -593,7 +608,8 @@ impl Recording {
             let (Some(entry), Some(state)) = (snapshot.graph.get(step.id), resolved.get(&step.id)) else { continue };
             let controls = snapshot.controls.get(&step.id).map_or(&[][..], Vec::as_slice);
             let base = base_directory.as_ref();
-            if let Some(ready) = entry.node.prepare_to_record(&state.input_streams, controls, base) {
+            let reach = snapshot.graph.control_triggers(step.id, triggers);
+            if let Some(ready) = entry.node.prepare_to_record(&state.input_streams, controls, base, &reach) {
                 prepared.insert(step.id, ready);
             }
         }

@@ -73,7 +73,7 @@ pub struct CameraSettings {
     /// does (an externally triggered one goes by its trigger), so changing it starts a new epoch.
     pub frame_rate: f64,
     /// The video stream's frame size, so changing it starts a new epoch too. Frames of other sizes are skipped: the camera
-    /// proposes the size it's sending, unless it's recording (see `Pass::propose`).
+    /// triggers an update to the size it's sending, unless it's recording (see `Pass::trigger_settings_update`).
     pub frame_size: [u32; 2],
     /// Microseconds.
     pub exposure: Control,

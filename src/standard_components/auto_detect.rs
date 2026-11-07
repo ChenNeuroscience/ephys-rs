@@ -1,6 +1,6 @@
 //! Choosing settings from the data ("auto detect"): a node's trigger (see `Node::triggers`), which its passes take,
-//! sample the data for a while, then propose settings from. The Spike Gain, Continuous Gain and Spike Detector have one,
-//! fired from their windows or a viewer's; these are the pieces they share.
+//! sample the data for a while, then trigger settings updates from. The Spike Gain, Continuous Gain and Spike Detector have one,
+//! triggered from their windows or a viewer's; these are the pieces they share.
 
 use eframe::egui;
 use serde::{Deserialize, Serialize};
@@ -124,7 +124,7 @@ impl PercentMultiple {
     }
 }
 
-/// A button to fire the auto-detect trigger (of the node's own settings, or of the setting `control` connects to),
+/// A button for the auto-detect trigger (of the node's own settings, or of the setting `control` connects to),
 /// and how it's going: for this node's window, and a viewer's.
 pub fn auto_detect_ui(ui: &mut egui::Ui, context: &mut Context<Edges>, control: Option<usize>, tip: &str) {
     ui.horizontal(|ui| {

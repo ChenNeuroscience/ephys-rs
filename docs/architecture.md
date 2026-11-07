@@ -110,12 +110,14 @@ The passes never wait on the GUI, nor it on them. Each run has an [`Exchange`](.
   The engine and GUI don't treat any of it specially. The usual thing is a [pool](../src/standard_components/pool.rs)
   of buffers, as between nodes' threads and the passes: passes fill buffers (or swap their own in) and queue them;
   the window reads the newest, giving the rest back. The dev tools show each such pool on the GUI's thread.
+- **Direct triggers** ([`triggers.rs`](../src/core/triggers.rs)) don't wait for a pass: the app delivers them on the GUI's
+  thread, running or not, so they belong to it rather than a run. A setting's update from a pass is one.
 - Stopping is a pause: the app keeps the run's exchange, so everything goes on showing what it last had, until the next
   run, or until the graph changes in a way that would start a new epoch (`Plan::same_shape`). Triggers need a run.
-- The GUI can **fire a trigger** on a node (`Node::triggers`): "auto detect", say, from a viewer through a settings
+- The GUI can **trigger** a node's pass triggers (`Node::triggers`): "auto detect", say, from a viewer through a settings
   edge, or from the node's own window. A pass takes it (`Pass::triggered`), says how it's going, and when it's done.
-- Passes can't change the graph, but can **propose** a setting's value (`Pass::propose`), which the GUI applies as an
-  edit (not while recording, when settings are locked).
+- Passes can't change the graph, but can **trigger an update** of a setting (`Pass::trigger_settings_update`), which the
+  GUI applies as an edit, unless settings are locked.
 
 Settings themselves go the other way through snapshots: a pass sees the snapshot's settings, so a change reaches the
 next pass.
@@ -141,7 +143,8 @@ Pressing Record asks every node to prepare (`Node::prepare_to_record`: writers o
 the [base directory](base-directories.md) chosen in the toolbar, then the snapshots record, and nodes see
 `Pass::recording`. The graph's saved with the recording, as `<name>.ephys-rs.json`. While recording, settings are
 locked: changes are undone.
-Stopping lets writers finish their files in the background ([`background.rs`](../src/core/background.rs)).
+Stopping lets writers finish their files in the background ([`background.rs`](../src/core/background.rs)), which they can
+ask to hear about (`OnFinished`). Recording stopping isn't the files being finished.
 
 ## Crashes
 

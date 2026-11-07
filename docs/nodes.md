@@ -92,15 +92,23 @@ oldest buffer queued. A node that takes its input can swap it straight in (`Shar
 `Pool::send_as_of`), so nothing's copied: the [Video Viewer](../src/standard_components/tracking/video_viewer.rs)
 does this with frames.
 
-## Triggers and proposals
+## Triggers
 
-A setting can offer **triggers** (`triggers(setting)`), as well as be set: "auto detect", say. A control connected to
-it fires one (`Context::trigger(Some(control), name)`), as can the node's own window (`None`); the node's next pass
+Anything sent to a node is a trigger, and there are two kinds, by how it gets there.
+
+A setting can offer **pass triggers** (`triggers(setting)`), as well as be set: "auto detect", say. A control connected to
+it triggers one (`Context::trigger(Some(control), name)`), as can the node's own window (`None`); the node's next pass
 takes it (`Pass::triggered`), reports progress (`Pass::trigger_progress`), and finishes (`Pass::trigger_done`).
 Meanwhile it can be stopped (`Context::cancel_trigger`): the passes then see `Pass::trigger_cancelled`, and abandon it. Since
-passes can't change the graph, what it finds it proposes (`Pass::propose(setting, value)`), and the GUI applies it as
-an edit. The [Continuous Gain](../src/standard_components/ephys/continuous_gain.rs), [Spike Gain](../src/standard_components/spikes/spike_gain.rs) and
+passes can't change the graph, it triggers an update of what it finds (`Pass::trigger_settings_update(setting, value)`),
+and the GUI applies it as an edit. The [Continuous Gain](../src/standard_components/ephys/continuous_gain.rs), [Spike Gain](../src/standard_components/spikes/spike_gain.rs) and
 [Spike Detector](../src/standard_components/spikes/spike_detector.rs) work this way, triggered from the Spike Viewer.
+
+**Direct triggers** ([`triggers.rs`](../src/core/triggers.rs)) need no pass, or even a run: they're delivered on the GUI's
+thread, whatever's going on. Every setting takes one without saying so, the settings update above, which isn't applied
+while settings are locked. A setting can offer others (`direct_triggers(setting)`), which reach `Node::on_trigger`, with
+whatever was sent. A node sends one through a control with a `TriggerHandle`, from the `ControlTriggers` it's given in
+`prepare_to_record`, which it can keep and use from any thread.
 
 ## Threads of its own
 
@@ -114,11 +122,12 @@ from a pool, for its thread to write; see [`recording`](../src/standard_componen
 ## Recording
 
 `prepare_to_record` is called on a thread of its own before recording starts (a writer opening its files), and what
-it returns comes back to the first pass that records (`Pass::take_prepared`). Passes see `Pass::recording`.
+it returns comes back to the first pass that records (`Pass::take_prepared`). Passes see `Pass::recording`. The graph
+can't change while recording, so everything that records has prepared.
 
 ## Testing
 
 A node's `process` can be run on its own: make buffers from a stream (`stream.buffer(PASS_DURATION)`), and a pass
-with `Pass::new`. Most node files have tests doing just that; for triggers, fire one on the pass's exchange (see the
+with `Pass::new`. Most node files have tests doing just that; for triggers, trigger one on the pass's exchange (see the
 Spike Gain's tests). Views are tested headless with `egui_kittest`, against images in `tests/snapshots` (see
 [Development](development.md)).

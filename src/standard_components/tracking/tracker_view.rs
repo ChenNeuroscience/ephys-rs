@@ -937,12 +937,12 @@ mod tests {
         let first = Snapshot::new(0, graph.clone(), None);
         let runner = Runner::start(&first, 2);
 
-        let mut proposal = None;
+        let mut update = None;
         assert!(wait_for(|| {
-            proposal = runner.exchange().take_proposals().into_iter().next();
-            proposal.is_some()
+            update = runner.exchange().direct_triggers().take_settings_updates().into_iter().next();
+            update.is_some()
         }));
-        let (_, setting, value) = proposal.unwrap();
+        let (_, setting, value) = update.unwrap();
         let value = value.downcast::<crate::Setting>().unwrap();
         graph.get_mut(camera).unwrap().node.set_setting(setting, *value);
         assert!(!runner.update(&Snapshot::new(1, graph, Some(&first))), "a new epoch");
@@ -950,7 +950,7 @@ mod tests {
     }
 
     #[test]
-    fn the_camera_proposes_the_size_its_sending_unless_recording() {
+    fn the_camera_updates_to_the_size_its_sending_unless_recording() {
         let mut graph = Graph::default();
         let camera = add(&mut graph, "Camera");
         let address = super::super::camera::serve_test_scene(320, 240);
@@ -960,17 +960,17 @@ mod tests {
         let idle = Snapshot::new(0, graph, None);
         let recording = idle.with_recording(1, Some(std::sync::Arc::new(crate::core::engine::Recording::default())));
         let runner = Runner::start(&recording, 2);
-        let proposed = || {
-            let proposals = runner.exchange().take_proposals();
-            proposals.into_iter().find_map(|(_, _, value)| value.downcast::<crate::Setting>().ok()).map(|value| *value)
+        let updated = || {
+            let updates = runner.exchange().direct_triggers().take_settings_updates();
+            updates.into_iter().find_map(|(_, _, value)| value.downcast::<crate::Setting>().ok()).map(|value| *value)
         };
         std::thread::sleep(Duration::from_millis(1000));
-        assert!(proposed().is_none(), "settings are locked while recording");
+        assert!(updated().is_none(), "settings are locked while recording");
 
         assert!(runner.update(&recording.with_recording(2, None)));
         let mut value = None;
         assert!(wait_for(|| {
-            value = proposed();
+            value = updated();
             value.is_some()
         }));
         let Some(crate::Setting::Camera(settings)) = value else { panic!("the camera's settings") };

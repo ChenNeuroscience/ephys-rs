@@ -8,16 +8,17 @@
 //! the dev tools to show. Once a run's stopped, its windows still find what's in its exchange: stopping is a pause, and
 //! what they show stays, until the next run, or until the graph changes in a way that would start a new epoch.
 //!
-//! The other way, the GUI can fire a node's triggers (see `Node::triggers`): "auto detect", say. A pass of the node
-//! takes it (`Pass::triggered`), says how it's getting on (`Pass::trigger_progress`) and when it's done. And the
-//! passes, which can't change the graph, can propose a new value for one of the node's settings (`Pass::propose`),
-//! which the GUI applies (as an edit, unless recording).
+//! The other way, the GUI can trigger a node's pass triggers (see `Node::triggers`): "auto detect", say. A pass of the
+//! node takes it (`Pass::triggered`), says how it's getting on (`Pass::trigger_progress`) and when it's done. And the
+//! passes, which can't change the graph, can trigger an update of one of the node's settings
+//! (`Pass::trigger_settings_update`): a direct trigger (see `crate::core::triggers`), which doesn't wait for a pass.
 
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use super::engine::{NodeId, PoolStatus};
+use super::triggers::DirectTriggers;
 
 /// Something a node's passes and its window share (see `Exchange`).
 pub trait Shared: Any + Send + Sync {
@@ -38,50 +39,57 @@ struct Entry {
     shared: Arc<dyn Shared>,
 }
 
-/// Where a run's nodes leave things for their windows, and the GUI fires their triggers.
+/// Where a run's nodes leave things for their windows, and the GUI triggers their pass triggers.
 #[derive(Default)]
 pub struct Exchange {
     /// What each node shares, by type.
     shared: Mutex<HashMap<(NodeId, TypeId), Entry>>,
-    /// Triggers fired, until they're done: how far along each is (0 until a pass takes it).
+    /// Pass triggers triggered, until they're done: how far along each is (0 until a pass takes it).
     triggers: Mutex<HashMap<(NodeId, &'static str), Trigger>>,
-    /// Settings' values proposed by passes, for the GUI to apply: the node, which setting, and its value.
-    proposals: Mutex<Vec<Proposal>>,
+    /// Where direct triggers go: the app's.
+    direct: Arc<DirectTriggers>,
 }
 
-/// A setting's value proposed by a pass: the node, which of its settings, and the value.
-pub type Proposal = (NodeId, usize, Box<dyn Any + Send>);
-
-/// A trigger fired: waiting for a pass to take it, or taken, and how far along (0 to 1).
+/// A pass trigger triggered: waiting for a pass to take it, or taken, and how far along (0 to 1).
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Trigger {
-    Fired,
+    Triggered,
     Running(f32),
     /// Stopped by the GUI, until a pass sees it has been.
     Cancelled,
 }
 
 impl Exchange {
-    /// Fires node `node`'s trigger `name`: its next pass takes it.
-    pub fn fire(&self, node: NodeId, name: &'static str) {
-        self.triggers.lock().unwrap().insert((node, name), Trigger::Fired);
+    /// An exchange whose direct triggers go to `direct`.
+    pub fn new(direct: Arc<DirectTriggers>) -> Self {
+        Exchange { direct, ..Default::default() }
     }
 
-    /// How far along node `node`'s trigger `name` is (0 to 1), if it's been fired and isn't done (or stopped).
+    /// Where direct triggers go.
+    pub fn direct_triggers(&self) -> &DirectTriggers {
+        &self.direct
+    }
+
+    /// Triggers node `node`'s pass trigger `name`: its next pass takes it.
+    pub fn trigger(&self, node: NodeId, name: &'static str) {
+        self.triggers.lock().unwrap().insert((node, name), Trigger::Triggered);
+    }
+
+    /// How far along node `node`'s trigger `name` is (0 to 1), if it's been triggered and isn't done (or stopped).
     pub fn trigger_progress(&self, node: NodeId, name: &'static str) -> Option<f32> {
         self.triggers.lock().unwrap().get(&(node, name)).and_then(|t| match t {
-            Trigger::Fired => Some(0.0),
+            Trigger::Triggered => Some(0.0),
             Trigger::Running(progress) => Some(*progress),
             Trigger::Cancelled => None,
         })
     }
 
-    /// Stops node `node`'s trigger `name`, if it's been fired: its passes abandon what they were doing.
+    /// Stops node `node`'s trigger `name`, if it's been triggered: its passes abandon what they were doing.
     pub fn cancel(&self, node: NodeId, name: &'static str) {
         let mut triggers = self.triggers.lock().unwrap();
         match triggers.get(&(node, name)) {
-            // Not taken yet: as if it hadn't been fired.
-            Some(Trigger::Fired) => {
+            // Not taken yet: as if it hadn't been triggered.
+            Some(Trigger::Triggered) => {
                 triggers.remove(&(node, name));
             }
             Some(Trigger::Running(_)) => {
@@ -101,16 +109,11 @@ impl Exchange {
         cancelled
     }
 
-    /// The settings' values passes have proposed since last time: the node, which setting, and the value.
-    pub fn take_proposals(&self) -> Vec<Proposal> {
-        std::mem::take(&mut *self.proposals.lock().unwrap())
-    }
-
-    /// For `Pass`: whether node `node`'s trigger `name` has been fired, taking it if so.
+    /// For `Pass`: whether node `node`'s trigger `name` has been triggered, taking it if so.
     pub(crate) fn take_trigger(&self, node: NodeId, name: &'static str) -> bool {
         let mut triggers = self.triggers.lock().unwrap();
         match triggers.get_mut(&(node, name)) {
-            Some(trigger @ Trigger::Fired) => {
+            Some(trigger @ Trigger::Triggered) => {
                 *trigger = Trigger::Running(0.0);
                 true
             }
@@ -131,11 +134,6 @@ impl Exchange {
                 triggers.remove(&(node, name));
             }
         }
-    }
-
-    /// For `Pass`: a proposed value for a node's setting.
-    pub(crate) fn propose(&self, node: NodeId, setting: usize, value: Box<dyn Any + Send>) {
-        self.proposals.lock().unwrap().push((node, setting, value));
     }
 
     /// Node `node`'s shared `T`, made with `make` if it hasn't one yet (see `Pass::shared`).

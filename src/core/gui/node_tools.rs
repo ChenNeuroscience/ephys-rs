@@ -22,7 +22,7 @@ pub struct NodeTools<'e> {
     /// it's connected to, if it is.
     pub own_triggers: Vec<&'static str>,
     pub controls: Vec<Option<(NodeId, &'static [&'static str])>>,
-    /// Where triggers go, while running.
+    /// Where pass triggers go, while running.
     pub exchange: Option<&'e Exchange>,
     /// What's clicked becomes these.
     pub events: &'e mut Vec<Event>,
@@ -65,7 +65,7 @@ impl<'e> NodeTools<'e> {
 impl NodeToolbar for NodeTools<'_> {
     fn trigger(&mut self, control: Option<usize>, name: &'static str) {
         if let (Some(node), Some(exchange)) = (self.trigger_node(control, name), self.exchange) {
-            exchange.fire(node, name);
+            exchange.trigger(node, name);
         }
     }
 

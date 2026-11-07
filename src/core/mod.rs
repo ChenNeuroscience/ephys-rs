@@ -1,5 +1,6 @@
 //! The core: the graph engine (`engine`), annotations (`annotation`), themes (`theme`), the log (`console`),
-//! handing things from passes to windows (`exchange`), threads finishing in the background (`background`), how plots
+//! handing things from passes to windows (`exchange`), triggers that don't need a pass (`triggers`), threads finishing
+//! in the background (`background`), how plots
 //! over time lay out time (`time_axis`), quick actions (`quick_action`), and the GUI (`gui`).
 //! None of it knows about particular node, edge or annotation types, or themes: the program supplies those
 //! (see `examples/chen-neuro/`), declared with `edge_types!`, `node_set!` and `annotation_set!`, through `Components`.
@@ -16,6 +17,7 @@ pub mod layout;
 pub mod quick_action;
 pub mod theme;
 pub mod time_axis;
+pub mod triggers;
 
 /// `version` ("0.12.0", as Cargo has it) as it's shown: "v0.12".
 fn shown_version(version: &str) -> String {

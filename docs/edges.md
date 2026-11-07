@@ -51,7 +51,7 @@ They carry no data, so can point anywhere, upstream included; a setting can have
 setting. A setting's type is its value (a list of thresholds, say), implementing `EdgeType`; it needn't be `Copy`.
 
 When a node's window edits a control's value (`Context::controls`), the graph sets it on the setting's node
-(`Node::set_setting`), as an edit. A setting can also offer triggers (see [Nodes](nodes.md#triggers-and-proposals)).
+(`Node::set_setting`), as an edit. A setting can also offer triggers (see [Nodes](nodes.md#triggers)).
 
 Settings edges are drawn dashed, with arrows both ways (dotted when read-only); the legend has one row for each, not a
 row per setting. Disabled edges are broken in the

@@ -46,15 +46,15 @@ the size of the first frame. Connecting's tried twice a second, so each of those
 incomplete, or stop coming, or aren't the size set.
 
 The video stream's size has to be known before running, for its buffers, so it's a setting: the Camera node's Frame
-size, one of its camera settings. Frames of any other size are skipped. When they come, the camera proposes the size
-they are (`Pass::propose`, like other auto-detected settings), which starts a new epoch.
+size, one of its camera settings. Frames of any other size are skipped. When they come, the camera triggers an update to the size
+they are (`Pass::trigger_settings_update`, like other auto-detected settings), which starts a new epoch.
 
 A new epoch doesn't open the camera again, as that takes a couple of seconds: it carries on with the one capturing, only
 changing the buffers if the frame size has, and setting the frame rate on it if that has (a triggered camera goes by its
 trigger, so there it only changes the rate declared for the video). Stopping closes it, so other programs can use it, and
 changing its source opens another. See [`capture.rs`](../src/standard_components/tracking/camera/capture.rs).
 
-While recording, settings are locked, so it logs an error instead, and proposes the size once recording stops.
+While recording, settings are locked, so it logs an error instead, and triggers the update once recording stops.
 
 ## The timing LED
 
@@ -98,7 +98,7 @@ for any of this: it makes `.pos.ttl` as for a camera's timing LED, so the file's
 `timing_led_*` headers are the defaults, with the radius 0 saying there's no real spot.
 
 Headers are written as recording starts, so settings can't change while recording. Ones that differ log an error and wait:
-only the latest is kept, in the connection's inbox, so it survives a new epoch, and it's proposed once recording stops,
+only the latest is kept, in the connection's inbox, so it survives a new epoch, and the update's triggered once recording stops,
 until the node has it. So a connection's last settings aren't lost, though the recording has the ones it started with.
 
 `time` is required on all but `settings`, in seconds by the VR computer's own clock, which has to be consistent for as long

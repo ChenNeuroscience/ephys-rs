@@ -106,7 +106,7 @@ impl Node<Edges> for ContinuousGain {
         &[AUTO_DETECT]
     }
 
-    /// When triggered, samples each channel (in µV) for a while, then proposes gains from it; and multiplies each
+    /// When triggered, samples each channel (in µV) for a while, then triggers an update to gains from it; and multiplies each
     /// channel by its gain.
     fn process(&self, pass: &mut Pass<Edges>, gaining: &mut Gaining) {
         let input = match pass.inputs[0] {
@@ -139,7 +139,7 @@ impl Node<Edges> for ContinuousGain {
             });
             pass.trigger_progress(AUTO_DETECT, progress);
             if let Some(gains) = chosen {
-                pass.propose(0, Setting::Gains(gains));
+                pass.trigger_settings_update(0, Setting::Gains(gains));
                 pass.trigger_done(AUTO_DETECT);
                 gaining.sampling = None;
             }
@@ -251,7 +251,7 @@ mod tests {
         let stream = Continuous { channels: 2, sample_rate: 1000.0 };
         let mut state = gain.initial_state(&[Some(DataStream::Continuous(stream))]);
         let exchange = Pass::<Edges>::new(0, PASS_DURATION, &[], &mut []).exchange;
-        exchange.fire(NodeId(0), AUTO_DETECT);
+        exchange.trigger(NodeId(0), AUTO_DETECT);
         let passes = (4.0 / PASS_DURATION).round() as u64;
         for sequence in 0..passes {
             // 100 µV either side of zero on the first channel, 400 on the second.
@@ -272,8 +272,8 @@ mod tests {
             let expected = -100.0 * gain.gains.get(0);
             assert_eq!(out.channel(0)[10], expected, "multiplied by the gain");
         }
-        let proposals = exchange.take_proposals();
-        let Some(Setting::Gains(gains)) = proposals[0].2.downcast_ref::<Setting>() else { panic!() };
+        let updates = exchange.direct_triggers().take_settings_updates();
+        let Some(Setting::Gains(gains)) = updates[0].2.downcast_ref::<Setting>() else { panic!() };
         // One for all, to begin with: the widest of theirs, so neither clips.
         assert!((gains.range_uv(0) - 1200.0).abs() < 20.0 && (gains.range_uv(1) - 1200.0).abs() < 20.0);
     }

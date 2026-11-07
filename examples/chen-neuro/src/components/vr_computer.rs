@@ -67,8 +67,8 @@ const TTL_RATE: f64 = 1000.0;
 const QUEUE: usize = 4096;
 /// The longest message: longer than this, and it isn't one.
 const MAX_MESSAGE: usize = 1 << 20;
-/// How long to give the GUI to apply settings, before proposing them again (it won't as recording starts).
-const PROPOSE_AGAIN: Duration = Duration::from_secs(1);
+/// How long to give the GUI to apply settings, before triggering an update to them again (it won't as recording starts).
+const TRIGGER_AGAIN: Duration = Duration::from_secs(1);
 /// How long to try each connection for, and to wait between them.
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(250);
 const RETRY_AFTER: Duration = Duration::from_millis(500);
@@ -158,8 +158,8 @@ struct Inbox {
     logs: VecDeque<(f64, String)>,
     /// The latest settings, until the node has them.
     settings: Option<Custom>,
-    /// When they were last proposed, and whether it's been said they're waiting for recording to stop.
-    proposed: Option<Instant>,
+    /// When an update to them was last triggered, and whether it's been said they're waiting for recording to stop.
+    triggered: Option<Instant>,
     held: bool,
     frames: u64,
 }
@@ -171,7 +171,7 @@ impl Inbox {
             Message::Settings { settings } => {
                 let settings = flatten(&settings);
                 if self.settings.as_ref() != Some(&settings) {
-                    (self.proposed, self.held) = (None, false);
+                    (self.triggered, self.held) = (None, false);
                 }
                 self.settings = Some(settings);
             }
@@ -218,12 +218,12 @@ impl Inbox {
         }
     }
 
-    /// The settings to propose to a node that has `current`, if they're new: kept until it has them. While `recording`
+    /// The settings to update a node to that has `current`, if they're new: kept until it has them. While `recording`
     /// they wait, with an error logged.
-    fn settings_to_propose(&mut self, current: &Custom, recording: bool) -> Option<Custom> {
+    fn settings_to_update(&mut self, current: &Custom, recording: bool) -> Option<Custom> {
         let settings = self.settings.as_ref()?;
         if settings == current {
-            (self.settings, self.proposed, self.held) = (None, None, false);
+            (self.settings, self.triggered, self.held) = (None, None, false);
             return None;
         }
         if recording {
@@ -235,10 +235,10 @@ impl Inbox {
             }
             return None;
         }
-        if self.proposed.is_some_and(|at| at.elapsed() < PROPOSE_AGAIN) {
+        if self.triggered.is_some_and(|at| at.elapsed() < TRIGGER_AGAIN) {
             return None;
         }
-        self.proposed = Some(Instant::now());
+        self.triggered = Some(Instant::now());
         Some(settings.clone())
     }
 }
@@ -522,7 +522,7 @@ impl Node<Edges> for VrComputer {
         // If the thread's filing a message just then, what's there is left for the next pass.
         let settings = shared.inbox.try_lock().ok().and_then(|mut inbox| {
             inbox.take(positions, ttls, logs);
-            inbox.settings_to_propose(&self.custom, pass.recording)
+            inbox.settings_to_update(&self.custom, pass.recording)
         });
         if !ttls.events.is_empty()
             && timing_led(&self.custom) == Some(false)
@@ -537,7 +537,7 @@ impl Node<Edges> for VrComputer {
             sample.pixels_per_metre = pixels_per_metre;
         }
         if let Some(custom) = settings {
-            pass.propose(0, Setting::Detection(Detection { custom, ..Default::default() }));
+            pass.trigger_settings_update(0, Setting::Detection(Detection { custom, ..Default::default() }));
         }
         let status = &shared.status;
         receiving.shown.send_newest(pass, |shown| shown.clone_from(&status.lock().unwrap()));
@@ -729,27 +729,27 @@ mod tests {
         };
         let task = |name: &str| Custom::from([("task".to_string(), name.to_string())]);
         send(&mut inbox, "first");
-        assert_eq!(inbox.settings_to_propose(&Custom::new(), false), Some(task("first")));
-        assert_eq!(inbox.settings_to_propose(&Custom::new(), false), None, "giving the GUI a moment");
-        assert_eq!(inbox.settings_to_propose(&task("first"), false), None, "it has them");
+        assert_eq!(inbox.settings_to_update(&Custom::new(), false), Some(task("first")));
+        assert_eq!(inbox.settings_to_update(&Custom::new(), false), None, "giving the GUI a moment");
+        assert_eq!(inbox.settings_to_update(&task("first"), false), None, "it has them");
         assert_eq!(inbox.settings, None);
 
         // The same again changes nothing, recording or not: it's what's sent on connecting again, say.
         send(&mut inbox, "first");
-        assert_eq!(inbox.settings_to_propose(&task("first"), true), None);
+        assert_eq!(inbox.settings_to_update(&task("first"), true), None);
         assert!(!inbox.held && inbox.settings.is_none());
 
         // The latest of those sent while recording is kept, however many passes go by.
         send(&mut inbox, "second");
         send(&mut inbox, "third");
-        assert_eq!(inbox.settings_to_propose(&task("first"), true), None);
+        assert_eq!(inbox.settings_to_update(&task("first"), true), None);
         assert!(inbox.held);
-        assert_eq!(inbox.settings_to_propose(&task("first"), true), None);
-        assert_eq!(inbox.settings_to_propose(&task("first"), false), Some(task("third")));
+        assert_eq!(inbox.settings_to_update(&task("first"), true), None);
+        assert_eq!(inbox.settings_to_update(&task("first"), false), Some(task("third")));
 
         // If they don't get through, as recording starts, they're still there to propose.
-        inbox.proposed = Some(Instant::now() - PROPOSE_AGAIN);
-        assert_eq!(inbox.settings_to_propose(&task("first"), false), Some(task("third")));
+        inbox.triggered = Some(Instant::now() - TRIGGER_AGAIN);
+        assert_eq!(inbox.settings_to_update(&task("first"), false), Some(task("third")));
     }
 
     #[test]

@@ -321,7 +321,7 @@ impl Node<Edges> for SpikeDetector {
 }
 
 impl SpikeDetector {
-    /// When triggered, samples each channel for a while, then proposes thresholds from it.
+    /// When triggered, samples each channel for a while, then triggers an update to thresholds from it.
     fn choose_thresholds(&self, pass: &Pass<Edges>, detector: &mut Detector) {
         let channels = detector.noise.len();
         if pass.triggered(AUTO_DETECT) {
@@ -347,7 +347,7 @@ impl SpikeDetector {
                         thresholds.set(channel, level.max(0.5));
                     }
                 }
-                pass.propose(0, Setting::Thresholds(thresholds));
+                pass.trigger_settings_update(0, Setting::Thresholds(thresholds));
                 pass.trigger_done(AUTO_DETECT);
                 detector.sampling = None;
             }
@@ -465,7 +465,7 @@ mod tests {
         let mut state = detector.initial_state(&[Some(DataStream::Continuous(stream))]);
         let spikes = detector.stream(4, 30000.0);
         let exchange = Pass::<Edges>::new(0, PASS_DURATION, &[], &mut []).exchange;
-        exchange.fire(crate::core::engine::NodeId(0), AUTO_DETECT);
+        exchange.trigger(crate::core::engine::NodeId(0), AUTO_DETECT);
         let passes = (4.0 / PASS_DURATION).round() as u64;
         for sequence in 0..passes {
             let mut input = stream.buffer(PASS_DURATION);
@@ -483,8 +483,8 @@ mod tests {
             pass.exchange = exchange;
             detector.process(&mut pass, &mut state);
         }
-        let proposals = exchange.take_proposals();
-        let Some(Setting::Thresholds(thresholds)) = proposals[0].2.downcast_ref::<Setting>() else { panic!() };
+        let updates = exchange.direct_triggers().take_settings_updates();
+        let Some(Setting::Thresholds(thresholds)) = updates[0].2.downcast_ref::<Setting>() else { panic!() };
         for channel in 0..4 {
             let threshold = thresholds.get(channel);
             assert!((threshold - 40.0).abs() < 1.0, "a mean of 20, and 30 is 10 above it, doubled: {threshold}");

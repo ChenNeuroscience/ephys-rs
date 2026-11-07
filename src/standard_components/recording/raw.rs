@@ -16,7 +16,7 @@
 
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use chrono::Local;
 use eframe::egui;
@@ -88,23 +88,14 @@ impl Chunk {
 
     /// The writer's thread, with a pool of chunks for these inputs.
     fn writing(
-        folder: std::path::PathBuf,
+        folder: &Path,
         continuous: Option<Continuous>,
         events: Option<Events>,
-        opened: Option<io::Result<RawFiles>>,
+        files: io::Result<RawFiles>,
     ) -> Writing<Chunk> {
         let (shown, bytes) = (folder.display().to_string(), Chunk::new(continuous, events).bytes());
         let make = move || Chunk::new(continuous, events);
-        match opened {
-            Some(files) => Writing::new("Raw writer", shown, files.map(|f| Box::new(f) as Box<_>), make, bytes),
-            None => Writing::start(
-                "Raw writer",
-                shown,
-                move || RawFiles::open(&folder, continuous, events).map(|f| Box::new(f) as Box<_>),
-                make,
-                bytes,
-            ),
-        }
+        Writing::new("Raw writer", shown, files.map(|f| Box::new(f) as Box<_>), make, bytes, None)
     }
 }
 
@@ -172,22 +163,20 @@ impl Node<Edges> for WriteRaw {
         inputs: &[Option<DataStream>],
         _controls: &[Option<crate::Setting>],
         base_directory: Option<&crate::core::base_directory::Place>,
+        _triggers: &crate::core::triggers::ControlTriggers,
     ) -> Option<Box<dyn std::any::Any + Send>> {
         let Recorder { continuous, events, .. } = self.initial_state(inputs);
         let folder = self.folder(base_directory);
         let files = RawFiles::open(&folder, continuous, events);
-        Some(Box::new(Chunk::writing(folder, continuous, events, Some(files))))
+        Some(Box::new(Chunk::writing(&folder, continuous, events, files)))
     }
 
     /// While recording, hands the pass's data to the writer's thread, swapping the buffers it's in for a chunk's.
     fn process(&self, pass: &mut Pass<Edges>, recorder: &mut Recorder) {
         match (pass.recording, &recorder.writing) {
             (true, None) => {
-                // Not prepared (the graph changed while recording, say): the thread opens the files.
-                let (continuous, events) = (recorder.continuous, recorder.events);
-                recorder.writing = pass
-                    .take_prepared::<Writing<Chunk>>()
-                    .or_else(|| Some(Chunk::writing(self.folder(pass.base_directory()), continuous, events, None)));
+                let writing = pass.take_prepared::<Writing<Chunk>>();
+                recorder.writing = Some(writing.unwrap_or_else(|| Writing::failed("it wasn't prepared to record")));
             }
             (false, Some(_)) => recorder.writing = None, // finishes the files
             _ => {}
@@ -270,22 +259,28 @@ struct Ttl {
 struct RawFiles {
     continuous: Option<Samples>,
     events: Option<Ttl>,
+    paths: Vec<PathBuf>,
 }
 
 impl RawFiles {
     fn open(folder: &Path, continuous: Option<Continuous>, events: Option<Events>) -> io::Result<Self> {
         let recording = folder.join("Record Node 101").join("experiment1").join("recording1");
         std::fs::create_dir_all(&recording)?;
-        std::fs::write(recording.join("structure.oebin"), structure(continuous, events))?;
+        let mut paths = Vec::new();
+        let mut path = |path: PathBuf| {
+            paths.push(path.clone());
+            path
+        };
+        std::fs::write(path(recording.join("structure.oebin")), structure(continuous, events))?;
         let continuous = match continuous {
             Some(stream) => {
                 let dir = recording.join("continuous").join(CONTINUOUS_FOLDER);
                 std::fs::create_dir_all(&dir)?;
                 Some(Samples {
                     stream,
-                    data: BufWriter::new(File::create(dir.join("continuous.dat"))?),
-                    numbers: Npy::create(&dir.join("sample_numbers.npy"), "<i8")?,
-                    times: Npy::create(&dir.join("timestamps.npy"), "<f8")?,
+                    data: BufWriter::new(File::create(path(dir.join("continuous.dat")))?),
+                    numbers: Npy::create(&path(dir.join("sample_numbers.npy")), "<i8")?,
+                    times: Npy::create(&path(dir.join("timestamps.npy")), "<f8")?,
                     count: 0,
                     row: Vec::new(),
                 })
@@ -298,10 +293,10 @@ impl RawFiles {
                 std::fs::create_dir_all(&dir)?;
                 Some(Ttl {
                     stream,
-                    states: Npy::create(&dir.join("states.npy"), "<i2")?,
-                    numbers: Npy::create(&dir.join("sample_numbers.npy"), "<i8")?,
-                    times: Npy::create(&dir.join("timestamps.npy"), "<f8")?,
-                    words: Npy::create(&dir.join("full_words.npy"), "<u8")?,
+                    states: Npy::create(&path(dir.join("states.npy")), "<i2")?,
+                    numbers: Npy::create(&path(dir.join("sample_numbers.npy")), "<i8")?,
+                    times: Npy::create(&path(dir.join("timestamps.npy")), "<f8")?,
+                    words: Npy::create(&path(dir.join("full_words.npy")), "<u8")?,
                     samples: 0,
                     word: 0,
                 })
@@ -309,7 +304,7 @@ impl RawFiles {
             None => None,
         };
         log::info!("Recording raw data to {}", folder.display());
-        Ok(RawFiles { continuous, events })
+        Ok(RawFiles { continuous, events, paths })
     }
 }
 
@@ -416,7 +411,7 @@ impl Files<Chunk> for RawFiles {
         Ok(bytes)
     }
 
-    fn finish(self: Box<Self>) -> io::Result<()> {
+    fn finish(self: Box<Self>) -> io::Result<Vec<PathBuf>> {
         if let Some(mut samples) = self.continuous {
             samples.data.flush()?;
             samples.numbers.finish()?;
@@ -428,7 +423,7 @@ impl Files<Chunk> for RawFiles {
             ttl.times.finish()?;
             ttl.words.finish()?;
         }
-        Ok(())
+        Ok(self.paths)
     }
 }
 

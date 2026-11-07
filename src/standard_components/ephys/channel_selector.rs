@@ -234,7 +234,8 @@ mod tests {
         let snapshot = Snapshot::new(0, graph.clone(), None);
         let runner = Runner::start(&snapshot, 2);
         let place = Place { directory: dir.clone(), prefix: Some("trial a".into()) };
-        let recording = snapshot.with_recording(1, Some(Arc::new(Recording::prepare(&snapshot, Some(place)))));
+        let recording =
+            snapshot.with_recording(1, Some(Arc::new(Recording::prepare(&snapshot, Some(place), &Default::default()))));
         assert!(runner.update(&recording), "recording carries on the same run");
         let deadline = Instant::now() + Duration::from_secs(10);
         while runner.clock() < 0.5 && Instant::now() < deadline {

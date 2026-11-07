@@ -152,26 +152,11 @@ impl Chunk {
             + self.log_lines.capacity() * size_of::<(f64, u32)>()
     }
 
-    /// The writer's thread, with a pool of chunks for `streams`: writing to `opened`, or opening the files itself.
-    fn writing(
-        base: PathBuf,
-        start: DateTime<Local>,
-        streams: Streams,
-        recorded: Recorded,
-        opened: Option<io::Result<LtxFiles>>,
-    ) -> Writing<Chunk> {
+    /// The writer's thread, with a pool of chunks for `streams`, writing to `files`.
+    fn writing(base: &Path, streams: Streams, files: io::Result<LtxFiles>) -> Writing<Chunk> {
         let (shown, bytes) = (base.display().to_string(), Chunk::new(streams).bytes());
         let make = move || Chunk::new(streams);
-        match opened {
-            Some(files) => Writing::new("LTX writer", shown, files.map(|f| Box::new(f) as Box<_>), make, bytes),
-            None => Writing::start(
-                "LTX writer",
-                shown,
-                move || LtxFiles::open(&base, start, streams, recorded).map(|f| Box::new(f) as Box<_>),
-                make,
-                bytes,
-            ),
-        }
+        Writing::new("LTX writer", shown, files.map(|f| Box::new(f) as Box<_>), make, bytes, None)
     }
 }
 
@@ -256,11 +241,12 @@ impl Node<Edges> for WriteLtx {
         inputs: &[Option<DataStream>],
         controls: &[Option<Setting>],
         base_directory: Option<&crate::core::base_directory::Place>,
+        _triggers: &crate::core::triggers::ControlTriggers,
     ) -> Option<Box<dyn std::any::Any + Send>> {
         let (start, base) = self.base(base_directory);
         let (streams, recorded) = (Streams::of(inputs), Recorded::of(controls));
-        let files = LtxFiles::open(&base, start, streams, recorded.clone());
-        Some(Box::new(Chunk::writing(base, start, streams, recorded, Some(files))))
+        let files = LtxFiles::open(&base, start, streams, recorded);
+        Some(Box::new(Chunk::writing(&base, streams, files)))
     }
 
     /// While recording, copies the pass's data for the writer's thread.
@@ -268,11 +254,8 @@ impl Node<Edges> for WriteLtx {
         match (pass.recording, &recorder.writing) {
             (true, None) => {
                 recorder.continuous_samples = 0;
-                recorder.writing = pass.take_prepared::<Writing<Chunk>>().or_else(|| {
-                    // Not prepared (the graph changed while recording, say): the thread opens the files.
-                    let (start, base) = self.base(pass.base_directory());
-                    Some(Chunk::writing(base, start, recorder.streams, Recorded::of(pass.controls), None))
-                });
+                let writing = pass.take_prepared::<Writing<Chunk>>();
+                recorder.writing = Some(writing.unwrap_or_else(|| Writing::failed("it wasn't prepared to record")));
             }
             (false, Some(_)) => recorder.writing = None, // finishes the files
             _ => {}
@@ -474,6 +457,7 @@ fn ticks(seconds: f64) -> [u8; 4] {
 
 /// An LTX file: header lines, then the data, with the duration (and one count) filled in at the end.
 struct LtxFile {
+    path: PathBuf,
     file: BufWriter<File>,
     /// Where the duration's value goes, and the count's.
     duration_at: u64,
@@ -493,7 +477,7 @@ impl LtxFile {
         write!(file, "\r\nduration ")?;
         let duration_at = file.stream_position()?;
         write!(file, "{PLACEHOLDER}")?;
-        Ok(LtxFile { file, duration_at, count_at: None, in_data: false })
+        Ok(LtxFile { path: path.to_path_buf(), file, duration_at, count_at: None, in_data: false })
     }
 
     fn header(&mut self, key: &str, value: impl std::fmt::Display) -> io::Result<()> {
@@ -515,7 +499,8 @@ impl LtxFile {
         self.file.write_all(bytes)
     }
 
-    fn finish(mut self, seconds: u64, count: u64) -> io::Result<()> {
+    /// Fills in what's only known at the end, and closes it, returning its path.
+    fn finish(mut self, seconds: u64, count: u64) -> io::Result<PathBuf> {
         if self.in_data {
             write!(self.file, "\r\ndata_end")?;
         }
@@ -525,7 +510,8 @@ impl LtxFile {
             self.file.seek(SeekFrom::Start(at))?;
             write!(self.file, "{count}")?;
         }
-        self.file.flush()
+        self.file.flush()?;
+        Ok(self.path)
     }
 }
 
@@ -584,6 +570,7 @@ struct LtxFiles {
     ttl: Option<LtxFile>,
     pos_ttl: Option<LtxFile>,
     log: Option<BufWriter<File>>,
+    log_path: PathBuf,
     /// For each record of `bytes`.
     record: Vec<u8>,
 }
@@ -674,12 +661,10 @@ impl LtxFiles {
             }
             _ => None,
         };
+        let mut log_path = base.to_path_buf();
+        log_path.as_mut_os_string().push(".txt");
         let log = match streams.log {
-            Some(_) => {
-                let mut path = base.to_path_buf();
-                path.as_mut_os_string().push(".txt");
-                Some(BufWriter::new(File::create(path)?))
-            }
+            Some(_) => Some(BufWriter::new(File::create(&log_path)?)),
             None => None,
         };
         log::info!("Recording LTX to {}", base.display());
@@ -697,6 +682,7 @@ impl LtxFiles {
             ttl,
             pos_ttl,
             log,
+            log_path,
             record: Vec::new(),
         })
     }
@@ -872,25 +858,26 @@ impl Files<Chunk> for LtxFiles {
         Ok(bytes)
     }
 
-    fn finish(self: Box<Self>) -> io::Result<()> {
+    fn finish(self: Box<Self>) -> io::Result<Vec<PathBuf>> {
         let seconds = (Local::now() - self.start).num_seconds().max(0) as u64;
-        self.set.finish(seconds, 0)?;
+        let mut paths = vec![self.set.finish(seconds, 0)?];
         for tetrode in self.tetrodes {
-            tetrode.file.finish(seconds, tetrode.spikes)?;
+            paths.push(tetrode.file.finish(seconds, tetrode.spikes)?);
         }
         for egf in self.egf {
-            egf.file.finish(seconds, egf.samples)?;
+            paths.push(egf.file.finish(seconds, egf.samples)?);
         }
         if let Some(pos) = self.pos {
-            pos.file.finish(seconds, pos.samples)?;
+            paths.push(pos.file.finish(seconds, pos.samples)?);
         }
         for ttl in [self.ttl, self.pos_ttl].into_iter().flatten() {
-            ttl.finish(seconds, 0)?;
+            paths.push(ttl.finish(seconds, 0)?);
         }
         if let Some(mut log) = self.log {
             log.flush()?;
+            paths.push(self.log_path);
         }
-        Ok(())
+        Ok(paths)
     }
 }
 

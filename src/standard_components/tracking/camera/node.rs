@@ -26,8 +26,8 @@ pub struct Camera {
 pub struct Capturing {
     capture: Option<Capture>,
     shown: SharedPool<CaptureStats>,
-    /// The wrong frame size last acted on (proposing the right one, or saying it can't be, while recording).
-    proposed: Option<[u32; 2]>,
+    /// The wrong frame size last acted on (triggering an update to the right one, or saying it can't be, while recording).
+    triggered_size: Option<[u32; 2]>,
     complained: Option<[u32; 2]>,
 }
 
@@ -131,12 +131,12 @@ impl Node<Edges> for Camera {
             fill(stats);
         }
         capturing.shown.send_newest(pass, fill);
-        // Frames of the wrong size are skipped. The right size is proposed, but while recording settings are locked.
+        // Frames of the wrong size are skipped. An update to the right size is triggered, but while recording settings are locked.
         if let Some(size @ [w, h]) = capture.wrong_size() {
-            if !pass.recording && capturing.proposed != Some(size) {
+            if !pass.recording && capturing.triggered_size != Some(size) {
                 log::info!("Camera: setting its Frame size to the {w}×{h} it's sending");
-                pass.propose(0, Setting::Camera(CameraSettings { frame_size: size, ..self.settings }));
-                capturing.proposed = Some(size);
+                pass.trigger_settings_update(0, Setting::Camera(CameraSettings { frame_size: size, ..self.settings }));
+                capturing.triggered_size = Some(size);
             } else if pass.recording && capturing.complained != Some(size) {
                 let [set_w, set_h] = self.settings.frame_size;
                 log::error!(

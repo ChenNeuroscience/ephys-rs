@@ -10,9 +10,9 @@
 //! it, or a directory of its own.
 //!
 //! Before recording starts, a writer opens its files and starts its thread (`Node::prepare_to_record`), so passes
-//! only record once it's ready. (If it starts recording without having prepared, after the graph's changed
-//! while recording, say, its thread opens the files as it starts.) Stopping lets the thread write what's
-//! queued and finish the files in the background (see `crate::core::background`).
+//! only record once it's ready. The graph can't change while recording, so one that hasn't prepared has a problem
+//! to report (`Writing::failed`). Stopping lets the thread write what's queued and finish the files in the background
+//! (see `crate::core::background`), which a writer can ask to hear about (`OnFinished`).
 
 pub mod ltx;
 mod npy;
@@ -58,9 +58,13 @@ pub struct Status {
 pub trait Files<C>: Send {
     /// Writes a chunk, returning the bytes written.
     fn write(&mut self, chunk: &C) -> io::Result<u64>;
-    /// Fills in what's only known at the end (counts, durations), and closes the files.
-    fn finish(self: Box<Self>) -> io::Result<()>;
+    /// Fills in what's only known at the end (counts, durations), and closes the files, returning their paths.
+    fn finish(self: Box<Self>) -> io::Result<Vec<PathBuf>>;
 }
+
+/// Told, on the writer's thread, how a recording ended: the paths of the files it finished, or what went wrong. Not told
+/// of a recording nothing was written to: one cancelled while preparing, say.
+pub type OnFinished = Box<dyn FnOnce(io::Result<Vec<PathBuf>>) + Send>;
 
 /// A writer's thread, writing the chunks its passes send, while recording. Dropping it finishes the files.
 pub struct Writing<C> {
@@ -80,66 +84,69 @@ impl<C: Send + Sync + 'static> Writing<C> {
         files: io::Result<Box<dyn Files<C>>>,
         chunk: impl Fn() -> C,
         bytes: usize,
+        on_finished: Option<OnFinished>,
     ) -> Self {
-        match files {
-            Ok(files) => Self::start(name, path, move || Ok(files), chunk, bytes),
+        let mut files = match files {
+            Ok(files) => files,
             Err(e) => {
                 log::error!("Recording to {path}: couldn't create the files: {e}");
                 let problem = Some(format!("couldn't create the files: {e}"));
-                let status = Status { path: Some(path), problem, ..Default::default() };
-                let done = Arc::new(AtomicBool::new(true));
-                Writing { pool: None, done, status: Arc::new(Mutex::new(status)), thread: None }
+                if let Some(on_finished) = on_finished {
+                    on_finished(Err(e));
+                }
+                return Self::with_status(Status { path: Some(path), problem, ..Default::default() });
             }
-        }
-    }
-
-    /// Starts a thread called `name` that opens files with `open`, then writes the chunks sent to it: chunks made
-    /// by `chunk`, each taking `bytes`.
-    pub fn start(
-        name: &str,
-        path: String,
-        open: impl FnOnce() -> io::Result<Box<dyn Files<C>>> + Send + 'static,
-        chunk: impl Fn() -> C,
-        bytes: usize,
-    ) -> Self {
+        };
         let size = (POOL_BYTES / bytes.max(1)).clamp(4, SLACK_PASSES);
         let pool = Pool::new((0..size).map(|_| chunk()), bytes);
         let status = Arc::new(Mutex::new(Status { path: Some(path.clone()), ..Default::default() }));
         let done = Arc::new(AtomicBool::new(false));
         let (thread_status, thread_pool, thread_done) = (status.clone(), pool.clone(), done.clone());
-        let fail = move |status: &Mutex<Status>, what: &str, e: io::Error| {
-            log::error!("Recording to {path}: {what}: {e}");
-            status.lock().unwrap().problem = Some(format!("{what}: {e}"));
-        };
         let thread = std::thread::Builder::new()
             .name(name.into())
             .spawn(move || {
-                let mut files = match open() {
-                    Ok(files) => files,
-                    Err(e) => return fail(&thread_status, "couldn't create the files", e),
-                };
                 // Until recording stops, then what's left.
-                loop {
+                let finished = loop {
                     let chunk = match thread_pool.next_full(Duration::from_millis(20)) {
                         Some(chunk) => chunk,
                         None if thread_done.load(Ordering::Acquire) => match thread_pool.try_full() {
                             Some(chunk) => chunk,
-                            None => break,
+                            None => break files.finish().map_err(|e| ("couldn't finish the files", e)),
                         },
                         None => continue,
                     };
                     match files.write(&chunk) {
                         Ok(bytes) => thread_status.lock().unwrap().bytes += bytes,
-                        Err(e) => return fail(&thread_status, "couldn't write", e),
+                        Err(e) => break Err(("couldn't write", e)),
                     }
                     thread_pool.give_back(chunk);
-                }
-                if let Err(e) = files.finish() {
-                    fail(&thread_status, "couldn't finish the files", e);
+                };
+                let written = thread_status.lock().unwrap().bytes > 0;
+                match (finished, on_finished) {
+                    (Ok(paths), Some(on_finished)) if written => on_finished(Ok(paths)),
+                    (Ok(_), _) => {}
+                    (Err((what, e)), on_finished) => {
+                        log::error!("Recording to {path}: {what}: {e}");
+                        thread_status.lock().unwrap().problem = Some(format!("{what}: {e}"));
+                        if let Some(on_finished) = on_finished {
+                            on_finished(Err(e));
+                        }
+                    }
                 }
             })
             .expect("writer thread");
         Writing { pool: Some(pool), done, status, thread: Some(thread) }
+    }
+
+    /// Writing nothing, for `problem`, which it reports. For a recording that wasn't prepared.
+    pub fn failed(problem: &str) -> Self {
+        log::error!("Can't record: {problem}");
+        Self::with_status(Status { problem: Some(problem.into()), ..Default::default() })
+    }
+
+    fn with_status(status: Status) -> Self {
+        let done = Arc::new(AtomicBool::new(true));
+        Writing { pool: None, done, status: Arc::new(Mutex::new(status)), thread: None }
     }
 
     /// An empty chunk to put a pass's data in, unless the disk's so far behind there are none (and the pass's data
@@ -338,6 +345,68 @@ mod tests {
         graph.connect(port(from, Role::Output, output), port(to, Role::Input, input)).unwrap();
     }
 
+    /// Files that can fail to write, and finish as one path.
+    struct Pretend {
+        fails: bool,
+    }
+
+    impl super::Files<u8> for Pretend {
+        fn write(&mut self, _chunk: &u8) -> std::io::Result<u64> {
+            if self.fails { Err(std::io::Error::other("full")) } else { Ok(1) }
+        }
+
+        fn finish(self: Box<Self>) -> std::io::Result<Vec<std::path::PathBuf>> {
+            Ok(vec!["finished".into()])
+        }
+    }
+
+    /// How a recording ended, as told to whoever asked: `writes` chunks to `files`, then stopping.
+    fn told(
+        files: std::io::Result<Box<dyn super::Files<u8>>>,
+        writes: usize,
+    ) -> Option<std::io::Result<Vec<std::path::PathBuf>>> {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let on_finished: super::OnFinished = Box::new(move |result| sender.send(result).unwrap());
+        let writing = super::Writing::new("test writer", "here".into(), files, || 0_u8, 1, Some(on_finished));
+        for _ in 0..writes {
+            writing.send(writing.chunk().unwrap());
+        }
+        drop(writing);
+        crate::core::background::wait();
+        receiver.try_recv().ok()
+    }
+
+    #[test]
+    fn a_writer_can_hear_how_its_recording_ended() {
+        let pretend = |fails| Ok(Box::new(Pretend { fails }) as Box<dyn super::Files<u8>>);
+        assert_eq!(told(pretend(false), 3).unwrap().unwrap(), vec![std::path::PathBuf::from("finished")]);
+        assert!(told(pretend(true), 1).unwrap().is_err(), "its files never finish");
+        assert!(told(Err(std::io::Error::other("no")), 0).unwrap().is_err(), "they couldn't be made");
+        assert!(told(pretend(false), 0).is_none(), "cancelled before anything was recorded");
+    }
+
+    /// Everything that records has prepared, as the graph can't change while recording. If that's ever not so, it says.
+    #[test]
+    fn a_writer_that_has_not_prepared_says_so_rather_than_quietly_not_recording() {
+        use crate::standard_components::pool::Pool;
+        for name in ["Write LTX", "Write Raw"] {
+            let mut graph = Graph::default();
+            let writer = add(&mut graph, name);
+            let snapshot = Snapshot::new(0, graph, None);
+            let recording = snapshot.with_recording(1, Some(Arc::new(Recording::default())));
+            let runner = Runner::start(&recording, 2);
+            let problem = || {
+                let pool = runner.exchange().get::<Pool<super::Status>>(writer)?;
+                pool.newest()?.problem.clone()
+            };
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while problem().is_none() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert_eq!(problem().as_deref(), Some("it wasn't prepared to record"), "{name}");
+        }
+    }
+
     #[test]
     fn records_while_recording_and_finishes_the_files() {
         let dir = std::env::temp_dir().join(format!("ephys-rs-recording-{}", std::process::id()));
@@ -369,7 +438,8 @@ mod tests {
         // The base directory has a prefix (a subject's trial, say).
         let place = crate::core::base_directory::Place { directory: dir.clone(), prefix: Some("trial a".into()) };
         // The writers open their files before recording starts.
-        let recording = snapshot.with_recording(1, Some(Arc::new(Recording::prepare(&snapshot, Some(place)))));
+        let recording =
+            snapshot.with_recording(1, Some(Arc::new(Recording::prepare(&snapshot, Some(place), &Default::default()))));
         assert!(runner.update(&recording), "recording carries on the same run");
         let deadline = Instant::now() + Duration::from_secs(10);
         while runner.clock() < 1.0 && Instant::now() < deadline {

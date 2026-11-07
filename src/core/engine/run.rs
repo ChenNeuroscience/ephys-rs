@@ -43,6 +43,7 @@ use crossbeam_utils::CachePadded;
 
 use crate::core::console::{self, PassId};
 use crate::core::exchange::Exchange;
+use crate::core::triggers::DirectTriggers;
 
 use super::{Buffer, DataStreamSet, Edges, Graph, NodeId, NodeSet, Port, Recording, Role, Snapshot};
 
@@ -109,7 +110,7 @@ impl<'a, E: Edges> Pass<'a, E> {
         self.exchange.shared(self.node, make)
     }
 
-    /// Whether the node's trigger `name` (see `Node::triggers`) has been fired, taking it if so: the node then says
+    /// Whether the node's trigger `name` (see `Node::triggers`) has been triggered, taking it if so: the node then says
     /// how it's getting on (`trigger_progress`) until it's done (`trigger_done`).
     pub fn triggered(&self, name: &'static str) -> bool {
         self.exchange.take_trigger(self.node, name)
@@ -131,10 +132,10 @@ impl<'a, E: Edges> Pass<'a, E> {
         self.exchange.set_trigger_progress(self.node, name, None);
     }
 
-    /// Proposes a new value for the node's setting `setting` (by index), which the GUI applies as an edit (unless
-    /// it's recording): passes can't change the graph themselves.
-    pub fn propose(&self, setting: usize, value: E::Setting) {
-        self.exchange.propose(self.node, setting, Box::new(value));
+    /// Triggers an update of the node's setting `setting` (by index) to `value`, which the app applies as an edit
+    /// (unless it's recording): passes can't change the graph themselves. See `crate::core::triggers`.
+    pub fn trigger_settings_update(&self, setting: usize, value: E::Setting) {
+        self.exchange.direct_triggers().trigger_settings_update(self.node, setting, Box::new(value));
     }
 
     /// An input's data, taken (see `take_input`) or not.
@@ -842,9 +843,17 @@ pub struct Runner<N: NodeSet> {
 
 impl<N: NodeSet> Runner<N> {
     pub fn start(snapshot: &Snapshot<N>, workers: usize) -> Self {
+        Self::start_with(snapshot, workers, Arc::default())
+    }
+
+    /// The same, with its direct triggers going to `direct`.
+    pub fn start_with(snapshot: &Snapshot<N>, workers: usize, direct: Arc<DirectTriggers>) -> Self {
         let workers = workers.max(1);
-        let shared =
-            Arc::new(Shared { workers: (0..workers).map(|_| WorkerSlot::default()).collect(), ..Default::default() });
+        let shared = Arc::new(Shared {
+            workers: (0..workers).map(|_| WorkerSlot::default()).collect(),
+            exchange: Arc::new(Exchange::new(direct)),
+            ..Default::default()
+        });
         let epoch = Arc::new(Epoch::new(snapshot, workers, shared.clone()));
         log::info!("Running on {workers} workers, {} ms passes", PASS_DURATION * 1000.0);
         log::debug!("Epoch {} for version {}: {}", epoch.number, snapshot.version, describe(&epoch.plan));

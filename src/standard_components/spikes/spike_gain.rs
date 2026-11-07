@@ -93,7 +93,7 @@ impl Node<Edges> for SpikeGain {
     }
 
     /// Multiplies each channel's waveforms by its gain (saying so on the spikes); and, when triggered, samples the
-    /// spikes (in µV, before that) for a while, then proposes gains from them.
+    /// spikes (in µV, before that) for a while, then triggers an update to gains from them.
     fn initial_state(&self, inputs: &[Option<DataStream>]) -> Gaining {
         let polarity = match inputs.first() {
             Some(Some(DataStream::Spikes(spikes))) => spikes.polarity,
@@ -124,7 +124,7 @@ impl Node<Edges> for SpikeGain {
             if sampling.elapsed >= sampling.seconds {
                 let mut gains = self.gains.clone();
                 gains.set_ranges(&sampling.choose(self.multiple, &spikes.thresholds), layout);
-                pass.propose(0, Setting::Gains(gains));
+                pass.trigger_settings_update(0, Setting::Gains(gains));
                 pass.trigger_done(AUTO_DETECT);
                 gaining.sampling = None;
             }
@@ -298,7 +298,7 @@ mod tests {
         let passes = (4.0 / PASS_DURATION).round() as u64;
         let mut outputs = [Buffer::Spikes(buffer)];
         let exchange = Pass::<Edges>::new(0, PASS_DURATION, &[], &mut []).exchange;
-        exchange.fire(NodeId(0), AUTO_DETECT);
+        exchange.trigger(NodeId(0), AUTO_DETECT);
         for sequence in 0..passes {
             let Buffer::Spikes(spikes) = &mut outputs[0] else { unreachable!() };
             spikes.clear();
@@ -314,8 +314,8 @@ mod tests {
             assert_eq!(state.sampling.is_some(), sequence + 1 < passes, "samples for 4 s, at pass {sequence}");
         }
         assert_eq!(exchange.trigger_progress(NodeId(0), AUTO_DETECT), None, "done");
-        let proposals = exchange.take_proposals();
-        let Some(Setting::Gains(gains)) = proposals[0].2.downcast_ref::<Setting>() else { panic!() };
+        let updates = exchange.direct_triggers().take_settings_updates();
+        let Some(Setting::Gains(gains)) = updates[0].2.downcast_ref::<Setting>() else { panic!() };
         let close = |a: f32, b: f32| (a - b).abs() < 0.01;
         assert!(close(gains.range_uv(0), 200.0), "the first channel's biggest, times 2");
         assert!(close(gains.range_uv(1), 600.0), "and the second's");
@@ -338,7 +338,7 @@ mod tests {
         let mut state = gain.initial_state(&[Some(DataStream::Spikes(stream))]);
         let mut outputs = [Buffer::Spikes(stream.buffer(PASS_DURATION))];
         let exchange = Pass::<Edges>::new(0, PASS_DURATION, &[], &mut []).exchange;
-        exchange.fire(NodeId(0), AUTO_DETECT);
+        exchange.trigger(NodeId(0), AUTO_DETECT);
         let mut run = |sequence| {
             let mut pass = Pass::new(sequence, PASS_DURATION, &[], &mut outputs);
             pass.exchange = exchange;
@@ -352,7 +352,7 @@ mod tests {
         for sequence in 2..600 {
             run(sequence);
         }
-        assert!(exchange.take_proposals().is_empty(), "nothing chosen");
+        assert!(exchange.direct_triggers().take_settings_updates().is_empty(), "nothing chosen");
         assert_eq!(exchange.trigger_progress(NodeId(0), AUTO_DETECT), None);
     }
 

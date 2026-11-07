@@ -43,6 +43,7 @@ use crate::core::base_directory::{BaseDirectories, BaseDirectoryType, Place};
 use crate::core::engine::{self, Graph, NodeId, NodeSet, Port, PortRef, Resolved, Runner, Snapshot, Stats};
 use crate::core::layout::{Layout, Mode, Pane};
 use crate::core::theme::{Colours, Theme};
+use crate::core::triggers::Triggered;
 use actions::Action;
 use canvas::{Canvas, HEADER, NODE_WIDTH, Selection, Tool};
 use create_menu::{Choice, CreateMenu};
@@ -235,6 +236,8 @@ pub struct App<N: NodeSet, A: AnnotationSet> {
     runner: Option<Runner<N>>,
     /// The last run, once it's stopped: see `Paused`.
     paused: Option<Paused<N>>,
+    /// Direct triggers on their way (see `crate::core::triggers`): the app's, as they can come after a run.
+    direct_triggers: Arc<crate::core::triggers::DirectTriggers>,
     /// The acquisition clock when recording last started.
     recording_since: f64,
     /// While the nodes prepare to record, where the recording comes from when they're ready.
@@ -290,6 +293,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             status: None,
             runner: None,
             paused: None,
+            direct_triggers: Arc::default(),
             recording_since: 0.0,
             preparing: None,
             dev_tools: dev_tools::DevTools::default(),
@@ -556,7 +560,8 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
     fn play(&mut self) {
         self.history.commit(&self.graph, &self.annotations);
         self.paused = None;
-        self.runner = Some(Runner::start(&self.history.current.snapshot, self.workers));
+        let triggers = self.direct_triggers.clone();
+        self.runner = Some(Runner::start_with(&self.history.current.snapshot, self.workers, triggers));
         self.frame_times.run_started = Some(self.frame_times.now());
         self.frame_times.run_restarted();
         self.ran = Some(self.history.current.snapshot.clone());
@@ -569,13 +574,14 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         let snapshot = self.history.current.snapshot.clone();
         let (sender, receiver) = std::sync::mpsc::channel();
         let repaint = ctx.clone();
+        let triggers = self.direct_triggers.clone();
         let base = self.base_directories.place();
         match &base {
             Some(base) => log::info!("Preparing to record, in {}", base),
             None => log::info!("Preparing to record"),
         }
         let spawned = std::thread::Builder::new().name("preparing to record".into()).spawn(move || {
-            let _ = sender.send(engine::Recording::prepare(&snapshot, base));
+            let _ = sender.send(engine::Recording::prepare(&snapshot, base, &triggers));
             repaint.request_repaint();
         });
         match spawned {
@@ -772,22 +778,26 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         self.set_done(ctx, format!("Pasted settings onto {count} node{plural}{left_out} (see the console)"));
     }
 
-    /// Applies settings the passes have proposed (see `Pass::propose`): an auto-detected gain, say. Not while
-    /// recording, when settings are locked.
-    fn apply_proposals(&mut self) {
-        let Some(runner) = &self.runner else { return };
-        let proposals = runner.exchange().take_proposals();
+    /// Delivers the direct triggers that have come (see `crate::core::triggers`), running or not. Settings updates are
+    /// applied as edits, unless settings are locked.
+    fn deliver_triggers(&mut self) {
         let locked = self.locked();
-        for (id, setting, value) in proposals {
-            let Ok(value) = value.downcast::<<N::Edges as engine::Edges>::Setting>() else { continue };
+        for (id, triggered) in self.direct_triggers.take() {
             let Some(entry) = self.graph.get_mut(id) else { continue };
-            let name = entry.node.settings().get(setting).map_or("a setting", |s| s.name);
-            if locked {
-                log::warn!("{}'s {name} weren't changed: settings are locked while recording", entry.label);
-                continue;
+            match triggered {
+                Triggered::SettingsUpdate { setting, value } => {
+                    let Ok(value) = value.downcast::<<N::Edges as engine::Edges>::Setting>() else { continue };
+                    let name = entry.node.settings().get(setting).map_or("a setting", |s| s.name);
+                    if locked {
+                        log::warn!("{}'s {name} weren't changed: settings are locked while recording", entry.label);
+                        continue;
+                    }
+                    entry.node.set_setting(setting, *value);
+                    log::info!("{}'s {name} set from its data", entry.label);
+                }
+                Triggered::Named { .. } if entry.disabled => {}
+                Triggered::Named { name, payload } => entry.node.on_trigger(name, payload),
             }
-            entry.node.set_setting(setting, *value);
-            log::info!("{}'s {name} set from its data", entry.label);
         }
     }
 
@@ -1404,7 +1414,8 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         self.paste_window(&ctx);
         self.crash_window(&ctx);
         self.about_window(&ctx);
-        self.apply_proposals();
+        self.direct_triggers.wake(&ctx);
+        self.deliver_triggers();
         self.lock(&ctx);
         self.history.record(&self.graph, &self.annotations, &ctx);
         self.keep_running(&ctx);
@@ -1882,6 +1893,36 @@ mod tests {
         pointer(&mut harness, grab + egui::vec2(-60.0, 20.0), Some(false));
         let moved = area(&harness).unwrap().min - before.min;
         assert!(moved.x < -50.0 && moved.y > 15.0, "window should follow the drag, moved {moved:?}");
+    }
+
+    /// A direct trigger doesn't need a run, so one sent as it stops isn't lost.
+    #[test]
+    fn a_settings_update_sent_just_as_the_run_stops_still_arrives() {
+        let mut harness = harness();
+        let ctx = harness.ctx.clone();
+        harness.state_mut().perform(&ctx, Action::Play);
+        harness.run_steps(2);
+        let detector = node_named(harness.state(), "Spike Detector");
+        let thresholds = crate::Setting::Thresholds(crate::standard_components::spikes::Thresholds(vec![60.0]));
+        let value = Box::new(thresholds.clone());
+        harness.state().direct_triggers.trigger_settings_update(detector, 0, value);
+        harness.state_mut().perform(&ctx, Action::Play);
+        assert!(harness.state().runner.is_none());
+        harness.run_steps(2);
+        assert_eq!(harness.state().graph.get(detector).unwrap().node.settings()[0].value, thresholds);
+    }
+
+    /// While recording, a settings update isn't applied, like any other change to settings.
+    #[test]
+    fn a_settings_update_is_refused_while_recording() {
+        let mut harness = harness();
+        let detector = node_named(harness.state(), "Spike Detector");
+        let before = harness.state().graph.get(detector).unwrap().node.settings()[0].value.clone();
+        harness.state_mut().set_recording(Some(Arc::new(engine::Recording::default())));
+        let thresholds = crate::Setting::Thresholds(crate::standard_components::spikes::Thresholds(vec![60.0]));
+        harness.state().direct_triggers.trigger_settings_update(detector, 0, Box::new(thresholds));
+        harness.run_steps(2);
+        assert_eq!(harness.state().graph.get(detector).unwrap().node.settings()[0].value, before);
     }
 
     /// Stopping is a pause: what the run shared stays, until the graph changes shape, or it runs again.
@@ -2712,7 +2753,7 @@ mod tests {
     }
 
     #[test]
-    fn viewers_trigger_auto_detect_and_proposals_are_applied() {
+    fn viewers_trigger_auto_detect_and_settings_updates_are_applied() {
         let mut harness = harness();
         for writer in ["Write LTX", "Write Raw"] {
             let id = node_named(harness.state(), writer);
@@ -2735,14 +2776,14 @@ mod tests {
         use crate::standard_components::auto_detect::AUTO_DETECT;
         let progress =
             |h: &Harness<TestApp>| h.state().runner.as_ref().unwrap().exchange().trigger_progress(gain, AUTO_DETECT);
-        assert!(progress(&harness).is_some(), "the Spike Gain's auto detect, fired");
+        assert!(progress(&harness).is_some(), "the Spike Gain's auto detect, triggered");
         // While it's going, it can be stopped.
         harness.get_by_label("Stop").click();
         harness.run_steps(2);
         assert_eq!(progress(&harness), None, "stopped");
-        // What the passes propose is applied, as an edit.
+        // A settings update from the passes is applied, as an edit.
         let gains = crate::standard_components::spikes::Gains { gains: vec![0.25], ..Default::default() };
-        harness.state().runner.as_ref().unwrap().exchange().propose(
+        harness.state().direct_triggers.trigger_settings_update(
             gain,
             0,
             Box::new(crate::Setting::Gains(gains.clone())),

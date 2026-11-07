@@ -118,7 +118,7 @@ impl<E: Edges> Context<'_, E> {
         }
     }
 
-    /// Fires the trigger `name` (see `Node::triggers`) of the setting that control `control` connects to, or (with
+    /// Triggers the pass trigger `name` (see `Node::triggers`) of the setting that control `control` connects to, or (with
     /// `None`) of the node's own. Nothing, if it can't be (see `can_trigger`).
     pub fn trigger(&mut self, control: Option<usize>, name: &'static str) {
         if let Some(tools) = &mut self.tools {
@@ -126,17 +126,17 @@ impl<E: Edges> Context<'_, E> {
         }
     }
 
-    /// Whether the trigger can be fired: the graph running, and (for a control) connected to a setting that has it.
+    /// Whether the pass trigger can be triggered: the graph running, and (for a control) connected to a setting that has it.
     pub fn can_trigger(&self, control: Option<usize>, name: &'static str) -> bool {
         self.tools.as_ref().is_some_and(|t| t.can_trigger(control, name))
     }
 
-    /// How far along the trigger is (0 to 1), if it's been fired and isn't done.
+    /// How far along the trigger is (0 to 1), if it's been triggered and isn't done.
     pub fn trigger_progress(&self, control: Option<usize>, name: &'static str) -> Option<f32> {
         self.tools.as_ref().and_then(|t| t.trigger_progress(control, name))
     }
 
-    /// Stops the trigger, if it's been fired and isn't done: the node abandons what it was doing for it.
+    /// Stops the trigger, if it's been triggered and isn't done: the node abandons what it was doing for it.
     pub fn cancel_trigger(&mut self, control: Option<usize>, name: &'static str) {
         if let Some(tools) = &mut self.tools {
             tools.cancel_trigger(control, name);
@@ -165,14 +165,14 @@ impl<E: Edges> Context<'_, E> {
 
 /// What the GUI does for a node's window: the buttons every node has, each on its own or all together (those that
 /// change the graph, its settings, enabling and deleting it, only there in advanced mode, giving `None` otherwise);
-/// and firing triggers (see `Node::triggers`), and opening other nodes' windows. A view uses these through its
+/// and triggering pass triggers (see `Node::triggers`), and opening other nodes' windows. A view uses these through its
 /// `Context`.
 pub trait NodeToolbar {
-    /// Fires a trigger (see `Context::trigger`).
+    /// Triggers a pass trigger (see `Context::trigger`).
     fn trigger(&mut self, control: Option<usize>, name: &'static str);
     fn can_trigger(&self, control: Option<usize>, name: &'static str) -> bool;
     fn trigger_progress(&self, control: Option<usize>, name: &'static str) -> Option<f32>;
-    /// Stops a trigger fired (see `Context::cancel_trigger`).
+    /// Stops a trigger triggered (see `Context::cancel_trigger`).
     fn cancel_trigger(&mut self, control: Option<usize>, name: &'static str);
     fn open_control_target(&mut self, control: usize);
 
@@ -373,12 +373,22 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
         true
     }
 
-    /// What can be triggered through one of the node's settings (by index), as well as set: "auto detect", say.
-    /// A control connected to it can fire one (`Context::trigger`), as can the node's own window; its passes take it
-    /// (`Pass::triggered`), and may propose new values for its settings when they're done (`Pass::propose`).
+    /// The pass triggers of one of the node's settings (by index): what can be triggered through it, as well as set,
+    /// while running: "auto detect", say. A control connected to it can trigger one (`Context::trigger`), as can the
+    /// node's own window; its passes take it (`Pass::triggered`), and may update its settings when they're done
+    /// (`Pass::trigger_settings_update`).
     fn triggers(&self, _setting: usize) -> &'static [&'static str] {
         &[]
     }
+
+    /// The direct triggers of one of the node's settings (by index): what can be triggered through it without a pass, or
+    /// a run, delivered to `on_trigger` on the GUI's thread. See `crate::core::triggers`.
+    fn direct_triggers(&self, _setting: usize) -> &'static [&'static str] {
+        &[]
+    }
+
+    /// One of its `direct_triggers`, with what was sent with it.
+    fn on_trigger(&mut self, _name: &'static str, _payload: Box<dyn Any + Send>) {}
 
     /// Whether the node takes an input's buffer, to do as it likes with the data (swap it for another just as big,
     /// say, to hand to its thread or window), rather than only reading it. Nodes don't copy their inputs: the plan
@@ -395,7 +405,8 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     fn process(&self, _pass: &mut Pass<E>, _state: &mut Self::State) {}
 
     /// Gets ready to record (a writer opening its files, say), given the data streams on its inputs, what its
-    /// controls see, and the base directory recordings go in, if there is one (see `crate::core::base_directory`).
+    /// controls see, the base directory recordings go in, if there is one (see `crate::core::base_directory`), and what
+    /// its controls can trigger directly (see `crate::core::triggers`).
     /// Called on a thread of its own when recording's asked for; passes only start recording once every node's
     /// ready, so this can take its time. What it returns is the node's (with `Pass::take_prepared`) on the first
     /// pass that records.
@@ -404,6 +415,7 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
         _inputs: &[Option<E::DataStream>],
         _controls: &[Option<E::Setting>],
         _base_directory: Option<&crate::core::base_directory::Place>,
+        _triggers: &crate::core::triggers::ControlTriggers,
     ) -> Option<Box<dyn Any + Send>> {
         None
     }
@@ -448,6 +460,8 @@ pub trait NodeSet: Clone + PartialEq + Serialize + DeserializeOwned + Send + Syn
     fn takes(&self, input: usize) -> bool;
     fn needs(&self, input: usize) -> bool;
     fn triggers(&self, setting: usize) -> &'static [&'static str];
+    fn direct_triggers(&self, setting: usize) -> &'static [&'static str];
+    fn on_trigger(&mut self, name: &'static str, payload: Box<dyn Any + Send>);
     /// Whether the node carries state from one pass to the next.
     fn has_state(&self) -> bool;
     /// Why it does (see `PassState::WHY`).
@@ -462,6 +476,7 @@ pub trait NodeSet: Clone + PartialEq + Serialize + DeserializeOwned + Send + Syn
         inputs: &[Option<<Self::Edges as Edges>::DataStream>],
         controls: &[Option<<Self::Edges as Edges>::Setting>],
         base_directory: Option<&crate::core::base_directory::Place>,
+        triggers: &crate::core::triggers::ControlTriggers,
     ) -> Option<Box<dyn Any + Send>>;
     fn threads(&self) -> Vec<NodeThread>;
     fn thread_ui(&self, thread: usize, ui: &mut egui::Ui, context: &ThreadContext);
@@ -582,6 +597,14 @@ macro_rules! node_set {
                 match self { $($name::$variant(n) => $crate::core::engine::Node::triggers(n, setting)),+ }
             }
 
+            fn direct_triggers(&self, setting: usize) -> &'static [&'static str] {
+                match self { $($name::$variant(n) => $crate::core::engine::Node::direct_triggers(n, setting)),+ }
+            }
+
+            fn on_trigger(&mut self, name: &'static str, payload: Box<dyn std::any::Any + Send>) {
+                match self { $($name::$variant(n) => $crate::core::engine::Node::on_trigger(n, name, payload)),+ }
+            }
+
             fn takes(&self, input: usize) -> bool {
                 match self { $($name::$variant(n) => $crate::core::engine::Node::takes(n, input)),+ }
             }
@@ -638,9 +661,10 @@ macro_rules! node_set {
                 inputs: &[Option<<$edges as $crate::core::engine::Edges>::DataStream>],
                 controls: &[Option<<$edges as $crate::core::engine::Edges>::Setting>],
                 base_directory: Option<&$crate::core::base_directory::Place>,
+                triggers: &$crate::core::triggers::ControlTriggers,
             ) -> Option<Box<dyn std::any::Any + Send>> {
                 match self {
-                    $($name::$variant(n) => $crate::core::engine::Node::prepare_to_record(n, inputs, controls, base_directory)),+
+                    $($name::$variant(n) => $crate::core::engine::Node::prepare_to_record(n, inputs, controls, base_directory, triggers)),+
                 }
             }
 
