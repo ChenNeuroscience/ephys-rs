@@ -512,33 +512,31 @@ fn uses_ui(ui: &mut egui::Ui, reference: &mut Reference, count: u32) {
     let mut picked: Option<(u32, Option<usize>)> = None;
     // Clicked at the top of a column: what's to be used by all of them, or (if it's on) by none of them.
     let mut column: Option<(Option<usize>, bool)> = None;
-    egui::ScrollArea::vertical().max_height(240.0).id_salt("uses").show(ui, |ui| {
-        egui::Grid::new("uses").num_columns(references + 2).striped(true).spacing([14.0, 2.0]).show(ui, |ui| {
-            ui.label("");
-            ui.weak("None");
-            for index in 0..references {
-                ui.label(RichText::new((index + 1).to_string()).color(reference_colour(index)));
+    egui::Grid::new("uses").num_columns(references + 2).striped(true).spacing([14.0, 2.0]).show(ui, |ui| {
+        ui.label("");
+        ui.weak("None");
+        for index in 0..references {
+            ui.label(RichText::new((index + 1).to_string()).color(reference_colour(index)));
+        }
+        ui.end_row();
+        let options = || std::iter::once(None).chain((0..references).map(Some));
+        ui.label("");
+        for option in options() {
+            let using = chosen.iter().filter(|used| **used == option).count();
+            if let Some(all) = all_checkbox(ui, using, count as usize, "") {
+                column = Some((option, all));
             }
-            ui.end_row();
-            let options = || std::iter::once(None).chain((0..references).map(Some));
-            ui.label("");
+        }
+        ui.end_row();
+        for channel in 0..count {
+            let label = ui.label((channel + 1).to_string());
             for option in options() {
-                let using = chosen.iter().filter(|used| **used == option).count();
-                if let Some(all) = all_checkbox(ui, using, count as usize, "") {
-                    column = Some((option, all));
+                if ui.radio(chosen[channel as usize] == option, "").labelled_by(label.id).clicked() {
+                    picked = Some((channel, option));
                 }
             }
             ui.end_row();
-            for channel in 0..count {
-                let label = ui.label((channel + 1).to_string());
-                for option in options() {
-                    if ui.radio(chosen[channel as usize] == option, "").labelled_by(label.id).clicked() {
-                        picked = Some((channel, option));
-                    }
-                }
-                ui.end_row();
-            }
-        });
+        }
     });
     match column {
         Some((Some(index), all)) => reference.set_all_use(index, all),
