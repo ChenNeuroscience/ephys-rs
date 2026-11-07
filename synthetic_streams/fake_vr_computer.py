@@ -124,9 +124,10 @@ def main():
     threading.Thread(target=count_enters, args=(enters,), daemon=True).start()
     while True:
         connection, _ = server.accept()
-        connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         print("Connected")
         try:
+            # In here too: a client that's already gone (the app closing as it connects) fails this.
+            connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             serve(connection, args.fps, enters)
         except OSError:
             print("Disconnected")

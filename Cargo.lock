@@ -439,7 +439,7 @@ dependencies = [
 
 [[package]]
 name = "chen-neuro"
-version = "0.975.0"
+version = "0.976.0"
 dependencies = [
  "chrono",
  "eframe",

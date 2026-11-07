@@ -446,10 +446,11 @@ def main():
             conn, addr = server.accept()
             print(f"client connected from {addr}")
             with conn:
-                conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 try:
+                    # In here too: a client that's already gone (the app closing as it connects) fails this.
+                    conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                     serve_client(conn, args, backgrounds, cam)
-                except (BrokenPipeError, ConnectionResetError):
+                except OSError:
                     print("client disconnected")
 
 

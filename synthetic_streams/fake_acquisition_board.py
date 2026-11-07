@@ -245,10 +245,11 @@ def main():
     print(f"fake acquisition board on 127.0.0.1:{args.port}, headstages {args.headstages}", flush=True)
     while True:
         conn, _ = listener.accept()
-        conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         try:
+            # In here too: a client that's already gone (the app closing as it connects) fails this.
+            conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             serve(conn, headstages, cache)
-        except (BrokenPipeError, ConnectionResetError, ValueError, KeyError) as e:
+        except (OSError, ValueError, KeyError) as e:
             print(f"client went: {e}", flush=True)
         finally:
             conn.close()
