@@ -6,6 +6,7 @@ use eframe::egui::{self, RichText};
 use serde::{Deserialize, Serialize};
 
 use crate::core::engine::{Category, Context, Input, Node, NodeInfo, Output, Pass, SettingPort};
+use crate::core::gui::widgets::{Icon, small_icon_button};
 use crate::standard_components::ephys::{Event, Events};
 use crate::standard_components::tracking::pipeline::{Pipeline, timing_led_on};
 use crate::standard_components::tracking::{CAMERA_TRACKER, PositionSample, Positions};
@@ -333,7 +334,7 @@ pub(super) fn calibration_ui(ui: &mut egui::Ui, detection: &mut Detection, size:
             ui.add(egui::DragValue::new(&mut ruler.length_cm).speed(0.5).range(0.0..=10_000.0).suffix(" cm"))
                 .labelled_by(name.id)
                 .on_hover_text("Physical length; 0 leaves this ruler out of the calibration");
-            if ui.small_button("×").on_hover_text("Remove ruler").clicked() {
+            if small_icon_button(ui, Icon::Delete, "Delete ruler", "Delete this ruler").clicked() {
                 remove = Some(i);
             }
             ui.end_row();

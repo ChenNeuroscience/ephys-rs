@@ -146,15 +146,6 @@ pub fn icon_button(
     response.on_hover_text(tooltip)
 }
 
-/// A red cross, for removing something.
-pub fn paint_cross(painter: &egui::Painter, rect: egui::Rect) {
-    let s = rect.width() / 16.0;
-    let p = |x: f32, y: f32| rect.min + egui::vec2(x, y) * s;
-    let stroke = egui::Stroke::new(1.8 * s, egui::Color32::from_rgb(214, 72, 64));
-    painter.line_segment([p(4.0, 4.0), p(12.0, 12.0)], stroke);
-    painter.line_segment([p(12.0, 4.0), p(4.0, 12.0)], stroke);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

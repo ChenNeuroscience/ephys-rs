@@ -612,23 +612,21 @@ pub fn channels_ui(
     });
     let across = ((ui.available_width() / 48.0) as u32).clamp(4, 16);
     let mut changed = false;
-    egui::ScrollArea::vertical().max_height(240.0).id_salt("made from").show(ui, |ui| {
-        egui::Grid::new("made from").spacing([6.0, 2.0]).show(ui, |ui| {
-            for channel in 0..count {
-                let mut on = chosen.contains(&channel);
-                if ui.checkbox(&mut on, format!("{:>2}", channel + 1)).changed() {
-                    if on {
-                        chosen.push(channel)
-                    } else {
-                        chosen.retain(|&c| c != channel)
-                    }
-                    changed = true;
+    egui::Grid::new("made from").spacing([6.0, 2.0]).show(ui, |ui| {
+        for channel in 0..count {
+            let mut on = chosen.contains(&channel);
+            if ui.checkbox(&mut on, format!("{:>2}", channel + 1)).changed() {
+                if on {
+                    chosen.push(channel)
+                } else {
+                    chosen.retain(|&c| c != channel)
                 }
-                if (channel + 1) % across == 0 {
-                    ui.end_row();
-                }
+                changed = true;
             }
-        });
+            if (channel + 1) % across == 0 {
+                ui.end_row();
+            }
+        }
     });
     if changed {
         *text = format_channels(&chosen, count);

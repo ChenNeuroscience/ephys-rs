@@ -10,6 +10,7 @@ use super::{AUX_PER_HEADSTAGE, Bandwidth, BoardInfo, Config, Headstage, OpalKell
 use crate::core::engine::{
     Category, Context, Flow, Node, NodeInfo, NodeThread, Output, Pass, PoolStatus, ThreadContext,
 };
+use crate::core::gui::widgets::{Icon, small_icon_button};
 use crate::standard_components::ephys::{Continuous, Events};
 use crate::standard_components::pool::{Pool, SharedPool};
 use crate::standard_components::widgets::{named_settings_grid, setting, settings_grid};
@@ -371,7 +372,7 @@ fn headstages_ui(ui: &mut egui::Ui, headstages: &mut Vec<Headstage>) {
                 })
                 .response
                 .labelled_by(port.id);
-            if ui.small_button("×").on_hover_text("Remove headstage").clicked() {
+            if small_icon_button(ui, Icon::Delete, "Delete headstage", "Delete this headstage").clicked() {
                 remove = Some(i);
             }
             ui.end_row();

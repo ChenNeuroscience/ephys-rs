@@ -121,9 +121,14 @@ impl Icon {
                 page(painter, &p, 5.0, 3.5, fade(PAPER), line);
             }
             Icon::Delete => {
-                let stroke = Stroke::new(2.2 * s, fade(RED));
-                painter.line_segment([p(3.5, 3.5), p(12.5, 12.5)], stroke);
-                painter.line_segment([p(12.5, 3.5), p(3.5, 12.5)], stroke);
+                // A trash can (a cross would read as closing): its lid and handle, its body, and its ribs.
+                let stroke = Stroke::new(1.5 * s, ink);
+                painter.line_segment([p(2.5, 4.0), p(13.5, 4.0)], stroke);
+                painter.add(Shape::line(vec![p(6.0, 4.0), p(6.5, 2.0), p(9.5, 2.0), p(10.0, 4.0)], stroke));
+                painter.add(Shape::line(vec![p(3.75, 4.0), p(4.75, 14.0), p(11.25, 14.0), p(12.25, 4.0)], stroke));
+                let rib = Stroke::new(1.2 * s, ink);
+                painter.line_segment([p(6.75, 6.5), p(7.0, 11.5)], rib);
+                painter.line_segment([p(9.25, 6.5), p(9.0, 11.5)], rib);
             }
             Icon::Arrange => {
                 let link = Stroke::new(1.2 * s, ink);

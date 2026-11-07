@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{encode, encode_pasted, image_size, image_uri};
 use crate::core::annotation::{AnnotationInfo, AnnotationType, Fit, Pasted};
+use crate::core::gui::widgets::Icon;
 use crate::core::theme::Colours;
 
 /// Whether `text` is written in markdown: with headings, lists, quotes or code blocks, or emphasis, links or code.
@@ -166,7 +167,9 @@ impl Markdown {
         for (name, base64) in &self.attachments {
             ui.horizontal(|ui| {
                 let tip = format!("Remove {name}");
-                if super::icon_button(ui, &tip, &tip, super::paint_cross).clicked() {
+                let ink = ui.visuals().text_color();
+                let paint = |painter: &egui::Painter, rect| Icon::Delete.paint(painter, rect, ink, true);
+                if super::icon_button(ui, &tip, &tip, paint).clicked() {
                     remove = Some(name.clone());
                 }
                 ui.label(RichText::new(format!("{name} ({:.0} kB)", base64.len() as f64 * 0.75 / 1e3)).small());

@@ -53,7 +53,16 @@ pub fn show<N: NodeSet>(
     if locked {
         ui.label(RichText::new("Settings are locked while recording.").color(colours.warning));
     }
-    egui::ScrollArea::vertical().show(ui, |ui| {
+    // Out to the very edge of the pane, however little the settings take, so that's where the bar is, with the pane's margin
+    // on the inside. The rest of the pane needn't know, or a window that fits its content would grow.
+    let margin = super::docking::PANE_MARGIN;
+    let mut pane = ui.available_rect_before_wrap();
+    let width = pane.width();
+    pane.max.x += margin as f32;
+    let mut area = ui.new_child(egui::UiBuilder::new().max_rect(pane));
+    let content_margin = egui::Margin { right: margin, ..Default::default() };
+    let scrolling = egui::ScrollArea::vertical().auto_shrink([false, true]).content_margin(content_margin);
+    scrolling.show(&mut area, |ui| {
         ui.add_enabled_ui(!locked, |ui| {
             let tools = Some(&mut tools as &mut dyn crate::core::engine::NodeToolbar);
             graph.edit(
@@ -98,4 +107,39 @@ pub fn show<N: NodeSet>(
             }
         }
     });
+    ui.allocate_space(egui::vec2(width, area.min_rect().height()));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Nodes;
+    use crate::core::engine::NodeSet;
+    use crate::core::gui::docking::PANE_MARGIN;
+    use crate::standard_components::themes::THEMES;
+
+    /// Settings narrower than the pane, and too long for it: the bar's at the pane's edge, not theirs. See tests/snapshots/.
+    #[test]
+    fn the_scroll_bar_is_at_the_edge_of_the_pane() {
+        let mut graph = Graph::<Nodes>::default();
+        let index = Nodes::TYPES.iter().position(|t| t.name == "Reference").unwrap();
+        let id = graph.add(Nodes::create(index), [0.0, 0.0]);
+        let resolved = graph.resolve();
+        let mut harness = egui_kittest::Harness::builder().with_size([520.0, 300.0]).wgpu().build_ui_state(
+            move |ui, graph: &mut Graph<Nodes>| {
+                let mut events = Vec::new();
+                egui::Frame::new().inner_margin(PANE_MARGIN).show(ui, |ui| {
+                    let colours = &THEMES[0].colours;
+                    show(ui, graph, &resolved, colours, None, None, false, true, id, &mut events);
+                });
+            },
+            graph,
+        );
+        THEMES[0].apply(&harness.ctx);
+        harness.run_steps(3);
+        // It only shows with the pointer over it.
+        harness.event(egui::Event::PointerMoved(egui::pos2(508.0, 200.0)));
+        harness.run_steps(20);
+        harness.snapshot("node_window_scroll_bar");
+    }
 }

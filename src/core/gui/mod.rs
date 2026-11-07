@@ -1150,7 +1150,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                 .resizable(true)
                 .show(ctx, |ui| {
                     clicks = docking::floating_header(ui, &title, colour);
-                    egui::Frame::new().inner_margin(8).show(ui, |ui| {
+                    egui::Frame::new().inner_margin(docking::PANE_MARGIN).show(ui, |ui| {
                         docking::node_ui(
                             ui,
                             &mut self.graph,

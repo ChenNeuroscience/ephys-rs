@@ -207,8 +207,11 @@ fn annotation_ui<A: AnnotationSet>(
     }
 }
 
+/// The margin inside a pane.
+pub const PANE_MARGIN: i8 = 8;
+
 fn padded(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
-    egui::Frame::new().inner_margin(8).show(ui, add);
+    egui::Frame::new().inner_margin(PANE_MARGIN).show(ui, add);
 }
 
 impl<N: NodeSet, A: AnnotationSet> Panes<'_, N, A> {
