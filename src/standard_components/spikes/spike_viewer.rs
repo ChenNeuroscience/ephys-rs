@@ -173,6 +173,7 @@ impl Node<Edges> for SpikeViewer {
                       thresholds: set them, and the gains, here.",
     };
     const HAS_VIEW: bool = true;
+    const SHOW_IN_BASIC_DEFAULT: bool = true;
 
     fn inputs(&self) -> Vec<Input<Edges>> {
         vec![Input { name: "spikes", kind: Kind::Spikes }]

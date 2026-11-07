@@ -94,6 +94,7 @@ impl Node<Edges> for TtlViewer {
                       acquisition, and recording, started.",
     };
     const HAS_VIEW: bool = true;
+    const SHOW_IN_BASIC_DEFAULT: bool = true;
 
     fn inputs(&self) -> Vec<Input<Edges>> {
         vec![Input { name: "events", kind: Kind::Events }]

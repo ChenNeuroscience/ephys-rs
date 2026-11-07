@@ -1,6 +1,6 @@
 //! The basic view, the home pane's first mode, for people who'd rather not work with the graph: the program's version
 //! as a title, with a link to the About window; while the graph's empty, the recent files, and otherwise the components
-//! shown in it (viewers, unless set otherwise: see `NodeEntry::in_basic`), large, to open their windows (beside it); and the
+//! shown in it (viewers, unless set otherwise: see `NodeEntry::shown_in_basic`), large, to open their windows (beside it); and the
 //! quick actions that apply to the graph, in grey (blue is for processing). Disabled components are faded, as on the
 //! graph. The graph is in advanced mode (the toolbar's graph button), a click away.
 
@@ -66,7 +66,7 @@ pub fn show<N: NodeSet>(
                 ui.add_space(8.0);
                 let mut views: Vec<(NodeId, &str, Category)> = graph
                     .iter()
-                    .filter(|(_, e)| e.in_basic())
+                    .filter(|(_, e)| e.shown_in_basic())
                     .map(|(id, e)| (id, e.label.as_str(), e.node.info().category))
                     .collect();
                 views.sort_by_key(|(id, label, _)| (graph.get(*id).map(|e| e.pos[1] as i64), *label));
@@ -124,7 +124,7 @@ pub fn show<N: NodeSet>(
                     }
                     card.context_menu(|ui| {
                         if ui.button("Hide from the basic view").clicked() {
-                            events.push(Event::InBasic(id, false));
+                            events.push(Event::ShowInBasic(id, false));
                         }
                     });
                     ui.add_space(6.0);

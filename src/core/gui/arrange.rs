@@ -12,15 +12,14 @@ use dugong::graphlib::{Graph as Layered, GraphOptions};
 use dugong::{EdgeLabel, GraphLabel, NodeLabel, RankDir};
 
 use super::canvas::node_size;
-use crate::core::engine::{Category, Dimension, Graph, NodeId, NodeSet};
+use crate::core::engine::{Dimension, Graph, NodeId, NodeSet};
 
 /// Room between nodes in a column, and between columns.
 const NODE_GAP: f64 = 36.0;
 const COLUMN_GAP: f64 = 90.0;
-/// The hidden start and end nodes, and how hard they pull.
+/// The hidden start node, and how hard it pulls.
 const START: &str = "start";
-const END: &str = "end";
-const END_WEIGHT: f64 = 4.0;
+const START_WEIGHT: f64 = 4.0;
 /// How hard edges pull the nodes they join together: settings edges much less than data.
 const DATA_WEIGHT: f64 = 1.0;
 const SETTINGS_WEIGHT: f64 = 0.25;
@@ -57,19 +56,15 @@ pub fn arrange<N: NodeSet>(graph: &Graph<N>) -> HashMap<NodeId, [f32; 2]> {
     }
     let mut pairs: Vec<_> = weights.into_iter().collect();
     pairs.sort_by_key(|((a, b), _)| (a.0, b.0)); // the same arrangement every time
-    // Sources are pulled to the first column, and writers to the last, by edges from a start node, and to an end
-    // node, that aren't shown.
+    // Nodes without inputs (sources) are pulled to the first column, by edges from a start node that isn't shown.
     let edge = |weight| EdgeLabel { weight, minlen: 1, ..Default::default() };
     layered.set_node(START, NodeLabel { width: 1.0, height: 1.0, ..Default::default() });
-    layered.set_node(END, NodeLabel { width: 1.0, height: 1.0, ..Default::default() });
     let mut ids: Vec<NodeId> = sizes.keys().copied().collect();
     ids.sort_by_key(|id| id.0);
     for id in ids {
-        match graph.get(id).map(|e| e.node.info().category) {
-            Some(Category::Source) => layered.set_edge_with_label(START, key(id), edge(END_WEIGHT)),
-            Some(Category::Recording) => layered.set_edge_with_label(key(id), END, edge(END_WEIGHT)),
-            _ => continue,
-        };
+        if graph.get(id).is_some_and(|e| e.node.inputs().is_empty()) {
+            layered.set_edge_with_label(START, key(id), edge(START_WEIGHT));
+        }
     }
     for ((from, to), weight) in pairs {
         layered.set_edge_with_label(key(from), key(to), edge(weight));

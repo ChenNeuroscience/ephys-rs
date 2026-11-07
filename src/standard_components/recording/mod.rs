@@ -406,6 +406,18 @@ mod tests {
         for name in ["Write LTX", "Write Raw"] {
             let mut graph = Graph::default();
             let writer = add(&mut graph, name);
+            // Something to record, for it to run.
+            let board = add(&mut graph, "Acquisition Board");
+            if let Some(crate::Nodes::AcquisitionBoard(b)) = graph.get_mut(board).map(|e| &mut e.node) {
+                b.source = crate::standard_components::ephys::board::Source::Fake {
+                    address: crate::standard_components::ephys::board::serve_test_board(),
+                };
+            }
+            let port = |node, role, index| crate::core::engine::Port { node, role, index };
+            use crate::core::engine::Role;
+            let input =
+                (0..8).find(|&i| graph.connect(port(board, Role::Output, 0), port(writer, Role::Input, i)).is_ok());
+            assert!(input.is_some(), "{name} records continuous data");
             let snapshot = Snapshot::new(0, graph, None);
             let recording = snapshot.with_recording(1, Some(Arc::new(Recording::default())));
             let runner = Runner::start(&recording, 2);

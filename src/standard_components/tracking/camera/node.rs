@@ -44,6 +44,11 @@ impl Node<Edges> for Camera {
                       synthetic_streams/.",
     };
 
+    /// A source: it runs, with nothing upstream.
+    fn would_run(&self, _inputs: &[bool]) -> bool {
+        true
+    }
+
     type State = Capturing;
 
     fn outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {

@@ -32,6 +32,7 @@ impl Node<Edges> for VideoViewer {
     const INFO: NodeInfo =
         NodeInfo { name: "Video Viewer", category: Category::Visualisation, description: "The latest video frame." };
     const HAS_VIEW: bool = true;
+    const SHOW_IN_BASIC_DEFAULT: bool = true;
 
     type State = Showing;
 

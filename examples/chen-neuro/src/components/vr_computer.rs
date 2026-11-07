@@ -436,6 +436,11 @@ impl Node<Edges> for VrComputer {
                       object a line.",
     };
 
+    /// A source: it runs, with nothing upstream.
+    fn would_run(&self, _inputs: &[bool]) -> bool {
+        true
+    }
+
     type State = Receiving;
 
     fn outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {

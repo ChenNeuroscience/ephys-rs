@@ -113,6 +113,7 @@ impl Node<Edges> for TrackerView {
                       shows where the positions are.",
     };
     const HAS_VIEW: bool = true;
+    const SHOW_IN_BASIC_DEFAULT: bool = true;
 
     type State = Tracking;
 

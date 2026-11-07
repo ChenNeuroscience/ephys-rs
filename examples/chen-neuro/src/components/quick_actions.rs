@@ -263,7 +263,7 @@ fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
             let added = change.add(Nodes::AlarmProcessor(node), Some(gain));
             // Its window has the alarms' settings.
             if let Some(entry) = change.graph.get_mut(added) {
-                entry.basic = Some(true);
+                entry.show_in_basic_override = Some(true);
             }
             added
         }
@@ -341,7 +341,7 @@ fn use_vr(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
         let added = change.add(Nodes::VrComputer(VrComputer::default()), None);
         // Its card has the address to connect to.
         if let Some(entry) = change.graph.get_mut(added) {
-            entry.basic = Some(true);
+            entry.show_in_basic_override = Some(true);
         }
         added
     });
@@ -486,7 +486,7 @@ mod tests {
         assert!(inputs.iter().all(Option::is_some), "all connected");
         let into = Port { node: alarm_processor, role: Input, index: 1 };
         assert!(graph.edges().iter().any(|e| e.target() == into && e.from.node == lfp), "the LFP, filtered");
-        assert!(graph.get(alarm_processor).unwrap().in_basic(), "for its settings");
+        assert!(graph.get(alarm_processor).unwrap().shown_in_basic(), "for its settings");
         let Nodes::AlarmProcessor(alarms) = &graph.get(named("Alarm Processor")).unwrap().node else { panic!() };
         let sources: Vec<_> = alarms.alarms.list.iter().map(|a| a.kind.source()).collect();
         assert_eq!(sources, vec![Source::Spikes, Source::Lfp, Source::Positions]);
@@ -540,7 +540,7 @@ mod tests {
         assert!(position_nodes(&vr).iter().all(|id| vr.get(*id).unwrap().disabled));
         let (ltx, alarms, computer) =
             (named(&vr, "Write LTX"), named(&vr, "Alarm Processor"), named(&vr, "VR Computer"));
-        assert!(!vr.get(computer).unwrap().disabled && vr.get(computer).unwrap().in_basic());
+        assert!(!vr.get(computer).unwrap().disabled && vr.get(computer).unwrap().shown_in_basic());
         for (node, input) in [(ltx, 2), (ltx, 4), (ltx, 5), (alarms, 2), (alarms, 3)] {
             assert_eq!(feeding(&vr, node, Input, input).as_deref(), Some("VR Computer"), "input {input}");
         }

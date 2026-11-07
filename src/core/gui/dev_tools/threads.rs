@@ -691,7 +691,8 @@ fn not_running<N: NodeSet>(ui: &mut egui::Ui, graph: &Graph<N>, colours: &Colour
     }
     ui.add_space(4.0);
     ui.label(small(
-        "Not in the plan: some output can't be known (an input not connected?), or nothing needs its outputs now",
+        "Not in the plan: nothing's running on its inputs, some output can't be known (an input not connected?), or \
+         nothing needs its outputs now",
         colours.text_secondary,
     ));
     ui.horizontal_wrapped(|ui| {

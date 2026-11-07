@@ -163,6 +163,7 @@ impl Node<Edges> for AlarmViewer {
         description: "How an Alarm Processor's alarms stand, with switches for them and for sound.",
     };
     const HAS_VIEW: bool = true;
+    const SHOW_IN_BASIC_DEFAULT: bool = true;
 
     fn inputs(&self) -> Vec<Input<Edges>> {
         vec![Input { name: "alarms", kind: Kind::AlarmStates }]

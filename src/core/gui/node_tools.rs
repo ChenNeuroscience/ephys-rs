@@ -14,7 +14,7 @@ use crate::core::exchange::Exchange;
 pub struct NodeTools<'e> {
     pub id: NodeId,
     /// Whether it's in the basic view, and enabled, now.
-    pub in_basic: bool,
+    pub show_in_basic: bool,
     pub enabled: bool,
     /// Whether the app's in advanced mode (otherwise, what changes the graph is left out).
     pub advanced: bool,
@@ -46,8 +46,8 @@ impl<'e> NodeTools<'e> {
                 Some((edge.to.node, graph.get(edge.to.node)?.node.triggers(edge.to.port)))
             })
             .collect();
-        let (in_basic, enabled) = (entry.in_basic(), !entry.disabled);
-        Some(NodeTools { id, in_basic, enabled, advanced, own_triggers, controls, exchange, events })
+        let (show_in_basic, enabled) = (entry.shown_in_basic(), !entry.disabled);
+        Some(NodeTools { id, show_in_basic, enabled, advanced, own_triggers, controls, exchange, events })
     }
 
     /// The node whose trigger `name` is meant, if it has one: the node's own, or the one a control connects to.
@@ -112,10 +112,10 @@ impl NodeToolbar for NodeTools<'_> {
         }
         let button = toolbar::small_icon_button(ui, Icon::Settings, "Settings", "This window's settings");
         egui::Popup::menu(&button).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
-            let mut in_basic = self.in_basic;
-            let tick = ui.checkbox(&mut in_basic, "Show in basic mode");
+            let mut show_in_basic = self.show_in_basic;
+            let tick = ui.checkbox(&mut show_in_basic, "Show in basic mode");
             if tick.on_hover_text("Shown among the components in basic mode").changed() {
-                self.events.push(Event::InBasic(self.id, in_basic));
+                self.events.push(Event::ShowInBasic(self.id, show_in_basic));
             }
             more(ui);
         });

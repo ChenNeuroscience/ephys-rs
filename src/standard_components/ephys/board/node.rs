@@ -90,6 +90,11 @@ impl Node<Edges> for AcquisitionBoard {
                       an Open Ephys board, Intan's RHD USB board, or the fake board in synthetic_streams/.",
     };
 
+    /// A source: it runs, with nothing upstream.
+    fn would_run(&self, _inputs: &[bool]) -> bool {
+        true
+    }
+
     type State = Acquiring;
 
     fn outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {

@@ -334,6 +334,10 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     /// Whether the node's window is a view of its own (a viewer, say) rather than just its settings.
     const HAS_VIEW: bool = false;
 
+    /// Whether it's listed in the basic view, unless that's been set for it (see `NodeEntry::basic`). By convention,
+    /// nodes with a view are; but it's up to each.
+    const SHOW_IN_BASIC_DEFAULT: bool = false;
+
     fn inputs(&self) -> Vec<Input<E>> {
         Vec::new()
     }
@@ -374,10 +378,18 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
         None
     }
 
+    /// Whether the node would run, given which of its inputs have something running connected to them (by index).
+    /// The plan asks each node in turn, upstream first, so what runs follows from what's upstream. By default, it runs
+    /// if any input has. A node without inputs (a source) says so for itself: it isn't run otherwise.
+    fn would_run(&self, inputs: &[bool]) -> bool {
+        inputs.iter().any(|&running| running)
+    }
+
     /// Whether the node needs an input's data now, given its settings (a viewer with part of its view hidden might
     /// not). If not, the plan doesn't give it the data; and a node whose outputs nothing needs doesn't run at all
-    /// (except sources, which run regardless). Changing what's needed changes the plan (a new epoch), so it's for
-    /// what's switched on and off, not what changes pass to pass.
+    /// (unless it has no inputs, or no outputs, so its effect is beyond the graph: a source, a viewer or a writer).
+    /// Changing what's needed changes the plan (a new epoch), so it's for what's switched on and off, not what changes
+    /// pass to pass.
     fn needs(&self, _input: usize) -> bool {
         true
     }
@@ -457,6 +469,7 @@ pub trait NodeSet: Clone + PartialEq + Serialize + DeserializeOwned + Send + Syn
     fn create(type_index: usize) -> Self;
     fn type_index(&self) -> usize;
     fn has_view(&self) -> bool;
+    fn show_in_basic_default(&self) -> bool;
     fn inputs(&self) -> Vec<Input<Self::Edges>>;
     fn outputs(&self, inputs: &[Option<<Self::Edges as Edges>::DataStream>]) -> Vec<Output<Self::Edges>>;
     fn warnings(&self, inputs: &[Option<<Self::Edges as Edges>::DataStream>]) -> Vec<String>;
@@ -467,6 +480,7 @@ pub trait NodeSet: Clone + PartialEq + Serialize + DeserializeOwned + Send + Syn
     fn view_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Self::Edges>);
     fn in_place(&self, output: usize) -> Option<usize>;
     fn takes(&self, input: usize) -> bool;
+    fn would_run(&self, inputs: &[bool]) -> bool;
     fn needs(&self, input: usize) -> bool;
     fn triggers(&self, setting: usize) -> &'static [&'static str];
     fn direct_triggers(&self, setting: usize) -> &'static [&'static str];
@@ -559,6 +573,10 @@ macro_rules! node_set {
                 match self { $($name::$variant(_) => <$ty as $crate::core::engine::Node<$edges>>::HAS_VIEW),+ }
             }
 
+            fn show_in_basic_default(&self) -> bool {
+                match self { $($name::$variant(_) => <$ty as $crate::core::engine::Node<$edges>>::SHOW_IN_BASIC_DEFAULT),+ }
+            }
+
             fn inputs(&self) -> Vec<$crate::core::engine::Input<$edges>> {
                 match self { $($name::$variant(n) => $crate::core::engine::Node::inputs(n)),+ }
             }
@@ -596,6 +614,10 @@ macro_rules! node_set {
 
             fn in_place(&self, output: usize) -> Option<usize> {
                 match self { $($name::$variant(n) => $crate::core::engine::Node::in_place(n, output)),+ }
+            }
+
+            fn would_run(&self, inputs: &[bool]) -> bool {
+                match self { $($name::$variant(n) => $crate::core::engine::Node::would_run(n, inputs)),+ }
             }
 
             fn needs(&self, input: usize) -> bool {

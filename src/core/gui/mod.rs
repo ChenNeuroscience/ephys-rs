@@ -150,7 +150,7 @@ pub enum Event {
     /// Do an action (from the graph's toolbar), with where a menu it opens goes.
     Perform(Action, Option<Pos2>),
     /// List a node in the basic view, or not.
-    InBasic(NodeId, bool),
+    ShowInBasic(NodeId, bool),
     /// Disable a node (or enable it), and the rest of the selection if it's in it.
     SetDisabled(NodeId, bool),
     SetEdgeDisabled(engine::Edge, bool),
@@ -1252,9 +1252,9 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             Event::DeleteEdge(edge) => self.graph.disconnect(edge),
             Event::CopySettings(ids) => self.copy_settings(ctx, &ids),
             Event::PasteSettings(target) => self.open_paste(ctx, target),
-            Event::InBasic(id, shown) => {
+            Event::ShowInBasic(id, shown) => {
                 if let Some(entry) = self.graph.get_mut(id) {
-                    entry.basic = Some(shown);
+                    entry.show_in_basic_override = Some(shown);
                 }
             }
         }
@@ -2622,7 +2622,7 @@ mod tests {
         // The Alarm Viewer opens its processor, in basic mode too (without its card there, to be sure it's the button).
         let (viewer, processor) =
             (node_named(harness.state(), "Alarm Viewer"), node_named(harness.state(), "Alarm Processor"));
-        harness.state_mut().graph.get_mut(processor).unwrap().basic = Some(false);
+        harness.state_mut().graph.get_mut(processor).unwrap().show_in_basic_override = Some(false);
         harness.state_mut().layout.show(Pane::Node(viewer));
         harness.run_steps(2);
         assert_eq!(harness.state().layout.window(processor), WindowState::Closed);
@@ -2644,8 +2644,8 @@ mod tests {
         assert!(card(&harness, "Spike Viewer") && !card(&harness, "Spike Detector"));
         let detector = node_named(harness.state(), "Spike Detector");
         let viewer = node_named(harness.state(), "Spike Viewer");
-        harness.state_mut().graph.get_mut(detector).unwrap().basic = Some(true);
-        harness.state_mut().graph.get_mut(viewer).unwrap().basic = Some(false);
+        harness.state_mut().graph.get_mut(detector).unwrap().show_in_basic_override = Some(true);
+        harness.state_mut().graph.get_mut(viewer).unwrap().show_in_basic_override = Some(false);
         harness.run_steps(2);
         assert!(!card(&harness, "Spike Viewer") && card(&harness, "Spike Detector"));
 
@@ -2793,7 +2793,11 @@ mod tests {
         harness.run_steps(2);
         harness.get_by_label("Show in basic mode").click();
         harness.run_steps(2);
-        assert_eq!(harness.state().graph.get(viewer).unwrap().basic, Some(false), "taken out of basic mode");
+        assert_eq!(
+            harness.state().graph.get(viewer).unwrap().show_in_basic_override,
+            Some(false),
+            "taken out of basic mode"
+        );
     }
 
     #[test]

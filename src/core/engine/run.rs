@@ -226,12 +226,27 @@ impl<N: NodeSet> Plan<N> {
     pub fn new(graph: &Graph<N>) -> Self {
         let resolved = graph.resolve();
         let topological = graph.topological_order();
-        let mut runs: Vec<NodeId> = topological
-            .iter()
-            .copied()
-            .filter(|id| graph.get(*id).is_some_and(|e| !e.disabled))
-            .filter(|id| resolved.get(id).is_some_and(|s| s.outputs.iter().all(|o| o.stream.is_some())))
-            .collect();
+        // Each node, upstream first, says whether it would run, given which of its inputs have something running
+        // connected (see `Node::would_run`). Not if it's disabled, or some output can't be known.
+        let mut runs: Vec<NodeId> = Vec::new();
+        for &id in &topological {
+            let (Some(entry), Some(state)) = (graph.get(id), resolved.get(&id)) else { continue };
+            if entry.disabled || state.outputs.iter().any(|o| o.stream.is_none()) {
+                continue;
+            }
+            let running = |input| {
+                graph.edges().iter().any(|e| {
+                    e.dimension == super::Dimension::Data
+                        && e.to == super::PortRef { node: id, port: input }
+                        && graph.is_live(e)
+                        && runs.contains(&e.from.node)
+                })
+            };
+            let inputs: Vec<bool> = (0..state.inputs.len()).map(running).collect();
+            if entry.node.would_run(&inputs) {
+                runs.push(id);
+            }
+        }
         // Data edges to inputs their nodes need now.
         let needed_edge = |e: &&super::Edge, runs: &[NodeId]| {
             e.dimension == super::Dimension::Data
@@ -240,12 +255,11 @@ impl<N: NodeSet> Plan<N> {
                 && runs.contains(&e.to.node)
                 && graph.get(e.to.node).is_some_and(|n| n.node.needs(e.to.port))
         };
-        // Only nodes something needs the outputs of run, besides sources and those without outputs (viewers,
-        // writers): from the last back, as needing passes back along the edges.
+        // Only nodes something needs the outputs of run, besides those without inputs or outputs, whose effect is
+        // beyond the graph (sources, viewers, writers): from the last back, as needing passes back along the edges.
         for &id in topological.iter().rev() {
-            let Some(entry) = graph.get(id) else { continue };
-            let always = entry.node.info().category == super::Category::Source
-                || resolved.get(&id).is_some_and(|s| s.outputs.is_empty());
+            let Some(state) = resolved.get(&id) else { continue };
+            let always = state.inputs.is_empty() || state.outputs.is_empty();
             let needed = always || graph.edges().iter().any(|e| e.from.node == id && needed_edge(&e, &runs));
             if !needed {
                 runs.retain(|r| *r != id);
@@ -1293,6 +1307,27 @@ pub mod tests {
         assert!(runs(&graph, board) && runs(&graph, viewer), "sources and viewers run regardless");
         let plan = Plan::new(&graph);
         assert_eq!(plan.steps.iter().find(|s| s.id == viewer).unwrap().inputs[1], None, "nor are they passed");
+    }
+
+    #[test]
+    fn a_node_runs_if_it_would_given_what_runs_upstream() {
+        let mut graph = Graph::default();
+        let board = add(&mut graph, "Acquisition Board");
+        let viewer = add(&mut graph, "LFP Viewer");
+        let alone = add(&mut graph, "TTL Viewer");
+        link(&mut graph, board, 0, viewer, 0);
+        let runs = |graph: &Graph<Nodes>, id| Plan::new(graph).steps.iter().any(|s| s.id == id);
+        assert!(runs(&graph, board), "a source says it would, for itself");
+        assert!(runs(&graph, viewer), "something's running on its input");
+        assert!(!runs(&graph, alone), "nothing is: there's nothing to show");
+        let lone = add(&mut graph, "Camera");
+        assert!(runs(&graph, lone), "with no inputs, it runs whether or not anything needs it");
+        graph.get_mut(board).unwrap().disabled = true;
+        assert!(!runs(&graph, viewer), "what feeds it isn't running");
+        let filter = add(&mut graph, "Band-pass Filter");
+        let fed = add(&mut graph, "LFP Viewer");
+        link(&mut graph, filter, 0, fed, 0);
+        assert!(!runs(&graph, filter) && !runs(&graph, fed), "connected, but to nothing running");
     }
 
     #[test]

@@ -10,11 +10,11 @@ another node can edit).
 
 ## Describing it
 
-- `INFO`: its name, category (source, processing, visualisation or recording: its colour on the graph, and where
-  it's offered) and description.
+- `INFO`: its name, category (source, processing, visualisation, recording or other) and description. The category
+  is for people: its colour on the graph, and where it's offered. Nothing about how it runs depends on it; that
+  follows from what it implements.
 - `inputs()` and `outputs(inputs)`: its data ports. An output says what data stream it produces, given what's on the
-  inputs (or `None` while that can't be known), so a graph's streams are worked out before anything runs. A node runs
-  only if all its outputs are known.
+  inputs (or `None` while that can't be known), so a graph's streams are worked out before anything runs.
 - `warnings(inputs)`: what's wrong (an input not connected, say), shown on the graph and in its window.
 - `settings()` and `set_setting`: the settings other nodes can edit through settings edges (see [Edges](edges.md)).
 - `controls()`: the other side, settings of other nodes this one can see and edit (or only read, `read_only`), in its
@@ -38,6 +38,10 @@ settings: the latest, as of the pass.
   `Pass::take_input` always gives the node a buffer: the input's own, if no one edits that data in place and every
   other reader can run first, otherwise a copy the plan makes as soon as the data's made (a copy point, in the dev
   tools). A node that only reads an input doesn't take it.
+- **Whether it runs.** The plan asks each node, upstream first, `would_run(inputs)`: given which of its inputs have
+  something running connected, whether it would. By default, if any has. A node without inputs (a source) has nothing
+  to go by, so says it would for itself. It runs if it would, all its outputs are known, and something needs them
+  (below), unless it has no inputs or no outputs: then its effect is beyond the graph (a source, a viewer, a writer).
 - **Needs.** `needs(input)`: whether it needs an input's data now, given its settings. If not, the plan doesn't pass it,
   and doesn't run a node whose outputs nothing needs (the LFP viewer's spectrum, switched off, stops the
   [Spectrum](../src/standard_components/ephys/spectrum.rs) node). Changing it changes the plan, so it's for what's
@@ -46,7 +50,8 @@ settings: the latest, as of the pass.
 ## Its window
 
 Double-clicking a node opens its window: `view_ui` if it has a view (`HAS_VIEW`), otherwise `settings_ui`, with its
-name, warnings and ports. Both get a [`Context`](../src/core/engine/node.rs):
+name, warnings and ports. `SHOW_IN_BASIC_DEFAULT` says whether it's listed in the basic view, till that's set for it: by convention,
+nodes with a view are. Both get a [`Context`](../src/core/engine/node.rs):
 
 - `inputs`: the streams on its inputs; `controls`: the values of the settings its controls see, to edit.
 - `shared::<T>()`: what its passes share with it in the run's [exchange](../src/core/exchange.rs), or the last run's

@@ -1008,9 +1008,9 @@ impl Canvas {
             if let Some(entry) = graph.get_mut(id) {
                 let name = ui.label(egui::RichText::new("Name").small().weak());
                 ui.text_edit_singleline(&mut entry.label).labelled_by(name.id);
-                let mut basic = entry.in_basic();
+                let mut basic = entry.shown_in_basic();
                 if ui.checkbox(&mut basic, "Show in basic view").changed() {
-                    entry.basic = Some(basic);
+                    entry.show_in_basic_override = Some(basic);
                 }
                 ui.separator();
             }

@@ -1154,6 +1154,7 @@ impl Node<Edges> for RunCommand {
     };
 
     const HAS_VIEW: bool = true;
+    const SHOW_IN_BASIC_DEFAULT: bool = true;
 
     fn outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {
         Vec::new()

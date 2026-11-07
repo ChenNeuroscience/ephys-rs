@@ -106,18 +106,18 @@ pub struct NodeEntry<N> {
     pub label: String,
     /// Top-left corner on the canvas.
     pub pos: [f32; 2],
-    /// Whether it's listed in the basic view, if set; otherwise, whether it's a visualisation (see `in_basic`).
+    /// Whether it's listed in the basic view, if set; otherwise, as its type says (see `Node::SHOW_IN_BASIC_DEFAULT`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub basic: Option<bool>,
+    pub show_in_basic_override: Option<bool>,
     /// Whether it's disabled: kept, but run as if it weren't there (see `Graph::is_live`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub disabled: bool,
 }
 
 impl<N: NodeSet> NodeEntry<N> {
-    /// Whether it's listed in the basic view: as set, or by default if it's a visualisation.
-    pub fn in_basic(&self) -> bool {
-        self.basic.unwrap_or(self.node.info().category == super::Category::Visualisation)
+    /// Whether it's listed in the basic view: as set, or as its type says.
+    pub fn shown_in_basic(&self) -> bool {
+        self.show_in_basic_override.unwrap_or(self.node.show_in_basic_default())
     }
 }
 
@@ -282,7 +282,7 @@ impl<N: NodeSet> Graph<N> {
         let id = NodeId(self.next_id);
         self.next_id += 1;
         let label = self.unique_label(node.info().name);
-        self.nodes.insert(id, NodeEntry { node, label, pos, basic: None, disabled: false });
+        self.nodes.insert(id, NodeEntry { node, label, pos, show_in_basic_override: None, disabled: false });
         id
     }
 

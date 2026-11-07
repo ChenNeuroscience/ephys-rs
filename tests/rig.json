@@ -859,7 +859,7 @@
           1680.0,
           752.0
         ],
-        "basic": true
+        "show_in_basic_override": true
       },
       "19": {
         "label": "Alarm Viewer",

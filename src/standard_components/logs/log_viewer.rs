@@ -76,6 +76,7 @@ impl Node<Edges> for LogViewer {
         description: "Log lines as they come, each with its time.",
     };
     const HAS_VIEW: bool = true;
+    const SHOW_IN_BASIC_DEFAULT: bool = true;
 
     fn inputs(&self) -> Vec<Input<Edges>> {
         vec![Input { name: "log", kind: Kind::LogLines }]

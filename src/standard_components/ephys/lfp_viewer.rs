@@ -186,6 +186,7 @@ impl Node<Edges> for LfpViewer {
                       reference channels.",
     };
     const HAS_VIEW: bool = true;
+    const SHOW_IN_BASIC_DEFAULT: bool = true;
 
     fn inputs(&self) -> Vec<Input<Edges>> {
         vec![
