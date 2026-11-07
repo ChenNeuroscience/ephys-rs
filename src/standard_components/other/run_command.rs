@@ -1817,49 +1817,85 @@ mod windows_tests {
         Run { program: "cmd".into(), arguments: vec!["/C".into(), command.into()] }
     }
 
+    /// A batch file, as it ran: what it was, what it said, and what it left in its status file. All of it, should a
+    /// test fail, as it can only be seen in CI.
+    #[derive(Debug)]
+    #[allow(dead_code, reason = "read in what a failing test says, through Debug")]
+    struct Ran {
+        script: String,
+        timed_out: bool,
+        stdout: String,
+        stderr: String,
+        status: String,
+        still_there: bool,
+    }
+
+    /// Runs `runs` from a batch file, as a terminal would, but with nobody to press a key, for 30 seconds at most.
+    fn run_batch(runs: &[Run], together: bool, close: bool) -> Ran {
+        let (path, status, out, err) =
+            (temporary_path("bat"), temporary_path("status"), temporary_path("out"), temporary_path("err"));
+        let script = batch_script(&std::env::temp_dir(), &status, runs, together, close);
+        std::fs::write(&path, &script).unwrap();
+        let mut child = Command::new("cmd")
+            .arg("/C")
+            .arg(&path)
+            .stdin(Stdio::null())
+            .stdout(std::fs::File::create(&out).unwrap())
+            .stderr(std::fs::File::create(&err).unwrap())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut timed_out = false;
+        while child.try_wait().unwrap().is_none() {
+            if Instant::now() > deadline {
+                timed_out = true;
+                let pid = child.id().to_string();
+                let _ = Command::new("taskkill").args(["/PID", &pid, "/T", "/F"]).output();
+                let _ = child.wait();
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let read = |path: &PathBuf| String::from_utf8_lossy(&std::fs::read(path).unwrap_or_default()).into_owned();
+        let ran = Ran {
+            script,
+            timed_out,
+            stdout: read(&out),
+            stderr: read(&err),
+            status: read(&status),
+            still_there: path.exists(),
+        };
+        for path in [&path, &status, &out, &err] {
+            let _ = std::fs::remove_file(path);
+        }
+        ran
+    }
+
     #[test]
     fn a_batch_file_says_what_programs_said_and_deletes_itself() {
-        let script = temporary_path("bat");
-        let status = temporary_path("status");
-        let runs = [cmd("echo said 100%"), cmd("exit 3")];
-        std::fs::write(&script, batch_script(&std::env::temp_dir(), &status, &runs, false, false)).unwrap();
-        let output = Command::new("cmd").arg("/C").arg(&script).stdin(Stdio::null()).output().unwrap();
-        let said_status = std::fs::read_to_string(&status).unwrap();
-        assert!(said_status.contains("end 0 0") && said_status.contains("end 1 3"), "{said_status}");
-        std::fs::remove_file(&status).unwrap();
-        let said = String::from_utf8_lossy(&output.stdout);
-        assert!(said.contains("said 100%"), "{said}");
-        assert!(said.contains("Failed, exit code 3"), "{said}");
-        assert!(said.contains("Finished"), "{said}");
-        assert!(!script.exists(), "{said}");
+        let ran = run_batch(&[cmd("echo said 100%"), cmd("exit 3")], false, false);
+        assert!(!ran.timed_out, "{ran:#?}");
+        assert!(ran.status.contains("end 0 0") && ran.status.contains("end 1 3"), "{ran:#?}");
+        assert!(ran.stdout.contains("said 100%"), "{ran:#?}");
+        assert!(ran.stdout.contains("Failed, exit code 3"), "{ran:#?}");
+        assert!(ran.stdout.contains("Finished"), "{ran:#?}");
+        assert!(!ran.still_there, "{ran:#?}");
     }
 
     #[test]
     fn a_batch_file_only_waits_if_something_failed() {
         for (command, waits) in [("exit 0", false), ("exit 2", true)] {
-            let (script, status) = (temporary_path("bat"), temporary_path("status"));
-            std::fs::write(&script, batch_script(&std::env::temp_dir(), &status, &[cmd(command)], false, true))
-                .unwrap();
-            let output = Command::new("cmd").arg("/C").arg(&script).stdin(Stdio::null()).output().unwrap();
-            let said = String::from_utf8_lossy(&output.stdout);
-            assert_eq!(said.contains("Finished."), waits, "{command}: {said}");
-            std::fs::remove_file(&status).unwrap();
+            let ran = run_batch(&[cmd(command)], false, true);
+            assert!(!ran.timed_out, "{ran:#?}");
+            assert_eq!(ran.stdout.contains("Finished."), waits, "{command}: {ran:#?}");
         }
     }
 
     #[test]
     fn a_batch_file_runs_them_together() {
-        let (script, status) = (temporary_path("bat"), temporary_path("status"));
-        let runs = [cmd("ping -n 2 127.0.0.1 >nul"), cmd("exit 4")];
-        std::fs::write(&script, batch_script(&std::env::temp_dir(), &status, &runs, true, false)).unwrap();
-        let output = Command::new("cmd").arg("/C").arg(&script).stdin(Stdio::null()).output().unwrap();
-        let said = std::fs::read_to_string(&status).unwrap();
-        assert!(
-            said.contains("end 0 0") && said.contains("end 1 4"),
-            "{said} {}",
-            String::from_utf8_lossy(&output.stdout)
-        );
-        std::fs::remove_file(&status).unwrap();
+        let ran = run_batch(&[cmd("ping -n 2 127.0.0.1 >nul"), cmd("exit 4")], true, false);
+        assert!(!ran.timed_out, "{ran:#?}");
+        assert!(ran.status.contains("end 0 0") && ran.status.contains("end 1 4"), "{ran:#?}");
     }
 
     #[test]
