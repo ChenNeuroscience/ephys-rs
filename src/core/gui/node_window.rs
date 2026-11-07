@@ -9,15 +9,17 @@ use crate::core::engine::NodeToolbar;
 use crate::core::engine::{Graph, NodeId, NodeSet, Port, Resolved, Role};
 use crate::core::theme::Colours;
 
-/// The window of a node without a view of its own: what it is, its settings, and its connections. `exchange` is what
-/// its passes share with its window (see `crate::core::exchange`), while running.
+/// The window of a node without a view of its own: what it is, its settings, and its connections. `live` is the run's
+/// exchange (see `crate::core::exchange`), while running, for its triggers; `shared`, where it finds what its passes
+/// share with it: the same, or the last run's, while paused.
 #[allow(clippy::too_many_arguments)]
 pub fn show<N: NodeSet>(
     ui: &mut egui::Ui,
     graph: &mut Graph<N>,
     resolved: &Resolved<N::Edges>,
     colours: &Colours,
-    exchange: Option<&crate::core::exchange::Exchange>,
+    live: Option<&crate::core::exchange::Exchange>,
+    shared: Option<&crate::core::exchange::Exchange>,
     base_directory: Option<&crate::core::base_directory::Place>,
     locked: bool,
     advanced: bool,
@@ -25,8 +27,8 @@ pub fn show<N: NodeSet>(
     events: &mut Vec<Event>,
 ) {
     let Some(state) = resolved.get(&id) else { return };
-    let running = exchange.is_some();
-    let Some(mut tools) = NodeTools::new(graph, id, advanced, exchange, events) else { return };
+    let running = live.is_some();
+    let Some(mut tools) = NodeTools::new(graph, id, advanced, live, events) else { return };
     let Some(entry) = graph.get_mut(id) else { return };
     let info = entry.node.info();
     // Its name, and its toolbar (see `node_tools`). Then its type.
@@ -69,7 +71,7 @@ pub fn show<N: NodeSet>(
                 id,
                 &state.input_streams,
                 colours,
-                exchange,
+                shared,
                 base_directory,
                 running,
                 locked,
@@ -118,6 +120,32 @@ mod tests {
     use crate::core::gui::docking::PANE_MARGIN;
     use crate::standard_components::themes::THEMES;
 
+    /// Paused, what's shared is there to read, but there's no run for a trigger to go to.
+    #[test]
+    fn triggers_need_a_run_not_just_what_one_shared() {
+        use egui_kittest::kittest::{NodeT as _, Queryable as _};
+        let disabled = |running: bool| {
+            let mut graph = Graph::<Nodes>::default();
+            let index = Nodes::TYPES.iter().position(|t| t.name == "Spike Gain").unwrap();
+            let id = graph.add(Nodes::create(index), [0.0, 0.0]);
+            let resolved = graph.resolve();
+            let exchange = crate::core::exchange::Exchange::default();
+            let mut harness = egui_kittest::Harness::builder().with_size([520.0, 500.0]).wgpu().build_ui_state(
+                move |ui, graph: &mut Graph<Nodes>| {
+                    let mut events = Vec::new();
+                    let live = running.then_some(&exchange);
+                    let colours = &THEMES[0].colours;
+                    show(ui, graph, &resolved, colours, live, Some(&exchange), None, false, true, id, &mut events);
+                },
+                graph,
+            );
+            harness.run_steps(2);
+            harness.get_by_role_and_label(egui::accesskit::Role::Button, "Auto detect").accesskit_node().is_disabled()
+        };
+        assert!(!disabled(true));
+        assert!(disabled(false));
+    }
+
     /// Settings narrower than the pane, and too long for it: the bar's at the pane's edge, not theirs. See tests/snapshots/.
     #[test]
     fn the_scroll_bar_is_at_the_edge_of_the_pane() {
@@ -130,7 +158,7 @@ mod tests {
                 let mut events = Vec::new();
                 egui::Frame::new().inner_margin(PANE_MARGIN).show(ui, |ui| {
                     let colours = &THEMES[0].colours;
-                    show(ui, graph, &resolved, colours, None, None, false, true, id, &mut events);
+                    show(ui, graph, &resolved, colours, None, None, None, false, true, id, &mut events);
                 });
             },
             graph,

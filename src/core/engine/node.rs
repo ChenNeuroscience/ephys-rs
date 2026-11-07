@@ -77,7 +77,7 @@ pub struct Context<'a, E: Edges> {
     pub theme: &'a Colours,
     /// The node.
     pub node: NodeId,
-    /// What the node's passes and window share (see `crate::core::exchange`), while running.
+    /// What the node's passes and window share (see `crate::core::exchange`): the run's, or the last run's, while paused.
     pub exchange: Option<&'a Exchange>,
     /// The base directory recordings go in (see `crate::core::base_directory`): the next one's, or the one going
     /// on's. For a writer to say where it'll write.
@@ -231,7 +231,8 @@ pub trait NodeToolbar {
 }
 
 impl<E: Edges> Context<'_, E> {
-    /// The node's shared `T` (see `crate::core::exchange`), if it's running and its passes have made one.
+    /// The node's shared `T` (see `crate::core::exchange`), if a run's passes have made one. A run stopped leaves it as it
+    /// was: that's a pause, so what's shown stays, and `running` says which it is.
     pub fn shared<T: Shared>(&self) -> Option<Arc<T>> {
         self.exchange?.get(self.node)
     }

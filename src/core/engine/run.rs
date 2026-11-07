@@ -401,7 +401,7 @@ impl<N: NodeSet> Plan<N> {
 
     /// Whether runs of the two plans would work the same way (the same steps on the same buffers), so a run of
     /// one can carry on with the other's graph.
-    fn same_shape(&self, other: &Self) -> bool {
+    pub fn same_shape(&self, other: &Self) -> bool {
         self.steps == other.steps && self.buffers == other.buffers
     }
 
@@ -873,6 +873,11 @@ impl<N: NodeSet> Runner<N> {
     /// Where the run's nodes leave things for their windows.
     pub fn exchange(&self) -> &Exchange {
         &self.shared.exchange
+    }
+
+    /// The same, to keep once the run's over.
+    pub fn exchange_to_keep(&self) -> Arc<Exchange> {
+        self.shared.exchange.clone()
     }
 
     /// The acquisition clock: seconds of passes sent so far.

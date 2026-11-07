@@ -293,7 +293,7 @@ pub fn recording_name(place: Option<&Place>, prefix: &str, start: &chrono::DateT
 }
 
 /// What a writer's thread is up to, for its window and the dev tools.
-pub fn status_ui(ui: &mut egui::Ui, status: Option<&Status>, theme: &Colours) {
+pub fn status_ui(ui: &mut egui::Ui, status: Option<&Status>, running: bool, theme: &Colours) {
     let small = |text: String| RichText::new(text).size(11.0);
     let Some(status) = status else {
         ui.label(small("Writes while recording.".into()).weak());
@@ -304,7 +304,8 @@ pub fn status_ui(ui: &mut egui::Ui, status: Option<&Status>, theme: &Colours) {
             ui.label(small(problem.clone()).color(theme.error));
         }
         (Some(path), None) => {
-            ui.label(small(format!("Recording to {path}")));
+            let doing = if running { "Recording" } else { "Recorded" };
+            ui.label(small(format!("{doing} to {path}")));
             ui.label(small(format!("{:.1} MB written", status.bytes as f64 / 1e6)).weak());
         }
         (None, None) => {
@@ -395,5 +396,22 @@ mod tests {
         let bytes = std::fs::metadata(dat).unwrap().len();
         assert!(bytes as f64 > 64.0 * 2.0 * 30000.0 * 0.5, "half a second or more of 64 channels, got {bytes} bytes");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Stopped while recording, its last status is of a recording that's over.
+    #[test]
+    fn a_status_left_by_a_run_says_it_recorded() {
+        use egui_kittest::kittest::Queryable as _;
+        let shown = |running: bool| {
+            let mut harness = egui_kittest::Harness::builder().build_ui(move |ui| {
+                let status =
+                    super::Status { path: Some("here".into()), bytes: 0, pool: Default::default(), problem: None };
+                super::status_ui(ui, Some(&status), running, &crate::standard_components::themes::THEMES[0].colours);
+            });
+            harness.run_steps(1);
+            harness.query_by_label("Recording to here").is_some()
+        };
+        assert!(shown(true));
+        assert!(!shown(false));
     }
 }

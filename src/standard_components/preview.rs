@@ -30,9 +30,11 @@ pub fn plot_area(ui: &mut egui::Ui, theme: &Colours) -> Rect {
 }
 
 /// Asks for the view to be drawn again when there's likely new data: after a pass (not every frame the display
-/// could show, which on a 120 Hz display is more than twice as often).
-pub fn repaint_with_data(ui: &egui::Ui) {
-    ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(crate::core::engine::PASS_DURATION));
+/// could show, which on a 120 Hz display is more than twice as often). There's none unless `running`.
+pub fn repaint_with_data(ui: &egui::Ui, running: bool) {
+    if running {
+        ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(crate::core::engine::PASS_DURATION));
+    }
 }
 
 /// The plot area with a message in place of data.

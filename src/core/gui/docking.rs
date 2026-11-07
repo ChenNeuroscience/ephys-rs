@@ -36,6 +36,8 @@ pub struct Panes<'a, N: NodeSet, A: AnnotationSet> {
     pub resolved: &'a Resolved<N::Edges>,
     pub colours: &'static Colours,
     pub runner: Option<&'a Runner<N>>,
+    /// What the run shares with the windows, or the last run shared, while paused.
+    pub shared: Option<&'a crate::core::exchange::Exchange>,
     /// The base directory recordings go in (see `crate::core::base_directory`).
     pub base_directory: Option<&'a crate::core::base_directory::Place>,
     /// The latest snapshot of the graph.
@@ -64,7 +66,7 @@ pub struct Panes<'a, N: NodeSet, A: AnnotationSet> {
 }
 
 /// A node's window content: its own view if it has one (which shows its settings as it likes), otherwise the
-/// default window (`node_window`). While running, it finds what its passes share with it in the run's exchange.
+/// default window (`node_window`). It finds what its passes share with it in `shared`: the run's exchange, or the last run's.
 #[allow(clippy::too_many_arguments)]
 pub fn node_ui<N: NodeSet>(
     ui: &mut egui::Ui,
@@ -72,6 +74,7 @@ pub fn node_ui<N: NodeSet>(
     resolved: &Resolved<N::Edges>,
     colours: &Colours,
     runner: Option<&Runner<N>>,
+    shared: Option<&crate::core::exchange::Exchange>,
     base_directory: Option<&crate::core::base_directory::Place>,
     locked: bool,
     advanced: bool,
@@ -82,17 +85,17 @@ pub fn node_ui<N: NodeSet>(
     let has_view = graph.get(id).is_some_and(|e| e.node.has_view());
     let running = runner.is_some();
     // A view stays live while recording (changes it makes to settings are undone: see `App::lock`). It finds what
-    // its passes share with it in the run's exchange.
-    let exchange = runner.map(|r| r.exchange());
+    // its passes share with it in `shared`; triggers need a run, to go to.
+    let live = runner.map(|r| r.exchange());
     if has_view {
-        let Some(mut tools) = NodeTools::new(graph, id, advanced, exchange, &mut *events) else { return };
+        let Some(mut tools) = NodeTools::new(graph, id, advanced, live, &mut *events) else { return };
         let tools = Some(&mut tools as &mut dyn crate::core::engine::NodeToolbar);
         let streams = &state.input_streams;
-        graph.edit(id, streams, colours, exchange, base_directory, running, locked, tools, |node: &mut N, context| {
+        graph.edit(id, streams, colours, shared, base_directory, running, locked, tools, |node: &mut N, context| {
             node.view_ui(ui, context)
         });
     } else {
-        node_window::show(ui, graph, resolved, colours, exchange, base_directory, locked, advanced, id, events);
+        node_window::show(ui, graph, resolved, colours, live, shared, base_directory, locked, advanced, id, events);
     }
 }
 
@@ -259,8 +262,10 @@ impl<N: NodeSet, A: AnnotationSet> Panes<'_, N, A> {
             Pane::Node(id) => {
                 let (graph, resolved, colours, runner, locked) =
                     (&mut *self.graph, self.resolved, self.colours, self.runner, self.locked);
-                let (advanced, base) = (self.mode == Mode::Advanced, self.base_directory);
-                padded(ui, |ui| node_ui(ui, graph, resolved, colours, runner, base, locked, advanced, id, self.events))
+                let (advanced, base, shared) = (self.mode == Mode::Advanced, self.base_directory, self.shared);
+                padded(ui, |ui| {
+                    node_ui(ui, graph, resolved, colours, runner, shared, base, locked, advanced, id, self.events)
+                })
             }
         }
     }

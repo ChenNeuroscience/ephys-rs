@@ -283,13 +283,14 @@ impl Node<Edges> for AcquisitionBoard {
         });
 
         ui.separator();
-        let pool = context.shared::<Pool<BoardDisplay>>();
-        let Some(display) = pool.as_deref().and_then(Pool::newest) else {
+        if !context.running {
             ui.weak("Press Play to start acquiring.");
-            return;
-        };
+        }
+        let pool = context.shared::<Pool<BoardDisplay>>();
+        let Some(display) = pool.as_deref().and_then(Pool::newest) else { return };
         let status = &display.status;
         match &status.state {
+            State::Starting if !context.running => {}
             State::Starting => {
                 ui.weak("Opening the board…");
             }
@@ -300,9 +301,10 @@ impl Node<Edges> for AcquisitionBoard {
                 ui.label(RichText::new(problem).color(theme.warning));
             }
         }
+        let rate = if context.running { format!("{:.0} samples/s · ", status.rate) } else { String::new() };
         ui.weak(format!(
-            "{:.0} samples/s · {} samples · {} dropped by the board · {} not taken in time",
-            status.rate, status.samples, status.board_dropped, status.not_taken
+            "{rate}{} samples · {} dropped by the board · {} not taken in time",
+            status.samples, status.board_dropped, status.not_taken
         ));
         if status.mismatched > 0
             && let Some(info) = &status.info

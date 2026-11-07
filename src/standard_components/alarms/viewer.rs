@@ -231,7 +231,7 @@ impl Node<Edges> for AlarmViewer {
             overrides.save(&mut alarms, &mut self.sounding);
         }
         let pool = context.shared::<Pool<AlarmsDisplay>>();
-        let display = pool.as_deref().and_then(Pool::newest).filter(|_| context.running);
+        let display = pool.as_deref().and_then(Pool::newest);
         let states = display.as_ref().map(|d| d.states.as_slice());
         let going_off = display.as_ref().map_or(&[][..], |d| d.going_off.as_slice());
 
@@ -253,7 +253,7 @@ impl Node<Edges> for AlarmViewer {
             }
         });
         context.controls[ALARMS] = Some(Setting::Alarms(alarms));
-        preview::repaint_with_data(ui);
+        preview::repaint_with_data(ui, context.running);
     }
 }
 
@@ -636,6 +636,18 @@ mod tests {
         locked: bool,
         size: [f32; 2],
     ) -> (egui_kittest::Harness<'static, Graph<Nodes>>, Arc<Exchange>, crate::core::engine::NodeId) {
+        window_of(alarms, display, overrides, locked, true, size)
+    }
+
+    /// The same, running or paused.
+    fn window_of(
+        alarms: Alarms,
+        display: impl Into<AlarmsDisplay>,
+        overrides: Overrides,
+        locked: bool,
+        running: bool,
+        size: [f32; 2],
+    ) -> (egui_kittest::Harness<'static, Graph<Nodes>>, Arc<Exchange>, crate::core::engine::NodeId) {
         let mut graph = Graph::<Nodes>::default();
         let add = |graph: &mut Graph<Nodes>, name: &str| {
             let index = Nodes::TYPES.iter().position(|t| t.name == name).unwrap();
@@ -664,7 +676,7 @@ mod tests {
                     &THEMES[0].colours,
                     Some(&shared),
                     None,
-                    true,
+                    running,
                     locked,
                     None,
                     |node, context| node.view_ui(ui, context),
@@ -855,6 +867,20 @@ mod tests {
         let mut going = vec![GoingOff { id: 0, seconds: 29.99 }];
         pips_due(&mut going, [off].into_iter(), 0.02, (true, true), |state, count| pips.push((state.id, count)));
         assert_eq!(pips, vec![(0, 3)]);
+    }
+
+    /// Stopping is a pause: the states stay as they were, to look at, and it's only quiet that it won't sound.
+    #[test]
+    fn paused_it_shows_the_states_it_last_had() {
+        let shown = |running| {
+            let overrides = Overrides::default();
+            let (mut harness, _, _) = window_of(one_of_each(), all_clear(), overrides, false, running, [700.0, 400.0]);
+            harness.run_steps(2);
+            (harness.query_by_label("Not running").is_none(), harness.query_by_label(SOUND_NOTE).is_some())
+        };
+        assert_eq!(shown(false).0, shown(true).0);
+        assert!(shown(false).0);
+        assert!(!shown(false).1, "nothing's waiting to sound");
     }
 
     #[test]

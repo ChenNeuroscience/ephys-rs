@@ -151,7 +151,7 @@ impl Node<Edges> for WriteRaw {
 
     fn thread_ui(&self, _thread: usize, ui: &mut egui::Ui, context: &ThreadContext) {
         let pool = context.shared::<Pool<Status>>();
-        status_ui(ui, pool.as_deref().and_then(Pool::newest).as_deref(), context.theme);
+        status_ui(ui, pool.as_deref().and_then(Pool::newest).as_deref(), true, context.theme);
     }
 
     fn initial_state(&self, inputs: &[Option<DataStream>]) -> Recorder {
@@ -234,7 +234,7 @@ impl Node<Edges> for WriteRaw {
         }
         ui.separator();
         let pool = context.shared::<Pool<Status>>();
-        status_ui(ui, pool.as_deref().and_then(Pool::newest).as_deref(), context.theme);
+        status_ui(ui, pool.as_deref().and_then(Pool::newest).as_deref(), context.running, context.theme);
     }
 }
 

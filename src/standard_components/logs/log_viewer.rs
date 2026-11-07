@@ -131,7 +131,7 @@ impl Node<Edges> for LogViewer {
             }
         });
         drop(entries);
-        preview::repaint_with_data(ui);
+        preview::repaint_with_data(ui, context.running);
     }
 }
 

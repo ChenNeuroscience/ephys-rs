@@ -206,7 +206,7 @@ impl Node<Edges> for TtlViewer {
         ui.painter().rect_filled(area, 2.0, theme.surface_sunken);
         let row = self.line_height.clamp(12.0, 200.0);
         egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| Self::lines_ui(ui, &display, row, theme));
-        preview::repaint_with_data(ui);
+        preview::repaint_with_data(ui, context.running);
     }
 }
 

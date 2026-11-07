@@ -292,7 +292,7 @@ impl TrackerView {
         let Some(display) = display.filter(|d| d.frame.width > 0) else {
             let state = display.and_then(|d| d.stats.as_ref()).map(|s| &s.status.state);
             let message = match (display, state) {
-                (None, _) => "Press Play to see the camera".to_string(),
+                _ if display.is_none() || !context.running => "Press Play to see the camera".to_string(),
                 (_, Some(State::Starting)) => "Opening the camera…".to_string(),
                 (_, Some(State::Problem(problem))) => format!("No video: {problem}"),
                 _ => "Waiting for frames…".to_string(),
@@ -330,7 +330,7 @@ impl TrackerView {
             };
             path_ui(ui, rect, xf, path, length, context.theme);
         }
-        preview::repaint_with_data(ui);
+        preview::repaint_with_data(ui, context.running);
     }
 
     /// The camera's and the detector's settings (through the controls), in sections whose headers say what's
@@ -527,7 +527,7 @@ fn positions_ui(ui: &mut egui::Ui, context: &Context<Edges>, display: Option<&Tr
         };
         path_ui(ui, rect, xf, path, length, context.theme);
     }
-    preview::repaint_with_data(ui);
+    preview::repaint_with_data(ui, context.running);
 }
 
 /// What's known of positions without video, which there's nothing to adjust of.

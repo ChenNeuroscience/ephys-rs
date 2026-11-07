@@ -110,6 +110,8 @@ The passes never wait on the GUI, nor it on them. Each run has an [`Exchange`](.
   The engine and GUI don't treat any of it specially. The usual thing is a [pool](../src/standard_components/pool.rs)
   of buffers, as between nodes' threads and the passes: passes fill buffers (or swap their own in) and queue them;
   the window reads the newest, giving the rest back. The dev tools show each such pool on the GUI's thread.
+- Stopping is a pause: the app keeps the run's exchange, so everything goes on showing what it last had, until the next
+  run, or until the graph changes in a way that would start a new epoch (`Plan::same_shape`). Triggers need a run.
 - The GUI can **fire a trigger** on a node (`Node::triggers`): "auto detect", say, from a viewer through a settings
   edge, or from the node's own window. A pass takes it (`Pass::triggered`), says how it's going, and when it's done.
 - Passes can't change the graph, but can **propose** a setting's value (`Pass::propose`), which the GUI applies as an

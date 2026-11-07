@@ -297,9 +297,7 @@ impl Node<Edges> for SpikeViewer {
         if let Some(gains) = gains {
             context.controls[GAINS_CONTROL] = Some(Setting::Gains(gains));
         }
-        if context.running {
-            preview::repaint_with_data(ui);
-        }
+        preview::repaint_with_data(ui, context.running);
     }
 }
 

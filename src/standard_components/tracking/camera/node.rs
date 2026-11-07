@@ -175,13 +175,14 @@ impl Node<Edges> for Camera {
         let display = pool.as_deref().and_then(Pool::newest);
         camera_settings_ui(ui, &mut self.settings, display.as_ref().map(|d| &d.status.controls));
         ui.separator();
-        let Some(display) = display else {
+        if !context.running {
             ui.weak("Press Play to start capturing.");
-            return;
-        };
+        }
+        let Some(display) = display else { return };
         let theme = context.theme;
         let status = &display.status;
         match &status.state {
+            State::Starting if !context.running => {}
             State::Starting => {
                 ui.weak("Opening the camera…");
             }
@@ -192,9 +193,10 @@ impl Node<Edges> for Camera {
                 ui.label(RichText::new(problem).color(theme.warning));
             }
         }
+        let rate = if context.running { format!("{:.1} fps · ", status.fps) } else { String::new() };
         ui.weak(format!(
-            "{:.1} fps · {} frames · {} dropped by the camera · {} not taken in time",
-            status.fps, status.frames, status.camera_dropped, status.not_taken
+            "{rate}{} frames · {} dropped by the camera · {} not taken in time",
+            status.frames, status.camera_dropped, status.not_taken
         ));
         if let Some([w, h]) = status.last_wrong_size {
             let [set_w, set_h] = self.settings.frame_size;

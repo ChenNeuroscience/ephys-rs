@@ -233,6 +233,8 @@ pub struct App<N: NodeSet, A: AnnotationSet> {
     history: History<N, A>,
     /// The graph running, while it is.
     runner: Option<Runner<N>>,
+    /// The last run, once it's stopped: see `Paused`.
+    paused: Option<Paused<N>>,
     /// The acquisition clock when recording last started.
     recording_since: f64,
     /// While the nodes prepare to record, where the recording comes from when they're ready.
@@ -287,6 +289,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             paste: None,
             status: None,
             runner: None,
+            paused: None,
             recording_since: 0.0,
             preparing: None,
             dev_tools: dev_tools::DevTools::default(),
@@ -382,6 +385,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         self.layout = file.layout.unwrap_or_default();
         self.layout.mode = mode;
         self.history = History::new(&file.graph, &file.annotations);
+        self.paused = None;
         self.graph = file.graph;
         self.annotations = file.annotations;
         if let Some(saved) = &file.base_directory {
@@ -551,6 +555,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
     /// Starts running whatever's latest, including edits not yet taken as a version.
     fn play(&mut self) {
         self.history.commit(&self.graph, &self.annotations);
+        self.paused = None;
         self.runner = Some(Runner::start(&self.history.current.snapshot, self.workers));
         self.frame_times.run_started = Some(self.frame_times.now());
         self.frame_times.run_restarted();
@@ -948,7 +953,10 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                 if self.runner.is_some() {
                     self.set_recording(None);
                     self.preparing = None;
-                    self.runner = None;
+                    self.paused = self.runner.take().map(|runner| Paused {
+                        exchange: runner.exchange_to_keep(),
+                        plan: self.history.current.snapshot.plan.clone(),
+                    });
                 } else {
                     self.play();
                 }
@@ -1017,6 +1025,8 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             }
             self.set_recording(Some(Arc::new(recording)));
         }
+        let plan = &self.history.current.snapshot.plan;
+        self.paused.take_if(|paused| !paused.plan.same_shape(plan));
         let Some(runner) = &self.runner else { return };
         let snapshot = &self.history.current.snapshot;
         let same_epoch = runner.update(snapshot);
@@ -1157,6 +1167,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                             resolved,
                             colours,
                             self.runner.as_ref(),
+                            shared(&self.runner, &self.paused),
                             base.as_ref(),
                             locked,
                             advanced,
@@ -1361,6 +1372,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                 resolved: &resolved,
                 colours,
                 runner: self.runner.as_ref(),
+                shared: shared(&self.runner, &self.paused),
                 base_directory: base.as_ref(),
                 snapshot: &self.history.current.snapshot,
                 mode: self.layout.mode,
@@ -1501,6 +1513,21 @@ fn clock_text(seconds: f64) -> String {
     } else {
         format!("{minutes:02}:{seconds:02}.{tenths}")
     }
+}
+
+/// Stopping is a pause: what the last run shared stays for the windows to show, as it was, until the next run, or until
+/// the graph changes in a way that would have started a new epoch, and what's kept might no longer fit it.
+struct Paused<N: NodeSet> {
+    exchange: Arc<crate::core::exchange::Exchange>,
+    plan: Arc<engine::Plan<N>>,
+}
+
+/// What the windows find what's been shared with them in: the run's exchange, or the last run's.
+fn shared<'a, N: NodeSet>(
+    runner: &'a Option<Runner<N>>,
+    paused: &'a Option<Paused<N>>,
+) -> Option<&'a crate::core::exchange::Exchange> {
+    runner.as_ref().map(Runner::exchange).or(paused.as_ref().map(|paused| &*paused.exchange))
 }
 
 /// A version of the document: a snapshot of the graph with all its configuration, and the annotations.
@@ -1855,6 +1882,59 @@ mod tests {
         pointer(&mut harness, grab + egui::vec2(-60.0, 20.0), Some(false));
         let moved = area(&harness).unwrap().min - before.min;
         assert!(moved.x < -50.0 && moved.y > 15.0, "window should follow the drag, moved {moved:?}");
+    }
+
+    /// Stopping is a pause: what the run shared stays, until the graph changes shape, or it runs again.
+    #[test]
+    fn stopping_keeps_what_the_run_shared_until_the_graph_changes_shape() {
+        let mut harness = harness();
+        let ctx = harness.ctx.clone();
+        let found = |harness: &Harness<TestApp>| {
+            let app = harness.state();
+            shared(&app.runner, &app.paused).map(|exchange| exchange as *const crate::core::exchange::Exchange)
+        };
+        assert_eq!(found(&harness), None, "nothing's run yet");
+        harness.state_mut().perform(&ctx, Action::Play);
+        harness.run_steps(2);
+        engine::tests::wait_for_passes(harness.state().runner.as_ref().unwrap(), 1);
+        let run = found(&harness);
+        assert!(run.is_some());
+        harness.state_mut().perform(&ctx, Action::Play);
+        harness.run_steps(2);
+        assert!(harness.state().runner.is_none());
+        assert_eq!(found(&harness), run, "stopped, it's still there");
+
+        // What doesn't change the shape of the graph leaves it.
+        let detector = node_named(harness.state(), "Spike Detector");
+        harness.state_mut().graph.get_mut(detector).unwrap().pos = [1234.0, 567.0];
+        harness.run_steps(2);
+        assert_eq!(found(&harness), run, "a node moved");
+        if let Some(entry) = harness.state_mut().graph.get_mut(detector) {
+            entry.node.set_setting(0, crate::standard_components::spikes::Thresholds(vec![60.0]).into());
+        }
+        harness.run_steps(2);
+        assert_eq!(found(&harness), run, "a value changed");
+
+        // A reference fewer: the viewers' rows wouldn't match what's kept.
+        let graph = &harness.state().graph;
+        let reference = graph.iter().find(|(_, entry)| matches!(entry.node, Nodes::Reference(_))).unwrap().0;
+        if let Some(Nodes::Reference(reference)) = harness.state_mut().graph.get_mut(reference).map(|e| &mut e.node) {
+            reference.list.pop();
+        }
+        harness.run_steps(2);
+        assert_eq!(found(&harness), None, "the graph's changed shape");
+
+        // And it's the next run's that's found, not the last's.
+        harness.state_mut().perform(&ctx, Action::Play);
+        harness.run_steps(2);
+        harness.state_mut().perform(&ctx, Action::Play);
+        harness.run_steps(2);
+        let second = found(&harness);
+        assert!(second.is_some());
+        harness.state_mut().perform(&ctx, Action::Play);
+        harness.run_steps(2);
+        assert!(harness.state().paused.is_none(), "running again");
+        assert_ne!(found(&harness), second);
     }
 
     #[test]

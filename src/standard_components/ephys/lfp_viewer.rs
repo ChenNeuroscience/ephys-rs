@@ -339,7 +339,7 @@ impl Node<Edges> for LfpViewer {
         if let Some(gains) = gains {
             context.controls[GAINS] = Some(Setting::Gains(gains));
         }
-        preview::repaint_with_data(ui);
+        preview::repaint_with_data(ui, context.running);
     }
 }
 
