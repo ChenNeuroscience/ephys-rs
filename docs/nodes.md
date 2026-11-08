@@ -56,7 +56,7 @@ settings: the latest, as of the pass.
 
 Double-clicking a node opens its window: `view_ui` if it has a view (`HAS_VIEW`), otherwise `settings_ui`, with its
 name, warnings and ports. `SHOW_IN_BASIC_DEFAULT` says whether it's listed in the basic view, till that's set for it: by convention,
-nodes with a view are. Both get a [`Context`](../src/core/engine/node.rs):
+nodes with a view are. Both get a [`Context`](../src/core/engine/context.rs):
 
 - `inputs`: the streams on its inputs; `controls`: the values of the settings its controls see, to edit.
 - `shared::<T>()`: what its passes share with it in the run's [exchange](../src/core/exchange.rs), or the last run's

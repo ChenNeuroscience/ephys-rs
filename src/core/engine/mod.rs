@@ -5,16 +5,22 @@
 //! declared with `node_set!` and `edge_types!`. Dispatch to a type is a plain `match`, with no dynamic
 //! loading.
 
+mod context;
 mod edge;
 mod graph;
 mod node;
+mod node_set;
+mod node_threads;
 mod pass;
 mod plan;
 mod run;
 
+pub use context::*;
 pub use edge::*;
 pub use graph::*;
 pub use node::*;
+pub use node_set::*;
+pub use node_threads::*;
 pub use pass::*;
 pub use plan::*;
 pub use run::*;
