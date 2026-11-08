@@ -1810,7 +1810,7 @@ struct Version<N: NodesEnum, A> {
 /// undoes in one step.
 struct History<N: NodesEnum, A> {
     current: Version<N, A>,
-    undo: Vec<Version<N, A>>,
+    undo: std::collections::VecDeque<Version<N, A>>,
     redo: Vec<Version<N, A>>,
     versions: u64,
 }
@@ -1821,7 +1821,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> History<N, A> {
     fn new(graph: &Graph<N>, annotations: &Annotations<A>) -> Self {
         let current =
             Version { snapshot: Snapshot::new(0, graph.clone(), None), annotations: Arc::new(annotations.clone()) };
-        History { current, undo: Vec::new(), redo: Vec::new(), versions: 0 }
+        History { current, undo: Default::default(), redo: Vec::new(), versions: 0 }
     }
 
     fn record(&mut self, graph: &Graph<N>, annotations: &Annotations<A>, ctx: &egui::Context) {
@@ -1840,9 +1840,9 @@ impl<N: NodesEnum, A: AnnotationsEnum> History<N, A> {
             snapshot: Snapshot::new(self.versions, graph.clone(), Some(&self.current.snapshot)),
             annotations: Arc::new(annotations.clone()),
         };
-        self.undo.push(std::mem::replace(&mut self.current, version));
+        self.undo.push_back(std::mem::replace(&mut self.current, version));
         if self.undo.len() > HISTORY_LIMIT {
-            self.undo.remove(0);
+            self.undo.pop_front();
         }
         self.redo.clear();
     }
@@ -1860,7 +1860,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> History<N, A> {
     }
 
     fn undo(&mut self) -> Option<(Graph<N>, Annotations<A>)> {
-        let previous = self.undo.pop()?;
+        let previous = self.undo.pop_back()?;
         let recording = self.current.snapshot.recording.clone();
         self.redo.push(std::mem::replace(&mut self.current, previous));
         self.set_recording(recording); // undoing an edit doesn't start or stop recording
@@ -1884,7 +1884,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> History<N, A> {
     fn redo(&mut self) -> Option<(Graph<N>, Annotations<A>)> {
         let next = self.redo.pop()?;
         let recording = self.current.snapshot.recording.clone();
-        self.undo.push(std::mem::replace(&mut self.current, next));
+        self.undo.push_back(std::mem::replace(&mut self.current, next));
         self.set_recording(recording);
         Some(self.restored())
     }
