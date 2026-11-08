@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use crate::core::engine::{Category, EdgeInfo, EdgeType, Node, NodeInfo, Output, SettingPort, UiContext};
 use crate::core::gui::widgets::{Icon, help_link, small_icon_button};
 use crate::core::theme::Colours;
-use crate::core::triggers::{AnyTrigger, Delivery, Trigger};
+use crate::core::triggers::{Delivery, TriggerType};
 use crate::standard_components::recording::expand;
 use crate::standard_components::widgets::{combo, setting, settings_grid};
 use crate::{DataStream, Edges, Setting};
@@ -32,7 +32,7 @@ use crate::{DataStream, Edges, Setting};
 #[derive(Clone, Debug, PartialEq)]
 pub struct RunOnFiles(pub Vec<PathBuf>);
 
-impl Trigger for RunOnFiles {
+impl TriggerType for RunOnFiles {
     const NAME: &'static str = "run on files";
     const DELIVERY: Delivery = Delivery::Direct;
 }
@@ -1183,13 +1183,13 @@ impl Node<Edges> for RunCommand {
         }
     }
 
-    fn triggers(&self, _setting: usize) -> &'static [crate::core::triggers::TriggerKind] {
-        &[RunOnFiles::KIND]
+    fn triggers(&self, _setting: usize) -> &'static [crate::TriggerKind] {
+        &[crate::TriggerKind::RunOnFiles]
     }
 
     /// Runs the program on the files sent.
-    fn on_trigger(&mut self, trigger: AnyTrigger) {
-        if let Ok(RunOnFiles(paths)) = trigger.take::<RunOnFiles>() {
+    fn on_trigger(&mut self, trigger: crate::Trigger) {
+        if let crate::Trigger::RunOnFiles(RunOnFiles(paths)) = trigger {
             self.run_on(self.settings.matching(paths));
         }
     }
@@ -1637,9 +1637,9 @@ mod tests {
         let waiting = direct.take();
         assert_eq!(waiting.len(), 1, "once the files are finished");
         let (to, Triggered::Trigger(trigger)) = waiting.into_iter().next().unwrap() else { panic!() };
-        assert_eq!((to, trigger.kind()), (command, RunOnFiles::KIND));
+        assert_eq!((to, trigger.key()), (command, crate::TriggerKind::RunOnFiles.into()));
         let Some(Nodes::RunCommand(node)) = graph.get_mut(command).map(|e| &mut e.node) else { panic!() };
-        Node::on_trigger(node, trigger);
+        Node::on_trigger(node, trigger.take::<crate::Trigger>().unwrap());
         wait_for_job(&node.job);
         assert_eq!(node.job.problem(), None);
         let said_text = std::fs::read_to_string(&said).unwrap();

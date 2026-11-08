@@ -134,26 +134,31 @@ does this with frames.
 
 ## Triggers
 
-Anything sent to a node is a trigger. Each is a type of its own implementing
-[`Trigger`](../src/core/triggers.rs), carrying whatever it needs to (`AutoDetect` nothing; `RunOnFiles` the files), with
-a name to show, and how it's delivered (`DELIVERY`). A node lists the kinds each setting takes, of either delivery, in
-`triggers(setting)` (`&[AutoDetect::KIND]`). Sending one is the same either way: a control connected to the setting
-sends it (`UiContext::trigger(Some(control), AutoDetect)`), as can the node's own window (`None`), and
-`UiContext::can_trigger` says whether it can be sent now. Only taking it differs, as that's on a different thread.
+Anything sent to a node is a trigger. Each trigger type implements [`TriggerType`](../src/core/triggers.rs), carrying
+whatever it needs to (`AutoDetect` nothing; `RunOnFiles` the files), with a name to show, and how it's delivered
+(`DELIVERY`). The program lists them with its edge types, in `edge_types!` (`triggers:`), which makes its `Trigger`
+enum, with a variant for each, and `TriggerKind`, naming them, as it does for data streams and settings: they're sent
+along settings edges, after all. A node lists the kinds each setting takes, of either delivery, in `triggers(setting)`
+(`&[TriggerKind::AutoDetect]`). Sending one is the same either way: a control connected to the setting sends it
+(`UiContext::trigger(Some(control), AutoDetect)`), as can the node's own window (`None`), and `UiContext::can_trigger`
+says whether it can be sent now. Only taking it differs, as that's on a different thread.
 
 - **`Delivery::Pass`** (`AutoDetect`): for what needs the data going by, so it needs a run. The node's next pass takes
-  it (`Pass::triggered::<AutoDetect>()`, which gives it back), reports progress (`Pass::trigger_progress`, shown with
-  `UiContext::trigger_progress`), and finishes (`Pass::trigger_done`). Meanwhile it can be stopped
-  (`UiContext::cancel_trigger`): the passes then see `Pass::trigger_cancelled`, and abandon it. Since passes can't
-  change the graph, it triggers an update of what it finds (`Pass::trigger_settings_update(setting, value)`), and the
-  GUI applies it as an edit. The [Continuous Gain](../src/standard_components/ephys/continuous_gain.rs),
+  it (`Pass::triggered(TriggerKind::AutoDetect)`, which gives back the `Trigger`), reports progress
+  (`Pass::trigger_progress`, shown with `UiContext::trigger_progress`), and finishes (`Pass::trigger_done`). Meanwhile
+  it can be stopped (`UiContext::cancel_trigger`): the passes then see `Pass::trigger_cancelled`, and abandon it. Since
+  passes can't change the graph, it triggers an update of what it finds (`Pass::trigger_settings_update(setting,
+  value)`), and the GUI applies it as an edit. The [Continuous Gain](../src/standard_components/ephys/continuous_gain.rs),
   [Spike Gain](../src/standard_components/spikes/spike_gain.rs) and
   [Spike Detector](../src/standard_components/spikes/spike_detector.rs) work this way, triggered from the Spike Viewer.
 - **`Delivery::Direct`** (`RunOnFiles`): needs no pass, or even a run. It's delivered on the GUI's thread, whatever's
-  going on, to `Node::on_trigger` as an `AnyTrigger`, taken as what it is with `take::<RunOnFiles>()`. As well as from
-  a window, a node can send one through a control with a `TriggerHandle<T>`, from the `ControlTriggers` it's given in
-  `prepare_to_record` (`handle::<RunOnFiles>(control)`), which it can keep and use from any thread. (Only a direct
-  trigger has a handle, as a handle can outlive the run: asking for one on a pass trigger doesn't compile.)
+  going on, to `Node::on_trigger`, as the `Trigger` (`if let Trigger::RunOnFiles(files) = trigger`). As well as from a
+  window, a node can send one through a control with a `TriggerHandle`, from the `ControlTriggers` it's given in
+  `prepare_to_record` (`handle(control, TriggerKind::RunOnFiles)`), which it can keep and use from any thread. (Only a
+  direct trigger has a handle, as a handle can outlive the run: there's none for a pass trigger.)
+
+On their way, triggers are carried as `AnyTrigger`s (boxed), so the exchange and the app's queue needn't know the
+program's enum, as node state is kept; what's sent and what's taken is always the enum.
 
 Every setting also takes a direct update of its value without saying so, the settings update above, which isn't
 applied while settings are locked.

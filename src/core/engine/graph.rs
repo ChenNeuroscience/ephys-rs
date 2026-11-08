@@ -550,7 +550,7 @@ impl<N: NodesEnum> Graph<N> {
         &self,
         id: NodeId,
         triggers: &Arc<crate::core::triggers::DirectTriggers>,
-    ) -> crate::core::triggers::ControlTriggers {
+    ) -> crate::core::triggers::ControlTriggers<<N::Edges as super::Edges>::Trigger> {
         let count = self.get(id).map_or(0, |entry| entry.node.controls().len());
         let control = |index| {
             let edges = self.live_edges_from(Port { node: id, role: PortRole::Control, index });

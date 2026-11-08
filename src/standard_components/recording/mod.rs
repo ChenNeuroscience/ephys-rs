@@ -67,8 +67,8 @@ pub trait Files<C>: Send {
 
 /// Sends what's been recorded to what control `control` is connected to, as `RunOnFiles`, if it takes that trigger,
 /// once the files are finished. Not if it failed.
-pub fn after_recording(triggers: &ControlTriggers, control: usize) -> Option<OnFinished> {
-    let handle = triggers.handle::<RunOnFiles>(control)?;
+pub fn after_recording(triggers: &ControlTriggers<crate::Trigger>, control: usize) -> Option<OnFinished> {
+    let handle = triggers.handle(control, crate::TriggerKind::RunOnFiles)?;
     Some(Box::new(move |result| {
         if let Ok(paths) = result {
             handle.trigger(RunOnFiles(paths));

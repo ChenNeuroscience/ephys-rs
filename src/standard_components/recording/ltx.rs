@@ -253,7 +253,7 @@ impl Node<Edges> for WriteLtx {
         inputs: &[Option<DataStream>],
         controls: &[Option<Setting>],
         base_directory: Option<&crate::core::base_directory::Place>,
-        triggers: &crate::core::triggers::ControlTriggers,
+        triggers: &crate::core::triggers::ControlTriggers<crate::Trigger>,
     ) -> Option<Box<dyn std::any::Any + Send>> {
         let (start, base) = self.base(base_directory);
         let (streams, recorded) = (Streams::of(inputs), Recorded::of(controls));

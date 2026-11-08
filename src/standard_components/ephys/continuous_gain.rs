@@ -9,10 +9,7 @@ use eframe::egui;
 use serde::{Deserialize, Serialize};
 
 use crate::core::engine::{Category, Input, Node, NodeInfo, Output, Pass, SettingPort, UiContext};
-use crate::core::triggers::Trigger;
-use crate::standard_components::auto_detect::{
-    AutoDetect, Distribution, PercentMultiple, SAMPLING, auto_detect_ui, detecting,
-};
+use crate::standard_components::auto_detect::{Distribution, PercentMultiple, SAMPLING, auto_detect_ui, detecting};
 use crate::standard_components::spikes::{Channels, DEFAULT_RANGE_UV, GainScope, Gains, RANGES_UV};
 use crate::standard_components::widgets::{input_summary, named_settings_grid, require_input, setting};
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
@@ -110,8 +107,8 @@ impl Node<Edges> for ContinuousGain {
         }
     }
 
-    fn triggers(&self, _setting: usize) -> &'static [crate::core::triggers::TriggerKind] {
-        &[AutoDetect::KIND]
+    fn triggers(&self, _setting: usize) -> &'static [crate::TriggerKind] {
+        &[crate::TriggerKind::AutoDetect]
     }
 
     /// When triggered, samples each channel (in µV) for a while, then triggers an update to gains from it; and multiplies each
@@ -124,11 +121,11 @@ impl Node<Edges> for ContinuousGain {
         let Some(Buffer::Continuous(output)) = pass.outputs.get_mut(0) else { return };
         output.transform(input, |_, x| x);
         let channels = output.channels;
-        if pass.triggered::<AutoDetect>().is_some() {
+        if pass.triggered(crate::TriggerKind::AutoDetect).is_some() {
             let seconds = self.sampling.clamp(*SAMPLING.start(), *SAMPLING.end()) as f64;
             gaining.sampling = Some(Sampling { elapsed: 0.0, seconds, data: vec![Distribution::default(); channels] });
         }
-        if gaining.sampling.is_some() && pass.trigger_cancelled::<AutoDetect>() {
+        if gaining.sampling.is_some() && pass.trigger_cancelled(crate::TriggerKind::AutoDetect) {
             gaining.sampling = None;
         }
         let Some(Buffer::Continuous(output)) = pass.outputs.get_mut(0) else { return };
@@ -145,10 +142,10 @@ impl Node<Edges> for ContinuousGain {
                 gains.set_ranges(&sampling.choose(self.level), layout);
                 gains
             });
-            pass.trigger_progress::<AutoDetect>(progress);
+            pass.trigger_progress(crate::TriggerKind::AutoDetect, progress);
             if let Some(gains) = chosen {
                 pass.trigger_settings_update(0, Setting::Gains(gains));
-                pass.trigger_done::<AutoDetect>();
+                pass.trigger_done(crate::TriggerKind::AutoDetect);
                 gaining.sampling = None;
             }
         }
@@ -259,7 +256,12 @@ mod tests {
         let stream = Continuous { channels: 2, sample_rate: 1000.0 };
         let mut state = gain.initial_state(&[Some(DataStream::Continuous(stream))]);
         let exchange = Pass::<Edges>::new(0, PASS_DURATION, &[], &mut []).exchange;
-        exchange.trigger(NodeId(0), crate::core::triggers::AnyTrigger::new(AutoDetect));
+        exchange.trigger(
+            NodeId(0),
+            crate::core::triggers::AnyTrigger::new(crate::Trigger::AutoDetect(
+                crate::standard_components::auto_detect::AutoDetect,
+            )),
+        );
         let passes = (4.0 / PASS_DURATION).round() as u64;
         for sequence in 0..passes {
             // 100 µV either side of zero on the first channel, 400 on the second.

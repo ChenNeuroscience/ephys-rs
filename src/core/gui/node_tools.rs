@@ -10,7 +10,7 @@ use super::icons::Icon;
 use super::toolbar;
 use crate::core::engine::{Graph, NodeId, NodeToolbar, NodesEnum, Port, PortRole};
 use crate::core::exchange::Exchange;
-use crate::core::triggers::{AnyTrigger, Delivery, TriggerKind};
+use crate::core::triggers::{AnyTrigger, Delivery, TriggerKey};
 
 /// A node's toolbar, for a frame: what it shows, and where what's clicked goes.
 pub struct NodeTools<'e> {
@@ -22,8 +22,8 @@ pub struct NodeTools<'e> {
     pub advanced: bool,
     /// The triggers of the node's own settings; and for each of its controls, the node and the triggers of the setting
     /// it's connected to, if it is.
-    pub own_triggers: Vec<TriggerKind>,
-    pub controls: Vec<Option<(NodeId, &'static [TriggerKind])>>,
+    pub own_triggers: Vec<TriggerKey>,
+    pub controls: Vec<Option<(NodeId, Vec<TriggerKey>)>>,
     /// Where pass triggers go, while running. Direct triggers go through `events`.
     pub exchange: Option<&'e Exchange>,
     /// What's clicked becomes these.
@@ -41,11 +41,12 @@ impl<'e> NodeTools<'e> {
     ) -> Option<Self> {
         let entry = graph.get(id)?;
         let node = &entry.node;
-        let own_triggers = (0..node.settings().len()).flat_map(|s| node.triggers(s).iter().copied()).collect();
+        let keys = |kinds: &[crate::core::engine::TriggerKind<N::Edges>]| kinds.iter().map(|&k| k.into()).collect();
+        let own_triggers = (0..node.settings().len()).flat_map(|s| keys(node.triggers(s))).collect::<Vec<_>>();
         let controls = (0..node.controls().len())
             .map(|index| {
                 let edge = graph.live_edges_from(Port { node: id, role: PortRole::Control, index }).next()?;
-                Some((edge.to.node, graph.get(edge.to.node)?.node.triggers(edge.to.port)))
+                Some((edge.to.node, keys(graph.get(edge.to.node)?.node.triggers(edge.to.port))))
             })
             .collect();
         let (show_in_basic, enabled) = (entry.shown_in_basic(), !entry.disabled);
@@ -54,12 +55,12 @@ impl<'e> NodeTools<'e> {
 
     /// The node whose trigger of kind `kind` is meant, if it takes one: the node itself, or the one a control connects
     /// to.
-    fn trigger_node(&self, control: Option<usize>, kind: TriggerKind) -> Option<NodeId> {
+    fn trigger_node(&self, control: Option<usize>, kind: TriggerKey) -> Option<NodeId> {
         match control {
             None => self.own_triggers.contains(&kind).then_some(self.id),
             Some(control) => {
-                let (node, triggers) = self.controls.get(control).copied().flatten()?;
-                triggers.contains(&kind).then_some(node)
+                let (node, triggers) = self.controls.get(control)?.as_ref()?;
+                triggers.contains(&kind).then_some(*node)
             }
         }
     }
@@ -67,34 +68,35 @@ impl<'e> NodeTools<'e> {
 
 impl NodeToolbar for NodeTools<'_> {
     fn trigger(&mut self, control: Option<usize>, trigger: AnyTrigger) {
-        let Some(node) = self.trigger_node(control, trigger.kind()) else { return };
-        match (trigger.kind().delivery, self.exchange) {
+        let Some(node) = self.trigger_node(control, trigger.key()) else { return };
+        match (trigger.key().delivery, self.exchange) {
             (Delivery::Pass, Some(exchange)) => exchange.trigger(node, trigger),
             (Delivery::Pass, None) => {}
             (Delivery::Direct, _) => self.events.push(Event::Trigger(node, trigger)),
         }
     }
 
-    fn can_trigger(&self, control: Option<usize>, kind: TriggerKind) -> bool {
+    fn can_trigger(&self, control: Option<usize>, kind: TriggerKey) -> bool {
         let running = self.exchange.is_some() || kind.delivery == Delivery::Direct;
         running && self.trigger_node(control, kind).is_some()
     }
 
-    fn trigger_progress(&self, control: Option<usize>, kind: TriggerKind) -> Option<f32> {
+    fn trigger_progress(&self, control: Option<usize>, kind: TriggerKey) -> Option<f32> {
         if kind.delivery != Delivery::Pass {
             return None;
         }
         self.exchange?.trigger_progress(self.trigger_node(control, kind)?, kind)
     }
 
-    fn cancel_trigger(&mut self, control: Option<usize>, kind: TriggerKind) {
+    fn cancel_trigger(&mut self, control: Option<usize>, kind: TriggerKey) {
         if let (Some(node), Some(exchange)) = (self.trigger_node(control, kind), self.exchange) {
             exchange.cancel(node, kind);
         }
     }
 
     fn open_control_target(&mut self, control: usize) {
-        if let Some((node, _)) = self.controls.get(control).copied().flatten() {
+        if let Some(Some((node, _))) = self.controls.get(control) {
+            let node = *node;
             self.events.push(Event::OpenWindow(node, Some(crate::core::layout::Pane::Node(self.id))));
         }
     }
@@ -168,7 +170,7 @@ impl NodeToolbar for NodeTools<'_> {
 mod tests {
     use super::*;
     use crate::Nodes;
-    use crate::core::triggers::Trigger;
+    use crate::TriggerKind;
     use crate::standard_components::auto_detect::AutoDetect;
     use crate::standard_components::other::run_command::RunOnFiles;
 
@@ -187,18 +189,18 @@ mod tests {
             let live = running.then_some(&exchange);
             let mut events = Vec::new();
             let mut tools = NodeTools::new(&graph, command, true, live, &mut events).unwrap();
-            assert!(tools.can_trigger(None, RunOnFiles::KIND), "running or not");
-            assert!(!tools.can_trigger(None, AutoDetect::KIND), "not what it takes");
-            tools.trigger(None, AnyTrigger::new(RunOnFiles(Vec::new())));
-            assert_eq!(tools.trigger_progress(None, RunOnFiles::KIND), None, "no progress to say");
+            assert!(tools.can_trigger(None, TriggerKind::RunOnFiles.into()), "running or not");
+            assert!(!tools.can_trigger(None, TriggerKind::AutoDetect.into()), "not what it takes");
+            tools.trigger(None, AnyTrigger::new(crate::Trigger::from(RunOnFiles(Vec::new()))));
+            assert_eq!(tools.trigger_progress(None, TriggerKind::RunOnFiles.into()), None, "no progress to say");
             assert!(matches!(events.as_slice(), [Event::Trigger(node, _)] if *node == command));
 
             let mut events = Vec::new();
             let mut tools = NodeTools::new(&graph, gain, true, live, &mut events).unwrap();
-            assert_eq!(tools.can_trigger(None, AutoDetect::KIND), running, "only to a run");
-            tools.trigger(None, AnyTrigger::new(AutoDetect));
+            assert_eq!(tools.can_trigger(None, TriggerKind::AutoDetect.into()), running, "only to a run");
+            tools.trigger(None, AnyTrigger::new(crate::Trigger::from(AutoDetect)));
             assert!(events.is_empty());
-            assert_eq!(exchange.trigger_progress(gain, AutoDetect::KIND), running.then_some(0.0));
+            assert_eq!(exchange.trigger_progress(gain, TriggerKind::AutoDetect), running.then_some(0.0));
         }
     }
 }

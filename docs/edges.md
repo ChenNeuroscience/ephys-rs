@@ -14,11 +14,16 @@ edge_types! {
         Thresholds(spikes::Thresholds),
         // ...
     }
+    triggers: pub enum Trigger, TriggerKind {
+        AutoDetect(standard_components::auto_detect::AutoDetect),
+        // ...
+    }
 }
 ```
 
 That makes the `DataStream` and `Setting` enums of values, the `Kind` and `SettingKind` enums that ports are declared
-with, and the `Buffer` enum of the data streams' buffers.
+with, and the `Buffer` enum of the data streams' buffers; and the `Trigger` enum of what can be sent along settings
+edges (or by a node itself), with `TriggerKind` naming them (see [Nodes](nodes.md#triggers)).
 
 ## Data streams
 

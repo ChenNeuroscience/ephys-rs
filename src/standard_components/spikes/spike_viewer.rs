@@ -334,7 +334,7 @@ impl SpikeViewer {
             // What it's detecting, while it is.
             let running: Vec<(usize, f32)> = [GAINS_CONTROL, THRESHOLDS]
                 .into_iter()
-                .filter_map(|c| context.trigger_progress::<AutoDetect>(Some(c)).map(|p| (c, p)))
+                .filter_map(|c| context.trigger_progress(Some(c), crate::TriggerKind::AutoDetect).map(|p| (c, p)))
                 .collect();
             ui.add_enabled_ui(!context.locked && running.is_empty(), |ui| {
                 egui::ComboBox::from_id_salt("detect")
@@ -353,7 +353,7 @@ impl SpikeViewer {
                 let stop = ui.add(egui::Button::new("Stop").small());
                 if stop.on_hover_text("Stop detecting, leaving things as they were").clicked() {
                     for &(control, _) in &running {
-                        context.cancel_trigger::<AutoDetect>(Some(control));
+                        context.cancel_trigger(Some(control), crate::TriggerKind::AutoDetect);
                     }
                 }
                 let least = running.iter().map(|r| r.1).fold(1.0, f32::min);
@@ -367,7 +367,7 @@ impl SpikeViewer {
                     .collect();
                 let can = missing.is_empty()
                     && !context.locked
-                    && controls.iter().all(|&(c, _, _)| context.can_trigger::<AutoDetect>(Some(c)));
+                    && controls.iter().all(|&(c, _, _)| context.can_trigger(Some(c), crate::TriggerKind::AutoDetect));
                 let why = if !missing.is_empty() {
                     format!("To detect them, {}", missing.join(", and "))
                 } else if context.locked {

@@ -74,13 +74,18 @@ pub trait DataStreamsEnum: EdgeTypesEnum + Copy {
     fn copy(from: &Self::Buffer, to: &mut Self::Buffer);
 }
 
-/// The edge types a program is built with, in both dimensions.
+/// The edge types a program is built with, in both dimensions, and the triggers sent along settings edges.
 pub trait Edges: 'static {
     /// What flows from outputs to inputs, a pass at a time.
     type DataStream: DataStreamsEnum;
     /// Values nodes share, through settings edges from a control to a setting.
     type Setting: EdgeTypesEnum;
+    /// What can be sent to a node, through a settings edge or by itself (see `crate::core::triggers`).
+    type Trigger: crate::core::triggers::TriggersEnum;
 }
+
+/// Which kind of the program's triggers one is (see `TriggersEnum::Kind`).
+pub type TriggerKind<E> = <<E as Edges>::Trigger as crate::core::triggers::TriggersEnum>::Kind;
 
 /// A pass's worth of data on a data edge.
 pub type Buffer<E> = <<E as Edges>::DataStream as DataStreamsEnum>::Buffer;
@@ -105,24 +110,65 @@ pub enum Dimension {
 ///     settings: pub enum Setting, SettingKind {
 ///         Thresholds(spikes::Thresholds),
 ///     }
+///     triggers: pub enum Trigger, TriggerKind {
+///         AutoDetect(auto_detect::AutoDetect),
+///     }
 /// }
 /// ```
 ///
-/// This makes `Edges` (implementing `engine::Edges`), the `DataStream` and `Setting` enums of values, the `Kind`
-/// and `SettingKind` enums naming their variants, and the `Buffer` enum of the data streams' buffers.
+/// This makes `Edges` (implementing `engine::Edges`), the `DataStream`, `Setting` and `Trigger` enums of values, the
+/// `Kind`, `SettingKind` and `TriggerKind` enums naming their variants, and the `Buffer` enum of the data streams'
+/// buffers.
 #[macro_export]
 macro_rules! edge_types {
     (
         $vis:vis struct $edges:ident;
         data_streams: $svis:vis enum $data_stream:ident, $kind:ident, $buffer:ident { $($sv:ident($st:ty)),+ $(,)? }
         settings: $cvis:vis enum $setting:ident, $ckind:ident { $($cv:ident($ct:ty)),+ $(,)? }
+        triggers: $tvis:vis enum $trigger:ident, $tkind:ident { $($tv:ident($tt:ty)),+ $(,)? }
     ) => {
         $vis struct $edges;
 
         impl $crate::core::engine::Edges for $edges {
             type DataStream = $data_stream;
             type Setting = $setting;
+            type Trigger = $trigger;
         }
+
+        #[derive(Clone, Debug)]
+        $tvis enum $trigger {
+            $($tv($tt)),+
+        }
+
+        #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+        $tvis enum $tkind {
+            $($tv),+
+        }
+
+        impl $crate::core::triggers::TriggersEnum for $trigger {
+            type Kind = $tkind;
+
+            fn kind(&self) -> $tkind {
+                match self { $($trigger::$tv(_) => $tkind::$tv),+ }
+            }
+        }
+
+        impl From<$tkind> for $crate::core::triggers::TriggerKey {
+            fn from(kind: $tkind) -> Self {
+                const TYPES: &[(&str, $crate::core::triggers::Delivery)] =
+                    &[$((<$tt as $crate::core::triggers::TriggerType>::NAME, <$tt as $crate::core::triggers::TriggerType>::DELIVERY)),+];
+                let (name, delivery) = TYPES[kind as usize];
+                $crate::core::triggers::TriggerKey { index: kind as usize, name, delivery }
+            }
+        }
+
+        $(
+            impl From<$tt> for $trigger {
+                fn from(t: $tt) -> Self {
+                    $trigger::$tv(t)
+                }
+            }
+        )+
 
         $crate::edge_types!(@set $svis $data_stream $kind $($sv($st)),+);
         $crate::edge_types!(@set $cvis $setting $ckind $($cv($ct)),+);

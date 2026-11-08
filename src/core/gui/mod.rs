@@ -931,7 +931,11 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                     log::info!("{}'s {name} set from its data", entry.label);
                 }
                 Triggered::Trigger(_) if entry.disabled => {}
-                Triggered::Trigger(trigger) => entry.node.on_trigger(trigger),
+                Triggered::Trigger(trigger) => {
+                    if let Some(trigger) = trigger.take::<<N::Edges as engine::Edges>::Trigger>() {
+                        entry.node.on_trigger(trigger);
+                    }
+                }
             }
         }
     }
@@ -2045,7 +2049,6 @@ mod tests {
     fn a_named_direct_trigger_reaches_its_node_with_nothing_running() {
         use crate::components::Nodes;
         use crate::core::triggers::ControlTriggers;
-        use crate::core::triggers::{Trigger, TriggerKind};
         use crate::standard_components::other::run_command::RunOnFiles;
         let mut harness = harness();
         let index = Nodes::TYPES.iter().position(|t| t.name == "Run Command").unwrap();
@@ -2057,17 +2060,17 @@ mod tests {
             node.settings.mode = crate::standard_components::other::run_command::Mode::Once;
         }
         let triggers = harness.state().direct_triggers.clone();
-        let names: &'static [TriggerKind] = &[RunOnFiles::KIND];
-        let controls = ControlTriggers::new(triggers, vec![vec![(id, names)]]);
+        let kinds: &'static [crate::TriggerKind] = &[crate::TriggerKind::RunOnFiles];
+        let controls = ControlTriggers::<crate::Trigger>::new(triggers, vec![vec![(id, kinds)]]);
 
         harness.state_mut().graph.get_mut(id).unwrap().disabled = true;
-        controls.handle::<RunOnFiles>(0).unwrap().trigger(RunOnFiles(Vec::new()));
+        controls.handle(0, crate::TriggerKind::RunOnFiles).unwrap().trigger(RunOnFiles(Vec::new()));
         harness.run_steps(1);
         std::thread::sleep(std::time::Duration::from_millis(100));
         assert!(!ran.exists(), "disabled, it's not for it");
 
         harness.state_mut().graph.get_mut(id).unwrap().disabled = false;
-        controls.handle::<RunOnFiles>(0).unwrap().trigger(RunOnFiles(Vec::new()));
+        controls.handle(0, crate::TriggerKind::RunOnFiles).unwrap().trigger(RunOnFiles(Vec::new()));
         assert!(harness.state().runner.is_none());
         harness.run_steps(1);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -3114,14 +3117,8 @@ mod tests {
         // Not the Run menu's: the viewer's, drawn after it.
         harness.get_all_by_label("Run").last().expect("the viewer's Run").click();
         harness.run_steps(2);
-        use crate::standard_components::auto_detect::AutoDetect;
         let progress = |h: &Harness<TestApp>| {
-            h.state()
-                .runner
-                .as_ref()
-                .unwrap()
-                .exchange()
-                .trigger_progress(gain, crate::core::triggers::TriggerKind::of::<AutoDetect>())
+            h.state().runner.as_ref().unwrap().exchange().trigger_progress(gain, crate::TriggerKind::AutoDetect)
         };
         assert!(progress(&harness).is_some(), "the Spike Gain's auto detect, triggered");
         // While it's going, it can be stopped.

@@ -175,7 +175,7 @@ impl Node<Edges> for WriteRaw {
         inputs: &[Option<DataStream>],
         _controls: &[Option<crate::Setting>],
         base_directory: Option<&crate::core::base_directory::Place>,
-        triggers: &crate::core::triggers::ControlTriggers,
+        triggers: &crate::core::triggers::ControlTriggers<crate::Trigger>,
     ) -> Option<Box<dyn std::any::Any + Send>> {
         let Recorder { continuous, events, .. } = self.initial_state(inputs);
         let folder = self.folder(base_directory);

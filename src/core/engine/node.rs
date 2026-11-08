@@ -9,7 +9,6 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use super::{Edges, Kind, NodeThread, Pass, PoolStatus, ThreadContext, UiContext};
-use crate::core::triggers::{AnyTrigger, TriggerKind};
 
 /// What a node's for, to people: its colour on the graph, and where it's offered. Nothing about how it runs depends
 /// on it.
@@ -214,12 +213,12 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     /// can the node's own window. How it's delivered is up to the trigger (see `crate::core::triggers`): a pass
     /// trigger's taken by a pass (`Pass::triggered`), which may update the node's settings when it's done
     /// (`Pass::trigger_settings_update`); a direct trigger goes to `on_trigger`.
-    fn triggers(&self, _setting: usize) -> &'static [TriggerKind] {
+    fn triggers(&self, _setting: usize) -> &'static [super::TriggerKind<E>] {
         &[]
     }
 
     /// One of its direct `triggers`, sent to it: `trigger.take::<T>()` has it as what it is.
-    fn on_trigger(&mut self, _trigger: AnyTrigger) {}
+    fn on_trigger(&mut self, _trigger: E::Trigger) {}
 
     /// Does the node's work for one pass: reads its inputs and fills its outputs, which are already sized for
     /// the data streams they carry. When an output is being made in place (see `evaluate_buffer_usage`), its input is `None`
@@ -237,7 +236,7 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
         _inputs: &[Option<E::DataStream>],
         _controls: &[Option<E::Setting>],
         _base_directory: Option<&crate::core::base_directory::Place>,
-        _triggers: &crate::core::triggers::ControlTriggers,
+        _triggers: &crate::core::triggers::ControlTriggers<E::Trigger>,
     ) -> Option<Box<dyn Any + Send>> {
         None
     }

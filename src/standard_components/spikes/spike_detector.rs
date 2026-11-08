@@ -14,10 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::engine::EdgeType;
 use crate::core::engine::{Category, Input, Node, NodeInfo, Output, PASS_DURATION, Pass, SettingPort, UiContext};
-use crate::core::triggers::Trigger;
-use crate::standard_components::auto_detect::{
-    AutoDetect, Distribution, PercentMultiple, SAMPLING, auto_detect_ui, detecting,
-};
+use crate::standard_components::auto_detect::{Distribution, PercentMultiple, SAMPLING, auto_detect_ui, detecting};
 use crate::standard_components::spikes::{Polarity, Spike, Spikes, Thresholds};
 use crate::standard_components::widgets::{
     combo, input_summary, named_settings_grid, require_input, setting, settings_grid,
@@ -269,8 +266,8 @@ impl Node<Edges> for SpikeDetector {
         }
     }
 
-    fn triggers(&self, _setting: usize) -> &'static [crate::core::triggers::TriggerKind] {
-        &[AutoDetect::KIND]
+    fn triggers(&self, _setting: usize) -> &'static [crate::TriggerKind] {
+        &[crate::TriggerKind::AutoDetect]
     }
 
     fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
@@ -331,11 +328,11 @@ impl SpikeDetector {
     /// When triggered, samples each channel for a while, then triggers an update to thresholds from it.
     fn choose_thresholds(&self, pass: &Pass<Edges>, detector: &mut Detector) {
         let channels = detector.noise.len();
-        if pass.triggered::<AutoDetect>().is_some() {
+        if pass.triggered(crate::TriggerKind::AutoDetect).is_some() {
             let seconds = self.sampling.clamp(*SAMPLING.start(), *SAMPLING.end()) as f64;
             detector.sampling = Some((0.0, seconds, vec![Distribution::default(); channels]));
         }
-        if detector.sampling.is_some() && pass.trigger_cancelled::<AutoDetect>() {
+        if detector.sampling.is_some() && pass.trigger_cancelled(crate::TriggerKind::AutoDetect) {
             detector.sampling = None;
         }
         if let Some((elapsed, seconds, data)) = &mut detector.sampling {
@@ -345,7 +342,7 @@ impl SpikeDetector {
                 }
             }
             *elapsed += pass.duration;
-            pass.trigger_progress::<AutoDetect>((*elapsed / *seconds) as f32);
+            pass.trigger_progress(crate::TriggerKind::AutoDetect, (*elapsed / *seconds) as f32);
             if *elapsed >= *seconds {
                 let mut thresholds = self.thresholds.clone();
                 for (channel, data) in data.iter().enumerate() {
@@ -355,7 +352,7 @@ impl SpikeDetector {
                     }
                 }
                 pass.trigger_settings_update(0, Setting::Thresholds(thresholds));
-                pass.trigger_done::<AutoDetect>();
+                pass.trigger_done(crate::TriggerKind::AutoDetect);
                 detector.sampling = None;
             }
         }
@@ -472,7 +469,12 @@ mod tests {
         let mut state = detector.initial_state(&[Some(DataStream::Continuous(stream))]);
         let spikes = detector.stream(4, 30000.0);
         let exchange = Pass::<Edges>::new(0, PASS_DURATION, &[], &mut []).exchange;
-        exchange.trigger(crate::core::engine::NodeId(0), crate::core::triggers::AnyTrigger::new(AutoDetect));
+        exchange.trigger(
+            crate::core::engine::NodeId(0),
+            crate::core::triggers::AnyTrigger::new(crate::Trigger::AutoDetect(
+                crate::standard_components::auto_detect::AutoDetect,
+            )),
+        );
         let passes = (4.0 / PASS_DURATION).round() as u64;
         for sequence in 0..passes {
             let mut input = stream.buffer(PASS_DURATION);

@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use super::engine::{NodeId, PoolStatus};
-use super::triggers::{AnyTrigger, DirectTriggers, Trigger, TriggerKind};
+use super::triggers::{AnyTrigger, DirectTriggers, TriggerKey, TriggersEnum};
 
 /// Something a node's passes and its window share (see `Exchange`).
 pub trait Shared: Any + Send + Sync {
@@ -45,7 +45,7 @@ pub struct Exchange {
     /// What each node shares, by type.
     shared: Mutex<HashMap<(NodeId, TypeId), Entry>>,
     /// Pass triggers triggered, until they're done: how far along each is (0 until a pass takes it).
-    triggers: Mutex<HashMap<(NodeId, TriggerKind), PassTrigger>>,
+    triggers: Mutex<HashMap<(NodeId, TriggerKey), PassTrigger>>,
     /// Where direct triggers go: the app's.
     direct: Arc<DirectTriggers>,
 }
@@ -71,13 +71,13 @@ impl Exchange {
 
     /// Triggers node `node`'s pass trigger `trigger`: its next pass takes it.
     pub fn trigger(&self, node: NodeId, trigger: AnyTrigger) {
-        self.triggers.lock().unwrap().insert((node, trigger.kind()), PassTrigger::Triggered(trigger));
+        self.triggers.lock().unwrap().insert((node, trigger.key()), PassTrigger::Triggered(trigger));
     }
 
     /// How far along node `node`'s trigger of kind `kind` is (0 to 1), if it's been triggered and isn't done (or
     /// stopped).
-    pub fn trigger_progress(&self, node: NodeId, kind: TriggerKind) -> Option<f32> {
-        self.triggers.lock().unwrap().get(&(node, kind)).and_then(|t| match t {
+    pub fn trigger_progress(&self, node: NodeId, kind: impl Into<TriggerKey>) -> Option<f32> {
+        self.triggers.lock().unwrap().get(&(node, kind.into())).and_then(|t| match t {
             PassTrigger::Triggered(_) => Some(0.0),
             PassTrigger::Running(progress) => Some(*progress),
             PassTrigger::Cancelled => None,
@@ -85,7 +85,8 @@ impl Exchange {
     }
 
     /// Stops node `node`'s trigger of kind `kind`, if it's been triggered: its passes abandon what they were doing.
-    pub fn cancel(&self, node: NodeId, kind: TriggerKind) {
+    pub fn cancel(&self, node: NodeId, kind: impl Into<TriggerKey>) {
+        let kind = kind.into();
         let mut triggers = self.triggers.lock().unwrap();
         match triggers.get(&(node, kind)) {
             // Not taken yet: as if it hadn't been triggered.
@@ -100,7 +101,7 @@ impl Exchange {
     }
 
     /// For `Pass`: whether node `node`'s trigger of kind `kind` has been stopped, forgetting it if so.
-    pub(crate) fn take_cancel(&self, node: NodeId, kind: TriggerKind) -> bool {
+    pub(crate) fn take_cancel(&self, node: NodeId, kind: TriggerKey) -> bool {
         let mut triggers = self.triggers.lock().unwrap();
         let cancelled = matches!(triggers.get(&(node, kind)), Some(PassTrigger::Cancelled));
         if cancelled {
@@ -109,19 +110,19 @@ impl Exchange {
         cancelled
     }
 
-    /// For `Pass`: node `node`'s trigger `T`, if it's been triggered, taking it.
-    pub(crate) fn take_trigger<T: Trigger>(&self, node: NodeId) -> Option<T> {
+    /// For `Pass`: node `node`'s trigger of kind `kind`, of the program's `T`, if it's been triggered, taking it.
+    pub(crate) fn take_trigger<T: TriggersEnum>(&self, node: NodeId, kind: T::Kind) -> Option<T> {
         let mut triggers = self.triggers.lock().unwrap();
-        let state = triggers.get_mut(&(node, TriggerKind::of::<T>()))?;
+        let state = triggers.get_mut(&(node, kind.into()))?;
         if !matches!(state, PassTrigger::Triggered(_)) {
             return None;
         }
         let PassTrigger::Triggered(trigger) = std::mem::replace(state, PassTrigger::Running(0.0)) else { return None };
-        trigger.take::<T>().ok()
+        trigger.take::<T>()
     }
 
     /// For `Pass`: how far along a trigger taken is, or (`None`) that it's done.
-    pub(crate) fn set_trigger_progress(&self, node: NodeId, kind: TriggerKind, progress: Option<f32>) {
+    pub(crate) fn set_trigger_progress(&self, node: NodeId, kind: TriggerKey, progress: Option<f32>) {
         let mut triggers = self.triggers.lock().unwrap();
         match progress {
             // Not over a stop the pass hasn't seen yet.
@@ -171,25 +172,19 @@ impl Exchange {
 mod tests {
     use super::*;
 
-    #[derive(Debug, PartialEq)]
-    struct Level(f32);
-    impl Trigger for Level {
-        const NAME: &'static str = "level";
-        const DELIVERY: crate::core::triggers::Delivery = crate::core::triggers::Delivery::Pass;
-    }
-
     #[test]
     fn a_pass_trigger_is_taken_with_what_it_carries_once() {
+        use crate::core::triggers::testing::{TestKind, TestTrigger};
         let exchange = Exchange::default();
         let node = NodeId(1);
-        exchange.trigger(node, AnyTrigger::new(Level(0.5)));
-        assert_eq!(exchange.trigger_progress(node, Level::KIND), Some(0.0), "waiting");
-        assert_eq!(exchange.take_trigger::<Level>(NodeId(2)), None, "another node's");
-        assert_eq!(exchange.take_trigger::<Level>(node), Some(Level(0.5)));
-        assert_eq!(exchange.take_trigger::<Level>(node), None, "taken");
-        assert_eq!(exchange.trigger_progress(node, Level::KIND), Some(0.0), "running, till it's done");
-        exchange.set_trigger_progress(node, Level::KIND, None);
-        assert_eq!(exchange.trigger_progress(node, Level::KIND), None);
+        exchange.trigger(node, AnyTrigger::new(TestTrigger::Level(0.5)));
+        assert_eq!(exchange.trigger_progress(node, TestKind::Level), Some(0.0), "waiting");
+        assert_eq!(exchange.take_trigger::<TestTrigger>(NodeId(2), TestKind::Level), None, "another node's");
+        assert_eq!(exchange.take_trigger(node, TestKind::Level), Some(TestTrigger::Level(0.5)));
+        assert_eq!(exchange.take_trigger::<TestTrigger>(node, TestKind::Level), None, "taken");
+        assert_eq!(exchange.trigger_progress(node, TestKind::Level), Some(0.0), "running, till it's done");
+        exchange.set_trigger_progress(node, TestKind::Level.into(), None);
+        assert_eq!(exchange.trigger_progress(node, TestKind::Level), None);
     }
 
     #[derive(Default)]

@@ -7,12 +7,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::Edges;
 use crate::core::engine::UiContext;
-use crate::core::triggers::{Delivery, Trigger};
+use crate::core::triggers::{Delivery, TriggerType};
 
 /// The trigger: sample the data for a while, then choose settings from it.
+#[derive(Clone, Debug, PartialEq)]
 pub struct AutoDetect;
 
-impl Trigger for AutoDetect {
+impl TriggerType for AutoDetect {
     const NAME: &'static str = "auto detect";
     const DELIVERY: Delivery = Delivery::Pass;
 }
@@ -135,14 +136,14 @@ impl PercentMultiple {
 pub fn auto_detect_ui(ui: &mut egui::Ui, context: &mut UiContext<Edges>, control: Option<usize>, tip: &str) {
     ui.horizontal(|ui| {
         // While detecting, it can be stopped.
-        if let Some(progress) = context.trigger_progress::<AutoDetect>(control) {
+        if let Some(progress) = context.trigger_progress(control, crate::TriggerKind::AutoDetect) {
             if ui.button("Stop").on_hover_text("Stop detecting, leaving things as they were").clicked() {
-                context.cancel_trigger::<AutoDetect>(control);
+                context.cancel_trigger(control, crate::TriggerKind::AutoDetect);
             }
             ui.add(egui::ProgressBar::new(progress).desired_width(80.0).show_percentage());
             return;
         }
-        let can = context.can_trigger::<AutoDetect>(control) && !context.locked;
+        let can = context.can_trigger(control, crate::TriggerKind::AutoDetect) && !context.locked;
         let why = if context.locked { "Not while recording" } else { "Only while acquiring: it needs data" };
         if ui
             .add_enabled(can, egui::Button::new("Auto detect"))
@@ -157,7 +158,7 @@ pub fn auto_detect_ui(ui: &mut egui::Ui, context: &mut UiContext<Edges>, control
 
 /// Whether the node's auto-detect is going (its settings for it can't change meanwhile).
 pub fn detecting(context: &UiContext<Edges>) -> bool {
-    context.trigger_progress::<AutoDetect>(None).is_some()
+    context.trigger_progress(None, crate::TriggerKind::AutoDetect).is_some()
 }
 
 #[cfg(test)]

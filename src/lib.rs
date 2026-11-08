@@ -38,6 +38,10 @@ edge_types! {
         Alarms(alarms::Alarms),
         Command(run_command::CommandSettings),
     }
+    triggers: pub enum Trigger, TriggerKind {
+        AutoDetect(standard_components::auto_detect::AutoDetect),
+        RunOnFiles(run_command::RunOnFiles),
+    }
 }
 
 // The tests are of the whole program: chen-neuro's.
