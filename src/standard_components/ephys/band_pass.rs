@@ -43,6 +43,7 @@ impl Node<Edges> for BandPassFilter {
     }
 
     type State = Filters;
+    type Shared = ();
 
     fn initial_state(&self, inputs: &[Option<DataStream>]) -> Filters {
         let Some(DataStream::Continuous(stream)) = inputs[0] else { return Filters::default() };

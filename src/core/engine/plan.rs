@@ -4,8 +4,7 @@
 //! Nodes don't copy their inputs: a node that would hand an input's data on (to a thread of its own, say, or its
 //! window) takes its buffer (see `BufferUsage::takes`), swapping it for one of its own. The plan decides when that needs a
 //! copy: if the node can be the last to read the data, it takes the buffer itself; otherwise the plan copies the data
-//! into a buffer of the node's own, as soon as it's made, which the node takes instead (a copy point). Each run has
-//! an `Exchange` where nodes keep what their passes and windows share (see `crate::core::exchange`).
+//! into a buffer of the node's own, as soon as it's made, which the node takes instead (a copy point).
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::OnceLock;
@@ -68,6 +67,8 @@ pub struct Plan<N: NodesEnum> {
     pub(super) state_inputs: Vec<(NodeId, Vec<Option<DataStream<N>>>)>,
     /// For each node with working memory, the same.
     pub(super) memory_inputs: Vec<(NodeId, Vec<Option<DataStream<N>>>)>,
+    /// For each step, the same (for what it shares with the GUI).
+    pub(super) step_inputs: Vec<Vec<Option<DataStream<N>>>>,
     /// The memory each buffer takes, once asked (see `buffer_bytes`).
     bytes: OnceLock<Vec<usize>>,
 }
@@ -246,8 +247,8 @@ impl<N: NodesEnum> Plan<N> {
             }
         }
 
-        let (mut steps, mut buffers, mut state_inputs, mut memory_inputs) =
-            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let (mut steps, mut buffers, mut state_inputs, mut memory_inputs, mut step_inputs) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
         // The buffer each output (of the nodes so far) is in.
         let mut buffer_of: HashMap<(NodeId, usize), usize> = HashMap::new();
         for id in order(&runs, &before) {
@@ -311,9 +312,10 @@ impl<N: NodesEnum> Plan<N> {
                 }
             }
             let copies = Vec::new();
+            step_inputs.push(state.input_streams.clone());
             steps.push(Step { id, inputs, outputs, in_place: made_in_place, takes, state: node_state, memory, copies });
         }
-        Plan { steps, buffers, state_inputs, memory_inputs, bytes: OnceLock::new() }
+        Plan { steps, buffers, state_inputs, memory_inputs, step_inputs, bytes: OnceLock::new() }
     }
 
     /// The nodes that run, in the order they run in each pass.

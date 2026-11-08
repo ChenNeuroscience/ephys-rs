@@ -40,7 +40,7 @@ use ephys_rs::core::engine::{
 };
 use ephys_rs::standard_components::ephys::{Event, Events, EventsBuffer};
 use ephys_rs::standard_components::logs::{LogLines, LogLinesBuffer};
-use ephys_rs::standard_components::pool::{Pool, SharedPool};
+use ephys_rs::standard_components::pool::Pool;
 use ephys_rs::standard_components::tracking::pipeline::Blob;
 use ephys_rs::standard_components::tracking::{
     Crop, Detection, PositionSample, Positions, PositionsBuffer, Ruler, TimingLed,
@@ -420,7 +420,6 @@ pub struct Receiving {
     connection: Option<Connection>,
     /// Whether it's been said that TTLs are coming that settings said wouldn't.
     told: bool,
-    shown: SharedPool<Status>,
 }
 
 impl ephys_rs::core::engine::PassState for Receiving {
@@ -437,6 +436,8 @@ impl Node<Edges> for VrComputer {
     };
 
     type State = Receiving;
+    /// What it shows, for its window.
+    type Shared = Pool<Status>;
 
     fn outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {
         let [_, _, width, height] = window(&self.custom).and_then(|crop| crop.bounds()).unwrap_or([0.0; 4]);
@@ -495,7 +496,7 @@ impl Node<Edges> for VrComputer {
 
     fn thread_ui(&self, _thread: usize, ui: &mut egui::Ui, context: &ThreadContext) {
         let pool = context.shared::<Pool<Status>>();
-        match pool.as_deref().and_then(Pool::newest) {
+        match pool.and_then(Pool::newest) {
             Some(status) => status_ui(ui, &status, context.theme.warning),
             None => drop(ui.weak("Reads messages as they arrive; starts when running.")),
         }
@@ -540,7 +541,7 @@ impl Node<Edges> for VrComputer {
             pass.trigger_settings_update(0, Setting::Detection(Detection { custom, ..Default::default() }));
         }
         let status = &shared.status;
-        receiving.shown.send_newest(pass, |shown| shown.clone_from(&status.lock().unwrap()));
+        pass.shared::<Pool<Status>>().send_newest(pass.sequence, |shown| shown.clone_from(&status.lock().unwrap()));
     }
 
     fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
@@ -562,7 +563,7 @@ impl Node<Edges> for VrComputer {
         });
         ui.separator();
         let pool = context.shared::<Pool<Status>>();
-        match pool.as_deref().and_then(Pool::newest) {
+        match pool.and_then(Pool::newest) {
             Some(status) => status_ui(ui, &status, context.theme.warning),
             None => drop(ui.weak("Press Play to connect.")),
         }

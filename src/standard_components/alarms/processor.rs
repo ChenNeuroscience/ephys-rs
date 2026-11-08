@@ -245,6 +245,7 @@ impl AlarmProcessor {
 
 impl Node<Edges> for AlarmProcessor {
     type State = Watching;
+    type Shared = ();
 
     const INFO: NodeInfo = NodeInfo {
         name: "Alarm Processor",

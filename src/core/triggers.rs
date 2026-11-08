@@ -4,7 +4,7 @@
 //! (`edge_types!`), which makes its enum of them (`TriggersEnum`), as it does of data streams and settings. A node says
 //! which kinds of them each of its settings takes (`Node::triggers`). How one's delivered is up to its type
 //! (`TriggerType::DELIVERY`), and sending one is the same either way (`UiContext::trigger`). A pass trigger waits in the
-//! run's exchange for a pass to take it (`Pass::triggered`; see `crate::core::exchange`): "auto detect" needs the data
+//! run's `PassTriggers` for a pass to take it (`Pass::triggered`; see `crate::core::pass_triggers`): "auto detect" needs the data
 //! going by, so it needs a run, and says how it's getting on. A direct trigger goes to the app's `DirectTriggers`, which
 //! it delivers to `Node::on_trigger` on the GUI's thread as soon as it can, whether anything's running or not: from a
 //! thread that's outlived the run that started it, say. A node sends one through a control with a `TriggerHandle`, from
@@ -13,7 +13,7 @@
 //! Every setting also takes a direct update of its value, without saying so (`Pass::trigger_settings_update`), which
 //! the app applies as an edit, unless settings are locked.
 //!
-//! On their way, triggers are carried as `AnyTrigger`s, so the exchange and the app's queue needn't know the program's
+//! On their way, triggers are carried as `AnyTrigger`s, so the run's and the app's queues needn't know the program's
 //! enum; what's sent and what's taken is always the enum.
 
 use std::any::Any;

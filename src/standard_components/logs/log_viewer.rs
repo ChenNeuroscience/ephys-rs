@@ -1,16 +1,14 @@
 //! The Log Viewer: log lines as they come, each with its time, in seconds by its source's clock, just as it came. The
 //! passes send each line to the window through a pool (see `Pool::send_pending`); the window keeps them for the run,
-//! up to `KEPT`, in the run's exchange (so they carry on from epoch to epoch), and draws only those in view.
+//! up to `KEPT`, and draws only those in view.
 
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use eframe::egui::{self, RichText};
 use serde::{Deserialize, Serialize};
 
-use crate::core::engine::PoolStatus;
-use crate::core::engine::{Category, Input, Node, NodeInfo, Output, Pass, PassState, UiContext};
-use crate::core::exchange::Shared;
+use crate::core::engine::{Category, Input, Node, NodeInfo, Output, Pass, PassState, PoolStatus, Shared, UiContext};
 use crate::standard_components::pool::{Pool, WINDOW_BUFFERS};
 use crate::standard_components::preview;
 use crate::standard_components::widgets::require_input;
@@ -43,12 +41,8 @@ impl Default for LogHistory {
 }
 
 impl Shared for LogHistory {
-    fn name(&self) -> &'static str {
-        "log lines"
-    }
-
-    fn pool(&self) -> Option<PoolStatus> {
-        Some(self.sent.status())
+    fn pools(&self) -> Vec<(&'static str, PoolStatus)> {
+        vec![("log lines", self.sent.status())]
     }
 }
 
@@ -71,10 +65,9 @@ impl LogHistory {
     }
 }
 
-/// While running: where its lines go, once there are any, and those not sent yet.
+/// While running: the lines not sent yet.
 #[derive(Default)]
 pub struct Viewing {
-    history: Option<Arc<LogHistory>>,
     pending: Vec<Entry>,
 }
 
@@ -84,6 +77,8 @@ impl PassState for Viewing {
 
 impl Node<Edges> for LogViewer {
     type State = Viewing;
+    /// The lines, for its window.
+    type Shared = LogHistory;
 
     const INFO: NodeInfo = NodeInfo {
         name: "Log Viewer",
@@ -106,8 +101,7 @@ impl Node<Edges> for LogViewer {
     }
 
     fn process(&self, pass: &mut Pass<Edges>, viewing: &mut Viewing) {
-        let Viewing { history, pending } = viewing;
-        let history = history.get_or_insert_with(|| pass.shared(LogHistory::default));
+        let (pending, history) = (&mut viewing.pending, pass.shared::<LogHistory>());
         if let Some(Some(Buffer::LogLines(log))) = pass.inputs.first() {
             pending.extend(
                 log.lines().map(|(time, line)| Entry { time, line: String::from_utf8_lossy(line).into_owned() }),
@@ -163,13 +157,14 @@ impl Node<Edges> for LogViewer {
 mod tests {
     use super::*;
     use crate::Nodes;
+    use crate::core::engine::SharedByNode;
     use crate::core::engine::{Graph, NodeId, NodesEnum};
-    use crate::core::exchange::Exchange;
     use crate::standard_components::themes::THEMES;
     use egui_kittest::kittest::Queryable;
+    use std::sync::Arc;
 
-    /// Runs a pass of the viewer, as node `node` of `exchange`, given `lines`.
-    fn pass(viewing: &mut Viewing, exchange: &Exchange, node: NodeId, lines: &[(f64, String)]) {
+    /// Runs a pass of the viewer, sharing `history`, given `lines`.
+    fn pass(viewing: &mut Viewing, history: &LogHistory, lines: &[(f64, String)]) {
         use crate::core::engine::DataStreamType;
         let mut log = crate::standard_components::logs::LogLines { width: 64 }.buffer(0.02);
         for (time, line) in lines {
@@ -178,7 +173,7 @@ mod tests {
         let input = Buffer::LogLines(log);
         let inputs = [Some(&input)];
         let mut pass = Pass::new(0, 0.02, &inputs, &mut []);
-        (pass.exchange, pass.node) = (exchange, node);
+        pass.shared = history;
         LogViewer::default().process(&mut pass, viewing);
     }
 
@@ -186,24 +181,23 @@ mod tests {
     /// `KEPT`.
     #[test]
     fn lines_wait_for_the_window_which_keeps_the_latest() {
-        let (exchange, node, mut viewing) = (Exchange::default(), NodeId(0), Viewing::default());
+        let (history, mut viewing) = (LogHistory::default(), Viewing::default());
         let per_pass = crate::standard_components::logs::LINES_PER_PASS;
         let passes = 2 * KEPT / per_pass;
         for p in 0..passes {
             let lines: Vec<(f64, String)> = (0..per_pass).map(|i| (0.0, (p * per_pass + i).to_string())).collect();
-            pass(&mut viewing, &exchange, node, &lines);
+            pass(&mut viewing, &history, &lines);
         }
-        let history = exchange.get::<LogHistory>(node).unwrap();
         // What was sent before the pool ran out, and the rest with the next pass.
         assert_eq!(history.lines().len(), WINDOW_BUFFERS * per_pass);
-        pass(&mut viewing, &exchange, node, &[]);
+        pass(&mut viewing, &history, &[]);
         let kept = history.lines();
         let last = passes * per_pass - 1;
         assert_eq!(kept.len(), KEPT);
         assert_eq!((kept[0].clone(), kept[KEPT - 1].clone()), ((last + 1 - KEPT).to_string(), last.to_string()));
     }
 
-    fn harness(exchange: Exchange) -> egui_kittest::Harness<'static, Graph<Nodes>> {
+    fn harness(shared: Arc<SharedByNode>) -> egui_kittest::Harness<'static, Graph<Nodes>> {
         let mut graph = Graph::default();
         let viewer = graph.add(Nodes::LogViewer(LogViewer::default()), [0.0, 0.0]);
         let mut harness = egui_kittest::Harness::builder().with_size([560.0, 200.0]).wgpu().build_ui_state(
@@ -212,16 +206,12 @@ mod tests {
                     viewer,
                     &[None],
                     &THEMES[0].colours,
-                    Some(&exchange),
+                    Some(&shared),
                     None,
                     true,
                     false,
                     None,
-                    |node, context| {
-                        // As the run's window has: it's made for it by its passes.
-                        context.exchange.unwrap().shared(viewer, LogHistory::default);
-                        node.custom_ui(ui, context)
-                    },
+                    |node, context| node.custom_ui(ui, context),
                 );
             },
             graph,
@@ -233,17 +223,18 @@ mod tests {
 
     #[test]
     fn lines_are_shown_with_their_times_and_cleared() {
-        let exchange = Exchange::default();
-        let (viewer, mut viewing) = (NodeId(1), Viewing::default());
+        let (history, viewer, mut viewing) = (LogHistory::default(), NodeId(1), Viewing::default());
         let lines = |lines: &[(f64, &str)]| lines.iter().map(|(t, l)| (*t, l.to_string())).collect::<Vec<_>>();
-        pass(&mut viewing, &exchange, viewer, &lines(&[(1520.25, "session started"), (1520.5, "trial 1 started")]));
-        pass(&mut viewing, &exchange, viewer, &lines(&[(1526.125, "trial 1 rewarded at the north arm")]));
-        let history = exchange.get::<LogHistory>(viewer).unwrap();
-        let mut harness = harness(exchange);
+        pass(&mut viewing, &history, &lines(&[(1520.25, "session started"), (1520.5, "trial 1 started")]));
+        pass(&mut viewing, &history, &lines(&[(1526.125, "trial 1 rewarded at the north arm")]));
+        let shared = Arc::new(SharedByNode::default().with(viewer, history));
+        let history = shared.clone();
+        let history = || history.get::<LogHistory>(viewer).unwrap();
+        let mut harness = harness(shared);
         harness.snapshot("log_viewer");
         harness.get_by_label("Clear").click();
         harness.run_steps(2);
-        assert!(history.lines().is_empty());
+        assert!(history().lines().is_empty());
         assert!(harness.query_by_label("0 lines").is_some());
     }
 }

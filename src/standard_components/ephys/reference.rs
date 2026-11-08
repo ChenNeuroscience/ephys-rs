@@ -374,6 +374,7 @@ impl Node<Edges> for Reference {
     }
 
     type State = Referencing;
+    type Shared = ();
 
     /// Its output's made in place, from its input.
     fn evaluate_buffer_usage(&self, inputs: usize, outputs: usize) -> BufferUsage {

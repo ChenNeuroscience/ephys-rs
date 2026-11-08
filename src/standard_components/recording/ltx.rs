@@ -46,7 +46,7 @@ use crate::core::engine::{
 use crate::standard_components::ephys::reference::parse_channels;
 use crate::standard_components::ephys::{ChannelSelection, Continuous, Events};
 use crate::standard_components::logs::LogLines;
-use crate::standard_components::pool::{Pool, SharedPool};
+use crate::standard_components::pool::Pool;
 use crate::standard_components::spikes::{Gains, Spikes};
 use crate::standard_components::tracking::{Crop, Detection, Positions};
 use crate::standard_components::widgets::{require_input, setting, settings_grid};
@@ -94,7 +94,6 @@ struct Streams {
 #[derive(Default)]
 pub struct Recorder {
     writing: Option<Writing<Chunk>>,
-    shown: SharedPool<Status>,
 }
 
 impl crate::core::engine::PassState for Recorder {
@@ -144,6 +143,8 @@ impl Chunk {
 
 impl Node<Edges> for WriteLtx {
     type State = Recorder;
+    /// What it shows, for its window.
+    type Shared = Pool<Status>;
 
     const INFO: NodeInfo = NodeInfo {
         name: "Write LTX",
@@ -222,7 +223,7 @@ impl Node<Edges> for WriteLtx {
 
     fn thread_ui(&self, _thread: usize, ui: &mut egui::Ui, context: &ThreadContext) {
         let pool = context.shared::<Pool<Status>>();
-        status_ui(ui, pool.as_deref().and_then(Pool::newest).as_deref(), true, context.theme);
+        status_ui(ui, pool.and_then(Pool::newest).as_deref(), true, context.theme);
     }
 
     /// Opens the files, and starts the thread to write them.
@@ -263,7 +264,7 @@ impl Node<Edges> for WriteLtx {
             writing.send(chunk);
         }
         let writing = &recorder.writing;
-        recorder.shown.send_newest(pass, |status| match writing {
+        pass.shared::<Pool<Status>>().send_newest(pass.sequence, |status| match writing {
             Some(writing) => writing.status_into(status),
             None => *status = Status::default(),
         });
@@ -298,7 +299,7 @@ impl Node<Edges> for WriteLtx {
         }
         ui.separator();
         let pool = context.shared::<Pool<Status>>();
-        status_ui(ui, pool.as_deref().and_then(Pool::newest).as_deref(), context.running, context.theme);
+        status_ui(ui, pool.and_then(Pool::newest).as_deref(), context.running, context.theme);
     }
 }
 

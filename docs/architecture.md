@@ -107,20 +107,22 @@ shown the same way, in the dispatcher.
 
 ## Between the GUI and the passes
 
-The passes never wait on the GUI, nor it on them. Each run has an [`Exchange`](../src/core/exchange.rs):
+The passes never wait on the GUI, nor it on them.
 
-- Each node keeps there whatever its passes and its window share, of any type (`Pass::shared`, `UiContext::shared`).
-  The engine and GUI don't treat any of it specially. The usual thing is a [pool](../src/standard_components/pool.rs)
+- Each node says what its passes share with the GUI (`Node::Shared`; see [`shared.rs`](../src/core/engine/shared.rs)),
+  made for each epoch, for its data streams then (`Pass::shared`, `UiContext::shared`). The engine and GUI don't treat
+  any of it specially. The usual thing is a [pool](../src/standard_components/pool.rs)
   of buffers, as between nodes' threads and the passes: passes fill buffers (or swap their own in) and queue them;
   the window reads the newest, giving the rest back. A window that needs everything sent, not only the newest (a log's
   lines, the tracker's path), takes every buffer, in order, and keeps what it likes on its own side; until it does,
   what's new waits in the node's state. The dev tools show each such pool on the GUI's thread.
 - **Direct triggers** ([`triggers.rs`](../src/core/triggers.rs)) don't wait for a pass: the app delivers them on the GUI's
   thread, running or not, so they belong to it rather than a run. A setting's update from a pass is one.
-- Once a run's stopped, the app keeps its exchange, so everything goes on showing what it last had, until the next
-  run, or until the graph changes in a way that would start a new epoch (`Plan::same_shape`). Pass triggers need a run.
+- Once a run's stopped, the app keeps what its last epoch shared, so everything goes on showing what it last had,
+  until the next run, or until the graph changes in a way that would start a new epoch (`Plan::same_shape`). Pass triggers need a run.
 - The GUI can **trigger** a node (`Node::triggers`), from another node's window through a settings edge, or from the
-  node's own. A pass trigger (`AutoDetect`, say) goes to the run's exchange: a pass takes it (`Pass::triggered`), says
+  node's own. A pass trigger (`AutoDetect`, say) goes to the run's
+  [`PassTriggers`](../src/core/pass_triggers.rs): a pass takes it (`Pass::triggered`), says
   how it's going, and when it's done. A direct one goes to the app, as above. Which is up to the trigger's type.
 - Passes can't change the graph, but can **trigger an update** of a setting (`Pass::trigger_settings_update`), which the
   GUI applies as an edit, unless settings are locked.

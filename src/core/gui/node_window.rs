@@ -10,16 +10,16 @@ use crate::core::engine::{Graph, NodeId, NodesEnum, Port, PortRole, Resolved};
 use crate::core::theme::Colours;
 
 /// The window of a node without a view of its own: what it is, its settings, and its connections. `live` is the run's
-/// exchange (see `crate::core::exchange`), while running, for its triggers; `shared`, where it finds what its passes
-/// share with it: the same, or the last run's, once it's stopped.
+/// pass triggers, while running, for its triggers to go to; `shared`, what its passes share with it: the run's, or the
+/// last run's, once it's stopped.
 #[allow(clippy::too_many_arguments)]
 pub fn show<N: NodesEnum>(
     ui: &mut egui::Ui,
     graph: &mut Graph<N>,
     resolved: &Resolved<N::Edges>,
     colours: &Colours,
-    live: Option<&crate::core::exchange::Exchange>,
-    shared: Option<&crate::core::exchange::Exchange>,
+    live: Option<&crate::core::pass_triggers::PassTriggers>,
+    shared: Option<&crate::core::engine::SharedByNode>,
     base_directory: Option<&crate::core::base_directory::Place>,
     locked: bool,
     advanced: bool,
@@ -131,13 +131,13 @@ mod tests {
             let index = Nodes::TYPES.iter().position(|t| t.name == "Spike Gain").unwrap();
             let id = graph.add(Nodes::create(index), [0.0, 0.0]);
             let resolved = graph.resolve();
-            let exchange = crate::core::exchange::Exchange::default();
+            let (triggers, shared) = (crate::core::pass_triggers::PassTriggers::default(), Default::default());
             let mut harness = egui_kittest::Harness::builder().with_size([520.0, 500.0]).wgpu().build_ui_state(
                 move |ui, graph: &mut Graph<Nodes>| {
                     let mut events = Vec::new();
-                    let live = running.then_some(&exchange);
+                    let live = running.then_some(&triggers);
                     let colours = &THEMES[0].colours;
-                    show(ui, graph, &resolved, colours, live, Some(&exchange), None, false, true, id, &mut events);
+                    show(ui, graph, &resolved, colours, live, Some(&shared), None, false, true, id, &mut events);
                 },
                 graph,
             );

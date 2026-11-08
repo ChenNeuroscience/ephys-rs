@@ -8,7 +8,7 @@ use eframe::egui;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use super::{Edges, Kind, NodeThread, Pass, PoolStatus, ThreadContext, UiContext};
+use super::{Edges, Kind, NodeThread, Pass, PoolStatus, Shared, ThreadContext, UiContext};
 
 /// What a node's for, to people: its colour on the graph, and where it's offered. Nothing about how it runs depends
 /// on it.
@@ -142,6 +142,10 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     /// nodes without it can run for several passes at once.
     type State: PassState;
 
+    /// What its passes share with the GUI (its window, its work on the GUI's thread, the dev tools): pools of buffers,
+    /// usually, or `()` for nothing. See `crate::core::engine::Shared`.
+    type Shared: Shared + Default;
+
     /// Whether the node's window is a UI of its own (`custom_ui`: a viewer's, say), rather than the standard one: its
     /// settings (`settings_ui`), with its name, warnings and ports.
     const HAS_CUSTOM_UI: bool = false;
@@ -178,6 +182,12 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
 
     /// Its window, if it has a UI of its own (see `HAS_CUSTOM_UI`).
     fn custom_ui(&mut self, _ui: &mut egui::Ui, _context: &mut UiContext<E>) {}
+
+    /// What its passes share with the GUI, made for each epoch it runs in, for its inputs' data streams then
+    /// (`inputs`). By default, `Default`'s.
+    fn shared(&self, _inputs: &[Option<E::DataStream>]) -> Self::Shared {
+        Self::Shared::default()
+    }
 
     /// The state for the first pass. `inputs` has the data stream connected to each input, if any.
     fn initial_state(&self, _inputs: &[Option<E::DataStream>]) -> Self::State {

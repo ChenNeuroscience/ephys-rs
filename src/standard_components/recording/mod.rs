@@ -423,7 +423,8 @@ mod tests {
             let recording = snapshot.with_recording(1, Some(Arc::new(Recording::default())));
             let runner = Runner::start(&recording, 2);
             let problem = || {
-                let pool = runner.exchange().get::<Pool<super::Status>>(writer)?;
+                let shared = runner.shared();
+                let pool = shared.get::<Pool<super::Status>>(writer)?;
                 pool.newest()?.problem.clone()
             };
             let deadline = Instant::now() + Duration::from_secs(5);

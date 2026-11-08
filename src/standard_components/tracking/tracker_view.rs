@@ -6,7 +6,7 @@
 //! Without video, given positions from elsewhere, it shows where they are in the window they range over (the detection's
 //! crop). There's nothing there to adjust, so its settings are only shown, and nothing's edited.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use eframe::egui::{self, Color32, ColorImage, Rect, RichText, Sense, TextureHandle, TextureOptions};
 use serde::{Deserialize, Serialize};
@@ -16,9 +16,11 @@ use super::camera::capture::State;
 use super::camera::node::camera_settings_ui;
 use super::led_chart::{self, History};
 use super::position_detector::{calibration_ui, crop_ui, detection_ui, timing_led_ui};
-use crate::core::engine::{Category, Control, EdgeType, Input, Node, NodeInfo, Output, Pass, PoolStatus, UiContext};
+use crate::core::engine::{
+    Category, Control, EdgeType, Input, Node, NodeInfo, Output, Pass, PoolStatus, Shared, UiContext,
+};
 use crate::core::theme::Colours;
-use crate::standard_components::pool::{Pool, SharedPool, WINDOW_BUFFERS};
+use crate::standard_components::pool::{Pool, WINDOW_BUFFERS};
 use crate::standard_components::preview;
 use crate::standard_components::tracking::VideoBuffer;
 use crate::standard_components::tracking::overlay::{self, Drag, Overlay, Overlays, Xform};
@@ -43,12 +45,10 @@ pub struct TrackerView {
 #[derive(Default)]
 pub struct Tracking {
     history: History,
-    path: Option<Arc<TrackedPath>>,
     pending: Vec<PathUpdate>,
     recording: bool,
     /// The LEDs in the latest position, for showing without video, when a pass might have none.
     latest: [Option<Blob>; 2],
-    shown: SharedPool<TrackerDisplay>,
 }
 
 /// Where the animal's been while recording: the middle of the LEDs found in each frame (in pixels), NaN where
@@ -75,13 +75,16 @@ impl Default for TrackedPath {
     }
 }
 
-impl crate::core::exchange::Shared for TrackedPath {
-    fn name(&self) -> &'static str {
-        "path"
-    }
+/// What the tracker's passes share with its window: what to show, and the path.
+#[derive(Default)]
+pub struct TrackerShared {
+    shown: Pool<TrackerDisplay>,
+    path: TrackedPath,
+}
 
-    fn pool(&self) -> Option<PoolStatus> {
-        Some(self.sent.status())
+impl Shared for TrackerShared {
+    fn pools(&self) -> Vec<(&'static str, PoolStatus)> {
+        vec![("display", self.shown.status()), ("path", self.path.sent.status())]
     }
 }
 
@@ -162,6 +165,7 @@ impl Node<Edges> for TrackerView {
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
     type State = Tracking;
+    type Shared = TrackerShared;
 
     fn inputs(&self) -> Vec<Input<Edges>> {
         vec![
@@ -199,8 +203,8 @@ impl Node<Edges> for TrackerView {
     /// Records the LEDs' sizes, and keeps the pass's last frame, the LEDs found in it and the camera's stats. A
     /// pass without a frame is only shown if the camera isn't running, to say why.
     fn process(&self, pass: &mut Pass<Edges>, tracking: &mut Tracking) {
-        let Tracking { history, path, pending, recording, latest, shown } = tracking;
-        let path = path.get_or_insert_with(|| pass.shared(TrackedPath::default));
+        let Tracking { history, pending, recording, latest } = tracking;
+        let TrackerShared { shown, path } = pass.shared::<TrackerShared>();
         if pass.recording && !*recording {
             pending.clear();
             pending.push(PathUpdate::Restart);
@@ -234,7 +238,7 @@ impl Node<Edges> for TrackerView {
             Some(Buffer::Positions(positions)) => Some(positions),
             _ => None,
         };
-        shown.send_newest(pass, |display| {
+        shown.send_newest(pass.sequence, |display| {
             display.leds.clear();
             display.timing_led = None;
             match video {
@@ -329,8 +333,8 @@ impl TrackerView {
 
     /// The camera, with what's detected drawn over it, and the LED chart beside or below it.
     fn camera_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>, arrangement: Arrangement) {
-        let pool = context.shared::<Pool<TrackerDisplay>>();
-        let reading = pool.as_deref().and_then(Pool::newest);
+        let pool = context.shared::<TrackerShared>().map(|shared| &shared.shown);
+        let reading = pool.and_then(Pool::newest);
         let display = reading.as_deref();
         if self.overlays.detection.visible
             && let Some(display) = display
@@ -371,7 +375,7 @@ impl TrackerView {
         } else {
             overlay::draw(&ui.painter_at(rect), xf, &Detection::default(), &self.overlays, &display.leds, false);
         }
-        if let Some(path) = context.shared::<TrackedPath>() {
+        if let Some(TrackerShared { path, .. }) = context.shared::<TrackerShared>() {
             let calibration = match &context.controls[1] {
                 Some(Setting::Detection(detection)) => detection.pixels_per_metre(),
                 _ => None,
@@ -380,7 +384,7 @@ impl TrackerView {
                 Some(ppm) => format!("{:.2} m", length / ppm),
                 None => format!("{length:.0} px"),
             };
-            path_ui(ui, rect, xf, &path, length, context.theme);
+            path_ui(ui, rect, xf, path, length, context.theme);
         }
         preview::repaint_with_data(ui, context.running);
     }
@@ -391,8 +395,8 @@ impl TrackerView {
         if positions_only(context) {
             return positions_settings_ui(ui, context);
         }
-        let pool = context.shared::<Pool<TrackerDisplay>>();
-        let reading = pool.as_deref().and_then(Pool::newest);
+        let pool = context.shared::<TrackerShared>().map(|shared| &shared.shown);
+        let reading = pool.and_then(Pool::newest);
         let stats = reading.as_deref().and_then(|d| d.stats.as_ref());
         let declared = match context.inputs[0] {
             Some(DataStream::Video(video)) => Some(video.fps as f64),
@@ -572,12 +576,12 @@ fn positions_ui(ui: &mut egui::Ui, context: &UiContext<Edges>, display: Option<&
         egui::FontId::proportional(11.0),
         context.theme.text_secondary,
     );
-    if let Some(path) = context.shared::<TrackedPath>() {
+    if let Some(TrackerShared { path, .. }) = context.shared::<TrackerShared>() {
         let length = |length: f32| match detection.pixels_per_metre() {
             Some(ppm) => format!("{:.2} m", length / ppm),
             None => format!("{length:.0} px"),
         };
-        path_ui(ui, rect, xf, &path, length, context.theme);
+        path_ui(ui, rect, xf, path, length, context.theme);
     }
     preview::repaint_with_data(ui, context.running);
 }
@@ -887,27 +891,24 @@ mod tests {
     #[test]
     fn the_path_is_sent_while_recording_and_restarts_with_it() {
         use crate::standard_components::tracking::{PositionSample, PositionsBuffer};
-        let (exchange, view, mut tracking) =
-            (crate::core::exchange::Exchange::default(), NodeId(0), Tracking::default());
+        let (shared, view, mut tracking) = (TrackerShared::default(), NodeId(0), Tracking::default());
         let mut run_pass = |recording: bool, x: f32| {
             let leds = [Some(Blob { x, y: 1.0, area: 9 }), None];
             let sample = PositionSample { frame: 0, time: 0.0, leds, timing_led: None, pixels_per_metre: f32::NAN };
             let positions = Buffer::Positions(PositionsBuffer { samples: vec![sample] });
             let inputs = [None, Some(&positions), None];
             let mut pass = Pass::new(0, 0.02, &inputs, &mut []);
-            (pass.exchange, pass.node, pass.recording) = (&exchange, view, recording);
+            (pass.shared, pass.node, pass.recording) = (&shared, view, recording);
             TrackerView::default().process(&mut pass, &mut tracking);
         };
-        let xs = |exchange: &crate::core::exchange::Exchange| {
-            exchange.get::<TrackedPath>(view).unwrap().kept().iter().map(|p| p[0]).collect::<Vec<_>>()
-        };
+        let xs = |shared: &TrackerShared| shared.path.kept().iter().map(|p| p[0]).collect::<Vec<_>>();
         run_pass(false, 1.0);
         run_pass(true, 2.0);
         run_pass(true, 3.0);
-        assert_eq!(xs(&exchange), [2.0, 3.0], "only while recording");
+        assert_eq!(xs(&shared), [2.0, 3.0], "only while recording");
         run_pass(false, 4.0);
         run_pass(true, 5.0);
-        assert_eq!(xs(&exchange), [5.0], "a new recording, a new path");
+        assert_eq!(xs(&shared), [5.0], "a new recording, a new path");
     }
 
     #[test]
@@ -925,8 +926,9 @@ mod tests {
 
     /// The LEDs in the view's latest display, once it has a frame.
     fn leds_shown(runner: &Runner<Nodes>, view: NodeId) -> Option<usize> {
-        let pool = runner.exchange().get::<Pool<TrackerDisplay>>(view)?;
-        pool.newest().filter(|d| d.frame.width > 0).map(|d| d.leds.len())
+        let shared = runner.shared();
+        let display = shared.get::<TrackerShared>(view)?.shown.newest();
+        display.filter(|d| d.frame.width > 0).map(|d| d.leds.len())
     }
 
     /// Waits (ten seconds at most, on a busy machine) for `done`.
@@ -991,8 +993,9 @@ mod tests {
         }
         let runner = Runner::start(&Snapshot::new(0, graph, None), 2);
         let shown = || {
-            let pool = runner.exchange().get::<Pool<TrackerDisplay>>(view)?;
-            pool.newest().filter(|d| d.frame.width > 0).map(|d| (d.leds.len(), d.timing_led))
+            let shared = runner.shared();
+            let display = shared.get::<TrackerShared>(view)?.shown.newest();
+            display.filter(|d| d.frame.width > 0).map(|d| (d.leds.len(), d.timing_led))
         };
         assert!(wait_for(|| shown() == Some((1, Some(true)))), "only the small LED's left: {:?}", shown());
     }
@@ -1018,7 +1021,7 @@ mod tests {
 
         let mut update = None;
         assert!(wait_for(|| {
-            update = runner.exchange().direct_triggers().take_settings_updates().into_iter().next();
+            update = runner.direct_triggers().take_settings_updates().into_iter().next();
             update.is_some()
         }));
         let (_, setting, value) = update.unwrap();
@@ -1040,7 +1043,7 @@ mod tests {
         let recording = idle.with_recording(1, Some(std::sync::Arc::new(crate::core::engine::Recording::default())));
         let runner = Runner::start(&recording, 2);
         let updated = || {
-            let updates = runner.exchange().direct_triggers().take_settings_updates();
+            let updates = runner.direct_triggers().take_settings_updates();
             updates.into_iter().find_map(|(_, _, value)| value.downcast::<crate::Setting>().ok()).map(|value| *value)
         };
         std::thread::sleep(Duration::from_millis(1000));
@@ -1135,15 +1138,15 @@ mod tests {
 
         let resolved = graph.resolve();
         let inputs = resolved[&view].input_streams.clone();
-        let exchange = crate::core::exchange::Exchange::default();
-        exchange.shared(view, || Pool::holding(display));
+        let shown = TrackerShared { shown: Pool::holding(display), path: TrackedPath::default() };
+        let shared = crate::core::engine::SharedByNode::default().with(view, shown);
         let mut harness = egui_kittest::Harness::builder().with_size([1150.0, 650.0]).wgpu().build_ui_state(
             |ui, graph: &mut Graph<Nodes>| {
                 graph.edit(
                     view,
                     &inputs,
                     &THEMES[0].colours,
-                    Some(&exchange),
+                    Some(&shared),
                     None,
                     true,
                     false,
@@ -1197,10 +1200,10 @@ mod tests {
         let [x, y] = *path.last().unwrap();
         let display = TrackerDisplay { leds: vec![Blob { x, y, area: 30 }], ..Default::default() };
         let inputs = resolved[&view].input_streams.clone();
-        let exchange = crate::core::exchange::Exchange::default();
-        exchange.shared(view, || Pool::holding(display));
+        let shown = TrackerShared { shown: Pool::holding(display), path: TrackedPath::default() };
         let mut sent = std::iter::once(PathUpdate::Restart).chain(path.into_iter().map(PathUpdate::Point)).collect();
-        exchange.shared(view, TrackedPath::default).sent.send_pending(&mut sent);
+        shown.path.sent.send_pending(&mut sent);
+        let shared = crate::core::engine::SharedByNode::default().with(view, shown);
         let before = graph.clone();
         let mut harness = egui_kittest::Harness::builder().with_size([900.0, 500.0]).wgpu().build_ui_state(
             |ui, graph: &mut Graph<Nodes>| {
@@ -1208,7 +1211,7 @@ mod tests {
                     view,
                     &inputs,
                     &THEMES[0].colours,
-                    Some(&exchange),
+                    Some(&shared),
                     None,
                     true,
                     false,

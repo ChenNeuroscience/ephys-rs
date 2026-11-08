@@ -55,6 +55,7 @@ struct Sampling {
 
 impl Node<Edges> for SpikeGain {
     type State = Gaining;
+    type Shared = ();
 
     const INFO: NodeInfo = NodeInfo {
         name: "Spike Gain",
@@ -304,8 +305,9 @@ mod tests {
         buffer.thresholds = vec![DEFAULT_THRESHOLD_UV, DEFAULT_THRESHOLD_UV, 80.0, DEFAULT_THRESHOLD_UV];
         let passes = (4.0 / PASS_DURATION).round() as u64;
         let mut outputs = [Buffer::Spikes(buffer)];
-        let exchange = Pass::<Edges>::new(0, PASS_DURATION, &[], &mut []).exchange;
-        exchange.trigger(
+        let (triggers, direct) =
+            (crate::core::pass_triggers::PassTriggers::default(), crate::core::triggers::DirectTriggers::default());
+        triggers.trigger(
             NodeId(0),
             crate::core::triggers::AnyTrigger::new(crate::Trigger::AutoDetect(
                 crate::standard_components::auto_detect::AutoDetect,
@@ -321,12 +323,12 @@ mod tests {
                 waveform[40 + 8] = if sequence % 4 == 0 { -300.0 } else { -50.0 };
             }
             let mut pass = Pass::new(sequence, PASS_DURATION, &[], &mut outputs);
-            pass.exchange = exchange;
+            (pass.triggers, pass.direct) = (&triggers, &direct);
             gain.process(&mut pass, &mut state);
             assert_eq!(state.sampling.is_some(), sequence + 1 < passes, "samples for 4 s, at pass {sequence}");
         }
-        assert_eq!(exchange.trigger_progress(NodeId(0), crate::TriggerKind::AutoDetect), None, "done");
-        let updates = exchange.direct_triggers().take_settings_updates();
+        assert_eq!(triggers.trigger_progress(NodeId(0), crate::TriggerKind::AutoDetect), None, "done");
+        let updates = direct.take_settings_updates();
         let Some(Setting::Gains(gains)) = updates[0].2.downcast_ref::<Setting>() else { panic!() };
         let close = |a: f32, b: f32| (a - b).abs() < 0.01;
         assert!(close(gains.range_uv(0), 200.0), "the first channel's biggest, times 2");
@@ -349,8 +351,9 @@ mod tests {
         };
         let mut state = gain.initial_state(&[Some(DataStream::Spikes(stream))]);
         let mut outputs = [Buffer::Spikes(stream.buffer(PASS_DURATION))];
-        let exchange = Pass::<Edges>::new(0, PASS_DURATION, &[], &mut []).exchange;
-        exchange.trigger(
+        let (triggers, direct) =
+            (crate::core::pass_triggers::PassTriggers::default(), crate::core::triggers::DirectTriggers::default());
+        triggers.trigger(
             NodeId(0),
             crate::core::triggers::AnyTrigger::new(crate::Trigger::AutoDetect(
                 crate::standard_components::auto_detect::AutoDetect,
@@ -358,23 +361,23 @@ mod tests {
         );
         let mut run = |sequence| {
             let mut pass = Pass::new(sequence, PASS_DURATION, &[], &mut outputs);
-            pass.exchange = exchange;
+            (pass.triggers, pass.direct) = (&triggers, &direct);
             gain.process(&mut pass, &mut state);
         };
         run(0);
         run(1);
-        assert!(exchange.trigger_progress(NodeId(0), crate::TriggerKind::AutoDetect).is_some(), "sampling");
-        exchange.cancel(NodeId(0), crate::TriggerKind::AutoDetect);
+        assert!(triggers.trigger_progress(NodeId(0), crate::TriggerKind::AutoDetect).is_some(), "sampling");
+        triggers.cancel(NodeId(0), crate::TriggerKind::AutoDetect);
         assert_eq!(
-            exchange.trigger_progress(NodeId(0), crate::TriggerKind::AutoDetect),
+            triggers.trigger_progress(NodeId(0), crate::TriggerKind::AutoDetect),
             None,
             "stopped, as far as the GUI's concerned"
         );
         for sequence in 2..600 {
             run(sequence);
         }
-        assert!(exchange.direct_triggers().take_settings_updates().is_empty(), "nothing chosen");
-        assert_eq!(exchange.trigger_progress(NodeId(0), crate::TriggerKind::AutoDetect), None);
+        assert!(direct.take_settings_updates().is_empty(), "nothing chosen");
+        assert_eq!(triggers.trigger_progress(NodeId(0), crate::TriggerKind::AutoDetect), None);
     }
 
     /// Its window, a gain for each tetrode. See tests/snapshots/.

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::engine::{Category, EdgeType, Input, Node, NodeInfo, Output, Pass, PassState, UiContext};
 use crate::standard_components::ephys::Events;
-use crate::standard_components::pool::{Pool, SharedPool};
+use crate::standard_components::pool::Pool;
 use crate::standard_components::preview;
 use crate::standard_components::widgets::{TIME_AXIS_HEIGHT, require_input, setting, settings_grid, time_axis_ui};
 use crate::{Buffer, DataStream, Edges, Kind};
@@ -58,7 +58,6 @@ pub struct Lines {
     /// Whether it's recording, and whether it has since acquisition started.
     recording: bool,
     recorded: bool,
-    shown: SharedPool<LinesDisplay>,
 }
 
 impl PassState for Lines {
@@ -86,6 +85,8 @@ pub struct LinesDisplay {
 
 impl Node<Edges> for TtlViewer {
     type State = Lines;
+    /// What it shows, for its window.
+    type Shared = Pool<LinesDisplay>;
 
     const INFO: NodeInfo = NodeInfo {
         name: "TTL Viewer",
@@ -154,8 +155,8 @@ impl Node<Edges> for TtlViewer {
         }
 
         let span = self.span.clamp(0.1, LONGEST) as f64;
-        let Lines { levels, changes, ups, ups_recording, recording, recorded, shown, .. } = lines;
-        shown.send_newest(pass, |display| {
+        let Lines { levels, changes, ups, ups_recording, recording, recorded, .. } = lines;
+        pass.shared::<Pool<LinesDisplay>>().send_newest(pass.sequence, |display| {
             let first = changes.partition_point(|c| c.time < now - span);
             // The levels before the span: now's, with the changes since undone.
             let mut before = *levels;
@@ -198,7 +199,7 @@ impl Node<Edges> for TtlViewer {
             return preview::unconnected(ui, context.theme, "Connect events to view them");
         };
         let pool = context.shared::<Pool<LinesDisplay>>();
-        let Some(display) = pool.as_deref().and_then(Pool::newest).filter(|d| d.lines > 0) else {
+        let Some(display) = pool.and_then(Pool::newest).filter(|d| d.lines > 0) else {
             let message = format!("{} · press Play to see them", stream.summary());
             return preview::unconnected(ui, context.theme, &message);
         };
@@ -283,12 +284,14 @@ mod tests {
     fn counts_ups_since_acquisition_and_recording() {
         let viewer = TtlViewer::default();
         let stream = Events { lines: 2, sample_rate: 1000.0 };
+        let shared = Pool::<LinesDisplay>::default();
         let mut lines = viewer.initial_state(&[Some(DataStream::Events(stream))]);
         let mut run = |list: &[(u32, u8, bool)], recording: bool| {
             let input = events(list, 100);
             let inputs = [Some(&input)];
             let mut pass = Pass::new(0, 0.1, &inputs, &mut []);
             pass.recording = recording;
+            pass.shared = &shared;
             viewer.process(&mut pass, &mut lines);
         };
         run(&[(10, 0, true), (20, 0, false), (30, 0, true)], false);
@@ -323,15 +326,14 @@ mod tests {
             ..Default::default()
         };
         let stream = Some(DataStream::Events(Events { lines: 8, sample_rate: 30000.0 }));
-        let exchange = crate::core::exchange::Exchange::default();
-        exchange.shared(viewer, || Pool::holding(display));
+        let shared = crate::core::engine::SharedByNode::default().with(viewer, Pool::holding(display));
         let mut harness = egui_kittest::Harness::builder().with_size([600.0, 220.0]).wgpu().build_ui_state(
             |ui, graph: &mut Graph<Nodes>| {
                 graph.edit(
                     viewer,
                     &[stream],
                     &THEMES[0].colours,
-                    Some(&exchange),
+                    Some(&shared),
                     None,
                     true,
                     false,

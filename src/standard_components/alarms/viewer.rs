@@ -14,7 +14,7 @@
 //!
 //! The buttons for all the alarms are only shortcuts: they set each one.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use eframe::egui::{self, Color32, CornerRadius, RichText, Stroke};
 use serde::{Deserialize, Serialize};
@@ -25,10 +25,9 @@ use super::{Alarm, AlarmKind, AlarmState, AlarmStates, Alarms, Phase, Source};
 use crate::core::engine::{
     Category, Control, Flow, Input, Node, NodeInfo, NodeThread, Output, Pass, PassState, UiContext,
 };
-use crate::core::exchange::Shared;
 use crate::core::gui::widgets::Icon;
 use crate::core::theme::Colours;
-use crate::standard_components::pool::{Pool, SharedPool};
+use crate::standard_components::pool::Pool;
 use crate::standard_components::preview;
 use crate::standard_components::widgets::{mark_mixed, open_settings_button, require_input};
 use crate::standard_components::widgets::{power, small_toggle};
@@ -53,9 +52,16 @@ pub struct Overrides {
     sounds: Mutex<Vec<u32>>,
 }
 
-impl Shared for Overrides {
-    fn name(&self) -> &'static str {
-        "alarms ignored"
+/// What the passes share with the window: how the alarms stand, and what's been switched.
+#[derive(Default)]
+pub struct AlarmsShared {
+    shown: Pool<AlarmsDisplay>,
+    overrides: Overrides,
+}
+
+impl crate::core::engine::Shared for AlarmsShared {
+    fn pools(&self) -> Vec<(&'static str, crate::core::engine::PoolStatus)> {
+        vec![("display", self.shown.status())]
     }
 }
 
@@ -133,8 +139,6 @@ const REMINDERS: [(f64, u8); 2] = [(30.0, 3), (60.0, 4)];
 /// What the passes keep to hand.
 #[derive(Default)]
 pub struct Showing {
-    shown: SharedPool<AlarmsDisplay>,
-    overrides: Option<Arc<Overrides>>,
     tone: Tone,
     /// The alarms going off as of the last pass.
     going_off: Vec<GoingOff>,
@@ -156,6 +160,7 @@ pub struct AlarmsDisplay {
 
 impl Node<Edges> for AlarmViewer {
     type State = Showing;
+    type Shared = AlarmsShared;
 
     const INFO: NodeInfo = NodeInfo {
         name: "Alarm Viewer",
@@ -194,7 +199,7 @@ impl Node<Edges> for AlarmViewer {
 
     fn process(&self, pass: &mut Pass<Edges>, showing: &mut Showing) {
         let Some(Some(Buffer::AlarmStates(input))) = pass.inputs.first().copied() else { return };
-        let overrides = showing.overrides.get_or_insert_with(|| pass.shared(Overrides::default)).clone();
+        let AlarmsShared { shown, overrides } = pass.shared::<AlarmsShared>();
         let states = input.states.iter().map(|state| overrides.apply(*state));
         let tone = &mut showing.tone;
         let was_recording = std::mem::replace(&mut showing.recording, pass.recording);
@@ -205,7 +210,7 @@ impl Node<Edges> for AlarmViewer {
             }
         });
         let going_off = &showing.going_off;
-        showing.shown.send_newest(pass, |display| {
+        shown.send_newest(pass.sequence, |display| {
             display.states.clear();
             display.states.extend(states);
             display.going_off.clear();
@@ -225,14 +230,13 @@ impl Node<Edges> for AlarmViewer {
             return preview::unconnected(ui, context.theme, "Connect an Alarm Processor's alarms and its setting");
         };
         let mut alarms = alarms.clone();
-        let overrides = context.shared::<Overrides>();
-        let overrides = overrides.as_deref();
+        let shared = context.shared::<AlarmsShared>();
+        let overrides = shared.map(|shared| &shared.overrides);
         let (locked, theme) = (context.locked, context.theme);
         if let (false, Some(overrides)) = (locked, overrides) {
             overrides.save(&mut alarms, &mut self.sounding);
         }
-        let pool = context.shared::<Pool<AlarmsDisplay>>();
-        let display = pool.as_deref().and_then(Pool::newest);
+        let display = shared.and_then(|shared| shared.shown.newest());
         let states = display.as_ref().map(|d| d.states.as_slice());
         let going_off = display.as_ref().map_or(&[][..], |d| d.going_off.as_slice());
 
@@ -608,12 +612,13 @@ fn detail(alarm: &Alarm, stream: AlarmStates) -> String {
 mod tests {
     use super::*;
     use crate::Nodes;
+    use crate::core::engine::SharedByNode;
     use crate::core::engine::{Graph, NodesEnum, Port, PortRole};
-    use crate::core::exchange::Exchange;
     use crate::standard_components::alarms::Selection;
     use crate::standard_components::alarms::processor::AlarmProcessor;
     use crate::standard_components::themes::THEMES;
     use egui_kittest::kittest::Queryable;
+    use std::sync::Arc;
 
     const BUTTON: egui::accesskit::Role = egui::accesskit::Role::Button;
     const STREAM: AlarmStates = AlarmStates { groups: 8, group_size: 4, channels: 4, positions: true, lines: 1 };
@@ -636,7 +641,7 @@ mod tests {
         overrides: Overrides,
         locked: bool,
         size: [f32; 2],
-    ) -> (egui_kittest::Harness<'static, Graph<Nodes>>, Arc<Exchange>, crate::core::engine::NodeId) {
+    ) -> (egui_kittest::Harness<'static, Graph<Nodes>>, Arc<SharedByNode>, crate::core::engine::NodeId) {
         window_of(alarms, display, overrides, locked, true, size)
     }
 
@@ -648,7 +653,7 @@ mod tests {
         locked: bool,
         running: bool,
         size: [f32; 2],
-    ) -> (egui_kittest::Harness<'static, Graph<Nodes>>, Arc<Exchange>, crate::core::engine::NodeId) {
+    ) -> (egui_kittest::Harness<'static, Graph<Nodes>>, Arc<SharedByNode>, crate::core::engine::NodeId) {
         let mut graph = Graph::<Nodes>::default();
         let add = |graph: &mut Graph<Nodes>, name: &str| {
             let index = Nodes::TYPES.iter().position(|t| t.name == name).unwrap();
@@ -663,11 +668,9 @@ mod tests {
             Port { node: processor, role: PortRole::Setting, index: 0 },
         );
         graph.connect(from, to).unwrap();
-        let exchange = Arc::new(Exchange::default());
-        let display = display.into();
-        exchange.shared(viewer, || Pool::holding(display));
-        exchange.shared(viewer, || overrides);
-        let shared = exchange.clone();
+        let shown = Pool::holding(display.into());
+        let by_node = Arc::new(SharedByNode::default().with(viewer, AlarmsShared { shown, overrides }));
+        let shared = by_node.clone();
         let stream = Some(DataStream::AlarmStates(STREAM));
         let harness = egui_kittest::Harness::builder().with_size(size).wgpu().build_ui_state(
             move |ui, graph: &mut Graph<Nodes>| {
@@ -685,7 +688,7 @@ mod tests {
             },
             graph,
         );
-        (harness, exchange, processor)
+        (harness, by_node, processor)
     }
 
     fn processor_alarms(graph: &Graph<Nodes>, id: crate::core::engine::NodeId) -> Alarms {
@@ -827,13 +830,14 @@ mod tests {
         let states = vec![state(1, Phase::Alarm, 1.0, None)];
         let input = Buffer::AlarmStates(super::super::AlarmStatesBuffer { states });
         let inputs = [Some(&input)];
+        let shared = AlarmsShared::default();
         let mut pass = Pass::new(0, 0.02, &inputs, &mut []);
-        pass.shared(Overrides::default).set_ignored(0, true);
+        pass.shared = &shared;
+        shared.overrides.set_ignored(0, true);
         for _ in 0..50 {
             viewer.process(&mut pass, &mut showing);
         }
-        let pool = pass.shared(|| Pool::holding(AlarmsDisplay::default()));
-        let display = pool.newest().unwrap();
+        let display = shared.shown.newest().unwrap();
         let [(id, seconds)] = display.going_off[..] else { panic!("{:?}", display.going_off) };
         assert_eq!(id, 1);
         assert!((seconds - 0.98).abs() < 1e-6, "{seconds}");
@@ -1001,7 +1005,7 @@ mod tests {
     fn while_recording_a_switch_only_ignores_until_recording_stops() {
         let mut off = one_of_each();
         off.list[3].on = false;
-        let (mut harness, exchange, processor) = window(off, all_clear(), Overrides::default(), true, [460.0, 420.0]);
+        let (mut harness, shared, processor) = window(off, all_clear(), Overrides::default(), true, [460.0, 420.0]);
         harness.run_steps(2);
         harness.get_by_role_and_label(BUTTON, SPIKES).click();
         harness.get_by_role_and_label(BUTTON, TTLS).click();
@@ -1009,7 +1013,7 @@ mod tests {
         let alarms = processor_alarms(harness.state(), processor);
         assert!(alarms.list[0].on, "the graph's left alone");
         let viewer = crate::core::engine::NodeId(2);
-        let overrides = exchange.shared(viewer, Overrides::default);
+        let overrides = &shared.get::<AlarmsShared>(viewer).unwrap().overrides;
         assert!(overrides.ignored(0), "but it's ignored");
         assert!(!overrides.ignored(3) && !alarms.list[3].on, "one that's off has no data to come back to");
         harness.get_by_role_and_label(BUTTON, "LFP within range sound").click();
@@ -1027,11 +1031,11 @@ mod tests {
     fn while_recording_all_ignores_what_can_be_ignored() {
         let mut off = one_of_each();
         off.list[3].on = false;
-        let (mut harness, exchange, processor) = window(off, all_clear(), Overrides::default(), true, [460.0, 420.0]);
+        let (mut harness, shared, processor) = window(off, all_clear(), Overrides::default(), true, [460.0, 420.0]);
         harness.run_steps(2);
         harness.get_by_role_and_label(BUTTON, "All alarms").click();
         harness.run_steps(2);
-        let overrides = exchange.shared(crate::core::engine::NodeId(2), Overrides::default);
+        let overrides = &shared.get::<AlarmsShared>(crate::core::engine::NodeId(2)).unwrap().overrides;
         assert!((0..3).all(|id| overrides.ignored(id)) && !overrides.ignored(3));
         assert!(processor_alarms(harness.state(), processor).list[0].on, "the graph's left alone");
         harness.get_by_role_and_label(BUTTON, "All alarms").click();
@@ -1073,13 +1077,8 @@ mod tests {
         let snapshot = Snapshot::new(0, graph, None);
         let runner = Runner::start(&snapshot, 2);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        let pool = loop {
-            if let Some(pool) = runner.exchange().get::<Pool<AlarmsDisplay>>(viewer) {
-                break pool;
-            }
-            assert!(std::time::Instant::now() < deadline, "no pool");
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        };
+        let shared = runner.shared();
+        let pool = &shared.get::<AlarmsShared>(viewer).expect("it runs").shown;
         loop {
             let state = pool.newest().and_then(|display| display.states.first().copied());
             if let Some(AlarmState { phase: Phase::Clear, value, .. }) = state {
@@ -1100,11 +1099,12 @@ mod tests {
         let states = (0..2).map(|id| state(id, Phase::Alarm, 1.0, None)).collect();
         let input = Buffer::AlarmStates(super::super::AlarmStatesBuffer { states });
         let inputs = [Some(&input)];
+        let shared = AlarmsShared::default();
         let mut pass = Pass::new(0, 0.02, &inputs, &mut []);
-        pass.shared(Overrides::default).set_ignored(1, true);
+        pass.shared = &shared;
+        shared.overrides.set_ignored(1, true);
         viewer.process(&mut pass, &mut showing);
-        let pool = pass.shared(|| Pool::holding(AlarmsDisplay::default()));
-        let display = pool.newest().unwrap();
+        let display = shared.shown.newest().unwrap();
         assert_eq!(display.states[0].phase, Phase::Alarm);
         assert_eq!(display.states[1].phase, Phase::Off);
     }

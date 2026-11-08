@@ -102,6 +102,7 @@ impl DataStreamType for Positions {
 }
 
 /// A pass's video frames (often none or one), each `width` × `height` bytes of grey.
+#[derive(Default)]
 pub struct VideoBuffer {
     pub width: usize,
     pub height: usize,

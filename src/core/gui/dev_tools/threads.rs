@@ -373,12 +373,12 @@ fn gui_thread<N: NodesEnum>(
     // The nodes sharing pools of buffers with their windows (the latest to show, say), while running: each with
     // where its buffers are.
     container(ui, colours, "GUI", WHY_GUI, "main thread", 1, true, |ui| {
-        let Some(exchange) = runner.map(|r| r.exchange()) else {
+        let Some(shared) = runner.map(|r| r.shared()) else {
             ui.label(small("Shows what nodes' passes share with their windows, while running.", colours.text_disabled));
             return;
         };
         for step in plan.steps() {
-            for (name, pool) in exchange.pools(step.id) {
+            for (name, pool) in shared.pools(step.id) {
                 let row = pool_row(ui, colours, window_pool(pool), |ui| {
                     node_chip(ui, graph, step.id, None);
                     ui.label(small(name, colours.text_secondary));
@@ -942,11 +942,11 @@ fn node_threads<N: NodesEnum>(
     flow: Flow,
     anchors: &mut Anchors,
 ) {
+    let shared = runner.map(|r| r.shared());
     for step in plan.steps() {
         let Some(entry) = graph.get(step.id) else { continue };
         for (index, thread) in entry.node.threads().iter().enumerate().filter(|(_, t)| t.flow == flow) {
-            let exchange = runner.map(|r| r.exchange());
-            let context = ThreadContext { theme: colours, node: step.id, exchange };
+            let context = ThreadContext { theme: colours, node: step.id, shared_by_node: shared.as_deref() };
             {
                 // The pool's buffers are like the step's: its outputs' for a source, its inputs' for a writer.
                 let ports: Vec<Option<usize>> = match thread.flow {

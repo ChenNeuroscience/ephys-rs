@@ -623,10 +623,10 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
     fn stop_running(&mut self) {
         self.set_recording(None);
         self.preparing = None;
-        self.last_run = self.runner.take().map(|runner| LastRun {
-            exchange: runner.exchange_to_keep(),
-            plan: self.history.current.snapshot.plan.clone(),
-        });
+        self.last_run = self
+            .runner
+            .take()
+            .map(|runner| LastRun { shared: runner.shared(), plan: self.history.current.snapshot.plan.clone() });
     }
 
     /// Stops recording, or preparing to.
@@ -1304,6 +1304,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                 .default_size(if has_custom_ui { [820.0, 520.0] } else { [340.0, 460.0] })
                 .resizable(true)
                 .show(ctx, |ui| {
+                    let shared = shared(&self.runner, &self.last_run);
                     clicks = docking::floating_header(ui, &title, colour);
                     egui::Frame::new().inner_margin(docking::PANE_MARGIN).show(ui, |ui| {
                         docking::node_ui(
@@ -1312,7 +1313,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                             resolved,
                             colours,
                             self.runner.as_ref(),
-                            shared(&self.runner, &self.last_run),
+                            shared.as_deref(),
                             base.as_ref(),
                             locked,
                             advanced,
@@ -1516,6 +1517,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         let graph_tools = self.graph_tools();
         let base = self.base_directories.place();
         let offered = self.offered();
+        let shared = shared(&self.runner, &self.last_run);
         egui::CentralPanel::default().frame(background).show(ui, |ui| {
             let mut panes = Panes {
                 hidden_annotations: &self.hidden.annotations,
@@ -1524,7 +1526,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                 resolved: &resolved,
                 colours,
                 runner: self.runner.as_ref(),
-                shared: shared(&self.runner, &self.last_run),
+                shared: shared.as_deref(),
                 base_directory: base.as_ref(),
                 snapshot: &self.history.current.snapshot,
                 mode: self.layout.mode,
@@ -1678,16 +1680,16 @@ fn clock_text(seconds: f64) -> String {
 /// What the last run shared, kept once it's stopped, for the windows to go on showing as it was, until the next run, or
 /// until the graph changes in a way that would have started a new epoch, and what's kept might no longer fit it.
 struct LastRun<N: NodesEnum> {
-    exchange: Arc<crate::core::exchange::Exchange>,
+    shared: Arc<engine::SharedByNode>,
     plan: Arc<engine::Plan<N>>,
 }
 
-/// What the windows find what's been shared with them in: the run's exchange, or the last run's.
-fn shared<'a, N: NodesEnum>(
-    runner: &'a Option<Runner<N>>,
-    last_run: &'a Option<LastRun<N>>,
-) -> Option<&'a crate::core::exchange::Exchange> {
-    runner.as_ref().map(Runner::exchange).or(last_run.as_ref().map(|last| &*last.exchange))
+/// What the nodes' passes share with the GUI: the run's, or the last run's.
+fn shared<N: NodesEnum>(
+    runner: &Option<Runner<N>>,
+    last_run: &Option<LastRun<N>>,
+) -> Option<Arc<engine::SharedByNode>> {
+    runner.as_ref().map(Runner::shared).or_else(|| last_run.as_ref().map(|last| last.shared.clone()))
 }
 
 /// A version of the document: a snapshot of the graph with all its configuration, and the annotations.
@@ -2120,7 +2122,7 @@ mod tests {
         let ctx = harness.ctx.clone();
         let found = |harness: &Harness<TestApp>| {
             let app = harness.state();
-            shared(&app.runner, &app.last_run).map(|exchange| exchange as *const crate::core::exchange::Exchange)
+            shared(&app.runner, &app.last_run).map(|shared| Arc::as_ptr(&shared))
         };
         assert_eq!(found(&harness), None, "nothing's run yet");
         harness.state_mut().perform(&ctx, Action::Play);
@@ -2161,7 +2163,7 @@ mod tests {
         let second = found(&harness);
         assert!(second.is_some());
         // Kept, so the next run's can't be made where it was, and look the same.
-        let _kept = harness.state().last_run.as_ref().map(|last| last.exchange.clone());
+        let _kept = harness.state().last_run.as_ref().map(|last| last.shared.clone());
         harness.state_mut().perform(&ctx, Action::Play);
         harness.run_steps(2);
         assert!(harness.state().last_run.is_none(), "running again");
@@ -3120,7 +3122,7 @@ mod tests {
         harness.get_all_by_label("Run").last().expect("the viewer's Run").click();
         harness.run_steps(2);
         let progress = |h: &Harness<TestApp>| {
-            h.state().runner.as_ref().unwrap().exchange().trigger_progress(gain, crate::TriggerKind::AutoDetect)
+            h.state().runner.as_ref().unwrap().pass_triggers().trigger_progress(gain, crate::TriggerKind::AutoDetect)
         };
         assert!(progress(&harness).is_some(), "the Spike Gain's auto detect, triggered");
         // While it's going, it can be stopped.
@@ -3200,8 +3202,8 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert_eq!(task(harness.state()).as_deref(), Some("first"), "not while recording");
-        let exchange = harness.state().runner.as_ref().unwrap().exchange();
-        let history = exchange.get::<crate::standard_components::logs::log_viewer::LogHistory>(viewer).unwrap();
+        let shared = harness.state().runner.as_ref().unwrap().shared();
+        let history = shared.get::<crate::standard_components::logs::log_viewer::LogHistory>(viewer).unwrap();
         assert_eq!(history.lines(), ["trial 1"], "the Log Viewer has it too");
         harness.state_mut().perform(&ctx, Action::Record);
         until(&mut harness, "the settings held back", &|app| task(app).as_deref() == Some("second"));

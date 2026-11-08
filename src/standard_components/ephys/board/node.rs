@@ -12,7 +12,7 @@ use crate::core::engine::{
 };
 use crate::core::gui::widgets::{Icon, small_icon_button};
 use crate::standard_components::ephys::{Continuous, Events};
-use crate::standard_components::pool::{Pool, SharedPool};
+use crate::standard_components::pool::Pool;
 use crate::standard_components::widgets::{named_settings_grid, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind};
 
@@ -52,7 +52,6 @@ impl Default for AcquisitionBoard {
 #[derive(Default)]
 pub struct Acquiring {
     capture: Option<Capture>,
-    shown: SharedPool<BoardDisplay>,
 }
 
 impl crate::core::engine::PassState for Acquiring {
@@ -91,6 +90,8 @@ impl Node<Edges> for AcquisitionBoard {
     };
 
     type State = Acquiring;
+    /// What it shows, for its window.
+    type Shared = Pool<BoardDisplay>;
 
     fn outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {
         let rate = self.sample_rate as f32;
@@ -139,7 +140,7 @@ impl Node<Edges> for AcquisitionBoard {
     fn thread_ui(&self, _thread: usize, ui: &mut egui::Ui, context: &ThreadContext) {
         let small = |text: String| RichText::new(text).size(11.0);
         let pool = context.shared::<Pool<BoardDisplay>>();
-        let Some(display) = pool.as_deref().and_then(Pool::newest) else {
+        let Some(display) = pool.and_then(Pool::newest) else {
             ui.label(small("Reads the board as samples arrive; starts when running.".into()).weak());
             return;
         };
@@ -169,7 +170,7 @@ impl Node<Edges> for AcquisitionBoard {
             adc: continuous(ADC_CHANNELS),
             events: Events { lines: self.source.ttl_lines(), sample_rate: rate },
         };
-        Acquiring { capture: Some(Capture::start(self.source.clone(), self.config(), shape)), ..Default::default() }
+        Acquiring { capture: Some(Capture::start(self.source.clone(), self.config(), shape)) }
     }
 
     /// Takes the samples that have arrived since the last pass, swapping the buffers they're in for the pass's
@@ -204,7 +205,7 @@ impl Node<Edges> for AcquisitionBoard {
                 }
             }
         }
-        acquiring.shown.send_newest(pass, |display| {
+        pass.shared::<Pool<BoardDisplay>>().send_newest(pass.sequence, |display| {
             capture.status_into(&mut display.status);
             display.pool = capture.pool().status();
         });
@@ -287,7 +288,7 @@ impl Node<Edges> for AcquisitionBoard {
             ui.weak("Press Play to start acquiring.");
         }
         let pool = context.shared::<Pool<BoardDisplay>>();
-        let Some(display) = pool.as_deref().and_then(Pool::newest) else { return };
+        let Some(display) = pool.and_then(Pool::newest) else { return };
         let status = &display.status;
         match &status.state {
             State::Starting if !context.running => {}
@@ -467,21 +468,12 @@ mod tests {
             ..Default::default()
         };
         let display = BoardDisplay { status, pool: PoolStatus::default() };
-        let exchange = crate::core::exchange::Exchange::default();
-        exchange.shared(board, || Pool::holding(display));
+        let shared = crate::core::engine::SharedByNode::default().with(board, Pool::holding(display));
         let mut harness = egui_kittest::Harness::builder().with_size([420.0, 560.0]).wgpu().build_ui_state(
             |ui, graph: &mut Graph<Nodes>| {
-                graph.edit(
-                    board,
-                    &[],
-                    &THEMES[0].colours,
-                    Some(&exchange),
-                    None,
-                    true,
-                    false,
-                    None,
-                    |node, context| node.settings_ui(ui, context),
-                );
+                graph.edit(board, &[], &THEMES[0].colours, Some(&shared), None, true, false, None, |node, context| {
+                    node.settings_ui(ui, context)
+                });
             },
             graph,
         );

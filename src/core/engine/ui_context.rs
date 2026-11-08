@@ -1,12 +1,9 @@
-//! What a node's window works with (`UiContext`): its inputs, the settings its controls see, the run's exchange, and
-//! the buttons every node has (`NodeToolbar`).
-
-use std::sync::Arc;
+//! What a node's window works with (`UiContext`): its inputs, the settings its controls see, what its passes share,
+//! and the buttons every node has (`NodeToolbar`).
 
 use eframe::egui;
 
-use super::{Edges, NodeId};
-use crate::core::exchange::{Exchange, Shared};
+use super::{Edges, NodeId, Shared, SharedByNode};
 use crate::core::theme::Colours;
 use crate::core::triggers::{AnyTrigger, TriggerKey};
 
@@ -23,8 +20,9 @@ pub struct UiContext<'a, E: Edges> {
     pub theme: &'a Colours,
     /// The node.
     pub node: NodeId,
-    /// What the node's passes and window share (see `crate::core::exchange`): the run's, or the last run's, once it's stopped.
-    pub exchange: Option<&'a Exchange>,
+    /// What the nodes' passes share with the GUI (see `crate::core::engine::Shared`): the run's, or the last run's, once
+    /// it's stopped.
+    pub shared_by_node: Option<&'a SharedByNode>,
     /// The base directory recordings go in (see `crate::core::base_directory`): the next one's, or the one going
     /// on's. For a writer to say where it'll write.
     pub base_directory: Option<&'a crate::core::base_directory::Place>,
@@ -39,11 +37,11 @@ pub struct UiContext<'a, E: Edges> {
     pub tools: Option<&'a mut dyn NodeToolbar>,
 }
 
-impl<E: Edges> UiContext<'_, E> {
-    /// The node's shared `T` (see `crate::core::exchange`), if a run's passes have made one. A run stopped leaves it as it
-    /// was, so what's shown stays, and `running` says which it is.
-    pub fn shared<T: Shared>(&self) -> Option<Arc<T>> {
-        self.exchange?.get(self.node)
+impl<'a, E: Edges> UiContext<'a, E> {
+    /// What the node's passes share (its `Node::Shared`, which is `T`), if it runs, or ran in the run just stopped (so
+    /// what's shown stays: `running` says which).
+    pub fn shared<T: Shared>(&self) -> Option<&'a T> {
+        self.shared_by_node?.get(self.node)
     }
 
     /// The node's toolbar (see `NodeToolbar::toolbar`), if there is one here.

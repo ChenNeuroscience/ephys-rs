@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::engine::{Category, Control, EdgeType, Input, Node, NodeInfo, Output, Pass, UiContext};
 use crate::standard_components::auto_detect::AutoDetect;
-use crate::standard_components::pool::{Pool, SharedPool};
+use crate::standard_components::pool::Pool;
 use crate::standard_components::preview;
 use crate::standard_components::spikes::{
     Channels, DEFAULT_RANGE_UV, DEFAULT_THRESHOLD_UV, Gains, Polarity, Spikes, Thresholds, range_step, threshold_step,
@@ -93,7 +93,6 @@ pub struct Recent {
     thresholds: Vec<f32>,
     /// Each channel's range (µV either side of zero), from its gain.
     ranges: Vec<f32>,
-    shown: SharedPool<RecentDisplay>,
 }
 
 impl crate::core::engine::PassState for Recent {
@@ -165,6 +164,8 @@ fn group_title(kind: &str, group: usize, channels: std::ops::Range<u32>) -> Stri
 
 impl Node<Edges> for SpikeViewer {
     type State = Recent;
+    /// What it shows, for its window.
+    type Shared = Pool<RecentDisplay>;
 
     const INFO: NodeInfo = NodeInfo {
         name: "Spike Viewer",
@@ -208,7 +209,6 @@ impl Node<Edges> for SpikeViewer {
             total: vec![0; groups],
             thresholds: vec![DEFAULT_THRESHOLD_UV; stream.channels as usize],
             ranges: vec![DEFAULT_RANGE_UV; stream.channels as usize],
-            ..Default::default()
         }
     }
 
@@ -239,8 +239,8 @@ impl Node<Edges> for SpikeViewer {
 
         let groups = stream.groups() as usize;
         let (first, shown) = self.groups(groups);
-        let Recent { waveforms, head, count, total, thresholds, ranges, shown: sent, .. } = recent;
-        sent.send_newest(pass, |display| {
+        let Recent { waveforms, head, count, total, thresholds, ranges, .. } = recent;
+        pass.shared::<Pool<RecentDisplay>>().send_newest(pass.sequence, |display| {
             (display.stream, display.first, display.shown, display.keep) = (Some(stream), first, shown, keep);
             display.waveforms.clear();
             display.count.clear();
@@ -271,7 +271,7 @@ impl Node<Edges> for SpikeViewer {
             return preview::unconnected(ui, context.theme, "Connect spikes to view them");
         };
         let pool = context.shared::<Pool<RecentDisplay>>();
-        let reading = pool.as_deref().and_then(Pool::newest).filter(|d| d.stream.is_some());
+        let reading = pool.and_then(Pool::newest).filter(|d| d.stream.is_some());
         let display = reading.as_deref();
         self.toolbar(ui, context);
         let mut thresholds = match &context.controls[THRESHOLDS] {

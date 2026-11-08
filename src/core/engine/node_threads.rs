@@ -1,9 +1,6 @@
 //! A node's threads of its own (acquiring from a board, writing files), as the dev tools show them.
 
-use std::sync::Arc;
-
-use super::NodeId;
-use crate::core::exchange::{Exchange, Shared};
+use super::{NodeId, Shared, SharedByNode};
 use crate::core::theme::Colours;
 
 /// A thread a node runs of its own while the graph runs (acquiring from a board, say), shown in the dev tools.
@@ -53,13 +50,13 @@ pub enum Flow {
 pub struct ThreadContext<'a> {
     pub theme: &'a Colours,
     pub node: NodeId,
-    /// What the node's passes and window share (see `crate::core::exchange`), while running.
-    pub exchange: Option<&'a Exchange>,
+    /// What the nodes' passes share with the GUI (see `crate::core::engine::Shared`), while running.
+    pub shared_by_node: Option<&'a SharedByNode>,
 }
 
-impl ThreadContext<'_> {
-    /// The node's shared `T` (see `crate::core::exchange`), if it's running and its passes have made one.
-    pub fn shared<T: Shared>(&self) -> Option<Arc<T>> {
-        self.exchange?.get(self.node)
+impl<'a> ThreadContext<'a> {
+    /// What the node's passes share (its `Node::Shared`, which is `T`), if it's running.
+    pub fn shared<T: Shared>(&self) -> Option<&'a T> {
+        self.shared_by_node?.get(self.node)
     }
 }

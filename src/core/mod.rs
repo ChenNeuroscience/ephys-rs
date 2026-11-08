@@ -1,5 +1,5 @@
 //! The core: the graph engine (`engine`), annotations (`annotation`), themes (`theme`), the log (`console`),
-//! handing things from passes to windows (`exchange`), triggers that don't need a pass (`triggers`), threads finishing
+//! triggers sent to passes (`pass_triggers`) and those that don't need a pass (`triggers`), threads finishing
 //! in the background (`background`), how plots
 //! over time lay out time (`time_axis`), quick actions (`quick_action`), and the GUI (`gui`).
 //! None of it knows about particular node, edge or annotation types, or themes: the program supplies those
@@ -13,9 +13,9 @@ pub mod config_patching;
 pub mod console;
 pub mod crash;
 pub mod engine;
-pub mod exchange;
 pub mod gui;
 pub mod layout;
+pub mod pass_triggers;
 pub mod quick_action;
 pub mod theme;
 pub mod time_axis;

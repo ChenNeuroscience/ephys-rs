@@ -1230,6 +1230,7 @@ fn files_help(senders: &[String]) -> String {
 
 impl Node<Edges> for RunCommand {
     type State = ();
+    type Shared = ();
 
     const INFO: NodeInfo = NodeInfo {
         name: "Run Command",

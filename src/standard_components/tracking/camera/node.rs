@@ -9,7 +9,7 @@ use super::{CameraControls, CameraSettings, CameraStats, CaptureStats, Control, 
 use crate::core::engine::{
     Category, Flow, Node, NodeInfo, NodeThread, Output, Pass, PoolStatus, SettingPort, ThreadContext, UiContext,
 };
-use crate::standard_components::pool::{Pool, SharedPool};
+use crate::standard_components::pool::Pool;
 use crate::standard_components::tracking::Video;
 use crate::standard_components::widgets::{setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
@@ -25,7 +25,6 @@ pub struct Camera {
 #[derive(Default)]
 pub struct Capturing {
     capture: Option<Capture>,
-    shown: SharedPool<CaptureStats>,
     /// The wrong frame size last acted on (triggering an update to the right one, or saying it can't be, while recording).
     triggered_size: Option<[u32; 2]>,
     complained: Option<[u32; 2]>,
@@ -45,6 +44,8 @@ impl Node<Edges> for Camera {
     };
 
     type State = Capturing;
+    /// What it shows, for its window.
+    type Shared = Pool<CaptureStats>;
 
     fn outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {
         let [width, height] = self.settings.frame_size;
@@ -80,7 +81,7 @@ impl Node<Edges> for Camera {
     fn thread_ui(&self, _thread: usize, ui: &mut egui::Ui, context: &ThreadContext) {
         let small = |text: String| RichText::new(text).size(11.0);
         let pool = context.shared::<Pool<CaptureStats>>();
-        let Some(stats) = pool.as_deref().and_then(Pool::newest) else {
+        let Some(stats) = pool.and_then(Pool::newest) else {
             ui.label(small("Takes frames as they arrive; starts when running.".into()).weak());
             return;
         };
@@ -131,7 +132,7 @@ impl Node<Edges> for Camera {
         if let Some(Buffer::CameraStats(stats)) = pass.outputs.get_mut(1) {
             fill(stats);
         }
-        capturing.shown.send_newest(pass, fill);
+        pass.shared::<Pool<CaptureStats>>().send_newest(pass.sequence, fill);
         // Frames of the wrong size are skipped. An update to the right size is triggered, but while recording settings are locked.
         if let Some(size @ [w, h]) = capture.wrong_size() {
             if !pass.recording && capturing.triggered_size != Some(size) {
@@ -173,7 +174,7 @@ impl Node<Edges> for Camera {
             });
         });
         let pool = context.shared::<Pool<CaptureStats>>();
-        let display = pool.as_deref().and_then(Pool::newest);
+        let display = pool.and_then(Pool::newest);
         camera_settings_ui(ui, &mut self.settings, display.as_ref().map(|d| &d.status.controls));
         ui.separator();
         if !context.running {

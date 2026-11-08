@@ -42,6 +42,7 @@ impl Node<Edges> for Downsample {
     };
 
     type State = Downsampling;
+    type Shared = ();
 
     /// Only while it's given something, and something needs what it makes.
     fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool]) -> TreeShake {

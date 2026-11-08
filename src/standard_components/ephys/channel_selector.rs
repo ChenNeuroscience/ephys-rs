@@ -63,6 +63,7 @@ impl Node<Edges> for ChannelSelector {
     }
 
     type State = Passed;
+    type Shared = ();
 
     fn inputs(&self) -> Vec<Input<Edges>> {
         vec![Input { name: "continuous", kind: Kind::Continuous }]
@@ -252,9 +253,10 @@ mod tests {
         for id in graph.ids().collect::<Vec<_>>() {
             let inputs = resolved[&id].input_streams.clone();
             let mut graph = graph.clone();
-            let exchange = Some(runner.exchange());
+            let shared = runner.shared();
+            let shared = Some(&*shared);
             let mut harness = egui_kittest::Harness::builder().with_size([800.0, 600.0]).build_ui(|ui| {
-                graph.edit(id, &inputs, &THEMES[0].colours, exchange, None, true, false, None, |node, context| {
+                graph.edit(id, &inputs, &THEMES[0].colours, shared, None, true, false, None, |node, context| {
                     node.settings_ui(ui, context);
                     if node.has_custom_ui() {
                         node.custom_ui(ui, context);

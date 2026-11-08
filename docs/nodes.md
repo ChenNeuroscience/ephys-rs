@@ -46,7 +46,7 @@ The parts of the API are there for three different reasons, and it helps to know
 
 `process(pass, state)` is called once a pass, on a worker thread, with the pass's buffers (see
 [`Pass`](../src/core/engine/pass.rs)): `inputs` to read, `outputs` to fill (already sized: nothing should be allocated
-per pass), the settings its `controls` see, whether it's recording, and the exchange. `self` is the snapshot's
+per pass), the settings its `controls` see, whether it's recording, what it shares with the GUI, and its triggers. `self` is the snapshot's
 settings: the latest, as of the pass.
 
 - **State.** `type State` is what it keeps between passes, made by `initial_state(inputs)`, and `()` for none. It
@@ -84,8 +84,8 @@ standard one, `settings_ui`, with its name, warnings and ports. `SHOW_IN_BASIC_D
 nodes with a view are. Both get a [`UiContext`](../src/core/engine/ui_context.rs):
 
 - `inputs`: the streams on its inputs; `controls`: the values of the settings its controls see, to edit.
-- `shared::<T>()`: what its passes share with it in the run's [exchange](../src/core/exchange.rs), or the last run's
-  once it's stopped, so what it shows stays (see below). Say nothing's going on when it isn't, by `running`.
+- `shared::<T>()`: what its passes share with it (its `Shared`, which is `T`), or what they did in the last run once
+  it's stopped, so what it shows stays (see below). Say nothing's going on when it isn't, by `running`.
 - `running` and `locked` (while recording, settings changes are undone, so show them disabled).
 - `advanced()`: whether the app's in advanced mode. What a view shows in basic mode is up to it, but basic is meant to
   be simpler; options for it go in its settings menu.
@@ -105,26 +105,27 @@ are full examples.
 
 ## Sharing with its window
 
-The engine doesn't hand anything to a node's window itself. Each run has an [`Exchange`](../src/core/exchange.rs),
-where a node keeps whatever its passes and its window (or the dev tools: `ThreadContext::shared`) both reach, of any
-type implementing `Shared`: `Pass::shared(make)` finds or makes it (keep the `Arc` in the node's state, rather than
-finding it every pass), and `UiContext::shared` finds it. A `Shared` can report a pool of buffers (`Shared::pool`),
-which the dev tools show on the GUI.
+A node says what its passes share with the GUI (its window, and the dev tools: `ThreadContext::shared`) as
+`type Shared` (see [`shared.rs`](../src/core/engine/shared.rs)), and `()` for nothing. One's made for each epoch it
+runs in, by `shared(inputs)` (by default, `Default`'s), so it's sized for the data streams of the time. The passes reach
+it with `Pass::shared`, and the window with `UiContext::shared`, both as the type. Once a run's stopped, the app keeps
+its last epoch's, so what's shown stays. It reports its pools of buffers (`Shared::pools`), for the dev tools to show
+on the GUI.
 
 The usual thing to share is a [`Pool`](../src/standard_components/pool.rs) of buffers: the same cross-thread pool
-sources and writers use with their threads. A `SharedPool<T>` in the node's state finds (or makes) the node's pool
-in the exchange, and the window finds it as `Pool<T>`. For something to show, only the newest matters:
+sources and writers use with their threads, which can be `Shared` by itself, or one of several in a struct of the
+node's. For something to show, only the newest matters:
 
 ```rust
-// In the state: the node's pool (its buffers made by T::default, or by `SharedPool::new`: to size, say).
-shown: SharedPool<TracesDisplay>,
+// The node's: buffers made by T::default (or by `fn shared`, to size them, say).
+type Shared = Pool<TracesDisplay>;
 
 // In process: fill a buffer (an earlier send's, to overwrite), and queue it as of the pass.
-state.shown.send_newest(pass, |display| display.fill_from(...));
+pass.shared::<Pool<TracesDisplay>>().send_newest(pass.sequence, |display| display.fill_from(...));
 
 // In custom_ui: the newest queued, held for as long as the view likes.
 let pool = context.shared::<Pool<TracesDisplay>>();
-let Some(display) = pool.as_deref().and_then(Pool::newest) else { return };
+let Some(display) = pool.and_then(Pool::newest) else { return };
 ```
 
 Neither side waits: passes don't skip a send while the window's reading, and if the window's closed, passes reuse the
@@ -157,7 +158,7 @@ says whether it can be sent now. Only taking it differs, as that's on a differen
   `prepare_to_record` (`handle(control, TriggerKind::RunOnFiles)`), which it can keep and use from any thread. (Only a
   direct trigger has a handle, as a handle can outlive the run: there's none for a pass trigger.)
 
-On their way, triggers are carried as `AnyTrigger`s (boxed), so the exchange and the app's queue needn't know the
+On their way, triggers are carried as `AnyTrigger`s (boxed), so the run's and the app's queues needn't know the
 program's enum, as node state is kept; what's sent and what's taken is always the enum.
 
 Every setting also takes a direct update of its value without saying so, the settings update above, which isn't
@@ -205,6 +206,6 @@ Command runs on, so it says so and doesn't offer files of its own.
 ## Testing
 
 A node's `process` can be run on its own: make buffers from a stream (`stream.buffer(PASS_DURATION)`), and a pass
-with `Pass::new`. Most node files have tests doing just that; for triggers, trigger one on the pass's exchange (see the
-Spike Gain's tests). Views are tested headless with `egui_kittest`, against images in `tests/snapshots` (see
+with `Pass::new`. Most node files have tests doing just that; for triggers, trigger one on the pass's `triggers` (see the
+Spike Gain's tests), and give it what it shares with `pass.shared`. Views are tested headless with `egui_kittest`, against images in `tests/snapshots` (see
 [Development](development.md)).

@@ -67,6 +67,7 @@ impl Sampling {
 
 impl Node<Edges> for ContinuousGain {
     type State = Gaining;
+    type Shared = ();
 
     const INFO: NodeInfo = NodeInfo {
         name: "Continuous Gain",
@@ -255,8 +256,9 @@ mod tests {
         let gain = ContinuousGain { sampling: 4.0, level, ..Default::default() };
         let stream = Continuous { channels: 2, sample_rate: 1000.0 };
         let mut state = gain.initial_state(&[Some(DataStream::Continuous(stream))]);
-        let exchange = Pass::<Edges>::new(0, PASS_DURATION, &[], &mut []).exchange;
-        exchange.trigger(
+        let (triggers, direct) =
+            (crate::core::pass_triggers::PassTriggers::default(), crate::core::triggers::DirectTriggers::default());
+        triggers.trigger(
             NodeId(0),
             crate::core::triggers::AnyTrigger::new(crate::Trigger::AutoDetect(
                 crate::standard_components::auto_detect::AutoDetect,
@@ -276,13 +278,13 @@ mod tests {
             let inputs = [Some(&input)];
             let mut outputs = [Buffer::Continuous(stream.buffer(PASS_DURATION))];
             let mut pass = Pass::new(sequence, PASS_DURATION, &inputs, &mut outputs);
-            pass.exchange = exchange;
+            (pass.triggers, pass.direct) = (&triggers, &direct);
             gain.process(&mut pass, &mut state);
             let Buffer::Continuous(out) = &outputs[0] else { unreachable!() };
             let expected = -100.0 * gain.gains.get(0);
             assert_eq!(out.channel(0)[10], expected, "multiplied by the gain");
         }
-        let updates = exchange.direct_triggers().take_settings_updates();
+        let updates = direct.take_settings_updates();
         let Some(Setting::Gains(gains)) = updates[0].2.downcast_ref::<Setting>() else { panic!() };
         // One for all, to begin with: the widest of theirs, so neither clips.
         assert!((gains.range_uv(0) - 1200.0).abs() < 20.0 && (gains.range_uv(1) - 1200.0).abs() < 20.0);

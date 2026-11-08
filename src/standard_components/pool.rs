@@ -14,8 +14,8 @@
 //! queued, so none are lost if the window's closed) and queue it as of their pass (`send_as_of`); the window reads
 //! the newest (`newest`), giving back the one it was reading and any older, and holds on to it for as long as it
 //! likes. A window that needs everything, not only the newest (each line of a log, say), takes every buffer, in order
-//! (`send_pending`, `receive_all`). A pool shared with a window lives in the run's exchange (see `crate::core::exchange`), where `SharedPool`
-//! finds or makes it from the passes, and `UiContext::shared::<Pool<T>>` from the window.
+//! (`send_pending`, `receive_all`). A pool shared with the GUI is (or is part of) the node's `Node::Shared`, which
+//! the passes find with `Pass::shared`, and the window with `UiContext::shared`.
 //!
 //! Passes never wait on it. The empty and full buffers are on lock-free queues (crossbeam's bounded channels), so
 //! taking and giving back is a few atomic operations; only a writer's thread blocks, waiting for a buffer to write.
@@ -29,8 +29,7 @@ use std::time::Duration;
 
 use crossbeam_channel::{Receiver, Sender};
 
-use crate::core::engine::{Edges, Pass, PoolStatus};
-use crate::core::exchange;
+use crate::core::engine::{PoolStatus, Shared};
 
 /// Passes' worth of slack a pool of a pass's buffers gives, before data's lost: a second's.
 pub const SLACK_PASSES: usize = 50;
@@ -40,18 +39,21 @@ pub const WINDOW_BUFFERS: usize = 6;
 
 /// One end of a pool (clone it for the other).
 pub struct Pool<T> {
-    shared: Arc<Shared<T>>,
+    shared: Arc<Inner<T>>,
 }
 
-impl<T: Send + Sync + 'static> exchange::Shared for Pool<T> {
-    /// What its buffers hold: their type's name.
-    fn name(&self) -> &'static str {
+/// A node can share a pool with the GUI by itself: named by what its buffers hold, its type's name.
+impl<T: Send + Sync + 'static> Shared for Pool<T> {
+    fn pools(&self) -> Vec<(&'static str, PoolStatus)> {
         let name = std::any::type_name::<T>();
-        name.rsplit("::").next().unwrap_or(name)
+        vec![(name.rsplit("::").next().unwrap_or(name), self.status())]
     }
+}
 
-    fn pool(&self) -> Option<PoolStatus> {
-        Some(self.status())
+/// A pool for a window: `WINDOW_BUFFERS` buffers made by `T::default`.
+impl<T: Default> Default for Pool<T> {
+    fn default() -> Self {
+        Pool::new((0..WINDOW_BUFFERS).map(|_| T::default()), 0)
     }
 }
 
@@ -64,7 +66,7 @@ impl<T> Clone for Pool<T> {
 /// A buffer, with the pass it's as of.
 type AsOf<T> = (u64, T);
 
-struct Shared<T> {
+struct Inner<T> {
     size: usize,
     bytes: usize,
     empty: (Sender<T>, Receiver<T>),
@@ -87,7 +89,7 @@ impl<T> Pool<T> {
         for buffer in buffers {
             let _ = empty.0.try_send(buffer);
         }
-        let shared = Shared {
+        let shared = Inner {
             size,
             bytes,
             empty,
@@ -233,6 +235,15 @@ impl<T> Pool<T> {
         reading.is_some().then_some(Newest(reading))
     }
 
+    /// For a window: fills a buffer with `fill` (an earlier send's, to overwrite: see `reuse`) and queues it as of pass
+    /// `sequence`. Nothing, if every buffer's in use (passes on every worker sending at once).
+    pub fn send_newest(&self, sequence: u64, fill: impl FnOnce(&mut T)) {
+        if let Some(mut buffer) = self.reuse() {
+            fill(&mut buffer);
+            self.send_as_of(sequence, buffer);
+        }
+    }
+
     /// Already holding `value`, as if it had been sent and read (for tests).
     #[cfg(test)]
     pub fn holding(value: T) -> Self {
@@ -276,47 +287,6 @@ impl<T> Deref for Newest<'_, T> {
 
     fn deref(&self) -> &T {
         &self.0.as_ref().expect("only made when there's something").1
-    }
-}
-
-/// A node's pool in the run's exchange, kept in its state: found (or made) by the first pass that asks for it, so the
-/// node's window (or the dev tools) can find it too (`UiContext::shared::<Pool<T>>`). A node whose state is only working
-/// memory has one on each worker (see `PassState::CARRIED_OVER`): they find the same pool.
-pub struct SharedPool<T> {
-    pool: Option<Arc<Pool<T>>>,
-    size: usize,
-    /// Makes the pool's buffers.
-    make: Box<dyn Fn() -> T + Send + Sync>,
-}
-
-impl<T: Default + 'static> Default for SharedPool<T> {
-    /// A window's pool, its buffers made by `T::default`.
-    fn default() -> Self {
-        SharedPool { pool: None, size: WINDOW_BUFFERS, make: Box::new(T::default) }
-    }
-}
-
-impl<T: Send + Sync + 'static> SharedPool<T> {
-    /// Of `size` buffers made by `make`: like a pass's, say, to swap them in.
-    pub fn new(size: usize, make: impl Fn() -> T + Send + Sync + 'static) -> Self {
-        SharedPool { pool: None, size, make: Box::new(make) }
-    }
-
-    /// The pool, found or made in the pass's exchange.
-    pub fn pool<E: Edges>(&mut self, pass: &Pass<E>) -> &Pool<T> {
-        let (size, make) = (self.size, &self.make);
-        self.pool.get_or_insert_with(|| pass.shared(|| Pool::new((0..size).map(|_| make()), 0)))
-    }
-
-    /// For a window: fills a buffer with `fill` (an earlier send's, to overwrite: see `Pool::reuse`) and queues it as of
-    /// this pass. Nothing, if every buffer's in use (passes on every worker sending at once).
-    pub fn send_newest<E: Edges>(&mut self, pass: &Pass<E>, fill: impl FnOnce(&mut T)) {
-        let sequence = pass.sequence;
-        let pool = self.pool(pass);
-        if let Some(mut buffer) = pool.reuse() {
-            fill(&mut buffer);
-            pool.send_as_of(sequence, buffer);
-        }
     }
 }
 
@@ -368,37 +338,24 @@ mod tests {
 
     #[test]
     fn a_window_reads_the_newest_sent() {
-        use crate::Edges;
-        use crate::core::engine::NodeId;
-
-        let mut pass: Pass<Edges> = Pass::new(0, 0.02, &[], &mut []);
-        pass.node = NodeId(7);
-        let exchange = pass.exchange;
-        let mut sender = SharedPool::<u32>::default();
-        sender.send_newest(&pass, |n| *n = 1);
-        let pool = exchange.get::<Pool<u32>>(NodeId(7)).unwrap();
-        pass.sequence = 1;
-        sender.send_newest(&pass, |n| *n = 2);
+        let pool = Pool::<u32>::default();
+        pool.send_newest(0, |n| *n = 1);
+        pool.send_newest(1, |n| *n = 2);
         assert_eq!(pool.newest().as_deref(), Some(&2));
         // Sending while the window reads (in two places at once).
         let reading = pool.newest().unwrap();
-        pass.sequence = 2;
-        sender.send_newest(&pass, |n| *n = 3);
+        pool.send_newest(2, |n| *n = 3);
         assert_eq!(*reading, 2);
         assert_eq!(pool.newest().as_deref(), Some(&2), "the same, until it's done with");
         drop(reading);
         assert_eq!(pool.newest().as_deref(), Some(&3));
-        // Another worker's sender shares the pool; an earlier pass's doesn't replace a later one.
-        let mut other = SharedPool::<u32>::default();
-        pass.sequence = 5;
-        other.send_newest(&pass, |n| *n = 5);
-        pass.sequence = 4;
-        sender.send_newest(&pass, |n| *n = 4);
+        // Passes on different workers send out of order: an earlier pass's doesn't replace a later one.
+        pool.send_newest(5, |n| *n = 5);
+        pool.send_newest(4, |n| *n = 4);
         assert_eq!(pool.newest().as_deref(), Some(&5));
         // Not read for a while: the oldest queued are reused, and nothing's lost for want of a buffer.
         for sequence in 6..30 {
-            pass.sequence = sequence;
-            sender.send_newest(&pass, |n| *n = sequence as u32);
+            pool.send_newest(sequence, |n| *n = sequence as u32);
         }
         assert_eq!(pool.newest().as_deref(), Some(&29));
         assert_eq!(pool.status().overflows, 0);

@@ -6,7 +6,7 @@ use super::tracker_view::{FrameView, show_frame};
 use crate::core::engine::{
     Category, DataStreamType, EdgeType, Input, Node, NodeInfo, Output, PASS_DURATION, Pass, UiContext,
 };
-use crate::standard_components::pool::{Pool, SharedPool, WINDOW_BUFFERS};
+use crate::standard_components::pool::{Pool, WINDOW_BUFFERS};
 use crate::standard_components::preview;
 use crate::standard_components::tracking::VideoBuffer;
 use crate::standard_components::tracking::overlay::Overlays;
@@ -19,23 +19,15 @@ pub struct VideoViewer {
     pub crosshair: bool,
 }
 
-/// Where it sends the latest frames to its window: their buffers, swapped in (so a pool of buffers like the pass's).
-#[derive(Default)]
-pub struct Showing(Option<SharedPool<VideoBuffer>>);
-
-impl crate::core::engine::PassState for Showing {
-    const WHY: &'static str = "Only where it sends the latest frames to its window, kept so it's found once: \
-                               working memory, so each worker has its own.";
-    const CARRIED_OVER: bool = false;
-}
-
 impl Node<Edges> for VideoViewer {
     const INFO: NodeInfo =
         NodeInfo { name: "Video Viewer", category: Category::Visualisation, description: "The latest video frame." };
     const HAS_CUSTOM_UI: bool = true;
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
-    type State = Showing;
+    type State = ();
+    /// The latest frames, for its window: their buffers, swapped in (so a pool of buffers like the pass's).
+    type Shared = Pool<VideoBuffer>;
 
     fn inputs(&self) -> Vec<Input<Edges>> {
         vec![Input { name: "video", kind: Kind::Video }]
@@ -54,19 +46,19 @@ impl Node<Edges> for VideoViewer {
         BufferUsage { takes: vec![true; inputs], ..BufferUsage::none(inputs, outputs) }
     }
 
-    fn initial_state(&self, inputs: &[Option<DataStream>]) -> Showing {
-        let Some(DataStream::Video(stream)) = inputs[0] else { return Showing::default() };
-        Showing(Some(SharedPool::new(WINDOW_BUFFERS, move || stream.buffer(PASS_DURATION))))
+    /// Buffers like the pass's, to swap for them.
+    fn shared(&self, inputs: &[Option<DataStream>]) -> Pool<VideoBuffer> {
+        let Some(DataStream::Video(stream)) = inputs[0] else { return Pool::default() };
+        Pool::new((0..WINDOW_BUFFERS).map(|_| stream.buffer(PASS_DURATION)), 0)
     }
 
     /// Swaps the pass's frames (if it has any) into the pool its window reads from: nothing's copied.
-    fn process(&self, pass: &mut Pass<Edges>, showing: &mut Showing) {
-        let (Some(sender), Some(Buffer::Video(video))) = (&mut showing.0, pass.input(0)) else { return };
+    fn process(&self, pass: &mut Pass<Edges>, _: &mut ()) {
+        let Some(Buffer::Video(video)) = pass.input(0) else { return };
         if video.frames == 0 {
             return;
         }
-        let sequence = pass.sequence;
-        let pool = sender.pool(pass);
+        let (sequence, pool) = (pass.sequence, pass.shared::<Pool<VideoBuffer>>());
         let Some(mut frames) = pool.reuse() else { return };
         if let Some(Buffer::Video(video)) = pass.take_input(0) {
             std::mem::swap(video, &mut frames);
@@ -89,7 +81,7 @@ impl Node<Edges> for VideoViewer {
         };
         // The last of the latest frames sent.
         let pool = context.shared::<Pool<VideoBuffer>>();
-        let Some(frames) = pool.as_deref().and_then(Pool::newest).filter(|f| f.frames > 0 && f.width > 0) else {
+        let Some(frames) = pool.and_then(Pool::newest).filter(|f| f.frames > 0 && f.width > 0) else {
             let message = if context.running { "Waiting for frames…" } else { "Press Play to see the video" };
             return preview::unconnected(ui, context.theme, message);
         };

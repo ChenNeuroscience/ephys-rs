@@ -30,7 +30,7 @@ use crate::standard_components::ephys::reference::{
 };
 use crate::standard_components::ephys::spectrum::{Spectra, SpectraBuffer};
 use crate::standard_components::ephys::{ChannelSelection, Continuous, ContinuousBuffer};
-use crate::standard_components::pool::{Pool, SharedPool};
+use crate::standard_components::pool::Pool;
 use crate::standard_components::preview;
 use crate::standard_components::spikes::{Channels, GainScope, Gains};
 use crate::standard_components::widgets::{
@@ -84,7 +84,6 @@ pub struct Traces {
     filled: usize,
     /// Columns filled since starting (up to `COLUMNS`).
     columns: usize,
-    shown: SharedPool<TracesDisplay>,
 }
 
 impl crate::core::engine::PassState for Traces {
@@ -135,7 +134,6 @@ impl Traces {
                 shape,
                 lows: vec![0.0; (shown + references) * COLUMNS],
                 highs: vec![0.0; (shown + references) * COLUMNS],
-                shown: std::mem::take(&mut self.shown),
                 ..Default::default()
             };
         }
@@ -178,6 +176,8 @@ struct Rows<'a> {
 
 impl Node<Edges> for LfpViewer {
     type State = Traces;
+    /// What it shows, for its window.
+    type Shared = Pool<TracesDisplay>;
 
     const INFO: NodeInfo = NodeInfo {
         name: "LFP Viewer",
@@ -239,8 +239,8 @@ impl Node<Edges> for LfpViewer {
             Some(Some(Buffer::Spectra(spectra))) if self.spectrum => Some(spectra),
             _ => None,
         };
-        let Traces { lows, highs, head, columns, shown: sent, .. } = traces;
-        sent.send_newest(pass, |display| {
+        let Traces { lows, highs, head, columns, .. } = traces;
+        pass.shared::<Pool<TracesDisplay>>().send_newest(pass.sequence, |display| {
             (display.first, display.shown, display.references, display.columns) = (first, shown, count, *columns);
             display.column_seconds = column_seconds;
             display.lows.clear();
@@ -306,7 +306,7 @@ impl Node<Edges> for LfpViewer {
             _ => None,
         };
         let pool = context.shared::<Pool<TracesDisplay>>();
-        let display = pool.as_deref().and_then(Pool::newest);
+        let display = pool.and_then(Pool::newest);
         let reference_rows = display.is_some() && context.inputs[2].is_some();
         let applied = selection.as_ref().is_some_and(|s| s.apply);
         self.toolbar(ui, context, stream, applied, reference.as_mut(), gains.as_mut(), reference_rows);

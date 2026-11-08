@@ -138,6 +138,7 @@ impl Node<Edges> for SpikeDetector {
     }
 
     type State = Detector;
+    type Shared = ();
 
     fn initial_state(&self, inputs: &[Option<DataStream>]) -> Detector {
         match inputs[0] {
@@ -468,8 +469,9 @@ mod tests {
         let stream = Continuous { channels: 4, sample_rate: 30000.0 };
         let mut state = detector.initial_state(&[Some(DataStream::Continuous(stream))]);
         let spikes = detector.stream(4, 30000.0);
-        let exchange = Pass::<Edges>::new(0, PASS_DURATION, &[], &mut []).exchange;
-        exchange.trigger(
+        let (triggers, direct) =
+            (crate::core::pass_triggers::PassTriggers::default(), crate::core::triggers::DirectTriggers::default());
+        triggers.trigger(
             crate::core::engine::NodeId(0),
             crate::core::triggers::AnyTrigger::new(crate::Trigger::AutoDetect(
                 crate::standard_components::auto_detect::AutoDetect,
@@ -489,10 +491,10 @@ mod tests {
             let mut outputs = [Buffer::Spikes(spikes.buffer(PASS_DURATION))];
             let inputs = [Some(&input)];
             let mut pass = Pass::new(sequence, PASS_DURATION, &inputs, &mut outputs);
-            pass.exchange = exchange;
+            (pass.triggers, pass.direct) = (&triggers, &direct);
             detector.process(&mut pass, &mut state);
         }
-        let updates = exchange.direct_triggers().take_settings_updates();
+        let updates = direct.take_settings_updates();
         let Some(Setting::Thresholds(thresholds)) = updates[0].2.downcast_ref::<Setting>() else { panic!() };
         for channel in 0..4 {
             let threshold = thresholds.get(channel);

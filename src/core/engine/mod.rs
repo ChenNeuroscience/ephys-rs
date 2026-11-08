@@ -13,6 +13,7 @@ mod nodes_enum;
 mod pass;
 mod plan;
 mod run;
+mod shared;
 mod ui_context;
 
 pub use edge::*;
@@ -23,4 +24,5 @@ pub use nodes_enum::*;
 pub use pass::*;
 pub use plan::*;
 pub use run::*;
+pub use shared::*;
 pub use ui_context::*;

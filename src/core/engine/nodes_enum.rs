@@ -7,8 +7,8 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use super::{
-    BufferUsage, Control, Edges, Input, NodeInfo, NodeThread, Output, Pass, PoolStatus, SettingPort, ThreadContext,
-    TreeShake, UiContext,
+    BufferUsage, Control, Edges, Input, NodeInfo, NodeThread, Output, Pass, PoolStatus, SettingPort, Shared,
+    ThreadContext, TreeShake, UiContext,
 };
 
 /// The closed set of node types a program is built with, as an enum with one variant per type. Implemented
@@ -50,6 +50,7 @@ pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + S
     /// Whether it carries its state over, or it's only working memory (see `PassState::CARRIED_OVER`).
     fn state_carried_over(&self) -> bool;
     fn initial_state(&self, inputs: &[Option<<Self::Edges as Edges>::DataStream>]) -> Box<dyn Any + Send>;
+    fn shared(&self, inputs: &[Option<<Self::Edges as Edges>::DataStream>]) -> Box<dyn Shared>;
     /// `state` is the node's state, if it has any (as made by `initial_state`).
     fn process(&self, pass: &mut Pass<Self::Edges>, state: Option<&mut (dyn Any + Send)>);
     fn prepare_to_record(
@@ -252,6 +253,13 @@ macro_rules! nodes_enum {
                 inputs: &[Option<<$edges as $crate::core::engine::Edges>::DataStream>],
             ) -> Box<dyn std::any::Any + Send> {
                 match self { $($name::$variant(n) => Box::new($crate::core::engine::Node::initial_state(n, inputs))),+ }
+            }
+
+            fn shared(
+                &self,
+                inputs: &[Option<<$edges as $crate::core::engine::Edges>::DataStream>],
+            ) -> Box<dyn $crate::core::engine::Shared> {
+                match self { $($name::$variant(n) => Box::new($crate::core::engine::Node::shared(n, inputs))),+ }
             }
 
             fn process(

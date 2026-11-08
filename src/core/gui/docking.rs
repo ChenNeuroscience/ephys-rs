@@ -38,8 +38,8 @@ pub struct Panes<'a, N: NodesEnum, A: AnnotationsEnum> {
     pub resolved: &'a Resolved<N::Edges>,
     pub colours: &'static Colours,
     pub runner: Option<&'a Runner<N>>,
-    /// What the run shares with the windows, or what the last run shared, once it's stopped.
-    pub shared: Option<&'a crate::core::exchange::Exchange>,
+    /// What the running nodes' passes share with the GUI, or what the last run's shared, once it's stopped.
+    pub shared: Option<&'a crate::core::engine::SharedByNode>,
     /// The base directory recordings go in (see `crate::core::base_directory`).
     pub base_directory: Option<&'a crate::core::base_directory::Place>,
     /// The latest snapshot of the graph.
@@ -68,7 +68,7 @@ pub struct Panes<'a, N: NodesEnum, A: AnnotationsEnum> {
 }
 
 /// A node's window content: its own view if it has one (which shows its settings as it likes), otherwise the
-/// default window (`node_window`). It finds what its passes share with it in `shared`: the run's exchange, or the last run's.
+/// default window (`node_window`). It finds what its passes share with it in `shared`: the run's, or the last run's.
 #[allow(clippy::too_many_arguments)]
 pub fn node_ui<N: NodesEnum>(
     ui: &mut egui::Ui,
@@ -76,7 +76,7 @@ pub fn node_ui<N: NodesEnum>(
     resolved: &Resolved<N::Edges>,
     colours: &Colours,
     runner: Option<&Runner<N>>,
-    shared: Option<&crate::core::exchange::Exchange>,
+    shared: Option<&crate::core::engine::SharedByNode>,
     base_directory: Option<&crate::core::base_directory::Place>,
     locked: bool,
     advanced: bool,
@@ -88,7 +88,7 @@ pub fn node_ui<N: NodesEnum>(
     let running = runner.is_some();
     // A view stays live while recording (changes it makes to settings are undone: see `App::lock`). It finds what
     // its passes share with it in `shared`; triggers need a run, to go to.
-    let live = runner.map(|r| r.exchange());
+    let live = runner.map(|r| r.pass_triggers());
     if has_custom_ui {
         let Some(mut tools) = NodeTools::new(graph, id, advanced, live, &mut *events) else { return };
         let tools = Some(&mut tools as &mut dyn crate::core::engine::NodeToolbar);

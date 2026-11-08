@@ -45,12 +45,12 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError};
 use crossbeam_utils::CachePadded;
 
 use crate::core::console::{self, PassId};
-use crate::core::exchange::Exchange;
+use crate::core::pass_triggers::PassTriggers;
 use crate::core::triggers::DirectTriggers;
 
 use super::pass::*;
 use super::plan::*;
-use super::{Buffer, DataStreamsEnum, Edges, Graph, NodeId, NodesEnum, Snapshot};
+use super::{Buffer, DataStreamsEnum, Edges, Graph, NodeId, NodesEnum, SharedByNode, Snapshot};
 
 type DataStream<N> = <<N as NodesEnum>::Edges as Edges>::DataStream;
 
@@ -109,7 +109,9 @@ impl<N: NodesEnum> Plan<N> {
                     controls,
                     recording: snapshot.recording.is_some(),
                     prepared: snapshot.recording.as_deref(),
-                    exchange: &run.exchange,
+                    shared: run.shared.any(step.id).unwrap_or(&()),
+                    triggers: &run.triggers,
+                    direct: &run.direct,
                 };
                 let start = Instant::now();
                 // When the node's state is handed over, after waiting for it, if it has any.
@@ -164,18 +166,31 @@ impl<N: NodesEnum> Workspace<N> {
     }
 }
 
-/// What the workers share during a run of one plan, besides the graph: the nodes' state, the run's exchange, and how
-/// long each step's taking.
+/// What the workers share during a run of one plan, besides the graph: the nodes' state, what they share with the GUI,
+/// the run's triggers, and how long each step's taking.
 struct RunSlots {
     states: Vec<StateSlot>,
-    exchange: Arc<Exchange>,
+    shared: Arc<SharedByNode>,
+    triggers: Arc<PassTriggers>,
+    direct: Arc<DirectTriggers>,
     times: Vec<StepTimes>,
 }
 
 impl RunSlots {
-    fn new<N: NodesEnum>(plan: &Plan<N>, graph: &Graph<N>, exchange: Arc<Exchange>) -> Self {
+    fn new<N: NodesEnum>(plan: &Plan<N>, graph: &Graph<N>, run: &RunCommon) -> Self {
         let times = plan.steps.iter().map(|_| StepTimes::default()).collect();
-        RunSlots { states: plan.initial_states(graph), exchange, times }
+        let shared = plan
+            .steps
+            .iter()
+            .zip(&plan.step_inputs)
+            .filter_map(|(step, inputs)| Some((step.id, graph.get(step.id)?.node.shared(inputs))));
+        RunSlots {
+            states: plan.initial_states(graph),
+            shared: Arc::new(SharedByNode(shared.collect())),
+            triggers: run.triggers.clone(),
+            direct: run.direct.clone(),
+            times,
+        }
     }
 }
 
@@ -282,9 +297,9 @@ struct Record {
 }
 
 /// What the runner, its workers and its dispatcher share, through every epoch: counts and recent passes for the
-/// stats, the exchange, and what each worker's doing.
+/// stats, the triggers, and what each worker's doing.
 #[derive(Default)]
-struct Shared {
+struct RunCommon {
     stop: AtomicBool,
     memory: AtomicUsize,
     busy: AtomicUsize,
@@ -292,8 +307,9 @@ struct Shared {
     dropped: AtomicU64,
     /// Where workers report to the GUI.
     reports: Reports,
-    /// Where nodes leave things for their windows.
-    exchange: Arc<Exchange>,
+    /// The pass triggers the GUI sends, and where the passes send direct triggers: the app's.
+    triggers: Arc<PassTriggers>,
+    direct: Arc<DirectTriggers>,
     /// What each worker is up to.
     workers: Vec<WorkerSlot>,
     /// The next pass the dispatcher will send.
@@ -418,13 +434,13 @@ struct Epoch<N: NodesEnum> {
     /// epoch know there will be no more.
     sender: Mutex<Option<Sender<Job>>>,
     receiver: Receiver<Job>,
-    shared: Arc<Shared>,
+    shared: Arc<RunCommon>,
 }
 
 impl<N: NodesEnum> Epoch<N> {
-    fn new(snapshot: &Snapshot<N>, workers: usize, shared: Arc<Shared>) -> Self {
+    fn new(snapshot: &Snapshot<N>, workers: usize, shared: Arc<RunCommon>) -> Self {
         let plan = snapshot.plan.clone();
-        let slots = RunSlots::new(&plan, &snapshot.graph, shared.exchange.clone());
+        let slots = RunSlots::new(&plan, &snapshot.graph, &shared);
         // A few passes may queue, beyond which they're dropped.
         let (sender, receiver) = crossbeam_channel::bounded(queue_capacity(workers));
         let number = shared.epochs.fetch_add(1, Ordering::Relaxed) + 1;
@@ -478,7 +494,7 @@ struct Epochs<N: NodesEnum> {
 /// The graph running: a dispatcher and a pool of workers, until dropped.
 pub struct Runner<N: NodesEnum> {
     epochs: Arc<Epochs<N>>,
-    shared: Arc<Shared>,
+    shared: Arc<RunCommon>,
     threads: Vec<JoinHandle<()>>,
     workers: usize,
     /// The version of the latest snapshot given to the run.
@@ -495,9 +511,9 @@ impl<N: NodesEnum> Runner<N> {
     /// The same, with its direct triggers going to `direct`.
     pub fn start_with(snapshot: &Snapshot<N>, workers: usize, direct: Arc<DirectTriggers>) -> Self {
         let workers = workers.max(1);
-        let shared = Arc::new(Shared {
+        let shared = Arc::new(RunCommon {
             workers: (0..workers).map(|_| WorkerSlot::default()).collect(),
-            exchange: Arc::new(Exchange::new(direct)),
+            direct,
             ..Default::default()
         });
         let epoch = Arc::new(Epoch::new(snapshot, workers, shared.clone()));
@@ -526,14 +542,21 @@ impl<N: NodesEnum> Runner<N> {
         self.epochs.wanted.load().snapshot.load().graph.clone()
     }
 
-    /// Where the run's nodes leave things for their windows.
-    pub fn exchange(&self) -> &Exchange {
-        &self.shared.exchange
+    /// Where the passes send direct triggers.
+    pub fn direct_triggers(&self) -> &DirectTriggers {
+        &self.shared.direct
     }
 
-    /// The same, to keep once the run's over.
-    pub fn exchange_to_keep(&self) -> Arc<Exchange> {
-        self.shared.exchange.clone()
+    /// The run's pass triggers, for the GUI to send.
+    pub fn pass_triggers(&self) -> &PassTriggers {
+        &self.shared.triggers
+    }
+
+    /// What the nodes running share with the GUI: the epoch being run's, or, until one is, the one being got ready
+    /// for.
+    pub fn shared(&self) -> Arc<SharedByNode> {
+        let epoch = self.epochs.running.load_full().unwrap_or_else(|| self.epochs.wanted.load_full());
+        epoch.slots.shared.clone()
     }
 
     /// The acquisition clock: seconds of passes sent so far.
@@ -687,7 +710,7 @@ const IDLE_CHECK: Duration = Duration::from_millis(2);
 
 /// A worker: runs passes of its epoch, and once there's a newer one and nothing of its own queued, makes
 /// buffers for that and moves on to it. Ends when the run stops, once every pass dispatched to it is done.
-fn work<N: NodesEnum>(epochs: &Epochs<N>, shared: &Shared, index: usize) {
+fn work<N: NodesEnum>(epochs: &Epochs<N>, shared: &RunCommon, index: usize) {
     let slot = &shared.workers[index];
     slot.pass.store(IDLE, Ordering::Relaxed);
     let mut mine: Option<(Arc<Epoch<N>>, Workspace<N>)> = None;
@@ -750,7 +773,7 @@ fn work<N: NodesEnum>(epochs: &Epochs<N>, shared: &Shared, index: usize) {
 
 /// The dispatcher: releases each pass when its time is up, on the queue of the newest epoch a worker is ready
 /// for. The clock starts once the first worker is ready, so making buffers doesn't count against the run.
-fn dispatch<N: NodesEnum>(epochs: &Epochs<N>, shared: &Shared) {
+fn dispatch<N: NodesEnum>(epochs: &Epochs<N>, shared: &RunCommon) {
     let duration = Duration::from_secs_f64(PASS_DURATION);
     let mut current: Option<(Arc<Epoch<N>>, Sender<Job>)> = None;
     let (mut sequence, mut due) = (0, Instant::now());
@@ -869,7 +892,7 @@ pub mod tests {
         link(&mut graph, board, 0, writer, 0);
         let snapshot = Snapshot::new(0, graph, None);
         let plan = &snapshot.plan;
-        let slots = RunSlots::new(plan, &snapshot.graph, Arc::default());
+        let slots = RunSlots::new(plan, &snapshot.graph, &RunCommon::default());
         let mut workspace = plan.workspace(&snapshot.graph);
         let filtered = plan.steps.iter().find(|s| s.id == filter).unwrap().outputs[0];
         let copied = plan.steps.iter().find(|s| s.id == writer).unwrap().inputs[0].unwrap();
@@ -953,7 +976,7 @@ pub mod tests {
         link(&mut graph, detector, 0, viewer, 0);
         let snapshot = Snapshot::new(0, graph, None);
         let plan = &snapshot.plan;
-        let slots = RunSlots::new(plan, &snapshot.graph, Arc::default());
+        let slots = RunSlots::new(plan, &snapshot.graph, &RunCommon::default());
         let mut workspace = plan.workspace(&snapshot.graph);
         // A second of samples, as they come from the board in real time.
         let (mut spikes, mut samples) = (0, 0);
@@ -1003,6 +1026,8 @@ pub mod tests {
         }
     }
 
+    /// What nodes share with the GUI is made for each epoch (sized for its data streams), and kept through changes
+    /// of settings.
     #[test]
     fn settings_changes_carry_on_and_others_start_a_new_epoch() {
         let mut graph = Graph::default();
@@ -1013,6 +1038,8 @@ pub mod tests {
         link(&mut graph, filter, 0, viewer, 0);
         let mut snapshot = Snapshot::new(0, graph.clone(), None);
         let runner = Runner::start(&snapshot, 2);
+        let shared = runner.shared();
+        assert!(!shared.pools(viewer).is_empty(), "the viewer's display");
         let mut next = |graph: &Graph<Nodes>| {
             snapshot = Snapshot::new(snapshot.version + 1, graph.clone(), Some(&snapshot));
             snapshot.clone()
@@ -1030,6 +1057,7 @@ pub mod tests {
         assert!(runner.update(&next(&graph)));
         link(&mut graph, board, 0, gain, 0);
         assert!(runner.update(&next(&graph)), "nothing needs its output");
+        assert!(Arc::ptr_eq(&runner.shared(), &shared), "the same epoch's");
         let second = add(&mut graph, "LFP Viewer");
         link(&mut graph, gain, 0, second, 0);
         let latest = next(&graph);
@@ -1041,6 +1069,9 @@ pub mod tests {
             assert!(Instant::now() < deadline, "passes should move on to the new plan");
             std::thread::sleep(Duration::from_millis(5));
         }
+        let now = runner.shared();
+        assert!(!Arc::ptr_eq(&now, &shared), "the new epoch's");
+        assert!(!now.pools(second).is_empty() && shared.pools(second).is_empty(), "with the new viewer's");
         let completed = runner.stats().completed;
         let stats = wait_for_passes(&runner, completed + 1);
         assert!(stats.completed > completed, "{stats:?}");
