@@ -92,6 +92,7 @@ impl Node<Edges> for AcquisitionBoard {
     type State = Acquiring;
     /// What it shows, for its window.
     type Shared = Pool<BoardDisplay>;
+    type UiState = ();
 
     fn outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {
         let rate = self.sample_rate as f32;
@@ -471,9 +472,18 @@ mod tests {
         let shared = crate::core::engine::SharedByNode::default().with(board, Pool::holding(display));
         let mut harness = egui_kittest::Harness::builder().with_size([420.0, 560.0]).wgpu().build_ui_state(
             |ui, graph: &mut Graph<Nodes>| {
-                graph.edit(board, &[], &THEMES[0].colours, Some(&shared), None, true, false, None, |node, context| {
-                    node.settings_ui(ui, context)
-                });
+                graph.edit(
+                    board,
+                    &[],
+                    &THEMES[0].colours,
+                    Some(&shared),
+                    None,
+                    None,
+                    true,
+                    false,
+                    None,
+                    |node, context| node.settings_ui(ui, context),
+                );
             },
             graph,
         );

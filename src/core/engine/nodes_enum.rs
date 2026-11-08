@@ -35,6 +35,9 @@ pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + S
     fn controls(&self) -> Vec<Control<Self::Edges>>;
     fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Self::Edges>);
     fn custom_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Self::Edges>);
+    fn background(&mut self, context: &mut UiContext<Self::Edges>) -> Option<std::time::Instant>;
+    /// Its `UiState` as it starts.
+    fn new_ui_state(&self) -> Box<dyn Any>;
     fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool]) -> TreeShake;
     fn evaluate_buffer_usage(&self, inputs: usize, outputs: usize) -> BufferUsage;
     fn triggers(&self, setting: usize) -> &'static [super::TriggerKind<Self::Edges>];
@@ -197,6 +200,21 @@ macro_rules! nodes_enum {
 
             fn custom_ui(&mut self, ui: &mut eframe::egui::Ui, context: &mut $crate::core::engine::UiContext<$edges>) {
                 match self { $($name::$variant(n) => $crate::core::engine::Node::custom_ui(n, ui, context)),+ }
+            }
+
+            fn background(
+                &mut self,
+                context: &mut $crate::core::engine::UiContext<$edges>,
+            ) -> Option<std::time::Instant> {
+                match self { $($name::$variant(n) => $crate::core::engine::Node::background(n, context)),+ }
+            }
+
+            fn new_ui_state(&self) -> Box<dyn std::any::Any> {
+                match self {
+                    $($name::$variant(_) => {
+                        Box::new(<<$ty as $crate::core::engine::Node<$edges>>::UiState as Default>::default())
+                    }),+
+                }
             }
 
             fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool]) -> $crate::core::engine::TreeShake {

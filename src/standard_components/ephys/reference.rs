@@ -375,6 +375,7 @@ impl Node<Edges> for Reference {
 
     type State = Referencing;
     type Shared = ();
+    type UiState = ();
 
     /// Its output's made in place, from its input.
     fn evaluate_buffer_usage(&self, inputs: usize, outputs: usize) -> BufferUsage {
@@ -828,7 +829,7 @@ mod tests {
         let inputs = [Some(DataStream::Continuous(Continuous { channels: 16, sample_rate: 30000.0 }))];
         let mut harness = egui_kittest::Harness::builder().with_size([360.0, 300.0]).wgpu().build_ui_state(
             |ui, graph: &mut Graph<Nodes>| {
-                graph.edit(id, &inputs, &THEMES[0].colours, None, None, false, false, None, |node, context| {
+                graph.edit(id, &inputs, &THEMES[0].colours, None, None, None, false, false, None, |node, context| {
                     node.settings_ui(ui, context)
                 });
             },

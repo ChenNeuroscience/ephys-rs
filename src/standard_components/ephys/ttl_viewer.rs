@@ -87,6 +87,7 @@ impl Node<Edges> for TtlViewer {
     type State = Lines;
     /// What it shows, for its window.
     type Shared = Pool<LinesDisplay>;
+    type UiState = ();
 
     const INFO: NodeInfo = NodeInfo {
         name: "TTL Viewer",
@@ -334,6 +335,7 @@ mod tests {
                     &[stream],
                     &THEMES[0].colours,
                     Some(&shared),
+                    None,
                     None,
                     true,
                     false,

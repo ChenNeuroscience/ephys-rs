@@ -40,6 +40,8 @@ pub struct Panes<'a, N: NodesEnum, A: AnnotationsEnum> {
     pub runner: Option<&'a Runner<N>>,
     /// What the running nodes' passes share with the GUI, or what the last run's shared, once it's stopped.
     pub shared: Option<&'a crate::core::engine::SharedByNode>,
+    /// Each node's state on the GUI's side (see `Node::UiState`).
+    pub(crate) ui_states: &'a super::UiStates,
     /// The base directory recordings go in (see `crate::core::base_directory`).
     pub base_directory: Option<&'a crate::core::base_directory::Place>,
     /// The latest snapshot of the graph.
@@ -77,6 +79,7 @@ pub fn node_ui<N: NodesEnum>(
     colours: &Colours,
     runner: Option<&Runner<N>>,
     shared: Option<&crate::core::engine::SharedByNode>,
+    ui_state: Option<&crate::core::engine::UiStateCell>,
     base_directory: Option<&crate::core::base_directory::Place>,
     locked: bool,
     advanced: bool,
@@ -93,11 +96,21 @@ pub fn node_ui<N: NodesEnum>(
         let Some(mut tools) = NodeTools::new(graph, id, advanced, live, &mut *events) else { return };
         let tools = Some(&mut tools as &mut dyn crate::core::engine::NodeToolbar);
         let streams = &state.input_streams;
-        graph.edit(id, streams, colours, shared, base_directory, running, locked, tools, |node: &mut N, context| {
-            node.custom_ui(ui, context)
-        });
+        graph.edit(
+            id,
+            streams,
+            colours,
+            shared,
+            ui_state,
+            base_directory,
+            running,
+            locked,
+            tools,
+            |node: &mut N, context| node.custom_ui(ui, context),
+        );
     } else {
-        node_window::show(ui, graph, resolved, colours, live, shared, base_directory, locked, advanced, id, events);
+        let gui = (shared, ui_state);
+        node_window::show(ui, graph, resolved, colours, live, gui, base_directory, locked, advanced, id, events);
     }
 }
 
@@ -271,8 +284,10 @@ impl<N: NodesEnum, A: AnnotationsEnum> Panes<'_, N, A> {
                 let (graph, resolved, colours, runner, locked) =
                     (&mut *self.graph, self.resolved, self.colours, self.runner, self.locked);
                 let (advanced, base, shared) = (self.mode == Mode::Advanced, self.base_directory, self.shared);
+                let ui_state = self.ui_states.get(graph, id);
                 padded(ui, |ui| {
-                    node_ui(ui, graph, resolved, colours, runner, shared, base, locked, advanced, id, self.events)
+                    let events = &mut *self.events;
+                    node_ui(ui, graph, resolved, colours, runner, shared, ui_state, base, locked, advanced, id, events)
                 })
             }
         }

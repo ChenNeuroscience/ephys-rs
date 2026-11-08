@@ -46,6 +46,7 @@ impl Node<Edges> for Camera {
     type State = Capturing;
     /// What it shows, for its window.
     type Shared = Pool<CaptureStats>;
+    type UiState = ();
 
     fn outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {
         let [width, height] = self.settings.frame_size;

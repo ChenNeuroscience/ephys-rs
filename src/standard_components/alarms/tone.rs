@@ -1,6 +1,6 @@
 //! The pips the Alarm Viewer can sound as an alarm goes off: a few, at a pitch for what it watches, from the default
 //! output device. It's on a thread of its own, started the first time it's needed, as finding a device takes a while
-//! and passes can't wait. Alarms going off together pip one after another. A machine with no sound just stays quiet,
+//! and the GUI can't wait. Alarms going off together pip one after another. A machine with no sound just stays quiet,
 //! with a warning.
 
 use std::f32::consts::{PI, TAU};

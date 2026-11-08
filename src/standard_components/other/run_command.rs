@@ -1231,6 +1231,7 @@ fn files_help(senders: &[String]) -> String {
 impl Node<Edges> for RunCommand {
     type State = ();
     type Shared = ();
+    type UiState = ();
 
     const INFO: NodeInfo = NodeInfo {
         name: "Run Command",
@@ -1796,7 +1797,7 @@ mod tests {
         let inputs: [Option<DataStream>; 0] = [];
         let mut harness = egui_kittest::Harness::builder().with_size([560.0, 580.0]).wgpu().build_ui_state(
             move |ui, graph: &mut Graph<Nodes>| {
-                graph.edit(id, &inputs, &THEMES[0].colours, None, None, false, false, None, |node, context| {
+                graph.edit(id, &inputs, &THEMES[0].colours, None, None, None, false, false, None, |node, context| {
                     node.custom_ui(ui, context)
                 });
             },
@@ -1869,9 +1870,18 @@ mod tests {
             let inputs: [Option<DataStream>; 0] = [];
             let mut harness = egui_kittest::Harness::builder().with_size([560.0, 560.0]).wgpu().build_ui_state(
                 move |ui, graph: &mut Graph<Nodes>| {
-                    graph.edit(id, &inputs, &THEMES[0].colours, None, None, false, false, None, |node, context| {
-                        node.custom_ui(ui, context)
-                    });
+                    graph.edit(
+                        id,
+                        &inputs,
+                        &THEMES[0].colours,
+                        None,
+                        None,
+                        None,
+                        false,
+                        false,
+                        None,
+                        |node, context| node.custom_ui(ui, context),
+                    );
                 },
                 graph,
             );

@@ -114,6 +114,7 @@ impl crate::core::engine::PassState for Analysis {
 impl Node<Edges> for Spectrum {
     type State = Analysis;
     type Shared = ();
+    type UiState = ();
 
     const INFO: NodeInfo = NodeInfo {
         name: "Spectrum",

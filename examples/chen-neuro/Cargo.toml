@@ -1,6 +1,6 @@
 [package]
 name = "chen-neuro"
-version = "0.1027.0"
+version = "0.1028.0"
 edition = "2024"
 description = "The Chen lab's build of ephys-rs, which is what this repository releases"
 publish = false

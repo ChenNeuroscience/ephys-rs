@@ -438,6 +438,7 @@ impl Node<Edges> for VrComputer {
     type State = Receiving;
     /// What it shows, for its window.
     type Shared = Pool<Status>;
+    type UiState = ();
 
     fn outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {
         let [_, _, width, height] = window(&self.custom).and_then(|crop| crop.bounds()).unwrap_or([0.0; 4]);

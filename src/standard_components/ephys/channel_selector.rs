@@ -64,6 +64,7 @@ impl Node<Edges> for ChannelSelector {
 
     type State = Passed;
     type Shared = ();
+    type UiState = ();
 
     fn inputs(&self) -> Vec<Input<Edges>> {
         vec![Input { name: "continuous", kind: Kind::Continuous }]
@@ -256,7 +257,7 @@ mod tests {
             let shared = runner.shared();
             let shared = Some(&*shared);
             let mut harness = egui_kittest::Harness::builder().with_size([800.0, 600.0]).build_ui(|ui| {
-                graph.edit(id, &inputs, &THEMES[0].colours, shared, None, true, false, None, |node, context| {
+                graph.edit(id, &inputs, &THEMES[0].colours, shared, None, None, true, false, None, |node, context| {
                     node.settings_ui(ui, context);
                     if node.has_custom_ui() {
                         node.custom_ui(ui, context);
@@ -288,7 +289,7 @@ mod tests {
                 let id = graph.add(crate::Nodes::create(index), [0.0, 0.0]);
                 let stream = Continuous { channels: 16, sample_rate: 30000.0 };
                 let inputs = [Some(DataStream::Continuous(stream))];
-                graph.edit(id, &inputs, &THEMES[0].colours, None, None, false, false, None, |_, context| {
+                graph.edit(id, &inputs, &THEMES[0].colours, None, None, None, false, false, None, |_, context| {
                     selector.settings_ui(ui, context)
                 });
             },

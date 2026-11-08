@@ -139,6 +139,12 @@ pane shows in each mode is up to it (`UiContext::advanced`). Where panes go when
 [layout](quick-actions.md#the-layout)'s to say ([`layout.rs`](../src/core/layout.rs)): windows take steps towards a
 default layout, a column on the left and two groups one above another on the right.
 
+Each time round the app does what isn't drawing first, in `App::logic` (eframe's `App::logic`): taking what's come from
+runs and nodes' threads, the nodes' work on the GUI's thread (`Node::background`, with each node's state on the GUI's
+side, `Node::UiState`), stopping what's unattended, and keeping the run up to date with the graph. eframe calls it before
+each frame, and while the window's hidden (minimised, say) whenever the app's woken (`request_repaint`, as a run does
+every quarter second), without drawing; then, if the window's shown, the app draws (`App::show`).
+
 What's kept between runs, whatever file's open, is in the app's preferences: the `eframe::Storage` that `App::save`
 writes to (the theme, the base directories, the recent files and the settings, under the `*_KEY`s in
 [`gui`](../src/core/gui/mod.rs)). File › Open Recent lists the last 10 files opened or saved, as does the basic view while the graph's empty.
@@ -147,8 +153,8 @@ File › Settings… ([`preferences`](../src/core/gui/preferences.rs)) has the r
 
 - **Auto stop.** Recording stops after an hour without mouse or keyboard input, and acquisition after two, by
   default; each can be off, or longer or shorter (in hours and minutes), but recording's never longer than
-  acquisition. The GUI keeps track: in the last minutes before, a warning counts down (any input carries on), and
-  after, a notice says what stopped, and when. Running and recording don't depend on the GUI, so a modal doesn't get in
+  acquisition. The GUI keeps track, minimised or not (in `App::logic`): in the last minutes before, a warning counts
+  down (any input carries on), and after, a notice says what stopped, and when. Running and recording don't depend on the GUI, so a modal doesn't get in
   their way.
 - **Nodes, Annotations, Base directories.** Which types are offered: node types in the add-node menu, annotation types
   among the drawing tools, base directory types to choose from. From the next start, and only what's offered: nodes

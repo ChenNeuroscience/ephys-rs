@@ -56,6 +56,7 @@ struct Sampling {
 impl Node<Edges> for SpikeGain {
     type State = Gaining;
     type Shared = ();
+    type UiState = ();
 
     const INFO: NodeInfo = NodeInfo {
         name: "Spike Gain",
@@ -400,7 +401,7 @@ mod tests {
         let inputs = [Some(DataStream::Spikes(spikes))];
         let mut harness = egui_kittest::Harness::builder().with_size([420.0, 380.0]).wgpu().build_ui_state(
             |ui, graph: &mut Graph<Nodes>| {
-                graph.edit(id, &inputs, &THEMES[0].colours, None, None, false, false, None, |node, context| {
+                graph.edit(id, &inputs, &THEMES[0].colours, None, None, None, false, false, None, |node, context| {
                     node.settings_ui(ui, context)
                 });
             },

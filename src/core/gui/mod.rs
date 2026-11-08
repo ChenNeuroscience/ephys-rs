@@ -240,9 +240,15 @@ pub struct App<N: NodesEnum, A: AnnotationsEnum> {
     hidden: preferences::Hidden,
     /// The Settings window, while it's open.
     settings: Option<preferences::SettingsWindow>,
-    /// When there was last mouse or keyboard input (egui's time, in seconds), for stopping what's unattended (see
-    /// `preferences`).
-    last_input: f64,
+    /// When there was last mouse or keyboard input, for stopping what's unattended (see `preferences`).
+    last_input: Instant,
+    /// For tests: added to how long it's been since then.
+    #[cfg(test)]
+    idle_extra: std::time::Duration,
+    /// What's unattended, as of the last time round: drawn as a warning, while it's one.
+    unattended: preferences::Unattended,
+    /// Each node's state on the GUI's side (see `Node::UiState`), while the graph has the node.
+    ui_states: UiStates,
     /// What's been stopped for being unattended, until that's been seen.
     stopped_unattended: Vec<preferences::Stopped>,
     /// The user has said to close despite unsaved changes.
@@ -314,7 +320,11 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             preferences: Default::default(),
             hidden: Default::default(),
             settings: None,
-            last_input: 0.0,
+            last_input: Instant::now(),
+            #[cfg(test)]
+            idle_extra: std::time::Duration::ZERO,
+            unattended: preferences::Unattended::Fine,
+            ui_states: UiStates::default(),
             stopped_unattended: Vec::new(),
             closing: false,
             themes,
@@ -638,36 +648,44 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         }
     }
 
-    /// Stops recording, or acquisition, when no one's used the app for as long as the preferences say: warning in the
-    /// last minutes before, and saying so after.
-    fn stop_unattended(&mut self, ctx: &egui::Context) {
+    /// Stops recording, or acquisition, when no one's used the app for as long as the preferences say (whether the
+    /// window's shown or not), noting what's coming, to warn of (see `unattended_ui`).
+    fn stop_unattended(&mut self) {
         use preferences::{Stopping, Unattended};
-        let recording = self.history.current.snapshot.recording.is_some() || self.preparing.is_some();
-        let idle = std::time::Duration::from_secs_f64((ctx.input(|i| i.time) - self.last_input).max(0.0));
-        let idle_text = preferences::minutes_text((idle.as_secs() / 60) as u32);
+        let recording = self.locked();
+        let idle = self.idle();
+        self.unattended = self.preferences.unattended(idle, self.runner.is_some(), recording);
+        if let Unattended::Stop(stopping) = self.unattended {
+            let what = unattended_what(stopping, recording);
+            match stopping {
+                Stopping::Recording => self.stop_recording(),
+                Stopping::Acquisition => self.stop_running(),
+            }
+            let at = chrono::Local::now().format("%H:%M").to_string();
+            let after = preferences::minutes_text((idle.as_secs() / 60) as u32);
+            log::warn!("{what} stopped at {at}, after {after} without input");
+            self.stopped_unattended.push(preferences::Stopped { what, at, after });
+            self.unattended = Unattended::Fine;
+        }
+    }
+
+    /// How long it's been since the last mouse or keyboard input.
+    fn idle(&self) -> std::time::Duration {
+        #[cfg(test)]
+        return self.last_input.elapsed() + self.idle_extra;
+        #[cfg(not(test))]
+        self.last_input.elapsed()
+    }
+
+    /// Warns of what's soon to stop for being unattended, and says what has.
+    fn unattended_ui(&mut self, ctx: &egui::Context) {
         let colours = self.colours();
-        let what = |stopping| match stopping {
-            Stopping::Recording => "Recording",
-            Stopping::Acquisition if recording => "Acquisition and recording",
-            Stopping::Acquisition => "Acquisition",
-        };
         let mut open_settings = false;
-        match self.preferences.unattended(idle, self.runner.is_some(), recording) {
-            Unattended::Fine => {}
-            Unattended::Warning { stopping, left } => {
-                open_settings = preferences::warning(ctx, what(stopping), left, &idle_text, colours);
-                ctx.request_repaint_after(std::time::Duration::from_secs(1));
-            }
-            Unattended::Stop(stopping) => {
-                let what = what(stopping);
-                match stopping {
-                    Stopping::Recording => self.stop_recording(),
-                    Stopping::Acquisition => self.stop_running(),
-                }
-                let at = chrono::Local::now().format("%H:%M").to_string();
-                log::warn!("{what} stopped at {at}, after {idle_text} without input");
-                self.stopped_unattended.push(preferences::Stopped { what, at, after: idle_text });
-            }
+        if let preferences::Unattended::Warning { stopping, left } = self.unattended {
+            let idle_text = preferences::minutes_text((self.idle().as_secs() / 60) as u32);
+            let what = unattended_what(stopping, self.locked());
+            open_settings = preferences::warning(ctx, what, left, &idle_text, colours);
+            ctx.request_repaint_after(std::time::Duration::from_secs(1));
         }
         if !self.stopped_unattended.is_empty() {
             let (close, settings) = preferences::stopped(ctx, &self.stopped_unattended, colours);
@@ -1305,6 +1323,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                 .resizable(true)
                 .show(ctx, |ui| {
                     let shared = shared(&self.runner, &self.last_run);
+                    let ui_state = self.ui_states.get(&self.graph, id);
                     clicks = docking::floating_header(ui, &title, colour);
                     egui::Frame::new().inner_margin(docking::PANE_MARGIN).show(ui, |ui| {
                         docking::node_ui(
@@ -1314,6 +1333,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                             colours,
                             self.runner.as_ref(),
                             shared.as_deref(),
+                            ui_state,
                             base.as_ref(),
                             locked,
                             advanced,
@@ -1457,10 +1477,12 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         self.frame_times.begin(self.last_cpu.take());
         let started = Instant::now();
         let ctx = ui.ctx().clone();
-        // Keep (and echo) what's been logged, so the log's queue doesn't fill.
-        crate::core::console::drain();
-        if let Some(now) = ctx.input(|i| i.events.iter().any(preferences::is_input).then_some(i.time)) {
-            self.last_input = now;
+        if ctx.input(|i| i.events.iter().any(preferences::is_input)) {
+            self.last_input = Instant::now();
+            #[cfg(test)]
+            {
+                self.idle_extra = std::time::Duration::ZERO;
+            }
         }
         self.shortcuts(&ctx);
         #[cfg(target_os = "macos")]
@@ -1527,6 +1549,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                 colours,
                 runner: self.runner.as_ref(),
                 shared: shared.as_deref(),
+                ui_states: &self.ui_states,
                 base_directory: base.as_ref(),
                 snapshot: &self.history.current.snapshot,
                 mode: self.layout.mode,
@@ -1559,13 +1582,66 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         self.crash_window(&ctx);
         self.about_window(&ctx);
         self.settings_window(&ctx);
-        self.direct_triggers.wake(&ctx);
-        self.deliver_triggers();
-        self.lock(&ctx);
-        self.history.record(&self.graph, &self.annotations, &ctx);
-        self.keep_running(&ctx);
-        self.stop_unattended(&ctx);
+        self.unattended_ui(&ctx);
+        self.upkeep(&ctx);
         self.frame_times.add("Upkeep", ms_since(started));
+    }
+
+    /// The app's work that isn't drawing: before each frame, and while the window's hidden (minimised, say) whenever
+    /// something's asked for the app to be woken (see `eframe::App::logic`). What's come from runs and nodes' threads,
+    /// the nodes' work on the GUI's thread (see `Node::background`), stopping what's unattended, and keeping the run up
+    /// to date.
+    pub fn logic(&mut self, ctx: &egui::Context) {
+        // Keep (and echo) what's been logged, so the log's queue doesn't fill.
+        crate::core::console::drain();
+        self.direct_triggers.wake(ctx);
+        self.deliver_triggers();
+        self.background(ctx);
+        self.stop_unattended();
+        self.upkeep(ctx);
+    }
+
+    /// Takes what's changed (in the GUI, by nodes or from triggers) as a version, unless it's locked, and keeps the run
+    /// up to date with it.
+    fn upkeep(&mut self, ctx: &egui::Context) {
+        self.lock(ctx);
+        self.history.record(&self.graph, &self.annotations, ctx);
+        self.keep_running(ctx);
+    }
+
+    /// The nodes' work on the GUI's thread (see `Node::background`), each with its state on the GUI's side; woken again
+    /// when the first of them asks to be.
+    fn background(&mut self, ctx: &egui::Context) {
+        self.ui_states.keep(&self.graph);
+        let resolved = self.graph.resolve();
+        let shared = shared(&self.runner, &self.last_run);
+        let (colours, base, running, locked) =
+            (self.colours(), self.base_directories.place(), self.runner.is_some(), self.locked());
+        let mut wake: Option<Instant> = None;
+        for id in self.graph.ids().collect::<Vec<_>>() {
+            let (Some(state), Some(ui_state)) = (resolved.get(&id), self.ui_states.get(&self.graph, id)) else {
+                continue;
+            };
+            let inputs = &state.input_streams;
+            let next = self.graph.edit(
+                id,
+                inputs,
+                colours,
+                shared.as_deref(),
+                Some(ui_state),
+                base.as_ref(),
+                running,
+                locked,
+                None,
+                |node, context| node.background(context),
+            );
+            if let Some(next) = next.flatten() {
+                wake = Some(wake.map_or(next, |wake| wake.min(next)));
+            }
+        }
+        if let Some(at) = wake {
+            ctx.request_repaint_after(at.saturating_duration_since(Instant::now()));
+        }
     }
 }
 
@@ -1647,6 +1723,10 @@ fn ms_since(start: Instant) -> f32 {
 }
 
 impl<N: NodesEnum, A: AnnotationsEnum> eframe::App for App<N, A> {
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        App::logic(self, ctx);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.last_cpu = frame.info().cpu_usage;
         self.show(ui);
@@ -1674,6 +1754,37 @@ fn clock_text(seconds: f64) -> String {
         format!("{hours}:{minutes:02}:{seconds:02}.{tenths}")
     } else {
         format!("{minutes:02}:{seconds:02}.{tenths}")
+    }
+}
+
+/// What's to stop, as it's said: whether recording too, if acquisition.
+fn unattended_what(stopping: preferences::Stopping, recording: bool) -> &'static str {
+    match stopping {
+        preferences::Stopping::Recording => "Recording",
+        preferences::Stopping::Acquisition if recording => "Acquisition and recording",
+        preferences::Stopping::Acquisition => "Acquisition",
+    }
+}
+
+/// Each node's state on the GUI's side (see `Node::UiState`), by node, with the type of node it's for: a file opened can
+/// have other nodes with the same ids.
+#[derive(Default)]
+pub(crate) struct UiStates(HashMap<NodeId, (usize, crate::core::engine::UiStateCell)>);
+
+impl UiStates {
+    /// Node `id`'s, if it's kept, for a node of its type.
+    pub(crate) fn get<N: NodesEnum>(&self, graph: &Graph<N>, id: NodeId) -> Option<&crate::core::engine::UiStateCell> {
+        let (kind, state) = self.0.get(&id)?;
+        (graph.get(id)?.node.type_index() == *kind).then_some(state)
+    }
+
+    /// Keeps one for each of `graph`'s nodes, as it starts for those without one, letting go of the rest.
+    fn keep<N: NodesEnum>(&mut self, graph: &Graph<N>) {
+        let kind = |id: NodeId| graph.get(id).map(|entry| entry.node.type_index());
+        self.0.retain(|id, (of, _)| kind(*id) == Some(*of));
+        for (id, entry) in graph.iter() {
+            self.0.entry(id).or_insert_with(|| (entry.node.type_index(), entry.node.new_ui_state().into()));
+        }
     }
 }
 
@@ -1803,6 +1914,12 @@ mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/rig.json")
     }
 
+    /// A frame of the app, as eframe runs it: its logic, then its UI.
+    fn run_app(ui: &mut egui::Ui, app: &mut TestApp) {
+        app.logic(&ui.ctx().clone());
+        app.show(ui);
+    }
+
     fn harness() -> Harness<'static, TestApp> {
         let mut app = TestApp::open(Some(example()), THEMES)
             .with_quick_actions(crate::components::quick_actions::QUICK_ACTIONS)
@@ -1815,10 +1932,7 @@ mod tests {
         // Most tests work on the graph.
         app.layout.mode = Mode::Advanced;
         assert!(app.status.is_none(), "the example opens");
-        let mut harness = Harness::builder()
-            .with_size([1400.0, 850.0])
-            .wgpu()
-            .build_ui_state(|ui, app: &mut TestApp| app.show(ui), app);
+        let mut harness = Harness::builder().with_size([1400.0, 850.0]).wgpu().build_ui_state(run_app, app);
         harness.run_steps(3);
         harness
     }
@@ -2690,10 +2804,7 @@ mod tests {
     fn says_where_the_last_crash_report_is() {
         let mut app = TestApp::open(None, THEMES);
         app.last_crash = Some(PathBuf::from("/reports/crash-2026-11-02-210040.txt"));
-        let mut harness = Harness::builder()
-            .with_size([1000.0, 600.0])
-            .wgpu()
-            .build_ui_state(|ui, app: &mut TestApp| app.show(ui), app);
+        let mut harness = Harness::builder().with_size([1000.0, 600.0]).wgpu().build_ui_state(run_app, app);
         harness.run_steps(2);
         assert!(harness.query_by_label_contains("crash-2026-11-02-210040.txt").is_some(), "where it is");
         harness.snapshot("last_crash");
@@ -2710,10 +2821,7 @@ mod tests {
             serde_json::json!({ "types": { "Subject, date and trial": { "directory": "/nowhere/recordings" } } });
         let types = crate::components::BASE_DIRECTORIES;
         app.base_directories = BaseDirectories::new(types, Some(&saved));
-        let mut harness = Harness::builder()
-            .with_size([1400.0, 850.0])
-            .wgpu()
-            .build_ui_state(|ui, app: &mut TestApp| app.show(ui), app);
+        let mut harness = Harness::builder().with_size([1400.0, 850.0]).wgpu().build_ui_state(run_app, app);
         harness.run_steps(3);
         assert_eq!(harness.state().layout.mode, Mode::Basic, "it starts in the basic view");
         harness.snapshot("basic_empty");
@@ -2890,10 +2998,7 @@ mod tests {
     #[test]
     fn what_no_one_is_using_stops_with_a_warning_first_and_a_notice_after() {
         let app = TestApp::open(None, THEMES);
-        let mut harness = Harness::builder()
-            .with_size([900.0, 600.0])
-            .wgpu()
-            .build_ui_state(|ui, app: &mut TestApp| app.show(ui), app);
+        let mut harness = Harness::builder().with_size([900.0, 600.0]).wgpu().build_ui_state(run_app, app);
         harness.run_steps(2);
         let ctx = harness.ctx.clone();
         harness.state_mut().perform(&ctx, Action::Record);
@@ -2904,8 +3009,8 @@ mod tests {
         }
         let recording = |app: &TestApp| app.history.current.snapshot.recording.is_some();
         let idle_for = |harness: &mut Harness<TestApp>, minutes: f64| {
-            let now = harness.ctx.input(|i| i.time);
-            harness.state_mut().last_input = now - minutes * 60.0;
+            harness.state_mut().last_input = Instant::now();
+            harness.state_mut().idle_extra = std::time::Duration::from_secs_f64(minutes * 60.0);
             harness.run_steps(2);
         };
 
@@ -2930,6 +3035,21 @@ mod tests {
         assert!(harness.query_by_label_contains("will stop in").is_none());
         assert!(harness.state().runner.is_some());
         harness.state_mut().perform(&ctx, Action::Play);
+    }
+
+    /// With the window hidden (minimised, say), the app's logic still runs when it's woken, without drawing: so what's
+    /// unattended stops all the same.
+    #[test]
+    fn what_no_one_is_using_stops_with_the_window_hidden() {
+        let mut app = TestApp::open(None, THEMES);
+        let ctx = egui::Context::default();
+        app.perform(&ctx, Action::Play);
+        app.logic(&ctx);
+        assert!(app.runner.is_some());
+        app.idle_extra = std::time::Duration::from_secs(121 * 60);
+        app.logic(&ctx);
+        assert!(app.runner.is_none(), "stopped, with nothing drawn");
+        assert_eq!(app.stopped_unattended.len(), 1, "to say so when it's next shown");
     }
 
     /// Annotation types hidden in Settings aren't among the drawing tools, from when the app starts; and only so many
@@ -3202,9 +3322,11 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert_eq!(task(harness.state()).as_deref(), Some("first"), "not while recording");
-        let shared = harness.state().runner.as_ref().unwrap().shared();
-        let history = shared.get::<crate::standard_components::logs::log_viewer::LogHistory>(viewer).unwrap();
-        assert_eq!(history.lines(), ["trial 1"], "the Log Viewer has it too");
+        // Taken by the Log Viewer on the GUI's side, its window open or not.
+        use crate::standard_components::logs::log_viewer::KeptLines;
+        let app = harness.state();
+        let kept = app.ui_states.get(&app.graph, viewer).unwrap().borrow().downcast_ref().map(KeptLines::lines);
+        assert_eq!(kept, Some(vec!["trial 1".to_string()]), "the Log Viewer has it too");
         harness.state_mut().perform(&ctx, Action::Record);
         until(&mut harness, "the settings held back", &|app| task(app).as_deref() == Some("second"));
         harness.state_mut().perform(&ctx, Action::Play);

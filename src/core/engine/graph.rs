@@ -601,6 +601,7 @@ impl<N: NodesEnum> Graph<N> {
         inputs: &[Option<DataStream<N>>],
         theme: &Colours,
         shared_by_node: Option<&super::SharedByNode>,
+        ui_state: Option<&crate::core::engine::UiStateCell>,
         base_directory: Option<&crate::core::base_directory::Place>,
         running: bool,
         locked: bool,
@@ -612,6 +613,15 @@ impl<N: NodesEnum> Graph<N> {
         let controlled_by = self.controlled_by(id);
         let entry = self.nodes.get_mut(&id)?;
         let read_only: Vec<bool> = entry.node.controls().iter().map(|c| c.read_only).collect();
+        // A fresh one, if the caller doesn't keep it (a test, say).
+        let fresh;
+        let ui_state = match ui_state {
+            Some(ui_state) => ui_state,
+            None => {
+                fresh = std::cell::RefCell::new(entry.node.new_ui_state());
+                &fresh
+            }
+        };
         let context = &mut UiContext {
             inputs,
             controls: &mut controls,
@@ -619,6 +629,7 @@ impl<N: NodesEnum> Graph<N> {
             theme,
             node: id,
             shared_by_node,
+            ui_state,
             base_directory,
             running,
             locked,
@@ -860,7 +871,7 @@ mod tests {
         let thresholds = |uv: Vec<f32>| Setting::Thresholds(spikes::Thresholds(uv));
         assert_eq!(graph.control_values(viewer), vec![Some(thresholds(vec![])), None]);
         let theme = &crate::standard_components::themes::THEMES[0].colours;
-        graph.edit(viewer, &[], theme, None, None, false, false, None, |_, context| {
+        graph.edit(viewer, &[], theme, None, None, None, false, false, None, |_, context| {
             context.controls[0] = Some(thresholds(vec![55.0]))
         });
         assert_eq!(graph.get(detector).unwrap().node.settings()[0].value, thresholds(vec![55.0]));

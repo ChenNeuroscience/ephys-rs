@@ -28,6 +28,7 @@ impl Node<Edges> for VideoViewer {
     type State = ();
     /// The latest frames, for its window: their buffers, swapped in (so a pool of buffers like the pass's).
     type Shared = Pool<VideoBuffer>;
+    type UiState = ();
 
     fn inputs(&self) -> Vec<Input<Edges>> {
         vec![Input { name: "video", kind: Kind::Video }]

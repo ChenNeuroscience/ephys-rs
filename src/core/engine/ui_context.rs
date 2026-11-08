@@ -1,11 +1,17 @@
 //! What a node's window works with (`UiContext`): its inputs, the settings its controls see, what its passes share,
 //! and the buttons every node has (`NodeToolbar`).
 
+use std::any::Any;
+use std::cell::{RefCell, RefMut};
+
 use eframe::egui;
 
 use super::{Edges, NodeId, Shared, SharedByNode};
 use crate::core::theme::Colours;
 use crate::core::triggers::{AnyTrigger, TriggerKey};
+
+/// A node's state on the GUI's side (its `Node::UiState`), as the app keeps it.
+pub type UiStateCell = RefCell<Box<dyn Any>>;
 
 /// What a node's UI gets to work with besides its own settings.
 pub struct UiContext<'a, E: Edges> {
@@ -23,6 +29,8 @@ pub struct UiContext<'a, E: Edges> {
     /// What the nodes' passes share with the GUI (see `crate::core::engine::Shared`): the run's, or the last run's, once
     /// it's stopped.
     pub shared_by_node: Option<&'a SharedByNode>,
+    /// The node's state on the GUI's side (see `ui_state`).
+    pub ui_state: &'a UiStateCell,
     /// The base directory recordings go in (see `crate::core::base_directory`): the next one's, or the one going
     /// on's. For a writer to say where it'll write.
     pub base_directory: Option<&'a crate::core::base_directory::Place>,
@@ -42,6 +50,12 @@ impl<'a, E: Edges> UiContext<'a, E> {
     /// what's shown stays: `running` says which).
     pub fn shared<T: Shared>(&self) -> Option<&'a T> {
         self.shared_by_node?.get(self.node)
+    }
+
+    /// The node's state on the GUI's side (its `Node::UiState`, which is `T`). Borrowed from the app, not the context,
+    /// so the context can still be used while it's held.
+    pub fn ui_state<T: 'static>(&self) -> RefMut<'a, T> {
+        RefMut::map(self.ui_state.borrow_mut(), |state| state.downcast_mut().expect("the node's own Node::UiState"))
     }
 
     /// The node's toolbar (see `NodeToolbar::toolbar`), if there is one here.

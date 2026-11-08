@@ -10,8 +10,8 @@ use crate::core::engine::{Graph, NodeId, NodesEnum, Port, PortRole, Resolved};
 use crate::core::theme::Colours;
 
 /// The window of a node without a view of its own: what it is, its settings, and its connections. `live` is the run's
-/// pass triggers, while running, for its triggers to go to; `shared`, what its passes share with it: the run's, or the
-/// last run's, once it's stopped.
+/// pass triggers, while running, for its triggers to go to; `gui`, what its passes share with it (the run's, or the
+/// last run's, once it's stopped), and its state on the GUI's side.
 #[allow(clippy::too_many_arguments)]
 pub fn show<N: NodesEnum>(
     ui: &mut egui::Ui,
@@ -19,7 +19,7 @@ pub fn show<N: NodesEnum>(
     resolved: &Resolved<N::Edges>,
     colours: &Colours,
     live: Option<&crate::core::pass_triggers::PassTriggers>,
-    shared: Option<&crate::core::engine::SharedByNode>,
+    gui: (Option<&crate::core::engine::SharedByNode>, Option<&crate::core::engine::UiStateCell>),
     base_directory: Option<&crate::core::base_directory::Place>,
     locked: bool,
     advanced: bool,
@@ -71,7 +71,8 @@ pub fn show<N: NodesEnum>(
                 id,
                 &state.input_streams,
                 colours,
-                shared,
+                gui.0,
+                gui.1,
                 base_directory,
                 running,
                 locked,
@@ -137,7 +138,19 @@ mod tests {
                     let mut events = Vec::new();
                     let live = running.then_some(&triggers);
                     let colours = &THEMES[0].colours;
-                    show(ui, graph, &resolved, colours, live, Some(&shared), None, false, true, id, &mut events);
+                    show(
+                        ui,
+                        graph,
+                        &resolved,
+                        colours,
+                        live,
+                        (Some(&shared), None),
+                        None,
+                        false,
+                        true,
+                        id,
+                        &mut events,
+                    );
                 },
                 graph,
             );
@@ -160,7 +173,7 @@ mod tests {
                 let mut events = Vec::new();
                 egui::Frame::new().inner_margin(PANE_MARGIN).show(ui, |ui| {
                     let colours = &THEMES[0].colours;
-                    show(ui, graph, &resolved, colours, None, None, None, false, true, id, &mut events);
+                    show(ui, graph, &resolved, colours, None, (None, None), None, false, true, id, &mut events);
                 });
             },
             graph,

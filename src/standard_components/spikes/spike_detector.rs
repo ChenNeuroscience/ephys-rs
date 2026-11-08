@@ -139,6 +139,7 @@ impl Node<Edges> for SpikeDetector {
 
     type State = Detector;
     type Shared = ();
+    type UiState = ();
 
     fn initial_state(&self, inputs: &[Option<DataStream>]) -> Detector {
         match inputs[0] {

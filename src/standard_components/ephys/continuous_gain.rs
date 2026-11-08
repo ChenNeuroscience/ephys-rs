@@ -68,6 +68,7 @@ impl Sampling {
 impl Node<Edges> for ContinuousGain {
     type State = Gaining;
     type Shared = ();
+    type UiState = ();
 
     const INFO: NodeInfo = NodeInfo {
         name: "Continuous Gain",

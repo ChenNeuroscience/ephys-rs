@@ -2,19 +2,22 @@
 //! switches edit the Alarm Processor's settings through a control; adding, removing and the rest are in its own window,
 //! which it has a button for, in basic mode too. The processor's data stays with it: this only gets the alarms' states.
 //!
-//! Switching an alarm off changes what the processor needs, and so the plan. While recording, the graph can't change, so
-//! an alarm switched off is only ignored here (`Overrides`); that's saved in the settings once recording's stopped, if
-//! the window's open by then. And an alarm off when recording started has no data coming, so can't come on until then.
+//! Its passes send every pass's alarm states to the GUI's side (`Update`), where its work on the GUI's thread (see
+//! `Node::background`) keeps track of them, whether its window's open or not, for the window to show.
 //!
-//! It can also pip as an alarm goes off, at a pitch for what it watches (see `tone`), from the passes, so with its window
-//! closed too, but only while recording, as what's wrong before then needn't fill the room. An alarm still going off pips
+//! Switching an alarm off changes what the processor needs, and so the plan. While recording, the graph can't change, so
+//! an alarm switched off is only ignored here (`Overrides`); that's saved in the settings once recording's stopped. And an
+//! alarm off when recording started has no data coming, so can't come on until then.
+//!
+//! It can also pip as an alarm goes off, at a pitch for what it watches (see `tone`), on the GUI's side, so with its
+//! window closed (or the app minimised) too, but only while recording, as what's wrong before then needn't fill the room. An alarm still going off pips
 //! again, more each time (`REMINDERS`), in case the first were missed, and one going off as recording starts pips then. Which
 //! alarms pip is its own setting, not the processor's. That's locked while recording too, but as nothing depends on it, it
 //! can go either way (`Overrides` again).
 //!
 //! The buttons for all the alarms are only shortcuts: they set each one.
 
-use std::sync::Mutex;
+use std::time::Instant;
 
 use eframe::egui::{self, Color32, CornerRadius, RichText, Stroke};
 use serde::{Deserialize, Serialize};
@@ -23,7 +26,7 @@ use super::settings::{BUTTON_GAP, all_power, title};
 use super::tone::Tone;
 use super::{Alarm, AlarmKind, AlarmState, AlarmStates, Alarms, Phase, Source};
 use crate::core::engine::{
-    Category, Control, Flow, Input, Node, NodeInfo, NodeThread, Output, Pass, PassState, UiContext,
+    Category, Control, Flow, Input, Node, NodeInfo, NodeThread, Output, Pass, PassState, PoolStatus, Shared, UiContext,
 };
 use crate::core::gui::widgets::Icon;
 use crate::core::theme::Colours;
@@ -43,40 +46,25 @@ pub struct AlarmViewer {
     pub sounding: Vec<u32>,
 }
 
-/// What's been switched while recording, for the passes and the window to go by.
+/// What's been switched while recording, on the GUI's side.
 #[derive(Default)]
 pub struct Overrides {
     /// The alarms switched off, by id: while recording there's no adding or removing them.
-    ignored: Mutex<Vec<u32>>,
+    ignored: Vec<u32>,
     /// The alarms whose sound has been switched, by id.
-    sounds: Mutex<Vec<u32>>,
-}
-
-/// What the passes share with the window: how the alarms stand, and what's been switched.
-#[derive(Default)]
-pub struct AlarmsShared {
-    shown: Pool<AlarmsDisplay>,
-    overrides: Overrides,
-}
-
-impl crate::core::engine::Shared for AlarmsShared {
-    fn pools(&self) -> Vec<(&'static str, crate::core::engine::PoolStatus)> {
-        vec![("display", self.shown.status())]
-    }
+    sounds: Vec<u32>,
 }
 
 impl Overrides {
     /// Whether alarm `id` has been switched off.
     fn ignored(&self, id: u32) -> bool {
-        self.ignored.lock().is_ok_and(|ignored| ignored.contains(&id))
+        self.ignored.contains(&id)
     }
 
-    fn set_ignored(&self, id: u32, ignore: bool) {
-        if let Ok(mut ignored) = self.ignored.lock() {
-            ignored.retain(|ignored| *ignored != id);
-            if ignore {
-                ignored.push(id);
-            }
+    fn set_ignored(&mut self, id: u32, ignore: bool) {
+        self.ignored.retain(|ignored| *ignored != id);
+        if ignore {
+            self.ignored.push(id);
         }
     }
 
@@ -90,26 +78,39 @@ impl Overrides {
 
     /// Whether alarm `id` pips, given the setting.
     fn sounds(&self, id: u32, setting: &[u32]) -> bool {
-        setting.contains(&id) != self.sounds.lock().is_ok_and(|sounds| sounds.contains(&id))
+        setting.contains(&id) != self.sounds.contains(&id)
     }
 
-    fn switch_sound(&self, id: u32) {
-        if let Ok(mut sounds) = self.sounds.lock() {
-            flip(&mut sounds, id);
-        }
+    fn switch_sound(&mut self, id: u32) {
+        flip(&mut self.sounds, id);
     }
 
     /// Moves what's been switched into the settings, as recording's over.
-    fn save(&self, alarms: &mut Alarms, sounding: &mut Vec<u32>) {
-        if let Ok(mut switched) = self.sounds.lock() {
-            switched.drain(..).for_each(|id| flip(sounding, id));
-        }
-        if let Ok(mut ignored) = self.ignored.lock() {
-            for alarm in alarms.list.iter_mut().filter(|alarm| ignored.contains(&alarm.id)) {
+    fn save(&mut self, alarms: Option<&mut Alarms>, sounding: &mut Vec<u32>) {
+        self.sounds.drain(..).for_each(|id| flip(sounding, id));
+        for alarm in alarms.into_iter().flat_map(|alarms| &mut alarms.list) {
+            if self.ignored.contains(&alarm.id) {
                 alarm.on = false;
             }
-            ignored.clear();
         }
+        self.ignored.clear();
+    }
+}
+
+/// What its passes send the GUI's side, every pass: that a pass has come (so long, and whether it's recording), then
+/// how each alarm stood in it.
+pub enum Update {
+    Pass { seconds: f64, recording: bool },
+    State(AlarmState),
+}
+
+/// What its passes share with the GUI: every pass's alarm states, in order.
+#[derive(Default)]
+pub struct SentStates(Pool<Vec<Update>>);
+
+impl Shared for SentStates {
+    fn pools(&self) -> Vec<(&'static str, PoolStatus)> {
+        vec![("alarm states", self.0.status())]
     }
 }
 
@@ -136,18 +137,29 @@ const FIRST_PIPS: u8 = 2;
 /// How long an alarm's to have been going off for more pips, and how many. After the last it says no more.
 const REMINDERS: [(f64, u8); 2] = [(30.0, 3), (60.0, 4)];
 
-/// What the passes keep to hand.
+/// While running: what's not been sent to the GUI yet.
 #[derive(Default)]
-pub struct Showing {
-    tone: Tone,
-    /// The alarms going off as of the last pass.
+pub struct Sending {
+    pending: Vec<Update>,
+}
+
+impl PassState for Sending {
+    const WHY: &'static str = "What the GUI hasn't been sent yet, which each pass adds to, in order.";
+}
+
+/// How many passes' updates wait, at most, for the GUI to take them (if it's held up): a minute's.
+const PENDING_PASSES: usize = 3000;
+
+/// The Alarm Viewer on the GUI's side: how the alarms stand (as of the last pass sent), how long those going off have
+/// been, what's been switched while recording, and the sound.
+#[derive(Default)]
+pub struct AlarmsUi {
+    shown: AlarmsDisplay,
     going_off: Vec<GoingOff>,
     /// Whether the last pass was recording.
     recording: bool,
-}
-
-impl PassState for Showing {
-    const WHY: &'static str = "The pool of states for its window, and what's being ignored.";
+    overrides: Overrides,
+    tone: Tone,
 }
 
 /// What's shown: how each alarm stands.
@@ -159,8 +171,9 @@ pub struct AlarmsDisplay {
 }
 
 impl Node<Edges> for AlarmViewer {
-    type State = Showing;
-    type Shared = AlarmsShared;
+    type State = Sending;
+    type Shared = SentStates;
+    type UiState = AlarmsUi;
 
     const INFO: NodeInfo = NodeInfo {
         name: "Alarm Viewer",
@@ -190,32 +203,77 @@ impl Node<Edges> for AlarmViewer {
         vec![NodeThread {
             name: "Alarm tone",
             link: "flag",
-            flow: Flow::FromPasses,
+            flow: Flow::FromGui,
             why: "On a thread of its own so that opening the sound device, the first time an alarm sounds, can't hold \
-                  up the passes. Only started if it's needed.",
+                  up the GUI. Only started if it's needed.",
             swapped_outputs: Vec::new(),
         }]
     }
 
-    fn process(&self, pass: &mut Pass<Edges>, showing: &mut Showing) {
+    /// Sends the pass's alarm states to the GUI's side.
+    fn process(&self, pass: &mut Pass<Edges>, sending: &mut Sending) {
         let Some(Some(Buffer::AlarmStates(input))) = pass.inputs.first().copied() else { return };
-        let AlarmsShared { shown, overrides } = pass.shared::<AlarmsShared>();
-        let states = input.states.iter().map(|state| overrides.apply(*state));
-        let tone = &mut showing.tone;
-        let was_recording = std::mem::replace(&mut showing.recording, pass.recording);
-        let recording = (was_recording, pass.recording);
-        pips_due(&mut showing.going_off, states.clone(), pass.duration, recording, |state, pips| {
-            if overrides.sounds(state.id, &self.sounding) {
-                tone.pips(state.source.index(), pips);
+        let pending = &mut sending.pending;
+        pending.push(Update::Pass { seconds: pass.duration, recording: pass.recording });
+        pending.extend(input.states.iter().map(|state| Update::State(*state)));
+        // If the GUI's held up a long while, the oldest passes go.
+        if pending.len() > 2 * PENDING_PASSES * (1 + input.states.len()) {
+            let keep = PENDING_PASSES * (1 + input.states.len());
+            pending.drain(..pending.len() - keep);
+            let first = pending.iter().position(|update| matches!(update, Update::Pass { .. }));
+            pending.drain(..first.unwrap_or(pending.len()));
+        }
+        pass.shared::<SentStates>().0.send_pending(pending);
+    }
+
+    /// Goes through the passes sent, keeping track of the alarms going off, and pipping as they do; and once recording's
+    /// over, saves what was switched while it was.
+    fn background(&mut self, context: &mut UiContext<Edges>) -> Option<Instant> {
+        let mut ui = context.ui_state::<AlarmsUi>();
+        let AlarmsUi { shown, going_off, recording, overrides, tone } = &mut *ui;
+        if !context.locked && (!overrides.ignored.is_empty() || !overrides.sounds.is_empty()) {
+            let alarms = match &mut context.controls[ALARMS] {
+                Some(Setting::Alarms(alarms)) => Some(alarms),
+                _ => None,
+            };
+            overrides.save(alarms, &mut self.sounding);
+        }
+        let sent = context.shared::<SentStates>()?;
+        // A pass's states, once they've all come.
+        let mut pass = |seconds: f64, now_recording: bool, states: &mut Vec<AlarmState>| {
+            for state in states.iter_mut() {
+                *state = overrides.apply(*state);
+            }
+            let was_recording = std::mem::replace(recording, now_recording);
+            let sounding = &self.sounding;
+            pips_due(going_off, states.iter().copied(), seconds, (was_recording, now_recording), |state, pips| {
+                if overrides.sounds(state.id, sounding) {
+                    tone.pips(state.source.index(), pips);
+                }
+            });
+            std::mem::swap(&mut shown.states, states);
+            states.clear();
+        };
+        let mut states = Vec::new();
+        sent.0.receive_all(|updates| {
+            let mut current = None;
+            for update in updates {
+                match update {
+                    Update::Pass { seconds, recording } => {
+                        if let Some((seconds, recording)) = current.replace((seconds, recording)) {
+                            pass(seconds, recording, &mut states);
+                        }
+                    }
+                    Update::State(state) => states.push(state),
+                }
+            }
+            if let Some((seconds, recording)) = current {
+                pass(seconds, recording, &mut states);
             }
         });
-        let going_off = &showing.going_off;
-        shown.send_newest(pass.sequence, |display| {
-            display.states.clear();
-            display.states.extend(states);
-            display.going_off.clear();
-            display.going_off.extend(going_off.iter().map(|going| (going.id, going.seconds)));
-        });
+        shown.going_off.clear();
+        shown.going_off.extend(going_off.iter().map(|going| (going.id, going.seconds)));
+        None
     }
 
     fn settings_ui(&mut self, ui: &mut egui::Ui, _context: &mut UiContext<Edges>) {
@@ -230,15 +288,12 @@ impl Node<Edges> for AlarmViewer {
             return preview::unconnected(ui, context.theme, "Connect an Alarm Processor's alarms and its setting");
         };
         let mut alarms = alarms.clone();
-        let shared = context.shared::<AlarmsShared>();
-        let overrides = shared.map(|shared| &shared.overrides);
         let (locked, theme) = (context.locked, context.theme);
-        if let (false, Some(overrides)) = (locked, overrides) {
-            overrides.save(&mut alarms, &mut self.sounding);
-        }
-        let display = shared.and_then(|shared| shared.shown.newest());
-        let states = display.as_ref().map(|d| d.states.as_slice());
-        let going_off = display.as_ref().map_or(&[][..], |d| d.going_off.as_slice());
+        let mut gui = context.ui_state::<AlarmsUi>();
+        let AlarmsUi { shown, overrides, .. } = &mut *gui;
+        // Nothing to show until it's run.
+        let states = (!shown.states.is_empty()).then_some(shown.states.as_slice());
+        let going_off = shown.going_off.as_slice();
 
         ui.horizontal(|ui| context.node_toolbar(ui));
         banner(ui, theme, &alarms, stream, states);
@@ -336,25 +391,25 @@ fn switch(ui: &mut egui::Ui, on: &mut bool, ignored: Option<bool>, locked: bool,
 }
 
 /// Whether `alarm` is on, with what's been switched while recording.
-fn active(alarm: &Alarm, overrides: Option<&Overrides>) -> bool {
-    alarm.on && !overrides.is_some_and(|o| o.ignored(alarm.id))
+fn active(alarm: &Alarm, overrides: &Overrides) -> bool {
+    alarm.on && !overrides.ignored(alarm.id)
 }
 
 /// Whether alarm `id` pips, with what's been switched while recording.
-fn sounds(overrides: Option<&Overrides>, id: u32, sounding: &[u32]) -> bool {
-    overrides.map_or(sounding.contains(&id), |o| o.sounds(id, sounding))
+fn sounds(overrides: &Overrides, id: u32, sounding: &[u32]) -> bool {
+    overrides.sounds(id, sounding)
 }
 
 /// Whether any alarm that's on has sound.
-fn any_sound(alarms: &Alarms, overrides: Option<&Overrides>, sounding: &[u32]) -> bool {
+fn any_sound(alarms: &Alarms, overrides: &Overrides, sounding: &[u32]) -> bool {
     alarms.list.iter().any(|alarm| active(alarm, overrides) && sounds(overrides, alarm.id, sounding))
 }
 
 /// Switches whether alarm `id` pips: only for now, while recording.
-fn switch_sound(overrides: Option<&Overrides>, id: u32, locked: bool, sounding: &mut Vec<u32>) {
-    match overrides {
-        Some(overrides) if locked => overrides.switch_sound(id),
-        _ => flip(sounding, id),
+fn switch_sound(overrides: &mut Overrides, id: u32, locked: bool, sounding: &mut Vec<u32>) {
+    match locked {
+        true => overrides.switch_sound(id),
+        false => flip(sounding, id),
     }
 }
 
@@ -364,7 +419,7 @@ fn switch_sound(overrides: Option<&Overrides>, id: u32, locked: bool, sounding: 
 fn all_row(
     ui: &mut egui::Ui,
     alarms: &mut Alarms,
-    overrides: Option<&Overrides>,
+    overrides: &mut Overrides,
     locked: bool,
     sounding: &mut Vec<u32>,
     waiting_to_sound: bool,
@@ -379,45 +434,43 @@ fn all_row(
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = BUTTON_GAP;
                 if !alarms.list.is_empty() {
-                    ui.add_enabled_ui(!locked || overrides.is_some(), |ui| {
-                        // While recording, those off since it started can't come on, so don't count.
-                        let can_switch = |alarm: &&mut Alarm| !locked || alarm.on;
-                        let count = alarms.list.iter().filter(|a| !locked || a.on).count();
-                        let on = alarms.list.iter().filter(|a| active(a, overrides)).count();
-                        if let Some(all) = all_power(ui, on, count) {
-                            for alarm in alarms.list.iter_mut().filter(can_switch) {
-                                match overrides {
-                                    Some(overrides) if locked => overrides.set_ignored(alarm.id, !all),
-                                    _ => alarm.on = all,
-                                }
+                    // While recording, those off since it started can't come on, so don't count.
+                    let can_switch = |alarm: &&mut Alarm| !locked || alarm.on;
+                    let count = alarms.list.iter().filter(|a| !locked || a.on).count();
+                    let on = alarms.list.iter().filter(|a| active(a, overrides)).count();
+                    if let Some(all) = all_power(ui, on, count) {
+                        for alarm in alarms.list.iter_mut().filter(can_switch) {
+                            match locked {
+                                true => overrides.set_ignored(alarm.id, !all),
+                                false => alarm.on = all,
                             }
                         }
-                        let active_alarms = || alarms.list.iter().filter(|alarm| active(alarm, overrides));
-                        let any = active_alarms().next().is_some();
-                        let quiet = active_alarms().filter(|a| !sounds(overrides, a.id, sounding)).count();
-                        let mut all = any && quiet == 0;
-                        let mixed = any && !all && quiet < active_alarms().count();
-                        let tip = mixed.then_some("Some pip: click for them all to");
-                        let button = ui
-                            .add_enabled_ui(any, |ui| {
-                                let button = match tip {
-                                    Some(tip) => small_toggle(ui, Icon::Sound, &mut all, "All sound", tip),
-                                    None => sound_button(ui, &mut all, "All sound"),
-                                };
-                                if mixed {
-                                    mark_mixed(ui, &button);
-                                }
-                                button
-                            })
-                            .inner;
-                        if button.changed() {
-                            for alarm in &alarms.list {
-                                if sounds(overrides, alarm.id, sounding) != all {
-                                    switch_sound(overrides, alarm.id, locked, sounding);
-                                }
+                    }
+                    let active_alarms = || alarms.list.iter().filter(|alarm| active(alarm, overrides));
+                    let any = active_alarms().next().is_some();
+                    let quiet = active_alarms().filter(|a| !sounds(overrides, a.id, sounding)).count();
+                    let mut all = any && quiet == 0;
+                    let mixed = any && !all && quiet < active_alarms().count();
+                    let tip = mixed.then_some("Some pip: click for them all to");
+                    let button = ui
+                        .add_enabled_ui(any, |ui| {
+                            let button = match tip {
+                                Some(tip) => small_toggle(ui, Icon::Sound, &mut all, "All sound", tip),
+                                None => sound_button(ui, &mut all, "All sound"),
+                            };
+                            if mixed {
+                                mark_mixed(ui, &button);
+                            }
+                            button
+                        })
+                        .inner;
+                    if button.changed() {
+                        for alarm in &alarms.list {
+                            if sounds(overrides, alarm.id, sounding) != all {
+                                switch_sound(overrides, alarm.id, locked, sounding);
                             }
                         }
-                    });
+                    }
                 }
                 settings(ui);
             });
@@ -507,7 +560,7 @@ fn row(
     stream: AlarmStates,
     state: Option<AlarmState>,
     off_for: Option<f64>,
-    overrides: Option<&Overrides>,
+    overrides: &mut Overrides,
     locked: bool,
     sounding: &mut Vec<u32>,
 ) {
@@ -538,12 +591,12 @@ fn row(
             ui.set_min_width(ui.available_width());
             ui.horizontal(|ui| {
                 let (id, name) = (alarm.id, alarm.kind.name());
-                let ignored = overrides.map(|o| o.ignored(id));
+                let ignored = Some(overrides.ignored(id));
                 title(ui, alarm.on && ignored != Some(true), name);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = BUTTON_GAP;
                     let switched = ui.add_enabled_ui(connected, |ui| switch(ui, &mut alarm.on, ignored, locked, name));
-                    if let (Some(ignore), Some(overrides)) = (switched.inner, overrides) {
+                    if let Some(ignore) = switched.inner {
                         overrides.set_ignored(id, ignore);
                     }
                     // An alarm that's off has no sound to speak of, whatever it'll have when it's on.
@@ -612,13 +665,56 @@ fn detail(alarm: &Alarm, stream: AlarmStates) -> String {
 mod tests {
     use super::*;
     use crate::Nodes;
-    use crate::core::engine::SharedByNode;
     use crate::core::engine::{Graph, NodesEnum, Port, PortRole};
+    use crate::core::engine::{NodeId, SharedByNode};
     use crate::standard_components::alarms::Selection;
     use crate::standard_components::alarms::processor::AlarmProcessor;
     use crate::standard_components::themes::THEMES;
     use egui_kittest::kittest::Queryable;
-    use std::sync::Arc;
+    use std::any::Any;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// The viewer's state on the GUI's side, shared with a test.
+    type Gui = Rc<RefCell<Box<dyn Any>>>;
+
+    /// What's been switched, in `gui`.
+    fn overrides<R>(gui: &Gui, f: impl FnOnce(&mut Overrides) -> R) -> R {
+        f(&mut gui.borrow_mut().downcast_mut::<AlarmsUi>().unwrap().overrides)
+    }
+
+    /// The viewer's work on the GUI's side, as the app does it, sharing `by_node` with its passes.
+    fn background(
+        graph: &mut Graph<Nodes>,
+        viewer: NodeId,
+        by_node: &SharedByNode,
+        gui: &RefCell<Box<dyn Any>>,
+        locked: bool,
+    ) {
+        let inputs = [Some(DataStream::AlarmStates(STREAM))];
+        graph.edit(viewer, &inputs, &THEMES[0].colours, Some(by_node), Some(gui), None, true, locked, None, |n, c| {
+            _ = n.background(c);
+        });
+    }
+
+    /// `passes` passes of `states` through a viewer, each taken on the GUI's side, recording or not, with `overrides`:
+    /// what it then has there.
+    fn through(states: Vec<AlarmState>, passes: usize, overrides: Overrides, recording: bool) -> AlarmsUi {
+        let mut graph = Graph::<Nodes>::default();
+        let viewer = graph.add(Nodes::AlarmViewer(AlarmViewer::default()), [0.0, 0.0]);
+        let by_node = SharedByNode::default().with(viewer, SentStates::default());
+        let input = Buffer::AlarmStates(super::super::AlarmStatesBuffer { states });
+        let inputs = [Some(&input)];
+        let mut sending = Sending::default();
+        let gui = RefCell::new(Box::new(AlarmsUi { overrides, ..Default::default() }) as Box<dyn Any>);
+        for _ in 0..passes {
+            let mut pass = Pass::new(0, 0.02, &inputs, &mut []);
+            (pass.shared, pass.recording) = (by_node.get::<SentStates>(viewer).unwrap(), recording);
+            AlarmViewer::default().process(&mut pass, &mut sending);
+            background(&mut graph, viewer, &by_node, &gui, recording);
+        }
+        *gui.into_inner().downcast().unwrap()
+    }
 
     const BUTTON: egui::accesskit::Role = egui::accesskit::Role::Button;
     const STREAM: AlarmStates = AlarmStates { groups: 8, group_size: 4, channels: 4, positions: true, lines: 1 };
@@ -641,7 +737,7 @@ mod tests {
         overrides: Overrides,
         locked: bool,
         size: [f32; 2],
-    ) -> (egui_kittest::Harness<'static, Graph<Nodes>>, Arc<SharedByNode>, crate::core::engine::NodeId) {
+    ) -> (egui_kittest::Harness<'static, Graph<Nodes>>, Gui, crate::core::engine::NodeId) {
         window_of(alarms, display, overrides, locked, true, size)
     }
 
@@ -653,7 +749,7 @@ mod tests {
         locked: bool,
         running: bool,
         size: [f32; 2],
-    ) -> (egui_kittest::Harness<'static, Graph<Nodes>>, Arc<SharedByNode>, crate::core::engine::NodeId) {
+    ) -> (egui_kittest::Harness<'static, Graph<Nodes>>, Gui, crate::core::engine::NodeId) {
         let mut graph = Graph::<Nodes>::default();
         let add = |graph: &mut Graph<Nodes>, name: &str| {
             let index = Nodes::TYPES.iter().position(|t| t.name == name).unwrap();
@@ -668,9 +764,9 @@ mod tests {
             Port { node: processor, role: PortRole::Setting, index: 0 },
         );
         graph.connect(from, to).unwrap();
-        let shown = Pool::holding(display.into());
-        let by_node = Arc::new(SharedByNode::default().with(viewer, AlarmsShared { shown, overrides }));
-        let shared = by_node.clone();
+        let gui: Gui =
+            Rc::new(RefCell::new(Box::new(AlarmsUi { shown: display.into(), overrides, ..Default::default() })));
+        let state = gui.clone();
         let stream = Some(DataStream::AlarmStates(STREAM));
         let harness = egui_kittest::Harness::builder().with_size(size).wgpu().build_ui_state(
             move |ui, graph: &mut Graph<Nodes>| {
@@ -678,7 +774,8 @@ mod tests {
                     viewer,
                     &[stream],
                     &THEMES[0].colours,
-                    Some(&shared),
+                    None,
+                    Some(&*state),
                     None,
                     running,
                     locked,
@@ -688,7 +785,7 @@ mod tests {
             },
             graph,
         );
-        (harness, by_node, processor)
+        (harness, gui, processor)
     }
 
     fn processor_alarms(graph: &Graph<Nodes>, id: crate::core::engine::NodeId) -> Alarms {
@@ -825,19 +922,9 @@ mod tests {
 
     #[test]
     fn the_time_going_off_gets_to_the_window() {
-        let viewer = AlarmViewer::default();
-        let mut showing = Showing::default();
-        let states = vec![state(1, Phase::Alarm, 1.0, None)];
-        let input = Buffer::AlarmStates(super::super::AlarmStatesBuffer { states });
-        let inputs = [Some(&input)];
-        let shared = AlarmsShared::default();
-        let mut pass = Pass::new(0, 0.02, &inputs, &mut []);
-        pass.shared = &shared;
-        shared.overrides.set_ignored(0, true);
-        for _ in 0..50 {
-            viewer.process(&mut pass, &mut showing);
-        }
-        let display = shared.shown.newest().unwrap();
+        let mut overrides = Overrides::default();
+        overrides.set_ignored(0, true);
+        let display = through(vec![state(1, Phase::Alarm, 1.0, None)], 50, overrides, false).shown;
         let [(id, seconds)] = display.going_off[..] else { panic!("{:?}", display.going_off) };
         assert_eq!(id, 1);
         assert!((seconds - 0.98).abs() < 1e-6, "{seconds}");
@@ -907,7 +994,7 @@ mod tests {
         // Only those on count.
         let mut alarms = one_of_each();
         alarms.list.iter_mut().for_each(|alarm| alarm.on = false);
-        assert!(!any_sound(&alarms, None, &[0]));
+        assert!(!any_sound(&alarms, &Overrides::default(), &[0]));
     }
 
     #[test]
@@ -1005,45 +1092,44 @@ mod tests {
     fn while_recording_a_switch_only_ignores_until_recording_stops() {
         let mut off = one_of_each();
         off.list[3].on = false;
-        let (mut harness, shared, processor) = window(off, all_clear(), Overrides::default(), true, [460.0, 420.0]);
+        let (mut harness, gui, processor) = window(off, all_clear(), Overrides::default(), true, [460.0, 420.0]);
         harness.run_steps(2);
         harness.get_by_role_and_label(BUTTON, SPIKES).click();
         harness.get_by_role_and_label(BUTTON, TTLS).click();
         harness.run_steps(2);
         let alarms = processor_alarms(harness.state(), processor);
         assert!(alarms.list[0].on, "the graph's left alone");
-        let viewer = crate::core::engine::NodeId(2);
-        let overrides = &shared.get::<AlarmsShared>(viewer).unwrap().overrides;
-        assert!(overrides.ignored(0), "but it's ignored");
-        assert!(!overrides.ignored(3) && !alarms.list[3].on, "one that's off has no data to come back to");
+        assert!(overrides(&gui, |o| o.ignored(0)), "but it's ignored");
+        assert!(!overrides(&gui, |o| o.ignored(3)) && !alarms.list[3].on, "one that's off has no data to come back to");
         harness.get_by_role_and_label(BUTTON, "LFP within range sound").click();
         harness.run_steps(2);
         assert!(viewer_node(harness.state()).sounding.is_empty(), "its setting's left alone too");
-        assert!(overrides.sounds(1, &[]) && !overrides.sounds(1, &[1]), "but it's switched, either way");
-        let (mut saved, mut sounding) = (alarms.clone(), vec![3]);
-        overrides.save(&mut saved, &mut sounding);
-        assert_eq!(sounding, vec![3, 1]);
-        assert!(overrides.sounds(1, &sounding) && !overrides.sounds(1, &[]), "and saved, so nothing's left switched");
-        assert!(!saved.list[0].on && saved.list[1].on && !overrides.ignored(0), "saved once recording's over");
+        assert!(overrides(&gui, |o| o.sounds(1, &[]) && !o.sounds(1, &[1])), "but it's switched, either way");
+
+        // Once recording's over, its work on the GUI's side saves what was switched, window open or not.
+        background(harness.state_mut(), NodeId(2), &SharedByNode::default(), &gui, false);
+        assert_eq!(viewer_node(harness.state()).sounding, vec![1]);
+        let saved = processor_alarms(harness.state(), processor);
+        assert!(!saved.list[0].on && saved.list[1].on, "the ignored ones switched off");
+        assert!(overrides(&gui, |o| o.sounds(1, &[1]) && !o.ignored(0)), "and nothing's left switched");
     }
 
     #[test]
     fn while_recording_all_ignores_what_can_be_ignored() {
         let mut off = one_of_each();
         off.list[3].on = false;
-        let (mut harness, shared, processor) = window(off, all_clear(), Overrides::default(), true, [460.0, 420.0]);
+        let (mut harness, gui, processor) = window(off, all_clear(), Overrides::default(), true, [460.0, 420.0]);
         harness.run_steps(2);
         harness.get_by_role_and_label(BUTTON, "All alarms").click();
         harness.run_steps(2);
-        let overrides = &shared.get::<AlarmsShared>(crate::core::engine::NodeId(2)).unwrap().overrides;
-        assert!((0..3).all(|id| overrides.ignored(id)) && !overrides.ignored(3));
+        assert!(overrides(&gui, |o| (0..3).all(|id| o.ignored(id)) && !o.ignored(3)));
         assert!(processor_alarms(harness.state(), processor).list[0].on, "the graph's left alone");
         harness.get_by_role_and_label(BUTTON, "All alarms").click();
         harness.run_steps(2);
-        assert!((0..3).all(|id| !overrides.ignored(id)), "and back");
+        assert!(overrides(&gui, |o| (0..3).all(|id| !o.ignored(id))), "and back");
         harness.get_by_role_and_label(BUTTON, "All sound").click();
         harness.run_steps(2);
-        assert!((0..4).all(|id| overrides.sounds(id, &[])));
+        assert!(overrides(&gui, |o| (0..4).all(|id| o.sounds(id, &[]))));
         assert!(viewer_node(harness.state()).sounding.is_empty());
     }
 
@@ -1074,13 +1160,15 @@ mod tests {
         graph.connect(port(board, PortRole::Output, 1), port(processor, PortRole::Input, 3)).unwrap();
         graph.connect(port(processor, PortRole::Output, 0), port(viewer, PortRole::Input, 0)).unwrap();
 
-        let snapshot = Snapshot::new(0, graph, None);
+        let snapshot = Snapshot::new(0, graph.clone(), None);
         let runner = Runner::start(&snapshot, 2);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let shared = runner.shared();
-        let pool = &shared.get::<AlarmsShared>(viewer).expect("it runs").shown;
+        let gui = RefCell::new(Box::new(AlarmsUi::default()) as Box<dyn Any>);
+        let shown = |gui: &RefCell<Box<dyn Any>>| gui.borrow().downcast_ref::<AlarmsUi>().unwrap().shown.states.clone();
         loop {
-            let state = pool.newest().and_then(|display| display.states.first().copied());
+            background(&mut graph, viewer, &shared, &gui, false);
+            let state = shown(&gui).first().copied();
             if let Some(AlarmState { phase: Phase::Clear, value, .. }) = state {
                 assert!((1.0..=4.0).contains(&value), "two a second, more or less: {value}");
                 break;
@@ -1089,22 +1177,15 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "never got there: {state:?}");
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        assert_eq!(pool.newest().unwrap().states[1].phase, Phase::Off, "the spikes aren't connected");
+        assert_eq!(shown(&gui)[1].phase, Phase::Off, "the spikes aren't connected");
     }
 
     #[test]
     fn ignored_alarms_are_not_passed_on() {
-        let viewer = AlarmViewer::default();
-        let mut showing = Showing::default();
         let states = (0..2).map(|id| state(id, Phase::Alarm, 1.0, None)).collect();
-        let input = Buffer::AlarmStates(super::super::AlarmStatesBuffer { states });
-        let inputs = [Some(&input)];
-        let shared = AlarmsShared::default();
-        let mut pass = Pass::new(0, 0.02, &inputs, &mut []);
-        pass.shared = &shared;
-        shared.overrides.set_ignored(1, true);
-        viewer.process(&mut pass, &mut showing);
-        let display = shared.shown.newest().unwrap();
+        let mut overrides = Overrides::default();
+        overrides.set_ignored(1, true);
+        let display = through(states, 1, overrides, true).shown;
         assert_eq!(display.states[0].phase, Phase::Alarm);
         assert_eq!(display.states[1].phase, Phase::Off);
     }

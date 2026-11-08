@@ -3,6 +3,7 @@
 //! program's built with in `nodes_enum`.
 
 use std::any::Any;
+use std::time::Instant;
 
 use eframe::egui;
 use serde::Serialize;
@@ -146,6 +147,11 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     /// usually, or `()` for nothing. See `crate::core::engine::Shared`.
     type Shared: Shared + Default;
 
+    /// Its state on the GUI's side: what its window and its work on the GUI's thread (`background`) keep (what's been
+    /// sent them, say), or `()` for nothing. The app keeps it while it has the node, whether its window's shown or not;
+    /// it isn't saved. See `UiContext::ui_state`.
+    type UiState: Default + 'static;
+
     /// Whether the node's window is a UI of its own (`custom_ui`: a viewer's, say), rather than the standard one: its
     /// settings (`settings_ui`), with its name, warnings and ports.
     const HAS_CUSTOM_UI: bool = false;
@@ -182,6 +188,15 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
 
     /// Its window, if it has a UI of its own (see `HAS_CUSTOM_UI`).
     fn custom_ui(&mut self, _ui: &mut egui::Ui, _context: &mut UiContext<E>) {}
+
+    /// Its work on the GUI's thread that isn't drawing, whether its window's shown or not: taking what its passes send
+    /// (see `Shared`), say, or timing something. The app calls it every time round, before each frame, and while its
+    /// window's hidden (minimised, say) whenever it's woken. It returns when it next needs calling, if it does, and the
+    /// app's woken then. It can edit the node's settings, and what its controls see, as a window does. By default,
+    /// nothing.
+    fn background(&mut self, _context: &mut UiContext<E>) -> Option<Instant> {
+        None
+    }
 
     /// What its passes share with the GUI, made for each epoch it runs in, for its inputs' data streams then
     /// (`inputs`). By default, `Default`'s.

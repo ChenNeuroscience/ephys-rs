@@ -6,8 +6,6 @@
 //! Without video, given positions from elsewhere, it shows where they are in the window they range over (the detection's
 //! crop). There's nothing there to adjust, so its settings are only shown, and nothing's edited.
 
-use std::sync::Mutex;
-
 use eframe::egui::{self, Color32, ColorImage, Rect, RichText, Sense, TextureHandle, TextureOptions};
 use serde::{Deserialize, Serialize};
 
@@ -20,7 +18,7 @@ use crate::core::engine::{
     Category, Control, EdgeType, Input, Node, NodeInfo, Output, Pass, PoolStatus, Shared, UiContext,
 };
 use crate::core::theme::Colours;
-use crate::standard_components::pool::{Pool, WINDOW_BUFFERS};
+use crate::standard_components::pool::Pool;
 use crate::standard_components::preview;
 use crate::standard_components::tracking::VideoBuffer;
 use crate::standard_components::tracking::overlay::{self, Drag, Overlay, Overlays, Xform};
@@ -62,46 +60,24 @@ pub enum PathUpdate {
     Point([f32; 2]),
 }
 
-/// The path sent to the window, and what it's kept of it.
-pub struct TrackedPath {
-    sent: Pool<Vec<PathUpdate>>,
-    /// Only the window takes this, so passes never wait on it.
-    kept: Mutex<Path>,
-}
-
-impl Default for TrackedPath {
-    fn default() -> Self {
-        TrackedPath { sent: Pool::new((0..WINDOW_BUFFERS).map(|_| Vec::new()), 0), kept: Mutex::default() }
-    }
-}
-
-/// What the tracker's passes share with its window: what to show, and the path.
+/// What the tracker's passes share with the GUI: what to show, and the path, every point of it, in order.
 #[derive(Default)]
 pub struct TrackerShared {
     shown: Pool<TrackerDisplay>,
-    path: TrackedPath,
+    path: Pool<Vec<PathUpdate>>,
 }
 
 impl Shared for TrackerShared {
     fn pools(&self) -> Vec<(&'static str, PoolStatus)> {
-        vec![("display", self.shown.status()), ("path", self.path.sent.status())]
+        vec![("display", self.shown.status()), ("path", self.path.status())]
     }
 }
 
-impl TrackedPath {
-    /// For the window: the path, with what's been sent since it last looked.
-    fn kept(&self) -> std::sync::MutexGuard<'_, Path> {
-        let mut kept = self.kept.lock().unwrap();
-        self.sent.receive_all(|updates| {
-            for update in updates {
-                match update {
-                    PathUpdate::Restart => kept.clear(),
-                    PathUpdate::Point(point) => kept.push(point),
-                }
-            }
-        });
-        kept
-    }
+/// The tracker on the GUI's side: the path so far, which it keeps (window open or not) until recording starts again,
+/// or it's cleared.
+#[derive(Default)]
+pub struct TrackerUi {
+    path: Path,
 }
 
 impl crate::core::engine::PassState for Tracking {
@@ -166,6 +142,7 @@ impl Node<Edges> for TrackerView {
 
     type State = Tracking;
     type Shared = TrackerShared;
+    type UiState = TrackerUi;
 
     fn inputs(&self) -> Vec<Input<Edges>> {
         vec![
@@ -221,7 +198,7 @@ impl Node<Edges> for TrackerView {
                 pending.extend(positions.samples.iter().map(|sample| PathUpdate::Point(middle(&sample.leds))));
             }
         }
-        path.sent.send_pending(pending);
+        path.send_pending(pending);
         let video = match pass.inputs[0] {
             Some(Buffer::Video(video)) if video.frames > 0 => Some(video),
             _ => None,
@@ -267,6 +244,21 @@ impl Node<Edges> for TrackerView {
     fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
         let size = frame_size(context);
         self.controls_ui(ui, context, size);
+    }
+
+    /// Takes the path sent.
+    fn background(&mut self, context: &mut UiContext<Edges>) -> Option<std::time::Instant> {
+        let shared = context.shared::<TrackerShared>()?;
+        let path = &mut context.ui_state::<TrackerUi>().path;
+        shared.path.receive_all(|updates| {
+            for update in updates {
+                match update {
+                    PathUpdate::Restart => path.clear(),
+                    PathUpdate::Point(point) => path.push(point),
+                }
+            }
+        });
+        None
     }
 
     fn custom_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
@@ -375,17 +367,15 @@ impl TrackerView {
         } else {
             overlay::draw(&ui.painter_at(rect), xf, &Detection::default(), &self.overlays, &display.leds, false);
         }
-        if let Some(TrackerShared { path, .. }) = context.shared::<TrackerShared>() {
-            let calibration = match &context.controls[1] {
-                Some(Setting::Detection(detection)) => detection.pixels_per_metre(),
-                _ => None,
-            };
-            let length = |length: f32| match calibration {
-                Some(ppm) => format!("{:.2} m", length / ppm),
-                None => format!("{length:.0} px"),
-            };
-            path_ui(ui, rect, xf, path, length, context.theme);
-        }
+        let calibration = match &context.controls[1] {
+            Some(Setting::Detection(detection)) => detection.pixels_per_metre(),
+            _ => None,
+        };
+        let length = |length: f32| match calibration {
+            Some(ppm) => format!("{:.2} m", length / ppm),
+            None => format!("{length:.0} px"),
+        };
+        path_ui(ui, rect, xf, &mut context.ui_state::<TrackerUi>().path, length, context.theme);
         preview::repaint_with_data(ui, context.running);
     }
 
@@ -576,13 +566,11 @@ fn positions_ui(ui: &mut egui::Ui, context: &UiContext<Edges>, display: Option<&
         egui::FontId::proportional(11.0),
         context.theme.text_secondary,
     );
-    if let Some(TrackerShared { path, .. }) = context.shared::<TrackerShared>() {
-        let length = |length: f32| match detection.pixels_per_metre() {
-            Some(ppm) => format!("{:.2} m", length / ppm),
-            None => format!("{length:.0} px"),
-        };
-        path_ui(ui, rect, xf, path, length, context.theme);
-    }
+    let length = |length: f32| match detection.pixels_per_metre() {
+        Some(ppm) => format!("{:.2} m", length / ppm),
+        None => format!("{length:.0} px"),
+    };
+    path_ui(ui, rect, xf, &mut context.ui_state::<TrackerUi>().path, length, context.theme);
     preview::repaint_with_data(ui, context.running);
 }
 
@@ -690,11 +678,10 @@ fn path_ui(
     ui: &mut egui::Ui,
     frame: Rect,
     xf: Xform,
-    path: &TrackedPath,
+    path: &mut Path,
     length_text: impl Fn(f32) -> String,
     theme: &Colours,
 ) {
-    let mut path = path.kept();
     if path.is_empty() {
         return;
     }
@@ -891,24 +878,37 @@ mod tests {
     #[test]
     fn the_path_is_sent_while_recording_and_restarts_with_it() {
         use crate::standard_components::tracking::{PositionSample, PositionsBuffer};
-        let (shared, view, mut tracking) = (TrackerShared::default(), NodeId(0), Tracking::default());
+        let mut graph = Graph::<Nodes>::default();
+        let view = graph.add(Nodes::TrackerView(TrackerView::default()), [0.0, 0.0]);
+        let by_node = crate::core::engine::SharedByNode::default().with(view, TrackerShared::default());
+        let (shared, mut tracking) = (by_node.get::<TrackerShared>(view).unwrap(), Tracking::default());
+        let ui_state = std::cell::RefCell::new(Box::new(TrackerUi::default()) as Box<dyn std::any::Any>);
         let mut run_pass = |recording: bool, x: f32| {
             let leds = [Some(Blob { x, y: 1.0, area: 9 }), None];
             let sample = PositionSample { frame: 0, time: 0.0, leds, timing_led: None, pixels_per_metre: f32::NAN };
             let positions = Buffer::Positions(PositionsBuffer { samples: vec![sample] });
             let inputs = [None, Some(&positions), None];
             let mut pass = Pass::new(0, 0.02, &inputs, &mut []);
-            (pass.shared, pass.node, pass.recording) = (&shared, view, recording);
+            (pass.shared, pass.node, pass.recording) = (shared, view, recording);
             TrackerView::default().process(&mut pass, &mut tracking);
         };
-        let xs = |shared: &TrackerShared| shared.path.kept().iter().map(|p| p[0]).collect::<Vec<_>>();
+        // What the GUI's side has, once it's taken what's been sent.
+        let mut xs = || {
+            let colours = &crate::standard_components::themes::THEMES[0].colours;
+            let inputs = [None, None, None];
+            graph.edit(view, &inputs, colours, Some(&by_node), Some(&ui_state), None, true, false, None, |n, c| {
+                _ = n.background(c)
+            });
+            let state = ui_state.borrow();
+            state.downcast_ref::<TrackerUi>().unwrap().path.iter().map(|p| p[0]).collect::<Vec<_>>()
+        };
         run_pass(false, 1.0);
         run_pass(true, 2.0);
         run_pass(true, 3.0);
-        assert_eq!(xs(&shared), [2.0, 3.0], "only while recording");
+        assert_eq!(xs(), [2.0, 3.0], "only while recording");
         run_pass(false, 4.0);
         run_pass(true, 5.0);
-        assert_eq!(xs(&shared), [5.0], "a new recording, a new path");
+        assert_eq!(xs(), [5.0], "a new recording, a new path");
     }
 
     #[test]
@@ -1138,7 +1138,7 @@ mod tests {
 
         let resolved = graph.resolve();
         let inputs = resolved[&view].input_streams.clone();
-        let shown = TrackerShared { shown: Pool::holding(display), path: TrackedPath::default() };
+        let shown = TrackerShared { shown: Pool::holding(display), path: Pool::default() };
         let shared = crate::core::engine::SharedByNode::default().with(view, shown);
         let mut harness = egui_kittest::Harness::builder().with_size([1150.0, 650.0]).wgpu().build_ui_state(
             |ui, graph: &mut Graph<Nodes>| {
@@ -1147,6 +1147,7 @@ mod tests {
                     &inputs,
                     &THEMES[0].colours,
                     Some(&shared),
+                    None,
                     None,
                     true,
                     false,
@@ -1200,10 +1201,10 @@ mod tests {
         let [x, y] = *path.last().unwrap();
         let display = TrackerDisplay { leds: vec![Blob { x, y, area: 30 }], ..Default::default() };
         let inputs = resolved[&view].input_streams.clone();
-        let shown = TrackerShared { shown: Pool::holding(display), path: TrackedPath::default() };
-        let mut sent = std::iter::once(PathUpdate::Restart).chain(path.into_iter().map(PathUpdate::Point)).collect();
-        shown.path.sent.send_pending(&mut sent);
+        let shown = TrackerShared { shown: Pool::holding(display), path: Pool::default() };
         let shared = crate::core::engine::SharedByNode::default().with(view, shown);
+        // The path the GUI's side has.
+        let ui_state = std::cell::RefCell::new(Box::new(TrackerUi { path }) as Box<dyn std::any::Any>);
         let before = graph.clone();
         let mut harness = egui_kittest::Harness::builder().with_size([900.0, 500.0]).wgpu().build_ui_state(
             |ui, graph: &mut Graph<Nodes>| {
@@ -1212,6 +1213,7 @@ mod tests {
                     &inputs,
                     &THEMES[0].colours,
                     Some(&shared),
+                    Some(&ui_state),
                     None,
                     true,
                     false,

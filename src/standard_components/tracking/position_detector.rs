@@ -52,6 +52,7 @@ impl Node<Edges> for PositionDetector {
 
     type State = Finding;
     type Shared = ();
+    type UiState = ();
 
     fn inputs(&self) -> Vec<Input<Edges>> {
         vec![Input { name: "video", kind: Kind::Video }]

@@ -87,6 +87,8 @@ struct NodeThreadAnchor {
 #[derive(Default)]
 struct Anchors {
     dispatcher: Option<Rect>,
+    /// The GUI's thread.
+    gui: Option<Rect>,
     /// The workers' first step, taking a pass off the queue.
     queue: Option<Rect>,
     steps: HashMap<NodeId, Rect>,
@@ -131,6 +133,7 @@ pub fn show<N: NodesEnum>(
             gui_thread(ui, graph, colours, runner, &plan, anchors);
             ui.add_space(16.0);
             node_threads(ui, graph, colours, runner, &plan, Flow::FromPasses, anchors);
+            node_threads(ui, graph, colours, runner, &plan, Flow::FromGui, anchors);
             ui.add_space(4.0);
             helpers(ui, colours);
         };
@@ -372,7 +375,7 @@ fn gui_thread<N: NodesEnum>(
 ) {
     // The nodes sharing pools of buffers with their windows (the latest to show, say), while running: each with
     // where its buffers are.
-    container(ui, colours, "GUI", WHY_GUI, "main thread", 1, true, |ui| {
+    let rect = container(ui, colours, "GUI", WHY_GUI, "main thread", 1, true, |ui| {
         let Some(shared) = runner.map(|r| r.shared()) else {
             ui.label(small("Shows what nodes' passes share with their windows, while running.", colours.text_disabled));
             return;
@@ -387,6 +390,7 @@ fn gui_thread<N: NodesEnum>(
             }
         }
     });
+    anchors.gui = Some(rect);
 }
 
 fn dispatcher<N: NodesEnum>(ui: &mut egui::Ui, colours: &Colours, info: Option<&RunInfo<N>>, anchors: &mut Anchors) {
@@ -952,6 +956,7 @@ fn node_threads<N: NodesEnum>(
                 let ports: Vec<Option<usize>> = match thread.flow {
                     Flow::ToPasses => step.outputs.iter().map(|&b| Some(b)).collect(),
                     Flow::FromPasses => step.inputs.clone(),
+                    Flow::FromGui => Vec::new(),
                 };
                 let pool = entry.node.thread_pool(index, &context);
                 let pool = pool.filter(|p| p.size > 0).map(|p| {
@@ -1073,6 +1078,14 @@ fn links(ui: &egui::Ui, colours: &Colours, anchors: &Anchors, wide: bool) {
     }
     // Pointing the way the data goes: to the passes from a board, say, or from them to a writer.
     for NodeThreadAnchor { node: id, rect: thread, link: how, flow, pooled } in &anchors.node_threads {
+        // From the GUI's thread, a node's work on it.
+        if *flow == Flow::FromGui {
+            if let Some(gui) = anchors.gui {
+                round(gui.left_center(), thread.left_center(), deeper());
+                label(thread.left_top() + vec2(10.0, -2.0), Align2::LEFT_BOTTOM, how);
+            }
+            continue;
+        }
         let Some(step) = anchors.steps.get(id) else { continue };
         let to_passes = *flow == Flow::ToPasses;
         if wide {

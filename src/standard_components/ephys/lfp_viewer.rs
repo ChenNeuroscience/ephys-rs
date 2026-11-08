@@ -178,6 +178,7 @@ impl Node<Edges> for LfpViewer {
     type State = Traces;
     /// What it shows, for its window.
     type Shared = Pool<TracesDisplay>;
+    type UiState = ();
 
     const INFO: NodeInfo = NodeInfo {
         name: "LFP Viewer",

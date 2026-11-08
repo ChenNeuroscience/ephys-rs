@@ -163,6 +163,7 @@ fn make_tour() {
         .with_base_directories(crate::components::BASE_DIRECTORIES);
     let harness = Harness::builder().with_size(SIZE).with_pixels_per_point(SCALE).wgpu().build_ui_state(
         |ui, app: &mut TestApp| {
+            app.logic(&ui.ctx().clone());
             app.show(ui);
             caption_ui(ui);
         },

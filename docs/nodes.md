@@ -129,9 +129,24 @@ let Some(display) = pool.and_then(Pool::newest) else { return };
 ```
 
 Neither side waits: passes don't skip a send while the window's reading, and if the window's closed, passes reuse the
-oldest buffer queued. A node that takes its input can swap it straight in (`SharedPool::pool`, then `Pool::reuse` and
-`Pool::send_as_of`), so nothing's copied: the [Video Viewer](../src/standard_components/tracking/video_viewer.rs)
-does this with frames.
+oldest buffer queued. A node that takes its input can swap it straight in (`Pool::reuse`, then `Pool::send_as_of`), so
+nothing's copied: the [Video Viewer](../src/standard_components/tracking/video_viewer.rs) does this with frames.
+
+## On the GUI's side
+
+A node can keep state on the GUI's side, as `type UiState` (and `()` for none): the app keeps one for each node while
+the graph has it, whether its window's shown or not, and doesn't save it. Its window gets it with
+`UiContext::ui_state::<T>()`, borrowed from the app rather than the context, so the context can still be used.
+
+Work that isn't drawing, but has to happen whether the window's shown or not, goes in `background(context)`: the app
+calls it on the GUI's thread every time round, before each frame, and, while the window's hidden (minimised, say),
+whenever it's woken (see `App::logic`). It gets the same `UiContext` as the window, so it can take what the passes
+share, keep it in its `UiState`, and edit settings as a window would. It returns when it next needs calling, if it does,
+and the app's woken then. When everything the passes send matters, not only the newest, they send it all, in order
+(`Pool::send_pending`), and `background` takes it (`Pool::receive_all`): the
+[Log Viewer](../src/standard_components/logs/log_viewer.rs) keeps lines this way, the Tracker View its path, and the
+[Alarm Viewer](../src/standard_components/alarms/viewer.rs) keeps track of alarms going off, pipping as they do, with
+its window closed too.
 
 ## Triggers
 

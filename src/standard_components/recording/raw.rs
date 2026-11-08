@@ -111,6 +111,7 @@ impl Node<Edges> for WriteRaw {
     type State = Recorder;
     /// What it shows, for its window.
     type Shared = Pool<Status>;
+    type UiState = ();
 
     const INFO: NodeInfo = NodeInfo {
         name: "Write Raw",
