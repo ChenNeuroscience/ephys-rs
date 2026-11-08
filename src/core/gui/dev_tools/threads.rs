@@ -537,10 +537,47 @@ fn steps<N: NodesEnum>(
         let time = times.and_then(|t| t.get(index)).copied();
         let row = ui.horizontal(|ui| step_row(ui, graph, resolved, colours, plan, index, step, time)).response;
         anchors.steps.insert(step.id, row.rect.with_max_x(ui.max_rect().right()));
+        for copy in &step.copies {
+            ui.horizontal(|ui| copy_row(ui, graph, colours, plan, step, copy));
+        }
     }
     if plan.steps().is_empty() {
         ui.label(small("Nothing runs: no node has all its outputs known.", colours.text_secondary));
     }
+}
+
+/// A copy the plan makes once a step's run, for a node taking a buffer it can't be the last to read.
+fn copy_row<N: NodesEnum>(
+    ui: &mut egui::Ui,
+    graph: &Graph<N>,
+    colours: &Colours,
+    plan: &Plan<N>,
+    step: &Step,
+    copy: &crate::core::engine::CopyPoint,
+) {
+    ui.set_height(ROW);
+    ui.spacing_mut().item_spacing.x = 4.0;
+    let name = |id: NodeId| graph.get(id).map_or("a node", |e| e.node.info().name);
+    let text = format!(
+        "Copy point: once {} has run, the plan copies buffer {} into buffer {}, for {} to take, as it can't be the \
+         last to read it (another reader depends on it, or the data's edited in place). Counted in {}'s time",
+        name(step.id),
+        copy.from,
+        copy.to,
+        name(copy.node),
+        name(step.id)
+    );
+    // In line with the steps' names.
+    ui.add_space(20.0);
+    badge(ui, Glyph::Copy, colours.accent, &text);
+    let label = |ui: &mut egui::Ui, words: &str| {
+        ui.add(egui::Label::new(small(words, colours.text_secondary)).extend()).on_hover_text(&text);
+    };
+    label(ui, "copy");
+    buffer_tag(ui, plan, copy.from, colours).on_hover_text(&text);
+    label(ui, "into");
+    buffer_tag(ui, plan, copy.to, colours).on_hover_text(&text);
+    label(ui, &format!("for {}", name(copy.node)));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -629,23 +666,6 @@ fn step_row<N: NodesEnum>(
         }
     }
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        if !step.copies.is_empty() {
-            let copies: Vec<String> = step
-                .copies
-                .iter()
-                .map(|c| {
-                    let name = graph.get(c.node).map_or("a node", |e| e.node.info().name);
-                    format!("buffer {} into buffer {}, for {name} to take", c.from, c.to)
-                })
-                .collect();
-            let text = format!(
-                "Copy point: once it's run, the plan copies {}. A node taking a buffer gets a copy when it can't be \
-                 the last to read it (another reader depends on it, or the data's edited in place). Counted in its \
-                 time",
-                copies.join("; ")
-            );
-            badge(ui, Glyph::Copy, colours.accent, &text);
-        }
         if step.state.is_some() {
             let why = graph.get(step.id).map_or("", |e| e.node.state_reason());
             let text = format!(
