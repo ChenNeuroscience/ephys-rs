@@ -11,7 +11,7 @@ pub const PATCHES: PatchSet = PatchSet { name: "std", version: env!("CARGO_PKG_V
 mod tests {
     use serde_json::json;
 
-    use crate::core::config_patching::{PatchSet, PatchSets, SavedVersions};
+    use crate::core::config_patching::{PatchSet, PatchSets, Versions};
 
     /// Something saved before there were versions is patched through the example, unchanged.
     #[test]
@@ -21,7 +21,7 @@ mod tests {
         assert_eq!(sets.versions().keys().collect::<Vec<_>>(), ["core", "std"]);
         let saved = json!({ "graph": { "nodes": { "1": { "node": { "type": "SpikeDetector", "threshold": 4 } } } } });
         let mut value = saved.clone();
-        sets.apply(&SavedVersions::new(), &mut value);
+        sets.apply_to_project(&Versions::new(), &mut value);
         assert_eq!(value, saved);
     }
 }

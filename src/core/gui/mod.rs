@@ -42,7 +42,7 @@ use serde::{Deserialize, Serialize};
 use crate::core::Components;
 use crate::core::annotation::{Annotation, AnnotationId, AnnotationSet, Annotations};
 use crate::core::base_directory::{BaseDirectories, BaseDirectoryType, Place};
-use crate::core::config_patching::{self, PatchSets, SavedVersions};
+use crate::core::config_patching::{self, PatchSets, Versions};
 use crate::core::engine::{self, Graph, NodeId, NodeSet, Port, PortRef, Resolved, Runner, Snapshot, Stats};
 use crate::core::layout::{Layout, Mode, Pane};
 use crate::core::theme::{Colours, Theme};
@@ -94,8 +94,7 @@ pub fn run<C: Components>(path: Option<PathBuf>) -> eframe::Result {
             app.themes[app.theme].apply(&cc.egui_ctx);
             let mut saved: Option<serde_json::Value> =
                 cc.storage.and_then(|s| eframe::get_value(s, BASE_DIRECTORY_KEY));
-            let versions: SavedVersions =
-                cc.storage.and_then(|s| eframe::get_value(s, VERSIONS_KEY)).unwrap_or_default();
+            let versions: Versions = cc.storage.and_then(|s| eframe::get_value(s, VERSIONS_KEY)).unwrap_or_default();
             if let Some(saved) = saved.as_mut() {
                 app.config_patches.apply_to_base_directory(&versions, saved);
             }
@@ -192,7 +191,7 @@ struct SaveFile<N, A> {
 #[serde(bound = "N: NodeSet, A: AnnotationSet")]
 struct SaveFileRef<'a, N, A> {
     /// The versions that saved it (see `crate::core::config_patching`).
-    versions: SavedVersions,
+    versions: Versions,
     graph: &'a Graph<N>,
     annotations: &'a Annotations<A>,
     layout: &'a Layout,
@@ -405,14 +404,14 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
     fn load(&mut self, path: &Path) -> Result<(), String> {
         let json = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
         let mut value: serde_json::Value = serde_json::from_str(&json).map_err(|e| e.to_string())?;
-        let versions: SavedVersions = value
+        let versions: Versions = value
             .get("versions")
             .cloned()
             .map(serde_json::from_value)
             .transpose()
             .map_err(|e| e.to_string())?
             .unwrap_or_default();
-        self.config_patches.apply(&versions, &mut value);
+        self.config_patches.apply_to_project(&versions, &mut value);
         let file: SaveFile<N, A> = serde_json::from_value(value).map_err(|e| e.to_string())?;
         // The mode stays as it is, opening a file (it starts basic, each time the app does).
         let mode = self.layout.mode;
@@ -2779,9 +2778,9 @@ mod tests {
 
     /// A set whose one patch changes a Spike Detector's waveform, as a node type's patch would, if it was saved before
     /// version 1.
-    fn pre_was_8(saved: &config_patching::SavedVersions, project: &mut serde_json::Value) {
-        if config_patching::saved_before(saved, "test", "1.0.0") {
-            for node in config_patching::nodes(project).filter(|node| node["type"] == "SpikeDetector") {
+    fn pre_was_8(config: &mut config_patching::IncomingConfig) {
+        if config.written_before("test", "1.0.0") {
+            for node in config.nodes().filter(|node| node["type"] == "SpikeDetector") {
                 node["settings"]["pre"] = 12.into();
             }
         }

@@ -183,7 +183,7 @@ crash reports start with it.
 
 ## Config patches
 
-Everything saved that's read back says which version of each part of the program saved it: projects and the settings
+Everything written that's read back says which version of each part of the program wrote it: projects and the settings
 saved beside recordings (`"versions"`), settings copied to the clipboard (`"ephys-rs settings"`), and what the app keeps
 between runs. Later versions patch it up to date before reading it. See
 [`config_patching.rs`](../src/core/config_patching.rs).
@@ -200,10 +200,11 @@ the standard components', then its own).
 To change what a part saves, add a patch to its set: a file with a function changing what was saved before to what's
 saved now, as JSON (`serde_json::Value`), before anything's read into types, and add it to the end of `PATCHES`. Every
 patch is applied to everything read, and whether it does anything is entirely up to it: think of it as a script more
-than typical Rust. It's given the versions that saved something (`saved_before(saved, "std", "0.158.0")` is the usual
-test: true too for what doesn't say), and the JSON, always shaped as a project: what isn't one (copied nodes, the base
-directory kept between runs) is put in one for it, with nothing else. `config_patching::nodes(project)` goes through
-its nodes. So pasting is patched just as opening is. Test it with something saved before the change, as the patching tests do. A patch is never changed once
+than typical Rust. It's given config coming in (`IncomingConfig`), from a file, the clipboard (copied to lab notes,
+maybe, and back much later) or the app's storage: the versions that wrote it (`config.written_before("std", "0.158.0")`
+is the usual test: true too for what doesn't say), and the JSON, always shaped as a project. What isn't one (copied
+nodes, the base directory kept between runs) is put in one for it, with nothing else. `config.nodes()` goes through its
+nodes. So pasting is patched just as opening is. Test it with something saved before the change, as the patching tests do. A patch is never changed once
 released.
 
 ## Performance

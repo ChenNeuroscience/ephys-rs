@@ -7,7 +7,7 @@
 use eframe::egui::{self, RichText};
 use serde::{Deserialize, Serialize};
 
-use crate::core::config_patching::{PatchSets, SavedVersions};
+use crate::core::config_patching::{PatchSets, Versions};
 use crate::core::engine::{Graph, NodeId, NodeSet};
 use crate::core::theme::Colours;
 
@@ -16,7 +16,7 @@ use crate::core::theme::Colours;
 struct Clip {
     /// Saying it's settings, and the versions that copied them.
     #[serde(rename = "ephys-rs settings")]
-    versions: SavedVersions,
+    versions: Versions,
     nodes: Vec<ClipNode>,
 }
 
