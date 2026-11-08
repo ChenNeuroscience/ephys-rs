@@ -27,6 +27,8 @@ pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + S
     fn type_index(&self) -> usize;
     fn window_size(&self) -> [f32; 2];
     fn show_in_basic_default(&self) -> bool;
+    /// The global settings its node types read, each type once, in the order of the node types that first name them.
+    fn global_settings_types() -> Vec<crate::core::global_settings::GlobalSettingsType>;
     fn inputs(&self) -> Vec<Input<Self::Edges>>;
     fn outputs(&self, inputs: &[Option<<Self::Edges as Edges>::DataStream>]) -> Vec<Output<Self::Edges>>;
     fn warnings(&self, inputs: &[Option<<Self::Edges as Edges>::DataStream>]) -> Vec<String>;
@@ -165,6 +167,15 @@ macro_rules! nodes_enum {
 
             fn show_in_basic_default(&self) -> bool {
                 match self { $($name::$variant(_) => <$ty as $crate::core::engine::Node<$edges>>::SHOW_IN_BASIC_DEFAULT),+ }
+            }
+
+            fn global_settings_types() -> Vec<$crate::core::global_settings::GlobalSettingsType> {
+                let mut types = Vec::new();
+                $(
+                    <<$ty as $crate::core::engine::Node<$edges>>::GlobalSettings
+                        as $crate::core::global_settings::GlobalSettingsSet>::types(&mut types);
+                )+
+                types
             }
 
             fn inputs(&self) -> Vec<$crate::core::engine::Input<$edges>> {

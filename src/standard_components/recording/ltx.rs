@@ -146,6 +146,7 @@ impl Node<Edges> for WriteLtx {
     /// What it shows, for its window.
     type Shared = Pool<Status>;
     type UiState = ();
+    type GlobalSettings = ();
 
     const INFO: NodeInfo = NodeInfo {
         name: "Write LTX",

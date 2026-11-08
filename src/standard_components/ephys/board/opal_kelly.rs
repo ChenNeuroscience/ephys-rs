@@ -3,21 +3,20 @@
 //! Open Ephys acquisition board plugins (`Rhd2000EvalBoard`, `AcqBoardOpalKelly`).
 //!
 //! Opal Kelly's FrontPanel library is loaded at runtime, so building needs nothing from Opal Kelly and machines
-//! without it just get an error when this board is selected. The FPGA is configured from a bitfile: the Open
-//! Ephys GUI's plugins come with them (`rhd2000.bit`, `rhd2000_usb3.bit`, `intan_rhd_usb.bit`), as does the
-//! library, and they're looked for where the GUI puts them.
+//! without it just get an error when this board is selected. The FPGA is configured from a bitfile (`rhd2000.bit`,
+//! `rhd2000_usb3.bit`, `intan_rhd_usb.bit`). The library and bitfiles are the Open Ephys GUI's (see `open_ephys`).
 //!
 //! This is the transport: the rest is in `rhythm`, shared with the generation 3 board. Not yet tried on hardware.
 
 use std::ffi::{CString, c_char, c_int, c_long, c_void};
 use std::io;
-use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use libloading::Library;
 use serde::{Deserialize, Serialize};
 
+use super::open_ephys::{FRONTPANEL, OpenEphysSettings};
 use super::rhythm::{RhythmBoard, Transport, sample_bytes};
 
 type Handle = *mut c_void;
@@ -66,13 +65,6 @@ impl OpalKellyKind {
         }
     }
 }
-
-#[cfg(windows)]
-const LIBRARY_NAME: &str = "okFrontPanel.dll";
-#[cfg(target_os = "macos")]
-const LIBRARY_NAME: &str = "libokFrontPanel.dylib";
-#[cfg(all(unix, not(target_os = "macos")))]
-const LIBRARY_NAME: &str = "libokFrontPanel.so";
 
 const XEM6010LX45: c_int = 13;
 const XEM6310LX45: c_int = 21;
@@ -170,74 +162,20 @@ frontpanel_api! {
     okFrontPanel_Close(Handle) -> ();
 }
 
-/// Where the Open Ephys GUI keeps what its plugins come with, and next to this program.
-pub(super) fn search_dirs() -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(dir) = exe.parent()
-    {
-        dirs.push(dir.to_path_buf());
-        dirs.push(dir.join("shared"));
-    }
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let saved_state: Vec<PathBuf> = if cfg!(windows) {
-        ["ProgramData", "APPDATA", "LOCALAPPDATA"]
-            .iter()
-            .filter_map(std::env::var_os)
-            .map(|d| PathBuf::from(d).join("Open Ephys"))
-            .collect()
-    } else if cfg!(target_os = "macos") {
-        home.map(|h| vec![h.join("Library/Application Support/open-ephys")]).unwrap_or_default()
-    } else {
-        home.map(|h| vec![h.join(".config/open-ephys")]).unwrap_or_default()
-    };
-    for dir in saved_state {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
-        let mut shared: Vec<PathBuf> = entries
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("shared")))
-            .collect();
-        shared.sort();
-        shared.reverse(); // the newest plugin API first
-        dirs.extend(shared);
-    }
-    dirs
-}
-
 impl Api {
     /// Loads the library once it's found (it's never unloaded); until then, tries again each time.
-    fn get(path: Option<&str>) -> io::Result<&'static Api> {
+    fn get(settings: &OpenEphysSettings) -> io::Result<&'static Api> {
         static API: OnceLock<Api> = OnceLock::new();
         if let Some(api) = API.get() {
             return Ok(api);
         }
-        let candidates: Vec<PathBuf> = match path {
-            Some(p) => vec![p.into()],
-            None => std::iter::once(LIBRARY_NAME.into())
-                .chain(search_dirs().into_iter().map(|d| d.join(LIBRARY_NAME)))
-                .collect(),
-        };
-        let mut errors = Vec::new();
-        for candidate in &candidates {
-            // Safety: loading a library runs its initialisers; FrontPanel's are benign.
-            match unsafe { Library::new(candidate) } {
-                Ok(library) => {
-                    // Safety: it's FrontPanel, by name.
-                    let api = unsafe { Api::from_library(library) }.map_err(io::Error::other)?;
-                    return Ok(API.get_or_init(|| api));
-                }
-                Err(e) => errors.push(format!("{}: {e}", candidate.display())),
-            }
-        }
-        Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!(
-                "Opal Kelly's FrontPanel library not found (it comes with the Open Ephys GUI's acquisition board \
-                 plugin). Tried {}",
-                errors.join("; ")
-            ),
-        ))
+        let path = settings.file("Opal Kelly's FrontPanel library", FRONTPANEL)?;
+        // Safety: loading a library runs its initialisers; FrontPanel's are benign.
+        let library = unsafe { Library::new(&path) }
+            .map_err(|e| io::Error::other(format!("loading {} failed: {e}", path.display())))?;
+        // Safety: it's FrontPanel, by name.
+        let api = unsafe { Api::from_library(library) }.map_err(io::Error::other)?;
+        Ok(API.get_or_init(|| api))
     }
 }
 
@@ -310,10 +248,9 @@ pub struct OpalKelly {
 // The handle is only used from the thread that owns the board.
 unsafe impl Send for OpalKelly {}
 
-/// Opens the first Rhythm board found and configures its FPGA. `bitfile` and `library` override where those
-/// are looked for.
-pub fn open(kind: OpalKellyKind, bitfile: Option<&str>, library: Option<&str>) -> io::Result<RhythmBoard<OpalKelly>> {
-    let api = Api::get(library)?;
+/// Opens the first Rhythm board found and configures its FPGA, with the library and bitfile `settings` say.
+pub fn open(kind: OpalKellyKind, settings: &OpenEphysSettings) -> io::Result<RhythmBoard<OpalKelly>> {
+    let api = Api::get(settings)?;
     let handle = unsafe { (api.okFrontPanel_Construct)() };
     if handle.is_null() {
         return Err(io::Error::other("FrontPanel couldn't start"));
@@ -345,27 +282,15 @@ pub fn open(kind: OpalKellyKind, bitfile: Option<&str>, library: Option<&str>) -
     fp.set_read_timeout();
     unsafe { (api.okFrontPanel_LoadDefaultPLLConfiguration)(handle) };
     let mut board = OpalKelly { fp, kind, usb3, enabled_streams: 0, running: false };
-    board.configure_fpga(bitfile)?;
+    board.configure_fpga(settings)?;
     board.initialize();
     RhythmBoard::new(board)
 }
 
 impl OpalKelly {
-    fn configure_fpga(&mut self, bitfile: Option<&str>) -> io::Result<()> {
+    fn configure_fpga(&mut self, settings: &OpenEphysSettings) -> io::Result<()> {
         let name = self.kind.bitfile(self.usb3);
-        let candidates: Vec<PathBuf> = match bitfile {
-            Some(path) => vec![path.into()],
-            None => search_dirs().into_iter().map(|d| d.join(name)).filter(|p| p.exists()).collect(),
-        };
-        let Some(path) = candidates.first() else {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!(
-                    "bitfile {name} not found: set where it is (it comes with the Open Ephys GUI's acquisition \
-                     board plugin)"
-                ),
-            ));
-        };
+        let path = &settings.file(&format!("bitfile {name}"), &[name])?;
         let c_path = CString::new(path.to_string_lossy().as_bytes()).map_err(io::Error::other)?;
         let api = self.fp.api;
         let error = unsafe { (api.okFrontPanel_ConfigureFPGA)(self.fp.handle, c_path.as_ptr()) };

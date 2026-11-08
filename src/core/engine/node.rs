@@ -10,6 +10,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use super::{Edges, Kind, NodeThread, Pass, PoolStatus, Shared, ThreadContext, UiContext};
+use crate::core::global_settings::GlobalSettingsSet;
 
 /// What a node's for, to people: its colour on the graph, and where it's offered. Nothing about how it runs depends
 /// on it.
@@ -151,6 +152,15 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     /// sent them, say), or `()` for nothing. The app keeps it while it has the node, whether its window's shown or not;
     /// it isn't saved. See `UiContext::ui_state`.
     type UiState: Default + 'static;
+
+    /// The global settings it reads (where a vendor's library is, say): `()` for none, a type of them, or a pair or
+    /// triple. A build has a tab in Settings… for each type its nodes name. See `crate::core::global_settings`.
+    type GlobalSettings: GlobalSettingsSet;
+
+    /// The global settings it reads, as they are now, from any thread: an `Arc` of each.
+    fn global_settings() -> <Self::GlobalSettings as GlobalSettingsSet>::Current {
+        Self::GlobalSettings::current()
+    }
 
     /// The size its window opens at, floating, by default: a view of its own might want more room than the standard
     /// window.

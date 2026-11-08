@@ -17,7 +17,7 @@ Each component starts with what kind of node it is and its ports: data ports `li
 Video from a camera:
 
 - **Teledyne FLIR** cameras (Blackfly, Chameleon, Grasshopper...), through FLIR's Spinnaker SDK, which needs to be
-  installed. Settings it doesn't change (trigger mode, region of interest...) are left as set in SpinView.
+  installed: File › Settings… › **Spinnaker cameras** says whether it's found, and links to it. Settings it doesn't change (trigger mode, region of interest...) are left as set in SpinView.
 - The **fake camera** in `synthetic_streams/`, for trying things without hardware.
 
 **Settings**: which camera (and its serial number), the **Frame size** and the **Frame rate**. Its exposure and gain

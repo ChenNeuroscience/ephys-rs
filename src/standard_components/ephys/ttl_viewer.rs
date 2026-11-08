@@ -88,6 +88,7 @@ impl Node<Edges> for TtlViewer {
     /// What it shows, for its window.
     type Shared = Pool<LinesDisplay>;
     type UiState = ();
+    type GlobalSettings = ();
 
     const INFO: NodeInfo = NodeInfo {
         name: "TTL Viewer",

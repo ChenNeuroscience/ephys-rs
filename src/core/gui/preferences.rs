@@ -20,6 +20,7 @@ use super::dialog;
 use crate::core::annotation::AnnotationInfo;
 use crate::core::base_directory::BaseDirectoryType;
 use crate::core::engine::{Category, NodeInfo};
+use crate::core::global_settings::GlobalSettingsType;
 use crate::core::theme::Colours;
 
 /// How long before a stop it's warned of: five minutes, or half the limit, if that's shorter.
@@ -227,6 +228,8 @@ pub struct Types<'a> {
     pub nodes: &'a [NodeInfo],
     pub annotations: &'a [AnnotationInfo],
     pub base_directories: &'a [BaseDirectoryType],
+    /// The global settings its nodes read: a section each, after the app's own.
+    pub global: &'a [GlobalSettingsType],
 }
 
 /// A part of the Settings window, chosen on its left.
@@ -238,6 +241,8 @@ pub enum Section {
     Annotations,
     BaseDirectories,
     RecentFiles,
+    /// A type of global settings, by its index in `Types::global`.
+    Global(usize),
 }
 
 impl Section {
@@ -251,6 +256,7 @@ impl Section {
             Section::Annotations => "Annotations",
             Section::BaseDirectories => "Base directories",
             Section::RecentFiles => "Recent files",
+            Section::Global(_) => "",
         }
     }
 }
@@ -292,6 +298,15 @@ impl SettingsWindow {
                     ui.set_width(130.0);
                     for section in Section::ALL.into_iter().filter(|s| has(*s)) {
                         if ui.selectable_label(self.section == section, section.name()).clicked() {
+                            self.section = section;
+                        }
+                    }
+                    if !types.global.is_empty() {
+                        ui.separator();
+                    }
+                    for (i, global) in types.global.iter().enumerate() {
+                        let section = Section::Global(i);
+                        if ui.selectable_label(self.section == section, global.name).clicked() {
                             self.section = section;
                         }
                     }
@@ -377,6 +392,11 @@ impl SettingsWindow {
                 );
                 let items: Vec<(&str, &str)> = types.base_directories.iter().map(|t| (t.name, t.description)).collect();
                 checklist(ui, &items, &mut preferences.hidden.base_directories);
+            }
+            Section::Global(i) => {
+                if let Some(global) = types.global.get(i) {
+                    global.ui(ui, colours);
+                }
             }
             Section::RecentFiles => {
                 note(ui, "The files last opened or saved, in File › Open Recent, and the basic view's start.");
@@ -517,7 +537,11 @@ mod tests {
         use crate::standard_components::themes::THEMES;
         use crate::{AnnotationTypes, Nodes};
         let mut results = egui_kittest::SnapshotResults::new();
-        for section in [Section::AutoStop, Section::Nodes, Section::RecentFiles] {
+        let global = Nodes::global_settings_types();
+        // The Spinnaker cameras' tab: what it finds is the same anywhere without the SDK (the others' differ, with
+        // the Open Ephys GUI's files).
+        let spinnaker = global.iter().position(|t| t.name == "Spinnaker cameras").unwrap();
+        for section in [Section::AutoStop, Section::Nodes, Section::RecentFiles, Section::Global(spinnaker)] {
             let mut preferences = Preferences::default();
             preferences.hidden.nodes.insert("Spectrum".into());
             let mut window = SettingsWindow { section };
@@ -525,6 +549,7 @@ mod tests {
                 nodes: Nodes::TYPES,
                 annotations: AnnotationTypes::TYPES,
                 base_directories: crate::components::BASE_DIRECTORIES,
+                global: &global.clone(),
             };
             let mut recent = vec![PathBuf::from("/a.json"), PathBuf::from("/b.json")];
             let mut harness = egui_kittest::Harness::builder().with_size([760.0, 600.0]).wgpu().build_ui_state(
@@ -536,8 +561,20 @@ mod tests {
             );
             THEMES[0].apply(&harness.ctx);
             harness.run_steps(3);
-            results.add(harness.try_snapshot(format!("settings_{}", section.name().to_lowercase().replace(' ', "_"))));
+            let name = match section {
+                Section::Global(i) => global[i].name,
+                _ => section.name(),
+            };
+            results.add(harness.try_snapshot(format!("settings_{}", name.to_lowercase().replace(' ', "_"))));
         }
+    }
+
+    #[test]
+    fn the_build_has_a_section_for_each_type_of_global_settings_its_nodes_read() {
+        use crate::Nodes;
+        use crate::core::engine::NodesEnum;
+        let names: Vec<_> = Nodes::global_settings_types().iter().map(|t| t.name).collect();
+        assert_eq!(names, ["Open Ephys", "Spinnaker cameras"]);
     }
 
     /// The warning before stopping, and the notice after, on their own. See tests/snapshots/.

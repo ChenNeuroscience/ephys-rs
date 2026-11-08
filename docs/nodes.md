@@ -221,6 +221,18 @@ Settings sit on the right of a node on the graph and controls on the left, unles
 "after recording" control's on the right, and Run Command's setting on the left, as what passes between them flows
 onward, like data.
 
+## Global settings
+
+Settings for the whole program on this machine, rather than a graph (where a vendor's library is, say), are global
+settings: a type implementing [`GlobalSettings`](../src/core/global_settings.rs), with a `NAME` and a `ui`, which is a
+tab of its own in Settings…, kept between sessions. A node names those it reads, as `type GlobalSettings` (`()` for
+none, a type, or a pair or triple), and reads them as they are now, from any thread, with `Self::global_settings()`. A
+build has a tab for each type its nodes name, so a component's global settings come with it, without the build listing
+them. The [Acquisition Board](../src/standard_components/ephys/board/open_ephys.rs) reads which folder of the Open
+Ephys GUI's its files come from; the [Camera](../src/standard_components/tracking/camera/spinnaker.rs) where FLIR's SDK
+is, with [`SearchFolders`](../src/core/search_folders.rs): folders to look in first, with a tab's list of them, what's
+found and where to get it.
+
 ## Work outside a run
 
 Not everything a node does belongs to a pass. The nodes in the Other category aren't about data as it's acquired: [Run

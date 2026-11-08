@@ -60,6 +60,16 @@ File › Settings… (Ctrl/⌘ ,) has the app's preferences, kept between sessio
   use. What's already in a graph stays. Applies from the next start.
 - **Recent files**: how many to keep in File › Open Recent and the basic view, and a button to clear them.
 
+Below those, a tab for each kind of hardware whose files come from elsewhere. These are for this machine, not saved
+with a graph.
+
+- **Open Ephys**: the acquisition boards' libraries and bitfiles are the Open Ephys GUI's. The tab shows the folder
+  they come from (the GUI's own, or one you choose), and which file there each board uses, with a link to get each on
+  its own, if you'd rather not install the GUI.
+- **Spinnaker cameras**: folders to look in first for FLIR's Spinnaker SDK, whether it's found, and where to get it.
+
+![Settings: where the Spinnaker SDK is](../../tests/snapshots/settings_spinnaker_cameras.png)
+
 ![Settings: which node types are offered](../../tests/snapshots/settings_nodes.png)
 
 When auto stop is about to act, it warns you, and once it has, it says so:

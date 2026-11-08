@@ -1,6 +1,7 @@
 //! Teledyne FLIR cameras (Blackfly, Chameleon, Grasshopper...) via the Spinnaker SDK, which is what Bonsai's
 //! `SpinnakerCapture` uses. The SDK's C library is loaded at runtime, so building needs nothing from FLIR and
-//! machines without the SDK just get an error when this camera is selected.
+//! machines without the SDK just get an error when this camera is selected. Where it's looked for first is a global
+//! setting (`SpinnakerSettings`).
 //!
 //! Function signatures follow the SDK's `SpinnakerC.h` (cross-checked against the generated bindings in
 //! Spinnaker.jl). Exposure and gain are only changed when the tracker window asks; other settings (trigger
@@ -12,12 +13,18 @@
 use std::collections::BTreeSet;
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::io;
+use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
+use eframe::egui;
 use libloading::Library;
+use serde::{Deserialize, Serialize};
 
 use super::{Camera, CameraControls, FrameInfo, Range};
 use super::{CameraSettings, Control};
+use crate::core::global_settings::GlobalSettings;
+use crate::core::search_folders::{self, SearchFolders};
+use crate::core::theme::Colours;
 
 type Handle = *mut c_void;
 type SpinError = i32;
@@ -81,6 +88,50 @@ impl System {
 fn step(text: &str) {
     crate::core::crash::note(text);
     log::info!("{text}");
+}
+
+/// Where the Spinnaker SDK's library is looked for, for every Spinnaker camera: a tab in Settings….
+#[derive(Clone, Default, PartialEq, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SpinnakerSettings {
+    /// Looked in first.
+    pub folders: SearchFolders,
+}
+
+impl SpinnakerSettings {
+    /// Where the library's looked for: the folders chosen, the system's search path, then where the SDK's installers
+    /// put it.
+    fn candidates(&self) -> Vec<PathBuf> {
+        let mut candidates = self.folders.candidates(&[LIBRARY_NAME], &[]);
+        candidates.push(LIBRARY_NAME.into());
+        candidates.extend(install_dirs().into_iter().map(|d| d.join(LIBRARY_NAME)));
+        candidates
+    }
+}
+
+impl GlobalSettings for SpinnakerSettings {
+    const NAME: &'static str = "Spinnaker cameras";
+
+    fn ui(&mut self, ui: &mut egui::Ui, colours: &Colours) {
+        search_folders::note(
+            ui,
+            colours,
+            "Where to look first for Teledyne FLIR's Spinnaker SDK, for FLIR cameras: before where its installer puts \
+             it. The SDK's installed from Teledyne FLIR.",
+        );
+        self.folders.ui(ui, colours);
+        ui.add_space(8.0);
+        let found = self.candidates().into_iter().find(|p| p.is_file());
+        search_folders::found_ui(ui, colours, &[("Spinnaker library", found)]);
+        ui.add_space(4.0);
+        search_folders::note(ui, colours, search_folders::LOADED_ONCE);
+        ui.add_space(8.0);
+        search_folders::get_them_ui(
+            ui,
+            colours,
+            &[("Teledyne FLIR's Spinnaker SDK", "https://www.teledynevisionsolutions.com/products/spinnaker-sdk/")],
+        );
+    }
 }
 
 /// Where the SDK installers put the library, tried after the system search path.
@@ -167,21 +218,19 @@ spinnaker_api! {
 }
 
 impl Api {
-    /// Loads the library once per process (it's never unloaded). `path` only matters on the first call.
-    fn get(path: Option<&str>) -> io::Result<&'static Api> {
-        static API: OnceLock<Result<Api, String>> = OnceLock::new();
-        API.get_or_init(|| Api::load(path)).as_ref().map_err(|e| io::Error::new(io::ErrorKind::NotFound, e.clone()))
+    /// Loads the library once it's found (it's never unloaded); until then, tries again each time.
+    fn get(settings: &SpinnakerSettings) -> io::Result<&'static Api> {
+        static API: OnceLock<Api> = OnceLock::new();
+        if let Some(api) = API.get() {
+            return Ok(api);
+        }
+        let api = Api::load(&settings.candidates()).map_err(|e| io::Error::new(io::ErrorKind::NotFound, e))?;
+        Ok(API.get_or_init(|| api))
     }
 
-    fn load(path: Option<&str>) -> Result<Api, String> {
-        let candidates: Vec<std::path::PathBuf> = match path {
-            Some(p) => vec![p.into()],
-            None => std::iter::once(LIBRARY_NAME.into())
-                .chain(install_dirs().into_iter().map(|d| d.join(LIBRARY_NAME)))
-                .collect(),
-        };
+    fn load(candidates: &[PathBuf]) -> Result<Api, String> {
         let mut errors = Vec::new();
-        for candidate in &candidates {
+        for candidate in candidates {
             match unsafe { open_library(candidate) } {
                 Ok(library) => {
                     let api = unsafe { Api::from_library(library) }?;
@@ -362,18 +411,17 @@ unsafe impl Send for SpinnakerCamera {}
 
 impl SpinnakerCamera {
     /// Opens the camera with the given serial number, or the first one found. `fps` sets the camera's frame
-    /// rate where it allows that; `library` overrides where the SDK is loaded from.
-    /// `note` is told how it's getting on.
+    /// rate where it allows that; `settings` say where the SDK's looked for. `note` is told how it's getting on.
     pub fn open(
         serial: Option<&str>,
         fps: f64,
-        library: Option<&str>,
+        settings: &SpinnakerSettings,
         note: &mut dyn FnMut(String),
     ) -> io::Result<Self> {
         if taken(&IN_USE.lock().unwrap(), serial) {
             return Err(io::Error::new(io::ErrorKind::ResourceBusy, "it's in use, or still closing"));
         }
-        let api = Api::get(library)?;
+        let api = Api::get(settings)?;
         let system = System::get(api)?;
         // From here on, Drop cleans up whatever has been set up.
         let mut cam = SpinnakerCamera {
@@ -636,7 +684,16 @@ mod tests {
 
     #[test]
     fn missing_sdk_is_a_clear_error() {
-        let err = Api::load(Some("/nonexistent/libSpinnaker_C")).err().unwrap();
+        let err = Api::load(&["/nonexistent/libSpinnaker_C".into()]).err().unwrap();
         assert!(err.contains("Spinnaker SDK not found"), "{err}");
+    }
+
+    #[test]
+    fn folders_chosen_are_looked_in_first_then_the_system_then_the_installers() {
+        let settings = SpinnakerSettings { folders: SearchFolders(vec!["/chosen".into()]) };
+        let candidates = settings.candidates();
+        assert_eq!(candidates[0], PathBuf::from("/chosen").join(LIBRARY_NAME));
+        assert_eq!(candidates[1], PathBuf::from(LIBRARY_NAME));
+        assert_eq!(candidates[2..], install_dirs().into_iter().map(|d| d.join(LIBRARY_NAME)).collect::<Vec<_>>()[..]);
     }
 }

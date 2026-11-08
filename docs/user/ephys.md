@@ -29,8 +29,11 @@ Samples from an acquisition board's headstages, and its digital (TTL) inputs, al
 - an **Intan RHD USB Interface Board**;
 - the **fake board** in `synthetic_streams/`, for trying things without hardware.
 
-The real boards need the drivers and libraries that come with the Open Ephys GUI's acquisition board plugin: install
-the Open Ephys GUI and its plugin, and ephys-rs finds them where it put them.
+The real boards use the libraries and bitfiles of the Open Ephys GUI's acquisition board plugin: install the Open
+Ephys GUI and the plugin (and its Intan RHD USB plugin, for Intan's board), and ephys-rs uses them from the GUI's
+folder. File › Settings… › **Open Ephys** shows which file each board uses, lets you choose another folder, and links
+to each file, to download on its own instead (see [Settings](main-window.md#settings)). The generation 3 board needs
+the plugin's liboni as a library of its own, which it is up to version 1.1.
 
 **Settings**
 

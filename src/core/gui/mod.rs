@@ -103,6 +103,11 @@ pub fn run<C: Components>(path: Option<PathBuf>) -> eframe::Result {
             app.recent = cc.storage.and_then(|s| eframe::get_value(s, RECENT_KEY)).unwrap_or_default();
             app.preferences = cc.storage.and_then(|s| eframe::get_value(s, PREFERENCES_KEY)).unwrap_or_default();
             app.hidden = app.preferences.hidden.clone();
+            if let Some(storage) = cc.storage {
+                for global in <C::Nodes as NodesEnum>::global_settings_types() {
+                    global.load(storage);
+                }
+            }
             // After the preferences: what a file has comes first.
             if let Some(path) = path {
                 app.open_path(path);
@@ -699,10 +704,12 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
     fn settings_window(&mut self, ctx: &egui::Context) {
         let colours = self.colours();
         let Some(window) = &mut self.settings else { return };
+        let global = N::global_settings_types();
         let types = preferences::Types {
             nodes: N::TYPES,
             annotations: A::TYPES,
             base_directories: self.base_directories.types(),
+            global: &global,
         };
         if !window.show(ctx, &mut self.preferences, &mut self.recent, &types, &self.hidden, colours) {
             self.settings = None;
@@ -1741,6 +1748,9 @@ impl<N: NodesEnum, A: AnnotationsEnum> eframe::App for App<N, A> {
         eframe::set_value(storage, VERSIONS_KEY, &self.config_patches.versions());
         eframe::set_value(storage, RECENT_KEY, &self.recent);
         eframe::set_value(storage, PREFERENCES_KEY, &self.preferences);
+        for global in N::global_settings_types() {
+            global.save(storage);
+        }
     }
 }
 

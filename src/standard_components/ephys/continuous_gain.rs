@@ -69,6 +69,7 @@ impl Node<Edges> for ContinuousGain {
     type State = Gaining;
     type Shared = ();
     type UiState = ();
+    type GlobalSettings = ();
 
     const INFO: NodeInfo = NodeInfo {
         name: "Continuous Gain",

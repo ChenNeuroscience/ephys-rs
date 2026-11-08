@@ -2,9 +2,10 @@
 //! Interface) controller over USB 3 (an FTDI FT600). Ported from the Open Ephys acquisition board plugin
 //! (`Rhd2000ONIBoard`, `AcqBoardONI`).
 //!
-//! liboni (and its FT600 driver, `onidriver_ft600`, which it loads in turn) is loaded at runtime: it comes with
-//! the Open Ephys GUI's acquisition board plugin, and is looked for where the GUI puts it. FTDI's D3XX driver
-//! must be installed too.
+//! liboni and its FT600 driver, `onidriver_ft600`, are loaded at runtime: they're the Open Ephys GUI's (see
+//! `open_ephys`). The driver's loaded first, from the same folder, and liboni, which loads it by name, finds it
+//! loaded. The acquisition board plugin has liboni as a library of its own up to version 1.1; from 2.0 it's built
+//! into the plugin. On Windows, FTDI's D3XX USB driver must be installed too.
 //!
 //! This is the transport: the rest is in `rhythm`, shared with the earlier boards. Not yet tried on hardware.
 
@@ -16,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use libloading::Library;
 
-use super::opal_kelly::search_dirs;
+use super::open_ephys::{FT600_DRIVER, LIBONI, OpenEphysSettings};
 use super::rhythm::{RhythmBoard, Transport, sample_bytes};
 
 type Ctx = *mut c_void;
@@ -29,13 +30,6 @@ struct Frame {
     data_sz: u32,
     data: *mut c_char,
 }
-
-#[cfg(windows)]
-const LIBRARY_NAME: &str = "liboni.dll";
-#[cfg(target_os = "macos")]
-const LIBRARY_NAME: &str = "liboni.dylib";
-#[cfg(all(unix, not(target_os = "macos")))]
-const LIBRARY_NAME: &str = "liboni.so";
 
 const ONI_OPT_RUNNING: c_int = 2;
 const ONI_OPT_RESET: c_int = 3;
@@ -118,37 +112,32 @@ oni_api! {
 }
 
 impl Api {
-    /// Loads the library once it's found (it's never unloaded); until then, tries again each time.
-    fn get(path: Option<&str>) -> io::Result<&'static Api> {
+    /// Loads the FT600 driver, then liboni, once they're found (they're never unloaded); until then, tries again each
+    /// time.
+    fn get(settings: &OpenEphysSettings) -> io::Result<&'static Api> {
+        static DRIVER: OnceLock<Library> = OnceLock::new();
         static API: OnceLock<Api> = OnceLock::new();
         if let Some(api) = API.get() {
             return Ok(api);
         }
-        let candidates: Vec<PathBuf> = match path {
-            Some(p) => vec![p.into()],
-            None => std::iter::once(LIBRARY_NAME.into())
-                .chain(search_dirs().into_iter().map(|d| d.join(LIBRARY_NAME)))
-                .collect(),
+        let load = |path: &PathBuf| {
+            // Safety: loading a library runs its initialisers; liboni's and its driver's are benign.
+            unsafe { Library::new(path) }
+                .map_err(|e| io::Error::other(format!("loading {} failed: {e}", path.display())))
         };
-        let mut errors = Vec::new();
-        for candidate in &candidates {
-            // Safety: loading a library runs its initialisers; liboni's are benign.
-            match unsafe { Library::new(candidate) } {
-                Ok(library) => {
-                    // Safety: it's liboni, by name.
-                    let api = unsafe { Api::from_library(library) }.map_err(io::Error::other)?;
-                    return Ok(API.get_or_init(|| api));
-                }
-                Err(e) => errors.push(format!("{}: {e}", candidate.display())),
-            }
+        if DRIVER.get().is_none() {
+            let driver = load(&settings.file("liboni's FT600 driver", FT600_DRIVER)?)?;
+            let _ = DRIVER.set(driver);
         }
-        Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!(
-                "liboni not found (it comes with the Open Ephys GUI's acquisition board plugin). Tried {}",
-                errors.join("; ")
-            ),
-        ))
+        let liboni = settings.file("liboni", LIBONI).map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!("{e} (the acquisition board plugin has it as a library of its own up to version 1.1)"),
+            )
+        })?;
+        // Safety: it's liboni, by name.
+        let api = unsafe { Api::from_library(load(&liboni)?) }.map_err(io::Error::other)?;
+        Ok(API.get_or_init(|| api))
     }
 
     fn error(&self, code: c_int, what: &str) -> io::Error {
@@ -169,9 +158,9 @@ pub struct Oni {
 // The context is only used from the thread that owns the board.
 unsafe impl Send for Oni {}
 
-/// Opens the board. `library` overrides where liboni is looked for.
-pub fn open(library: Option<&str>) -> io::Result<RhythmBoard<Oni>> {
-    let api = Api::get(library)?;
+/// Opens the board, with liboni and its driver from where `settings` say.
+pub fn open(settings: &OpenEphysSettings) -> io::Result<RhythmBoard<Oni>> {
+    let api = Api::get(settings)?;
     let driver = CString::new("ft600").unwrap();
     let ctx = unsafe { (api.oni_create_ctx)(driver.as_ptr()) };
     if ctx.is_null() {

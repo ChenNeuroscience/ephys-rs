@@ -247,6 +247,7 @@ impl Node<Edges> for AlarmProcessor {
     type State = Watching;
     type Shared = ();
     type UiState = ();
+    type GlobalSettings = ();
 
     const INFO: NodeInfo = NodeInfo {
         name: "Alarm Processor",
