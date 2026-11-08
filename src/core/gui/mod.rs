@@ -20,6 +20,7 @@ mod mac_menu;
 mod node_tools;
 mod node_window;
 mod paste_settings;
+mod preferences;
 mod style;
 mod toolbar;
 
@@ -100,6 +101,8 @@ pub fn run<C: Components>(path: Option<PathBuf>) -> eframe::Result {
             }
             app.base_directories = BaseDirectories::new(app.base_directories.types(), saved.as_ref());
             app.recent = cc.storage.and_then(|s| eframe::get_value(s, RECENT_KEY)).unwrap_or_default();
+            app.preferences = cc.storage.and_then(|s| eframe::get_value(s, PREFERENCES_KEY)).unwrap_or_default();
+            app.hidden_types = app.preferences.hidden_types.clone();
             // After the preferences: what a file has comes first.
             if let Some(path) = path {
                 app.open_path(path);
@@ -128,6 +131,8 @@ const BASE_DIRECTORY_KEY: &str = "base directory";
 const RECENT_KEY: &str = "recent files";
 /// Where it's kept which versions kept what else is kept (see `crate::core::config_patching`).
 const VERSIONS_KEY: &str = "versions";
+/// Where the app's preferences (Settings…) are kept.
+const PREFERENCES_KEY: &str = "preferences";
 /// How many recent files are kept.
 const RECENT_FILES: usize = 10;
 
@@ -229,6 +234,17 @@ pub struct App<N: NodeSet, A: AnnotationSet> {
     saved_base_directory: Option<serde_json::Value>,
     /// The files last opened or saved, latest first (kept with the app's preferences).
     recent: Vec<PathBuf>,
+    /// The app's preferences (Settings…), kept with them.
+    preferences: preferences::Preferences,
+    /// The node types hidden since the app started: those the add-node menu leaves out, till it starts again.
+    hidden_types: std::collections::BTreeSet<String>,
+    /// Whether the Settings window is open.
+    settings_open: bool,
+    /// When there was last mouse or keyboard input (egui's time, in seconds), for stopping what's unattended (see
+    /// `preferences`).
+    last_input: f64,
+    /// What's been stopped for being unattended, until that's been seen.
+    stopped_unattended: Vec<String>,
     /// The user has said to close despite unsaved changes.
     closing: bool,
     /// The themes to choose from, and the one in use.
@@ -295,6 +311,11 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             saved: None,
             saved_base_directory: None,
             recent: Vec::new(),
+            preferences: Default::default(),
+            hidden_types: Default::default(),
+            settings_open: false,
+            last_input: 0.0,
+            stopped_unattended: Vec::new(),
             closing: false,
             themes,
             theme: 0,
@@ -596,6 +617,97 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         self.frame_times.run_started = Some(self.frame_times.now());
         self.frame_times.run_restarted();
         self.ran = Some(self.history.current.snapshot.clone());
+    }
+
+    /// Stops running, and recording, keeping what the run shared (see `LastRun`).
+    fn stop_running(&mut self) {
+        self.set_recording(None);
+        self.preparing = None;
+        self.last_run = self.runner.take().map(|runner| LastRun {
+            exchange: runner.exchange_to_keep(),
+            plan: self.history.current.snapshot.plan.clone(),
+        });
+    }
+
+    /// Stops recording, or preparing to.
+    fn stop_recording(&mut self) {
+        if self.history.current.snapshot.recording.is_some() {
+            self.set_recording(None);
+        } else if self.preparing.take().is_some() {
+            log::info!("Cancelled recording");
+        }
+    }
+
+    /// Stops recording, or acquisition, when no one's used the app for as long as the preferences say: warning in the
+    /// last minutes before, and saying so after.
+    fn stop_unattended(&mut self, ctx: &egui::Context) {
+        use preferences::{Stopping, Unattended};
+        let recording = self.history.current.snapshot.recording.is_some() || self.preparing.is_some();
+        let idle = std::time::Duration::from_secs_f64((ctx.input(|i| i.time) - self.last_input).max(0.0));
+        let colours = self.colours();
+        match self.preferences.unattended(idle, self.runner.is_some(), recording) {
+            Unattended::Fine => {}
+            Unattended::Warning { stopping, left } => {
+                let body = |ui: &mut egui::Ui| {
+                    let idle = preferences::minutes_text((idle.as_secs() / 60) as u32);
+                    ui.label(format!("No one's used ephys-rs for {idle}."));
+                    let what = match stopping {
+                        Stopping::Recording => "Recording",
+                        Stopping::Acquisition if recording => "Acquisition and recording",
+                        Stopping::Acquisition => "Acquisition",
+                    };
+                    ui.label(RichText::new(format!("{what} will stop in {}.", preferences::countdown(left))).strong());
+                    ui.label("Move the mouse or press a key to carry on.");
+                };
+                // Any input carries on, so the button needn't do anything.
+                let footer = |ui: &mut egui::Ui| dialog::at_right(ui, |ui| ui.button("Carry on"));
+                dialog::show(ctx, "Stopping soon", 420.0, colours, body, |ui| {
+                    footer(ui);
+                });
+                ctx.request_repaint_after(std::time::Duration::from_secs(1));
+            }
+            Unattended::Stop(stopping) => {
+                let what = match stopping {
+                    Stopping::Recording => "Recording",
+                    Stopping::Acquisition if recording => "Acquisition and recording",
+                    Stopping::Acquisition => "Acquisition",
+                };
+                match stopping {
+                    Stopping::Recording => self.stop_recording(),
+                    Stopping::Acquisition => self.stop_running(),
+                }
+                let after = preferences::minutes_text((idle.as_secs() / 60) as u32);
+                let at = chrono::Local::now().format("%H:%M");
+                let message = format!("{what} stopped at {at}, after {after} without input.");
+                log::warn!("{message}");
+                self.stopped_unattended.push(message);
+            }
+        }
+        if self.stopped_unattended.is_empty() {
+            return;
+        }
+        let mut close = false;
+        let stopped = &self.stopped_unattended;
+        let body = |ui: &mut egui::Ui| {
+            for message in stopped {
+                ui.label(message);
+            }
+            ui.label(RichText::new("Change when this happens in Settings.").small().color(colours.text_secondary));
+        };
+        let footer = |ui: &mut egui::Ui| close = dialog::at_right(ui, |ui| ui.button("OK").clicked());
+        let dismissed = dialog::show(ctx, "Stopped automatically", 460.0, colours, body, footer);
+        if close || dismissed {
+            self.stopped_unattended.clear();
+        }
+    }
+
+    /// The Settings window, while it's open.
+    fn settings_window(&mut self, ctx: &egui::Context) {
+        if !self.settings_open {
+            return;
+        }
+        let colours = self.colours();
+        self.settings_open = preferences::show(ctx, &mut self.preferences, N::TYPES, &self.hidden_types, colours);
     }
 
     /// Has the nodes prepare to record (see `Node::prepare_to_record`), on a thread of their own: once they're
@@ -996,24 +1108,18 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             }
             Action::ToggleDevTools => self.layout.toggle_dev_tools(),
             Action::About => self.about = Some(about::About::default()),
+            Action::Settings => self.settings_open = true,
             Action::Source => ctx.open_url(egui::OpenUrl::new_tab(self.source)),
             Action::Play => {
                 if self.runner.is_some() {
-                    self.set_recording(None);
-                    self.preparing = None;
-                    self.last_run = self.runner.take().map(|runner| LastRun {
-                        exchange: runner.exchange_to_keep(),
-                        plan: self.history.current.snapshot.plan.clone(),
-                    });
+                    self.stop_running();
                 } else {
                     self.play();
                 }
             }
             Action::Record => {
-                if self.history.current.snapshot.recording.is_some() {
-                    self.set_recording(None);
-                } else if self.preparing.take().is_some() {
-                    log::info!("Cancelled recording");
+                if self.history.current.snapshot.recording.is_some() || self.preparing.is_some() {
+                    self.stop_recording();
                 } else {
                     if self.runner.is_none() {
                         self.play();
@@ -1299,7 +1405,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
 
     fn create_menu(&mut self, ctx: &egui::Context, resolved: &Resolved<N::Edges>) {
         let Some(menu) = &mut self.menu else { return };
-        let (choice, keep) = menu.show(ctx, &self.graph, resolved);
+        let (choice, keep) = menu.show(ctx, &self.graph, resolved, &self.hidden_types);
         let (scene, from) = (menu.scene, menu.from);
         if !keep {
             self.menu = None;
@@ -1361,6 +1467,9 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         let ctx = ui.ctx().clone();
         // Keep (and echo) what's been logged, so the log's queue doesn't fill.
         crate::core::console::drain();
+        if let Some(now) = ctx.input(|i| i.events.iter().any(preferences::is_input).then_some(i.time)) {
+            self.last_input = now;
+        }
         self.shortcuts(&ctx);
         #[cfg(target_os = "macos")]
         for action in self.mac_menu.as_ref().map(|m| m.actions()).unwrap_or_default() {
@@ -1455,11 +1564,13 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         self.paste_window(&ctx);
         self.crash_window(&ctx);
         self.about_window(&ctx);
+        self.settings_window(&ctx);
         self.direct_triggers.wake(&ctx);
         self.deliver_triggers();
         self.lock(&ctx);
         self.history.record(&self.graph, &self.annotations, &ctx);
         self.keep_running(&ctx);
+        self.stop_unattended(&ctx);
         self.frame_times.add("Upkeep", ms_since(started));
     }
 }
@@ -1554,6 +1665,7 @@ impl<N: NodeSet, A: AnnotationSet> eframe::App for App<N, A> {
         eframe::set_value(storage, BASE_DIRECTORY_KEY, &self.base_directories.save());
         eframe::set_value(storage, VERSIONS_KEY, &self.config_patches.versions());
         eframe::set_value(storage, RECENT_KEY, &self.recent);
+        eframe::set_value(storage, PREFERENCES_KEY, &self.preferences);
     }
 }
 
@@ -2774,6 +2886,65 @@ mod tests {
         harness.get_by_label("Enabled").click();
         harness.run_steps(2);
         assert!(harness.state().graph.get(detector).unwrap().disabled);
+    }
+
+    /// Recording, then acquisition, stop when no one's used the app for as long as the preferences say (by default, an
+    /// hour, then two): warned of first, and said after. Recording here goes nowhere: there's no base directory.
+    #[test]
+    fn what_no_one_is_using_stops_with_a_warning_first_and_a_notice_after() {
+        let app = TestApp::open(None, THEMES);
+        let mut harness = Harness::builder()
+            .with_size([900.0, 600.0])
+            .wgpu()
+            .build_ui_state(|ui, app: &mut TestApp| app.show(ui), app);
+        harness.run_steps(2);
+        let ctx = harness.ctx.clone();
+        harness.state_mut().perform(&ctx, Action::Record);
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        while harness.state().history.current.snapshot.recording.is_none() {
+            assert!(Instant::now() < deadline, "timed out waiting to record");
+            harness.run_steps(1);
+        }
+        let recording = |app: &TestApp| app.history.current.snapshot.recording.is_some();
+        let idle_for = |harness: &mut Harness<TestApp>, minutes: f64| {
+            let now = harness.ctx.input(|i| i.time);
+            harness.state_mut().last_input = now - minutes * 60.0;
+            harness.run_steps(2);
+        };
+
+        idle_for(&mut harness, 57.0);
+        assert!(harness.query_by_label_contains("Recording will stop in").is_some(), "warned");
+        assert!(recording(harness.state()));
+        idle_for(&mut harness, 61.0);
+        assert!(!recording(harness.state()) && harness.state().runner.is_some(), "only recording");
+        assert!(harness.query_by_label_contains("Recording stopped at").is_some());
+        idle_for(&mut harness, 116.0);
+        assert!(harness.query_by_label_contains("Acquisition will stop in").is_some());
+        idle_for(&mut harness, 121.0);
+        assert!(harness.state().runner.is_none());
+        assert_eq!(harness.state().stopped_unattended.len(), 2, "both said, till they're seen");
+
+        // Any input carries on.
+        harness.state_mut().stopped_unattended.clear();
+        harness.state_mut().perform(&ctx, Action::Play);
+        idle_for(&mut harness, 118.0);
+        harness.event(egui::Event::PointerMoved(egui::pos2(10.0, 10.0)));
+        harness.run_steps(2);
+        assert!(harness.query_by_label_contains("will stop in").is_none());
+        assert!(harness.state().runner.is_some());
+        harness.state_mut().perform(&ctx, Action::Play);
+    }
+
+    /// Node types hidden in Settings aren't offered for adding to a graph, from when the app starts.
+    #[test]
+    fn hidden_node_types_are_not_offered() {
+        let mut harness = harness();
+        harness.state_mut().hidden_types.insert("Spike Detector".into());
+        let ctx = harness.ctx.clone();
+        harness.state_mut().perform(&ctx, Action::AddNode);
+        harness.run_steps(2);
+        assert!(harness.query_by_label("Spike Gain").is_some(), "the menu's open");
+        assert!(harness.query_by_label("Spike Detector").is_none());
     }
 
     /// A set whose one patch changes a Spike Detector's waveform, as a node type's patch would, if it was saved before

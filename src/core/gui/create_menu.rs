@@ -1,5 +1,6 @@
 //! The pop-up for adding a node where the user clicked. Opened from a port, it lists only the
-//! node types that could connect there, plus the ports already in the graph that could.
+//! node types that could connect there, plus the ports already in the graph that could. Node types hidden in Settings
+//! aren't listed.
 
 use eframe::egui::{self, Id, Key, Order, Pos2, RichText};
 
@@ -39,12 +40,13 @@ impl CreateMenu {
         ctx: &egui::Context,
         graph: &Graph<N>,
         resolved: &Resolved<N::Edges>,
+        hidden: &std::collections::BTreeSet<String>,
     ) -> (Option<Choice>, bool) {
         let needle = self.search.to_lowercase();
         let matches = |name: &str| name.to_lowercase().contains(&needle);
         let from = self.from;
         let types: Vec<usize> = (0..N::TYPES.len())
-            .filter(|&t| matches(N::TYPES[t].name))
+            .filter(|&t| matches(N::TYPES[t].name) && !hidden.contains(N::TYPES[t].name))
             .filter(|&t| from.is_none_or(|from| port_on_new::<N>(from, resolved, t).is_some()))
             .collect();
         let existing: Vec<(Port, String)> = from

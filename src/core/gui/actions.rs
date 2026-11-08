@@ -51,6 +51,8 @@ pub enum Action {
     Play,
     /// Starts or stops recording (starting the graph running, if it isn't).
     Record,
+    /// Opens the Settings window: the app's preferences.
+    Settings,
     /// Says what the program is: its version, and what its build says about itself.
     About,
     /// Opens where the program's source is, in the browser.
@@ -96,6 +98,8 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Item(Action::Save),
             Item(Action::SaveAs),
             Separator,
+            Item(Action::Settings),
+            Separator,
             Item(Action::Quit),
         ],
     ),
@@ -138,7 +142,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
 ];
 
 /// Checked in this order, so that e.g. shift-ctrl-Z (redo) is seen before ctrl-Z (undo).
-const SHORTCUT_ORDER: [Action; 18] = [
+const SHORTCUT_ORDER: [Action; 19] = [
     Action::Redo,
     Action::Undo,
     Action::SaveAs,
@@ -157,6 +161,7 @@ const SHORTCUT_ORDER: [Action; 18] = [
     Action::ToggleDisabled,
     Action::Home,
     Action::Advanced,
+    Action::Settings,
 ];
 
 impl Action {
@@ -196,6 +201,7 @@ impl Action {
             Action::Theme(index) => themes.get(index).map_or("?", |t| t.name),
             Action::Play => "Play",
             Action::Record => "Record",
+            Action::Settings => "Settings…",
             Action::About => "About…",
             Action::Source => "Source Code",
         }
@@ -221,6 +227,8 @@ impl Action {
             Action::ToggleDisabled => command(Key::E),
             Action::Home => command(Key::Num0),
             Action::Advanced => command(Key::Num1),
+            // As on macOS.
+            Action::Settings => command(Key::Comma),
             // As in browsers.
             Action::ToggleDevTools => Some(KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::ALT, Key::I)),
             _ => None,

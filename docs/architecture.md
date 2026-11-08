@@ -135,8 +135,20 @@ pane shows in each mode is up to it (`UiContext::advanced`). Where panes go when
 default layout, a column on the left and two groups one above another on the right.
 
 What's kept between runs, whatever file's open, is in the app's preferences: the `eframe::Storage` that `App::save`
-writes to (the theme, the base directories and the recent files, under the `*_KEY`s in
+writes to (the theme, the base directories, the recent files and the settings, under the `*_KEY`s in
 [`gui`](../src/core/gui/mod.rs)). File › Open Recent lists the last 10 files opened or saved, as does the basic view while the graph's empty.
+
+File › Settings… ([`preferences`](../src/core/gui/preferences.rs)) has the rest of the preferences:
+
+- **Stopping when no one's using ephys-rs.** Recording stops after an hour without mouse or keyboard input, and
+  acquisition after two, by default; each can be off, or longer or shorter, but recording's never longer than
+  acquisition. The GUI keeps track: in the last minutes before, a warning counts down (any input carries on), and
+  after, a notice says what stopped, and when. Running and recording don't depend on the GUI, so a modal doesn't get in
+  their way.
+- **Node types.** Which can be added to a graph (from the add-node menu), from the next start: nodes already in a graph
+  are left as they are, as are quick actions.
+
+![Settings](../tests/snapshots/settings.png)
 
 ![Basic mode, after the standard LTX quick action](../tests/snapshots/standard_ltx_layout.png)
 
