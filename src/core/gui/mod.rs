@@ -66,7 +66,7 @@ pub fn run<C: Components>(path: Option<PathBuf>) -> eframe::Result {
     crate::core::crash::install();
     crate::core::crash::start_session();
     crate::core::crash::test_if_asked();
-    let mut app = App::<C::Nodes, C::Annotations>::open(None, C::THEMES)
+    let mut app = App::<C::Nodes, C::Annotations>::new(C::THEMES)
         .with_quick_actions(C::QUICK_ACTIONS)
         .with_base_directories(C::BASE_DIRECTORIES)
         .with_config_patches(C::CONFIG_PATCHES)
@@ -308,11 +308,12 @@ pub struct App<N: NodesEnum, A: AnnotationsEnum> {
 }
 
 impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
-    /// Opens the file at `path`, or an empty graph if there's no file there. `themes` mustn't be empty.
-    pub fn open(path: Option<PathBuf>, themes: &'static [Theme]) -> Self {
+    /// An empty graph. `themes` mustn't be empty. A file's opened afterwards (`open_path`), once the config patches are
+    /// set (`with_config_patches`), so it's patched.
+    pub fn new(themes: &'static [Theme]) -> Self {
         let annotations = Annotations::default();
         let graph = Graph::default();
-        let mut app = App {
+        App {
             path: None,
             saved: None,
             saved_base_directory: None,
@@ -360,11 +361,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             base_directories: BaseDirectories::new(&[], None),
             config_patches: PatchSets::default(),
             disk_space: Default::default(),
-        };
-        if let Some(path) = path {
-            app.open_path(path);
         }
-        app
     }
 
     /// Opens the file at `path`, or if there isn't one there, makes it the file to save to.
@@ -1920,7 +1917,7 @@ mod tests {
     }
 
     fn harness() -> Harness<'static, TestApp> {
-        let mut app = TestApp::open(Some(example()), THEMES)
+        let mut app = TestApp::new(THEMES)
             .with_quick_actions(crate::components::quick_actions::QUICK_ACTIONS)
             .with_base_directories(crate::components::BASE_DIRECTORIES)
             .with_config_patches(crate::components::CONFIG_PATCHES)
@@ -1928,6 +1925,7 @@ mod tests {
                 <crate::components::ChenNeuro as Components>::ABOUT,
                 <crate::components::ChenNeuro as Components>::SOURCE,
             );
+        app.open_path(example());
         // Most tests work on the graph.
         app.layout.mode = Mode::Advanced;
         assert!(app.status.is_none(), "the example opens");
@@ -2440,7 +2438,7 @@ mod tests {
         harness.run_steps(2);
         assert!(opened(&harness));
 
-        let fresh = TestApp::open(None, THEMES);
+        let fresh = TestApp::new(THEMES);
         assert!(!fresh.unsaved(), "just started");
     }
 
@@ -2801,7 +2799,7 @@ mod tests {
 
     #[test]
     fn says_where_the_last_crash_report_is() {
-        let mut app = TestApp::open(None, THEMES);
+        let mut app = TestApp::new(THEMES);
         app.last_crash = Some(PathBuf::from("/reports/crash-2026-11-02-210040.txt"));
         let mut harness = Harness::builder().with_size([1000.0, 600.0]).wgpu().build_ui_state(run_app, app);
         harness.run_steps(2);
@@ -2814,7 +2812,7 @@ mod tests {
 
     #[test]
     fn quick_actions_build_the_graph_from_the_basic_view() {
-        let mut app = TestApp::open(None, THEMES).with_quick_actions(crate::components::quick_actions::QUICK_ACTIONS);
+        let mut app = TestApp::new(THEMES).with_quick_actions(crate::components::quick_actions::QUICK_ACTIONS);
         // Trials, when they're chosen, in a directory that isn't there (so they start from the first).
         let saved =
             serde_json::json!({ "types": { "Subject, date and trial": { "directory": "/nowhere/recordings" } } });
@@ -2996,7 +2994,7 @@ mod tests {
     /// hour, then two): warned of first, and said after. Recording here goes nowhere: there's no base directory.
     #[test]
     fn what_no_one_is_using_stops_with_a_warning_first_and_a_notice_after() {
-        let app = TestApp::open(None, THEMES);
+        let app = TestApp::new(THEMES);
         let mut harness = Harness::builder().with_size([900.0, 600.0]).wgpu().build_ui_state(run_app, app);
         harness.run_steps(2);
         let ctx = harness.ctx.clone();
@@ -3040,7 +3038,7 @@ mod tests {
     /// unattended stops all the same.
     #[test]
     fn what_no_one_is_using_stops_with_the_window_hidden() {
-        let mut app = TestApp::open(None, THEMES);
+        let mut app = TestApp::new(THEMES);
         let ctx = egui::Context::default();
         app.perform(&ctx, Action::Play);
         app.logic(&ctx);
@@ -3107,7 +3105,7 @@ mod tests {
 
     #[test]
     fn what_is_saved_says_the_versions_that_saved_it_and_is_patched_when_read() {
-        let mut app = TestApp::open(None, THEMES).with_config_patches(crate::components::CONFIG_PATCHES);
+        let mut app = TestApp::new(THEMES).with_config_patches(crate::components::CONFIG_PATCHES);
         app.load(&example()).unwrap();
         let path = std::env::temp_dir().join(format!("ephys-rs-versions-{}.json", std::process::id()));
         let base_directory = serde_json::Value::Null;
@@ -3117,7 +3115,7 @@ mod tests {
         assert!(saved["versions"]["chen-neuro"].is_string(), "every set");
 
         // The patch is applied to what was saved before version 1: the example was saved before there were versions.
-        let mut patched = TestApp::open(None, THEMES).with_config_patches(&WITH_A_PATCH);
+        let mut patched = TestApp::new(THEMES).with_config_patches(&WITH_A_PATCH);
         patched.load(&example()).unwrap();
         assert_eq!((pre(&app.graph), pre(&patched.graph)), (8, 12));
         patched.load(&path).unwrap();
@@ -3132,7 +3130,7 @@ mod tests {
 
     #[test]
     fn copied_settings_say_the_versions_that_copied_them_a_line_for_each_node() {
-        let mut app = TestApp::open(None, THEMES).with_config_patches(&WITH_A_PATCH);
+        let mut app = TestApp::new(THEMES).with_config_patches(&WITH_A_PATCH);
         app.load(&example()).unwrap();
         let detector = node_named(&app, "Spike Detector");
         let viewer = node_named(&app, "Spike Viewer");

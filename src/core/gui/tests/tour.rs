@@ -158,7 +158,7 @@ impl Tour {
 fn make_tour() {
     let (_board, board) = Fake::start("fake_acquisition_board.py");
     let (_camera, camera) = Fake::start("fake_camera.py");
-    let app = TestApp::open(None, THEMES)
+    let app = TestApp::new(THEMES)
         .with_quick_actions(crate::components::quick_actions::QUICK_ACTIONS)
         .with_base_directories(crate::components::BASE_DIRECTORIES);
     let harness = Harness::builder().with_size(SIZE).with_pixels_per_point(SCALE).wgpu().build_ui_state(
