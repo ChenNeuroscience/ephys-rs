@@ -42,7 +42,7 @@ use serde::{Deserialize, Serialize};
 use crate::core::Components;
 use crate::core::annotation::{Annotation, AnnotationId, AnnotationSet, Annotations};
 use crate::core::base_directory::{BaseDirectories, BaseDirectoryType, Place};
-use crate::core::config_patching::{self, PatchLevels, PatchSets};
+use crate::core::config_patching::{self, PatchSets, SavedVersions};
 use crate::core::engine::{self, Graph, NodeId, NodeSet, Port, PortRef, Resolved, Runner, Snapshot, Stats};
 use crate::core::layout::{Layout, Mode, Pane};
 use crate::core::theme::{Colours, Theme};
@@ -94,13 +94,10 @@ pub fn run<C: Components>(path: Option<PathBuf>) -> eframe::Result {
             app.themes[app.theme].apply(&cc.egui_ctx);
             let mut saved: Option<serde_json::Value> =
                 cc.storage.and_then(|s| eframe::get_value(s, BASE_DIRECTORY_KEY));
-            let levels: PatchLevels =
-                cc.storage.and_then(|s| eframe::get_value(s, PATCH_LEVELS_KEY)).unwrap_or_default();
-            if let Some(Err(problem)) =
-                saved.as_mut().map(|s| app.config_patches.apply(&levels, config_patching::SavedPart::BaseDirectory, s))
-            {
-                log::warn!("The base directory kept from last time can't be read: {problem}");
-                saved = None;
+            let versions: SavedVersions =
+                cc.storage.and_then(|s| eframe::get_value(s, VERSIONS_KEY)).unwrap_or_default();
+            if let Some(saved) = saved.as_mut() {
+                app.config_patches.apply(&versions, config_patching::SavedPart::BaseDirectory, saved);
             }
             app.base_directories = BaseDirectories::new(app.base_directories.types(), saved.as_ref());
             app.recent = cc.storage.and_then(|s| eframe::get_value(s, RECENT_KEY)).unwrap_or_default();
@@ -130,8 +127,8 @@ const THEME_KEY: &str = "theme";
 const BASE_DIRECTORY_KEY: &str = "base directory";
 /// Where the recent files are kept with the app's preferences.
 const RECENT_KEY: &str = "recent files";
-/// Where it's kept what patch levels what else is kept is at (see `crate::core::config_patching`).
-const PATCH_LEVELS_KEY: &str = "patch levels";
+/// Where it's kept which versions kept what else is kept (see `crate::core::config_patching`).
+const VERSIONS_KEY: &str = "versions";
 /// How many recent files are kept.
 const RECENT_FILES: usize = 10;
 
@@ -194,8 +191,8 @@ struct SaveFile<N, A> {
 #[derive(Serialize)]
 #[serde(bound = "N: NodeSet, A: AnnotationSet")]
 struct SaveFileRef<'a, N, A> {
-    /// The patch levels it's at (see `crate::core::config_patching`).
-    patch_levels: PatchLevels,
+    /// The versions that saved it (see `crate::core::config_patching`).
+    versions: SavedVersions,
     graph: &'a Graph<N>,
     annotations: &'a Annotations<A>,
     layout: &'a Layout,
@@ -408,14 +405,14 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
     fn load(&mut self, path: &Path) -> Result<(), String> {
         let json = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
         let mut value: serde_json::Value = serde_json::from_str(&json).map_err(|e| e.to_string())?;
-        let levels: PatchLevels = value
-            .get("patch_levels")
+        let versions: SavedVersions = value
+            .get("versions")
             .cloned()
             .map(serde_json::from_value)
             .transpose()
             .map_err(|e| e.to_string())?
             .unwrap_or_default();
-        self.config_patches.apply(&levels, config_patching::SavedPart::Project, &mut value)?;
+        self.config_patches.apply(&versions, config_patching::SavedPart::Project, &mut value);
         let file: SaveFile<N, A> = serde_json::from_value(value).map_err(|e| e.to_string())?;
         // The mode stays as it is, opening a file (it starts basic, each time the app does).
         let mode = self.layout.mode;
@@ -462,9 +459,9 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
 
     /// What's written to a file.
     fn save_file<'a>(&'a self, base_directory: &'a serde_json::Value) -> SaveFileRef<'a, N, A> {
-        let (graph, annotations, layout, patch_levels) =
-            (&self.graph, &self.annotations, &self.layout, self.config_patches.levels());
-        SaveFileRef { patch_levels, graph, annotations, layout, base_directory }
+        let (graph, annotations, layout, versions) =
+            (&self.graph, &self.annotations, &self.layout, self.config_patches.versions());
+        SaveFileRef { versions, graph, annotations, layout, base_directory }
     }
 
     /// Saves the graph (as File › Save would, but without changing which file is open) beside a recording starting in
@@ -1556,7 +1553,7 @@ impl<N: NodeSet, A: AnnotationSet> eframe::App for App<N, A> {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, THEME_KEY, &self.themes[self.theme].name);
         eframe::set_value(storage, BASE_DIRECTORY_KEY, &self.base_directories.save());
-        eframe::set_value(storage, PATCH_LEVELS_KEY, &self.config_patches.levels());
+        eframe::set_value(storage, VERSIONS_KEY, &self.config_patches.versions());
         eframe::set_value(storage, RECENT_KEY, &self.recent);
     }
 }
@@ -2780,14 +2777,21 @@ mod tests {
         assert!(harness.state().graph.get(detector).unwrap().disabled);
     }
 
-    /// A set whose one patch changes a Spike Detector's waveform, as a node type's patch would.
-    fn pre_was_8(what: config_patching::SavedPart, value: &mut serde_json::Value) {
-        if what == config_patching::SavedPart::Node("SpikeDetector") {
+    /// A set whose one patch changes a Spike Detector's waveform, as a node type's patch would, if it was saved before
+    /// version 1.
+    fn pre_was_8(
+        saved: &config_patching::SavedVersions,
+        what: config_patching::SavedPart,
+        value: &mut serde_json::Value,
+    ) {
+        if what == config_patching::SavedPart::Node("SpikeDetector")
+            && config_patching::saved_before(saved, "test", "1.0.0")
+        {
             value["settings"]["pre"] = 12.into();
         }
     }
     static WITH_A_PATCH: [config_patching::PatchSet; 1] =
-        [config_patching::PatchSet { name: "test", oldest: 0, patches: &[pre_was_8] }];
+        [config_patching::PatchSet { name: "test", version: "1.0.0", patches: &[pre_was_8] }];
 
     fn pre(graph: &Graph<Nodes>) -> u32 {
         let detector = graph.iter().find_map(|(_, e)| match &e.node {
@@ -2798,53 +2802,51 @@ mod tests {
     }
 
     #[test]
-    fn what_is_saved_says_its_patch_levels_and_is_brought_up_to_date_when_read() {
+    fn what_is_saved_says_the_versions_that_saved_it_and_is_patched_when_read() {
         let mut app = TestApp::open(None, THEMES).with_config_patches(crate::components::CONFIG_PATCHES);
         app.load(&example()).unwrap();
-        let path = std::env::temp_dir().join(format!("ephys-rs-patch-levels-{}.json", std::process::id()));
+        let path = std::env::temp_dir().join(format!("ephys-rs-versions-{}.json", std::process::id()));
         let base_directory = serde_json::Value::Null;
         std::fs::write(&path, serde_json::to_string(&app.save_file(&base_directory)).unwrap()).unwrap();
         let mut saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(saved["patch_levels"], serde_json::to_value(app.config_patches.levels()).unwrap());
-        assert_eq!(saved["patch_levels"]["chen-neuro"], 1, "every set");
+        assert_eq!(saved["versions"], serde_json::to_value(app.config_patches.versions()).unwrap());
+        assert!(saved["versions"]["chen-neuro"].is_string(), "every set");
 
-        // A patch is applied to what was saved before it: the example was saved before there were patches.
-        let mut stepped = TestApp::open(None, THEMES).with_config_patches(&WITH_A_PATCH);
-        stepped.load(&example()).unwrap();
-        assert_eq!((pre(&app.graph), pre(&stepped.graph)), (8, 12));
-        stepped.load(&path).unwrap();
-        assert_eq!(pre(&stepped.graph), 12, "saved without that set: at 0, so it's applied");
+        // The patch is applied to what was saved before version 1: the example was saved before there were versions.
+        let mut patched = TestApp::open(None, THEMES).with_config_patches(&WITH_A_PATCH);
+        patched.load(&example()).unwrap();
+        assert_eq!((pre(&app.graph), pre(&patched.graph)), (8, 12));
+        patched.load(&path).unwrap();
+        assert_eq!(pre(&patched.graph), 12, "saved without that set");
 
-        saved["patch_levels"]["std"] = 99.into();
+        saved["versions"]["test"] = "1.0.0".into();
         std::fs::write(&path, saved.to_string()).unwrap();
-        let newer = app.load(&path).unwrap_err();
-        assert!(newer.contains("newer version") && newer.contains("std patch level 99"), "{newer}");
+        patched.load(&path).unwrap();
+        assert_eq!(pre(&patched.graph), 8, "saved since: up to the patch, which leaves it");
         std::fs::remove_file(path).unwrap();
     }
 
     #[test]
-    fn copied_settings_say_their_patch_levels_a_line_for_each_node() {
+    fn copied_settings_say_the_versions_that_copied_them_a_line_for_each_node() {
         let mut app = TestApp::open(None, THEMES).with_config_patches(&WITH_A_PATCH);
         app.load(&example()).unwrap();
         let detector = node_named(&app, "Spike Detector");
         let viewer = node_named(&app, "Spike Viewer");
         let one = paste_settings::copy(&app.graph, &[detector], &app.config_patches);
         assert_eq!(one.lines().count(), 1, "to go in a line of notes: {one}");
-        assert!(one.starts_with(r#"{"ephys-rs settings":{"test":1},"nodes":[{"#), "{one}");
+        assert!(one.starts_with(r#"{"ephys-rs settings":{"test":"1.0.0"},"nodes":[{"#), "{one}");
         assert_eq!(paste_settings::copy(&app.graph, &[detector, viewer], &app.config_patches).lines().count(), 2);
 
-        // Brought up to date as they'd be in a project.
-        let older = one.replace(r#""test":1"#, r#""test":0"#).replace(r#""pre":12"#, r#""pre":8"#);
-        let paste = paste_settings::PasteSettings::new(&older, &app.graph, &app.config_patches).unwrap();
-        let Some(Ok(pasted)) = paste.onto(detector, &app.graph) else { panic!() };
-        let Nodes::SpikeDetector(d) = pasted.node else { panic!() };
-        assert_eq!(d.pre, 12);
-
-        let newer = one.replace(r#""test":1"#, r#""test":2"#);
-        let Err(problem) = paste_settings::PasteSettings::new(&newer, &app.graph, &app.config_patches) else {
-            panic!()
+        // Patched as they'd be in a project.
+        let pasted_pre = |text: &str| {
+            let paste = paste_settings::PasteSettings::new(text, &app.graph, &app.config_patches).unwrap();
+            let Some(Ok(pasted)) = paste.onto(detector, &app.graph) else { panic!() };
+            let Nodes::SpikeDetector(d) = pasted.node else { panic!() };
+            d.pre
         };
-        assert!(problem.contains("newer version"), "{problem}");
+        let eight = one.replace(r#""pre":12"#, r#""pre":8"#);
+        assert_eq!(pasted_pre(&eight.replace(r#""test":"1.0.0""#, r#""test":"0.9.0""#)), 12);
+        assert_eq!(pasted_pre(&eight), 8, "copied since");
     }
 
     #[test]
