@@ -191,7 +191,8 @@ See [`formats.rs`](../src/core/formats.rs).
 Each part is a layer with its own count: the core's (`formats::CORE`: the project's structure), the standard
 components' (`standard_components::FORMATS`: their node types and base directories), and a build's own
 (`Components::FORMATS` lists them all but the core's, as [chen-neuro's](../examples/chen-neuro/src/components/mod.rs)
-does). They're all at 0 for now: what was saved before there were formats.
+does). The standard components' is at 1, after an example step that changes nothing (`standard_components::formats`,
+to copy); the rest are at 0: what was saved before there were formats.
 
 To change what a layer saves, add a step to its `steps`: a function bringing what's saved from the format before to
 the new one, as JSON (`serde_json::Value`), before anything's read into types. It's told what it's looking at
