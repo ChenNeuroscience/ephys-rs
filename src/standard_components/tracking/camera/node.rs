@@ -72,7 +72,8 @@ impl Node<Edges> for Camera {
             flow: Flow::ToPasses,
             why: "On a thread of its own so frames are taken from the camera as they come, whatever the passes \
                   are doing.",
-            swaps: true,
+            // The video: the stats are made by the passes.
+            swapped_outputs: vec![0],
         }]
     }
 

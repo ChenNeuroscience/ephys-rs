@@ -577,11 +577,11 @@ fn step_row<N: NodesEnum>(
             }
             Some(b) if step.takes.get(i) == Some(&true) => {
                 let text = format!(
-                    "Takes buffer {b}, with {name} in it, being the last to read it: then does as it likes with it \
-                     (swaps it for one of its own, say), so nothing's copied"
+                    "Swap point: takes buffer {b}, with {name} in it, being the last to read it, and swaps it for one \
+                     of its own (one of its thread's, say, to write), so nothing's copied"
                 );
                 buffer_tag(ui, plan, *b, colours).on_hover_text(&text);
-                badge(ui, Glyph::InPlace, colours.success, &text);
+                badge(ui, Glyph::Swap, colours.success, &text);
             }
             Some(b) => {
                 buffer_tag(ui, plan, *b, colours).on_hover_text(format!("Reads {name} from buffer {b}"));
@@ -599,6 +599,9 @@ fn step_row<N: NodesEnum>(
     ui.painter().line_segment([egui::pos2(arrow.left() + 1.0, y), egui::pos2(arrow.right() - 1.0, y)], stroke);
     let tip = egui::pos2(arrow.right() - 1.0, y);
     ui.painter().add(Shape::line(vec![tip + vec2(-3.5, -3.0), tip, tip + vec2(-3.5, 3.0)], stroke));
+    // The outputs its thread fills, which the passes swap for their own.
+    let threads = graph.get(step.id).map(|e| e.node.threads()).unwrap_or_default();
+    let swapped = |o: usize| threads.iter().any(|t| t.flow == Flow::ToPasses && t.swapped_outputs.contains(&o));
     for (o, &b) in step.outputs.iter().enumerate() {
         let name = output_names.get(o).copied().unwrap_or("output");
         // What's in it, if there's more to say than its kind.
@@ -612,35 +615,20 @@ fn step_row<N: NodesEnum>(
                 buffer_tag(ui, plan, b, colours).on_hover_text(&text);
                 badge(ui, Glyph::InPlace, colours.success, &text);
             }
+            None if swapped(o) => {
+                let text = format!(
+                    "Swap point: makes {name}{stream} by swapping buffer {b} for one its thread filled, from their \
+                     pool (and giving the pass's back, to be filled again), so nothing's copied"
+                );
+                buffer_tag(ui, plan, b, colours).on_hover_text(&text);
+                badge(ui, Glyph::Swap, colours.success, &text);
+            }
             None => {
                 buffer_tag(ui, plan, b, colours).on_hover_text(format!("Fills {name}{stream} in buffer {b}"));
             }
         }
     }
-    // A node whose thread swaps buffers with the passes: a source's passes take what it's filled; a writer's hand it
-    // the buffers they take.
-    let threads = graph.get(step.id).map(|e| e.node.threads()).unwrap_or_default();
-    let swaps_in = threads.iter().any(|t| t.swaps && t.flow == Flow::ToPasses);
-    let swaps_out = threads.iter().any(|t| t.swaps && t.flow == Flow::FromPasses);
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        if swaps_in {
-            badge(
-                ui,
-                Glyph::Swap,
-                colours.success,
-                "Swap point: takes the buffers its thread filled, from their pool, swapping them for the pass's own \
-                 (which go back to the pool, freed, to be filled again). Nothing's copied",
-            );
-        }
-        if swaps_out {
-            badge(
-                ui,
-                Glyph::Swap,
-                colours.success,
-                "Swap point: swaps the buffers it takes into its thread's, from their pool, for it to write (and \
-                 free, back to the pool, once written)",
-            );
-        }
         if !step.copies.is_empty() {
             let copies: Vec<String> = step
                 .copies

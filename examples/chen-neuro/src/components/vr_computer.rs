@@ -489,7 +489,7 @@ impl Node<Edges> for VrComputer {
             link: "message queue",
             flow: Flow::ToPasses,
             why: "On a thread of its own so messages are read as they come, whatever the passes are doing.",
-            swaps: false,
+            swapped_outputs: Vec::new(),
         }]
     }
 

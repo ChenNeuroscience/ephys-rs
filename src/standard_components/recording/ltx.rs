@@ -206,7 +206,7 @@ impl Node<Edges> for WriteLtx {
             link: "buffer pool",
             flow: Flow::FromPasses,
             why: super::WHY_A_THREAD,
-            swaps: true,
+            swapped_outputs: Vec::new(),
         }]
     }
 

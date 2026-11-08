@@ -144,7 +144,7 @@ impl Node<Edges> for WriteRaw {
             link: "buffer pool",
             flow: Flow::FromPasses,
             why: super::WHY_A_THREAD,
-            swaps: true,
+            swapped_outputs: Vec::new(),
         }]
     }
 

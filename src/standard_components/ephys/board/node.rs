@@ -132,7 +132,7 @@ impl Node<Edges> for AcquisitionBoard {
             flow: Flow::ToPasses,
             why: "On a thread of its own so samples are taken from the board as they come (before its buffer \
                   overflows), whatever the passes are doing.",
-            swaps: true,
+            swapped_outputs: (0..self.outputs(&[]).len()).collect(),
         }]
     }
 

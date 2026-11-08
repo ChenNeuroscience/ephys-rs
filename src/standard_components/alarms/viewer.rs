@@ -188,7 +188,7 @@ impl Node<Edges> for AlarmViewer {
             flow: Flow::FromPasses,
             why: "On a thread of its own so that opening the sound device, the first time an alarm sounds, can't hold \
                   up the passes. Only started if it's needed.",
-            swaps: false,
+            swapped_outputs: Vec::new(),
         }]
     }
 

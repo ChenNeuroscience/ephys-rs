@@ -15,9 +15,10 @@ pub struct NodeThread {
     pub flow: Flow,
     /// Why it's a thread of its own, rather than done in the passes.
     pub why: &'static str,
-    /// Whether the data's buffers are swapped with the passes' own (through a pool: see `Node::thread_pool`), rather
-    /// than copied.
-    pub swaps: bool,
+    /// The node's outputs whose buffers the passes swap for ones the thread's filled (through a pool: see
+    /// `Node::thread_pool`), rather than copying. (Data going the other way, to the thread, is swapped from the inputs
+    /// the node takes: see `BufferUsage::takes`.)
+    pub swapped_outputs: Vec<usize>,
 }
 
 /// Where the buffers are that a node's thread swaps with its passes, rather than copying (see `Node::thread_pool`):
