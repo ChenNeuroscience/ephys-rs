@@ -244,7 +244,7 @@ pub struct App<N: NodesEnum, A: AnnotationsEnum> {
     /// `preferences`).
     last_input: f64,
     /// What's been stopped for being unattended, until that's been seen.
-    stopped_unattended: Vec<StoppedUnattended>,
+    stopped_unattended: Vec<preferences::Stopped>,
     /// The user has said to close despite unsaved changes.
     closing: bool,
     /// The themes to choose from, and the one in use.
@@ -651,30 +651,11 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             Stopping::Acquisition if recording => "Acquisition and recording",
             Stopping::Acquisition => "Acquisition",
         };
-        let centred = |ui: &mut egui::Ui, text: &str, colour| {
-            ui.vertical_centered(|ui| ui.label(RichText::new(text).color(colour)));
-        };
         let mut open_settings = false;
         match self.preferences.unattended(idle, self.runner.is_some(), recording) {
             Unattended::Fine => {}
             Unattended::Warning { stopping, left } => {
-                let body = |ui: &mut egui::Ui| {
-                    ui.add_space(6.0);
-                    let left = preferences::countdown(left);
-                    let headline = [(what(stopping), false), (" will stop in ", false), (left.as_str(), true)];
-                    dialog::headline(ui, &headline, 24.0, colours.text_primary);
-                    ui.add_space(10.0);
-                    centred(ui, &format!("No one's used ephys-rs for {idle_text}."), colours.text_primary);
-                    centred(ui, "Move the mouse or press a key to carry on.", colours.text_primary);
-                    ui.add_space(6.0);
-                    centred(ui, "Change when this happens in File › Settings.", colours.text_secondary);
-                };
-                // Any input carries on, so the buttons needn't do anything more.
-                let footer = |ui: &mut egui::Ui| {
-                    open_settings = ui.button("Settings…").clicked();
-                    dialog::at_right(ui, |ui| ui.button("Carry on"));
-                };
-                dialog::show(ctx, "Stopping soon", 460.0, colours, body, footer);
+                open_settings = preferences::warning(ctx, what(stopping), left, &idle_text, colours);
                 ctx.request_repaint_after(std::time::Duration::from_secs(1));
             }
             Unattended::Stop(stopping) => {
@@ -685,29 +666,13 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                 }
                 let at = chrono::Local::now().format("%H:%M").to_string();
                 log::warn!("{what} stopped at {at}, after {idle_text} without input");
-                self.stopped_unattended.push(StoppedUnattended { what, at, after: idle_text });
+                self.stopped_unattended.push(preferences::Stopped { what, at, after: idle_text });
             }
         }
         if !self.stopped_unattended.is_empty() {
-            let mut close = false;
-            let stopped = &self.stopped_unattended;
-            let body = |ui: &mut egui::Ui| {
-                for stop in stopped {
-                    ui.add_space(6.0);
-                    let headline = [(stop.what, false), (" stopped at ", false), (stop.at.as_str(), true)];
-                    dialog::headline(ui, &headline, 24.0, colours.text_primary);
-                    ui.add_space(4.0);
-                    centred(ui, &format!("after {} without input", stop.after), colours.text_primary);
-                }
-                ui.add_space(10.0);
-                centred(ui, "Change when this happens in File › Settings.", colours.text_secondary);
-            };
-            let footer = |ui: &mut egui::Ui| {
-                open_settings |= ui.button("Settings…").clicked();
-                close = dialog::at_right(ui, |ui| ui.button("OK").clicked());
-            };
-            let dismissed = dialog::show(ctx, "Stopped automatically", 460.0, colours, body, footer);
-            if close || dismissed || open_settings {
+            let (close, settings) = preferences::stopped(ctx, &self.stopped_unattended, colours);
+            open_settings |= settings;
+            if close || settings {
                 self.stopped_unattended.clear();
             }
         }
@@ -1691,14 +1656,6 @@ impl<N: NodesEnum, A: AnnotationsEnum> eframe::App for App<N, A> {
         eframe::set_value(storage, RECENT_KEY, &self.recent);
         eframe::set_value(storage, PREFERENCES_KEY, &self.preferences);
     }
-}
-
-/// Something stopped because no one was using the app (see `App::stop_unattended`): what, when (the time of day), and
-/// after how long without input.
-struct StoppedUnattended {
-    what: &'static str,
-    at: String,
-    after: String,
 }
 
 /// "1:02:03.4", or "02:03.4" under an hour.
@@ -2966,31 +2923,6 @@ mod tests {
         assert!(harness.query_by_label_contains("will stop in").is_none());
         assert!(harness.state().runner.is_some());
         harness.state_mut().perform(&ctx, Action::Play);
-    }
-
-    /// The warning before stopping, and the notice after. See tests/snapshots/.
-    #[test]
-    fn the_auto_stop_warning_and_notice() {
-        let app = TestApp::open(None, THEMES);
-        let mut harness = Harness::builder()
-            .with_size([760.0, 440.0])
-            .wgpu()
-            .build_ui_state(|ui, app: &mut TestApp| app.show(ui), app);
-        THEMES[0].apply(&harness.ctx);
-        harness.run_steps(2);
-        let ctx = harness.ctx.clone();
-        let mut results = egui_kittest::SnapshotResults::new();
-        harness.state_mut().perform(&ctx, Action::Play);
-        let now = harness.ctx.input(|i| i.time);
-        harness.state_mut().last_input = now - (117.0 * 60.0 + 30.0);
-        harness.run_steps(2);
-        results.add(harness.try_snapshot("auto_stop_warning"));
-
-        harness.state_mut().perform(&ctx, Action::Play);
-        let stopped = StoppedUnattended { what: "Acquisition", at: "14:32".into(), after: "2 h".into() };
-        harness.state_mut().stopped_unattended.push(stopped);
-        harness.run_steps(2);
-        results.add(harness.try_snapshot("auto_stop_notice"));
     }
 
     /// Annotation types hidden in Settings aren't among the drawing tools, from when the app starts; and only so many

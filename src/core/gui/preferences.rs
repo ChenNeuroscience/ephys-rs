@@ -161,6 +161,67 @@ pub fn is_input(event: &egui::Event) -> bool {
     )
 }
 
+/// Something stopped because no one was using the app: what, when (the time of day), and after how long without input.
+pub struct Stopped {
+    pub what: &'static str,
+    pub at: String,
+    pub after: String,
+}
+
+/// `text` on a line of its own, centred, in `colour`.
+fn centred(ui: &mut egui::Ui, text: &str, colour: egui::Color32) {
+    ui.vertical_centered(|ui| ui.label(RichText::new(text).color(colour)));
+}
+
+/// The warning that `what` ("Recording") will stop in `left`, after `idle` ("55 min") without input. Any input carries
+/// on, so it needn't be closed. Returns whether Settings was asked for.
+pub fn warning(ctx: &egui::Context, what: &str, left: Duration, idle: &str, colours: &Colours) -> bool {
+    let mut open_settings = false;
+    let body = |ui: &mut egui::Ui| {
+        ui.add_space(6.0);
+        let left = countdown(left);
+        dialog::headline(
+            ui,
+            &[(what, false), (" will stop in ", false), (left.as_str(), true)],
+            24.0,
+            colours.text_primary,
+        );
+        ui.add_space(10.0);
+        centred(ui, &format!("No one's used ephys-rs for {idle}."), colours.text_primary);
+        centred(ui, "Move the mouse or press a key to carry on.", colours.text_primary);
+        ui.add_space(6.0);
+        centred(ui, "Change when this happens in File › Settings.", colours.text_secondary);
+    };
+    let footer = |ui: &mut egui::Ui| {
+        open_settings = ui.button("Settings…").clicked();
+        dialog::at_right(ui, |ui| ui.button("Carry on"));
+    };
+    dialog::show(ctx, "Stopping soon", 460.0, colours, body, footer);
+    open_settings
+}
+
+/// The notice of what's been `stopped`. Returns whether it's been dismissed, and whether Settings was asked for.
+pub fn stopped(ctx: &egui::Context, stopped: &[Stopped], colours: &Colours) -> (bool, bool) {
+    let (mut close, mut open_settings) = (false, false);
+    let body = |ui: &mut egui::Ui| {
+        for stop in stopped {
+            ui.add_space(6.0);
+            let headline = [(stop.what, false), (" stopped at ", false), (stop.at.as_str(), true)];
+            dialog::headline(ui, &headline, 24.0, colours.text_primary);
+            ui.add_space(4.0);
+            centred(ui, &format!("after {} without input", stop.after), colours.text_primary);
+        }
+        ui.add_space(10.0);
+        centred(ui, "Change when this happens in File › Settings.", colours.text_secondary);
+    };
+    let footer = |ui: &mut egui::Ui| {
+        open_settings = ui.button("Settings…").clicked();
+        close = dialog::at_right(ui, |ui| ui.button("OK").clicked());
+    };
+    let dismissed = dialog::show(ctx, "Stopped automatically", 460.0, colours, body, footer);
+    (close || dismissed, open_settings)
+}
+
 /// The types the program has, to offer or not.
 pub struct Types<'a> {
     pub nodes: &'a [NodeInfo],
@@ -476,6 +537,27 @@ mod tests {
             THEMES[0].apply(&harness.ctx);
             harness.run_steps(3);
             results.add(harness.try_snapshot(format!("settings_{}", section.name().to_lowercase().replace(' ', "_"))));
+        }
+    }
+
+    /// The warning before stopping, and the notice after, on their own. See tests/snapshots/.
+    #[test]
+    fn the_auto_stop_warning_and_notice() {
+        use crate::standard_components::themes::THEMES;
+        let mut results = egui_kittest::SnapshotResults::new();
+        for name in ["auto_stop_warning", "auto_stop_notice"] {
+            let mut harness = egui_kittest::Harness::builder().with_size([560.0, 300.0]).wgpu().build_ui(|ui| {
+                let colours = &THEMES[0].colours;
+                if name == "auto_stop_warning" {
+                    warning(ui.ctx(), "Acquisition", Duration::from_secs(149), "1 h 57 min", colours);
+                } else {
+                    let stop = Stopped { what: "Acquisition", at: "14:32".into(), after: "2 h".into() };
+                    stopped(ui.ctx(), &[stop], colours);
+                }
+            });
+            THEMES[0].apply(&harness.ctx);
+            harness.run_steps(3);
+            results.add(harness.try_snapshot(name));
         }
     }
 
