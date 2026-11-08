@@ -23,7 +23,7 @@ another node can edit).
 ## Running
 
 `process(pass, state)` is called once a pass, on a worker thread, with the pass's buffers (see
-[`Pass`](../src/core/engine/run.rs)): `inputs` to read, `outputs` to fill (already sized: nothing should be allocated
+[`Pass`](../src/core/engine/pass.rs)): `inputs` to read, `outputs` to fill (already sized: nothing should be allocated
 per pass), the settings its `controls` see, whether it's recording, and the exchange. `self` is the snapshot's
 settings: the latest, as of the pass.
 

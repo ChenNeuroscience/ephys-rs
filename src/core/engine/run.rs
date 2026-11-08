@@ -24,17 +24,14 @@
 //! one queued), and the dispatcher only sends passes for it once a worker is ready, to the workers that are;
 //! until then, passes carry on with the old one. So a worker is never handed a pass it isn't ready to run.
 //!
-//! Nodes don't copy their inputs: a node that would hand an input's data on (to a thread of its own, say, or its
-//! window) takes its buffer (see `Node::takes`), swapping it for one of its own. The plan decides when that needs a
-//! copy: if the node can be the last to read the data, it takes the buffer itself; otherwise the plan copies the data
-//! into a buffer of the node's own, as soon as it's made, which the node takes instead (a copy point). Each run has
-//! an `Exchange` where nodes keep what their passes and windows share (see `crate::core::exchange`).
+//!
+//! What each pass is given is in `pass`, and how it's planned in `plan`.
 
 use std::any::Any;
 use std::cell::UnsafeCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -45,441 +42,14 @@ use crate::core::console::{self, PassId};
 use crate::core::exchange::Exchange;
 use crate::core::triggers::DirectTriggers;
 
-use super::{Buffer, DataStreamSet, Edges, Graph, NodeId, NodeSet, Port, Recording, Role, Snapshot};
+use super::pass::*;
+use super::plan::*;
+use super::{Buffer, DataStreamSet, Edges, Graph, NodeId, NodeSet, Snapshot};
 
 type DataStream<N> = <<N as NodeSet>::Edges as Edges>::DataStream;
 
-/// The length of time each pass covers, in seconds.
-pub const PASS_DURATION: f64 = 0.02;
-
-/// What a node works on for one pass.
-pub struct Pass<'a, E: Edges> {
-    /// Passes are numbered from 0, each covering the next `duration` seconds. (No node needs them just now.)
-    #[allow(dead_code)]
-    pub sequence: u64,
-    #[allow(dead_code)]
-    pub duration: f64,
-    /// The node being run.
-    pub node: NodeId,
-    /// For each input, this pass's data on it, if it's connected (and not taken: see `take_input`).
-    pub inputs: &'a [Option<&'a Buffer<E>>],
-    /// For each input, its buffer, if the node's taking it (see `Node::takes`).
-    taken: &'a mut [Option<Buffer<E>>],
-    /// For each output, a buffer to fill.
-    pub outputs: &'a mut [Buffer<E>],
-    /// For each of the node's controls, the value of the setting it's connected to, if it is (for a writer to
-    /// record, say).
-    pub controls: &'a [Option<E::Setting>],
-    /// Whether the graph is recording.
-    pub recording: bool,
-    /// The recording, with what nodes prepared for it.
-    prepared: Option<&'a Recording>,
-    /// What the node's passes and window share (see `crate::core::exchange`).
-    pub exchange: &'a Exchange,
-}
-
-impl<'a, E: Edges> Pass<'a, E> {
-    /// A pass for trying a node out on, not recording, with no controls connected.
-    #[cfg(test)]
-    pub fn new(
-        sequence: u64,
-        duration: f64,
-        inputs: &'a [Option<&'a Buffer<E>>],
-        outputs: &'a mut [Buffer<E>],
-    ) -> Self {
-        Self::taking(sequence, duration, inputs, Box::leak(Box::new([])), outputs)
-    }
-
-    /// The same, with the node given `taken` to take (see `Node::takes`), for each input (`None` for those it reads).
-    #[cfg(test)]
-    pub fn taking(
-        sequence: u64,
-        duration: f64,
-        inputs: &'a [Option<&'a Buffer<E>>],
-        taken: &'a mut [Option<Buffer<E>>],
-        outputs: &'a mut [Buffer<E>],
-    ) -> Self {
-        let exchange: &'static Exchange = Box::leak(Box::default());
-        let (node, controls, recording, prepared) = (NodeId(0), &[], false, None);
-        Pass { sequence, duration, node, inputs, taken, outputs, controls, recording, prepared, exchange }
-    }
-
-    /// The node's shared `T` in the run's exchange, made with `make` the first time (see `crate::core::exchange`):
-    /// keep it in the node's state, rather than finding it every pass.
-    pub fn shared<T: crate::core::exchange::Shared>(&self, make: impl FnOnce() -> T) -> Arc<T> {
-        self.exchange.shared(self.node, make)
-    }
-
-    /// Whether the node's trigger `name` (see `Node::triggers`) has been triggered, taking it if so: the node then says
-    /// how it's getting on (`trigger_progress`) until it's done (`trigger_done`).
-    pub fn triggered(&self, name: &'static str) -> bool {
-        self.exchange.take_trigger(self.node, name)
-    }
-
-    /// Whether the node's trigger `name`, taken, has been stopped since: the node should abandon what it's doing
-    /// for it (it's then done).
-    pub fn trigger_cancelled(&self, name: &'static str) -> bool {
-        self.exchange.take_cancel(self.node, name)
-    }
-
-    /// How far along the node's trigger `name` is, from 0 to 1, for the GUI to show.
-    pub fn trigger_progress(&self, name: &'static str, progress: f32) {
-        self.exchange.set_trigger_progress(self.node, name, Some(progress.clamp(0.0, 1.0)));
-    }
-
-    /// The node's trigger `name` is done.
-    pub fn trigger_done(&self, name: &'static str) {
-        self.exchange.set_trigger_progress(self.node, name, None);
-    }
-
-    /// Triggers an update of the node's setting `setting` (by index) to `value`, which the app applies as an edit
-    /// (unless it's recording): passes can't change the graph themselves. See `crate::core::triggers`.
-    pub fn trigger_settings_update(&self, setting: usize, value: E::Setting) {
-        self.exchange.direct_triggers().trigger_settings_update(self.node, setting, Box::new(value));
-    }
-
-    /// An input's data, taken (see `take_input`) or not.
-    pub fn input(&self, index: usize) -> Option<&Buffer<E>> {
-        match self.taken.get(index) {
-            Some(Some(buffer)) => Some(buffer),
-            _ => self.inputs.get(index).copied().flatten(),
-        }
-    }
-
-    /// The buffer of an input the node takes (see `Node::takes`), if it's connected: to swap for another just as big
-    /// (of the same data stream), which the pass carries on with. The data's the node's to do as it likes with.
-    pub fn take_input(&mut self, index: usize) -> Option<&mut Buffer<E>> {
-        self.taken.get_mut(index)?.as_mut()
-    }
-
-    /// The base directory the recording's in (see `crate::core::base_directory`), while recording, if there is one.
-    pub fn base_directory(&self) -> Option<&crate::core::base_directory::Place> {
-        self.prepared?.base_directory()
-    }
-
-    /// What the node prepared to record (see `Node::prepare_to_record`), if it did and it's of type `T`: given once,
-    /// to the first pass that asks while recording.
-    pub fn take_prepared<T: 'static>(&self) -> Option<T> {
-        let prepared = self.prepared?.take(self.node)?;
-        prepared.downcast().ok().map(|b| *b)
-    }
-}
-
-/// A node to run in each pass, and which buffers (in the workspace's pool) it works with.
-#[derive(PartialEq)]
-pub struct Step {
-    pub id: NodeId,
-    /// For each input, the buffer feeding it. `None` if it's unconnected, or an output is made from it in place.
-    pub inputs: Vec<Option<usize>>,
-    /// For each output, its buffer.
-    pub outputs: Vec<usize>,
-    /// For each output, the input it's made from in place (taking over its buffer), if it is.
-    pub in_place: Vec<Option<usize>>,
-    /// For each input, whether the node takes its buffer (see `Node::takes`): being the last to read it, or a copy.
-    pub takes: Vec<bool>,
-    /// Copies of outputs the plan makes once the node's run, for nodes taking them that can't be the last to read
-    /// them: from the output's buffer, into the taker's own.
-    pub copies: Vec<CopyPoint>,
-    /// The node's state, if it carries any over: an index into the run's state slots. Each pass waits here for
-    /// the pass before to hand the state over.
-    pub state: Option<usize>,
-    /// The node's working memory, if its state is only that: an index into each worker's own.
-    pub memory: Option<usize>,
-}
-
-/// A copy of a buffer the plan makes, for a node taking it that can't be the last to read it.
-#[derive(Clone, PartialEq, Debug)]
-pub struct CopyPoint {
-    pub from: usize,
-    pub to: usize,
-    /// The node it's for, and which of its inputs.
-    pub node: NodeId,
-    pub input: usize,
-}
-
-/// Which nodes run, in what order, on which buffers: worked out when a snapshot is taken (see `Snapshot`), so
-/// it's ready before anything runs.
-///
-/// The nodes that run are those whose outputs are all known (so can have buffers). Each output gets a buffer
-/// of its own, except where a node can make an output in place from an input (see `Node::in_place`): then
-/// the output takes over the input's buffer, as long as every other node reading that data can run before
-/// it. Within a pass everything runs on one thread, in an order of our choosing, so the plan orders the
-/// nodes to make that so: the other readers first (they only read, e.g. viewers copying what they show),
-/// then the one editing in place. Only if another reader depends on the editor's output can't it be.
-///
-/// Likewise a node taking an input's buffer (see `Node::takes`) takes it if every other reader of the data can run
-/// first, and no one's editing it in place; otherwise the plan copies it for the node into a buffer of its own, once
-/// it's made. Otherwise nodes run in the graph's order.
-pub struct Plan<N: NodeSet> {
-    steps: Vec<Step>,
-    /// The data stream each buffer in the pool holds.
-    buffers: Vec<DataStream<N>>,
-    /// For each node with state, the data streams on its inputs (for its initial state).
-    state_inputs: Vec<(NodeId, Vec<Option<DataStream<N>>>)>,
-    /// For each node with working memory, the same.
-    memory_inputs: Vec<(NodeId, Vec<Option<DataStream<N>>>)>,
-    /// The memory each buffer takes, once asked (see `buffer_bytes`).
-    bytes: OnceLock<Vec<usize>>,
-}
-
-/// A data edge, as `settle` sees it: from an output to an input, and whether the node it goes to needs it.
-struct Link {
-    from: super::PortRef,
-    to: super::PortRef,
-    needed: bool,
-}
-
-/// How many times a node's asked whether it runs before its answer's taken as it stands (see `settle`).
-const SETTLE_ASKS: usize = 8;
-
-/// Which of `nodes` (each with how many inputs and outputs it has, upstream first) run, as each `answer`s, given which
-/// of its inputs have something running into them that it needs, and which of its outputs have something running
-/// that needs them (see `Node::runs_given`). Everything starts out running, and each is asked in turn; when one's
-/// answer changes, its neighbours are asked again, if what they'd be told has changed, until nothing does.
-///
-/// A node's answer can keep changing, if more in use can make it stop: so after `SETTLE_ASKS`, it's asked once more,
-/// and runs if either of its last two answers was yes, for good. Running when it needn't is better than not when it
-/// should. That's warned of, by its `label`.
-fn settle(
-    nodes: &[(NodeId, usize, usize)],
-    links: &[Link],
-    answer: impl Fn(NodeId, &[bool], &[bool]) -> bool,
-    label: impl Fn(NodeId) -> String,
-) -> Vec<NodeId> {
-    let mut runs: Vec<NodeId> = nodes.iter().map(|(id, _, _)| *id).collect();
-    let mut told: HashMap<NodeId, (Vec<bool>, Vec<bool>)> = HashMap::new();
-    let mut asks: HashMap<NodeId, usize> = HashMap::new();
-    let mut queue: VecDeque<(NodeId, usize, usize)> = nodes.iter().copied().collect();
-    while let Some((id, input_count, output_count)) = queue.pop_front() {
-        let asked = asks.get(&id).copied().unwrap_or(0);
-        if asked > SETTLE_ASKS {
-            continue;
-        }
-        let port = |port| super::PortRef { node: id, port };
-        let inputs: Vec<bool> = (0..input_count)
-            .map(|i| links.iter().any(|l| l.to == port(i) && l.needed && runs.contains(&l.from.node)))
-            .collect();
-        let outputs: Vec<bool> = (0..output_count)
-            .map(|o| links.iter().any(|l| l.from == port(o) && l.needed && runs.contains(&l.to.node)))
-            .collect();
-        if told.get(&id) == Some(&(inputs.clone(), outputs.clone())) {
-            continue;
-        }
-        let was = runs.contains(&id);
-        let mut runs_now = answer(id, &inputs, &outputs);
-        if asked == SETTLE_ASKS {
-            runs_now |= was;
-            log::warn!(
-                "{} kept changing its mind about whether to run, given what it's connected to: it {}",
-                label(id),
-                if runs_now { "runs" } else { "doesn't run" }
-            );
-        }
-        asks.insert(id, asked + 1);
-        told.insert(id, (inputs, outputs));
-        if runs_now == was {
-            continue;
-        }
-        if runs_now {
-            runs.push(id);
-        } else {
-            runs.retain(|r| *r != id);
-        }
-        // What it's connected to is told something different now.
-        for link in links.iter().filter(|l| l.from.node == id || l.to.node == id) {
-            let other = if link.from.node == id { link.to.node } else { link.from.node };
-            if let Some(node) = nodes.iter().find(|(n, _, _)| *n == other)
-                && !queue.iter().any(|(n, _, _)| *n == other)
-            {
-                queue.push_back(*node);
-            }
-        }
-    }
-    // In the order they were given.
-    nodes.iter().map(|(id, _, _)| *id).filter(|id| runs.contains(id)).collect()
-}
-
+/// What the workers do with a plan: make its node state, and their buffers for it, and run its passes.
 impl<N: NodeSet> Plan<N> {
-    pub fn new(graph: &Graph<N>) -> Self {
-        let resolved = graph.resolve();
-        let topological = graph.topological_order();
-        // Which nodes run is up to them (see `settle`): of those that can, not disabled, with every output known.
-        let data: Vec<&super::Edge> =
-            graph.edges().iter().filter(|e| e.dimension == super::Dimension::Data && graph.is_live(e)).collect();
-        let needed = |e: &super::Edge| graph.get(e.to.node).is_some_and(|n| n.node.needs(e.to.port));
-        let can_run: Vec<(NodeId, usize, usize)> = topological
-            .iter()
-            .filter(|id| graph.get(**id).is_some_and(|e| !e.disabled))
-            .filter_map(|id| resolved.get(id).map(|s| (*id, s)))
-            .filter(|(_, s)| s.outputs.iter().all(|o| o.stream.is_some()))
-            .map(|(id, s)| (id, s.inputs.len(), s.outputs.len()))
-            .collect();
-        let links: Vec<Link> = data.iter().map(|e| Link { from: e.from, to: e.to, needed: needed(e) }).collect();
-        let runs = settle(
-            &can_run,
-            &links,
-            |id, inputs, outputs| graph.get(id).is_some_and(|e| e.node.runs_given(inputs, outputs)),
-            |id| graph.get(id).map_or_else(|| format!("{id:?}"), |e| e.label.clone()),
-        );
-        let data_edges: Vec<&super::Edge> = data
-            .iter()
-            .copied()
-            .filter(|e| runs.contains(&e.from.node) && runs.contains(&e.to.node) && needed(e))
-            .collect();
-        // Which nodes must run before which: those feeding them, and those reading data another edits in place.
-        let mut before: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
-        for edge in &data_edges {
-            before.entry(edge.from.node).or_default().push(edge.to.node);
-        }
-
-        // Pick the outputs made in place: (node, output) -> its input, and the data each takes over.
-        let mut in_place: HashMap<(NodeId, usize), usize> = HashMap::new();
-        let mut claimed: Vec<(NodeId, usize)> = Vec::new();
-        for &id in &runs {
-            let (Some(entry), Some(state)) = (graph.get(id), resolved.get(&id)) else { continue };
-            for output in 0..state.outputs.len() {
-                let Some(input) = entry.node.in_place(output) else { continue };
-                let Some(edge) = data_edges.iter().find(|e| e.to.node == id && e.to.port == input) else { continue };
-                let source = (edge.from.node, edge.from.port);
-                if claimed.contains(&source) {
-                    continue; // another node is already editing this data in place
-                }
-                let others: Vec<NodeId> = data_edges
-                    .iter()
-                    .filter(|e| (e.from.node, e.from.port) == source && e.to.node != id)
-                    .map(|e| e.to.node)
-                    .collect();
-                // The other readers must run first, which they can't if they depend on this node.
-                if others.iter().any(|&other| reaches(&before, id, other)) {
-                    continue;
-                }
-                for other in others {
-                    before.entry(other).or_default().push(id);
-                }
-                claimed.push(source);
-                in_place.insert((id, output), input);
-            }
-        }
-
-        // Pick the inputs taken: those whose data no one edits in place, whose other readers can run first.
-        let mut taken: Vec<(NodeId, usize)> = Vec::new();
-        for &id in &runs {
-            let (Some(entry), Some(state)) = (graph.get(id), resolved.get(&id)) else { continue };
-            for input in (0..state.inputs.len()).filter(|&i| entry.node.takes(i)) {
-                let Some(edge) = data_edges.iter().find(|e| e.to.node == id && e.to.port == input) else { continue };
-                let source = (edge.from.node, edge.from.port);
-                if claimed.contains(&source) {
-                    continue;
-                }
-                let others: Vec<NodeId> = data_edges
-                    .iter()
-                    .filter(|e| (e.from.node, e.from.port) == source && e.to.node != id)
-                    .map(|e| e.to.node)
-                    .collect();
-                if others.iter().any(|&other| reaches(&before, id, other)) {
-                    continue;
-                }
-                for other in others {
-                    before.entry(other).or_default().push(id);
-                }
-                claimed.push(source);
-                taken.push((id, input));
-            }
-        }
-
-        let (mut steps, mut buffers, mut state_inputs, mut memory_inputs) =
-            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-        // The buffer each output (of the nodes so far) is in.
-        let mut buffer_of: HashMap<(NodeId, usize), usize> = HashMap::new();
-        for id in order(&runs, &before) {
-            let (Some(entry), Some(state)) = (graph.get(id), resolved.get(&id)) else { continue };
-            let mut inputs: Vec<Option<usize>> = (0..state.inputs.len())
-                .map(|index| {
-                    let edge = graph.live_edge_into(Port { node: id, role: Role::Input, index })?;
-                    buffer_of.get(&(edge.from.node, edge.from.port)).copied()
-                })
-                .collect();
-            let (mut outputs, mut made_in_place) = (Vec::new(), Vec::new());
-            for (index, output) in state.outputs.iter().enumerate() {
-                let from = in_place.get(&(id, index)).and_then(|&input| Some((input, inputs[input]?)));
-                let buffer = match from {
-                    Some((input, buffer)) => {
-                        inputs[input] = None; // its data is in the output
-                        buffer
-                    }
-                    None => {
-                        buffers.push(output.stream.expect("only nodes with known outputs run"));
-                        buffers.len() - 1
-                    }
-                };
-                outputs.push(buffer);
-                made_in_place.push(from.map(|(input, _)| input));
-                buffer_of.insert((id, index), buffer);
-            }
-            let carried = entry.node.has_state() && entry.node.state_carried_over();
-            let node_state = carried.then(|| {
-                state_inputs.push((id, state.input_streams.clone()));
-                state_inputs.len() - 1
-            });
-            let memory = (entry.node.has_state() && !carried).then(|| {
-                memory_inputs.push((id, state.input_streams.clone()));
-                memory_inputs.len() - 1
-            });
-            // The inputs it takes but can't be the last to read: copied for it, once they're made.
-            let mut takes = Vec::with_capacity(inputs.len());
-            for (input, buffer) in inputs.iter_mut().enumerate() {
-                let Some(from) = *buffer else {
-                    takes.push(false);
-                    continue;
-                };
-                if !(entry.node.takes(input) && entry.node.needs(input)) {
-                    takes.push(false);
-                } else if taken.contains(&(id, input)) {
-                    takes.push(true);
-                } else {
-                    // Copied once the node making it has run, before anything edits it in place.
-                    let edge = graph.live_edge_into(Port { node: id, role: Role::Input, index: input });
-                    let maker = edge.and_then(|e| steps.iter_mut().find(|s: &&mut Step| s.id == e.from.node));
-                    let Some(maker) = maker else {
-                        takes.push(false);
-                        continue;
-                    };
-                    buffers.push(buffers[from]);
-                    let to = buffers.len() - 1;
-                    maker.copies.push(CopyPoint { from, to, node: id, input });
-                    *buffer = Some(to);
-                    takes.push(true);
-                }
-            }
-            let copies = Vec::new();
-            steps.push(Step { id, inputs, outputs, in_place: made_in_place, takes, state: node_state, memory, copies });
-        }
-        Plan { steps, buffers, state_inputs, memory_inputs, bytes: OnceLock::new() }
-    }
-
-    /// The nodes that run, in the order they run in each pass.
-    pub fn steps(&self) -> &[Step] {
-        &self.steps
-    }
-
-    /// The data stream each buffer holds (each worker has one of each).
-    pub fn buffers(&self) -> &[DataStream<N>] {
-        &self.buffers
-    }
-
-    /// The memory each buffer takes, in bytes. Worked out (by making one of each) the first time it's asked.
-    pub fn buffer_bytes(&self) -> &[usize] {
-        self.bytes.get_or_init(|| {
-            self.buffers.iter().map(|s| <DataStream<N> as DataStreamSet>::bytes(&s.buffer(PASS_DURATION))).collect()
-        })
-    }
-
-    /// Whether runs of the two plans would work the same way (the same steps on the same buffers), so a run of
-    /// one can carry on with the other's graph.
-    pub fn same_shape(&self, other: &Self) -> bool {
-        self.steps == other.steps && self.buffers == other.buffers
-    }
-
     /// Each stateful node's state for the first pass.
     fn initial_states(&self, graph: &Graph<N>) -> Vec<StateSlot> {
         let state = |id: NodeId, inputs: &[Option<DataStream<N>>]| graph.get(id).map(|e| e.node.initial_state(inputs));
@@ -572,47 +142,6 @@ impl<N: NodeSet> Plan<N> {
             }
         }
     }
-}
-
-/// Whether `to` must run after `from` (or is `from`), given which nodes must run before which.
-fn reaches(before: &HashMap<NodeId, Vec<NodeId>>, from: NodeId, to: NodeId) -> bool {
-    let mut stack = vec![from];
-    let mut seen = Vec::new();
-    while let Some(id) = stack.pop() {
-        if id == to {
-            return true;
-        }
-        if !seen.contains(&id) {
-            seen.push(id);
-            stack.extend(before.get(&id).into_iter().flatten());
-        }
-    }
-    false
-}
-
-/// `nodes` ordered so each comes after those it must run after, otherwise keeping their order, but with those
-/// in `early` as soon as they can be.
-fn order(nodes: &[NodeId], before: &HashMap<NodeId, Vec<NodeId>>) -> Vec<NodeId> {
-    let mut waiting: HashMap<NodeId, usize> = nodes.iter().map(|id| (*id, 0)).collect();
-    for later in before.values().flatten() {
-        if let Some(count) = waiting.get_mut(later) {
-            *count += 1;
-        }
-    }
-    let mut ordered = Vec::with_capacity(nodes.len());
-    while ordered.len() < nodes.len() {
-        // The first node (in the original order) with nothing left to wait for.
-        let ready = |id: &&NodeId| waiting.get(id) == Some(&0);
-        let Some(&next) = nodes.iter().find(ready) else { break };
-        waiting.remove(&next);
-        ordered.push(next);
-        for later in before.get(&next).into_iter().flatten() {
-            if let Some(count) = waiting.get_mut(later) {
-                *count -= 1;
-            }
-        }
-    }
-    ordered
 }
 
 /// A worker's buffers, for every step. Made once per worker per plan, before the worker runs any of the plan's
@@ -948,7 +477,7 @@ impl<N: NodeSet> Runner<N> {
     }
 
     /// The graph of the latest snapshot given to the run.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub fn graph(&self) -> Arc<Graph<N>> {
         self.epochs.wanted.lock().unwrap().snapshot.lock().unwrap().graph.clone()
     }
@@ -1217,38 +746,29 @@ fn queue_capacity(workers: usize) -> usize {
     2 * workers
 }
 
-/// "4 steps, 6 buffers (1.2 MB a worker), 3 with state, 1 copy".
-fn describe<N: NodeSet>(plan: &Plan<N>) -> String {
-    let bytes: usize = plan.buffer_bytes().iter().sum();
-    let copies: usize = plan.steps.iter().map(|s| s.copies.len()).sum();
-    format!(
-        "{} steps, {} buffers ({:.2} MB a worker), {} with state, {copies} {}",
-        plan.steps.len(),
-        plan.buffers.len(),
-        bytes as f64 / 1e6,
-        plan.state_inputs.len(),
-        if copies == 1 { "copy" } else { "copies" }
-    )
-}
-
 /// How many workers to use by default: half the cores (leaving the rest for the GUI, nodes' own threads and
 /// everything else), up to 4.
 pub fn default_workers() -> usize {
     std::thread::available_parallelism().map_or(2, |n| n.get() / 2).clamp(1, 4)
 }
 
-/// Whether two graphs would process the same way: the same nodes, settings and edges, whatever their
-/// positions and labels.
-pub fn same_processing<N: NodeSet>(a: &Graph<N>, b: &Graph<N>) -> bool {
-    a.edges() == b.edges()
-        && a.edges().iter().all(|e| a.is_edge_disabled(e) == b.is_edge_disabled(e))
-        && a.iter().count() == b.iter().count()
-        && a.iter().zip(b.iter()).all(|((x, xe), (y, ye))| x == y && xe.node == ye.node && xe.disabled == ye.disabled)
-}
-
 #[cfg(test)]
 pub mod tests {
+    use super::super::{Port, Role};
     use super::*;
+
+    use crate::Buffer;
+    use crate::Nodes;
+
+    fn add(graph: &mut Graph<Nodes>, name: &str) -> NodeId {
+        let index = Nodes::TYPES.iter().position(|t| t.name == name).unwrap();
+        graph.add(Nodes::create(index), [0.0, 0.0])
+    }
+
+    fn link(graph: &mut Graph<Nodes>, from: NodeId, output: usize, to: NodeId, input: usize) {
+        let port = |node, role, index| Port { node, role, index };
+        graph.connect(port(from, Role::Output, output), port(to, Role::Input, input)).unwrap();
+    }
 
     #[test]
     fn state_is_handed_from_pass_to_pass_in_order() {
@@ -1268,167 +788,6 @@ pub mod tests {
         }
         let order = slot.with(8, |state| state.downcast_ref::<Vec<u64>>().unwrap().clone());
         assert_eq!(order, (0..8).collect::<Vec<_>>());
-    }
-
-    use crate::Buffer;
-    use crate::Nodes;
-
-    fn add(graph: &mut Graph<Nodes>, name: &str) -> NodeId {
-        let index = Nodes::TYPES.iter().position(|t| t.name == name).unwrap();
-        graph.add(Nodes::create(index), [0.0, 0.0])
-    }
-
-    fn link(graph: &mut Graph<Nodes>, from: NodeId, output: usize, to: NodeId, input: usize) {
-        let port = |node, role, index| Port { node, role, index };
-        graph.connect(port(from, Role::Output, output), port(to, Role::Input, input)).unwrap();
-    }
-
-    fn position(plan: &Plan<Nodes>, id: NodeId) -> usize {
-        plan.steps.iter().position(|s| s.id == id).unwrap()
-    }
-
-    #[test]
-    fn outputs_are_made_in_place_after_other_readers() {
-        let mut graph = Graph::default();
-        let board = add(&mut graph, "Acquisition Board");
-        let gain = add(&mut graph, "Continuous Gain");
-        let filter = add(&mut graph, "Band-pass Filter");
-        link(&mut graph, board, 0, gain, 0);
-        link(&mut graph, gain, 0, filter, 0);
-        // Something needing the filter's output, so it runs (see `Node::needs`).
-        let end = add(&mut graph, "LFP Viewer");
-        link(&mut graph, filter, 0, end, 0);
-        // Board (continuous and events), then gain and filter working in the board's continuous buffer.
-        let plan = Plan::new(&graph);
-        assert_eq!(plan.buffers.len(), 2);
-
-        // A viewer also reading the board's data runs before the gain edits it, so the gain still works in place.
-        let viewer = add(&mut graph, "LFP Viewer");
-        link(&mut graph, board, 0, viewer, 0);
-        let plan = Plan::new(&graph);
-        assert_eq!(plan.buffers.len(), 2);
-        assert!(position(&plan, viewer) < position(&plan, gain));
-
-        // Two nodes that would edit the board's data in place: one does (last), the other gets its own buffer.
-        let second_gain = add(&mut graph, "Continuous Gain");
-        link(&mut graph, board, 0, second_gain, 0);
-        let second_end = add(&mut graph, "LFP Viewer");
-        link(&mut graph, second_gain, 0, second_end, 0);
-        let plan = Plan::new(&graph);
-        assert_eq!(plan.buffers.len(), 3);
-        assert!(position(&plan, second_gain) < position(&plan, gain));
-    }
-
-    #[test]
-    fn writers_take_buffers_no_one_else_needs_after_them() {
-        let mut graph = Graph::default();
-        let board = add(&mut graph, "Acquisition Board");
-        let writer = add(&mut graph, "Write Raw");
-        let viewer = add(&mut graph, "LFP Viewer");
-        link(&mut graph, board, 0, writer, 0);
-        link(&mut graph, board, 1, writer, 1);
-        link(&mut graph, board, 0, viewer, 0);
-        // The writer takes both the board's buffers, after the viewer's read the continuous one.
-        let plan = Plan::new(&graph);
-        let step = |plan: &Plan<Nodes>, id| plan.steps.iter().find(|s| s.id == id).unwrap().takes.clone();
-        assert_eq!(step(&plan, writer), vec![true, true]);
-        assert!(position(&plan, viewer) < position(&plan, writer));
-
-        // A filter editing the board's data in place: the plan copies it for the writer, once the board's run.
-        let filter = add(&mut graph, "Band-pass Filter");
-        link(&mut graph, board, 0, filter, 0);
-        let end = add(&mut graph, "LFP Viewer");
-        link(&mut graph, filter, 0, end, 0);
-        let plan = Plan::new(&graph);
-        assert_eq!(step(&plan, writer), vec![true, true], "it's always given buffers to take");
-        let board_step = plan.steps.iter().find(|s| s.id == board).unwrap();
-        let writer_step = plan.steps.iter().find(|s| s.id == writer).unwrap();
-        let copy =
-            CopyPoint { from: board_step.outputs[0], to: writer_step.inputs[0].unwrap(), node: writer, input: 0 };
-        assert_eq!(board_step.copies, vec![copy]);
-        assert_eq!(plan.buffers[writer_step.inputs[0].unwrap()], plan.buffers[board_step.outputs[0]]);
-    }
-
-    #[test]
-    fn nodes_run_only_while_something_needs_their_outputs() {
-        let mut graph = Graph::default();
-        let board = add(&mut graph, "Acquisition Board");
-        let spectrum = add(&mut graph, "Spectrum");
-        let viewer = add(&mut graph, "LFP Viewer");
-        link(&mut graph, board, 0, spectrum, 0);
-        link(&mut graph, board, 0, viewer, 0);
-        link(&mut graph, spectrum, 0, viewer, 1);
-        let runs = |graph: &Graph<Nodes>, id| Plan::new(graph).steps.iter().any(|s| s.id == id);
-        assert!(runs(&graph, spectrum), "the viewer shows the spectra");
-        if let Some(Nodes::LfpViewer(v)) = graph.get_mut(viewer).map(|e| &mut e.node) {
-            v.spectrum = false;
-        }
-        assert!(!runs(&graph, spectrum), "nothing needs them");
-        assert!(runs(&graph, board) && runs(&graph, viewer), "sources and viewers run regardless");
-        let plan = Plan::new(&graph);
-        assert_eq!(plan.steps.iter().find(|s| s.id == viewer).unwrap().inputs[1], None, "nor are they passed");
-    }
-
-    #[test]
-    fn a_node_runs_if_it_would_given_what_runs_upstream() {
-        let mut graph = Graph::default();
-        let board = add(&mut graph, "Acquisition Board");
-        let viewer = add(&mut graph, "LFP Viewer");
-        let alone = add(&mut graph, "TTL Viewer");
-        link(&mut graph, board, 0, viewer, 0);
-        let runs = |graph: &Graph<Nodes>, id| Plan::new(graph).steps.iter().any(|s| s.id == id);
-        assert!(runs(&graph, board), "a source says it would, for itself");
-        assert!(runs(&graph, viewer), "something's running on its input");
-        assert!(!runs(&graph, alone), "nothing is: there's nothing to show");
-        let lone = add(&mut graph, "Camera");
-        assert!(runs(&graph, lone), "with no inputs, it runs whether or not anything needs it");
-        graph.get_mut(board).unwrap().disabled = true;
-        assert!(!runs(&graph, viewer), "what feeds it isn't running");
-        let filter = add(&mut graph, "Band-pass Filter");
-        let fed = add(&mut graph, "LFP Viewer");
-        link(&mut graph, filter, 0, fed, 0);
-        assert!(!runs(&graph, filter) && !runs(&graph, fed), "connected, but to nothing running");
-    }
-
-    #[test]
-    fn a_node_that_keeps_changing_its_mind_ends_up_running() {
-        use std::cell::Cell;
-        let (a, b) = (NodeId(1), NodeId(2));
-        let links = [Link {
-            from: super::super::PortRef { node: a, port: 0 },
-            to: super::super::PortRef { node: b, port: 0 },
-            needed: true,
-        }];
-        let asked = Cell::new(0);
-        // a runs only while nothing uses what it makes, and b only while it's given something: round they'd go.
-        let answer = |id, inputs: &[bool], outputs: &[bool]| {
-            asked.set(asked.get() + 1);
-            if id == a { !outputs[0] } else { inputs[0] }
-        };
-        let runs = settle(&[(a, 0, 1), (b, 1, 0)], &links, answer, |id| format!("{id:?}"));
-        assert_eq!(runs, [a, b], "running, when in doubt, and what it feeds with it");
-        assert!(asked.get() <= 2 * (SETTLE_ASKS + 1), "{} asks", asked.get());
-
-        let steady = |_, inputs: &[bool], _: &[bool]| inputs.is_empty() || inputs[0];
-        assert_eq!(settle(&[(a, 0, 1), (b, 1, 0)], &links, steady, |_| String::new()), [a, b]);
-    }
-
-    #[test]
-    fn what_a_node_does_not_need_counts_for_neither_it_nor_what_feeds_it() {
-        let mut graph = Graph::default();
-        let board = add(&mut graph, "Acquisition Board");
-        let spectrum = add(&mut graph, "Spectrum");
-        let viewer = add(&mut graph, "LFP Viewer");
-        link(&mut graph, board, 0, spectrum, 0);
-        link(&mut graph, spectrum, 0, viewer, 1);
-        let runs = |graph: &Graph<Nodes>, id| Plan::new(graph).steps.iter().any(|s| s.id == id);
-        assert!(runs(&graph, spectrum) && runs(&graph, viewer), "it shows the spectra");
-        if let Some(Nodes::LfpViewer(v)) = graph.get_mut(viewer).map(|e| &mut e.node) {
-            v.spectrum = false;
-        }
-        assert!(!runs(&graph, viewer), "the spectra are all it's given, and it doesn't need them");
-        assert!(!runs(&graph, spectrum), "so nothing needs them");
-        assert!(runs(&graph, board), "which needn't stop a source");
     }
 
     #[test]
@@ -1552,19 +911,6 @@ pub mod tests {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-    }
-
-    #[test]
-    fn snapshots_share_a_plan_until_processing_changes() {
-        let mut graph = Graph::default();
-        let board = add(&mut graph, "Acquisition Board");
-        let first = Snapshot::new(0, graph.clone(), None);
-        graph.get_mut(board).unwrap().pos = [100.0, 50.0];
-        let moved = Snapshot::new(1, graph.clone(), Some(&first));
-        assert!(Arc::ptr_eq(&first.plan, &moved.plan), "moving a node doesn't change how it runs");
-        add(&mut graph, "Continuous Gain");
-        let added = Snapshot::new(2, graph, Some(&moved));
-        assert!(!Arc::ptr_eq(&moved.plan, &added.plan));
     }
 
     #[test]

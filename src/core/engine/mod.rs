@@ -8,9 +8,13 @@
 mod edge;
 mod graph;
 mod node;
+mod pass;
+mod plan;
 mod run;
 
 pub use edge::*;
 pub use graph::*;
 pub use node::*;
+pub use pass::*;
+pub use plan::*;
 pub use run::*;

@@ -52,7 +52,8 @@ Snapshots that process the same way (only positions or labels changed) share a p
 
 ## Plans, passes and epochs
 
-[`run.rs`](../src/core/engine/run.rs) runs the graph; its module docs are the detail. In short:
+[`run.rs`](../src/core/engine/run.rs) runs the graph, as [`plan.rs`](../src/core/engine/plan.rs) plans it, giving
+each node a [`Pass`](../src/core/engine/pass.rs); their module docs are the detail. In short:
 
 - Time is cut into **passes** of 20 ms. A dispatcher thread releases each when its time's up, to a small pool of
   **worker** threads (half the cores, at most four), each running whole passes.
