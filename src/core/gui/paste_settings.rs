@@ -1,5 +1,5 @@
-//! Copying nodes' settings, and pasting them onto nodes of the same types. On the clipboard, they're JSON: which formats
-//! wrote them (see `crate::core::formats`), then each node's label, and its type and settings as the graph's file has
+//! Copying nodes' settings, and pasting them onto nodes of the same types. On the clipboard, they're JSON: their patch levels
+//! (see `crate::core::config_patching`), then each node's label, and its type and settings as the graph's file has
 //! them, a line for each node, so one node's fits on a line of notes. Pasting opens a window to review where
 //! each goes (the node of the same type and label, to begin with, or the only one of its type), what it changes,
 //! and whether to paste it at all, before pasting.
@@ -7,16 +7,16 @@
 use eframe::egui::{self, RichText};
 use serde::{Deserialize, Serialize};
 
+use crate::core::config_patching::{PatchLevels, PatchSets, SavedPart};
 use crate::core::engine::{Graph, NodeId, NodeSet};
-use crate::core::formats::{Formats, Layers, SavedPart};
 use crate::core::theme::Colours;
 
 /// What's on the clipboard.
 #[derive(Serialize, Deserialize)]
 struct Clip {
-    /// Saying it's settings, and which formats wrote them.
+    /// Saying it's settings, and their patch levels.
     #[serde(rename = "ephys-rs settings")]
-    formats: Formats,
+    patch_levels: PatchLevels,
     nodes: Vec<ClipNode>,
 }
 
@@ -27,8 +27,8 @@ struct ClipNode {
     node: serde_json::Value,
 }
 
-/// The settings of `ids`, for the clipboard, in `formats`: as `Clip`, with a line for each node.
-pub fn copy<N: NodeSet>(graph: &Graph<N>, ids: &[NodeId], formats: &Layers) -> String {
+/// The settings of `ids`, for the clipboard, at the levels of `patches`: as `Clip`, with a line for each node.
+pub fn copy<N: NodeSet>(graph: &Graph<N>, ids: &[NodeId], patches: &PatchSets) -> String {
     let nodes: Vec<String> = ids
         .iter()
         .filter_map(|id| graph.get(*id))
@@ -37,8 +37,8 @@ pub fn copy<N: NodeSet>(graph: &Graph<N>, ids: &[NodeId], formats: &Layers) -> S
             serde_json::to_string(&node).ok()
         })
         .collect();
-    let formats = serde_json::to_string(&formats.current()).unwrap_or_default();
-    format!("{{\"ephys-rs settings\":{formats},\"nodes\":[{}]}}", nodes.join(",\n"))
+    let levels = serde_json::to_string(&patches.levels()).unwrap_or_default();
+    format!("{{\"ephys-rs settings\":{levels},\"nodes\":[{}]}}", nodes.join(",\n"))
 }
 
 /// Whether `text` is settings copied from nodes (see `copy`), rather than just any text, or other JSON.
@@ -76,14 +76,14 @@ pub struct Pasted<N> {
 
 impl<N: NodeSet> PasteSettings<N> {
     /// From the clipboard's text, matching each node to one of the same type: of the same label, or the only one.
-    pub fn new(text: &str, graph: &Graph<N>, formats: &Layers) -> Result<Self, String> {
+    pub fn new(text: &str, graph: &Graph<N>, patches: &PatchSets) -> Result<Self, String> {
         let mut clip: Clip =
             serde_json::from_str(text).map_err(|_| "There are no copied settings to paste".to_owned())?;
         // Brought up to date as they'd be in a project.
         for copied in &mut clip.nodes {
             let kind = copied.node.get("type").and_then(|t| t.as_str()).unwrap_or_default().to_string();
-            formats
-                .upgrade(&clip.formats, SavedPart::Node(&kind), &mut copied.node)
+            patches
+                .apply(&clip.patch_levels, SavedPart::Node(&kind), &mut copied.node)
                 .map_err(|problem| format!("The copied settings can't be pasted. {problem}"))?;
         }
         let rows = clip

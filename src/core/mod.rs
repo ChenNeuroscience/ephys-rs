@@ -8,11 +8,12 @@
 pub mod annotation;
 pub mod background;
 pub mod base_directory;
+pub mod config_patches;
+pub mod config_patching;
 pub mod console;
 pub mod crash;
 pub mod engine;
 pub mod exchange;
-pub mod formats;
 pub mod gui;
 pub mod layout;
 pub mod quick_action;
@@ -71,9 +72,10 @@ pub trait Components: 'static {
     const QUICK_ACTIONS: &'static [quick_action::QuickAction<Self::Nodes>] = &[];
     /// Where recordings go (see `base_directory`): the first is the default.
     const BASE_DIRECTORIES: &'static [base_directory::BaseDirectoryType] = &[];
-    /// The formats of what's saved by the parts it's built from, besides the core's (see `formats`): the standard
-    /// components' (`standard_components::FORMATS`), and its own, if it has node types of its own, say.
-    const FORMATS: &'static [formats::Layer] = &[];
+    /// The config patches of the parts it's built from, in the order they're applied (see `config_patching`): the
+    /// core's (`config_patches::PATCHES`), the standard components' (`standard_components::config_patches::PATCHES`),
+    /// and its own, if it has node types of its own, say. Just the core's, unless it says.
+    const CONFIG_PATCHES: &'static [config_patching::PatchSet] = &[config_patches::PATCHES];
 
     /// What's special about this build, in markdown, for the About window, under the version.
     const ABOUT: &'static str = "";

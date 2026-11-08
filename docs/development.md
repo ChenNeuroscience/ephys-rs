@@ -181,25 +181,29 @@ Anything can ask for them: `core::full_version()` is the whole thing, and `core:
 keeps the whole thing in its headers (`created_by`, `data_source`), Write Raw in `structure.oebin` (`recorded_with`), and
 crash reports start with it.
 
-## Formats
+## Config patches
 
-Versions count every change; formats count only changes to what's saved. Everything saved that's read back says which
-format of each part of the program wrote it, so later versions can read it: projects and the settings saved beside
-recordings (`"formats"`), settings copied to the clipboard (`"ephys-rs settings"`), and what the app keeps between runs.
-See [`formats.rs`](../src/core/formats.rs).
+Versions count every change; patch levels count only changes to what's saved. Everything saved that's read back says
+the patch level of each part of the program that wrote it, so later versions can read it: projects and the settings
+saved beside recordings (`"patch_levels"`), settings copied to the clipboard (`"ephys-rs settings"`), and what the app
+keeps between runs. See [`config_patching.rs`](../src/core/config_patching.rs).
 
-Each part is a layer with its own count: the core's (`formats::CORE`: the project's structure), the standard
-components' (`standard_components::FORMATS`: their node types and base directories), and a build's own
-(`Components::FORMATS` lists them all but the core's, as [chen-neuro's](../examples/chen-neuro/src/components/mod.rs)
-does). The standard components' is at 1, after an example step that changes nothing (`standard_components::formats`,
-to copy); the rest are at 0: what was saved before there were formats.
+Each part has a set of patches, with its own level: the core's ([`core/config_patches`](../src/core/config_patches):
+the project's structure), the standard components'
+([`standard_components/config_patches`](../src/standard_components/config_patches): their node types and base
+directories), and a build's own (as [chen-neuro's](../examples/chen-neuro/src/components/config_patches)). Each is a
+folder with a patch in each file, listed in order in its `mod.rs` as `PATCHES`. Which sets a build has, and the order
+they're applied in, is up to it (`Components::CONFIG_PATCHES`, as
+[chen-neuro's](../examples/chen-neuro/src/components/mod.rs) lists them: the core's, the standard components', then
+its own). Each set is at 1 for now, after an example patch that changes nothing (`example.rs`, to copy).
 
-To change what a layer saves, add a step to its `steps`: a function bringing what's saved from the format before to
-the new one, as JSON (`serde_json::Value`), before anything's read into types. It's told what it's looking at
-(`SavedPart::Project`, `SavedPart::Node` with its type's name, `SavedPart::BaseDirectory`) and leaves alone what it isn't about.
-The same steps run on a project's nodes and on copied ones, so pasting is brought up to date just as opening is. Test
-it with something saved before the change, as the formats tests do. To stop reading a layer's oldest formats, raise
-its `oldest` and drop their steps; what's older is then refused, saying so, as is anything newer than the program.
+To change what a part saves, add a patch to its set: a file with a function bringing what's saved from the level before
+to the new one, as JSON (`serde_json::Value`), before anything's read into types, and add it to the end of `PATCHES`.
+It's told what it's looking at (`SavedPart::Project`, `SavedPart::Node` with its type's name, `SavedPart::BaseDirectory`)
+and leaves alone what it isn't about. The same patches are applied to a project's nodes and to copied ones, so pasting
+is brought up to date just as opening is. Test it with something saved before the change, as the patching tests do. A
+patch is never changed once released. To stop reading a set's oldest levels, raise its `oldest` and drop their patches;
+what's older is then refused, saying so, as is anything newer than the program.
 
 ## Performance
 
