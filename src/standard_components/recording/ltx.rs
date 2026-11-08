@@ -233,11 +233,12 @@ impl Node<Edges> for WriteLtx {
         inputs: &[Option<DataStream>],
         controls: &[Option<Setting>],
         base_directory: Option<&crate::core::base_directory::Place>,
+        start: &DateTime<Local>,
         triggers: &crate::core::triggers::ControlTriggers<crate::Trigger>,
     ) -> Option<Box<dyn std::any::Any + Send>> {
-        let (start, base) = self.base(base_directory);
+        let base = self.base(base_directory, start);
         let (streams, recorded) = (Streams::of(inputs), Recorded::of(controls));
-        let files = LtxFiles::open(&base, start, streams, recorded);
+        let files = LtxFiles::open(&base, *start, streams, recorded);
         Some(Box::new(Chunk::writing(&base, streams, files, after_recording(triggers, AFTER_RECORDING))))
     }
 
@@ -307,10 +308,9 @@ impl Node<Edges> for WriteLtx {
 }
 
 impl WriteLtx {
-    /// When a recording starts, and its files' path (without their extensions), given the base directory.
-    fn base(&self, base_directory: Option<&crate::core::base_directory::Place>) -> (DateTime<Local>, PathBuf) {
-        let start = Local::now();
-        (start, self.location.directory(base_directory).join(recording_name(base_directory, &self.prefix, &start)))
+    /// A recording's files' path (without their extensions), given the base directory and when it starts.
+    fn base(&self, base_directory: Option<&crate::core::base_directory::Place>, start: &DateTime<Local>) -> PathBuf {
+        self.location.directory(base_directory).join(recording_name(base_directory, &self.prefix, start))
     }
 }
 
@@ -842,6 +842,15 @@ mod tests {
     use crate::standard_components::ephys::Event;
     use crate::standard_components::spikes::Spike;
     use crate::standard_components::tracking::PositionSample;
+
+    #[test]
+    fn files_are_named_after_when_the_recording_started() {
+        use chrono::TimeZone;
+        let start = Local.with_ymd_and_hms(2026, 1, 1, 14, 30, 5).unwrap();
+        let base = crate::core::base_directory::Place::directory("/r");
+        let path = WriteLtx::default().base(Some(&base), &start);
+        assert_eq!(path, PathBuf::from("/r/session_2026-01-01_143005"), "the time it's given, not when it's asked");
+    }
 
     impl Chunk {
         /// Input `index`'s buffer, as given data by a pass.

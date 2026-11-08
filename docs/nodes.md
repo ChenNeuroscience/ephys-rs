@@ -200,9 +200,10 @@ from a pool, for its thread to write; see [`recording`](../src/standard_componen
 
 ## Recording
 
-`prepare_to_record` is called on a thread of its own before recording starts (a writer opening its files), and what
-it returns comes back to the first pass that records (`Pass::take_prepared`). Passes see `Pass::recording`. The graph
-can't change while recording, so everything that records has prepared.
+`prepare_to_record` is called on a thread of its own before recording starts (a writer opening its files), given when
+the recording starts, to name or date what it writes by: the same for every node, and for the settings saved with
+it, as preparing can take a while. What it returns comes back to the first pass that records (`Pass::take_prepared`).
+Passes see `Pass::recording`. The graph can't change while recording, so everything that records has prepared.
 
 A writer has an "after recording" control. Connected to a setting that takes the `run_command::RunOnFiles` trigger (a direct one),
 it sends the paths of the files once they're finished (not when recording stops, which is sooner), and only if

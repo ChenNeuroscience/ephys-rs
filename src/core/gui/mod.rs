@@ -491,10 +491,10 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
     }
 
     /// Saves the graph (as File › Save would, but without changing which file is open) beside a recording starting in
-    /// `place` (see `settings_path`), so what recorded it is kept with it. On a thread of its own, so a slow disk
-    /// doesn't hold up the GUI.
-    fn save_with_recording(&self, place: &Place) {
-        let path = settings_path(place, &chrono::Local::now());
+    /// `place` at `start` (see `settings_path`), so what recorded it is kept with it. On a thread of its own, so a slow
+    /// disk doesn't hold up the GUI.
+    fn save_with_recording(&self, place: &Place, start: &chrono::DateTime<chrono::Local>) {
+        let path = settings_path(place, start);
         let base_directory = self.base_directories.save();
         let file = self.save_file(&base_directory);
         let json = match serde_json::to_string_pretty(&file) {
@@ -717,13 +717,15 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         let (sender, receiver) = std::sync::mpsc::channel();
         let repaint = ctx.clone();
         let triggers = self.direct_triggers.clone();
+        // When it starts, as far as names and dates go: now, not once the nodes are ready, which can be a while.
+        let start = chrono::Local::now();
         let base = self.base_directories.place();
         match &base {
             Some(base) => log::info!("Preparing to record, in {}", base),
             None => log::info!("Preparing to record"),
         }
         let spawned = std::thread::Builder::new().name("preparing to record".into()).spawn(move || {
-            let _ = sender.send(engine::Recording::prepare(&snapshot, base, &triggers));
+            let _ = sender.send(engine::Recording::prepare(&snapshot, base, start, &triggers));
             repaint.request_repaint();
         });
         match spawned {
@@ -1180,7 +1182,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         if let Some(recording) = self.preparing.as_ref().and_then(|r| r.try_recv().ok()) {
             self.preparing = None;
             if let Some(place) = recording.base_directory() {
-                self.save_with_recording(place);
+                self.save_with_recording(place, recording.start());
             }
             self.set_recording(Some(Arc::new(recording)));
         }
@@ -2551,15 +2553,18 @@ mod tests {
 
     #[test]
     fn recordings_keep_the_settings_they_were_made_with() {
-        let start = chrono::Local::now();
+        use chrono::TimeZone;
+        let start = chrono::Local.with_ymd_and_hms(2026, 1, 1, 14, 30, 5).unwrap();
         let named = Place { directory: "/r/r2405".into(), prefix: Some("2026-01-01 a".into()) };
         assert_eq!(settings_path(&named, &start), PathBuf::from("/r/r2405/2026-01-01 a.ephys-rs.json"));
         let unnamed = settings_path(&Place::directory("/r"), &start);
-        assert!(unnamed.starts_with("/r") && unnamed.to_string_lossy().ends_with(".ephys-rs.json"));
+        assert_eq!(unnamed, PathBuf::from("/r/2026-01-01_143005.ephys-rs.json"), "named after when it started");
 
         let harness = harness();
         let directory = std::env::temp_dir().join(format!("ephys-rs-settings-{}", std::process::id()));
-        harness.state().save_with_recording(&Place { directory: directory.clone(), prefix: Some("trial a".into()) });
+        harness
+            .state()
+            .save_with_recording(&Place { directory: directory.clone(), prefix: Some("trial a".into()) }, &start);
         crate::core::background::wait();
         let saved = std::fs::read_to_string(directory.join("trial a.ephys-rs.json")).unwrap();
         let file: SaveFile<Nodes, crate::AnnotationTypes> = serde_json::from_str(&saved).unwrap();

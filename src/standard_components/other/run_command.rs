@@ -1718,7 +1718,7 @@ mod tests {
         let direct = Arc::new(DirectTriggers::default());
         let snapshot = Snapshot::new(0, graph.clone(), None);
         let runner = Runner::start_with(&snapshot, 2, direct.clone());
-        let recording = Recording::prepare(&snapshot, None, &direct);
+        let recording = Recording::prepare(&snapshot, None, chrono::Local::now(), &direct);
         let recording = snapshot.with_recording(1, Some(Arc::new(recording)));
         runner.update(&recording);
         let deadline = Instant::now() + Duration::from_secs(10);

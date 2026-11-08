@@ -675,19 +675,23 @@ impl<N: NodesEnum> Graph<N> {
 pub type ControlValues<N> = HashMap<NodeId, Vec<Option<Setting<N>>>>;
 
 /// A recording, once the nodes have prepared for it (see `Node::prepare_to_record`): its base directory (see
-/// `crate::core::base_directory`), and what each node prepared, until its first recording pass takes it.
+/// `crate::core::base_directory`), when it started, and what each node prepared, until its first recording pass takes
+/// it.
 #[derive(Default)]
 pub struct Recording {
     base_directory: Option<crate::core::base_directory::Place>,
+    start: chrono::DateTime<chrono::Local>,
     prepared: Mutex<HashMap<NodeId, Box<dyn Any + Send>>>,
 }
 
 impl Recording {
-    /// Has every node that runs in `snapshot` prepare to record, in `base_directory` (if there is one). Can take a
-    /// while (opening files, say), so isn't for the GUI's thread.
+    /// Has every node that runs in `snapshot` prepare to record, in `base_directory` (if there is one), starting at
+    /// `start`: the one time everything that names or dates the recording goes by. Can take a while (opening files,
+    /// say), so isn't for the GUI's thread.
     pub fn prepare<N: NodesEnum>(
         snapshot: &Snapshot<N>,
         base_directory: Option<crate::core::base_directory::Place>,
+        start: chrono::DateTime<chrono::Local>,
         triggers: &Arc<crate::core::triggers::DirectTriggers>,
     ) -> Self {
         let resolved = snapshot.graph.resolve();
@@ -697,16 +701,21 @@ impl Recording {
             let controls = snapshot.controls.get(&step.id).map_or(&[][..], Vec::as_slice);
             let base = base_directory.as_ref();
             let reach = snapshot.graph.control_triggers(step.id, triggers);
-            if let Some(ready) = entry.node.prepare_to_record(&state.input_streams, controls, base, &reach) {
+            if let Some(ready) = entry.node.prepare_to_record(&state.input_streams, controls, base, &start, &reach) {
                 prepared.insert(step.id, ready);
             }
         }
-        Recording { base_directory, prepared: Mutex::new(prepared) }
+        Recording { base_directory, start, prepared: Mutex::new(prepared) }
     }
 
     /// Its base directory, if there is one.
     pub fn base_directory(&self) -> Option<&crate::core::base_directory::Place> {
         self.base_directory.as_ref()
+    }
+
+    /// When it started (see `prepare`).
+    pub fn start(&self) -> &chrono::DateTime<chrono::Local> {
+        &self.start
     }
 
     /// What node `id` prepared, if it did and it hasn't been taken.

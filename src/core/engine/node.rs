@@ -255,8 +255,9 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     fn process(&self, _pass: &mut Pass<E>, _state: &mut Self::State) {}
 
     /// Gets ready to record (a writer opening its files, say), given the data streams on its inputs, what its
-    /// controls see, the base directory recordings go in, if there is one (see `crate::core::base_directory`), and what
-    /// its controls can trigger directly (see `crate::core::triggers`).
+    /// controls see, the base directory recordings go in, if there is one (see `crate::core::base_directory`), when the
+    /// recording starts (to name or date it by: the same for every node, and the settings saved with it), and what its
+    /// controls can trigger directly (see `crate::core::triggers`).
     /// Called on a thread of its own when recording's asked for; passes only start recording once every node's
     /// ready, so this can take its time. What it returns is the node's (with `Pass::take_prepared`) on the first
     /// pass that records.
@@ -265,6 +266,7 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
         _inputs: &[Option<E::DataStream>],
         _controls: &[Option<E::Setting>],
         _base_directory: Option<&crate::core::base_directory::Place>,
+        _start: &chrono::DateTime<chrono::Local>,
         _triggers: &crate::core::triggers::ControlTriggers<E::Trigger>,
     ) -> Option<Box<dyn Any + Send>> {
         None

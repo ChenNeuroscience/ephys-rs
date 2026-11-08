@@ -60,6 +60,7 @@ pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + S
         inputs: &[Option<<Self::Edges as Edges>::DataStream>],
         controls: &[Option<<Self::Edges as Edges>::Setting>],
         base_directory: Option<&crate::core::base_directory::Place>,
+        start: &chrono::DateTime<chrono::Local>,
         triggers: &crate::core::triggers::ControlTriggers<<Self::Edges as Edges>::Trigger>,
     ) -> Option<Box<dyn Any + Send>>;
     fn threads(&self) -> Vec<NodeThread>;
@@ -296,10 +297,11 @@ macro_rules! nodes_enum {
                 inputs: &[Option<<$edges as $crate::core::engine::Edges>::DataStream>],
                 controls: &[Option<<$edges as $crate::core::engine::Edges>::Setting>],
                 base_directory: Option<&$crate::core::base_directory::Place>,
+                start: &chrono::DateTime<chrono::Local>,
                 triggers: &$crate::core::triggers::ControlTriggers<<$edges as $crate::core::engine::Edges>::Trigger>,
             ) -> Option<Box<dyn std::any::Any + Send>> {
                 match self {
-                    $($name::$variant(n) => $crate::core::engine::Node::prepare_to_record(n, inputs, controls, base_directory, triggers)),+
+                    $($name::$variant(n) => $crate::core::engine::Node::prepare_to_record(n, inputs, controls, base_directory, start, triggers)),+
                 }
             }
 

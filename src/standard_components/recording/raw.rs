@@ -183,10 +183,11 @@ impl Node<Edges> for WriteRaw {
         inputs: &[Option<DataStream>],
         _controls: &[Option<crate::Setting>],
         base_directory: Option<&crate::core::base_directory::Place>,
+        start: &chrono::DateTime<Local>,
         triggers: &crate::core::triggers::ControlTriggers<crate::Trigger>,
     ) -> Option<Box<dyn std::any::Any + Send>> {
         let Recorder { continuous, events, .. } = self.initial_state(inputs);
-        let folder = self.folder(base_directory);
+        let folder = self.folder(base_directory, start);
         let files = RawFiles::open(&folder, continuous, events);
         Some(Box::new(Chunk::writing(&folder, continuous, events, files, after_recording(triggers, AFTER_RECORDING))))
     }
@@ -250,9 +251,13 @@ impl Node<Edges> for WriteRaw {
 }
 
 impl WriteRaw {
-    /// A new recording's folder, given the base directory.
-    fn folder(&self, base_directory: Option<&crate::core::base_directory::Place>) -> std::path::PathBuf {
-        self.location.directory(base_directory).join(recording_name(base_directory, &self.prefix, &Local::now()))
+    /// A recording's folder, given the base directory and when it starts.
+    fn folder(
+        &self,
+        base_directory: Option<&crate::core::base_directory::Place>,
+        start: &chrono::DateTime<Local>,
+    ) -> std::path::PathBuf {
+        self.location.directory(base_directory).join(recording_name(base_directory, &self.prefix, start))
     }
 }
 
@@ -452,6 +457,19 @@ impl Files<Chunk> for RawFiles {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_folder_is_named_after_when_the_recording_started() {
+        use chrono::TimeZone;
+        let start = Local.with_ymd_and_hms(2026, 1, 1, 14, 30, 5).unwrap();
+        let base = crate::core::base_directory::Place::directory("/r");
+        let folder = WriteRaw::default().folder(Some(&base), &start);
+        assert_eq!(
+            folder,
+            std::path::PathBuf::from("/r/session_2026-01-01_143005"),
+            "the time it's given, not when it's asked"
+        );
+    }
 
     #[test]
     fn writes_samples_interleaved_and_events() {

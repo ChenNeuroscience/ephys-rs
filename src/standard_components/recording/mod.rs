@@ -470,8 +470,10 @@ mod tests {
         // The base directory has a prefix (a subject's trial, say).
         let place = crate::core::base_directory::Place { directory: dir.clone(), prefix: Some("trial a".into()) };
         // The writers open their files before recording starts.
-        let recording =
-            snapshot.with_recording(1, Some(Arc::new(Recording::prepare(&snapshot, Some(place), &Default::default()))));
+        let recording = snapshot.with_recording(
+            1,
+            Some(Arc::new(Recording::prepare(&snapshot, Some(place), chrono::Local::now(), &Default::default()))),
+        );
         assert!(runner.update(&recording), "recording carries on the same run");
         let deadline = Instant::now() + Duration::from_secs(10);
         while runner.clock() < 1.0 && Instant::now() < deadline {
