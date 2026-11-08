@@ -14,7 +14,7 @@ see the [developer docs](../README.md).
 ephys-rs has two modes, switched with the toolbar's home and graph buttons:
 
 - **[Basic mode](basic-mode.md)** is for running experiments. It shows the viewers (spikes, LFP, tracking...) as large
-  buttons, and offers *quick actions*: ready-made setups, such as "the standard tetrode rig". You don't need to know
+  buttons, and offers *quick actions*: ready-made setups, such as chen-neuro's "Standard LTX graph". You don't need to know
   about the graph to use it.
 - **[Advanced mode](graph.md)** shows the *graph*: boxes (nodes) for each source, processing step, viewer and writer,
   and the wires (edges) between them. It's where you build or change a setup, and where everything can be adjusted.
