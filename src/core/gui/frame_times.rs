@@ -60,7 +60,7 @@ pub struct FrameTimes {
     /// When the graph started running, if it is (seconds since the app started), for timing passes alike.
     pub run_started: Option<f64>,
     /// Not timing frames, and the time it stopped at (so tests' snapshots don't change with how fast they run).
-    paused: Option<f64>,
+    frozen: Option<f64>,
 }
 
 impl Default for FrameTimes {
@@ -72,7 +72,7 @@ impl Default for FrameTimes {
             waiting: VecDeque::new(),
             current: None,
             run_started: None,
-            paused: None,
+            frozen: None,
         }
     }
 }
@@ -80,20 +80,20 @@ impl Default for FrameTimes {
 impl FrameTimes {
     /// Seconds since the app started.
     pub fn now(&self) -> f64 {
-        self.paused.unwrap_or_else(|| self.started.elapsed().as_secs_f64())
+        self.frozen.unwrap_or_else(|| self.started.elapsed().as_secs_f64())
     }
 
-    /// Stops timing frames, forgetting those so far, and stops the clock.
+    /// Stops timing frames, forgetting those so far, and stops the clock: for tests, which can't have times change.
     #[cfg(test)]
-    pub fn pause(&mut self) {
+    pub fn freeze(&mut self) {
         self.frames.clear();
         self.current = None;
-        self.paused = Some(0.0);
+        self.frozen = Some(0.0);
     }
 
     /// Starts timing a frame, giving the last its layout and painting time, from its total CPU time (in seconds).
     pub fn begin(&mut self, last_cpu: Option<f32>) {
-        if self.paused.is_some() {
+        if self.frozen.is_some() {
             return;
         }
         if let Some(frame) = self.current.take() {
@@ -122,7 +122,7 @@ impl FrameTimes {
 
     /// Marks pass `sequence`, started at `at`, as the first to use `version`, and so the changes up to it.
     pub fn first_use(&mut self, version: u64, sequence: u64, at: Instant) {
-        let at = self.paused.unwrap_or_else(|| at.saturating_duration_since(self.started).as_secs_f64());
+        let at = self.frozen.unwrap_or_else(|| at.saturating_duration_since(self.started).as_secs_f64());
         while let Some(change) = self.waiting.pop_front_if(|w| w.version <= version) {
             let later = ((at - change.at) * 1000.0).max(0.0);
             let detail =

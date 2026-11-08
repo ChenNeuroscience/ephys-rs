@@ -11,7 +11,7 @@ use crate::core::theme::Colours;
 
 /// The window of a node without a view of its own: what it is, its settings, and its connections. `live` is the run's
 /// exchange (see `crate::core::exchange`), while running, for its triggers; `shared`, where it finds what its passes
-/// share with it: the same, or the last run's, while paused.
+/// share with it: the same, or the last run's, once it's stopped.
 #[allow(clippy::too_many_arguments)]
 pub fn show<N: NodeSet>(
     ui: &mut egui::Ui,
@@ -122,7 +122,7 @@ mod tests {
     use crate::core::gui::docking::PANE_MARGIN;
     use crate::standard_components::themes::THEMES;
 
-    /// Paused, what's shared is there to read, but there's no run for a trigger to go to.
+    /// Stopped, what the last run shared is there to read, but there's no run for a trigger to go to.
     #[test]
     fn triggers_need_a_run_not_just_what_one_shared() {
         use egui_kittest::kittest::{NodeT as _, Queryable as _};

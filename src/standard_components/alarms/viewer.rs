@@ -640,7 +640,7 @@ mod tests {
         window_of(alarms, display, overrides, locked, true, size)
     }
 
-    /// The same, running or paused.
+    /// The same, running or stopped.
     fn window_of(
         alarms: Alarms,
         display: impl Into<AlarmsDisplay>,
@@ -870,9 +870,9 @@ mod tests {
         assert_eq!(pips, vec![(0, 3)]);
     }
 
-    /// Stopping is a pause: the states stay as they were, to look at, and it's only quiet that it won't sound.
+    /// Stopped, the states stay as they were, to look at, and it's only quiet that it won't sound.
     #[test]
-    fn paused_it_shows_the_states_it_last_had() {
+    fn stopped_it_shows_the_states_it_last_had() {
         let shown = |running| {
             let overrides = Overrides::default();
             let (mut harness, _, _) = window_of(one_of_each(), all_clear(), overrides, false, running, [700.0, 400.0]);

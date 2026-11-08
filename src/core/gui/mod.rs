@@ -252,8 +252,8 @@ pub struct App<N: NodeSet, A: AnnotationSet> {
     history: History<N, A>,
     /// The graph running, while it is.
     runner: Option<Runner<N>>,
-    /// The last run, once it's stopped: see `Paused`.
-    paused: Option<Paused<N>>,
+    /// What the last run shared, once it's stopped: see `LastRun`.
+    last_run: Option<LastRun<N>>,
     /// Direct triggers on their way (see `crate::core::triggers`): the app's, as they can come after a run.
     direct_triggers: Arc<crate::core::triggers::DirectTriggers>,
     /// The acquisition clock when recording last started.
@@ -312,7 +312,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             paste: None,
             status: None,
             runner: None,
-            paused: None,
+            last_run: None,
             direct_triggers: Arc::default(),
             recording_since: 0.0,
             preparing: None,
@@ -419,7 +419,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         self.layout = file.layout.unwrap_or_default();
         self.layout.mode = mode;
         self.history = History::new(&file.graph, &file.annotations);
-        self.paused = None;
+        self.last_run = None;
         self.graph = file.graph;
         self.annotations = file.annotations;
         if let Some(saved) = &file.base_directory {
@@ -591,7 +591,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
     /// Starts running whatever's latest, including edits not yet taken as a version.
     fn play(&mut self) {
         self.history.commit(&self.graph, &self.annotations);
-        self.paused = None;
+        self.last_run = None;
         let triggers = self.direct_triggers.clone();
         self.runner = Some(Runner::start_with(&self.history.current.snapshot, self.workers, triggers));
         self.frame_times.run_started = Some(self.frame_times.now());
@@ -1001,7 +1001,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                 if self.runner.is_some() {
                     self.set_recording(None);
                     self.preparing = None;
-                    self.paused = self.runner.take().map(|runner| Paused {
+                    self.last_run = self.runner.take().map(|runner| LastRun {
                         exchange: runner.exchange_to_keep(),
                         plan: self.history.current.snapshot.plan.clone(),
                     });
@@ -1074,7 +1074,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             self.set_recording(Some(Arc::new(recording)));
         }
         let plan = &self.history.current.snapshot.plan;
-        self.paused.take_if(|paused| !paused.plan.same_shape(plan));
+        self.last_run.take_if(|last| !last.plan.same_shape(plan));
         let Some(runner) = &self.runner else { return };
         let snapshot = &self.history.current.snapshot;
         let same_epoch = runner.update(snapshot);
@@ -1215,7 +1215,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                             resolved,
                             colours,
                             self.runner.as_ref(),
-                            shared(&self.runner, &self.paused),
+                            shared(&self.runner, &self.last_run),
                             base.as_ref(),
                             locked,
                             advanced,
@@ -1422,7 +1422,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                 resolved: &resolved,
                 colours,
                 runner: self.runner.as_ref(),
-                shared: shared(&self.runner, &self.paused),
+                shared: shared(&self.runner, &self.last_run),
                 base_directory: base.as_ref(),
                 snapshot: &self.history.current.snapshot,
                 mode: self.layout.mode,
@@ -1567,9 +1567,9 @@ fn clock_text(seconds: f64) -> String {
     }
 }
 
-/// Stopping is a pause: what the last run shared stays for the windows to show, as it was, until the next run, or until
-/// the graph changes in a way that would have started a new epoch, and what's kept might no longer fit it.
-struct Paused<N: NodeSet> {
+/// What the last run shared, kept once it's stopped, for the windows to go on showing as it was, until the next run, or
+/// until the graph changes in a way that would have started a new epoch, and what's kept might no longer fit it.
+struct LastRun<N: NodeSet> {
     exchange: Arc<crate::core::exchange::Exchange>,
     plan: Arc<engine::Plan<N>>,
 }
@@ -1577,9 +1577,9 @@ struct Paused<N: NodeSet> {
 /// What the windows find what's been shared with them in: the run's exchange, or the last run's.
 fn shared<'a, N: NodeSet>(
     runner: &'a Option<Runner<N>>,
-    paused: &'a Option<Paused<N>>,
+    last_run: &'a Option<LastRun<N>>,
 ) -> Option<&'a crate::core::exchange::Exchange> {
-    runner.as_ref().map(Runner::exchange).or(paused.as_ref().map(|paused| &*paused.exchange))
+    runner.as_ref().map(Runner::exchange).or(last_run.as_ref().map(|last| &*last.exchange))
 }
 
 /// A version of the document: a snapshot of the graph with all its configuration, and the annotations.
@@ -2006,14 +2006,14 @@ mod tests {
         assert_eq!(harness.state().graph.get(detector).unwrap().node.settings()[0].value, before);
     }
 
-    /// Stopping is a pause: what the run shared stays, until the graph changes shape, or it runs again.
+    /// Once stopped, what the run shared stays, until the graph changes shape, or it runs again.
     #[test]
     fn stopping_keeps_what_the_run_shared_until_the_graph_changes_shape() {
         let mut harness = harness();
         let ctx = harness.ctx.clone();
         let found = |harness: &Harness<TestApp>| {
             let app = harness.state();
-            shared(&app.runner, &app.paused).map(|exchange| exchange as *const crate::core::exchange::Exchange)
+            shared(&app.runner, &app.last_run).map(|exchange| exchange as *const crate::core::exchange::Exchange)
         };
         assert_eq!(found(&harness), None, "nothing's run yet");
         harness.state_mut().perform(&ctx, Action::Play);
@@ -2054,10 +2054,10 @@ mod tests {
         let second = found(&harness);
         assert!(second.is_some());
         // Kept, so the next run's can't be made where it was, and look the same.
-        let _kept = harness.state().paused.as_ref().map(|paused| paused.exchange.clone());
+        let _kept = harness.state().last_run.as_ref().map(|last| last.exchange.clone());
         harness.state_mut().perform(&ctx, Action::Play);
         harness.run_steps(2);
-        assert!(harness.state().paused.is_none(), "running again");
+        assert!(harness.state().last_run.is_none(), "running again");
         assert_ne!(found(&harness), second);
     }
 
@@ -2389,7 +2389,7 @@ mod tests {
         // However many cores the machine has.
         harness.state_mut().workers = 4;
         // However fast it runs.
-        harness.state_mut().frame_times.pause();
+        harness.state_mut().frame_times.freeze();
         harness.key_press_modifiers(Modifiers::COMMAND | Modifiers::ALT, Key::I);
         // Other tests log at the same time, so the console's filtered to nothing, to look the same every time.
         harness.state_mut().dev_tools.hide_console_lines();

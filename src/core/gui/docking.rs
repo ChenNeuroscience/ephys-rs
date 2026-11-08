@@ -36,7 +36,7 @@ pub struct Panes<'a, N: NodeSet, A: AnnotationSet> {
     pub resolved: &'a Resolved<N::Edges>,
     pub colours: &'static Colours,
     pub runner: Option<&'a Runner<N>>,
-    /// What the run shares with the windows, or the last run shared, while paused.
+    /// What the run shares with the windows, or what the last run shared, once it's stopped.
     pub shared: Option<&'a crate::core::exchange::Exchange>,
     /// The base directory recordings go in (see `crate::core::base_directory`).
     pub base_directory: Option<&'a crate::core::base_directory::Place>,

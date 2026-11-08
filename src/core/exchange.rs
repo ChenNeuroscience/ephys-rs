@@ -5,7 +5,7 @@
 //! What they are, and how they're used, is up to the node: the exchange only keeps them for the run, and doesn't
 //! make or move anything per pass. The usual one is a `standard_components::pool::Pool` of buffers, which the passes
 //! fill and the window reads the newest of. Anything kept can say where its buffers are (`Shared::pool`), for
-//! the dev tools to show. Once a run's stopped, its windows still find what's in its exchange: stopping is a pause, and
+//! the dev tools to show. Once a run's stopped, its windows still find what's in its exchange, so
 //! what they show stays, until the next run, or until the graph changes in a way that would start a new epoch.
 //!
 //! The other way, the GUI can trigger a node's pass triggers (see `Node::triggers`): "auto detect", say. A pass of the

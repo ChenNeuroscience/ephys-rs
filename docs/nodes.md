@@ -82,7 +82,7 @@ nodes with a view are. Both get a [`UiContext`](../src/core/engine/ui_context.rs
 
 - `inputs`: the streams on its inputs; `controls`: the values of the settings its controls see, to edit.
 - `shared::<T>()`: what its passes share with it in the run's [exchange](../src/core/exchange.rs), or the last run's
-  while paused, so what it shows stays (see below). Say nothing's going on when it isn't, by `running`.
+  once it's stopped, so what it shows stays (see below). Say nothing's going on when it isn't, by `running`.
 - `running` and `locked` (while recording, settings changes are undone, so show them disabled).
 - `advanced()`: whether the app's in advanced mode. What a view shows in basic mode is up to it, but basic is meant to
   be simpler; options for it go in its settings menu.
