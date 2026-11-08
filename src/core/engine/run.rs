@@ -418,15 +418,19 @@ impl<N: NodeSet> Epoch<N> {
 
 impl<N: NodeSet> Drop for Epoch<N> {
     /// Passes still queued when no worker is left to run them were never run. The nodes' state is let go of in
-    /// the background: that can take a while (a capture thread stopping, say), and this may be on a worker, whose
-    /// passes mustn't wait, or the GUI.
+    /// the background (see `let_go_of`).
     fn drop(&mut self) {
         self.shared.dropped.fetch_add(self.receiver.len() as u64, Ordering::Relaxed);
-        let states = std::mem::take(&mut self.slots.states);
-        if states.is_empty() {
-            return;
-        }
-        let dropping = std::thread::Builder::new().name("dropping node state".into()).spawn(move || drop(states));
+        let_go_of(std::mem::take(&mut self.slots.states));
+    }
+}
+
+/// Lets go of nodes' state in the background, each on a thread of its own: it can take a while (a capture thread
+/// stopping, waiting on its device, say), and this may be on a worker, whose passes mustn't wait, or the GUI. Each its
+/// own, so one slow to stop doesn't keep another node's device going.
+fn let_go_of(states: Vec<StateSlot>) {
+    for state in states {
+        let dropping = std::thread::Builder::new().name("dropping node state".into()).spawn(move || drop(state));
         if let Ok(thread) = dropping {
             crate::core::background::finish_later(thread);
         }
@@ -832,6 +836,34 @@ pub mod tests {
             assert!(Instant::now() < deadline, "no samples came");
             std::thread::sleep(Duration::from_secs_f64(PASS_DURATION));
         }
+    }
+
+    #[test]
+    fn a_node_slow_to_let_go_doesnt_hold_up_the_others() {
+        use std::sync::atomic::AtomicBool;
+        /// Takes a while to drop, as a device does to close.
+        struct Slow;
+        impl Drop for Slow {
+            fn drop(&mut self) {
+                std::thread::sleep(Duration::from_secs(2));
+            }
+        }
+        /// Says when it's dropped.
+        struct Quick(Arc<AtomicBool>);
+        impl Drop for Quick {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Relaxed);
+            }
+        }
+        let dropped = Arc::new(AtomicBool::new(false));
+        let states = vec![StateSlot::new(Box::new(Slow)), StateSlot::new(Box::new(Quick(dropped.clone())))];
+        let started = Instant::now();
+        let_go_of(states);
+        assert!(started.elapsed() < Duration::from_millis(500), "not on this thread");
+        while !dropped.load(Ordering::Relaxed) && started.elapsed() < Duration::from_secs(1) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(dropped.load(Ordering::Relaxed), "the quick one went without waiting for the slow one");
     }
 
     #[test]
