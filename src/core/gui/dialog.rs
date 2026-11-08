@@ -1,6 +1,6 @@
 //! Dialogs: a modal window with a title bar (the program's icon and a title), a body, and a footer for its buttons.
 
-use eframe::egui::{self, CornerRadius, Frame, Margin, RichText, TextureHandle, TextureOptions, vec2};
+use eframe::egui::{self, Color32, CornerRadius, Frame, Margin, RichText, TextureHandle, TextureOptions, vec2};
 
 use crate::core::theme::Colours;
 
@@ -75,4 +75,28 @@ fn title_bar(ui: &mut egui::Ui, title: &str, width: f32, colours: &Colours) {
 /// `add`, at the right of a footer.
 pub fn at_right<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), add).inner
+}
+
+/// `parts` on a line of their own, centred, `size` points high: a headline. Those marked bold are drawn again a hair
+/// to the right, as there's no bold font.
+pub fn headline(ui: &mut egui::Ui, parts: &[(&str, bool)], size: f32, colour: Color32) {
+    let job = |bold_only: bool| {
+        let mut job = egui::text::LayoutJob::default();
+        for &(text, bold) in parts {
+            let color = if bold_only && !bold { Color32::TRANSPARENT } else { colour };
+            job.append(
+                text,
+                0.0,
+                egui::TextFormat { font_id: egui::FontId::proportional(size), color, ..Default::default() },
+            );
+        }
+        job
+    };
+    let galley = ui.painter().layout_job(job(false));
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), galley.size().y), egui::Sense::hover());
+    let text: String = parts.iter().map(|(text, _)| *text).collect();
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, &text));
+    let at = egui::pos2(rect.center().x - galley.size().x / 2.0, rect.top());
+    ui.painter().galley(at, galley, colour);
+    ui.painter().galley(at + vec2(0.7, 0.0), ui.painter().layout_job(job(true)), colour);
 }
