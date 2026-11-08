@@ -105,33 +105,44 @@ impl GlobalSettings for OpenEphysSettings {
 
     fn ui(&mut self, ui: &mut egui::Ui, colours: &Colours) {
         let small = |text: &str| RichText::new(text).small().color(colours.text_secondary);
-        ui.label(small("The acquisition boards need the libraries and bitfiles below. Either:"));
+        ui.label(small("The acquisition boards need the files below. Either:"));
         ui.add_space(2.0);
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 0.0;
-            ui.label(small("•  download them yourself, with each one's \"get\" link, into a folder"));
-            if cfg!(windows) {
-                ui.label(small(" (and install "));
-                ui.hyperlink_to(RichText::new("the boards' USB drivers").small(), USB_DRIVERS);
-                ui.label(small(")"));
-            }
-            ui.label(small("; or"));
-        });
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 0.0;
-            ui.label(small("•  install "));
-            ui.hyperlink_to(RichText::new("the Open Ephys GUI").small(), "https://open-ephys.org/gui");
-            ui.label(small(
-                " and its Acquisition Board plugin (and Intan RHD USB plugin, for Intan's board), which install them, \
-                 and the drivers, in Open Ephys's default location.",
-            ));
+        // Open Ephys's, for its newest plugin API: "shared-api10", say.
+        let shared = usual_folder()
+            .and_then(|f| f.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .unwrap_or_else(|| "shared-api10".into());
+        ui.indent("options", |ui| {
+            let option = |ui: &mut egui::Ui, letter: &str, body: &mut dyn FnMut(&mut egui::Ui)| {
+                ui.horizontal_top(|ui| {
+                    // As the text is laid out, so they line up.
+                    ui.horizontal_wrapped(|ui| {
+                        ui.set_width(14.0);
+                        ui.label(small(letter));
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        body(ui);
+                    });
+                });
+            };
+            option(ui, "A.", &mut |ui| {
+                ui.label(small("Download each file from its \"get\" link into a folder of your choosing"));
+                if cfg!(windows) {
+                    ui.label(small(", install "));
+                    ui.hyperlink_to(RichText::new("the boards' USB drivers").small(), USB_DRIVERS);
+                }
+                ui.label(small(", and choose that folder here."));
+            });
+            option(ui, "B.", &mut |ui| {
+                ui.label(small("Install "));
+                ui.hyperlink_to(RichText::new("the Open Ephys GUI").small(), "https://open-ephys.org/gui");
+                ui.label(small(&format!(
+                    " and its Acquisition Board plugin, then choose the \"{shared}\" folder in its installation \
+                     (ephys-rs tries to find it automatically)."
+                )));
+            });
         });
         ui.add_space(6.0);
-        ui.label(small(
-            "Then choose the folder they're in. Until you do, ephys-rs looks in Open Ephys's default location \
-             (where the Open Ephys GUI installs them).",
-        ));
-        ui.add_space(2.0);
         ui.horizontal(|ui| {
             ui.label("Folder");
             match self.folder() {
