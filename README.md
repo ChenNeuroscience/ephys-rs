@@ -15,6 +15,8 @@ This is the Chen lab's build, [chen-neuro](examples/chen-neuro), so its quick ac
 
 Start from a quick action, or build your own graph of sources, processing, viewers and writers, then press Play. It acquires from Open Ephys and Intan boards and FLIR cameras, and records [LTX format](https://github.com/ChenNeuroscience/ltx-format) or Open Ephys binary.
 
+**[User guide](docs/user/README.md)** describes basic mode and the graph, and each component that comes with ephys-rs: what it does, its settings, and how to connect it.
+
 ## Timing and synchronisation
 
 > [!IMPORTANT]

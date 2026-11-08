@@ -1,7 +1,7 @@
 # Developer docs
 
 How ephys-rs works under the hood, and how to extend it. Start with the architecture, then read about whichever part
-you're working on.
+you're working on. For how to use it, see the [user guide](user/README.md).
 
 - [Architecture](architecture.md): the graph and its snapshots, plans, passes and epochs; threads, buffers and pools;
   how the GUI and the passes talk; the core, standard components and custom builds.

@@ -1,0 +1,76 @@
+# Recording
+
+Writers record what's connected to them while ephys-rs is recording (the toolbar's **Record**). They write in the
+[base directory](main-window.md#where-recordings-go) chosen in the toolbar, with its file prefix. Or each can write in
+a **Subdirectory** of it, or a **Directory** of its own (its **Writes in** setting).
+
+Each component starts with what kind of node it is and its ports: data ports `like this`, settings ports marked ◇.
+
+## Write LTX
+
+> **Writer.** In: `spikes`, `eeg` (continuous), `positions`, `events`, `pos ttl`, `log`. ◇ `detection` (a Position
+> Detector's), ◇ `gains` (a Spike Gain's), ◇ `eeg selection` (a Channel Selector's), ◇ `eeg gains` (a Continuous
+> Gain's), all read only. ◇ `after recording`.
+
+Records in the [LTX format](https://github.com/ChenNeuroscience/ltx-format), as the Open Ephys LTX plugin writes it,
+for tetrode analysis code and [Waveform](https://chenneuroscience.github.io/waveform/). For a recording called `name`:
+
+| File | What's in it | Comes from |
+| --- | --- | --- |
+| `name.set` | Headers: the settings, gains and channels | the settings connected |
+| `name.1`, `name.2`... | Each tetrode's spikes, 50 samples a channel | `spikes`, from a Spike Gain (−128 to 127) |
+| `name.egf`, `name.egf2`... | Each EEG channel, at 5 kHz | `eeg`, from a Downsample then a Continuous Gain (−128 to 127) |
+| `name.pos` | Both LEDs' positions and sizes | `positions`, from a Position Detector |
+| `name.ttl` | Digital input changes | `events` |
+| `name.pos.ttl` | The timing LED's changes | `pos ttl`, from a Position Detector |
+| `name.txt` | Log lines | `log` |
+
+Connect its read-only settings so the files say what they hold: the spikes' and EEG's gains, which channels the EEG
+is, and the tracking's crop and calibration. Without them, the headers leave them out. Its window says which aren't
+connected, and it warns if what's connected doesn't suit LTX (spikes not in tetrodes, or EEG not at 5 kHz).
+
+## Write Raw
+
+> **Writer.** In: `continuous`, `events`. ◇ `after recording`.
+
+Records continuous data and digital inputs as they come, in the Open Ephys binary format, which the Open Ephys analysis
+tools (and anything reading NumPy files) can load. Each recording is a folder (its window shows what it'll be called,
+from its **Folder prefix** and the base directory), laid out as the Open Ephys GUI's are: `structure.oebin`, then `continuous/` (16-bit samples, with each
+sample's number and time) and `events/` (each TTL change).
+
+## Run Command
+
+> **Other.** ◇ `command` (connect a writer's `after recording` here). ◇ `after running` (to run another after it).
+
+<img src="../../tests/snapshots/run_command.png" alt="Run Command, with files picked by hand">
+
+Runs a program on files, in a terminal window of its own: spike sorting, converting or analysing a recording, say.
+It's nothing to do with acquiring, so it can run whenever. Running other programs while recording may slow it,
+if the computer's stretched.
+
+**Files** can be picked by hand (files, or a folder), or sent by a writer: connect the writer's ◇ `after recording` to
+it, and it runs on what's recorded each time recording stops.
+
+<img src="../../tests/snapshots/run_command_connected.png" alt="Run Command, with files sent by Write Raw">
+
+**Settings**
+
+- **Only files named**: a filter on the files (`.set`, say). The `.*` button switches to a regular expression, with a
+  cheat sheet.
+- **Program**: a name on your PATH (`python3`, `klusta`), or Browse to it.
+- **Mode**: **one per file, in turn**; **one per file, in parallel**; or **just one**, with all the files.
+- **Arguments**: `{file}` is replaced by the file, or `{files}` by all of them in **just one** mode. Paths with spaces
+  arrive whole. Pipes and `&&` mean nothing, unless the program's a shell (`bash -c "..."`).
+- **Terminal**: whether it closes if every command succeeds. It always stays open if one fails, so you can read why.
+- **Then** (with another Run Command connected after it): run the next if every command succeeds, if any fails, or
+  either way.
+
+**Examples**, at the top, shows how to run a Python script or a MATLAB function:
+
+<img src="../../tests/snapshots/run_command_examples.png" alt="Examples of running Python and MATLAB">
+
+The commands to run are listed at the bottom, as they'll run. After a run, each says how it went:
+
+<img src="../../tests/snapshots/run_command_last_run.png" alt="How each command went last time">
+
+The terminal runs apart from ephys-rs, so it carries on if ephys-rs quits.
