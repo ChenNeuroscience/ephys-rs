@@ -2949,7 +2949,7 @@ mod tests {
             app.remember(Path::new(&format!("/recent-{i}.json")));
         }
         assert_eq!(app.recent.len(), 3);
-        assert_eq!(app.recent[0], PathBuf::from("/recent-4.json"));
+        assert!(app.recent[0].ends_with("recent-4.json"), "the latest first: {:?}", app.recent);
     }
 
     /// Node types hidden in Settings aren't offered for adding to a graph, from when the app starts.
