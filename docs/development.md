@@ -199,11 +199,11 @@ the standard components', then its own).
 
 To change what a part saves, add a patch to its set: a file with a function changing what was saved before to what's
 saved now, as JSON (`serde_json::Value`), before anything's read into types, and add it to the end of `PATCHES`. Every
-patch is applied to everything read, and whether it does anything is entirely up to it: it's given the versions that
-saved it (`saved_before(saved, "std", "0.158.0")` is the usual test: true too for what doesn't say) and what it's
-looking at (`SavedPart::Project`, `SavedPart::Node` with its type's name, `SavedPart::BaseDirectory`), and leaves alone
-what it isn't about. The same patches are applied to a project's nodes and to copied ones, so pasting is patched just as
-opening is. Test it with something saved before the change, as the patching tests do. A patch is never changed once
+patch is applied to everything read, and whether it does anything is entirely up to it: think of it as a script more
+than typical Rust. It's given the versions that saved something (`saved_before(saved, "std", "0.158.0")` is the usual
+test: true too for what doesn't say), and the JSON, always shaped as a project: what isn't one (copied nodes, the base
+directory kept between runs) is put in one for it, with nothing else. `config_patching::nodes(project)` goes through
+its nodes. So pasting is patched just as opening is. Test it with something saved before the change, as the patching tests do. A patch is never changed once
 released.
 
 ## Performance

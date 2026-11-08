@@ -97,7 +97,7 @@ pub fn run<C: Components>(path: Option<PathBuf>) -> eframe::Result {
             let versions: SavedVersions =
                 cc.storage.and_then(|s| eframe::get_value(s, VERSIONS_KEY)).unwrap_or_default();
             if let Some(saved) = saved.as_mut() {
-                app.config_patches.apply(&versions, config_patching::SavedPart::BaseDirectory, saved);
+                app.config_patches.apply_to_base_directory(&versions, saved);
             }
             app.base_directories = BaseDirectories::new(app.base_directories.types(), saved.as_ref());
             app.recent = cc.storage.and_then(|s| eframe::get_value(s, RECENT_KEY)).unwrap_or_default();
@@ -412,7 +412,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             .transpose()
             .map_err(|e| e.to_string())?
             .unwrap_or_default();
-        self.config_patches.apply(&versions, config_patching::SavedPart::Project, &mut value);
+        self.config_patches.apply(&versions, &mut value);
         let file: SaveFile<N, A> = serde_json::from_value(value).map_err(|e| e.to_string())?;
         // The mode stays as it is, opening a file (it starts basic, each time the app does).
         let mode = self.layout.mode;
@@ -2779,15 +2779,11 @@ mod tests {
 
     /// A set whose one patch changes a Spike Detector's waveform, as a node type's patch would, if it was saved before
     /// version 1.
-    fn pre_was_8(
-        saved: &config_patching::SavedVersions,
-        what: config_patching::SavedPart,
-        value: &mut serde_json::Value,
-    ) {
-        if what == config_patching::SavedPart::Node("SpikeDetector")
-            && config_patching::saved_before(saved, "test", "1.0.0")
-        {
-            value["settings"]["pre"] = 12.into();
+    fn pre_was_8(saved: &config_patching::SavedVersions, project: &mut serde_json::Value) {
+        if config_patching::saved_before(saved, "test", "1.0.0") {
+            for node in config_patching::nodes(project).filter(|node| node["type"] == "SpikeDetector") {
+                node["settings"]["pre"] = 12.into();
+            }
         }
     }
     static WITH_A_PATCH: [config_patching::PatchSet; 1] =

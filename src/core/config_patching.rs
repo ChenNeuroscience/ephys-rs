@@ -4,35 +4,24 @@
 //!
 //! Each part has a `PatchSet`: the core's (`crate::core::config_patches`), the standard components'
 //! (`crate::standard_components::config_patches`), a build's own. When a part changes what it saves, it adds a `Patch`,
-//! which changes what was saved before to what's saved now, as JSON, before anything's read into types. Every patch is
-//! applied to everything read, and it's entirely up to the patch whether it does anything: it's given the versions that
-//! saved it (`saved_before` is the usual test), and what it's looking at. Patches never need changing after, as they
-//! don't depend on the types as they are now. Which sets there are, and in what order they're applied, is up to the
-//! build (`Components::CONFIG_PATCHES`).
+//! which changes what was saved before to what's saved now, as JSON, before anything's read into types. Think of a
+//! patch as a script: it's given the versions that saved something (`saved_before` is the usual test), and the JSON,
+//! always shaped as a project (`{"graph": {"nodes": {...}}, "base_directory": ...}`), and does as it likes. What isn't a
+//! project is put in one for it: copied nodes in its graph, the base directory kept between runs as its base directory,
+//! with nothing else. Every patch is applied to everything read. Patches never need changing after, as they don't
+//! depend on the types as they are now. Which sets there are, and in what order they're applied, is up to the build
+//! (`Components::CONFIG_PATCHES`).
 
 use std::collections::BTreeMap;
 
 use serde_json::Value;
 
-/// What a patch is looking at.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum SavedPart<'a> {
-    /// A whole project, as saved, or beside a recording: its graph, annotations, layout and base directory. Patches are
-    /// then applied to its nodes and base directory too.
-    Project,
-    /// A node, as saved (`{"type": ...}`), of the type named (its name in `node_set!`): in a project, or copied.
-    Node(&'a str),
-    /// The settings of the base directory (see `crate::core::base_directory`): in a project, or kept between runs.
-    BaseDirectory,
-}
-
 /// The version of each part of the program that saved something, by its set's name. Empty for what was saved before
 /// versions were.
 pub type SavedVersions = BTreeMap<String, String>;
 
-/// Changes what was saved, given the versions that saved it and what it is, if it needs to. It leaves alone what it
-/// isn't about.
-pub type Patch = fn(&SavedVersions, SavedPart, &mut Value);
+/// Changes what was saved, a project's JSON, given the versions that saved it, if it needs to.
+pub type Patch = fn(&SavedVersions, &mut Value);
 
 /// The patches of a part of the program.
 pub struct PatchSet {
@@ -51,6 +40,12 @@ pub fn saved_before(saved: &SavedVersions, name: &str, version: &str) -> bool {
     saved.get(name).is_none_or(|saved| numbers(saved) < numbers(version))
 }
 
+/// The nodes of `project` (as saved: `{"type": ...}`), if it has any, to change as a patch likes.
+pub fn nodes(project: &mut Value) -> impl Iterator<Item = &mut Value> {
+    let nodes = project.pointer_mut("/graph/nodes").and_then(Value::as_object_mut);
+    nodes.into_iter().flat_map(|nodes| nodes.values_mut().filter_map(|entry| entry.get_mut("node")))
+}
+
 /// A program's patch sets, in the order they're applied.
 #[derive(Clone, Default)]
 pub struct PatchSets(Vec<&'static PatchSet>);
@@ -65,29 +60,34 @@ impl PatchSets {
         self.0.iter().map(|set| (set.name.to_string(), set.version.to_string())).collect()
     }
 
-    /// Applies every patch, set by set, to `value`, a `what` saved by `saved`.
-    pub fn apply(&self, saved: &SavedVersions, what: SavedPart, value: &mut Value) {
+    /// Applies every patch, set by set, to `project`, saved by `saved`.
+    pub fn apply(&self, saved: &SavedVersions, project: &mut Value) {
         for patch in self.0.iter().flat_map(|set| set.patches) {
-            apply(*patch, saved, what, value);
+            patch(saved, project);
         }
     }
-}
 
-/// `patch`, on `value`, and, for a project, on its nodes and base directory.
-fn apply(patch: Patch, saved: &SavedVersions, what: SavedPart, value: &mut Value) {
-    patch(saved, what, value);
-    if what != SavedPart::Project {
-        return;
-    }
-    if let Some(nodes) = value.pointer_mut("/graph/nodes").and_then(Value::as_object_mut) {
-        for node in nodes.values_mut().filter_map(|entry| entry.get_mut("node")) {
-            if let Some(kind) = node.get("type").and_then(Value::as_str).map(str::to_string) {
-                patch(saved, SavedPart::Node(&kind), node);
+    /// Applies every patch to `nodes` (each as saved: `{"type": ...}`), put in a project's graph for them.
+    pub fn apply_to_nodes(&self, saved: &SavedVersions, nodes: &mut [Value]) {
+        let entries: serde_json::Map<String, Value> = nodes
+            .iter_mut()
+            .enumerate()
+            .map(|(i, node)| (i.to_string(), serde_json::json!({ "node": node.take() })))
+            .collect();
+        let mut project = serde_json::json!({ "graph": { "nodes": entries } });
+        self.apply(saved, &mut project);
+        for (i, node) in nodes.iter_mut().enumerate() {
+            if let Some(patched) = project.pointer_mut(&format!("/graph/nodes/{i}/node")) {
+                *node = patched.take();
             }
         }
     }
-    if let Some(base_directory) = value.get_mut("base_directory").filter(|b| !b.is_null()) {
-        patch(saved, SavedPart::BaseDirectory, base_directory);
+
+    /// Applies every patch to `base_directory`, put in a project for them.
+    pub fn apply_to_base_directory(&self, saved: &SavedVersions, base_directory: &mut Value) {
+        let mut project = serde_json::json!({ "base_directory": base_directory.take() });
+        self.apply(saved, &mut project);
+        *base_directory = project["base_directory"].take();
     }
 }
 
@@ -104,27 +104,30 @@ mod tests {
         }
     }
 
-    fn core_project(saved: &SavedVersions, what: SavedPart, value: &mut Value) {
-        if what == SavedPart::Project && saved_before(saved, "core", "1.0.0") {
-            note(value, "core");
+    fn core_project(saved: &SavedVersions, project: &mut Value) {
+        if saved_before(saved, "core", "1.0.0") {
+            note(project, "core");
         }
     }
 
-    fn std_writer(saved: &SavedVersions, what: SavedPart, value: &mut Value) {
-        if what == SavedPart::Node("WriteLtx") && saved_before(saved, "std", "0.100.0") {
-            note(value, "std writer");
+    fn std_writer(saved: &SavedVersions, project: &mut Value) {
+        if saved_before(saved, "std", "0.100.0") {
+            for node in nodes(project).filter(|n| n["type"] == "WriteLtx") {
+                note(node, "std writer");
+            }
         }
     }
 
-    fn std_base_directory(saved: &SavedVersions, what: SavedPart, value: &mut Value) {
-        if what == SavedPart::BaseDirectory && saved_before(saved, "std", "0.200.0") {
-            note(value, "std base directory");
+    fn std_base_directory(saved: &SavedVersions, project: &mut Value) {
+        if saved_before(saved, "std", "0.200.0") {
+            note(&mut project["base_directory"], "std base directory");
         }
     }
 
-    fn build_any_node(_: &SavedVersions, what: SavedPart, value: &mut Value) {
-        if let SavedPart::Node(kind) = what {
-            note(value, &format!("build {kind}"));
+    fn build_any_node(_: &SavedVersions, project: &mut Value) {
+        for node in nodes(project) {
+            let kind = node["type"].as_str().unwrap_or_default().to_string();
+            note(node, &format!("build {kind}"));
         }
     }
 
@@ -168,25 +171,29 @@ mod tests {
     }
 
     #[test]
-    fn every_patch_is_applied_to_a_project_and_its_parts_and_decides_for_itself() {
+    fn every_patch_is_applied_to_a_project_and_decides_for_itself() {
         let mut old = project();
-        sets().apply(&versions(&[]), SavedPart::Project, &mut old);
+        sets().apply(&versions(&[]), &mut old);
         assert_eq!(old["seen"], json!(["core"]));
         assert_eq!(old["graph"]["nodes"]["1"]["node"]["seen"], json!(["std writer", "build WriteLtx"]), "in order");
         assert_eq!(old["graph"]["nodes"]["2"]["node"]["seen"], json!(["build LfpViewer"]));
         assert_eq!(old["base_directory"]["seen"], json!(["std base directory"]));
 
         let mut part_way = project();
-        sets().apply(&versions(&[("core", "1.0.0"), ("std", "0.150.0")]), SavedPart::Project, &mut part_way);
+        sets().apply(&versions(&[("core", "1.0.0"), ("std", "0.150.0")]), &mut part_way);
         assert_eq!(part_way["seen"], json!([]));
         assert_eq!(part_way["graph"]["nodes"]["1"]["node"]["seen"], json!(["build WriteLtx"]));
         assert_eq!(part_way["base_directory"]["seen"], json!(["std base directory"]), "only what's after");
     }
 
     #[test]
-    fn a_node_on_its_own_is_patched_the_same_way() {
-        let mut node = json!({"type": "WriteLtx", "seen": []});
-        sets().apply(&versions(&[("std", "0.1.0")]), SavedPart::Node("WriteLtx"), &mut node);
-        assert_eq!(node["seen"], json!(["std writer", "build WriteLtx"]));
+    fn nodes_and_a_base_directory_on_their_own_are_patched_in_a_project() {
+        let mut nodes = [json!({"type": "WriteLtx", "seen": []}), json!({"type": "LfpViewer", "seen": []})];
+        sets().apply_to_nodes(&versions(&[("std", "0.1.0")]), &mut nodes);
+        assert_eq!(nodes[0]["seen"], json!(["std writer", "build WriteLtx"]));
+        assert_eq!(nodes[1]["seen"], json!(["build LfpViewer"]));
+        let mut base_directory = json!({"seen": []});
+        sets().apply_to_base_directory(&versions(&[]), &mut base_directory);
+        assert_eq!(base_directory["seen"], json!(["std base directory"]));
     }
 }

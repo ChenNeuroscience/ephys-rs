@@ -7,7 +7,7 @@
 use eframe::egui::{self, RichText};
 use serde::{Deserialize, Serialize};
 
-use crate::core::config_patching::{PatchSets, SavedPart, SavedVersions};
+use crate::core::config_patching::{PatchSets, SavedVersions};
 use crate::core::engine::{Graph, NodeId, NodeSet};
 use crate::core::theme::Colours;
 
@@ -80,9 +80,10 @@ impl<N: NodeSet> PasteSettings<N> {
         let mut clip: Clip =
             serde_json::from_str(text).map_err(|_| "There are no copied settings to paste".to_owned())?;
         // Brought up to date as they'd be in a project.
-        for copied in &mut clip.nodes {
-            let kind = copied.node.get("type").and_then(|t| t.as_str()).unwrap_or_default().to_string();
-            patches.apply(&clip.versions, SavedPart::Node(&kind), &mut copied.node);
+        let mut nodes: Vec<serde_json::Value> = clip.nodes.iter_mut().map(|c| c.node.take()).collect();
+        patches.apply_to_nodes(&clip.versions, &mut nodes);
+        for (copied, node) in clip.nodes.iter_mut().zip(nodes) {
+            copied.node = node;
         }
         let rows = clip
             .nodes
