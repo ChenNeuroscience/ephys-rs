@@ -160,88 +160,93 @@ impl Node<Edges> for ContinuousGain {
         }
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
-        let channels = match context.inputs[0] {
-            Some(DataStream::Continuous(c)) => Channels { count: c.channels as usize, group_size: 1 },
-            _ => Channels { count: 0, group_size: 1 },
-        };
-        // The gains: one for all, or one each.
-        ui.strong("Gains");
-        named_settings_grid(ui, "gain scope", |ui| {
-            setting(ui, "One for", |ui| {
-                let mut scope = self.gains.scope;
-                let options = [(GainScope::All, "All channels together"), (GainScope::Channel, "Each channel")];
-                let name = options.iter().find(|(s, _)| *s == scope).map_or("Each channel", |(_, n)| n);
-                let response = egui::ComboBox::from_id_salt("gain scope")
-                    .selected_text(name)
-                    .show_ui(ui, |ui| {
-                        for (option, name) in options {
-                            ui.selectable_value(&mut scope, option, name);
-                        }
-                    })
-                    .response
-                    .on_hover_text("Whether the channels share a gain");
-                if scope != self.gains.scope {
-                    self.gains.set_scope(scope, channels);
-                }
-                response
-            });
-        });
-        if channels.count > 0 {
-            egui::ScrollArea::vertical().max_height(260.0).id_salt("gains").show(ui, |ui| {
-                egui::Grid::new("gains").num_columns(3).striped(true).show(ui, |ui| {
-                    ui.strong("Channel");
-                    ui.strong("Gain");
-                    ui.strong("Fits").on_hover_text("The µV that reach the output range, at this gain");
-                    ui.end_row();
-                    for unit in self.gains.units(channels) {
-                        let name = if unit.len() > 1 {
-                            format!("1–{}", channels.count)
-                        } else {
-                            format!("{}", unit.start + 1)
-                        };
-                        ui.label(name);
-                        let mut gain = self.gains.get(unit.start);
-                        let speed = gain * 0.01;
-                        let field =
-                            egui::DragValue::new(&mut gain).range(1e-6..=1e6).speed(speed).max_decimals(3).prefix("×");
-                        if ui.add(field).changed() {
-                            self.gains.set(unit.start, gain, channels);
-                        }
-                        ui.label(format!("±{:.0} µV", self.gains.range_uv(unit.start)));
-                        ui.end_row();
+    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+        crate::core::gui::node_window::standard(self, ui, context, |node, ui, context| {
+            let channels = match context.inputs[0] {
+                Some(DataStream::Continuous(c)) => Channels { count: c.channels as usize, group_size: 1 },
+                _ => Channels { count: 0, group_size: 1 },
+            };
+            // The gains: one for all, or one each.
+            ui.strong("Gains");
+            named_settings_grid(ui, "gain scope", |ui| {
+                setting(ui, "One for", |ui| {
+                    let mut scope = node.gains.scope;
+                    let options = [(GainScope::All, "All channels together"), (GainScope::Channel, "Each channel")];
+                    let name = options.iter().find(|(s, _)| *s == scope).map_or("Each channel", |(_, n)| n);
+                    let response = egui::ComboBox::from_id_salt("gain scope")
+                        .selected_text(name)
+                        .show_ui(ui, |ui| {
+                            for (option, name) in options {
+                                ui.selectable_value(&mut scope, option, name);
+                            }
+                        })
+                        .response
+                        .on_hover_text("Whether the channels share a gain");
+                    if scope != node.gains.scope {
+                        node.gains.set_scope(scope, channels);
                     }
+                    response
                 });
             });
-        }
+            if channels.count > 0 {
+                egui::ScrollArea::vertical().max_height(260.0).id_salt("gains").show(ui, |ui| {
+                    egui::Grid::new("gains").num_columns(3).striped(true).show(ui, |ui| {
+                        ui.strong("Channel");
+                        ui.strong("Gain");
+                        ui.strong("Fits").on_hover_text("The µV that reach the output range, at this gain");
+                        ui.end_row();
+                        for unit in node.gains.units(channels) {
+                            let name = if unit.len() > 1 {
+                                format!("1–{}", channels.count)
+                            } else {
+                                format!("{}", unit.start + 1)
+                            };
+                            ui.label(name);
+                            let mut gain = node.gains.get(unit.start);
+                            let speed = gain * 0.01;
+                            let field = egui::DragValue::new(&mut gain)
+                                .range(1e-6..=1e6)
+                                .speed(speed)
+                                .max_decimals(3)
+                                .prefix("×");
+                            if ui.add(field).changed() {
+                                node.gains.set(unit.start, gain, channels);
+                            }
+                            ui.label(format!("±{:.0} µV", node.gains.range_uv(unit.start)));
+                            ui.end_row();
+                        }
+                    });
+                });
+            }
 
-        // Choosing them from the data.
-        ui.add_space(8.0);
-        ui.strong("Auto detect");
-        ui.add_enabled_ui(!detecting(context), |ui| {
-            named_settings_grid(ui, "auto detect", |ui| {
-                setting(ui, "Fit to", |ui| {
-                    let field =
-                        egui::DragValue::new(&mut self.gains.output_range).range(1e-6..=1e9).speed(1.0).prefix("±");
-                    ui.add(field)
-                        .on_hover_text("The output range to fill: ±128 for int8, ±32768 for int16, ±1 for floats")
-                });
-                setting(ui, "Level", |ui| {
-                    self.level.ui(
-                        ui,
-                        "The percentile of the samples, ignoring sign",
-                        "Its distance from the mean, times this, fills the output range",
-                    )
-                });
-                setting(ui, "Sampling for", |ui| {
-                    ui.add(egui::DragValue::new(&mut self.sampling).range(SAMPLING).speed(0.2).suffix(" s"))
-                        .on_hover_text("How long to sample for")
+            // Choosing them from the data.
+            ui.add_space(8.0);
+            ui.strong("Auto detect");
+            ui.add_enabled_ui(!detecting(context), |ui| {
+                named_settings_grid(ui, "auto detect", |ui| {
+                    setting(ui, "Fit to", |ui| {
+                        let field =
+                            egui::DragValue::new(&mut node.gains.output_range).range(1e-6..=1e9).speed(1.0).prefix("±");
+                        ui.add(field)
+                            .on_hover_text("The output range to fill: ±128 for int8, ±32768 for int16, ±1 for floats")
+                    });
+                    setting(ui, "Level", |ui| {
+                        node.level.ui(
+                            ui,
+                            "The percentile of the samples, ignoring sign",
+                            "Its distance from the mean, times this, fills the output range",
+                        )
+                    });
+                    setting(ui, "Sampling for", |ui| {
+                        ui.add(egui::DragValue::new(&mut node.sampling).range(SAMPLING).speed(0.2).suffix(" s"))
+                            .on_hover_text("How long to sample for")
+                    });
                 });
             });
+            auto_detect_ui(ui, context, None, "Sample each channel, then set its gain");
+            ui.add_space(4.0);
+            input_summary(ui, context.inputs);
         });
-        auto_detect_ui(ui, context, None, "Sample each channel, then set its gain");
-        ui.add_space(4.0);
-        input_summary(ui, context.inputs);
     }
 }
 

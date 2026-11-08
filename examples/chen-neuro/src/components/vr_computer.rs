@@ -545,41 +545,43 @@ impl Node<Edges> for VrComputer {
         pass.shared::<Pool<Status>>().send_newest(pass.sequence, |shown| shown.clone_from(&status.lock().unwrap()));
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
-        egui::Grid::new("vr computer").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-            ui.label("IP address");
-            ui.text_edit_singleline(&mut self.ip);
-            ui.end_row();
-            ui.label("Port");
-            ui.add(egui::DragValue::new(&mut self.port));
-            ui.end_row();
-            ui.label("Position rate");
-            ui.add(egui::DragValue::new(&mut self.fps).range(1.0..=1000.0).suffix(" Hz"))
-                .on_hover_text("How many positions to expect a second, as a frame rate: the alarms go by it");
-            ui.end_row();
-            ui.label("Log line limit");
-            ui.add(egui::DragValue::new(&mut self.log_width).range(16..=65536).suffix(" bytes"))
-                .on_hover_text("Longer log lines are cut short");
-            ui.end_row();
-        });
-        ui.separator();
-        let pool = context.shared::<Pool<Status>>();
-        match pool.and_then(Pool::newest) {
-            Some(status) => status_ui(ui, &status, context.theme.warning),
-            None => drop(ui.weak("Press Play to connect.")),
-        }
-        ui.add_space(4.0);
-        if self.custom.is_empty() {
-            ui.weak("No settings from the VR computer yet.");
-            return;
-        }
-        ui.label(RichText::new("Settings from the VR computer").strong());
-        egui::Grid::new("vr settings").num_columns(2).striped(true).show(ui, |ui| {
-            for (key, value) in &self.custom {
-                ui.label(key);
-                ui.label(value);
+    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+        ephys_rs::core::gui::node_window::standard(self, ui, context, |node, ui, context| {
+            egui::Grid::new("vr computer").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+                ui.label("IP address");
+                ui.text_edit_singleline(&mut node.ip);
                 ui.end_row();
+                ui.label("Port");
+                ui.add(egui::DragValue::new(&mut node.port));
+                ui.end_row();
+                ui.label("Position rate");
+                ui.add(egui::DragValue::new(&mut node.fps).range(1.0..=1000.0).suffix(" Hz"))
+                    .on_hover_text("How many positions to expect a second, as a frame rate: the alarms go by it");
+                ui.end_row();
+                ui.label("Log line limit");
+                ui.add(egui::DragValue::new(&mut node.log_width).range(16..=65536).suffix(" bytes"))
+                    .on_hover_text("Longer log lines are cut short");
+                ui.end_row();
+            });
+            ui.separator();
+            let pool = context.shared::<Pool<Status>>();
+            match pool.and_then(Pool::newest) {
+                Some(status) => status_ui(ui, &status, context.theme.warning),
+                None => drop(ui.weak("Press Play to connect.")),
             }
+            ui.add_space(4.0);
+            if node.custom.is_empty() {
+                ui.weak("No settings from the VR computer yet.");
+                return;
+            }
+            ui.label(RichText::new("Settings from the VR computer").strong());
+            egui::Grid::new("vr settings").num_columns(2).striped(true).show(ui, |ui| {
+                for (key, value) in &node.custom {
+                    ui.label(key);
+                    ui.label(value);
+                    ui.end_row();
+                }
+            });
         });
     }
 }

@@ -27,7 +27,7 @@ The parts of the API are there for three different reasons, and it helps to know
   memory: `evaluate_buffer_usage`, `evaluate_tree_shake` (one exception: a writer says it only runs with something
   to record, or it would write empty files), working memory instead of state (`CARRIED_OVER = false`), and pools for buffers its threads swap.
 - **The experience of using it: how it looks and behaves for people.** These change nothing it computes: its category,
-  name and description (`INFO`), `warnings`, its window (`settings_ui`, or `custom_ui` with `HAS_CUSTOM_UI`), whether
+  name and description (`INFO`), `warnings`, its window (`gui_ui`, and `WINDOW_SIZE`), whether
   it's in the basic view (`SHOW_IN_BASIC_DEFAULT`), and how its threads show in the dev tools (`threads`,
   `thread_pool`, `thread_ui`).
 
@@ -79,9 +79,19 @@ settings: the latest, as of the pass.
 
 ## Its window
 
-Double-clicking a node opens its window: `custom_ui` if it has a UI of its own (`HAS_CUSTOM_UI`), otherwise the
-standard one, `settings_ui`, with its name, warnings and ports. `SHOW_IN_BASIC_DEFAULT` says whether it's listed in the basic view, till that's set for it: by convention,
-nodes with a view are. Both get a [`UiContext`](../src/core/engine/ui_context.rs):
+Double-clicking a node opens its window, `gui_ui`. By default it's the standard window
+([`node_window::standard`](../src/core/gui/node_window.rs)): its name, toolbar, what it is, any problems, and its ports.
+A node with settings to set there shows them in the standard window, as most do:
+
+```rust
+fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+    standard(self, ui, context, |node, ui, context| { /* node's settings */ });
+}
+```
+
+A view of its own (a viewer's, say) draws whatever it likes instead, and says how big its window opens
+(`WINDOW_SIZE`). `SHOW_IN_BASIC_DEFAULT` says whether it's listed in the basic view, till that's set for it: by
+convention, nodes with a view are. It gets a [`UiContext`](../src/core/engine/ui_context.rs):
 
 - `inputs`: the streams on its inputs; `controls`: the values of the settings its controls see, to edit.
 - `shared::<T>()`: what its passes share with it (its `Shared`, which is `T`), or what they did in the last run once
@@ -123,7 +133,7 @@ type Shared = Pool<TracesDisplay>;
 // In process: fill a buffer (an earlier send's, to overwrite), and queue it as of the pass.
 pass.shared::<Pool<TracesDisplay>>().send_newest(pass.sequence, |display| display.fill_from(...));
 
-// In custom_ui: the newest queued, held for as long as the view likes.
+// In gui_ui: the newest queued, held for as long as the view likes.
 let pool = context.shared::<Pool<TracesDisplay>>();
 let Some(display) = pool.and_then(Pool::newest) else { return };
 ```
@@ -138,12 +148,12 @@ A node can keep state on the GUI's side, as `type UiState` (and `()` for none): 
 the graph has it, whether its window's shown or not, and doesn't save it. Its window gets it with
 `UiContext::ui_state::<T>()`, borrowed from the app rather than the context, so the context can still be used.
 
-Work that isn't drawing, but has to happen whether the window's shown or not, goes in `background(context)`: the app
+Work that isn't drawing, but has to happen whether the window's shown or not, goes in `gui_background(context)`: the app
 calls it on the GUI's thread every time round, before each frame, and, while the window's hidden (minimised, say),
 whenever it's woken (see `App::logic`). It gets the same `UiContext` as the window, so it can take what the passes
 share, keep it in its `UiState`, and edit settings as a window would. It returns when it next needs calling, if it does,
 and the app's woken then. When everything the passes send matters, not only the newest, they send it all, in order
-(`Pool::send_pending`), and `background` takes it (`Pool::receive_all`): the
+(`Pool::send_pending`), and `gui_background` takes it (`Pool::receive_all`): the
 [Log Viewer](../src/standard_components/logs/log_viewer.rs) keeps lines this way, the Tracker View its path, and the
 [Alarm Viewer](../src/standard_components/alarms/viewer.rs) keeps track of alarms going off, pipping as they do, with
 its window closed too.

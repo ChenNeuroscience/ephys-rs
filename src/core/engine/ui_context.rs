@@ -24,8 +24,9 @@ pub struct UiContext<'a, E: Edges> {
     pub controlled_by: &'a [Vec<String>],
     /// The colours to draw with, by role. A node can derive more of its own from these.
     pub theme: &'a Colours,
-    /// The node.
+    /// The node, and its name (to edit).
     pub node: NodeId,
+    pub label: &'a mut String,
     /// What the nodes' passes share with the GUI (see `crate::core::engine::Shared`): the run's, or the last run's, once
     /// it's stopped.
     pub shared_by_node: Option<&'a SharedByNode>,

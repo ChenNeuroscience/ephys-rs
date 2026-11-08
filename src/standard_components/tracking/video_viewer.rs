@@ -22,7 +22,7 @@ pub struct VideoViewer {
 impl Node<Edges> for VideoViewer {
     const INFO: NodeInfo =
         NodeInfo { name: "Video Viewer", category: Category::Visualisation, description: "The latest video frame." };
-    const HAS_CUSTOM_UI: bool = true;
+    const WINDOW_SIZE: [f32; 2] = [820.0, 520.0];
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
     type State = ();
@@ -67,11 +67,7 @@ impl Node<Edges> for VideoViewer {
         pool.send_as_of(sequence, frames);
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, _context: &mut UiContext<Edges>) {
-        ui.checkbox(&mut self.crosshair, "Crosshair");
-    }
-
-    fn custom_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
         let locked = context.locked;
         ui.horizontal(|ui| {
             ui.add_enabled_ui(!locked, |ui| ui.checkbox(&mut self.crosshair, "Crosshair"));

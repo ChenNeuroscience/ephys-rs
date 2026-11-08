@@ -3,7 +3,7 @@
 //! which it has a button for, in basic mode too. The processor's data stays with it: this only gets the alarms' states.
 //!
 //! Its passes send every pass's alarm states to the GUI's side (`Update`), where its work on the GUI's thread (see
-//! `Node::background`) keeps track of them, whether its window's open or not, for the window to show.
+//! `Node::gui_background`) keeps track of them, whether its window's open or not, for the window to show.
 //!
 //! Switching an alarm off changes what the processor needs, and so the plan. While recording, the graph can't change, so
 //! an alarm switched off is only ignored here (`Overrides`); that's saved in the settings once recording's stopped. And an
@@ -180,7 +180,7 @@ impl Node<Edges> for AlarmViewer {
         category: Category::Visualisation,
         description: "How an Alarm Processor's alarms stand, with switches for them and for sound.",
     };
-    const HAS_CUSTOM_UI: bool = true;
+    const WINDOW_SIZE: [f32; 2] = [820.0, 520.0];
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
     fn inputs(&self) -> Vec<Input<Edges>> {
@@ -228,7 +228,7 @@ impl Node<Edges> for AlarmViewer {
 
     /// Goes through the passes sent, keeping track of the alarms going off, and pipping as they do; and once recording's
     /// over, saves what was switched while it was.
-    fn background(&mut self, context: &mut UiContext<Edges>) -> Option<Instant> {
+    fn gui_background(&mut self, context: &mut UiContext<Edges>) -> Option<Instant> {
         let mut ui = context.ui_state::<AlarmsUi>();
         let AlarmsUi { shown, going_off, recording, overrides, tone } = &mut *ui;
         if !context.locked && (!overrides.ignored.is_empty() || !overrides.sounds.is_empty()) {
@@ -276,11 +276,7 @@ impl Node<Edges> for AlarmViewer {
         None
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, _context: &mut UiContext<Edges>) {
-        ui.weak("The Alarm Processor has the alarms' settings.");
-    }
-
-    fn custom_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
         let (Some(DataStream::AlarmStates(stream)), Some(Setting::Alarms(alarms))) =
             (context.inputs[0], context.controls[ALARMS].as_ref())
         else {
@@ -693,7 +689,7 @@ mod tests {
     ) {
         let inputs = [Some(DataStream::AlarmStates(STREAM))];
         graph.edit(viewer, &inputs, &THEMES[0].colours, Some(by_node), Some(gui), None, true, locked, None, |n, c| {
-            _ = n.background(c);
+            _ = n.gui_background(c);
         });
     }
 
@@ -780,7 +776,7 @@ mod tests {
                     running,
                     locked,
                     None,
-                    |node, context| node.custom_ui(ui, context),
+                    |node, context| node.gui_ui(ui, context),
                 );
             },
             graph,

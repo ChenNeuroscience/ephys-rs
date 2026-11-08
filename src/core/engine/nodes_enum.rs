@@ -25,7 +25,7 @@ pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + S
     /// A node of the given type, with default settings.
     fn create(type_index: usize) -> Self;
     fn type_index(&self) -> usize;
-    fn has_custom_ui(&self) -> bool;
+    fn window_size(&self) -> [f32; 2];
     fn show_in_basic_default(&self) -> bool;
     fn inputs(&self) -> Vec<Input<Self::Edges>>;
     fn outputs(&self, inputs: &[Option<<Self::Edges as Edges>::DataStream>]) -> Vec<Output<Self::Edges>>;
@@ -33,9 +33,8 @@ pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + S
     fn settings(&self) -> Vec<SettingPort<Self::Edges>>;
     fn set_setting(&mut self, index: usize, value: <Self::Edges as Edges>::Setting);
     fn controls(&self) -> Vec<Control<Self::Edges>>;
-    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Self::Edges>);
-    fn custom_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Self::Edges>);
-    fn background(&mut self, context: &mut UiContext<Self::Edges>) -> Option<std::time::Instant>;
+    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Self::Edges>);
+    fn gui_background(&mut self, context: &mut UiContext<Self::Edges>) -> Option<std::time::Instant>;
     /// Its `UiState` as it starts.
     fn new_ui_state(&self) -> Box<dyn Any>;
     fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool]) -> TreeShake;
@@ -159,8 +158,8 @@ macro_rules! nodes_enum {
                 unreachable!()
             }
 
-            fn has_custom_ui(&self) -> bool {
-                match self { $($name::$variant(_) => <$ty as $crate::core::engine::Node<$edges>>::HAS_CUSTOM_UI),+ }
+            fn window_size(&self) -> [f32; 2] {
+                match self { $($name::$variant(_) => <$ty as $crate::core::engine::Node<$edges>>::WINDOW_SIZE),+ }
             }
 
             fn show_in_basic_default(&self) -> bool {
@@ -194,19 +193,15 @@ macro_rules! nodes_enum {
                 match self { $($name::$variant(n) => $crate::core::engine::Node::controls(n)),+ }
             }
 
-            fn settings_ui(&mut self, ui: &mut eframe::egui::Ui, context: &mut $crate::core::engine::UiContext<$edges>) {
-                match self { $($name::$variant(n) => $crate::core::engine::Node::settings_ui(n, ui, context)),+ }
+            fn gui_ui(&mut self, ui: &mut eframe::egui::Ui, context: &mut $crate::core::engine::UiContext<$edges>) {
+                match self { $($name::$variant(n) => $crate::core::engine::Node::gui_ui(n, ui, context)),+ }
             }
 
-            fn custom_ui(&mut self, ui: &mut eframe::egui::Ui, context: &mut $crate::core::engine::UiContext<$edges>) {
-                match self { $($name::$variant(n) => $crate::core::engine::Node::custom_ui(n, ui, context)),+ }
-            }
-
-            fn background(
+            fn gui_background(
                 &mut self,
                 context: &mut $crate::core::engine::UiContext<$edges>,
             ) -> Option<std::time::Instant> {
-                match self { $($name::$variant(n) => $crate::core::engine::Node::background(n, context)),+ }
+                match self { $($name::$variant(n) => $crate::core::engine::Node::gui_background(n, context)),+ }
             }
 
             fn new_ui_state(&self) -> Box<dyn std::any::Any> {

@@ -121,26 +121,28 @@ impl Node<Edges> for ChannelSelector {
         }
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
-        let count = match context.inputs[0] {
-            Some(DataStream::Continuous(c)) => c.channels,
-            _ => 64,
-        };
-        let apply = &mut self.apply;
-        channels_ui(ui, "Selected", &mut self.channels, count, |ui, selected| {
-            // Together, on the next line if they won't fit on this one.
-            inline_block(ui, "apply", false, |ui| {
-                power(ui, apply, "Apply selection");
-                if *apply {
-                    ui.label("Selection applied");
-                } else if selected < count as usize {
-                    let text = if selected == 0 { "Nothing selected" } else { "Selection pending" };
-                    ui.colored_label(ui.visuals().error_fg_color, text);
-                }
+    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+        crate::core::gui::node_window::standard(self, ui, context, |node, ui, context| {
+            let count = match context.inputs[0] {
+                Some(DataStream::Continuous(c)) => c.channels,
+                _ => 64,
+            };
+            let apply = &mut node.apply;
+            channels_ui(ui, "Selected", &mut node.channels, count, |ui, selected| {
+                // Together, on the next line if they won't fit on this one.
+                inline_block(ui, "apply", false, |ui| {
+                    power(ui, apply, "Apply selection");
+                    if *apply {
+                        ui.label("Selection applied");
+                    } else if selected < count as usize {
+                        let text = if selected == 0 { "Nothing selected" } else { "Selection pending" };
+                        ui.colored_label(ui.visuals().error_fg_color, text);
+                    }
+                });
             });
+            ui.add_space(4.0);
+            input_summary(ui, context.inputs);
         });
-        ui.add_space(4.0);
-        input_summary(ui, context.inputs);
     }
 }
 
@@ -258,10 +260,7 @@ mod tests {
             let shared = Some(&*shared);
             let mut harness = egui_kittest::Harness::builder().with_size([800.0, 600.0]).build_ui(|ui| {
                 graph.edit(id, &inputs, &THEMES[0].colours, shared, None, None, true, false, None, |node, context| {
-                    node.settings_ui(ui, context);
-                    if node.has_custom_ui() {
-                        node.custom_ui(ui, context);
-                    }
+                    node.gui_ui(ui, context);
                 });
             });
             harness.run_steps(2);
@@ -290,7 +289,7 @@ mod tests {
                 let stream = Continuous { channels: 16, sample_rate: 30000.0 };
                 let inputs = [Some(DataStream::Continuous(stream))];
                 graph.edit(id, &inputs, &THEMES[0].colours, None, None, None, false, false, None, |_, context| {
-                    selector.settings_ui(ui, context)
+                    selector.gui_ui(ui, context)
                 });
             },
             ChannelSelector { apply: false, channels: "1-4".into() },

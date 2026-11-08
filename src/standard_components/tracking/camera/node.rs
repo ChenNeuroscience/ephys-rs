@@ -151,68 +151,70 @@ impl Node<Edges> for Camera {
         }
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
-        settings_grid(ui, |ui| {
-            setting(ui, "Camera", |ui| source_ui(ui, &mut self.source));
-            match &mut self.source {
-                Source::Fake { address } => {
-                    setting(ui, "Address", |ui| ui.text_edit_singleline(address));
+    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+        crate::core::gui::node_window::standard(self, ui, context, |node, ui, context| {
+            settings_grid(ui, |ui| {
+                setting(ui, "Camera", |ui| source_ui(ui, &mut node.source));
+                match &mut node.source {
+                    Source::Fake { address } => {
+                        setting(ui, "Address", |ui| ui.text_edit_singleline(address));
+                    }
+                    Source::Spinnaker { serial, library } => {
+                        setting(ui, "Serial", |ui| ui.add(egui::TextEdit::singleline(serial).hint_text("first found")));
+                        setting(ui, "Library", |ui| {
+                            ui.add(egui::TextEdit::singleline(library).hint_text("found automatically"))
+                        });
+                    }
                 }
-                Source::Spinnaker { serial, library } => {
-                    setting(ui, "Serial", |ui| ui.add(egui::TextEdit::singleline(serial).hint_text("first found")));
-                    setting(ui, "Library", |ui| {
-                        ui.add(egui::TextEdit::singleline(library).hint_text("found automatically"))
-                    });
-                }
-            }
-            setting(ui, "Frame size", |ui| {
-                ui.horizontal(|ui| {
-                    ui.add(egui::DragValue::new(&mut self.settings.frame_size[0]).range(16..=8192).suffix(" px"));
-                    ui.label("×");
-                    ui.add(egui::DragValue::new(&mut self.settings.frame_size[1]).range(16..=8192).suffix(" px"));
-                })
-                .response
+                setting(ui, "Frame size", |ui| {
+                    ui.horizontal(|ui| {
+                        ui.add(egui::DragValue::new(&mut node.settings.frame_size[0]).range(16..=8192).suffix(" px"));
+                        ui.label("×");
+                        ui.add(egui::DragValue::new(&mut node.settings.frame_size[1]).range(16..=8192).suffix(" px"));
+                    })
+                    .response
+                });
             });
+            let pool = context.shared::<Pool<CaptureStats>>();
+            let display = pool.and_then(Pool::newest);
+            camera_settings_ui(ui, &mut node.settings, display.as_ref().map(|d| &d.status.controls));
+            ui.separator();
+            if !context.running {
+                ui.weak("Press Play to start capturing.");
+            }
+            let Some(display) = display else { return };
+            let theme = context.theme;
+            let status = &display.status;
+            match &status.state {
+                State::Starting if !context.running => {}
+                State::Starting => {
+                    ui.weak("Opening the camera…");
+                }
+                State::Running => {
+                    ui.label(&status.description);
+                }
+                State::Problem(problem) => {
+                    ui.label(RichText::new(problem).color(theme.warning));
+                }
+            }
+            let rate = if context.running { format!("{:.1} fps · ", status.fps) } else { String::new() };
+            ui.weak(format!(
+                "{rate}{} frames · {} dropped by the camera · {} not taken in time",
+                status.frames, status.camera_dropped, status.not_taken
+            ));
+            if let Some([w, h]) = status.last_wrong_size {
+                let [set_w, set_h] = node.settings.frame_size;
+                let message = format!(
+                    "{} frames skipped: they're {w}×{h}, not the {set_w}×{set_h} set. It'll change to match, unless \
+                     recording.",
+                    status.wrong_size
+                );
+                ui.label(RichText::new(message).color(theme.warning));
+            }
+            for warning in &status.warnings {
+                ui.label(RichText::new(warning).small().color(theme.warning));
+            }
         });
-        let pool = context.shared::<Pool<CaptureStats>>();
-        let display = pool.and_then(Pool::newest);
-        camera_settings_ui(ui, &mut self.settings, display.as_ref().map(|d| &d.status.controls));
-        ui.separator();
-        if !context.running {
-            ui.weak("Press Play to start capturing.");
-        }
-        let Some(display) = display else { return };
-        let theme = context.theme;
-        let status = &display.status;
-        match &status.state {
-            State::Starting if !context.running => {}
-            State::Starting => {
-                ui.weak("Opening the camera…");
-            }
-            State::Running => {
-                ui.label(&status.description);
-            }
-            State::Problem(problem) => {
-                ui.label(RichText::new(problem).color(theme.warning));
-            }
-        }
-        let rate = if context.running { format!("{:.1} fps · ", status.fps) } else { String::new() };
-        ui.weak(format!(
-            "{rate}{} frames · {} dropped by the camera · {} not taken in time",
-            status.frames, status.camera_dropped, status.not_taken
-        ));
-        if let Some([w, h]) = status.last_wrong_size {
-            let [set_w, set_h] = self.settings.frame_size;
-            let message = format!(
-                "{} frames skipped: they're {w}×{h}, not the {set_w}×{set_h} set. It'll change to match, unless \
-                 recording.",
-                status.wrong_size
-            );
-            ui.label(RichText::new(message).color(theme.warning));
-        }
-        for warning in &status.warnings {
-            ui.label(RichText::new(warning).small().color(theme.warning));
-        }
     }
 }
 

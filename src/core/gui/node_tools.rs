@@ -1,7 +1,6 @@
 //! The buttons every node has, for its window (see `NodeToolbar`): copying and pasting its settings; and in advanced
 //! mode, its settings menu (whether it shows in basic mode, and the pane's own options), enabling it, and deleting
-//! it. A node's default window has them beside its name; a view puts them
-//! where it likes, through its `UiContext`.
+//! it. The standard window has them beside its name; a view puts them where it likes, through its `UiContext`.
 
 use eframe::egui;
 

@@ -1,45 +1,31 @@
-//! A node's window, for a node without a UI of its own (see `Node::HAS_CUSTOM_UI`): its name (to edit), what it is,
-//! any problems, its settings, and what its ports carry and are connected to.
+//! The standard window, for a node to show (`Node::gui_ui`, as it does by default): its name (to edit), its toolbar,
+//! what it is, any problems, its settings, and what its ports carry and are connected to.
 
 use eframe::egui::{self, RichText};
 
-use super::node_tools::NodeTools;
-use super::{Event, style};
-use crate::core::engine::NodeToolbar;
-use crate::core::engine::{Graph, NodeId, NodesEnum, Port, PortRole, Resolved};
-use crate::core::theme::Colours;
+use super::style;
+use crate::core::engine::{Edges, Node, NodeState, PortRole, UiContext};
 
-/// The window of a node without a view of its own: what it is, its settings, and its connections. `live` is the run's
-/// pass triggers, while running, for its triggers to go to; `gui`, what its passes share with it (the run's, or the
-/// last run's, once it's stopped), and its state on the GUI's side.
-#[allow(clippy::too_many_arguments)]
-pub fn show<N: NodesEnum>(
+/// The standard window, with `settings` (what of the node's own there is to set, if anything) in the middle: disabled
+/// while recording, as settings are locked.
+pub fn standard<E: Edges, N: Node<E>>(
+    node: &mut N,
     ui: &mut egui::Ui,
-    graph: &mut Graph<N>,
-    resolved: &Resolved<N::Edges>,
-    colours: &Colours,
-    live: Option<&crate::core::pass_triggers::PassTriggers>,
-    gui: (Option<&crate::core::engine::SharedByNode>, Option<&crate::core::engine::UiStateCell>),
-    base_directory: Option<&crate::core::base_directory::Place>,
-    locked: bool,
-    advanced: bool,
-    id: NodeId,
-    events: &mut Vec<Event>,
+    context: &mut UiContext<E>,
+    settings: impl FnOnce(&mut N, &mut egui::Ui, &mut UiContext<E>),
 ) {
-    let Some(state) = resolved.get(&id) else { return };
-    let running = live.is_some();
-    let Some(mut tools) = NodeTools::new(graph, id, advanced, live, events) else { return };
-    let Some(entry) = graph.get_mut(id) else { return };
-    let info = entry.node.info();
-    // Its name, and its toolbar (see `node_tools`). Then its type.
+    let state = NodeState::of(node, context.inputs.to_vec());
+    let info = N::INFO;
+    let colours = context.theme;
+    // Its name, and its toolbar (see `NodeToolbar`). Then its type.
     ui.horizontal(|ui| {
         let width = (ui.available_width() - 160.0).clamp(80.0, 260.0);
-        let name = egui::TextEdit::singleline(&mut entry.label)
+        let name = egui::TextEdit::singleline(&mut *context.label)
             .font(egui::TextStyle::Heading)
             .hint_text("Name")
             .desired_width(width);
         ui.add(name).on_hover_text("Its name");
-        tools.toolbar(ui);
+        context.node_toolbar(ui);
     });
     ui.horizontal_wrapped(|ui| {
         let (chip, _) = ui.allocate_exact_size(egui::vec2(9.0, 9.0), egui::Sense::hover());
@@ -52,6 +38,7 @@ pub fn show<N: NodesEnum>(
     }
     ui.separator();
 
+    let locked = context.locked;
     if locked {
         ui.label(RichText::new("Settings are locked while recording.").color(colours.warning));
     }
@@ -65,21 +52,7 @@ pub fn show<N: NodesEnum>(
     let content_margin = egui::Margin { right: margin, ..Default::default() };
     let scrolling = egui::ScrollArea::vertical().auto_shrink([false, true]).content_margin(content_margin);
     scrolling.show(&mut area, |ui| {
-        ui.add_enabled_ui(!locked, |ui| {
-            let tools = Some(&mut tools as &mut dyn crate::core::engine::NodeToolbar);
-            graph.edit(
-                id,
-                &state.input_streams,
-                colours,
-                gui.0,
-                gui.1,
-                base_directory,
-                running,
-                locked,
-                tools,
-                |node: &mut N, context| node.settings_ui(ui, context),
-            );
-        });
+        ui.add_enabled_ui(!locked, |ui| settings(node, ui, context));
         ui.add_space(8.0);
         for (role, title) in [
             (PortRole::Input, "Inputs"),
@@ -92,14 +65,13 @@ pub fn show<N: NodesEnum>(
             }
             ui.label(RichText::new(title).small().weak());
             for index in 0..state.count(role) {
-                let port = Port { node: id, role, index };
                 // What it carries (or a setting's value); a control, whether it's connected.
                 let detail = match role {
                     PortRole::Input | PortRole::Output => {
                         state.summary(role, index).unwrap_or_else(|| "not connected".into())
                     }
                     PortRole::Setting => state.summary(role, index).unwrap_or_default(),
-                    PortRole::Control if graph.edges_from(port).next().is_some() => "connected".into(),
+                    PortRole::Control if context.control_connected(index) => "connected".into(),
                     PortRole::Control => "not connected".into(),
                 };
                 ui.horizontal(|ui| {
@@ -119,8 +91,9 @@ pub fn show<N: NodesEnum>(
 mod tests {
     use super::*;
     use crate::Nodes;
+    use crate::core::engine::Graph;
     use crate::core::engine::NodesEnum;
-    use crate::core::gui::docking::PANE_MARGIN;
+    use crate::core::gui::docking::{PANE_MARGIN, node_ui};
     use crate::standard_components::themes::THEMES;
 
     /// Stopped, what the last run shared is there to read, but there's no run for a trigger to go to.
@@ -132,25 +105,13 @@ mod tests {
             let index = Nodes::TYPES.iter().position(|t| t.name == "Spike Gain").unwrap();
             let id = graph.add(Nodes::create(index), [0.0, 0.0]);
             let resolved = graph.resolve();
-            let (triggers, shared) = (crate::core::pass_triggers::PassTriggers::default(), Default::default());
+            let triggers = crate::core::pass_triggers::PassTriggers::default();
             let mut harness = egui_kittest::Harness::builder().with_size([520.0, 500.0]).wgpu().build_ui_state(
                 move |ui, graph: &mut Graph<Nodes>| {
                     let mut events = Vec::new();
                     let live = running.then_some(&triggers);
                     let colours = &THEMES[0].colours;
-                    show(
-                        ui,
-                        graph,
-                        &resolved,
-                        colours,
-                        live,
-                        (Some(&shared), None),
-                        None,
-                        false,
-                        true,
-                        id,
-                        &mut events,
-                    );
+                    node_ui(ui, graph, &resolved, colours, live, None, None, None, false, true, id, &mut events);
                 },
                 graph,
             );
@@ -173,7 +134,7 @@ mod tests {
                 let mut events = Vec::new();
                 egui::Frame::new().inner_margin(PANE_MARGIN).show(ui, |ui| {
                     let colours = &THEMES[0].colours;
-                    show(ui, graph, &resolved, colours, None, (None, None), None, false, true, id, &mut events);
+                    node_ui(ui, graph, &resolved, colours, None, None, None, None, false, true, id, &mut events);
                 });
             },
             graph,

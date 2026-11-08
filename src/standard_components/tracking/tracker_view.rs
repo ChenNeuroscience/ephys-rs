@@ -137,7 +137,7 @@ impl Node<Edges> for TrackerView {
                       adjust. Through its controls, adjusts the camera and the position detector too. Without video, \
                       shows where the positions are.",
     };
-    const HAS_CUSTOM_UI: bool = true;
+    const WINDOW_SIZE: [f32; 2] = [820.0, 520.0];
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
     type State = Tracking;
@@ -241,13 +241,8 @@ impl Node<Edges> for TrackerView {
         });
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
-        let size = frame_size(context);
-        self.controls_ui(ui, context, size);
-    }
-
     /// Takes the path sent.
-    fn background(&mut self, context: &mut UiContext<Edges>) -> Option<std::time::Instant> {
+    fn gui_background(&mut self, context: &mut UiContext<Edges>) -> Option<std::time::Instant> {
         let shared = context.shared::<TrackerShared>()?;
         let path = &mut context.ui_state::<TrackerUi>().path;
         shared.path.receive_all(|updates| {
@@ -261,7 +256,7 @@ impl Node<Edges> for TrackerView {
         None
     }
 
-    fn custom_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
         // The node's toolbar, along the top.
         if context.tools.is_some() {
             ui.horizontal(|ui| context.node_toolbar(ui));
@@ -897,7 +892,7 @@ mod tests {
             let colours = &crate::standard_components::themes::THEMES[0].colours;
             let inputs = [None, None, None];
             graph.edit(view, &inputs, colours, Some(&by_node), Some(&ui_state), None, true, false, None, |n, c| {
-                _ = n.background(c)
+                _ = n.gui_background(c)
             });
             let state = ui_state.borrow();
             state.downcast_ref::<TrackerUi>().unwrap().path.iter().map(|p| p[0]).collect::<Vec<_>>()
@@ -1152,7 +1147,7 @@ mod tests {
                     true,
                     false,
                     None,
-                    |node, context| node.custom_ui(ui, context),
+                    |node, context| node.gui_ui(ui, context),
                 );
             },
             graph,
@@ -1218,7 +1213,7 @@ mod tests {
                     true,
                     false,
                     None,
-                    |node, context| node.custom_ui(ui, context),
+                    |node, context| node.gui_ui(ui, context),
                 );
             },
             graph,

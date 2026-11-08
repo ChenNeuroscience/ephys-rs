@@ -334,8 +334,10 @@ impl Node<Edges> for AlarmProcessor {
         }
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
-        alarms_ui(ui, &mut self.alarms, streams(context.inputs));
+    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+        crate::core::gui::node_window::standard(self, ui, context, |node, ui, context| {
+            alarms_ui(ui, &mut node.alarms, streams(context.inputs));
+        });
     }
 }
 

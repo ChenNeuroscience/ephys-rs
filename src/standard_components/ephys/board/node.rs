@@ -212,123 +212,125 @@ impl Node<Edges> for AcquisitionBoard {
         });
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
-        let theme = context.theme;
-        settings_grid(ui, |ui| {
-            setting(ui, "Board", |ui| source_ui(ui, &mut self.source));
-            match &mut self.source {
-                Source::Fake { address } => {
-                    setting(ui, "Address", |ui| ui.text_edit_singleline(address));
+    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+        crate::core::gui::node_window::standard(self, ui, context, |node, ui, context| {
+            let theme = context.theme;
+            settings_grid(ui, |ui| {
+                setting(ui, "Board", |ui| source_ui(ui, &mut node.source));
+                match &mut node.source {
+                    Source::Fake { address } => {
+                        setting(ui, "Address", |ui| ui.text_edit_singleline(address));
+                    }
+                    Source::OpalKelly { board, bitfile, library } => {
+                        setting(ui, "Kind", |ui| {
+                            egui::ComboBox::from_id_salt("rhythm")
+                                .selected_text(board.name())
+                                .show_ui(ui, |ui| {
+                                    for kind in [OpalKellyKind::OpenEphys, OpalKellyKind::IntanRhdUsb] {
+                                        ui.selectable_value(board, kind, kind.name());
+                                    }
+                                })
+                                .response
+                        });
+                        let path = |ui: &mut egui::Ui, value: &mut String| {
+                            ui.add(egui::TextEdit::singleline(value).hint_text("found automatically"))
+                        };
+                        setting(ui, "Bitfile", |ui| path(ui, bitfile));
+                        setting(ui, "Library", |ui| path(ui, library));
+                    }
+                    Source::Oni { library } => {
+                        setting(ui, "Library", |ui| {
+                            ui.add(egui::TextEdit::singleline(library).hint_text("found automatically"))
+                        });
+                    }
                 }
-                Source::OpalKelly { board, bitfile, library } => {
-                    setting(ui, "Kind", |ui| {
-                        egui::ComboBox::from_id_salt("rhythm")
-                            .selected_text(board.name())
-                            .show_ui(ui, |ui| {
-                                for kind in [OpalKellyKind::OpenEphys, OpalKellyKind::IntanRhdUsb] {
-                                    ui.selectable_value(board, kind, kind.name());
-                                }
-                            })
-                            .response
-                    });
-                    let path = |ui: &mut egui::Ui, value: &mut String| {
-                        ui.add(egui::TextEdit::singleline(value).hint_text("found automatically"))
-                    };
-                    setting(ui, "Bitfile", |ui| path(ui, bitfile));
-                    setting(ui, "Library", |ui| path(ui, library));
-                }
-                Source::Oni { library } => {
-                    setting(ui, "Library", |ui| {
-                        ui.add(egui::TextEdit::singleline(library).hint_text("found automatically"))
-                    });
-                }
-            }
-            setting(ui, "Sample rate", |ui| {
-                egui::ComboBox::from_id_salt("rate")
-                    .selected_text(format!("{} Hz", self.sample_rate))
-                    .show_ui(ui, |ui| {
-                        for rate in SAMPLE_RATES {
-                            ui.selectable_value(&mut self.sample_rate, rate, format!("{rate} Hz"));
-                        }
+                setting(ui, "Sample rate", |ui| {
+                    egui::ComboBox::from_id_salt("rate")
+                        .selected_text(format!("{} Hz", node.sample_rate))
+                        .show_ui(ui, |ui| {
+                            for rate in SAMPLE_RATES {
+                                ui.selectable_value(&mut node.sample_rate, rate, format!("{rate} Hz"));
+                            }
+                        })
+                        .response
+                });
+            });
+
+            ui.add_space(6.0);
+            ui.label(RichText::new("Headstages").strong());
+            headstages_ui(ui, &mut node.headstages);
+            detect_ui(ui, node, theme);
+
+            ui.add_space(6.0);
+            ui.checkbox(&mut node.aux, format!("Auxiliary inputs ({AUX_PER_HEADSTAGE} per headstage)"));
+            ui.checkbox(&mut node.adc, format!("Analogue inputs ({ADC_CHANNELS})"));
+
+            ui.add_space(6.0);
+            ui.label(RichText::new("Bandwidth").strong());
+            named_settings_grid(ui, "bandwidth", |ui| {
+                let upper = node.bandwidth.upper_hz;
+                setting(ui, "Low cut", |ui| ui.add(hz(&mut node.bandwidth.lower_hz, 0.1..=upper)));
+                setting(ui, "High cut", |ui| ui.add(hz(&mut node.bandwidth.upper_hz, 100.0..=20000.0)));
+                setting(ui, "DSP high-pass", |ui| {
+                    ui.horizontal(|ui| {
+                        let mut on = node.bandwidth.dsp_hz.is_some();
+                        ui.checkbox(&mut on, "on");
+                        node.bandwidth.dsp_hz = on.then(|| {
+                            let mut cutoff = node.bandwidth.dsp_hz.unwrap_or(0.5);
+                            ui.add(hz(&mut cutoff, 0.01..=1000.0));
+                            cutoff
+                        });
                     })
                     .response
+                });
             });
+
+            ui.separator();
+            if !context.running {
+                ui.weak("Press Play to start acquiring.");
+            }
+            let pool = context.shared::<Pool<BoardDisplay>>();
+            let Some(display) = pool.and_then(Pool::newest) else { return };
+            let status = &display.status;
+            match &status.state {
+                State::Starting if !context.running => {}
+                State::Starting => {
+                    ui.weak("Opening the board…");
+                }
+                State::Running => {
+                    ui.label(status.info.as_ref().map_or("", |i| i.description.as_str()));
+                }
+                State::Problem(problem) => {
+                    ui.label(RichText::new(problem).color(theme.warning));
+                }
+            }
+            let rate = if context.running { format!("{:.0} samples/s · ", status.rate) } else { String::new() };
+            ui.weak(format!(
+                "{rate}{} samples · {} dropped by the board · {} not taken in time",
+                status.samples, status.board_dropped, status.not_taken
+            ));
+            if status.mismatched > 0
+                && let Some(info) = &status.info
+            {
+                let message = format!(
+                    "{} samples skipped: the board has headstages {}, not the {} set.",
+                    status.mismatched,
+                    Headstage::describe(&info.headstages),
+                    Headstage::describe(&node.headstages)
+                );
+                ui.label(RichText::new(message).color(theme.warning));
+                if ui.button("Use the board's headstages").clicked() {
+                    node.headstages = info.headstages.clone();
+                }
+            }
+            if status.lost_events > 0 {
+                let message = format!("{} digital input changes lost (too many in a pass)", status.lost_events);
+                ui.label(RichText::new(message).color(theme.warning));
+            }
+            for warning in &status.warnings {
+                ui.label(RichText::new(warning).small().color(theme.warning));
+            }
         });
-
-        ui.add_space(6.0);
-        ui.label(RichText::new("Headstages").strong());
-        headstages_ui(ui, &mut self.headstages);
-        detect_ui(ui, self, theme);
-
-        ui.add_space(6.0);
-        ui.checkbox(&mut self.aux, format!("Auxiliary inputs ({AUX_PER_HEADSTAGE} per headstage)"));
-        ui.checkbox(&mut self.adc, format!("Analogue inputs ({ADC_CHANNELS})"));
-
-        ui.add_space(6.0);
-        ui.label(RichText::new("Bandwidth").strong());
-        named_settings_grid(ui, "bandwidth", |ui| {
-            let upper = self.bandwidth.upper_hz;
-            setting(ui, "Low cut", |ui| ui.add(hz(&mut self.bandwidth.lower_hz, 0.1..=upper)));
-            setting(ui, "High cut", |ui| ui.add(hz(&mut self.bandwidth.upper_hz, 100.0..=20000.0)));
-            setting(ui, "DSP high-pass", |ui| {
-                ui.horizontal(|ui| {
-                    let mut on = self.bandwidth.dsp_hz.is_some();
-                    ui.checkbox(&mut on, "on");
-                    self.bandwidth.dsp_hz = on.then(|| {
-                        let mut cutoff = self.bandwidth.dsp_hz.unwrap_or(0.5);
-                        ui.add(hz(&mut cutoff, 0.01..=1000.0));
-                        cutoff
-                    });
-                })
-                .response
-            });
-        });
-
-        ui.separator();
-        if !context.running {
-            ui.weak("Press Play to start acquiring.");
-        }
-        let pool = context.shared::<Pool<BoardDisplay>>();
-        let Some(display) = pool.and_then(Pool::newest) else { return };
-        let status = &display.status;
-        match &status.state {
-            State::Starting if !context.running => {}
-            State::Starting => {
-                ui.weak("Opening the board…");
-            }
-            State::Running => {
-                ui.label(status.info.as_ref().map_or("", |i| i.description.as_str()));
-            }
-            State::Problem(problem) => {
-                ui.label(RichText::new(problem).color(theme.warning));
-            }
-        }
-        let rate = if context.running { format!("{:.0} samples/s · ", status.rate) } else { String::new() };
-        ui.weak(format!(
-            "{rate}{} samples · {} dropped by the board · {} not taken in time",
-            status.samples, status.board_dropped, status.not_taken
-        ));
-        if status.mismatched > 0
-            && let Some(info) = &status.info
-        {
-            let message = format!(
-                "{} samples skipped: the board has headstages {}, not the {} set.",
-                status.mismatched,
-                Headstage::describe(&info.headstages),
-                Headstage::describe(&self.headstages)
-            );
-            ui.label(RichText::new(message).color(theme.warning));
-            if ui.button("Use the board's headstages").clicked() {
-                self.headstages = info.headstages.clone();
-            }
-        }
-        if status.lost_events > 0 {
-            let message = format!("{} digital input changes lost (too many in a pass)", status.lost_events);
-            ui.label(RichText::new(message).color(theme.warning));
-        }
-        for warning in &status.warnings {
-            ui.label(RichText::new(warning).small().color(theme.warning));
-        }
     }
 }
 
@@ -482,7 +484,7 @@ mod tests {
                     true,
                     false,
                     None,
-                    |node, context| node.settings_ui(ui, context),
+                    |node, context| node.gui_ui(ui, context),
                 );
             },
             graph,

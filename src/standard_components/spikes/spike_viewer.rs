@@ -174,7 +174,7 @@ impl Node<Edges> for SpikeViewer {
         description: "Each group's (tetrode's, say) recent spike waveforms overlaid, a plot per channel, with the \
                       thresholds: set them, and the gains, here.",
     };
-    const HAS_CUSTOM_UI: bool = true;
+    const WINDOW_SIZE: [f32; 2] = [820.0, 520.0];
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
     fn inputs(&self) -> Vec<Input<Edges>> {
@@ -261,12 +261,7 @@ impl Node<Edges> for SpikeViewer {
         });
     }
 
-    /// Nothing more than its view has.
-    fn settings_ui(&mut self, ui: &mut egui::Ui, _context: &mut UiContext<Edges>) {
-        ui.weak("Set in its view: the plots' height, and the thresholds and gains it's connected to.");
-    }
-
-    fn custom_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
         let locked = context.locked;
         let Some(DataStream::Spikes(stream)) = context.inputs[0] else {
             return preview::unconnected(ui, context.theme, "Connect spikes to view them");

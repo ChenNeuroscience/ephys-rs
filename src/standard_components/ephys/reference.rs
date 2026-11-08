@@ -461,49 +461,52 @@ impl Node<Edges> for Reference {
         warnings
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
-        let count = match context.inputs[0] {
-            Some(DataStream::Continuous(c)) => c.channels,
-            _ => 64,
-        };
-        let mut remove = None;
-        for index in 0..self.list.len() {
-            let reference = &mut self.list[index];
-            let title = RichText::new(format!("Reference {}: {}", index + 1, reference.summary()))
-                .strong()
-                .color(reference_colour(index));
-            ui.push_id(reference.id, |ui| {
-                // The line down its left, in its colour, to hold together all that's its.
-                ui.visuals_mut().widgets.noninteractive.bg_stroke = egui::Stroke::new(2.0, reference_colour(index));
-                let section = egui::CollapsingHeader::new(title).default_open(true).show(ui, |ui| {
-                    settings_grid(ui, |ui| {
-                        setting(ui, "Method", |ui| method_ui(ui, &mut reference.method));
+    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+        crate::core::gui::node_window::standard(self, ui, context, |node, ui, context| {
+            let count = match context.inputs[0] {
+                Some(DataStream::Continuous(c)) => c.channels,
+                _ => 64,
+            };
+            let mut remove = None;
+            for index in 0..node.list.len() {
+                let reference = &mut node.list[index];
+                let title = RichText::new(format!("Reference {}: {}", index + 1, reference.summary()))
+                    .strong()
+                    .color(reference_colour(index));
+                ui.push_id(reference.id, |ui| {
+                    // The line down its left, in its colour, to hold together all that's its.
+                    ui.visuals_mut().widgets.noninteractive.bg_stroke = egui::Stroke::new(2.0, reference_colour(index));
+                    let section = egui::CollapsingHeader::new(title).default_open(true).show(ui, |ui| {
+                        settings_grid(ui, |ui| {
+                            setting(ui, "Method", |ui| method_ui(ui, &mut reference.method));
+                        });
+                        ui.add_space(4.0);
+                        channels_ui(ui, "Made from", &mut reference.channels, count, |_, _| {});
                     });
-                    ui.add_space(4.0);
-                    channels_ui(ui, "Made from", &mut reference.channels, count, |_, _| {});
+                    // Right after its title, there whether or not it's open.
+                    let title = section.header_response.rect;
+                    let place = title.with_min_x(title.right() + 4.0).with_max_x(ui.max_rect().right());
+                    let layout = egui::Layout::left_to_right(egui::Align::Center);
+                    let mut buttons = ui.new_child(egui::UiBuilder::new().max_rect(place).layout(layout));
+                    let label = format!("Delete reference {}", index + 1);
+                    if small_toggle_button(&mut buttons, Icon::Delete, &label, "Delete this reference", false).clicked()
+                    {
+                        remove = Some(index);
+                    }
                 });
-                // Right after its title, there whether or not it's open.
-                let title = section.header_response.rect;
-                let place = title.with_min_x(title.right() + 4.0).with_max_x(ui.max_rect().right());
-                let layout = egui::Layout::left_to_right(egui::Align::Center);
-                let mut buttons = ui.new_child(egui::UiBuilder::new().max_rect(place).layout(layout));
-                let label = format!("Delete reference {}", index + 1);
-                if small_toggle_button(&mut buttons, Icon::Delete, &label, "Delete this reference", false).clicked() {
-                    remove = Some(index);
-                }
-            });
-            ui.add_space(REFERENCES_GAP);
-        }
-        if let Some(index) = remove {
-            self.list.remove(index);
-        }
-        if ui.button("Add reference").on_hover_text("Channels using none will use it").clicked() {
-            self.add(count);
-        }
-        ui.add_space(6.0);
-        uses_ui(ui, self, count);
-        ui.add_space(4.0);
-        input_summary(ui, context.inputs);
+                ui.add_space(REFERENCES_GAP);
+            }
+            if let Some(index) = remove {
+                node.list.remove(index);
+            }
+            if ui.button("Add reference").on_hover_text("Channels using none will use it").clicked() {
+                node.add(count);
+            }
+            ui.add_space(6.0);
+            uses_ui(ui, node, count);
+            ui.add_space(4.0);
+            input_summary(ui, context.inputs);
+        });
     }
 }
 
@@ -830,7 +833,7 @@ mod tests {
         let mut harness = egui_kittest::Harness::builder().with_size([360.0, 300.0]).wgpu().build_ui_state(
             |ui, graph: &mut Graph<Nodes>| {
                 graph.edit(id, &inputs, &THEMES[0].colours, None, None, None, false, false, None, |node, context| {
-                    node.settings_ui(ui, context)
+                    node.gui_ui(ui, context)
                 });
             },
             graph,

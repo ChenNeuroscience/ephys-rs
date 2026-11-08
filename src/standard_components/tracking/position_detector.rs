@@ -122,12 +122,14 @@ impl Node<Edges> for PositionDetector {
         }
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
-        let size = match context.inputs[0] {
-            Some(DataStream::Video(video)) => [video.width as f32, video.height as f32],
-            _ => [640.0, 480.0],
-        };
-        all_detection_ui(ui, &mut self.detection, size);
+    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+        crate::core::gui::node_window::standard(self, ui, context, |node, ui, context| {
+            let size = match context.inputs[0] {
+                Some(DataStream::Video(video)) => [video.width as f32, video.height as f32],
+                _ => [640.0, 480.0],
+            };
+            all_detection_ui(ui, &mut node.detection, size);
+        });
     }
 }
 

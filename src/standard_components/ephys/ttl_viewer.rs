@@ -10,7 +10,7 @@ use crate::core::engine::{Category, EdgeType, Input, Node, NodeInfo, Output, Pas
 use crate::standard_components::ephys::Events;
 use crate::standard_components::pool::Pool;
 use crate::standard_components::preview;
-use crate::standard_components::widgets::{TIME_AXIS_HEIGHT, require_input, setting, settings_grid, time_axis_ui};
+use crate::standard_components::widgets::{TIME_AXIS_HEIGHT, require_input, time_axis_ui};
 use crate::{Buffer, DataStream, Edges, Kind};
 
 /// The most changes kept, however many come.
@@ -95,7 +95,7 @@ impl Node<Edges> for TtlViewer {
         description: "Digital inputs' levels over time, a row per line, with how many times each has gone up since \
                       acquisition, and recording, started.",
     };
-    const HAS_CUSTOM_UI: bool = true;
+    const WINDOW_SIZE: [f32; 2] = [820.0, 520.0];
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
     fn inputs(&self) -> Vec<Input<Edges>> {
@@ -175,15 +175,7 @@ impl Node<Edges> for TtlViewer {
         });
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, _context: &mut UiContext<Edges>) {
-        settings_grid(ui, |ui| {
-            setting(ui, "Span", |ui| {
-                ui.add(egui::DragValue::new(&mut self.span).range(0.1..=LONGEST).speed(0.05).suffix(" s"))
-            });
-        });
-    }
-
-    fn custom_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
         let locked = context.locked;
         ui.horizontal(|ui| {
             ui.add_enabled_ui(!locked, |ui| {
@@ -340,7 +332,7 @@ mod tests {
                     true,
                     false,
                     None,
-                    |node, context| node.custom_ui(ui, context),
+                    |node, context| node.gui_ui(ui, context),
                 );
             },
             graph,

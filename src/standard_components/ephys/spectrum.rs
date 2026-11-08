@@ -166,28 +166,30 @@ impl Node<Edges> for Spectrum {
         }
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
-        let rate = match context.inputs[0] {
-            Some(DataStream::Continuous(c)) => c.sample_rate,
-            _ => 30000.0,
-        };
-        let nyquist = rate / Analysis::factor(rate) as f32 / 2.0;
-        settings_grid(ui, |ui| {
-            setting(ui, "Band", |ui| {
-                ui.horizontal(|ui| {
-                    let [low, high] = &mut self.band;
-                    ui.add(egui::DragValue::new(low).range(0.0..=nyquist).speed(0.1)).on_hover_text("From (Hz)");
-                    ui.label("–");
-                    ui.add(egui::DragValue::new(high).range(0.5..=nyquist).speed(0.1).suffix(" Hz"))
-                        .on_hover_text("To (Hz)");
-                    if *high <= *low {
-                        *high = (*low + 0.5).min(nyquist);
-                    }
-                })
-                .response
+    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+        crate::core::gui::node_window::standard(self, ui, context, |node, ui, context| {
+            let rate = match context.inputs[0] {
+                Some(DataStream::Continuous(c)) => c.sample_rate,
+                _ => 30000.0,
+            };
+            let nyquist = rate / Analysis::factor(rate) as f32 / 2.0;
+            settings_grid(ui, |ui| {
+                setting(ui, "Band", |ui| {
+                    ui.horizontal(|ui| {
+                        let [low, high] = &mut node.band;
+                        ui.add(egui::DragValue::new(low).range(0.0..=nyquist).speed(0.1)).on_hover_text("From (Hz)");
+                        ui.label("–");
+                        ui.add(egui::DragValue::new(high).range(0.5..=nyquist).speed(0.1).suffix(" Hz"))
+                            .on_hover_text("To (Hz)");
+                        if *high <= *low {
+                            *high = (*low + 0.5).min(nyquist);
+                        }
+                    })
+                    .response
+                });
             });
+            input_summary(ui, context.inputs);
         });
-        input_summary(ui, context.inputs);
     }
 }
 

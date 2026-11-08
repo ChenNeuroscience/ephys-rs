@@ -34,7 +34,7 @@ use crate::standard_components::pool::Pool;
 use crate::standard_components::preview;
 use crate::standard_components::spikes::{Channels, GainScope, Gains};
 use crate::standard_components::widgets::{
-    TIME_AXIS_HEIGHT, inline_block, open_settings_button, require_input, setting, settings_grid, time_axis_ui,
+    TIME_AXIS_HEIGHT, inline_block, open_settings_button, require_input, time_axis_ui,
 };
 use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
 
@@ -187,7 +187,7 @@ impl Node<Edges> for LfpViewer {
                       (theta, say). Sets an Continuous Gain's gains, a Channel Selector's channels and a Reference's \
                       reference channels.",
     };
-    const HAS_CUSTOM_UI: bool = true;
+    const WINDOW_SIZE: [f32; 2] = [820.0, 520.0];
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
     fn inputs(&self) -> Vec<Input<Edges>> {
@@ -282,14 +282,7 @@ impl Node<Edges> for LfpViewer {
         ]
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, _context: &mut UiContext<Edges>) {
-        settings_grid(ui, |ui| {
-            setting(ui, "Span", |ui| ui.add(self.span_field()));
-            setting(ui, "Scale", |ui| ui.add(self.scale_field()));
-        });
-    }
-
-    fn custom_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
         let locked = context.locked;
         let Some(DataStream::Continuous(stream)) = context.inputs[0] else {
             return preview::unconnected(ui, context.theme, "Connect a continuous data stream to view it");

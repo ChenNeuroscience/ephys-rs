@@ -13,7 +13,7 @@ use super::frame_times::FrameTimes;
 use super::icons::Icon;
 use super::node_tools::NodeTools;
 use super::style;
-use super::{Event, basic, node_window, toolbar};
+use super::{Event, basic, toolbar};
 use crate::core::annotation::{Annotations, AnnotationsEnum};
 use crate::core::engine::{Graph, NodeId, NodesEnum, Resolved, Runner, Snapshot};
 use crate::core::layout::{Layout, Mode, Pane, hide_tile};
@@ -69,15 +69,15 @@ pub struct Panes<'a, N: NodesEnum, A: AnnotationsEnum> {
     pub timings: &'a mut Vec<(String, f32)>,
 }
 
-/// A node's window content: its own view if it has one (which shows its settings as it likes), otherwise the
-/// default window (`node_window`). It finds what its passes share with it in `shared`: the run's, or the last run's.
+/// A node's window content (see `Node::gui_ui`), with its toolbar. It finds what its passes share with it in `shared`:
+/// the run's, or the last run's. Its triggers need a run to go to, while there is one (`live`).
 #[allow(clippy::too_many_arguments)]
 pub fn node_ui<N: NodesEnum>(
     ui: &mut egui::Ui,
     graph: &mut Graph<N>,
     resolved: &Resolved<N::Edges>,
     colours: &Colours,
-    runner: Option<&Runner<N>>,
+    live: Option<&crate::core::pass_triggers::PassTriggers>,
     shared: Option<&crate::core::engine::SharedByNode>,
     ui_state: Option<&crate::core::engine::UiStateCell>,
     base_directory: Option<&crate::core::base_directory::Place>,
@@ -87,31 +87,22 @@ pub fn node_ui<N: NodesEnum>(
     events: &mut Vec<Event>,
 ) {
     let Some(state) = resolved.get(&id) else { return };
-    let has_custom_ui = graph.get(id).is_some_and(|e| e.node.has_custom_ui());
-    let running = runner.is_some();
-    // A view stays live while recording (changes it makes to settings are undone: see `App::lock`). It finds what
-    // its passes share with it in `shared`; triggers need a run, to go to.
-    let live = runner.map(|r| r.pass_triggers());
-    if has_custom_ui {
-        let Some(mut tools) = NodeTools::new(graph, id, advanced, live, &mut *events) else { return };
-        let tools = Some(&mut tools as &mut dyn crate::core::engine::NodeToolbar);
-        let streams = &state.input_streams;
-        graph.edit(
-            id,
-            streams,
-            colours,
-            shared,
-            ui_state,
-            base_directory,
-            running,
-            locked,
-            tools,
-            |node: &mut N, context| node.custom_ui(ui, context),
-        );
-    } else {
-        let gui = (shared, ui_state);
-        node_window::show(ui, graph, resolved, colours, live, gui, base_directory, locked, advanced, id, events);
-    }
+    let Some(mut tools) = NodeTools::new(graph, id, advanced, live, events) else { return };
+    let tools = Some(&mut tools as &mut dyn crate::core::engine::NodeToolbar);
+    let (streams, running) = (&state.input_streams, live.is_some());
+    // A view stays live while recording (changes it makes to settings are undone: see `App::lock`).
+    graph.edit(
+        id,
+        streams,
+        colours,
+        shared,
+        ui_state,
+        base_directory,
+        running,
+        locked,
+        tools,
+        |node: &mut N, context| node.gui_ui(ui, context),
+    );
 }
 
 /// What was clicked in a floating window's header.
@@ -285,9 +276,10 @@ impl<N: NodesEnum, A: AnnotationsEnum> Panes<'_, N, A> {
                     (&mut *self.graph, self.resolved, self.colours, self.runner, self.locked);
                 let (advanced, base, shared) = (self.mode == Mode::Advanced, self.base_directory, self.shared);
                 let ui_state = self.ui_states.get(graph, id);
+                let live = runner.map(|r| r.pass_triggers());
                 padded(ui, |ui| {
                     let events = &mut *self.events;
-                    node_ui(ui, graph, resolved, colours, runner, shared, ui_state, base, locked, advanced, id, events)
+                    node_ui(ui, graph, resolved, colours, live, shared, ui_state, base, locked, advanced, id, events)
                 })
             }
         }

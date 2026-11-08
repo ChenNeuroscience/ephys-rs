@@ -40,7 +40,7 @@ pub struct PoolStatus {
 }
 
 /// Which way data goes between a node's thread and its passes, or whether it's from the GUI's side instead (the
-/// node's work on the GUI's thread: see `Node::background`).
+/// node's work on the GUI's thread: see `Node::gui_background`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Flow {
     ToPasses,

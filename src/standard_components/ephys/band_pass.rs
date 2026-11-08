@@ -99,17 +99,19 @@ impl Node<Edges> for BandPassFilter {
         warnings
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
-        settings_grid(ui, |ui| {
-            setting(ui, "Low cut-off", |ui| {
-                ui.add(egui::DragValue::new(&mut self.low_hz).range(0.1..=20000.0).speed(1.0).suffix(" Hz"))
+    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+        crate::core::gui::node_window::standard(self, ui, context, |node, ui, context| {
+            settings_grid(ui, |ui| {
+                setting(ui, "Low cut-off", |ui| {
+                    ui.add(egui::DragValue::new(&mut node.low_hz).range(0.1..=20000.0).speed(1.0).suffix(" Hz"))
+                });
+                setting(ui, "High cut-off", |ui| {
+                    ui.add(egui::DragValue::new(&mut node.high_hz).range(1.0..=20000.0).speed(10.0).suffix(" Hz"))
+                });
+                setting(ui, "Order", |ui| ui.add(egui::DragValue::new(&mut node.order).range(1..=8)));
             });
-            setting(ui, "High cut-off", |ui| {
-                ui.add(egui::DragValue::new(&mut self.high_hz).range(1.0..=20000.0).speed(10.0).suffix(" Hz"))
-            });
-            setting(ui, "Order", |ui| ui.add(egui::DragValue::new(&mut self.order).range(1..=8)));
+            input_summary(ui, context.inputs);
         });
-        input_summary(ui, context.inputs);
     }
 }
 

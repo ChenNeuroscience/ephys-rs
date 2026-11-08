@@ -1239,7 +1239,7 @@ impl Node<Edges> for RunCommand {
         description: "Runs a program on files, in a terminal: by hand, or on files sent to it (by a writer, after recording).",
     };
 
-    const HAS_CUSTOM_UI: bool = true;
+    const WINDOW_SIZE: [f32; 2] = [820.0, 520.0];
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
     fn outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {
@@ -1277,11 +1277,7 @@ impl Node<Edges> for RunCommand {
         }
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
-        self.window(ui, context);
-    }
-
-    fn custom_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
         self.window(ui, context);
     }
 }
@@ -1798,7 +1794,7 @@ mod tests {
         let mut harness = egui_kittest::Harness::builder().with_size([560.0, 580.0]).wgpu().build_ui_state(
             move |ui, graph: &mut Graph<Nodes>| {
                 graph.edit(id, &inputs, &THEMES[0].colours, None, None, None, false, false, None, |node, context| {
-                    node.custom_ui(ui, context)
+                    node.gui_ui(ui, context)
                 });
             },
             graph,
@@ -1880,7 +1876,7 @@ mod tests {
                         false,
                         false,
                         None,
-                        |node, context| node.custom_ui(ui, context),
+                        |node, context| node.gui_ui(ui, context),
                     );
                 },
                 graph,

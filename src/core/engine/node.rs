@@ -147,14 +147,14 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     /// usually, or `()` for nothing. See `crate::core::engine::Shared`.
     type Shared: Shared + Default;
 
-    /// Its state on the GUI's side: what its window and its work on the GUI's thread (`background`) keep (what's been
+    /// Its state on the GUI's side: what its window and its work on the GUI's thread (`gui_background`) keep (what's been
     /// sent them, say), or `()` for nothing. The app keeps it while it has the node, whether its window's shown or not;
     /// it isn't saved. See `UiContext::ui_state`.
     type UiState: Default + 'static;
 
-    /// Whether the node's window is a UI of its own (`custom_ui`: a viewer's, say), rather than the standard one: its
-    /// settings (`settings_ui`), with its name, warnings and ports.
-    const HAS_CUSTOM_UI: bool = false;
+    /// The size its window opens at, floating, by default: a view of its own might want more room than the standard
+    /// window.
+    const WINDOW_SIZE: [f32; 2] = [340.0, 460.0];
 
     /// Whether it's listed in the basic view, unless that's been set for it (see `NodeEntry::basic`). By convention,
     /// nodes with a view are; but it's up to each.
@@ -184,17 +184,20 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
         Vec::new()
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<E>);
-
-    /// Its window, if it has a UI of its own (see `HAS_CUSTOM_UI`).
-    fn custom_ui(&mut self, _ui: &mut egui::Ui, _context: &mut UiContext<E>) {}
+    /// Its window. By default the standard one, with nothing of its own to set: its name, what it is, any problems, and its
+    /// ports (see `crate::core::gui::node_window::standard`). A node with settings to set there shows them in the
+    /// standard window, with `standard(self, ui, context, |node, ui, context| ...)`; a view of its own (a viewer's, say)
+    /// draws whatever it likes.
+    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<E>) {
+        crate::core::gui::node_window::standard(self, ui, context, |_, _, _| {});
+    }
 
     /// Its work on the GUI's thread that isn't drawing, whether its window's shown or not: taking what its passes send
     /// (see `Shared`), say, or timing something. The app calls it every time round, before each frame, and while its
     /// window's hidden (minimised, say) whenever it's woken. It returns when it next needs calling, if it does, and the
     /// app's woken then. It can edit the node's settings, and what its controls see, as a window does. By default,
     /// nothing.
-    fn background(&mut self, _context: &mut UiContext<E>) -> Option<Instant> {
+    fn gui_background(&mut self, _context: &mut UiContext<E>) -> Option<Instant> {
         None
     }
 

@@ -140,7 +140,7 @@ pane shows in each mode is up to it (`UiContext::advanced`). Where panes go when
 default layout, a column on the left and two groups one above another on the right.
 
 Each time round the app does what isn't drawing first, in `App::logic` (eframe's `App::logic`): taking what's come from
-runs and nodes' threads, the nodes' work on the GUI's thread (`Node::background`, with each node's state on the GUI's
+runs and nodes' threads, the nodes' work on the GUI's thread (`Node::gui_background`, with each node's state on the GUI's
 side, `Node::UiState`), stopping what's unattended, and keeping the run up to date with the graph. eframe calls it before
 each frame, and while the window's hidden (minimised, say) whenever the app's woken (`request_repaint`, as a run does
 every quarter second), without drawing; then, if the window's shown, the app draws (`App::show`).

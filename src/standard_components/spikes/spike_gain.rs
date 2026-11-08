@@ -155,94 +155,101 @@ impl Node<Edges> for SpikeGain {
         }
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
-        let channels = match context.inputs[0] {
-            Some(DataStream::Spikes(s)) => Channels { count: s.channels as usize, group_size: s.group_size as usize },
-            _ => Channels { count: 0, group_size: 4 },
-        };
-        // The gains: how they're shared out, then each one.
-        ui.strong("Gains");
-        named_settings_grid(ui, "gain scope", |ui| {
-            setting(ui, "One for", |ui| {
-                let mut scope = self.gains.scope;
-                let response = egui::ComboBox::from_id_salt("gain scope")
-                    .selected_text(scope.name(channels.group_size))
-                    .show_ui(ui, |ui| {
-                        for option in GainScope::ALL {
-                            ui.selectable_value(&mut scope, option, option.name(channels.group_size));
-                        }
-                    })
-                    .response
-                    .on_hover_text("Whether the channels share a gain: all of them, each group's, or none");
-                if scope != self.gains.scope {
-                    self.gains.set_scope(scope, channels);
+    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+        crate::core::gui::node_window::standard(self, ui, context, |node, ui, context| {
+            let channels = match context.inputs[0] {
+                Some(DataStream::Spikes(s)) => {
+                    Channels { count: s.channels as usize, group_size: s.group_size as usize }
                 }
-                response
-            });
-        });
-        if channels.count > 0 {
-            let units = self.gains.units(channels);
-            let kind = match self.gains.scope {
-                GainScope::All => "All",
-                GainScope::Group => "Group",
-                GainScope::Channel => "Channel",
+                _ => Channels { count: 0, group_size: 4 },
             };
-            egui::ScrollArea::vertical().max_height(260.0).id_salt("gains").show(ui, |ui| {
-                egui::Grid::new("gains").num_columns(3).striped(true).show(ui, |ui| {
-                    ui.strong(kind);
-                    ui.strong("Gain");
-                    ui.strong("Fits").on_hover_text("The µV that reach the output range, at this gain");
-                    ui.end_row();
-                    for (index, unit) in units.iter().enumerate() {
-                        let name = match self.gains.scope {
-                            GainScope::All => format!("1–{}", channels.count),
-                            GainScope::Group => format!("{} ({}–{})", index + 1, unit.start + 1, unit.end),
-                            GainScope::Channel => format!("{}", unit.start + 1),
-                        };
-                        ui.label(name);
-                        let mut gain = self.gains.get(unit.start);
-                        let speed = gain * 0.01;
-                        let field =
-                            egui::DragValue::new(&mut gain).range(1e-6..=1e6).speed(speed).max_decimals(3).prefix("×");
-                        if ui.add(field).changed() {
-                            self.gains.set(unit.start, gain, channels);
-                        }
-                        ui.label(format!("±{:.0} µV", self.gains.range_uv(unit.start)));
-                        ui.end_row();
+            // The gains: how they're shared out, then each one.
+            ui.strong("Gains");
+            named_settings_grid(ui, "gain scope", |ui| {
+                setting(ui, "One for", |ui| {
+                    let mut scope = node.gains.scope;
+                    let response = egui::ComboBox::from_id_salt("gain scope")
+                        .selected_text(scope.name(channels.group_size))
+                        .show_ui(ui, |ui| {
+                            for option in GainScope::ALL {
+                                ui.selectable_value(&mut scope, option, option.name(channels.group_size));
+                            }
+                        })
+                        .response
+                        .on_hover_text("Whether the channels share a gain: all of them, each group's, or none");
+                    if scope != node.gains.scope {
+                        node.gains.set_scope(scope, channels);
                     }
-                });
-            });
-        }
-
-        // Choosing them from the data.
-        ui.add_space(8.0);
-        ui.strong("Auto detect");
-        let detecting = detecting(context);
-        ui.add_enabled_ui(!detecting, |ui| {
-            named_settings_grid(ui, "auto detect", |ui| {
-                setting(ui, "Fit to", |ui| {
-                    let mut output_range = self.gains.output_range;
-                    let field = egui::DragValue::new(&mut output_range).range(1e-6..=1e9).speed(1.0).prefix("±");
-                    let response = ui
-                        .add(field)
-                        .on_hover_text("The output range to fill: ±128 for int8, ±32768 for int16, ±1 for floats");
-                    self.gains.output_range = output_range;
                     response
                 });
-                setting(ui, "Biggest spike ×", |ui| {
-                    ui.add(egui::DragValue::new(&mut self.multiple).range(0.1..=20.0).speed(0.01)).on_hover_text(
-                        "The biggest spike times this fills the output range. It's never less than 1.5 × the threshold",
-                    )
+            });
+            if channels.count > 0 {
+                let units = node.gains.units(channels);
+                let kind = match node.gains.scope {
+                    GainScope::All => "All",
+                    GainScope::Group => "Group",
+                    GainScope::Channel => "Channel",
+                };
+                egui::ScrollArea::vertical().max_height(260.0).id_salt("gains").show(ui, |ui| {
+                    egui::Grid::new("gains").num_columns(3).striped(true).show(ui, |ui| {
+                        ui.strong(kind);
+                        ui.strong("Gain");
+                        ui.strong("Fits").on_hover_text("The µV that reach the output range, at this gain");
+                        ui.end_row();
+                        for (index, unit) in units.iter().enumerate() {
+                            let name = match node.gains.scope {
+                                GainScope::All => format!("1–{}", channels.count),
+                                GainScope::Group => format!("{} ({}–{})", index + 1, unit.start + 1, unit.end),
+                                GainScope::Channel => format!("{}", unit.start + 1),
+                            };
+                            ui.label(name);
+                            let mut gain = node.gains.get(unit.start);
+                            let speed = gain * 0.01;
+                            let field = egui::DragValue::new(&mut gain)
+                                .range(1e-6..=1e6)
+                                .speed(speed)
+                                .max_decimals(3)
+                                .prefix("×");
+                            if ui.add(field).changed() {
+                                node.gains.set(unit.start, gain, channels);
+                            }
+                            ui.label(format!("±{:.0} µV", node.gains.range_uv(unit.start)));
+                            ui.end_row();
+                        }
+                    });
                 });
-                setting(ui, "Sampling for", |ui| {
-                    ui.add(egui::DragValue::new(&mut self.sampling).range(SAMPLING).speed(0.2).suffix(" s"))
-                        .on_hover_text("How long to sample for")
-                });
-            })
+            }
+
+            // Choosing them from the data.
+            ui.add_space(8.0);
+            ui.strong("Auto detect");
+            let detecting = detecting(context);
+            ui.add_enabled_ui(!detecting, |ui| {
+                named_settings_grid(ui, "auto detect", |ui| {
+                    setting(ui, "Fit to", |ui| {
+                        let mut output_range = node.gains.output_range;
+                        let field = egui::DragValue::new(&mut output_range).range(1e-6..=1e9).speed(1.0).prefix("±");
+                        let response = ui
+                            .add(field)
+                            .on_hover_text("The output range to fill: ±128 for int8, ±32768 for int16, ±1 for floats");
+                        node.gains.output_range = output_range;
+                        response
+                    });
+                    setting(ui, "Biggest spike ×", |ui| {
+                        ui.add(egui::DragValue::new(&mut node.multiple).range(0.1..=20.0).speed(0.01)).on_hover_text(
+                            "The biggest spike times this fills the output range. It's never less than 1.5 × the threshold",
+                        )
+                    });
+                    setting(ui, "Sampling for", |ui| {
+                        ui.add(egui::DragValue::new(&mut node.sampling).range(SAMPLING).speed(0.2).suffix(" s"))
+                            .on_hover_text("How long to sample for")
+                    });
+                })
+            });
+            auto_detect_ui(ui, context, None, "Sample each channel's spikes, then set its gain");
+            ui.add_space(4.0);
+            input_summary(ui, context.inputs);
         });
-        auto_detect_ui(ui, context, None, "Sample each channel's spikes, then set its gain");
-        ui.add_space(4.0);
-        input_summary(ui, context.inputs);
     }
 }
 
@@ -402,7 +409,7 @@ mod tests {
         let mut harness = egui_kittest::Harness::builder().with_size([420.0, 380.0]).wgpu().build_ui_state(
             |ui, graph: &mut Graph<Nodes>| {
                 graph.edit(id, &inputs, &THEMES[0].colours, None, None, None, false, false, None, |node, context| {
-                    node.settings_ui(ui, context)
+                    node.gui_ui(ui, context)
                 });
             },
             graph,

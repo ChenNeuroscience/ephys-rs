@@ -108,13 +108,15 @@ impl Node<Edges> for Downsample {
         warnings
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
-        settings_grid(ui, |ui| {
-            setting(ui, "Rate", |ui| {
-                ui.add(egui::DragValue::new(&mut self.rate_hz).range(1.0..=100_000.0).speed(10.0).suffix(" Hz"))
+    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+        crate::core::gui::node_window::standard(self, ui, context, |node, ui, context| {
+            settings_grid(ui, |ui| {
+                setting(ui, "Rate", |ui| {
+                    ui.add(egui::DragValue::new(&mut node.rate_hz).range(1.0..=100_000.0).speed(10.0).suffix(" Hz"))
+                });
             });
+            input_summary(ui, context.inputs);
         });
-        input_summary(ui, context.inputs);
     }
 }
 

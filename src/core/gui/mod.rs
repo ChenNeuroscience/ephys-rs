@@ -18,7 +18,7 @@ mod icons;
 #[cfg(target_os = "macos")]
 mod mac_menu;
 mod node_tools;
-mod node_window;
+pub mod node_window;
 mod paste_settings;
 mod preferences;
 mod style;
@@ -1308,7 +1308,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         for id in self.layout.floating() {
             let started = Instant::now();
             let Some(entry) = self.graph.get(id) else { continue };
-            let has_custom_ui = entry.node.has_custom_ui();
+            let size = entry.node.window_size();
             let beside = self.canvas.to_screen(egui::pos2(entry.pos[0] + NODE_WIDTH + 20.0, entry.pos[1]));
             let title = entry.label.clone();
             let colour = style::category_colour(entry.node.info().category);
@@ -1319,7 +1319,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                 .collapsible(false)
                 .frame(egui::Frame::window(&ctx.global_style()).inner_margin(0).corner_radius(2))
                 .default_pos(beside)
-                .default_size(if has_custom_ui { [820.0, 520.0] } else { [340.0, 460.0] })
+                .default_size(size)
                 .resizable(true)
                 .show(ctx, |ui| {
                     let shared = shared(&self.runner, &self.last_run);
@@ -1331,7 +1331,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                             &mut self.graph,
                             resolved,
                             colours,
-                            self.runner.as_ref(),
+                            self.runner.as_ref().map(Runner::pass_triggers),
                             shared.as_deref(),
                             ui_state,
                             base.as_ref(),
@@ -1589,7 +1589,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
 
     /// The app's work that isn't drawing: before each frame, and while the window's hidden (minimised, say) whenever
     /// something's asked for the app to be woken (see `eframe::App::logic`). What's come from runs and nodes' threads,
-    /// the nodes' work on the GUI's thread (see `Node::background`), stopping what's unattended, and keeping the run up
+    /// the nodes' work on the GUI's thread (see `Node::gui_background`), stopping what's unattended, and keeping the run up
     /// to date.
     pub fn logic(&mut self, ctx: &egui::Context) {
         // Keep (and echo) what's been logged, so the log's queue doesn't fill.
@@ -1609,7 +1609,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         self.keep_running(ctx);
     }
 
-    /// The nodes' work on the GUI's thread (see `Node::background`), each with its state on the GUI's side; woken again
+    /// The nodes' work on the GUI's thread (see `Node::gui_background`), each with its state on the GUI's side; woken again
     /// when the first of them asks to be.
     fn background(&mut self, ctx: &egui::Context) {
         self.ui_states.keep(&self.graph);
@@ -1633,7 +1633,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                 running,
                 locked,
                 None,
-                |node, context| node.background(context),
+                |node, context| node.gui_background(context),
             );
             if let Some(next) = next.flatten() {
                 wake = Some(wake.map_or(next, |wake| wake.min(next)));
@@ -2772,7 +2772,7 @@ mod tests {
         pointer(&mut harness, at, Some(false));
         harness.run_steps(2);
         assert_eq!(harness.state().layout.window(detector), WindowState::Docked);
-        // Its default window: its settings, and its thresholds' value.
+        // Its window, the standard one: its settings, and its thresholds' value.
         assert!(harness.query_all_by_label_contains("µV").next().is_some());
     }
 

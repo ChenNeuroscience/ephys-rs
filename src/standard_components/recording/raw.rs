@@ -223,27 +223,29 @@ impl Node<Edges> for WriteRaw {
         });
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
-        settings_grid(ui, |ui| {
-            location_ui(ui, &mut self.location, context.base_directory);
-            setting(ui, "Folder prefix", |ui| ui.text_edit_singleline(&mut self.prefix));
+    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+        crate::core::gui::node_window::standard(self, ui, context, |node, ui, context| {
+            settings_grid(ui, |ui| {
+                location_ui(ui, &mut node.location, context.base_directory);
+                setting(ui, "Folder prefix", |ui| ui.text_edit_singleline(&mut node.prefix));
+            });
+            location_summary(ui, &node.location, context.base_directory, &node.prefix, "a folder");
+            ui.add_space(4.0);
+            let recording: Vec<String> = node
+                .inputs()
+                .iter()
+                .zip(context.inputs)
+                .filter_map(|(input, stream)| stream.map(|s| format!("{}: {}", input.name, s.summary())))
+                .collect();
+            if recording.is_empty() {
+                ui.weak("Nothing connected to record.");
+            } else {
+                ui.label(format!("Records {}.", recording.join(", ")));
+            }
+            ui.separator();
+            let pool = context.shared::<Pool<Status>>();
+            status_ui(ui, pool.and_then(Pool::newest).as_deref(), context.running, context.theme);
         });
-        location_summary(ui, &self.location, context.base_directory, &self.prefix, "a folder");
-        ui.add_space(4.0);
-        let recording: Vec<String> = self
-            .inputs()
-            .iter()
-            .zip(context.inputs)
-            .filter_map(|(input, stream)| stream.map(|s| format!("{}: {}", input.name, s.summary())))
-            .collect();
-        if recording.is_empty() {
-            ui.weak("Nothing connected to record.");
-        } else {
-            ui.label(format!("Records {}.", recording.join(", ")));
-        }
-        ui.separator();
-        let pool = context.shared::<Pool<Status>>();
-        status_ui(ui, pool.and_then(Pool::newest).as_deref(), context.running, context.theme);
     }
 }
 

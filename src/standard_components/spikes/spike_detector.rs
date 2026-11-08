@@ -272,57 +272,61 @@ impl Node<Edges> for SpikeDetector {
         &[crate::TriggerKind::AutoDetect]
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
-        let (rate, channels) = match context.inputs[0] {
-            Some(DataStream::Continuous(c)) => (c.sample_rate, c.channels as usize),
-            _ => (30000.0, 0),
-        };
-        let ms = |samples: u32| format!(" samples ({:.2} ms)", samples as f32 * 1000.0 / rate);
-        settings_grid(ui, |ui| {
-            setting(ui, "Polarity", |ui| {
-                combo(
-                    ui,
-                    "polarity",
-                    &mut self.polarity,
-                    &[(Polarity::Negative, "Negative"), (Polarity::Positive, "Positive"), (Polarity::Both, "Both")],
-                )
-            });
-            setting(ui, "Group", |ui| {
-                combo(
-                    ui,
-                    "group",
-                    &mut self.group_size,
-                    &[(1, "Single channels"), (2, "Stereotrodes (2)"), (4, "Tetrodes (4)"), (8, "Octrodes (8)")],
-                )
-            });
-            let (pre, post) = (ms(self.pre), ms(self.post));
-            setting(ui, "Before peak", |ui| ui.add(egui::DragValue::new(&mut self.pre).range(1..=64).suffix(pre)));
-            setting(ui, "After peak", |ui| ui.add(egui::DragValue::new(&mut self.post).range(1..=128).suffix(post)));
-            setting(ui, "Thresholds", |ui| ui.label(self.thresholds.summary()));
-        });
-        // Choosing the thresholds from the data (not while it's going).
-        ui.add_space(8.0);
-        ui.strong("Auto detect");
-        ui.add_enabled_ui(!detecting(context), |ui| {
-            named_settings_grid(ui, "auto detect", |ui| {
-                setting(ui, "Level", |ui| {
-                    self.level.ui(
+    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+        crate::core::gui::node_window::standard(self, ui, context, |node, ui, context| {
+            let (rate, channels) = match context.inputs[0] {
+                Some(DataStream::Continuous(c)) => (c.sample_rate, c.channels as usize),
+                _ => (30000.0, 0),
+            };
+            let ms = |samples: u32| format!(" samples ({:.2} ms)", samples as f32 * 1000.0 / rate);
+            settings_grid(ui, |ui| {
+                setting(ui, "Polarity", |ui| {
+                    combo(
                         ui,
-                        "The percentile of the samples to use",
-                        "Its distance from the mean, times this, sets the threshold",
+                        "polarity",
+                        &mut node.polarity,
+                        &[(Polarity::Negative, "Negative"), (Polarity::Positive, "Positive"), (Polarity::Both, "Both")],
                     )
                 });
-                setting(ui, "Sampling for", |ui| {
-                    ui.add(egui::DragValue::new(&mut self.sampling).range(SAMPLING).speed(0.2).suffix(" s"))
-                        .on_hover_text("How long to sample for")
+                setting(ui, "Group", |ui| {
+                    combo(
+                        ui,
+                        "group",
+                        &mut node.group_size,
+                        &[(1, "Single channels"), (2, "Stereotrodes (2)"), (4, "Tetrodes (4)"), (8, "Octrodes (8)")],
+                    )
+                });
+                let (pre, post) = (ms(node.pre), ms(node.post));
+                setting(ui, "Before peak", |ui| ui.add(egui::DragValue::new(&mut node.pre).range(1..=64).suffix(pre)));
+                setting(ui, "After peak", |ui| {
+                    ui.add(egui::DragValue::new(&mut node.post).range(1..=128).suffix(post))
+                });
+                setting(ui, "Thresholds", |ui| ui.label(node.thresholds.summary()));
+            });
+            // Choosing the thresholds from the data (not while it's going).
+            ui.add_space(8.0);
+            ui.strong("Auto detect");
+            ui.add_enabled_ui(!detecting(context), |ui| {
+                named_settings_grid(ui, "auto detect", |ui| {
+                    setting(ui, "Level", |ui| {
+                        node.level.ui(
+                            ui,
+                            "The percentile of the samples to use",
+                            "Its distance from the mean, times this, sets the threshold",
+                        )
+                    });
+                    setting(ui, "Sampling for", |ui| {
+                        ui.add(egui::DragValue::new(&mut node.sampling).range(SAMPLING).speed(0.2).suffix(" s"))
+                            .on_hover_text("How long to sample for")
+                    });
                 });
             });
+            auto_detect_ui(ui, context, None, "Sample each channel, then set its threshold");
+            if channels > 0 {
+                node.channels_ui(ui, channels);
+            }
+            input_summary(ui, context.inputs);
         });
-        auto_detect_ui(ui, context, None, "Sample each channel, then set its threshold");
-        if channels > 0 {
-            self.channels_ui(ui, channels);
-        }
-        input_summary(ui, context.inputs);
     }
 }
 

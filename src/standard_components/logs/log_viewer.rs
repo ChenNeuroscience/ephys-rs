@@ -70,7 +70,7 @@ impl Node<Edges> for LogViewer {
         category: Category::Visualisation,
         description: "Log lines as they come, each with its time.",
     };
-    const HAS_CUSTOM_UI: bool = true;
+    const WINDOW_SIZE: [f32; 2] = [820.0, 520.0];
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
     fn inputs(&self) -> Vec<Input<Edges>> {
@@ -100,7 +100,7 @@ impl Node<Edges> for LogViewer {
     }
 
     /// Takes the lines sent, keeping the latest.
-    fn background(&mut self, context: &mut UiContext<Edges>) -> Option<Instant> {
+    fn gui_background(&mut self, context: &mut UiContext<Edges>) -> Option<Instant> {
         let sent = context.shared::<SentLines>()?;
         let mut kept = context.ui_state::<KeptLines>();
         sent.0.receive_all(|entries| {
@@ -111,11 +111,7 @@ impl Node<Edges> for LogViewer {
         None
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, _context: &mut UiContext<Edges>) {
-        ui.weak("Nothing to set.");
-    }
-
-    fn custom_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
         let mut kept = context.ui_state::<KeptLines>();
         let entries = &mut kept.0;
         ui.horizontal(|ui| {
@@ -213,10 +209,10 @@ mod tests {
             pass(&mut viewing, gui.sent(), &lines);
         }
         // What was sent before the pool ran out, and the rest with the next pass.
-        gui.run(|node, context| _ = node.background(context));
+        gui.run(|node, context| _ = node.gui_background(context));
         assert_eq!(gui.lines().len(), WINDOW_BUFFERS * per_pass);
         pass(&mut viewing, gui.sent(), &[]);
-        gui.run(|node, context| _ = node.background(context));
+        gui.run(|node, context| _ = node.gui_background(context));
         let kept = gui.lines();
         let last = passes * per_pass - 1;
         assert_eq!(kept.len(), KEPT);
@@ -231,8 +227,8 @@ mod tests {
         pass(&mut viewing, gui.sent(), &lines(&[(1526.125, "trial 1 rewarded at the north arm")]));
         let mut harness = egui_kittest::Harness::builder().with_size([560.0, 200.0]).wgpu().build_ui_state(
             |ui, gui: &mut Gui| {
-                gui.run(|node, context| _ = node.background(context));
-                gui.run(|node, context| node.custom_ui(ui, context));
+                gui.run(|node, context| _ = node.gui_background(context));
+                gui.run(|node, context| node.gui_ui(ui, context));
             },
             gui,
         );

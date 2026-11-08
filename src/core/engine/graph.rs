@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    Control, Dimension, EdgeInfo, EdgeTypesEnum, Edges, Input, NodesEnum, Output, Plan, SettingPort, UiContext,
+    Control, Dimension, EdgeInfo, EdgeTypesEnum, Edges, Input, Node, NodesEnum, Output, Plan, SettingPort, UiContext,
     same_processing,
 };
 use crate::core::theme::Colours;
@@ -172,6 +172,18 @@ pub struct NodeState<E: Edges> {
 pub type KindKey = (Dimension, usize);
 
 impl<E: Edges> NodeState<E> {
+    /// Of a node of one type (see `new`).
+    pub fn of<N: Node<E>>(node: &N, input_streams: Vec<Option<E::DataStream>>) -> Self {
+        NodeState {
+            inputs: node.inputs(),
+            outputs: node.outputs(&input_streams),
+            warnings: node.warnings(&input_streams),
+            input_streams,
+            settings: node.settings(),
+            controls: node.controls(),
+        }
+    }
+
     pub fn new<N: NodesEnum<Edges = E>>(node: &N, input_streams: Vec<Option<E::DataStream>>) -> Self {
         NodeState {
             inputs: node.inputs(),
@@ -628,6 +640,7 @@ impl<N: NodesEnum> Graph<N> {
             controlled_by: &controlled_by,
             theme,
             node: id,
+            label: &mut entry.label,
             shared_by_node,
             ui_state,
             base_directory,
