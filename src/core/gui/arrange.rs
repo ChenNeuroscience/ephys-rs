@@ -2,9 +2,12 @@
 //! right the way data flows. Nodes go in columns by how far along the data's flow they are, ordered within each
 //! to cross as few edges as can be, and placed to keep edges short and straight.
 //!
-//! Sources go in the first column, and writers in the last (viewers go just after what they view). Settings edges count too, though for less than data edges, the other way round (from the node
-//! whose setting it is to the one editing or reading it), as a viewer editing a detector's settings is usually after
-//! it anyway.
+//! Sources go in the first column, and writers in the last (viewers go just after what they view). Settings edges
+//! count too, though for less than data edges, the other way round (from the node whose setting it is to the one
+//! editing or reading it), as a viewer editing a detector's settings is usually after it anyway. But a settings edge
+//! to or from a node without data edges (Run Command, say, which a writer triggers) is all there is to place that node
+//! by, so it counts just as a data edge would. Whether an edge is enabled doesn't matter: the layout's the same either
+//! way.
 
 use std::collections::HashMap;
 
@@ -43,12 +46,22 @@ pub fn arrange<N: NodeSet>(graph: &Graph<N>) -> HashMap<NodeId, [f32; 2]> {
         let label = NodeLabel { width: size.x as f64, height: size.y as f64, ..Default::default() };
         layered.set_node(key(id), label);
     }
+    // Nodes with data edges (enabled or not); a settings edge to or from one without counts as a data edge.
+    let has_data: std::collections::HashSet<NodeId> = graph
+        .edges()
+        .iter()
+        .filter(|e| e.dimension == Dimension::Data)
+        .flat_map(|e| [e.from.node, e.to.node])
+        .collect();
+    let as_data = |edge: &crate::core::engine::Edge| {
+        edge.dimension == Dimension::Data || !has_data.contains(&edge.from.node) || !has_data.contains(&edge.to.node)
+    };
     // One edge each way between a pair of nodes, weighted by how many there are (settings counting for less).
     let mut weights: HashMap<(NodeId, NodeId), f64> = HashMap::new();
     for edge in graph.edges() {
-        let (from, to, weight) = match edge.dimension {
-            Dimension::Data => (edge.from.node, edge.to.node, DATA_WEIGHT),
-            Dimension::Settings => (edge.to.node, edge.from.node, SETTINGS_WEIGHT),
+        let (from, to, weight) = match as_data(edge) {
+            true => (edge.from.node, edge.to.node, DATA_WEIGHT),
+            false => (edge.to.node, edge.from.node, SETTINGS_WEIGHT),
         };
         if from != to && sizes.contains_key(&from) && sizes.contains_key(&to) {
             *weights.entry((from, to)).or_default() += weight;
@@ -56,7 +69,8 @@ pub fn arrange<N: NodeSet>(graph: &Graph<N>) -> HashMap<NodeId, [f32; 2]> {
     }
     let mut pairs: Vec<_> = weights.into_iter().collect();
     pairs.sort_by_key(|((a, b), _)| (a.0, b.0)); // the same arrangement every time
-    // Nodes without inputs (sources) are pulled to the first column, by edges from a start node that isn't shown.
+    // Nodes without inputs (sources) are pulled to the first column, by edges from a start node that isn't shown. (One
+    // that a settings edge counting as data leads to can't go further left than that edge lets it.)
     let edge = |weight| EdgeLabel { weight, minlen: 1, ..Default::default() };
     layered.set_node(START, NodeLabel { width: 1.0, height: 1.0, ..Default::default() });
     let mut ids: Vec<NodeId> = sizes.keys().copied().collect();
@@ -126,5 +140,30 @@ mod tests {
         let resolved = graph.resolve();
         let height = |id| node_size(&resolved[&id]).y;
         assert!(d[1] + height(detector) <= l[1] || l[1] + height(lfp) <= d[1], "{d:?} {l:?}");
+    }
+
+    /// Run Command has only a settings edge, from the writer that triggers it: it goes after the writer, not first as
+    /// if it were a source, and the same whether the edge is enabled or not.
+    #[test]
+    fn a_node_with_only_settings_edges_is_placed_by_them() {
+        let mut graph = Graph::<Nodes>::default();
+        let add = |graph: &mut Graph<Nodes>, name: &str| {
+            let index = Nodes::TYPES.iter().position(|t| t.name == name).unwrap();
+            graph.add(Nodes::create(index), [0.0, 0.0])
+        };
+        let command = add(&mut graph, "Run Command");
+        let board = add(&mut graph, "Acquisition Board");
+        let detector = add(&mut graph, "Spike Detector");
+        let writer = add(&mut graph, "Write LTX");
+        let port = |node, role, index| Port { node, role, index };
+        graph.connect(port(board, PortRole::Output, 0), port(detector, PortRole::Input, 0)).unwrap();
+        graph.connect(port(detector, PortRole::Output, 0), port(writer, PortRole::Input, 0)).unwrap();
+        graph.connect(port(writer, PortRole::Control, 4), port(command, PortRole::Setting, 0)).unwrap();
+        let placed = arrange(&graph);
+        let x = |id| placed[&id][0];
+        assert!(x(board) < x(detector) && x(detector) < x(writer) && x(writer) < x(command), "{placed:?}");
+        let edge = graph.edge_into(port(command, PortRole::Setting, 0)).unwrap();
+        graph.set_edge_disabled(edge, true);
+        assert_eq!(arrange(&graph), placed, "disabled");
     }
 }
