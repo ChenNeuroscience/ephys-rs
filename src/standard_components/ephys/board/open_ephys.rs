@@ -52,6 +52,10 @@ const PLUGIN_1_1: &str =
 const PLUGIN_1_1: &str =
     "https://openephys.jfrog.io/artifactory/AcquisitionBoard-plugin/linux/AcquisitionBoard-linux_1.1.6-API10.zip";
 
+/// The boards' USB drivers, for Windows: FTDI's for generation 3, Opal Kelly's for the rest.
+const USB_DRIVERS: &str =
+    "https://github.com/open-ephys/plugin-GUI/tree/560c995500f7f1438c6c3646311ff11776da49bb/Resources/DLLs";
+
 /// The files the boards use: what each is, its names, which boards use it, and where to get it on its own.
 const FILES: &[(&str, &[&str], &str, &str)] = &[
     ("FrontPanel library", FRONTPANEL, "Gen 1/2, Intan USB", RHYTHM_PLUGINS),
@@ -100,13 +104,31 @@ impl GlobalSettings for OpenEphysSettings {
     const NAME: &'static str = "Open Ephys";
 
     fn ui(&mut self, ui: &mut egui::Ui, colours: &Colours) {
-        search_folders::note(
-            ui,
-            colours,
-            "The acquisition boards use the Open Ephys GUI's files: install the Open Ephys GUI, and its Acquisition \
-             Board plugin from its Plugin Installer (for Intan's board, its Intan RHD USB plugin too), and they're \
-             found in its folder. Or download them (each file's \"get\" link below) into a folder, and choose that.",
-        );
+        let small = |text: &str| RichText::new(text).small().color(colours.text_secondary);
+        ui.label(small("The acquisition boards need the libraries and bitfiles below. Either:"));
+        ui.add_space(2.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            ui.label(small("•  download them yourself, with each one's \"get\" link, into a folder"));
+            if cfg!(windows) {
+                ui.label(small(" (and install "));
+                ui.hyperlink_to(RichText::new("the boards' USB drivers").small(), USB_DRIVERS);
+                ui.label(small(")"));
+            }
+            ui.label(small("; or"));
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            ui.label(small("•  install "));
+            ui.hyperlink_to(RichText::new("the Open Ephys GUI").small(), "https://open-ephys.org/gui");
+            ui.label(small(
+                " and its Acquisition Board plugin (and Intan RHD USB plugin, for Intan's board), which put them, \
+                 and the drivers, in a folder of the GUI's.",
+            ));
+        });
+        ui.add_space(6.0);
+        ui.label(small("Then say which folder they're in: the GUI's is found by itself."));
+        ui.add_space(2.0);
         ui.horizontal(|ui| {
             ui.label("Folder");
             match self.folder() {
@@ -114,7 +136,7 @@ impl GlobalSettings for OpenEphysSettings {
                 None => ui.label(RichText::new("not found").small().color(colours.warning)),
             };
             if self.folder.is_none() {
-                ui.label(RichText::new("(the Open Ephys GUI's)").small().color(colours.text_secondary));
+                ui.label(small("(the Open Ephys GUI's)"));
             }
         });
         ui.horizontal(|ui| {
@@ -146,23 +168,6 @@ impl GlobalSettings for OpenEphysSettings {
         });
         ui.add_space(4.0);
         search_folders::note(ui, colours, search_folders::LOADED_ONCE);
-        ui.add_space(8.0);
-        search_folders::get_them_ui(
-            ui,
-            colours,
-            &[
-                ("The Open Ephys GUI", "https://open-ephys.org/gui"),
-                ("Open Ephys's guide to the Acquisition Board", "https://open-ephys.github.io/acq-board-docs/"),
-                (
-                    "Open Ephys's Intan RHD USB plugin",
-                    "https://open-ephys.github.io/gui-docs/User-Manual/Plugins/Intan-RHD-USB.html",
-                ),
-                (
-                    "The boards' USB drivers, for Windows (FTDI's for gen 3, Opal Kelly's for the rest)",
-                    "https://github.com/open-ephys/plugin-GUI/tree/560c995500f7f1438c6c3646311ff11776da49bb/Resources/DLLs",
-                ),
-            ],
-        );
     }
 }
 
