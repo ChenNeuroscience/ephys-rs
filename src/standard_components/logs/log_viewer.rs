@@ -140,7 +140,7 @@ impl Node<Edges> for LogViewer {
 mod tests {
     use super::*;
     use crate::Nodes;
-    use crate::core::engine::{Graph, NodeSet};
+    use crate::core::engine::{Graph, NodesEnum};
     use crate::core::exchange::Exchange;
     use crate::standard_components::themes::THEMES;
     use egui_kittest::kittest::Queryable;

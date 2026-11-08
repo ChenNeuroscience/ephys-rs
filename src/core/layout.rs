@@ -25,7 +25,7 @@ use eframe::egui::{self, Pos2, Rect, vec2};
 use egui_tiles::{Container, Linear, LinearDir, Tile, TileId, Tiles, Tree};
 use serde::{Deserialize, Serialize};
 
-use crate::core::engine::{Graph, NodeId, NodeSet};
+use crate::core::engine::{Graph, NodeId, NodesEnum};
 
 /// What a pane in the layout shows.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
@@ -250,7 +250,7 @@ impl Layout {
     }
 
     /// Forgets the windows of nodes that no longer exist.
-    pub fn retain_nodes<N: NodeSet>(&mut self, graph: &Graph<N>) {
+    pub fn retain_nodes<N: NodesEnum>(&mut self, graph: &Graph<N>) {
         self.floating.retain(|id| graph.contains(*id));
         let gone: Vec<TileId> = self
             .tree

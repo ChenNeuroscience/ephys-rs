@@ -23,10 +23,10 @@ use ephys_rs::standard_components::recording::{ltx, raw};
 use ephys_rs::standard_components::spikes::{spike_detector, spike_gain, spike_viewer};
 use ephys_rs::standard_components::themes::{DARK, LIGHT};
 use ephys_rs::standard_components::tracking::{camera, position_detector, tracker_view, video_viewer};
-use ephys_rs::{Edges, annotation_set, node_set};
+use ephys_rs::{Edges, annotations_enum, nodes_enum};
 
 // In the order they're offered in the add-node menu.
-node_set! {
+nodes_enum! {
     edges: Edges;
     pub enum Nodes {
         AcquisitionBoard(board::node::AcquisitionBoard),
@@ -54,7 +54,7 @@ node_set! {
     }
 }
 
-annotation_set! {
+annotations_enum! {
     pub enum AnnotationTypes {
         StickyNote(sticky_note::StickyNote),
         Markdown(markdown::Markdown),

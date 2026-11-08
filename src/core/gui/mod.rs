@@ -41,10 +41,10 @@ use eframe::egui::{self, Id, Key, Modifiers, Pos2, RichText, ViewportCommand};
 use serde::{Deserialize, Serialize};
 
 use crate::core::Components;
-use crate::core::annotation::{Annotation, AnnotationId, AnnotationSet, Annotations};
+use crate::core::annotation::{Annotation, AnnotationId, Annotations, AnnotationsEnum};
 use crate::core::base_directory::{BaseDirectories, BaseDirectoryType, Place};
 use crate::core::config_patching::{self, PatchSets, Versions};
-use crate::core::engine::{self, Graph, NodeId, NodeSet, Port, PortRef, Resolved, Runner, Snapshot, Stats};
+use crate::core::engine::{self, Graph, NodeId, NodesEnum, Port, PortRef, Resolved, Runner, Snapshot, Stats};
 use crate::core::layout::{Layout, Mode, Pane};
 use crate::core::theme::{Colours, Theme};
 use crate::core::triggers::Triggered;
@@ -180,7 +180,7 @@ pub enum Event {
 
 /// The file: the graph, its annotations, the window layout, and the base directories.
 #[derive(Deserialize)]
-#[serde(bound = "N: NodeSet, A: AnnotationSet")]
+#[serde(bound = "N: NodesEnum, A: AnnotationsEnum")]
 struct SaveFile<N, A> {
     graph: Graph<N>,
     #[serde(default)]
@@ -193,7 +193,7 @@ struct SaveFile<N, A> {
 
 /// The file as it's saved: `SaveFile`, borrowed rather than copied.
 #[derive(Serialize)]
-#[serde(bound = "N: NodeSet, A: AnnotationSet")]
+#[serde(bound = "N: NodesEnum, A: AnnotationsEnum")]
 struct SaveFileRef<'a, N, A> {
     /// The versions that saved it (see `crate::core::config_patching`).
     versions: Versions,
@@ -224,7 +224,7 @@ struct Status {
 }
 
 /// The app: the graph being edited, its history and file, the run, if it's running, and everything on screen.
-pub struct App<N: NodeSet, A: AnnotationSet> {
+pub struct App<N: NodesEnum, A: AnnotationsEnum> {
     /// The file being edited, if it's been saved.
     path: Option<PathBuf>,
     /// What's in the file, if any: anything else has unsaved changes.
@@ -301,7 +301,7 @@ pub struct App<N: NodeSet, A: AnnotationSet> {
     last_crash: Option<PathBuf>,
 }
 
-impl<N: NodeSet, A: AnnotationSet> App<N, A> {
+impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
     /// Opens the file at `path`, or an empty graph if there's no file there. `themes` mustn't be empty.
     pub fn open(path: Option<PathBuf>, themes: &'static [Theme]) -> Self {
         let annotations = Annotations::default();
@@ -1598,7 +1598,10 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
 
 /// What changed from one snapshot to the next, as it runs: a short label, and the detail; nothing if only how it's
 /// shown changed (nodes moved, say).
-fn describe_change<N: NodeSet>(before: &engine::Snapshot<N>, after: &engine::Snapshot<N>) -> Option<(String, String)> {
+fn describe_change<N: NodesEnum>(
+    before: &engine::Snapshot<N>,
+    after: &engine::Snapshot<N>,
+) -> Option<(String, String)> {
     let mut changes = Vec::new();
     let mut label = "changed".to_owned();
     match (before.recording.is_some(), after.recording.is_some()) {
@@ -1670,7 +1673,7 @@ fn ms_since(start: Instant) -> f32 {
     start.elapsed().as_secs_f32() * 1000.0
 }
 
-impl<N: NodeSet, A: AnnotationSet> eframe::App for App<N, A> {
+impl<N: NodesEnum, A: AnnotationsEnum> eframe::App for App<N, A> {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.last_cpu = frame.info().cpu_usage;
         self.show(ui);
@@ -1711,13 +1714,13 @@ fn clock_text(seconds: f64) -> String {
 
 /// What the last run shared, kept once it's stopped, for the windows to go on showing as it was, until the next run, or
 /// until the graph changes in a way that would have started a new epoch, and what's kept might no longer fit it.
-struct LastRun<N: NodeSet> {
+struct LastRun<N: NodesEnum> {
     exchange: Arc<crate::core::exchange::Exchange>,
     plan: Arc<engine::Plan<N>>,
 }
 
 /// What the windows find what's been shared with them in: the run's exchange, or the last run's.
-fn shared<'a, N: NodeSet>(
+fn shared<'a, N: NodesEnum>(
     runner: &'a Option<Runner<N>>,
     last_run: &'a Option<LastRun<N>>,
 ) -> Option<&'a crate::core::exchange::Exchange> {
@@ -1725,7 +1728,7 @@ fn shared<'a, N: NodeSet>(
 }
 
 /// A version of the document: a snapshot of the graph with all its configuration, and the annotations.
-struct Version<N: NodeSet, A> {
+struct Version<N: NodesEnum, A> {
     snapshot: Snapshot<N>,
     annotations: Arc<Annotations<A>>,
 }
@@ -1733,7 +1736,7 @@ struct Version<N: NodeSet, A> {
 /// Undo and redo step between versions. A new version is taken whenever anything has changed (including
 /// node settings) and the user isn't mid-gesture (dragging, or typing in a field), so a whole drag or edit
 /// undoes in one step.
-struct History<N: NodeSet, A> {
+struct History<N: NodesEnum, A> {
     current: Version<N, A>,
     undo: Vec<Version<N, A>>,
     redo: Vec<Version<N, A>>,
@@ -1742,7 +1745,7 @@ struct History<N: NodeSet, A> {
 
 const HISTORY_LIMIT: usize = 200;
 
-impl<N: NodeSet, A: AnnotationSet> History<N, A> {
+impl<N: NodesEnum, A: AnnotationsEnum> History<N, A> {
     fn new(graph: &Graph<N>, annotations: &Annotations<A>) -> Self {
         let current =
             Version { snapshot: Snapshot::new(0, graph.clone(), None), annotations: Arc::new(annotations.clone()) };
@@ -2994,7 +2997,7 @@ mod tests {
     /// recent files are kept, as Settings says.
     #[test]
     fn hidden_annotations_are_not_drawing_tools_and_recent_files_are_kept_as_set() {
-        use crate::core::annotation::AnnotationSet;
+        use crate::core::annotation::AnnotationsEnum;
         let mut harness = harness();
         let name = AnnotationTypes::TYPES[0].name;
         let tool = |harness: &Harness<TestApp>| harness.query_by_label_contains(&format!("{name}: ")).is_some();

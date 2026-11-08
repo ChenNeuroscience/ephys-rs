@@ -1,6 +1,6 @@
 # Nodes
 
-A node type is a struct of its settings implementing [`Node`](../src/core/engine/node.rs), listed in `node_set!` in
+A node type is a struct of its settings implementing [`Node`](../src/core/engine/node.rs), listed in `nodes_enum!` in
 a program's components (the [chen-neuro's](../examples/chen-neuro/src/components/mod.rs), say). Its settings are saved in the graph's file (with serde), copied and pasted, and undone;
 two nodes of a type differ only in their settings. A simple complete one is the
 [Channel Selector](../src/standard_components/ephys/channel_selector.rs): one input, one output, one setting (which

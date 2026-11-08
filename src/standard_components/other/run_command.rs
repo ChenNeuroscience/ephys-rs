@@ -1210,7 +1210,7 @@ mod tests {
 
     use super::*;
     use crate::Nodes;
-    use crate::core::engine::{Graph, NodeSet, Port, PortRole, Recording, Runner, Snapshot};
+    use crate::core::engine::{Graph, NodesEnum, Port, PortRole, Recording, Runner, Snapshot};
     use crate::core::triggers::{DirectTriggers, Triggered};
     use crate::standard_components::ephys::board::{Source, serve_test_board};
     use crate::standard_components::recording::Location;

@@ -39,8 +39,8 @@ use super::{
     status_ui,
 };
 use crate::core::engine::{
-    Category, Control, DataStreamType, EdgeSet, Flow, Input, Node, NodeInfo, NodeThread, Output, PASS_DURATION, Pass,
-    PoolStatus, ThreadContext, UiContext,
+    Category, Control, DataStreamType, EdgeTypesEnum, Flow, Input, Node, NodeInfo, NodeThread, Output, PASS_DURATION,
+    Pass, PoolStatus, ThreadContext, UiContext,
 };
 use crate::standard_components::ephys::reference::parse_channels;
 use crate::standard_components::ephys::{ChannelSelection, Continuous, Event, Events};

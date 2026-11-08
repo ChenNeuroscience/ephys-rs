@@ -14,7 +14,7 @@
 //!   real devices, while any is synthetic.
 
 use super::Nodes;
-use ephys_rs::core::engine::{Graph, NodeId, NodeSet, Port, PortRole};
+use ephys_rs::core::engine::{Graph, NodeId, NodesEnum, Port, PortRole};
 use ephys_rs::core::layout::{Pane, WindowState};
 use ephys_rs::core::quick_action::{Arrangement, QuickAction, QuickChange, QuickState, Tab};
 use ephys_rs::standard_components::alarms::processor::AlarmProcessor;

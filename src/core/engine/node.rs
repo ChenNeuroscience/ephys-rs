@@ -1,6 +1,6 @@
 //! The `Node` trait each node type implements: what it is, its ports and settings, how it runs a pass, and what it
 //! carries from one to the next. Its window's in `context`, its threads' in `node_threads`, and the list of types a
-//! program's built with in `node_set`.
+//! program's built with in `nodes_enum`.
 
 use std::any::Any;
 

@@ -815,7 +815,7 @@ mod tests {
     #[test]
     fn settings_window() {
         use crate::Nodes;
-        use crate::core::engine::{Graph, NodeSet};
+        use crate::core::engine::{Graph, NodesEnum};
         use crate::standard_components::themes::THEMES;
         let mut graph = Graph::<Nodes>::default();
         use egui_kittest::kittest::Queryable as _;

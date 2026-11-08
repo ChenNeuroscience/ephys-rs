@@ -8,7 +8,7 @@ use eframe::egui;
 use super::Event;
 use super::icons::Icon;
 use super::toolbar;
-use crate::core::engine::{Graph, NodeId, NodeSet, NodeToolbar, Port, PortRole};
+use crate::core::engine::{Graph, NodeId, NodeToolbar, NodesEnum, Port, PortRole};
 use crate::core::exchange::Exchange;
 use crate::core::triggers::{AnyTrigger, Delivery, TriggerKind};
 
@@ -32,7 +32,7 @@ pub struct NodeTools<'e> {
 
 impl<'e> NodeTools<'e> {
     /// For node `id`'s window: what it can trigger, through its own settings and its controls.
-    pub fn new<N: NodeSet>(
+    pub fn new<N: NodesEnum>(
         graph: &Graph<N>,
         id: NodeId,
         advanced: bool,

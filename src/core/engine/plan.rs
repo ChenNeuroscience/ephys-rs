@@ -11,9 +11,9 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::OnceLock;
 
 use super::pass::*;
-use super::{BufferUsage, DataStreamSet, Edges, Graph, NodeId, NodeSet, Port, PortRole, TreeShake};
+use super::{BufferUsage, DataStreamsEnum, Edges, Graph, NodeId, NodesEnum, Port, PortRole, TreeShake};
 
-type DataStream<N> = <<N as NodeSet>::Edges as Edges>::DataStream;
+type DataStream<N> = <<N as NodesEnum>::Edges as Edges>::DataStream;
 
 /// A node to run in each pass, and which buffers (in the workspace's pool) it works with.
 #[derive(PartialEq)]
@@ -60,7 +60,7 @@ pub struct CopyPoint {
 /// Likewise a node taking an input's buffer (see `BufferUsage::takes`) takes it if every other reader of the data can run
 /// first, and no one's editing it in place; otherwise the plan copies it for the node into a buffer of its own, once
 /// it's made. Otherwise nodes run in the graph's order.
-pub struct Plan<N: NodeSet> {
+pub struct Plan<N: NodesEnum> {
     pub(super) steps: Vec<Step>,
     /// The data stream each buffer in the pool holds.
     pub(super) buffers: Vec<DataStream<N>>,
@@ -148,7 +148,7 @@ fn settle(
     nodes.iter().filter_map(|(id, _, _)| shakes.remove(id).filter(|s| s.runs).map(|s| (*id, s.needs))).collect()
 }
 
-impl<N: NodeSet> Plan<N> {
+impl<N: NodesEnum> Plan<N> {
     pub fn new(graph: &Graph<N>) -> Self {
         let resolved = graph.resolve();
         let topological = graph.topological_order();
@@ -329,7 +329,7 @@ impl<N: NodeSet> Plan<N> {
     /// The memory each buffer takes, in bytes. Worked out (by making one of each) the first time it's asked.
     pub fn buffer_bytes(&self) -> &[usize] {
         self.bytes.get_or_init(|| {
-            self.buffers.iter().map(|s| <DataStream<N> as DataStreamSet>::bytes(&s.buffer(PASS_DURATION))).collect()
+            self.buffers.iter().map(|s| <DataStream<N> as DataStreamsEnum>::bytes(&s.buffer(PASS_DURATION))).collect()
         })
     }
 
@@ -382,7 +382,7 @@ fn order(nodes: &[NodeId], before: &HashMap<NodeId, Vec<NodeId>>) -> Vec<NodeId>
 }
 
 /// "4 steps, 6 buffers (1.2 MB a worker), 3 with state, 1 copy".
-pub(super) fn describe<N: NodeSet>(plan: &Plan<N>) -> String {
+pub(super) fn describe<N: NodesEnum>(plan: &Plan<N>) -> String {
     let bytes: usize = plan.buffer_bytes().iter().sum();
     let copies: usize = plan.steps.iter().map(|s| s.copies.len()).sum();
     format!(
@@ -397,7 +397,7 @@ pub(super) fn describe<N: NodeSet>(plan: &Plan<N>) -> String {
 
 /// Whether two graphs would process the same way: the same nodes, settings and edges, whatever their
 /// positions and labels.
-pub fn same_processing<N: NodeSet>(a: &Graph<N>, b: &Graph<N>) -> bool {
+pub fn same_processing<N: NodesEnum>(a: &Graph<N>, b: &Graph<N>) -> bool {
     a.edges() == b.edges()
         && a.edges().iter().all(|e| a.is_edge_disabled(e) == b.is_edge_disabled(e))
         && a.iter().count() == b.iter().count()

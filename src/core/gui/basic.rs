@@ -13,7 +13,7 @@ use super::Event;
 use super::actions::Action;
 use super::icons::Icon;
 use super::style;
-use crate::core::engine::{Category, EdgeSet, Graph, NodeId, NodeSet, Resolved};
+use crate::core::engine::{Category, EdgeTypesEnum, Graph, NodeId, NodesEnum, Resolved};
 use crate::core::quick_action::QuickAction;
 use crate::core::theme::Colours;
 
@@ -23,7 +23,7 @@ const WIDTH: f32 = 560.0;
 const DISABLED_OPACITY: f32 = 0.35;
 
 #[allow(clippy::too_many_arguments)]
-pub fn show<N: NodeSet>(
+pub fn show<N: NodesEnum>(
     ui: &mut egui::Ui,
     graph: &Graph<N>,
     resolved: &Resolved<N::Edges>,
@@ -83,7 +83,7 @@ pub fn show<N: NodeSet>(
                             .iter()
                             .zip(&state.input_streams)
                             .filter_map(|(input, stream)| {
-                                let summary = EdgeSet::summary(stream.as_ref()?);
+                                let summary = EdgeTypesEnum::summary(stream.as_ref()?);
                                 Some(if summary.is_empty() {
                                     input.name.to_string()
                                 } else {
@@ -96,7 +96,7 @@ pub fn show<N: NodeSet>(
                         }
                         // A source has nothing to connect: what it gives is what's worth saying.
                         let outputs = state.outputs.iter().filter_map(|output| {
-                            let summary = EdgeSet::summary(output.stream.as_ref()?);
+                            let summary = EdgeTypesEnum::summary(output.stream.as_ref()?);
                             Some(format!("{}: {summary}", output.name))
                         });
                         state.inputs.is_empty().then(|| outputs.collect::<Vec<_>>().join(" · "))

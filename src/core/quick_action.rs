@@ -5,25 +5,25 @@
 //! apply (it's already been done, say), when it isn't offered. It says what it did (`QuickChange::summary`), which
 //! is logged. The program supplies its quick actions (see `Components`), through `Components`.
 
-use super::engine::{Graph, NodeSet};
+use super::engine::{Graph, NodesEnum};
 pub use super::layout::{Arrangement, Layout, Tab};
 
 /// A quick action: its name and description, as offered, and what it does.
-pub struct QuickAction<N: NodeSet> {
+pub struct QuickAction<N: NodesEnum> {
     pub name: &'static str,
     pub description: &'static str,
     pub run: fn(&QuickState<N>) -> Option<QuickChange<N>>,
 }
 
 /// What a quick action works from.
-pub struct QuickState<'a, N: NodeSet> {
+pub struct QuickState<'a, N: NodesEnum> {
     pub graph: &'a Graph<N>,
     /// The panes, and where they are.
     pub layout: &'a Layout,
 }
 
 /// What a quick action does.
-pub struct QuickChange<N: NodeSet> {
+pub struct QuickChange<N: NodesEnum> {
     pub graph: Graph<N>,
     /// The panes, where they're to be: the layout it was given, changed (windows opened and closed, say, with
     /// `Layout`'s helpers, or arranged afresh: see `Layout::arrange`).

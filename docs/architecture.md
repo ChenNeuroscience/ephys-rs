@@ -19,8 +19,8 @@ so `cargo run` runs it, and its binary is called `ephys-rs` too. A build of your
 `cargo add --git https://github.com/ChenNeuroscience/ephys-rs ephys-rs`, as well as `serde` and `eframe`, which the
 macros below use. (`cargo install --git` installs programs, so here that's chen-neuro.)
 
-A build lists its types with `node_set!` (node types, in the order the add-node menu offers them) and
-`annotation_set!`, then implements [`Components`](../src/core/mod.rs) with them, its themes, quick actions and base
+A build lists its types with `nodes_enum!` (node types, in the order the add-node menu offers them) and
+`annotations_enum!`, then implements [`Components`](../src/core/mod.rs) with them, its themes, quick actions and base
 directories, and calls `core::gui::run`. Each macro makes an enum with a variant per type, which forwards the traits'
 methods to the variant's type, so the core works with one concrete type (`Nodes`, say) without trait objects.
 

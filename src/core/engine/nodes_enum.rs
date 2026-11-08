@@ -1,4 +1,4 @@
-//! `NodeSet`, the closed list of node types a program is built with, and `node_set!`, which declares it.
+//! `NodesEnum`, the closed list of node types a program is built with, and `nodes_enum!`, which declares it.
 
 use std::any::{Any, TypeId};
 
@@ -12,9 +12,9 @@ use super::{
 };
 
 /// The closed set of node types a program is built with, as an enum with one variant per type. Implemented
-/// by `node_set!`, and forwards each `Node` method to the variant's type.
+/// by `nodes_enum!`, and forwards each `Node` method to the variant's type.
 #[allow(clippy::type_complexity)]
-pub trait NodeSet: Clone + PartialEq + Serialize + DeserializeOwned + Send + Sync + 'static {
+pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + Sync + 'static {
     /// The edge types its node types use.
     type Edges: Edges;
 
@@ -68,10 +68,10 @@ pub fn is_state<S: 'static>() -> bool {
     TypeId::of::<S>() != TypeId::of::<()>()
 }
 
-/// Declares the enum of node types a program is built with, and implements `NodeSet` for it:
+/// Declares the enum of node types a program is built with, and implements `NodesEnum` for it:
 ///
 /// ```ignore
-/// node_set! {
+/// nodes_enum! {
 ///     edges: Edges;
 ///     pub enum Nodes {
 ///         Gain(gain::Gain),
@@ -83,7 +83,7 @@ pub fn is_state<S: 'static>() -> bool {
 /// where `Edges` was declared with `edge_types!`. Saved graphs name each node by its variant, so renaming a
 /// variant breaks existing files.
 #[macro_export]
-macro_rules! node_set {
+macro_rules! nodes_enum {
     (edges: $edges:ty; $(#[$meta:meta])* $vis:vis enum $name:ident { $($variant:ident($ty:ty)),+ $(,)? }) => {
         $(#[$meta])*
         #[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -92,7 +92,7 @@ macro_rules! node_set {
             $($variant($ty)),+
         }
 
-        impl $crate::core::engine::NodeSet for $name {
+        impl $crate::core::engine::NodesEnum for $name {
             type Edges = $edges;
 
             const TYPES: &'static [$crate::core::engine::NodeInfo] =

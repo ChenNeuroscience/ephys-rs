@@ -14,8 +14,8 @@ use super::icons::Icon;
 use super::node_tools::NodeTools;
 use super::style;
 use super::{Event, basic, node_window, toolbar};
-use crate::core::annotation::{AnnotationSet, Annotations};
-use crate::core::engine::{Graph, NodeId, NodeSet, Resolved, Runner, Snapshot};
+use crate::core::annotation::{Annotations, AnnotationsEnum};
+use crate::core::engine::{Graph, NodeId, NodesEnum, Resolved, Runner, Snapshot};
 use crate::core::layout::{Layout, Mode, Pane, hide_tile};
 use crate::core::quick_action::QuickAction;
 use crate::core::theme::Colours;
@@ -24,13 +24,13 @@ use crate::core::theme::Colours;
 const MIN_PANE: f32 = 300.0;
 
 impl Layout {
-    pub fn ui<N: NodeSet, A: AnnotationSet>(&mut self, ui: &mut egui::Ui, panes: &mut Panes<N, A>) {
+    pub fn ui<N: NodesEnum, A: AnnotationsEnum>(&mut self, ui: &mut egui::Ui, panes: &mut Panes<N, A>) {
         self.tree.ui(panes, ui);
     }
 }
 
 /// What the panes need to draw themselves, for one frame.
-pub struct Panes<'a, N: NodeSet, A: AnnotationSet> {
+pub struct Panes<'a, N: NodesEnum, A: AnnotationsEnum> {
     /// The annotation types hidden in Settings: not among the drawing tools.
     pub hidden_annotations: &'a std::collections::BTreeSet<String>,
     pub graph: &'a mut Graph<N>,
@@ -70,7 +70,7 @@ pub struct Panes<'a, N: NodeSet, A: AnnotationSet> {
 /// A node's window content: its own view if it has one (which shows its settings as it likes), otherwise the
 /// default window (`node_window`). It finds what its passes share with it in `shared`: the run's exchange, or the last run's.
 #[allow(clippy::too_many_arguments)]
-pub fn node_ui<N: NodeSet>(
+pub fn node_ui<N: NodesEnum>(
     ui: &mut egui::Ui,
     graph: &mut Graph<N>,
     resolved: &Resolved<N::Edges>,
@@ -178,7 +178,7 @@ pub fn tab_title(label: &str, colour: egui::Color32) -> egui::WidgetText {
 }
 
 /// The selected annotation's settings; for several, how many, to delete together.
-fn annotation_ui<A: AnnotationSet>(
+fn annotation_ui<A: AnnotationsEnum>(
     ui: &mut egui::Ui,
     annotations: &mut Annotations<A>,
     selection: &Selection,
@@ -219,7 +219,7 @@ fn padded(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new().inner_margin(PANE_MARGIN).show(ui, add);
 }
 
-impl<N: NodeSet, A: AnnotationSet> Panes<'_, N, A> {
+impl<N: NodesEnum, A: AnnotationsEnum> Panes<'_, N, A> {
     fn pane_contents(&mut self, ui: &mut egui::Ui, pane: Pane) {
         match pane {
             Pane::Home if self.mode == Mode::Basic => basic::show(
@@ -279,7 +279,7 @@ impl<N: NodeSet, A: AnnotationSet> Panes<'_, N, A> {
     }
 }
 
-impl<N: NodeSet, A: AnnotationSet> egui_tiles::Behavior<Pane> for Panes<'_, N, A> {
+impl<N: NodesEnum, A: AnnotationsEnum> egui_tiles::Behavior<Pane> for Panes<'_, N, A> {
     /// Where a dragged window would go: in the accent (egui_tiles uses the selection's stroke, which is the colour
     /// on the accent, so hard to see on a light theme).
     fn drag_preview_stroke(&self, _visuals: &egui::Visuals) -> egui::Stroke {

@@ -182,7 +182,7 @@ mod tests {
     #[test]
     fn nothing_selected_runs_records_and_draws_everything_after_it() {
         use crate::core::base_directory::Place;
-        use crate::core::engine::{Graph, NodeSet, Port, PortRole, Recording, Runner, Snapshot};
+        use crate::core::engine::{Graph, NodesEnum, Port, PortRole, Recording, Runner, Snapshot};
         use crate::standard_components::ephys::board::{Source, serve_test_board};
         use crate::standard_components::themes::THEMES;
         use crate::{Nodes, example_graph};
@@ -276,7 +276,7 @@ mod tests {
     /// The channels are chosen from a checkbox each, and one for all of them, as a Reference's are.
     #[test]
     fn its_settings_are_a_checkbox_for_each_channel() {
-        use crate::core::engine::{Graph, NodeSet};
+        use crate::core::engine::{Graph, NodesEnum};
         use crate::standard_components::themes::THEMES;
         use egui_kittest::kittest::Queryable as _;
         let mut harness = egui_kittest::Harness::builder().with_size([340.0, 220.0]).wgpu().build_ui_state(

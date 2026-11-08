@@ -8,7 +8,8 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    Control, Dimension, EdgeInfo, EdgeSet, Edges, Input, NodeSet, Output, Plan, SettingPort, UiContext, same_processing,
+    Control, Dimension, EdgeInfo, EdgeTypesEnum, Edges, Input, NodesEnum, Output, Plan, SettingPort, UiContext,
+    same_processing,
 };
 use crate::core::theme::Colours;
 
@@ -117,7 +118,7 @@ pub struct NodeEntry<N> {
     pub disabled: bool,
 }
 
-impl<N: NodeSet> NodeEntry<N> {
+impl<N: NodesEnum> NodeEntry<N> {
     /// Whether it's listed in the basic view: as set, or as its type says.
     pub fn shown_in_basic(&self) -> bool {
         self.show_in_basic_override.unwrap_or(self.node.show_in_basic_default())
@@ -167,11 +168,11 @@ pub struct NodeState<E: Edges> {
     pub warnings: Vec<String>,
 }
 
-/// Identifies an edge type: its dimension, and its index in that dimension's `EdgeSet::KINDS`.
+/// Identifies an edge type: its dimension, and its index in that dimension's `EdgeTypesEnum::KINDS`.
 pub type KindKey = (Dimension, usize);
 
 impl<E: Edges> NodeState<E> {
-    pub fn new<N: NodeSet<Edges = E>>(node: &N, input_streams: Vec<Option<E::DataStream>>) -> Self {
+    pub fn new<N: NodesEnum<Edges = E>>(node: &N, input_streams: Vec<Option<E::DataStream>>) -> Self {
         NodeState {
             inputs: node.inputs(),
             outputs: node.outputs(&input_streams),
@@ -193,7 +194,7 @@ impl<E: Edges> NodeState<E> {
     }
 
     /// The node's state with nothing connected.
-    pub fn unconnected<N: NodeSet<Edges = E>>(node: &N) -> Self {
+    pub fn unconnected<N: NodesEnum<Edges = E>>(node: &N) -> Self {
         Self::new(node, vec![None; node.inputs().len()])
     }
 
@@ -266,7 +267,7 @@ pub type Resolved<E> = HashMap<NodeId, NodeState<E>>;
 /// The nodes and the edges between them: what's edited, saved and undone. A run works from snapshots of it (see
 /// `Snapshot`), so it's never read from more than one thread.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
-#[serde(bound = "N: NodeSet")]
+#[serde(bound = "N: NodesEnum")]
 pub struct Graph<N> {
     next_id: u64,
     nodes: BTreeMap<NodeId, NodeEntry<N>>,
@@ -282,10 +283,10 @@ impl<N> Default for Graph<N> {
     }
 }
 
-type Setting<N> = <<N as NodeSet>::Edges as Edges>::Setting;
-type DataStream<N> = <<N as NodeSet>::Edges as Edges>::DataStream;
+type Setting<N> = <<N as NodesEnum>::Edges as Edges>::Setting;
+type DataStream<N> = <<N as NodesEnum>::Edges as Edges>::DataStream;
 
-impl<N: NodeSet> Graph<N> {
+impl<N: NodesEnum> Graph<N> {
     pub fn add(&mut self, node: N, pos: [f32; 2]) -> NodeId {
         let id = NodeId(self.next_id);
         self.next_id += 1;
@@ -627,7 +628,7 @@ pub struct Recording {
 impl Recording {
     /// Has every node that runs in `snapshot` prepare to record, in `base_directory` (if there is one). Can take a
     /// while (opening files, say), so isn't for the GUI's thread.
-    pub fn prepare<N: NodeSet>(
+    pub fn prepare<N: NodesEnum>(
         snapshot: &Snapshot<N>,
         base_directory: Option<crate::core::base_directory::Place>,
         triggers: &Arc<crate::core::triggers::DirectTriggers>,
@@ -660,7 +661,7 @@ impl Recording {
 /// A frozen version of the graph, with all its configuration (whether it's recording, too), and the plan for
 /// running it. Undo steps back through snapshots, and each processing pass runs against one. Cheap to clone and to
 /// share between threads.
-pub struct Snapshot<N: NodeSet> {
+pub struct Snapshot<N: NodesEnum> {
     /// Increases with every snapshot taken.
     pub version: u64,
     pub graph: Arc<Graph<N>>,
@@ -671,7 +672,7 @@ pub struct Snapshot<N: NodeSet> {
     pub recording: Option<Arc<Recording>>,
 }
 
-impl<N: NodeSet> Snapshot<N> {
+impl<N: NodesEnum> Snapshot<N> {
     /// A snapshot of `graph`, planning how to run it, unless it processes the same as `previous` (when only
     /// positions or labels have changed, say), whose plan it shares. It records if `previous` does.
     pub fn new(version: u64, graph: Graph<N>, previous: Option<&Snapshot<N>>) -> Self {
@@ -699,7 +700,7 @@ impl<N: NodeSet> Snapshot<N> {
     }
 }
 
-impl<N: NodeSet> Clone for Snapshot<N> {
+impl<N: NodesEnum> Clone for Snapshot<N> {
     fn clone(&self) -> Self {
         Snapshot {
             version: self.version,

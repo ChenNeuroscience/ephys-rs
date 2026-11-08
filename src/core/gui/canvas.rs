@@ -23,10 +23,10 @@ use eframe::egui::{
 use super::Event;
 use super::icons::eye;
 use super::style;
-use crate::core::annotation::{Annotation, AnnotationId, AnnotationSet, AnnotationUi, Annotations, PastedContent};
+use crate::core::annotation::{Annotation, AnnotationId, AnnotationUi, Annotations, AnnotationsEnum, PastedContent};
 use crate::core::engine::{
-    Dimension, Edge, EdgeInfo, EdgeSet, Edges, Graph, KindKey, NodeEntry, NodeId, NodeSet, NodeState, Port, PortRole,
-    Resolved,
+    Dimension, Edge, EdgeInfo, EdgeTypesEnum, Edges, Graph, KindKey, NodeEntry, NodeId, NodeState, NodesEnum, Port,
+    PortRole, Resolved,
 };
 use crate::core::layout::Pane;
 use crate::core::theme::Colours;
@@ -74,7 +74,11 @@ impl Selection {
     }
 
     /// Drops anything no longer there (after an undo, say).
-    pub fn retain_existing<N: NodeSet, A: AnnotationSet>(&mut self, graph: &Graph<N>, annotations: &Annotations<A>) {
+    pub fn retain_existing<N: NodesEnum, A: AnnotationsEnum>(
+        &mut self,
+        graph: &Graph<N>,
+        annotations: &Annotations<A>,
+    ) {
         self.nodes.retain(|id| graph.contains(*id));
         self.annotations.retain(|id| annotations.contains(*id));
         self.edge = self.edge.filter(|e| graph.edges().contains(e));
@@ -408,7 +412,7 @@ impl Canvas {
         self.editing = Some(id);
     }
 
-    fn framing<N: NodeSet, A: AnnotationSet>(
+    fn framing<N: NodesEnum, A: AnnotationsEnum>(
         &self,
         graph: &Graph<N>,
         annotations: &Annotations<A>,
@@ -450,7 +454,7 @@ impl Canvas {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn show<N: NodeSet, A: AnnotationSet>(
+    pub fn show<N: NodesEnum, A: AnnotationsEnum>(
         &mut self,
         ui: &mut egui::Ui,
         graph: &mut Graph<N>,
@@ -615,7 +619,7 @@ impl Canvas {
 
     /// With a drawing tool picked, the whole canvas is for drawing: drag out the annotation (or click for the
     /// default size). Returns the outline so far, on screen, while dragging.
-    fn draw_annotation<A: AnnotationSet>(
+    fn draw_annotation<A: AnnotationsEnum>(
         &mut self,
         ui: &mut egui::Ui,
         rect: Rect,
@@ -667,7 +671,7 @@ impl Canvas {
 
     /// A key to the edge types on the graph (on an edge or a port), in the bottom-right corner of the canvas
     /// (not of the scene, so it stays put as the graph pans and zooms). Click its title to collapse or expand it.
-    fn legend<N: NodeSet>(
+    fn legend<N: NodesEnum>(
         &mut self,
         ui: &mut egui::Ui,
         painter: &Painter,
@@ -828,7 +832,7 @@ impl Canvas {
 
     /// What's pasted over the canvas (an image, or text; while nothing's being typed in) becomes an annotation
     /// there, of the type that suits it best (see `AnnotationType::pasted`), if any can show it.
-    fn paste<A: AnnotationSet>(
+    fn paste<A: AnnotationsEnum>(
         &mut self,
         ui: &egui::Ui,
         annotations: &mut Annotations<A>,
@@ -853,7 +857,7 @@ impl Canvas {
 
     /// Makes an annotation of a type that's chosen rather than drawn (an image from a file, say), in the middle of
     /// the view.
-    pub fn insert_chosen<A: AnnotationSet>(
+    pub fn insert_chosen<A: AnnotationsEnum>(
         &mut self,
         type_index: usize,
         annotations: &mut Annotations<A>,
@@ -867,7 +871,7 @@ impl Canvas {
 
     /// Adds an annotation centred on `centre`, scaled down (keeping its shape) to take no more than a quarter of
     /// the view across or down, and selects it.
-    fn place<A: AnnotationSet>(
+    fn place<A: AnnotationsEnum>(
         &mut self,
         annotations: &mut Annotations<A>,
         selection: &mut Selection,
@@ -886,7 +890,7 @@ impl Canvas {
     /// Annotations sit above the graph, or beneath it (those that go there: boxes, see `above_graph`): drag to
     /// move (along with anything else selected), drag the corner to resize, double-click to edit.
     #[allow(clippy::too_many_arguments)]
-    fn annotations<N: NodeSet, A: AnnotationSet>(
+    fn annotations<N: NodesEnum, A: AnnotationsEnum>(
         &mut self,
         ui: &mut egui::Ui,
         painter: &Painter,
@@ -970,7 +974,7 @@ impl Canvas {
 
     /// Registers the interactions for a node and its ports. Returns whether any nodes moved.
     #[allow(clippy::too_many_arguments)]
-    fn interact_node<N: NodeSet, A: AnnotationSet>(
+    fn interact_node<N: NodesEnum, A: AnnotationsEnum>(
         &mut self,
         ui: &mut egui::Ui,
         id: NodeId,
@@ -1096,7 +1100,7 @@ impl Canvas {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn drop_wire<N: NodeSet>(
+    fn drop_wire<N: NodesEnum>(
         &self,
         port: Port,
         target: Option<Port>,
@@ -1156,7 +1160,7 @@ impl Canvas {
         }
     }
 
-    fn paint_edges<N: NodeSet>(
+    fn paint_edges<N: NodesEnum>(
         &self,
         painter: &Painter,
         graph: &Graph<N>,
@@ -1217,7 +1221,7 @@ impl Canvas {
 
 /// The legend's sections (data, then settings) with the edge types to list in each: those on some port of
 /// the graph (which covers the edges, as each connects two ports). Sections with none are left out.
-pub fn legend_entries<N: NodeSet>(
+pub fn legend_entries<N: NodesEnum>(
     resolved: &Resolved<N::Edges>,
 ) -> Vec<(&'static str, Dimension, Vec<&'static EdgeInfo>)> {
     let present: HashSet<KindKey> =
@@ -1226,8 +1230,12 @@ pub fn legend_entries<N: NodeSet>(
         kinds.iter().enumerate().filter(|(i, _)| present.contains(&(dimension, *i))).map(|(_, k)| k).collect()
     };
     [
-        ("Data", Dimension::Data, shown(Dimension::Data, <<N::Edges as Edges>::DataStream as EdgeSet>::KINDS)),
-        ("Settings", Dimension::Settings, shown(Dimension::Settings, <<N::Edges as Edges>::Setting as EdgeSet>::KINDS)),
+        ("Data", Dimension::Data, shown(Dimension::Data, <<N::Edges as Edges>::DataStream as EdgeTypesEnum>::KINDS)),
+        (
+            "Settings",
+            Dimension::Settings,
+            shown(Dimension::Settings, <<N::Edges as Edges>::Setting as EdgeTypesEnum>::KINDS),
+        ),
     ]
     .into_iter()
     .filter(|(_, _, kinds)| !kinds.is_empty())
@@ -1235,7 +1243,7 @@ pub fn legend_entries<N: NodeSet>(
 }
 
 /// Moves every selected node and annotation by `delta`, in scene coordinates.
-fn move_selection<N: NodeSet, A: AnnotationSet>(
+fn move_selection<N: NodesEnum, A: AnnotationsEnum>(
     graph: &mut Graph<N>,
     annotations: &mut Annotations<A>,
     selection: &Selection,
@@ -1253,7 +1261,7 @@ fn move_selection<N: NodeSet, A: AnnotationSet>(
     }
 }
 
-fn layouts<N: NodeSet>(
+fn layouts<N: NodesEnum>(
     graph: &Graph<N>,
     resolved: &Resolved<N::Edges>,
     to_screen: &TSTransform,
@@ -1304,7 +1312,7 @@ struct PortPaint<'a> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn paint_node<N: NodeSet>(
+fn paint_node<N: NodesEnum>(
     painter: &Painter,
     id: NodeId,
     layout: &Layout,

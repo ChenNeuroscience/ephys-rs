@@ -451,8 +451,8 @@ mod tests {
     /// See tests/snapshots/.
     #[test]
     fn the_settings_window() {
-        use crate::core::annotation::AnnotationSet;
-        use crate::core::engine::NodeSet;
+        use crate::core::annotation::AnnotationsEnum;
+        use crate::core::engine::NodesEnum;
         use crate::standard_components::themes::THEMES;
         use crate::{AnnotationTypes, Nodes};
         let mut results = egui_kittest::SnapshotResults::new();

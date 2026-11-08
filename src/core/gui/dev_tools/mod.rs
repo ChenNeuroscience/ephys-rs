@@ -10,7 +10,7 @@ mod threads;
 use eframe::egui;
 
 use super::frame_times::FrameTimes;
-use crate::core::engine::{Graph, NodeSet, Resolved, Runner, Snapshot};
+use crate::core::engine::{Graph, NodesEnum, Resolved, Runner, Snapshot};
 use crate::core::theme::Colours;
 
 /// What the dev tools remember between frames.
@@ -53,7 +53,7 @@ impl DevTools {
 /// (if the pane is much wider than it's tall) the threads beside the other two. A bar between the threads and the
 /// others, while both are open, can be dragged to share the space between them.
 #[allow(clippy::too_many_arguments)]
-pub fn show<N: NodeSet>(
+pub fn show<N: NodesEnum>(
     ui: &mut egui::Ui,
     tools: &mut DevTools,
     graph: &Graph<N>,

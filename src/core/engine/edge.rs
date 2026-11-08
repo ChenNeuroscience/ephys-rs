@@ -32,7 +32,7 @@ pub trait EdgeType: Clone + PartialEq + Debug + Send + Sync + 'static {
 
 /// The closed set of edge types for one dimension: an enum with one variant per type. Implemented by
 /// `edge_types!`.
-pub trait EdgeSet: Clone + PartialEq + Debug + Send + Sync + 'static {
+pub trait EdgeTypesEnum: Clone + PartialEq + Debug + Send + Sync + 'static {
     /// Which type a value is, without what's in it: what ports are matched by.
     type Kind: Copy + Eq + Hash + Debug + 'static;
     /// Indexed by `kind_index`.
@@ -43,8 +43,8 @@ pub trait EdgeSet: Clone + PartialEq + Debug + Send + Sync + 'static {
     fn summary(&self) -> String;
 }
 
-/// Which edge type a value of `S` is (see `EdgeSet::Kind`).
-pub type Kind<S> = <S as EdgeSet>::Kind;
+/// Which edge type a value of `S` is (see `EdgeTypesEnum::Kind`).
+pub type Kind<S> = <S as EdgeTypesEnum>::Kind;
 
 /// A data edge type, which besides describing a data stream says how a pass's worth of it is held. Data streams are
 /// small descriptions, so `Copy`; settings may hold more (a list, say), so needn't be.
@@ -65,7 +65,7 @@ pub trait DataStreamType: EdgeType + Copy {
 }
 
 /// The data edge types, with their buffers. Implemented by `edge_types!`.
-pub trait DataStreamSet: EdgeSet + Copy {
+pub trait DataStreamsEnum: EdgeTypesEnum + Copy {
     /// A buffer of any of them: an enum, with a variant for each type's.
     type Buffer: Send + Sync + 'static;
     fn buffer(&self, duration: f64) -> Self::Buffer;
@@ -77,13 +77,13 @@ pub trait DataStreamSet: EdgeSet + Copy {
 /// The edge types a program is built with, in both dimensions.
 pub trait Edges: 'static {
     /// What flows from outputs to inputs, a pass at a time.
-    type DataStream: DataStreamSet;
+    type DataStream: DataStreamsEnum;
     /// Values nodes share, through settings edges from a control to a setting.
-    type Setting: EdgeSet;
+    type Setting: EdgeTypesEnum;
 }
 
 /// A pass's worth of data on a data edge.
-pub type Buffer<E> = <<E as Edges>::DataStream as DataStreamSet>::Buffer;
+pub type Buffer<E> = <<E as Edges>::DataStream as DataStreamsEnum>::Buffer;
 
 /// The two kinds of edge: data, flowing from an output to an input each pass; and settings, linking a control to
 /// another node's setting, so either can see and change it.
@@ -134,7 +134,7 @@ macro_rules! edge_types {
             $($sv(<$st as $crate::core::engine::DataStreamType>::Buffer)),+
         }
 
-        impl $crate::core::engine::DataStreamSet for $data_stream {
+        impl $crate::core::engine::DataStreamsEnum for $data_stream {
             type Buffer = $buffer;
 
             fn buffer(&self, duration: f64) -> $buffer {
@@ -166,7 +166,7 @@ macro_rules! edge_types {
             $($variant),+
         }
 
-        impl $crate::core::engine::EdgeSet for $value {
+        impl $crate::core::engine::EdgeTypesEnum for $value {
             type Kind = $kind;
             const KINDS: &'static [$crate::core::engine::EdgeInfo] = &[$(<$ty as $crate::core::engine::EdgeType>::INFO),+];
 

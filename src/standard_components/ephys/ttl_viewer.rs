@@ -303,7 +303,7 @@ mod tests {
     #[test]
     fn lines_are_as_high_as_set() {
         use crate::Nodes;
-        use crate::core::engine::{Graph, NodeSet};
+        use crate::core::engine::{Graph, NodesEnum};
         use crate::standard_components::themes::THEMES;
         let mut graph = Graph::<Nodes>::default();
         let index = Nodes::TYPES.iter().position(|t| t.name == "TTL Viewer").unwrap();

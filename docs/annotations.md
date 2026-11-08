@@ -6,7 +6,7 @@ and arrows. They're saved with the graph and undone with it, but take no part in
 ![Drawing a note](../tests/snapshots/graph_drawing_note.png)
 
 An annotation type is a struct implementing [`AnnotationType`](../src/core/annotation.rs), listed in
-`annotation_set!` in a program's components (the [chen-neuro's](../examples/chen-neuro/src/components/mod.rs), say); the standard ones are in
+`annotations_enum!` in a program's components (the [chen-neuro's](../examples/chen-neuro/src/components/mod.rs), say); the standard ones are in
 [`annotations`](../src/standard_components/annotations/mod.rs). The simplest is the
 [sticky note](../src/standard_components/annotations/sticky_note.rs).
 
@@ -15,7 +15,7 @@ An annotation type is a struct implementing [`AnnotationType`](../src/core/annot
   was drawn); `DRAWN = false` instead asks for one when the tool's chosen (`choose`: an image from a file, say).
   `pasted`: what's pasted onto the canvas (`PastedContent`: an image, or text) is offered to each type, which says how well
   it suits it (`Fit`: `Possible`, `Good` or `Best`) and makes one. The best fit wins; of two as good, the first in
-  `annotation_set!`. As it stands, an image makes an image; a single short line, a heading; text in markdown, a
+  `annotations_enum!`. As it stands, an image makes an image; a single short line, a heading; text in markdown, a
   markdown note; other text, a sticky note. (Settings copied from nodes don't come here: they're recognised, and pasted
   as settings.)
 - `settings_ui`: its settings in the annotation pane, while it's selected; `toolbar_ui`: buttons there of its own.

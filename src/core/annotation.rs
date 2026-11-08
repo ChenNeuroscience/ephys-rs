@@ -1,7 +1,7 @@
 //! Annotations: things on the canvas that aren't part of the graph, like sticky notes. They're saved and undone
 //! along with the graph, but take no part in processing.
 //!
-//! Like node types, annotation types are declared by the program (with `annotation_set!`): each is a struct
+//! Like node types, annotation types are declared by the program (with `annotations_enum!`): each is a struct
 //! implementing `AnnotationType`. The canvas does what's the same for them all: selecting them, moving them,
 //! editing and deleting them, which goes in front of which, and making them (drawn out, chosen, or pasted). Each draws
 //! itself, and takes what interaction of its own it likes (resizing, dragging an arrow's ends), in `canvas_ui`, with
@@ -99,7 +99,7 @@ pub trait AnnotationType: Default + Clone + PartialEq + Serialize + DeserializeO
 
     /// One showing what's been pasted onto the canvas, if this type can: how well it suits it, the annotation, and
     /// its natural size (which the canvas scales down to fit the view). Of the types that can, the one that suits it
-    /// best makes it (of two as good, the first in `annotation_set!`).
+    /// best makes it (of two as good, the first in `annotations_enum!`).
     fn pasted(_pasted: &PastedContent) -> Option<(Fit, Self, [f32; 2])> {
         None
     }
@@ -129,8 +129,8 @@ pub trait AnnotationType: Default + Clone + PartialEq + Serialize + DeserializeO
 }
 
 /// The closed set of annotation types a program is built with, as an enum with one variant per type.
-/// Implemented by `annotation_set!`, and forwards each `AnnotationType` method to the variant's type.
-pub trait AnnotationSet: Clone + PartialEq + Serialize + DeserializeOwned + 'static {
+/// Implemented by `annotations_enum!`, and forwards each `AnnotationType` method to the variant's type.
+pub trait AnnotationsEnum: Clone + PartialEq + Serialize + DeserializeOwned + 'static {
     /// Indexed by type index.
     const TYPES: &'static [AnnotationInfo];
 
@@ -157,10 +157,10 @@ pub trait AnnotationSet: Clone + PartialEq + Serialize + DeserializeOwned + 'sta
     }
 }
 
-/// Declares the enum of annotation types a program is built with, and implements `AnnotationSet` for it:
+/// Declares the enum of annotation types a program is built with, and implements `AnnotationsEnum` for it:
 ///
 /// ```ignore
-/// annotation_set! {
+/// annotations_enum! {
 ///     pub enum AnnotationTypes {
 ///         StickyNote(sticky_note::StickyNote),
 ///     }
@@ -169,7 +169,7 @@ pub trait AnnotationSet: Clone + PartialEq + Serialize + DeserializeOwned + 'sta
 ///
 /// Saved files name each annotation by its variant, so renaming a variant breaks existing files.
 #[macro_export]
-macro_rules! annotation_set {
+macro_rules! annotations_enum {
     ($(#[$meta:meta])* $vis:vis enum $name:ident { $($variant:ident($ty:ty)),+ $(,)? }) => {
         $(#[$meta])*
         #[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -178,7 +178,7 @@ macro_rules! annotation_set {
             $($variant($ty)),+
         }
 
-        impl $crate::core::annotation::AnnotationSet for $name {
+        impl $crate::core::annotation::AnnotationsEnum for $name {
             const TYPES: &'static [$crate::core::annotation::AnnotationInfo] =
                 &[$(<$ty as $crate::core::annotation::AnnotationType>::INFO),+];
 
@@ -315,7 +315,7 @@ pub struct AnnotationId(pub u64);
 
 /// An annotation on the canvas.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
-#[serde(bound = "A: AnnotationSet")]
+#[serde(bound = "A: AnnotationsEnum")]
 pub struct Annotation<A> {
     /// Top-left corner on the canvas.
     pub pos: [f32; 2],
@@ -323,7 +323,7 @@ pub struct Annotation<A> {
     pub kind: A,
 }
 
-impl<A: AnnotationSet> Annotation<A> {
+impl<A: AnnotationsEnum> Annotation<A> {
     pub fn rect(&self) -> Rect {
         Rect::from_min_size(self.pos.into(), self.size.into())
     }
@@ -331,7 +331,7 @@ impl<A: AnnotationSet> Annotation<A> {
 
 /// The annotations on the canvas, by id: saved and undone with the graph, but no part of how it runs.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
-#[serde(bound = "A: AnnotationSet")]
+#[serde(bound = "A: AnnotationsEnum")]
 pub struct Annotations<A> {
     next_id: u64,
     items: BTreeMap<AnnotationId, Annotation<A>>,
@@ -343,7 +343,7 @@ impl<A> Default for Annotations<A> {
     }
 }
 
-impl<A: AnnotationSet> Annotations<A> {
+impl<A: AnnotationsEnum> Annotations<A> {
     pub fn add(&mut self, annotation: Annotation<A>) -> AnnotationId {
         self.next_id += 1;
         let id = AnnotationId(self.next_id);

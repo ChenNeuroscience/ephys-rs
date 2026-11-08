@@ -2,7 +2,7 @@
 
 use eframe::egui;
 
-use crate::core::engine::{EdgeSet, UiContext};
+use crate::core::engine::{EdgeTypesEnum, UiContext};
 use crate::core::gui::widgets::{Icon, small_icon_button, small_toggle_button};
 use crate::core::theme::Colours;
 use crate::{DataStream, Edges};

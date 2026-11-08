@@ -44,12 +44,12 @@ use crate::core::triggers::DirectTriggers;
 
 use super::pass::*;
 use super::plan::*;
-use super::{Buffer, DataStreamSet, Edges, Graph, NodeId, NodeSet, Snapshot};
+use super::{Buffer, DataStreamsEnum, Edges, Graph, NodeId, NodesEnum, Snapshot};
 
-type DataStream<N> = <<N as NodeSet>::Edges as Edges>::DataStream;
+type DataStream<N> = <<N as NodesEnum>::Edges as Edges>::DataStream;
 
 /// What the workers do with a plan: make its node state, and their buffers for it, and run its passes.
-impl<N: NodeSet> Plan<N> {
+impl<N: NodesEnum> Plan<N> {
     /// Each stateful node's state for the first pass.
     fn initial_states(&self, graph: &Graph<N>) -> Vec<StateSlot> {
         let state = |id: NodeId, inputs: &[Option<DataStream<N>>]| graph.get(id).map(|e| e.node.initial_state(inputs));
@@ -131,7 +131,7 @@ impl<N: NodeSet> Plan<N> {
             for copy in &step.copies {
                 let mut to = workspace[copy.to].take().expect("buffer in pool");
                 if let Some(from) = &workspace[copy.from] {
-                    <DataStream<N> as DataStreamSet>::copy(from, &mut to);
+                    <DataStream<N> as DataStreamsEnum>::copy(from, &mut to);
                 }
                 workspace[copy.to] = Some(to);
             }
@@ -146,15 +146,15 @@ impl<N: NodeSet> Plan<N> {
 
 /// A worker's buffers, for every step. Made once per worker per plan, before the worker runs any of the plan's
 /// passes.
-struct Workspace<N: NodeSet> {
+struct Workspace<N: NodesEnum> {
     buffers: Vec<Option<Buffer<N::Edges>>>,
     memory: Vec<Box<dyn Any + Send>>,
 }
 
-impl<N: NodeSet> Workspace<N> {
+impl<N: NodesEnum> Workspace<N> {
     /// The memory of its data buffers.
     fn bytes(&self) -> usize {
-        self.buffers.iter().flatten().map(<<N::Edges as Edges>::DataStream as DataStreamSet>::bytes).sum()
+        self.buffers.iter().flatten().map(<<N::Edges as Edges>::DataStream as DataStreamsEnum>::bytes).sum()
     }
 }
 
@@ -167,7 +167,7 @@ struct RunSlots {
 }
 
 impl RunSlots {
-    fn new<N: NodeSet>(plan: &Plan<N>, graph: &Graph<N>, exchange: Arc<Exchange>) -> Self {
+    fn new<N: NodesEnum>(plan: &Plan<N>, graph: &Graph<N>, exchange: Arc<Exchange>) -> Self {
         let times = plan.steps.iter().map(|_| StepTimes::default()).collect();
         RunSlots { states: plan.initial_states(graph), exchange, times }
     }
@@ -337,7 +337,7 @@ pub struct WorkerInfo {
 }
 
 /// A run of one plan (see `Epoch`).
-pub struct EpochInfo<N: NodeSet> {
+pub struct EpochInfo<N: NodesEnum> {
     /// Epochs are numbered from 1, in the order they start.
     pub number: u64,
     /// The version of the latest snapshot its passes run against.
@@ -352,7 +352,7 @@ pub struct EpochInfo<N: NodeSet> {
 }
 
 /// Everything about a run, as of now, for the dev tools.
-pub struct RunInfo<N: NodeSet> {
+pub struct RunInfo<N: NodesEnum> {
     /// The epoch passes are being sent for, once a worker's ready for one.
     pub running: Option<EpochInfo<N>>,
     /// A newer epoch workers are getting ready for, if there is one.
@@ -375,7 +375,7 @@ struct Job {
 /// A run of one plan: the snapshot its passes run against (swapped for newer snapshots of the same shape), the
 /// plan, what the workers share running it, and the queue its passes are dispatched on. A change to the graph
 /// that changes the plan starts a new epoch, which the dispatcher moves on to once a worker is ready for it.
-struct Epoch<N: NodeSet> {
+struct Epoch<N: NodesEnum> {
     number: u64,
     snapshot: Mutex<Snapshot<N>>,
     plan: Arc<Plan<N>>,
@@ -389,7 +389,7 @@ struct Epoch<N: NodeSet> {
     shared: Arc<Shared>,
 }
 
-impl<N: NodeSet> Epoch<N> {
+impl<N: NodesEnum> Epoch<N> {
     fn new(snapshot: &Snapshot<N>, workers: usize, shared: Arc<Shared>) -> Self {
         let plan = snapshot.plan.clone();
         let slots = RunSlots::new(&plan, &snapshot.graph, shared.exchange.clone());
@@ -416,7 +416,7 @@ impl<N: NodeSet> Epoch<N> {
     }
 }
 
-impl<N: NodeSet> Drop for Epoch<N> {
+impl<N: NodesEnum> Drop for Epoch<N> {
     /// Passes still queued when no worker is left to run them were never run. The nodes' state is let go of in
     /// the background (see `let_go_of`).
     fn drop(&mut self) {
@@ -438,13 +438,13 @@ fn let_go_of(states: Vec<StateSlot>) {
 }
 
 /// The epochs a run has: the newest (which workers prepare for), and the one being dispatched.
-struct Epochs<N: NodeSet> {
+struct Epochs<N: NodesEnum> {
     wanted: Mutex<Arc<Epoch<N>>>,
     running: Mutex<Option<Arc<Epoch<N>>>>,
 }
 
 /// The graph running: a dispatcher and a pool of workers, until dropped.
-pub struct Runner<N: NodeSet> {
+pub struct Runner<N: NodesEnum> {
     epochs: Arc<Epochs<N>>,
     shared: Arc<Shared>,
     threads: Vec<JoinHandle<()>>,
@@ -453,7 +453,7 @@ pub struct Runner<N: NodeSet> {
     version: AtomicU64,
 }
 
-impl<N: NodeSet> Runner<N> {
+impl<N: NodesEnum> Runner<N> {
     pub fn start(snapshot: &Snapshot<N>, workers: usize) -> Self {
         Self::start_with(snapshot, workers, Arc::default())
     }
@@ -609,7 +609,7 @@ impl<N: NodeSet> Runner<N> {
     }
 }
 
-impl<N: NodeSet> Drop for Runner<N> {
+impl<N: NodesEnum> Drop for Runner<N> {
     fn drop(&mut self) {
         self.shared.stop.store(true, Ordering::Relaxed);
         for thread in self.threads.drain(..) {
@@ -629,7 +629,7 @@ const IDLE_CHECK: Duration = Duration::from_millis(2);
 
 /// A worker: runs passes of its epoch, and once there's a newer one and nothing of its own queued, makes
 /// buffers for that and moves on to it. Ends when the run stops, once every pass dispatched to it is done.
-fn work<N: NodeSet>(epochs: &Epochs<N>, shared: &Shared, index: usize) {
+fn work<N: NodesEnum>(epochs: &Epochs<N>, shared: &Shared, index: usize) {
     let slot = &shared.workers[index];
     slot.pass.store(IDLE, Ordering::Relaxed);
     let mut mine: Option<(Arc<Epoch<N>>, Workspace<N>)> = None;
@@ -697,7 +697,7 @@ fn work<N: NodeSet>(epochs: &Epochs<N>, shared: &Shared, index: usize) {
 
 /// The dispatcher: releases each pass when its time is up, on the queue of the newest epoch a worker is ready
 /// for. The clock starts once the first worker is ready, so making buffers doesn't count against the run.
-fn dispatch<N: NodeSet>(epochs: &Epochs<N>, shared: &Shared) {
+fn dispatch<N: NodesEnum>(epochs: &Epochs<N>, shared: &Shared) {
     let duration = Duration::from_secs_f64(PASS_DURATION);
     let mut current: Option<(Arc<Epoch<N>>, Sender<Job>)> = None;
     let (mut sequence, mut due) = (0, Instant::now());

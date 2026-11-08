@@ -15,7 +15,7 @@ use dugong::graphlib::{Graph as Layered, GraphOptions};
 use dugong::{EdgeLabel, GraphLabel, NodeLabel, RankDir};
 
 use super::canvas::node_size;
-use crate::core::engine::{Dimension, Graph, NodeId, NodeSet};
+use crate::core::engine::{Dimension, Graph, NodeId, NodesEnum};
 
 /// Room between nodes in a column, and between columns.
 const NODE_GAP: f64 = 36.0;
@@ -28,7 +28,7 @@ const DATA_WEIGHT: f64 = 1.0;
 const SETTINGS_WEIGHT: f64 = 0.25;
 
 /// Where each node goes, its top-left corner, with the whole arrangement's top-left where the graph's was.
-pub fn arrange<N: NodeSet>(graph: &Graph<N>) -> HashMap<NodeId, [f32; 2]> {
+pub fn arrange<N: NodesEnum>(graph: &Graph<N>) -> HashMap<NodeId, [f32; 2]> {
     let resolved = graph.resolve();
     let key = |id: NodeId| id.0.to_string();
     let mut layered: Layered<NodeLabel, EdgeLabel, GraphLabel> = Layered::new(GraphOptions::default());

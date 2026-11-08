@@ -158,7 +158,7 @@ mod tests {
     #[test]
     fn what_is_pasted_becomes_the_annotation_that_suits_it_best() {
         use crate::AnnotationTypes;
-        use crate::core::annotation::{AnnotationSet, PastedContent};
+        use crate::core::annotation::{AnnotationsEnum, PastedContent};
         let made = |pasted: PastedContent| AnnotationTypes::pasted(&pasted).map(|(a, _)| a.info().name);
         assert_eq!(made(PastedContent::Image(&red_square())), Some("Image"));
         assert_eq!(made(PastedContent::Text("Recording room 2")), Some("Heading"), "a short line");

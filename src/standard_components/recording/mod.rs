@@ -346,7 +346,7 @@ mod tests {
 
     use super::Location;
     use crate::Nodes;
-    use crate::core::engine::{Graph, NodeId, NodeSet, Port, PortRole, Recording, Runner, Snapshot};
+    use crate::core::engine::{Graph, NodeId, NodesEnum, Port, PortRole, Recording, Runner, Snapshot};
     use crate::standard_components::ephys::board::{Source, serve_test_board};
 
     fn add(graph: &mut Graph<Nodes>, name: &str) -> NodeId {

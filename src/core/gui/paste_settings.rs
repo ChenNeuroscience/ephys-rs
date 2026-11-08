@@ -8,7 +8,7 @@ use eframe::egui::{self, RichText};
 use serde::{Deserialize, Serialize};
 
 use crate::core::config_patching::{PatchSets, Versions};
-use crate::core::engine::{Graph, NodeId, NodeSet};
+use crate::core::engine::{Graph, NodeId, NodesEnum};
 use crate::core::theme::Colours;
 
 /// What's on the clipboard.
@@ -28,7 +28,7 @@ struct ClipNode {
 }
 
 /// The settings of `ids`, for the clipboard, saying the versions of `patches`: as `Clip`, with a line for each node.
-pub fn copy<N: NodeSet>(graph: &Graph<N>, ids: &[NodeId], patches: &PatchSets) -> String {
+pub fn copy<N: NodesEnum>(graph: &Graph<N>, ids: &[NodeId], patches: &PatchSets) -> String {
     let nodes: Vec<String> = ids
         .iter()
         .filter_map(|id| graph.get(*id))
@@ -74,7 +74,7 @@ pub struct Pasted<N> {
     pub from: String,
 }
 
-impl<N: NodeSet> PasteSettings<N> {
+impl<N: NodesEnum> PasteSettings<N> {
     /// From the clipboard's text, matching each node to one of the same type: of the same label, or the only one.
     pub fn new(text: &str, graph: &Graph<N>, patches: &PatchSets) -> Result<Self, String> {
         let mut clip: Clip =
@@ -257,7 +257,7 @@ impl<N: NodeSet> PasteSettings<N> {
 }
 
 /// Which of a node's settings `new` would change, by name.
-pub fn changed_settings<N: NodeSet>(old: &N, new: &N) -> String {
+pub fn changed_settings<N: NodesEnum>(old: &N, new: &N) -> String {
     let settings = |n: &N| serde_json::to_value(n).ok().and_then(|v| v.get("settings").cloned()).unwrap_or_default();
     let (old, new) = (settings(old), settings(new));
     let (Some(old), Some(new)) = (old.as_object(), new.as_object()) else {

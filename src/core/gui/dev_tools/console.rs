@@ -7,7 +7,7 @@ use log::{Level, LevelFilter};
 
 use super::ansi;
 use crate::core::console::{self, Line};
-use crate::core::engine::{Graph, NodeSet};
+use crate::core::engine::{Graph, NodesEnum};
 use crate::core::theme::Colours;
 
 /// What the console shows.
@@ -41,7 +41,7 @@ fn level_colour(level: Level, colours: &Colours) -> Color32 {
     }
 }
 
-pub fn show<N: NodeSet>(ui: &mut egui::Ui, view: &mut ConsoleView, graph: &Graph<N>, colours: &Colours) {
+pub fn show<N: NodesEnum>(ui: &mut egui::Ui, view: &mut ConsoleView, graph: &Graph<N>, colours: &Colours) {
     ui.horizontal(|ui| {
         let current = LEVELS.iter().find(|(l, _)| *l == view.level).map_or("", |(_, name)| name);
         egui::ComboBox::new("console level", "shown").selected_text(current).show_ui(ui, |ui| {
@@ -100,7 +100,7 @@ fn matches(line: &Line, filter: &str) -> bool {
 }
 
 /// The line as a row: its time, level, thread and pass (or blanks, for a continuation), then the text.
-fn layout<N: NodeSet>(line: &Line, graph: &Graph<N>, colours: &Colours, font: &FontId) -> LayoutJob {
+fn layout<N: NodesEnum>(line: &Line, graph: &Graph<N>, colours: &Colours, font: &FontId) -> LayoutJob {
     let mut job = LayoutJob::default();
     let format = |colour| egui::TextFormat { font_id: font.clone(), color: colour, ..Default::default() };
     let thread = line.thread.name().unwrap_or("?");

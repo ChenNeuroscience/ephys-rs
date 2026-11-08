@@ -8,9 +8,9 @@ use super::actions::{self, Action, MENUS, MenuEntry};
 use super::canvas::Tool;
 use super::icons::{self, Icon};
 use super::{App, Event};
-use crate::core::annotation::AnnotationSet;
+use crate::core::annotation::AnnotationsEnum;
 use crate::core::base_directory::{BaseDirectoryContext, BaseDirectoryType};
-use crate::core::engine::NodeSet;
+use crate::core::engine::NodesEnum;
 use crate::core::layout::{Mode, Pane};
 
 const BUTTON: egui::Vec2 = egui::vec2(26.0, 24.0);
@@ -34,7 +34,7 @@ pub struct GraphTools {
 
 /// The graph's toolbar, along the top of its pane: adding nodes, and drawing annotations (those not `hidden`, by
 /// name); duplicating and deleting; arranging and framing it.
-pub fn graph_toolbar<A: AnnotationSet>(
+pub fn graph_toolbar<A: AnnotationsEnum>(
     ui: &mut egui::Ui,
     tools: GraphTools,
     tool: Tool,
@@ -90,7 +90,7 @@ pub fn graph_toolbar<A: AnnotationSet>(
     });
 }
 
-impl<N: NodeSet, A: AnnotationSet> App<N, A> {
+impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
     /// Whether an action can be done right now.
     pub(super) fn enabled(&self, action: Action) -> bool {
         let selected = !self.selection.nodes.is_empty() || !self.selection.annotations.is_empty();
@@ -281,7 +281,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
     }
 }
 
-impl<N: NodeSet, A: AnnotationSet> App<N, A> {
+impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
     /// Where recordings go: the base directory in use's section (see `crate::core::base_directory`), then in advanced
     /// mode, choosing which is in use. Whether there's one.
     fn base_directory_ui(&mut self, ui: &mut egui::Ui) -> bool {

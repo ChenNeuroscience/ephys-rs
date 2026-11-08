@@ -27,13 +27,13 @@ use std::sync::Arc;
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Shape, Stroke, Vec2, vec2};
 
 use crate::core::engine::{
-    EdgeSet, Edges, Flow, Graph, NodeId, NodeSet, PASS_DURATION, Plan, PoolStatus, Resolved, RunInfo, Runner, Snapshot,
-    Step, StepTime, ThreadContext,
+    EdgeTypesEnum, Edges, Flow, Graph, NodeId, NodesEnum, PASS_DURATION, Plan, PoolStatus, Resolved, RunInfo, Runner,
+    Snapshot, Step, StepTime, ThreadContext,
 };
 use crate::core::gui::style;
 use crate::core::theme::Colours;
 
-type DataStream<N> = <<N as NodeSet>::Edges as Edges>::DataStream;
+type DataStream<N> = <<N as NodesEnum>::Edges as Edges>::DataStream;
 
 /// Room between the columns of threads, for the links between them.
 const GAP: f32 = 80.0;
@@ -96,7 +96,7 @@ struct Anchors {
     node_threads: Vec<NodeThreadAnchor>,
 }
 
-pub fn show<N: NodeSet>(
+pub fn show<N: NodesEnum>(
     ui: &mut egui::Ui,
     graph: &Graph<N>,
     resolved: &Resolved<N::Edges>,
@@ -234,7 +234,7 @@ fn container(
 }
 
 /// A node as on the graph: its label on its category's colour, `width` wide (or as wide as the label).
-fn node_chip<N: NodeSet>(ui: &mut egui::Ui, graph: &Graph<N>, id: NodeId, width: Option<f32>) -> egui::Response {
+fn node_chip<N: NodesEnum>(ui: &mut egui::Ui, graph: &Graph<N>, id: NodeId, width: Option<f32>) -> egui::Response {
     let (label, category) = match graph.get(id) {
         Some(entry) => (entry.label.clone(), entry.node.info().category),
         None => ("(removed)".to_string(), crate::core::engine::Category::Processing),
@@ -249,12 +249,12 @@ fn node_chip<N: NodeSet>(ui: &mut egui::Ui, graph: &Graph<N>, id: NodeId, width:
     response
 }
 
-fn stream_info<N: NodeSet>(stream: &DataStream<N>) -> &'static crate::core::engine::EdgeInfo {
-    &<DataStream<N> as EdgeSet>::KINDS[<DataStream<N> as EdgeSet>::kind_index(stream.kind())]
+fn stream_info<N: NodesEnum>(stream: &DataStream<N>) -> &'static crate::core::engine::EdgeInfo {
+    &<DataStream<N> as EdgeTypesEnum>::KINDS[<DataStream<N> as EdgeTypesEnum>::kind_index(stream.kind())]
 }
 
 /// A buffer: a dot in its data stream's colour, and its number.
-fn buffer_tag<N: NodeSet>(ui: &mut egui::Ui, plan: &Plan<N>, buffer: usize, colours: &Colours) -> egui::Response {
+fn buffer_tag<N: NodesEnum>(ui: &mut egui::Ui, plan: &Plan<N>, buffer: usize, colours: &Colours) -> egui::Response {
     let colour = plan.buffers().get(buffer).map_or(colours.text_disabled, |s| stream_info::<N>(s).colour);
     let text = format!("b{buffer}");
     let font = FontId::monospace(10.5);
@@ -352,7 +352,7 @@ fn small(text: impl Into<String>, colour: Color32) -> RichText {
 }
 
 /// A short name for a plan, from where it is in memory: the same plan, the same name.
-fn plan_id<N: NodeSet>(plan: &Arc<Plan<N>>) -> String {
+fn plan_id<N: NodesEnum>(plan: &Arc<Plan<N>>) -> String {
     // Where it is in memory changes from run to run, which snapshots can't have.
     let address = if cfg!(test) { 0 } else { Arc::as_ptr(plan) as usize & 0xff_ffff };
     format!("@{address:06x}")
@@ -362,7 +362,7 @@ fn megabytes(bytes: usize) -> String {
     if bytes >= 100_000 { format!("{:.1} MB", bytes as f64 / 1e6) } else { format!("{:.1} kB", bytes as f64 / 1e3) }
 }
 
-fn gui_thread<N: NodeSet>(
+fn gui_thread<N: NodesEnum>(
     ui: &mut egui::Ui,
     graph: &Graph<N>,
     colours: &Colours,
@@ -388,7 +388,7 @@ fn gui_thread<N: NodeSet>(
     });
 }
 
-fn dispatcher<N: NodeSet>(ui: &mut egui::Ui, colours: &Colours, info: Option<&RunInfo<N>>, anchors: &mut Anchors) {
+fn dispatcher<N: NodesEnum>(ui: &mut egui::Ui, colours: &Colours, info: Option<&RunInfo<N>>, anchors: &mut Anchors) {
     let period = format!("every {:.0} ms", PASS_DURATION * 1000.0);
     let rect = container(ui, colours, "Pass dispatcher", WHY_DISPATCHER, &period, 1, info.is_some(), |ui| {
         let Some(info) = info else {
@@ -420,7 +420,7 @@ fn helpers(ui: &mut egui::Ui, colours: &Colours) {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn workers_ui<N: NodeSet>(
+fn workers_ui<N: NodesEnum>(
     ui: &mut egui::Ui,
     graph: &Graph<N>,
     resolved: &Resolved<N::Edges>,
@@ -480,7 +480,7 @@ fn workers_ui<N: NodeSet>(
 }
 
 /// What each worker is doing: the pass it's running, idle, or still on an older epoch.
-fn worker_chips<N: NodeSet>(ui: &mut egui::Ui, colours: &Colours, info: &RunInfo<N>) {
+fn worker_chips<N: NodesEnum>(ui: &mut egui::Ui, colours: &Colours, info: &RunInfo<N>) {
     let running = info.running.as_ref().map(|e| e.number);
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
@@ -514,7 +514,7 @@ fn worker_chips<N: NodeSet>(ui: &mut egui::Ui, colours: &Colours, info: &RunInfo
 }
 
 /// The plan, a step to a row, between taking the pass off the queue and finishing it.
-fn steps<N: NodeSet>(
+fn steps<N: NodesEnum>(
     ui: &mut egui::Ui,
     graph: &Graph<N>,
     resolved: &Resolved<N::Edges>,
@@ -543,7 +543,7 @@ fn steps<N: NodeSet>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn step_row<N: NodeSet>(
+fn step_row<N: NodesEnum>(
     ui: &mut egui::Ui,
     graph: &Graph<N>,
     resolved: &Resolved<N::Edges>,
@@ -684,7 +684,7 @@ fn step_row<N: NodeSet>(
 }
 
 /// Nodes that don't run, and why.
-fn not_running<N: NodeSet>(ui: &mut egui::Ui, graph: &Graph<N>, colours: &Colours, plan: &Plan<N>) {
+fn not_running<N: NodesEnum>(ui: &mut egui::Ui, graph: &Graph<N>, colours: &Colours, plan: &Plan<N>) {
     let idle: Vec<NodeId> =
         graph.iter().map(|(id, _)| id).filter(|id| !plan.steps().iter().any(|s| s.id == *id)).collect();
     if idle.is_empty() {
@@ -705,7 +705,7 @@ fn not_running<N: NodeSet>(ui: &mut egui::Ui, graph: &Graph<N>, colours: &Colour
 }
 
 /// Each buffer a worker has for the plan, what it holds and its size, then the totals.
-fn memory<N: NodeSet>(
+fn memory<N: NodesEnum>(
     ui: &mut egui::Ui,
     graph: &Graph<N>,
     colours: &Colours,
@@ -920,7 +920,7 @@ fn legend(ui: &mut egui::Ui, colours: &Colours) {
 }
 
 /// The nodes' threads that data goes `flow` from.
-fn node_threads<N: NodeSet>(
+fn node_threads<N: NodesEnum>(
     ui: &mut egui::Ui,
     graph: &Graph<N>,
     colours: &Colours,

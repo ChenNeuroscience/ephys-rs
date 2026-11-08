@@ -29,8 +29,8 @@ use super::{
     status_ui,
 };
 use crate::core::engine::{
-    Category, Control, DataStreamType, EdgeSet, Flow, Input, Node, NodeInfo, NodeThread, Output, PASS_DURATION, Pass,
-    PoolStatus, ThreadContext, UiContext,
+    Category, Control, DataStreamType, EdgeTypesEnum, Flow, Input, Node, NodeInfo, NodeThread, Output, PASS_DURATION,
+    Pass, PoolStatus, ThreadContext, UiContext,
 };
 use crate::standard_components::ephys::board::EPHYS_MICROVOLTS_PER_BIT;
 use crate::standard_components::ephys::{Continuous, ContinuousBuffer, Event, Events, EventsBuffer};

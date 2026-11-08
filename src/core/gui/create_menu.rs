@@ -4,7 +4,7 @@
 
 use eframe::egui::{self, Id, Key, Order, Pos2, RichText};
 
-use crate::core::engine::{Category, Graph, NodeId, NodeSet, NodeState, Port, Resolved};
+use crate::core::engine::{Category, Graph, NodeId, NodeState, NodesEnum, Port, Resolved};
 
 /// What's chosen in the menu: a new node, of a type (by index), or a port already in the graph.
 pub enum Choice {
@@ -24,7 +24,7 @@ pub struct CreateMenu {
 
 /// The port on a new node of type `type_index` that `from` would connect to, if any. The port's node is a
 /// placeholder.
-pub fn port_on_new<N: NodeSet>(from: Port, resolved: &Resolved<N::Edges>, type_index: usize) -> Option<Port> {
+pub fn port_on_new<N: NodesEnum>(from: Port, resolved: &Resolved<N::Edges>, type_index: usize) -> Option<Port> {
     let kind = resolved.get(&from.node)?.kind(from.role, from.index)?;
     NodeState::unconnected(&N::create(type_index)).find(NodeId(0), from.role.partner(), kind)
 }
@@ -35,7 +35,7 @@ impl CreateMenu {
     }
 
     /// Returns what was chosen, if anything, and whether the menu stays open.
-    pub fn show<N: NodeSet>(
+    pub fn show<N: NodesEnum>(
         &mut self,
         ctx: &egui::Context,
         graph: &Graph<N>,

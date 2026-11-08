@@ -6,14 +6,14 @@ use eframe::egui::{self, RichText};
 use super::node_tools::NodeTools;
 use super::{Event, style};
 use crate::core::engine::NodeToolbar;
-use crate::core::engine::{Graph, NodeId, NodeSet, Port, PortRole, Resolved};
+use crate::core::engine::{Graph, NodeId, NodesEnum, Port, PortRole, Resolved};
 use crate::core::theme::Colours;
 
 /// The window of a node without a view of its own: what it is, its settings, and its connections. `live` is the run's
 /// exchange (see `crate::core::exchange`), while running, for its triggers; `shared`, where it finds what its passes
 /// share with it: the same, or the last run's, once it's stopped.
 #[allow(clippy::too_many_arguments)]
-pub fn show<N: NodeSet>(
+pub fn show<N: NodesEnum>(
     ui: &mut egui::Ui,
     graph: &mut Graph<N>,
     resolved: &Resolved<N::Edges>,
@@ -118,7 +118,7 @@ pub fn show<N: NodeSet>(
 mod tests {
     use super::*;
     use crate::Nodes;
-    use crate::core::engine::NodeSet;
+    use crate::core::engine::NodesEnum;
     use crate::core::gui::docking::PANE_MARGIN;
     use crate::standard_components::themes::THEMES;
 

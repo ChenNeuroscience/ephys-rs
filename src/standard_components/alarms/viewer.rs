@@ -608,7 +608,7 @@ fn detail(alarm: &Alarm, stream: AlarmStates) -> String {
 mod tests {
     use super::*;
     use crate::Nodes;
-    use crate::core::engine::{Graph, NodeSet, Port, PortRole};
+    use crate::core::engine::{Graph, NodesEnum, Port, PortRole};
     use crate::core::exchange::Exchange;
     use crate::standard_components::alarms::Selection;
     use crate::standard_components::alarms::processor::AlarmProcessor;

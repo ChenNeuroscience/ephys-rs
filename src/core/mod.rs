@@ -3,7 +3,7 @@
 //! in the background (`background`), how plots
 //! over time lay out time (`time_axis`), quick actions (`quick_action`), and the GUI (`gui`).
 //! None of it knows about particular node, edge or annotation types, or themes: the program supplies those
-//! (see `examples/chen-neuro/`), declared with `edge_types!`, `node_set!` and `annotation_set!`, through `Components`.
+//! (see `examples/chen-neuro/`), declared with `edge_types!`, `nodes_enum!` and `annotations_enum!`, through `Components`.
 
 pub mod annotation;
 pub mod background;
@@ -62,10 +62,10 @@ pub fn build_version(lab: &str, version: &str) -> String {
 /// What a program is built from: its node types (which bring their edge types), annotation types, themes, quick
 /// actions and base directories.
 pub trait Components: 'static {
-    /// Its node types, from `node_set!`.
-    type Nodes: engine::NodeSet;
-    /// Its annotation types, from `annotation_set!`.
-    type Annotations: annotation::AnnotationSet;
+    /// Its node types, from `nodes_enum!`.
+    type Nodes: engine::NodesEnum;
+    /// Its annotation types, from `annotations_enum!`.
+    type Annotations: annotation::AnnotationsEnum;
     /// The first is the default.
     const THEMES: &'static [theme::Theme];
     /// In the order they're offered.

@@ -449,7 +449,7 @@ fn detect_ui(ui: &mut egui::Ui, board: &mut AcquisitionBoard, theme: &crate::cor
 mod tests {
     use super::*;
     use crate::Nodes;
-    use crate::core::engine::{Graph, NodeSet};
+    use crate::core::engine::{Graph, NodesEnum};
     use crate::standard_components::themes::THEMES;
 
     /// The settings, running, with a board whose headstages differ from those set. See tests/snapshots/.

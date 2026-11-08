@@ -836,7 +836,7 @@ mod tests {
 
     use super::*;
     use crate::Nodes;
-    use crate::core::engine::{Graph, NodeId, NodeSet, Port, PortRole, Runner, Snapshot};
+    use crate::core::engine::{Graph, NodeId, NodesEnum, Port, PortRole, Runner, Snapshot};
 
     #[test]
     fn lays_out_by_the_window_shape() {
