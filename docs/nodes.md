@@ -8,11 +8,33 @@ another node can edit).
 
 ![A node's window, and the graph](../tests/snapshots/graph_windows.png)
 
+## Every node is the same kind of thing
+
+**A node's category is only a label.** Sources, processing, visualisation, recording and other look different on the
+graph (each has a colour of its own) and are grouped apart in the Add Node menu, and that's all the category does.
+Nothing in the engine, the plan or the GUI behaves differently because of it. Every node is a type implementing the one
+`Node` trait, and what it does follows from which parts of it the node implements. Any node can implement any of
+them: a "visualisation" can have outputs, a "source" can take inputs or triggers, a "processing" node can have a window
+of its own, threads, or write files. Pick the category for how the node should look to the people using it, nothing
+else.
+
+The parts of the API are there for three different reasons, and it helps to know which is which:
+
+- **The data model: what the node is and does.** These have to be right for the node to work: its ports (`inputs`,
+  `outputs`), its settings (`settings`, `set_setting`) and the settings of others it can see (`controls`), `process`
+  and the `State` it carries from pass to pass, the triggers it takes, and `prepare_to_record`.
+- **Optimisation: how cheaply it runs.** Leaving these at their defaults is always correct, only slower or using more
+  memory: `in_place`, `takes`, `needs`, working memory instead of state (`CARRIED_OVER = false`), pools for buffers its
+  threads swap, and `runs_given` (one exception: a node without inputs has to say it runs).
+- **The experience of using it: how it looks and behaves for people.** These change nothing it computes: its category,
+  name and description (`INFO`), `warnings`, its window (`settings_ui`, or `custom_ui` with `HAS_CUSTOM_UI`), whether
+  it's in the basic view (`SHOW_IN_BASIC_DEFAULT`), and how its threads show in the dev tools (`threads`,
+  `thread_pool`, `thread_ui`).
+
 ## Describing it
 
 - `INFO`: its name, category (source, processing, visualisation, recording or other) and description. The category
-  is for people: its colour on the graph, and where it's offered. Nothing about how it runs depends on it; that
-  follows from what it implements.
+  is only a label (see above).
 - `inputs()` and `outputs(inputs)`: its data ports. An output says what data stream it produces, given what's on the
   inputs (or `None` while that can't be known), so a graph's streams are worked out before anything runs.
 - `warnings(inputs)`: what's wrong (an input not connected, say), shown on the graph and in its window.
