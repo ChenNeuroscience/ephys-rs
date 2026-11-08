@@ -137,8 +137,8 @@ impl GlobalSettings for OpenEphysSettings {
                 ui.label(small("Install "));
                 ui.hyperlink_to(RichText::new("the Open Ephys GUI").small(), "https://open-ephys.org/gui");
                 ui.label(small(&format!(
-                    " and its Acquisition Board plugin, then choose the \"{shared}\" folder in its installation \
-                     (ephys-rs tries to find it automatically)."
+                    " and the Acquisition Board plugin, then choose the \"{shared}\" folder in Open Ephys's \
+                     installation (ephys-rs tries to find it automatically)."
                 )));
             });
         });
