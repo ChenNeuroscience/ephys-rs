@@ -234,6 +234,7 @@ impl StateSlot {
             }
         }
         // Hands over even if `f` panics, so later passes don't wait forever.
+        /// Sets the turn to the next pass's when dropped.
         struct HandOver<'a>(&'a AtomicU64, u64);
         impl Drop for HandOver<'_> {
             fn drop(&mut self) {
@@ -266,6 +267,7 @@ pub struct Stats {
     pub memory: usize,
 }
 
+/// A pass that's run, for the stats: when it finished, how long it took, and how late.
 struct Record {
     sequence: u64,
     finished: Instant,
@@ -273,6 +275,8 @@ struct Record {
     lag: Duration,
 }
 
+/// What the runner, its workers and its dispatcher share, through every epoch: counts and recent passes for the
+/// stats, the exchange, and what each worker's doing.
 #[derive(Default)]
 struct Shared {
     stop: AtomicBool,
@@ -361,6 +365,7 @@ pub struct RunInfo<N: NodeSet> {
     pub stats: Stats,
 }
 
+/// A pass on the queue, for a worker to run.
 struct Job {
     sequence: u64,
     /// When the pass's data was all due: the end of the time it covers.

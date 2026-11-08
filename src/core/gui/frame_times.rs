@@ -36,6 +36,7 @@ struct Waiting {
     detail: String,
 }
 
+/// What a mark on the timeline is for.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MarkKind {
     /// Recording started or stopped.
@@ -46,6 +47,8 @@ pub enum MarkKind {
     Version,
 }
 
+/// The GUI's frames and the run's passes over the last while, and marks for changes, for the timeline in the dev
+/// tools.
 pub struct FrameTimes {
     started: Instant,
     pub frames: VecDeque<Frame>,

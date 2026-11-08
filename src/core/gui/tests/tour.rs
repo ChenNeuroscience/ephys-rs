@@ -78,6 +78,7 @@ impl Drop for Fake {
     }
 }
 
+/// The README's tour as it's made: the app, and the frames taken so far.
 struct Tour {
     harness: Harness<'static, TestApp>,
     frames: Vec<RgbaImage>,

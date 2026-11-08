@@ -8,6 +8,7 @@
 use super::engine::{Graph, NodeSet};
 pub use super::layout::{Arrangement, Layout, Tab};
 
+/// A quick action: its name and description, as offered, and what it does.
 pub struct QuickAction<N: NodeSet> {
     pub name: &'static str,
     pub description: &'static str,

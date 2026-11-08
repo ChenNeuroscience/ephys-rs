@@ -187,6 +187,7 @@ struct SaveFile<N, A> {
     base_directory: Option<serde_json::Value>,
 }
 
+/// The file as it's saved: `SaveFile`, borrowed rather than copied.
 #[derive(Serialize)]
 #[serde(bound = "N: NodeSet, A: AnnotationSet")]
 struct SaveFileRef<'a, N, A> {
@@ -218,6 +219,7 @@ struct Status {
     ok: bool,
 }
 
+/// The app: the graph being edited, its history and file, the run, if it's running, and everything on screen.
 pub struct App<N: NodeSet, A: AnnotationSet> {
     /// The file being edited, if it's been saved.
     path: Option<PathBuf>,

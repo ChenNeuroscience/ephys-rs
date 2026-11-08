@@ -64,6 +64,7 @@ thread_local! {
 
 /// Runs `f` as (part of) pass `pass`, so what it logs says so.
 pub fn in_pass<R>(pass: PassId, f: impl FnOnce() -> R) -> R {
+    /// Puts back the pass the thread was running before, however `f` ends.
     struct Restore(Option<PassId>);
     impl Drop for Restore {
         fn drop(&mut self) {
@@ -89,6 +90,7 @@ struct Message {
     text: String,
 }
 
+/// The lines kept for the console, and counts of what's been logged, kept or not.
 #[derive(Default)]
 struct Kept {
     lines: VecDeque<Line>,
@@ -99,6 +101,8 @@ struct Kept {
     warnings: u64,
 }
 
+/// The logger: logging threads queue their messages, and the console's frame takes them off the queue into what's
+/// kept, so logging never waits on the console.
 struct Logger {
     start: Instant,
     queue: Sender<Message>,

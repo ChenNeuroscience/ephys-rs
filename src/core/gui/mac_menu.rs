@@ -12,6 +12,8 @@ use super::actions::{self, Action, MENUS, MenuEntry};
 use crate::core::annotation::AnnotationInfo;
 use crate::core::theme::Theme;
 
+/// The menu bar, while it's shown: what's clicked comes back as `Action`s, and the checkmarks and recent files are
+/// kept in step with the app.
 pub struct MacMenu {
     /// Kept alive for as long as the menu is shown.
     _menu: Menu,

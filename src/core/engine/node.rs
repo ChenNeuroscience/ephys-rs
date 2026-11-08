@@ -11,6 +11,8 @@ use super::{Edges, Kind, NodeId, Pass};
 use crate::core::exchange::{Exchange, Shared};
 use crate::core::theme::Colours;
 
+/// What a node's for, to people: its colour on the graph, and where it's offered. Nothing about how it runs depends
+/// on it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Category {
     Source,
@@ -43,11 +45,13 @@ pub struct NodeInfo {
     pub description: &'static str,
 }
 
+/// A data input: its name, and the kind of data stream it takes.
 pub struct Input<E: Edges> {
     pub name: &'static str,
     pub kind: Kind<E::DataStream>,
 }
 
+/// A data output: its name, the kind of data stream it makes, and the stream itself, once that can be known.
 pub struct Output<E: Edges> {
     pub name: &'static str,
     pub kind: Kind<E::DataStream>,
@@ -465,6 +469,7 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
 /// by `node_set!`, and forwards each `Node` method to the variant's type.
 #[allow(clippy::type_complexity)]
 pub trait NodeSet: Clone + PartialEq + Serialize + DeserializeOwned + Send + Sync + 'static {
+    /// The edge types its node types use.
     type Edges: Edges;
 
     /// Indexed by type index.

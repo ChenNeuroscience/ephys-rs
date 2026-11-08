@@ -43,6 +43,7 @@ const HIT_DISTANCE: f32 = 8.0;
 const MIN_ZOOM: f32 = 0.2;
 const MAX_ZOOM: f32 = 2.5;
 
+/// What's selected on the canvas: nodes and annotations, or an edge.
 #[derive(Default)]
 pub struct Selection {
     pub nodes: BTreeSet<NodeId>,
@@ -324,6 +325,8 @@ fn arrowhead(painter: &Painter, at: Pos2, direction: Vec2, size: f32, colour: Co
     painter.add(Shape::convex_polygon(vec![tip, back + side, back - side], colour, Stroke::NONE));
 }
 
+/// The graph's canvas: how it's panned and zoomed, and what's going on with the pointer (a wire being dragged, a
+/// selection rectangle, an annotation being drawn), from frame to frame.
 pub struct Canvas {
     /// Scene to canvas coordinates, relative to the canvas's top-left corner.
     view: TSTransform,
@@ -1290,6 +1293,8 @@ fn target_at(pointer: Pos2, layouts: &HashMap<NodeId, Layout>, targets: &[Port])
     })
 }
 
+/// What painting a node's ports needs to know besides the node: which are connected, and where a wire being dragged
+/// could go.
 struct PortPaint<'a> {
     connected: &'a HashSet<Port>,
     targets: &'a [Port],

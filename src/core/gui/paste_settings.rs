@@ -20,6 +20,7 @@ struct Clip {
     nodes: Vec<ClipNode>,
 }
 
+/// A node's settings on the clipboard: its label, to match it to a node, and the node as the graph's file has it.
 #[derive(Serialize, Deserialize)]
 struct ClipNode {
     label: String,

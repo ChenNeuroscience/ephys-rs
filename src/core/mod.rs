@@ -61,7 +61,9 @@ pub fn build_version(lab: &str, version: &str) -> String {
 /// What a program is built from: its node types (which bring their edge types), annotation types, themes, quick
 /// actions and base directories.
 pub trait Components: 'static {
+    /// Its node types, from `node_set!`.
     type Nodes: engine::NodeSet;
+    /// Its annotation types, from `annotation_set!`.
     type Annotations: annotation::AnnotationSet;
     /// The first is the default.
     const THEMES: &'static [theme::Theme];

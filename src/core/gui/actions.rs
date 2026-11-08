@@ -8,6 +8,7 @@ use eframe::egui::{Key, KeyboardShortcut, Modifiers};
 use crate::core::annotation::AnnotationInfo;
 use crate::core::theme::Theme;
 
+/// Something the user can do from a menu, a toolbar or a shortcut: each is done the same way, whichever.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Action {
     New,
@@ -56,6 +57,7 @@ pub enum Action {
     Source,
 }
 
+/// An entry in a menu: the menus are described once, for egui's menu bar and macOS's alike.
 pub enum MenuEntry {
     Action(Action),
     Separator,

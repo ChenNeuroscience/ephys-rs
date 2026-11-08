@@ -5,11 +5,14 @@ use eframe::egui::{self, Id, Key, Order, Pos2, RichText};
 
 use crate::core::engine::{Category, Graph, NodeId, NodeSet, NodeState, Port, Resolved};
 
+/// What's chosen in the menu: a new node, of a type (by index), or a port already in the graph.
 pub enum Choice {
     New(usize),
     Existing(Port),
 }
 
+/// The menu, open: where it was opened (on screen, and in the scene, for the new node), the port it was opened
+/// from, if any, and what's being searched for.
 pub struct CreateMenu {
     pub screen: Pos2,
     pub scene: Pos2,

@@ -188,6 +188,7 @@ fn write_report(text: &str) {
 mod native {
     use std::ffi::c_void;
 
+    /// Windows's `EXCEPTION_RECORD`: what went wrong, and where.
     #[repr(C)]
     struct ExceptionRecord {
         code: u32,
@@ -198,12 +199,14 @@ mod native {
         information: [usize; 15],
     }
 
+    /// Windows's `EXCEPTION_POINTERS`, which an exception filter's given.
     #[repr(C)]
     struct ExceptionPointers {
         record: *const ExceptionRecord,
         context: *const c_void,
     }
 
+    /// An unhandled exception filter, as `SetUnhandledExceptionFilter` takes it.
     type Filter = unsafe extern "system" fn(*const ExceptionPointers) -> i32;
 
     const EXECUTE_HANDLER: i32 = 1;

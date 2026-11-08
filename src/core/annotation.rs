@@ -308,6 +308,7 @@ macro_rules! annotation_set {
     };
 }
 
+/// An annotation on the canvas, unique within it and never reused, as `NodeId` is for nodes.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct AnnotationId(pub u64);
@@ -328,6 +329,7 @@ impl<A: AnnotationSet> Annotation<A> {
     }
 }
 
+/// The annotations on the canvas, by id: saved and undone with the graph, but no part of how it runs.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(bound = "A: AnnotationSet")]
 pub struct Annotations<A> {

@@ -21,6 +21,8 @@ pub struct EdgeInfo {
     pub description: &'static str,
 }
 
+/// An edge type: what flows along an edge of one kind, a data stream (32 channels at 30 kHz, say) or a setting (a
+/// spike detector's thresholds), and how it's described on the graph.
 pub trait EdgeType: Clone + PartialEq + Debug + Send + Sync + 'static {
     const INFO: EdgeInfo;
 
@@ -31,6 +33,7 @@ pub trait EdgeType: Clone + PartialEq + Debug + Send + Sync + 'static {
 /// The closed set of edge types for one dimension: an enum with one variant per type. Implemented by
 /// `edge_types!`.
 pub trait EdgeSet: Clone + PartialEq + Debug + Send + Sync + 'static {
+    /// Which type a value is, without what's in it: what ports are matched by.
     type Kind: Copy + Eq + Hash + Debug + 'static;
     /// Indexed by `kind_index`.
     const KINDS: &'static [EdgeInfo];
@@ -40,11 +43,13 @@ pub trait EdgeSet: Clone + PartialEq + Debug + Send + Sync + 'static {
     fn summary(&self) -> String;
 }
 
+/// Which edge type a value of `S` is (see `EdgeSet::Kind`).
 pub type Kind<S> = <S as EdgeSet>::Kind;
 
 /// A data edge type, which besides describing a data stream says how a pass's worth of it is held. Data streams are
 /// small descriptions, so `Copy`; settings may hold more (a list, say), so needn't be.
 pub trait DataStreamType: EdgeType + Copy {
+    /// A pass's worth of it, made once and reused for every pass.
     type Buffer: Send + Sync + 'static;
 
     /// An empty buffer with room for `duration` seconds of this data stream. Buffers are made before running, and
@@ -61,6 +66,7 @@ pub trait DataStreamType: EdgeType + Copy {
 
 /// The data edge types, with their buffers. Implemented by `edge_types!`.
 pub trait DataStreamSet: EdgeSet + Copy {
+    /// A buffer of any of them: an enum, with a variant for each type's.
     type Buffer: Send + Sync + 'static;
     fn buffer(&self, duration: f64) -> Self::Buffer;
     fn bytes(buffer: &Self::Buffer) -> usize;
@@ -70,13 +76,17 @@ pub trait DataStreamSet: EdgeSet + Copy {
 
 /// The edge types a program is built with, in both dimensions.
 pub trait Edges: 'static {
+    /// What flows from outputs to inputs, a pass at a time.
     type DataStream: DataStreamSet;
+    /// Values nodes share, through settings edges from a control to a setting.
     type Setting: EdgeSet;
 }
 
 /// A pass's worth of data on a data edge.
 pub type Buffer<E> = <<E as Edges>::DataStream as DataStreamSet>::Buffer;
 
+/// The two kinds of edge: data, flowing from an output to an input each pass; and settings, linking a control to
+/// another node's setting, so either can see and change it.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default, Serialize, Deserialize)]
 pub enum Dimension {
     #[default]

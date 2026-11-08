@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::engine::{Graph, NodeId, NodeSet};
 
+/// What a pane in the layout shows.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub enum Pane {
     /// Home: the basic view, or the graph (see `Mode`).
@@ -57,6 +58,7 @@ impl Mode {
     }
 }
 
+/// Where a node's window is, if anywhere.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum WindowState {
     Closed,
@@ -76,6 +78,8 @@ pub enum Side {
     Below,
 }
 
+/// Where the panes are: docked in a tree of tabs and splits, or floating; and whether the home pane's basic or
+/// advanced. Saved with the file, but for the mode.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Layout {
     pub(crate) tree: Tree<Pane>,

@@ -11,6 +11,7 @@ use super::toolbar;
 use crate::core::engine::{Graph, NodeId, NodeSet, NodeToolbar, Port, Role};
 use crate::core::exchange::Exchange;
 
+/// A node's toolbar, for a frame: what it shows, and where what's clicked goes.
 pub struct NodeTools<'e> {
     pub id: NodeId,
     /// Whether it's in the basic view, and enabled, now.

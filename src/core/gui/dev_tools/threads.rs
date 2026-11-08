@@ -269,6 +269,7 @@ fn buffer_tag<N: NodeSet>(ui: &mut egui::Ui, plan: &Plan<N>, buffer: usize, colo
     response
 }
 
+/// A small picture beside a step, for what happens there between threads or buffers.
 #[derive(Clone, Copy)]
 enum Glyph {
     /// A sync point: waiting for another thread.

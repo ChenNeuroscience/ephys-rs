@@ -8,6 +8,8 @@ use eframe::egui::{Color32, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, vec2
 use super::style;
 use crate::core::engine::Category;
 
+/// An icon, drawn with egui's painter rather than from an image, so it's crisp at any size and in any theme's
+/// colours.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Icon {
     New,

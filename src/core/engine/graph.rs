@@ -12,6 +12,7 @@ use super::{
 };
 use crate::core::theme::Colours;
 
+/// A node in a graph, unique within it and never reused, so it's the same node through undo, redo and saving.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct NodeId(pub u64);
@@ -99,6 +100,8 @@ impl Edge {
     }
 }
 
+/// A node in the graph, with what the graph keeps about it besides its settings: its label, where it is, and
+/// whether it's disabled or shown in the basic view.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct NodeEntry<N> {
     pub node: N,
@@ -121,6 +124,7 @@ impl<N: NodeSet> NodeEntry<N> {
     }
 }
 
+/// Why two ports can't be connected.
 #[derive(Debug, PartialEq)]
 pub enum ConnectError {
     NoSuchPort,
@@ -255,8 +259,12 @@ pub fn edge_info<E: Edges>((dimension, index): KindKey) -> &'static EdgeInfo {
     }
 }
 
+/// Every node's state (see `NodeState`): its ports, and the data streams on them, worked out from its settings and
+/// what's upstream.
 pub type Resolved<E> = HashMap<NodeId, NodeState<E>>;
 
+/// The nodes and the edges between them: what's edited, saved and undone. A run works from snapshots of it (see
+/// `Snapshot`), so it's never read from more than one thread.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(bound = "N: NodeSet")]
 pub struct Graph<N> {
