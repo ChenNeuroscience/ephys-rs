@@ -155,12 +155,12 @@ use PortRole::{Control, Input, Output, Setting};
 
 /// A real board: the Open Ephys acquisition board, generation 1 or 2.
 fn real_board() -> board::Source {
-    board::Source::OpalKelly { board: OpalKellyKind::OpenEphys, bitfile: String::new(), library: String::new() }
+    board::Source::OpalKelly { board: OpalKellyKind::OpenEphys }
 }
 
 /// A real camera: the first FLIR camera found.
 fn real_camera() -> camera::Source {
-    camera::Source::Spinnaker { serial: String::new(), library: String::new() }
+    camera::Source::Spinnaker { serial: String::new() }
 }
 
 /// Board → Reference → Band-pass (spikes' band) → Spike Detector → Spike Gain → Spike Viewer (setting the

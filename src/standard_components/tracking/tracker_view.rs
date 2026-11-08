@@ -143,6 +143,7 @@ impl Node<Edges> for TrackerView {
     type State = Tracking;
     type Shared = TrackerShared;
     type UiState = TrackerUi;
+    type GlobalSettings = ();
 
     fn inputs(&self) -> Vec<Input<Edges>> {
         vec![

@@ -57,6 +57,7 @@ impl Node<Edges> for SpikeGain {
     type State = Gaining;
     type Shared = ();
     type UiState = ();
+    type GlobalSettings = ();
 
     const INFO: NodeInfo = NodeInfo {
         name: "Spike Gain",

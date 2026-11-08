@@ -20,13 +20,15 @@ use std::io;
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::engine::{DataStreamType, PASS_DURATION};
+use crate::Edges;
+use crate::core::engine::{DataStreamType, Node, PASS_DURATION};
 use crate::standard_components::ephys::{Continuous, ContinuousBuffer, Events, EventsBuffer};
 
 pub use fake::FakeBoard;
 #[cfg(test)]
 pub use fake::serve_test_board;
-pub use opal_kelly::OpalKellyKind;
+pub use oni::OniSettings;
+pub use opal_kelly::{OpalKellyKind, OpalKellySettings};
 
 /// Microvolts per bit of headstage data.
 pub const EPHYS_MICROVOLTS_PER_BIT: f32 = 0.195;
@@ -207,18 +209,9 @@ pub enum Source {
     /// Samples streamed over TCP by `synthetic_streams/fake_acquisition_board.py`.
     Fake { address: String },
     /// A board on an Opal Kelly FPGA running Rhythm firmware.
-    OpalKelly {
-        board: OpalKellyKind,
-        /// The FPGA's bitfile, if it isn't found automatically; blank to search.
-        bitfile: String,
-        /// Opal Kelly's FrontPanel library, if it isn't found automatically; blank to search.
-        library: String,
-    },
+    OpalKelly { board: OpalKellyKind },
     /// The generation 3 Open Ephys Acquisition Board.
-    Oni {
-        /// liboni's FT600 driver, if it isn't found automatically; blank to search.
-        driver: String,
-    },
+    Oni,
 }
 
 impl Source {
@@ -227,7 +220,7 @@ impl Source {
         match self {
             Source::Fake { .. } => 8,
             Source::OpalKelly { board, .. } => board.ttl_lines(),
-            Source::Oni { .. } => 8,
+            Source::Oni => 8,
         }
     }
 }
@@ -241,14 +234,13 @@ impl Default for Source {
 /// Where `fake_acquisition_board.py` serves samples by default.
 pub const FAKE_ADDRESS: &str = "127.0.0.1:27031";
 
-/// Opens the board, finding out what it has.
+/// Opens the board, finding out what it has. Where its libraries are is as the global settings say now, so a change
+/// applies when it's next tried.
 pub fn open(source: &Source) -> io::Result<Box<dyn Board>> {
-    let blank_as_none = |s: &str| Some(s.trim()).filter(|s| !s.is_empty()).map(str::to_string);
+    let (opal_kelly, oni) = <node::AcquisitionBoard as Node<Edges>>::global_settings();
     Ok(match source {
         Source::Fake { address } => Box::new(FakeBoard::connect(address)?),
-        Source::OpalKelly { board, bitfile, library } => {
-            Box::new(opal_kelly::open(*board, blank_as_none(bitfile).as_deref(), blank_as_none(library).as_deref())?)
-        }
-        Source::Oni { driver } => Box::new(oni::open(blank_as_none(driver).as_deref())?),
+        Source::OpalKelly { board } => Box::new(opal_kelly::open(*board, &opal_kelly)?),
+        Source::Oni => Box::new(oni::open(&oni)?),
     })
 }

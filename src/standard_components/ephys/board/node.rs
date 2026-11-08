@@ -93,6 +93,7 @@ impl Node<Edges> for AcquisitionBoard {
     /// What it shows, for its window.
     type Shared = Pool<BoardDisplay>;
     type UiState = ();
+    type GlobalSettings = (super::OpalKellySettings, super::OniSettings);
 
     fn outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {
         let rate = self.sample_rate as f32;
@@ -221,7 +222,7 @@ impl Node<Edges> for AcquisitionBoard {
                     Source::Fake { address } => {
                         setting(ui, "Address", |ui| ui.text_edit_singleline(address));
                     }
-                    Source::OpalKelly { board, bitfile, library } => {
+                    Source::OpalKelly { board } => {
                         setting(ui, "Kind", |ui| {
                             egui::ComboBox::from_id_salt("rhythm")
                                 .selected_text(board.name())
@@ -232,17 +233,8 @@ impl Node<Edges> for AcquisitionBoard {
                                 })
                                 .response
                         });
-                        let path = |ui: &mut egui::Ui, value: &mut String| {
-                            ui.add(egui::TextEdit::singleline(value).hint_text("found automatically"))
-                        };
-                        setting(ui, "Bitfile", |ui| path(ui, bitfile));
-                        setting(ui, "Library", |ui| path(ui, library));
                     }
-                    Source::Oni { driver } => {
-                        setting(ui, "Driver", |ui| {
-                            ui.add(egui::TextEdit::singleline(driver).hint_text("found automatically"))
-                        });
-                    }
+                    Source::Oni => {}
                 }
                 setting(ui, "Sample rate", |ui| {
                     egui::ComboBox::from_id_salt("rate")
@@ -338,13 +330,9 @@ fn source_ui(ui: &mut egui::Ui, source: &mut Source) -> egui::Response {
     let name = |source: &Source| match source {
         Source::Fake { .. } => "Fake board (synthetic_streams/)",
         Source::OpalKelly { .. } => "Open Ephys gen 1/2, or Intan USB",
-        Source::Oni { .. } => "Open Ephys gen 3",
+        Source::Oni => "Open Ephys gen 3",
     };
-    let choices = [
-        Source::default(),
-        Source::OpalKelly { board: OpalKellyKind::OpenEphys, bitfile: String::new(), library: String::new() },
-        Source::Oni { driver: String::new() },
-    ];
+    let choices = [Source::default(), Source::OpalKelly { board: OpalKellyKind::OpenEphys }, Source::Oni];
     egui::ComboBox::from_id_salt("board")
         .selected_text(name(source))
         .show_ui(ui, |ui| {

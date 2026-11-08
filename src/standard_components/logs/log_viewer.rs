@@ -64,6 +64,7 @@ impl Node<Edges> for LogViewer {
     type State = Viewing;
     type Shared = SentLines;
     type UiState = KeptLines;
+    type GlobalSettings = ();
 
     const INFO: NodeInfo = NodeInfo {
         name: "Log Viewer",

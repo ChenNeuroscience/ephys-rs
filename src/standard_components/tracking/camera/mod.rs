@@ -11,11 +11,12 @@ use std::io;
 use eframe::egui::Color32;
 use serde::{Deserialize, Serialize};
 
-use crate::core::engine::{DataStreamType, EdgeInfo, EdgeType, PoolStatus};
+use crate::Edges;
+use crate::core::engine::{DataStreamType, EdgeInfo, EdgeType, Node, PoolStatus};
 pub use fake::FakeCamera;
 #[cfg(test)]
 pub use fake::serve_test_scene;
-pub use spinnaker::SpinnakerCamera;
+pub use spinnaker::{SpinnakerCamera, SpinnakerSettings};
 
 /// A camera's stats, as a data stream: how capture is going, and what the camera is and supports.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -185,8 +186,6 @@ pub enum Source {
     Spinnaker {
         /// Blank for the first camera found.
         serial: String,
-        /// The Spinnaker C library, if it isn't found automatically; blank to search.
-        library: String,
     },
 }
 
@@ -208,15 +207,16 @@ pub fn open(source: &Source, settings: &CameraSettings, note: &mut dyn FnMut(Str
             note(format!("Camera: connecting to the fake camera at {address}"));
             Box::new(FakeCamera::connect(address)?)
         }
-        Source::Spinnaker { serial, library } => {
-            let (serial, library) = (blank_as_none(serial), blank_as_none(library));
+        Source::Spinnaker { serial } => {
+            let serial = blank_as_none(serial);
             note(format!(
-                "Camera: looking for a FLIR camera ({}, Spinnaker library {}), at {} fps",
+                "Camera: looking for a FLIR camera ({}), at {} fps",
                 serial.as_ref().map_or("the first found".into(), |s| format!("serial {s}")),
-                library.as_deref().unwrap_or("found automatically"),
                 settings.frame_rate,
             ));
-            Box::new(SpinnakerCamera::open(serial.as_deref(), settings.frame_rate, library.as_deref(), note)?)
+            // As they are now, so a change applies when it's next tried.
+            let spinnaker = <node::Camera as Node<Edges>>::global_settings();
+            Box::new(SpinnakerCamera::open(serial.as_deref(), settings.frame_rate, &spinnaker, note)?)
         }
     })
 }

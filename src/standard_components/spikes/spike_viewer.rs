@@ -167,6 +167,7 @@ impl Node<Edges> for SpikeViewer {
     /// What it shows, for its window.
     type Shared = Pool<RecentDisplay>;
     type UiState = ();
+    type GlobalSettings = ();
 
     const INFO: NodeInfo = NodeInfo {
         name: "Spike Viewer",

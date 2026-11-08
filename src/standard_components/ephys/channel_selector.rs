@@ -65,6 +65,7 @@ impl Node<Edges> for ChannelSelector {
     type State = Passed;
     type Shared = ();
     type UiState = ();
+    type GlobalSettings = ();
 
     fn inputs(&self) -> Vec<Input<Edges>> {
         vec![Input { name: "continuous", kind: Kind::Continuous }]

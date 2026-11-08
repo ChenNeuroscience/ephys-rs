@@ -174,6 +174,7 @@ impl Node<Edges> for AlarmViewer {
     type State = Sending;
     type Shared = SentStates;
     type UiState = AlarmsUi;
+    type GlobalSettings = ();
 
     const INFO: NodeInfo = NodeInfo {
         name: "Alarm Viewer",

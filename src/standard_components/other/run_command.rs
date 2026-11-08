@@ -1232,6 +1232,7 @@ impl Node<Edges> for RunCommand {
     type State = ();
     type Shared = ();
     type UiState = ();
+    type GlobalSettings = ();
 
     const INFO: NodeInfo = NodeInfo {
         name: "Run Command",

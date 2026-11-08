@@ -3,8 +3,8 @@
 //! (`Rhd2000ONIBoard`, `AcqBoardONI`); liboni, the ONI host library, is ported in `liboni`.
 //!
 //! liboni's FT600 driver, `libonidriver_ft600`, is a library loaded at runtime, as it's built on FTDI's own: it
-//! comes with the program, and is otherwise looked for where the Open Ephys GUI puts it. On Windows, FTDI's D3XX
-//! USB driver must be installed too.
+//! comes with the program, and is otherwise looked for where the Open Ephys GUI puts it; where it's looked for first is
+//! a global setting (`OniSettings`). On Windows, FTDI's D3XX USB driver must be installed too.
 //!
 //! This is the transport: the rest is in `rhythm`, shared with the earlier boards. Not yet tried on hardware.
 
@@ -14,11 +14,16 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
+use eframe::egui;
 use libloading::Library;
+use serde::{Deserialize, Serialize};
 
 use super::liboni::{self, Context, Driver, Stream};
-use super::opal_kelly::search_dirs;
+use super::opal_kelly::default_dirs;
 use super::rhythm::{RhythmBoard, Transport, sample_bytes};
+use crate::core::global_settings::GlobalSettings;
+use crate::core::search_folders::{self, SearchFolders};
+use crate::core::theme::Colours;
 
 /// liboni's driver for the board's USB 3 chip.
 #[cfg(windows)]
@@ -64,6 +69,53 @@ const LED_ENABLE: u32 = 4;
 /// Frames read at a time while running.
 const FRAMES_PER_READ: usize = 128;
 
+/// Where the generation 3 board's driver is looked for: a tab in Settings….
+#[derive(Clone, Default, PartialEq, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OniSettings {
+    /// Looked in first.
+    pub folders: SearchFolders,
+}
+
+impl OniSettings {
+    /// Where the driver's looked for: the folders chosen, with the program, where the Open Ephys GUI puts it, then
+    /// the system's search path.
+    fn candidates(&self) -> Vec<PathBuf> {
+        let mut candidates = self.folders.candidates(&[DRIVER_NAME], &default_dirs());
+        candidates.push(DRIVER_NAME.into());
+        candidates
+    }
+}
+
+impl GlobalSettings for OniSettings {
+    const NAME: &'static str = "Open Ephys gen 3";
+
+    fn ui(&mut self, ui: &mut egui::Ui, colours: &Colours) {
+        search_folders::note(
+            ui,
+            colours,
+            "Where to look first for liboni's FT600 driver, for the generation 3 Open Ephys Acquisition Board. It \
+             comes with ephys-rs, and is looked for where the Open Ephys GUI puts it too.",
+        );
+        self.folders.ui(ui, colours);
+        ui.add_space(8.0);
+        let found = self.candidates().into_iter().find(|p| p.is_file());
+        search_folders::found_ui(ui, colours, &[("FT600 driver", found)]);
+        ui.add_space(4.0);
+        search_folders::note(ui, colours, search_folders::LOADED_ONCE);
+        ui.add_space(8.0);
+        search_folders::get_them_ui(
+            ui,
+            colours,
+            &[
+                ("The Open Ephys GUI, with its Acquisition Board plugin", "https://open-ephys.org/gui"),
+                ("Open Ephys's guide to the Acquisition Board", "https://open-ephys.github.io/acq-board-docs/"),
+                ("FTDI's D3XX USB driver (Windows)", "https://ftdichip.com/drivers/d3xx-drivers/"),
+            ],
+        );
+    }
+}
+
 type DriverCtx = *mut c_void;
 
 macro_rules! driver_api {
@@ -104,19 +156,12 @@ driver_api! {
 
 impl DriverApi {
     /// Loads the driver once it's found (it's never unloaded); until then, tries again each time.
-    fn get(path: Option<&str>) -> io::Result<&'static DriverApi> {
+    fn get(settings: &OniSettings) -> io::Result<&'static DriverApi> {
         static API: OnceLock<DriverApi> = OnceLock::new();
         if let Some(api) = API.get() {
             return Ok(api);
         }
-        let candidates: Vec<PathBuf> = match path {
-            Some(p) => vec![p.into()],
-            None => search_dirs()
-                .into_iter()
-                .map(|d| d.join(DRIVER_NAME))
-                .chain(std::iter::once(DRIVER_NAME.into()))
-                .collect(),
-        };
+        let candidates = settings.candidates();
         let mut errors = Vec::new();
         for candidate in &candidates {
             // Safety: loading a library runs its initialisers; the driver's are benign.
@@ -203,9 +248,9 @@ pub struct Oni {
     running: bool,
 }
 
-/// Opens the board. `driver` overrides where liboni's FT600 driver is looked for.
-pub fn open(driver: Option<&str>) -> io::Result<RhythmBoard<Oni>> {
-    let mut context = Context::new(Ft600::new(DriverApi::get(driver)?)?);
+/// Opens the board, finding liboni's FT600 driver as `settings` say.
+pub fn open(settings: &OniSettings) -> io::Result<RhythmBoard<Oni>> {
+    let mut context = Context::new(Ft600::new(DriverApi::get(settings)?)?);
     match context.init(-1) {
         Ok(()) => {}
         Err(liboni::Error(liboni::EBADCONTROLLER)) => {
@@ -444,5 +489,19 @@ impl Transport for Oni {
 impl Drop for Oni {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn folders_chosen_are_looked_in_first_and_the_system_last() {
+        let settings = OniSettings { folders: SearchFolders(vec!["/chosen".into()]) };
+        let candidates = settings.candidates();
+        assert_eq!(candidates[0], PathBuf::from("/chosen").join(DRIVER_NAME));
+        assert_eq!(candidates[1..candidates.len() - 1], OniSettings::default().candidates()[..candidates.len() - 2]);
+        assert_eq!(candidates.last(), Some(&PathBuf::from(DRIVER_NAME)));
     }
 }

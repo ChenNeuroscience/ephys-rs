@@ -5,7 +5,8 @@
 //! Opal Kelly's FrontPanel library is loaded at runtime, so building needs nothing from Opal Kelly. The FPGA is
 //! configured from a bitfile (`rhd2000.bit`, `rhd2000_usb3.bit`, `intan_rhd_usb.bit`). The library and the Open Ephys
 //! bitfiles come with the program, from the Open Ephys acquisition board plugin's release (see scripts/package.py),
-//! and are otherwise looked for where the Open Ephys GUI puts them.
+//! and are otherwise looked for where the Open Ephys GUI puts them; where they're looked for first is a global
+//! setting (`OpalKellySettings`).
 //!
 //! This is the transport: the rest is in `rhythm`, shared with the generation 3 board. Not yet tried on hardware.
 
@@ -15,10 +16,14 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
+use eframe::egui;
 use libloading::Library;
 use serde::{Deserialize, Serialize};
 
 use super::rhythm::{RhythmBoard, Transport, sample_bytes};
+use crate::core::global_settings::GlobalSettings;
+use crate::core::search_folders::{self, SearchFolders};
+use crate::core::theme::Colours;
 
 type Handle = *mut c_void;
 
@@ -170,20 +175,67 @@ frontpanel_api! {
     okFrontPanel_Close(Handle) -> ();
 }
 
-/// Where the boards' libraries and bitfiles are looked for: with this program (next to it, or in its macOS app's
-/// Frameworks and Resources), then where the Open Ephys GUI keeps what its plugins come with.
-pub(super) fn search_dirs() -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(dir) = exe.parent()
-    {
-        dirs.push(dir.to_path_buf());
-        dirs.push(dir.join("shared"));
-        if cfg!(target_os = "macos") {
-            dirs.push(dir.join("../Frameworks"));
-            dirs.push(dir.join("../Resources"));
-        }
+/// Where the Opal Kelly boards' library and bitfiles are looked for: a tab in Settings….
+#[derive(Clone, Default, PartialEq, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OpalKellySettings {
+    /// Looked in first.
+    pub folders: SearchFolders,
+}
+
+impl OpalKellySettings {
+    /// Where FrontPanel's looked for: the folders chosen, with the program, where the Open Ephys GUI puts it, then the
+    /// system's search path.
+    fn library_candidates(&self) -> Vec<PathBuf> {
+        let mut candidates = self.folders.candidates(LIBRARY_NAMES, &default_dirs());
+        candidates.extend(LIBRARY_NAMES.iter().map(PathBuf::from));
+        candidates
     }
+
+    fn bitfile(&self, name: &str) -> Option<PathBuf> {
+        self.folders.find(&[name], &default_dirs())
+    }
+}
+
+impl GlobalSettings for OpalKellySettings {
+    const NAME: &'static str = "Open Ephys gen 1/2";
+
+    fn ui(&mut self, ui: &mut egui::Ui, colours: &Colours) {
+        search_folders::note(
+            ui,
+            colours,
+            "Where to look first for Opal Kelly's FrontPanel library and the bitfiles, for the Open Ephys \
+             Acquisition Board (generations 1 and 2) and Intan's RHD USB Interface Board. The library and the Open \
+             Ephys bitfiles come with ephys-rs, and are looked for where the Open Ephys GUI puts them too.",
+        );
+        self.folders.ui(ui, colours);
+        ui.add_space(8.0);
+        let library = self.library_candidates().into_iter().find(|p| p.is_file());
+        let mut found = vec![("FrontPanel library", library)];
+        for name in ["rhd2000.bit", "rhd2000_usb3.bit", "intan_rhd_usb.bit"] {
+            found.push((name, self.bitfile(name)));
+        }
+        search_folders::found_ui(ui, colours, &found);
+        ui.add_space(4.0);
+        search_folders::note(ui, colours, search_folders::LOADED_ONCE);
+        ui.add_space(8.0);
+        search_folders::get_them_ui(
+            ui,
+            colours,
+            &[
+                ("The Open Ephys GUI, with its Acquisition Board plugin", "https://open-ephys.org/gui"),
+                ("Open Ephys's guide to the Acquisition Board", "https://open-ephys.github.io/acq-board-docs/"),
+                ("Opal Kelly's FrontPanel, and its USB driver", "https://opalkelly.com/products/frontpanel/"),
+                ("Intan's software, with its board's bitfile", "https://intantech.com/downloads.html"),
+            ],
+        );
+    }
+}
+
+/// Where the boards' libraries and bitfiles are, unless they're in folders chosen: with this program, then where
+/// the Open Ephys GUI keeps what its plugins come with.
+pub(super) fn default_dirs() -> Vec<PathBuf> {
+    let mut dirs = search_folders::with_program();
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let saved_state: Vec<PathBuf> = if cfg!(windows) {
         ["ProgramData", "APPDATA", "LOCALAPPDATA"]
@@ -212,19 +264,12 @@ pub(super) fn search_dirs() -> Vec<PathBuf> {
 
 impl Api {
     /// Loads the library once it's found (it's never unloaded); until then, tries again each time.
-    fn get(path: Option<&str>) -> io::Result<&'static Api> {
+    fn get(settings: &OpalKellySettings) -> io::Result<&'static Api> {
         static API: OnceLock<Api> = OnceLock::new();
         if let Some(api) = API.get() {
             return Ok(api);
         }
-        let candidates: Vec<PathBuf> = match path {
-            Some(p) => vec![p.into()],
-            None => search_dirs()
-                .into_iter()
-                .flat_map(|d| LIBRARY_NAMES.iter().map(move |name| d.join(name)))
-                .chain(LIBRARY_NAMES.iter().map(PathBuf::from))
-                .collect(),
-        };
+        let candidates = settings.library_candidates();
         let mut errors = Vec::new();
         for candidate in &candidates {
             // Safety: loading a library runs its initialisers; FrontPanel's are benign.
@@ -313,10 +358,9 @@ pub struct OpalKelly {
 // The handle is only used from the thread that owns the board.
 unsafe impl Send for OpalKelly {}
 
-/// Opens the first Rhythm board found and configures its FPGA. `bitfile` and `library` override where those
-/// are looked for.
-pub fn open(kind: OpalKellyKind, bitfile: Option<&str>, library: Option<&str>) -> io::Result<RhythmBoard<OpalKelly>> {
-    let api = Api::get(library)?;
+/// Opens the first Rhythm board found and configures its FPGA, finding the library and bitfile as `settings` say.
+pub fn open(kind: OpalKellyKind, settings: &OpalKellySettings) -> io::Result<RhythmBoard<OpalKelly>> {
+    let api = Api::get(settings)?;
     let handle = unsafe { (api.okFrontPanel_Construct)() };
     if handle.is_null() {
         return Err(io::Error::other("FrontPanel couldn't start"));
@@ -348,20 +392,19 @@ pub fn open(kind: OpalKellyKind, bitfile: Option<&str>, library: Option<&str>) -
     fp.set_read_timeout();
     unsafe { (api.okFrontPanel_LoadDefaultPLLConfiguration)(handle) };
     let mut board = OpalKelly { fp, kind, usb3, enabled_streams: 0, running: false };
-    board.configure_fpga(bitfile)?;
+    board.configure_fpga(settings)?;
     board.initialize();
     RhythmBoard::new(board)
 }
 
 impl OpalKelly {
-    fn configure_fpga(&mut self, bitfile: Option<&str>) -> io::Result<()> {
+    fn configure_fpga(&mut self, settings: &OpalKellySettings) -> io::Result<()> {
         let name = self.kind.bitfile(self.usb3);
-        let candidates: Vec<PathBuf> = match bitfile {
-            Some(path) => vec![path.into()],
-            None => search_dirs().into_iter().map(|d| d.join(name)).filter(|p| p.exists()).collect(),
-        };
-        let Some(path) = candidates.first() else {
-            return Err(io::Error::new(io::ErrorKind::NotFound, format!("bitfile {name} not found: set where it is")));
+        let Some(path) = settings.bitfile(name) else {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("bitfile {name} not found: add the folder it's in, in Settings… › {}", OpalKellySettings::NAME),
+            ));
         };
         let c_path = CString::new(path.to_string_lossy().as_bytes()).map_err(io::Error::other)?;
         let api = self.fp.api;
@@ -665,5 +708,24 @@ impl Drop for OpalKelly {
             self.fp.wire(WIRE_IN_LED_DISPLAY, 0, 0xff);
         }
         unsafe { (self.fp.api.okFrontPanel_ResetFPGA)(self.fp.handle) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn folders_chosen_are_looked_in_first() {
+        let dir = std::env::temp_dir().join(format!("opal-kelly-settings-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("intan_rhd_usb.bit"), b"").unwrap();
+        let settings = OpalKellySettings { folders: SearchFolders(vec![dir.clone()]) };
+        assert_eq!(settings.bitfile("intan_rhd_usb.bit"), Some(dir.join("intan_rhd_usb.bit")));
+        assert_eq!(OpalKellySettings::default().bitfile("intan_rhd_usb.bit"), None);
+        let candidates = settings.library_candidates();
+        assert_eq!(candidates[0], dir.join(LIBRARY_NAMES[0]));
+        assert_eq!(candidates.last(), Some(&PathBuf::from(LIBRARY_NAMES[LIBRARY_NAMES.len() - 1])));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

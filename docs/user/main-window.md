@@ -60,6 +60,12 @@ File › Settings… (Ctrl/⌘ ,) has the app's preferences, kept between sessio
   use. What's already in a graph stays. Applies from the next start.
 - **Recent files**: how many to keep in File › Open Recent and the basic view, and a button to clear them.
 
+Below those, a tab for each kind of hardware whose files come from elsewhere: **Open Ephys gen 1/2** (which is Intan's
+USB board's too: both are on Opal Kelly FPGAs), **Open Ephys gen 3** and **Spinnaker cameras**. Each has folders to look in first, says where each file it needs was found, and links to
+where to get them. These are for this machine, not saved with a graph.
+
+![Settings: where the Spinnaker SDK is](../../tests/snapshots/settings_spinnaker_cameras.png)
+
 ![Settings: which node types are offered](../../tests/snapshots/settings_nodes.png)
 
 When auto stop is about to act, it warns you, and once it has, it says so:

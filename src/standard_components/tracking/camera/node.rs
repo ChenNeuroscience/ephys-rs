@@ -47,6 +47,7 @@ impl Node<Edges> for Camera {
     /// What it shows, for its window.
     type Shared = Pool<CaptureStats>;
     type UiState = ();
+    type GlobalSettings = super::SpinnakerSettings;
 
     fn outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {
         let [width, height] = self.settings.frame_size;
@@ -159,11 +160,8 @@ impl Node<Edges> for Camera {
                     Source::Fake { address } => {
                         setting(ui, "Address", |ui| ui.text_edit_singleline(address));
                     }
-                    Source::Spinnaker { serial, library } => {
+                    Source::Spinnaker { serial } => {
                         setting(ui, "Serial", |ui| ui.add(egui::TextEdit::singleline(serial).hint_text("first found")));
-                        setting(ui, "Library", |ui| {
-                            ui.add(egui::TextEdit::singleline(library).hint_text("found automatically"))
-                        });
                     }
                 }
                 setting(ui, "Frame size", |ui| {
@@ -223,7 +221,7 @@ fn source_ui(ui: &mut egui::Ui, source: &mut Source) -> egui::Response {
         Source::Fake { .. } => "Fake camera (synthetic_streams/)",
         Source::Spinnaker { .. } => "FLIR (Spinnaker)",
     };
-    let choices = [Source::default(), Source::Spinnaker { serial: String::new(), library: String::new() }];
+    let choices = [Source::default(), Source::Spinnaker { serial: String::new() }];
     egui::ComboBox::from_id_salt("source")
         .selected_text(name(source))
         .show_ui(ui, |ui| {

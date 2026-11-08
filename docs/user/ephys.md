@@ -31,8 +31,9 @@ Samples from an acquisition board's headstages, and its digital (TTL) inputs, al
 
 What the real boards need comes with ephys-rs: the libraries and bitfiles the Open Ephys GUI's acquisition board
 plugin has. On Windows, the boards' USB drivers must be installed once too: run **Install USB drivers.cmd**, which
-comes with ephys-rs, as the Open Ephys GUI's installer would. Intan's own board needs Intan's bitfile, set under
-**Bitfile**.
+comes with ephys-rs, as the Open Ephys GUI's installer would. Intan's own board needs Intan's bitfile: add the folder
+it's in in File › Settings… › **Open Ephys gen 1/2**, which says where each file was found (see
+[Settings](main-window.md#settings)).
 
 **Settings**
 
