@@ -2488,7 +2488,7 @@ mod tests {
         assert_eq!(threshold(harness.state()), 77.0, "pasted straight onto the node selected");
         assert_eq!(harness.state().annotations.ids().count(), annotations, "not as a note");
         // Other JSON is only text.
-        harness.event(egui::Event::Paste("{\"format\": \"something else\"}".into()));
+        harness.event(egui::Event::Paste("{\"something\": \"else\"}".into()));
         harness.run_steps(2);
         assert_eq!(harness.state().annotations.ids().count(), annotations + 1);
     }
