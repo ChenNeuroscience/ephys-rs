@@ -12,7 +12,7 @@
 use eframe::egui::{self, Align2, FontId, Key, Pos2, Rect, Sense, Shape, Stroke};
 use serde::{Deserialize, Serialize};
 
-use crate::core::engine::{Category, Context, Control, EdgeType, Input, Node, NodeInfo, Output, Pass};
+use crate::core::engine::{Category, Control, EdgeType, Input, Node, NodeInfo, Output, Pass, UiContext};
 use crate::standard_components::auto_detect::AUTO_DETECT;
 use crate::standard_components::pool::{Pool, SharedPool};
 use crate::standard_components::preview;
@@ -172,7 +172,7 @@ impl Node<Edges> for SpikeViewer {
         description: "Each group's (tetrode's, say) recent spike waveforms overlaid, a plot per channel, with the \
                       thresholds: set them, and the gains, here.",
     };
-    const HAS_VIEW: bool = true;
+    const HAS_CUSTOM_UI: bool = true;
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
     fn inputs(&self) -> Vec<Input<Edges>> {
@@ -261,11 +261,11 @@ impl Node<Edges> for SpikeViewer {
     }
 
     /// Nothing more than its view has.
-    fn settings_ui(&mut self, ui: &mut egui::Ui, _context: &mut Context<Edges>) {
+    fn settings_ui(&mut self, ui: &mut egui::Ui, _context: &mut UiContext<Edges>) {
         ui.weak("Set in its view: the plots' height, and the thresholds and gains it's connected to.");
     }
 
-    fn view_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
+    fn custom_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
         let locked = context.locked;
         let Some(DataStream::Spikes(stream)) = context.inputs[0] else {
             return preview::unconnected(ui, context.theme, "Connect spikes to view them");
@@ -321,7 +321,7 @@ impl SpikeViewer {
 
     /// The plots' height; detecting the gains and thresholds from the data (triggering the Spike Gain's and Spike
     /// Detector's auto-detect), and in advanced mode, opening them, and a hint of what else can be done.
-    fn toolbar(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
+    fn toolbar(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
         ui.horizontal_wrapped(|ui| {
             ui.add_enabled_ui(!context.locked, |ui| {
                 let label = ui.label("Plot height");

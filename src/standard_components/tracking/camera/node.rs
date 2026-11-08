@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use super::capture::{Capture, State};
 use super::{CameraControls, CameraSettings, CameraStats, CaptureStats, Control, Range, Source};
 use crate::core::engine::{
-    Category, Context, Flow, Node, NodeInfo, NodeThread, Output, Pass, PoolStatus, SettingPort, ThreadContext,
+    Category, Flow, Node, NodeInfo, NodeThread, Output, Pass, PoolStatus, SettingPort, ThreadContext, UiContext,
 };
 use crate::standard_components::pool::{Pool, SharedPool};
 use crate::standard_components::tracking::Video;
@@ -153,7 +153,7 @@ impl Node<Edges> for Camera {
         }
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
+    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
         settings_grid(ui, |ui| {
             setting(ui, "Camera", |ui| source_ui(ui, &mut self.source));
             match &mut self.source {

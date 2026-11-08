@@ -12,7 +12,7 @@ use eframe::egui;
 use serde::{Deserialize, Serialize};
 
 use crate::core::engine::EdgeType;
-use crate::core::engine::{Category, Context, Input, Node, NodeInfo, Output, PASS_DURATION, Pass, SettingPort};
+use crate::core::engine::{Category, Input, Node, NodeInfo, Output, PASS_DURATION, Pass, SettingPort, UiContext};
 use crate::standard_components::auto_detect::{
     AUTO_DETECT, Distribution, PercentMultiple, SAMPLING, auto_detect_ui, detecting,
 };
@@ -271,7 +271,7 @@ impl Node<Edges> for SpikeDetector {
         &[AUTO_DETECT]
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
+    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
         let (rate, channels) = match context.inputs[0] {
             Some(DataStream::Continuous(c)) => (c.sample_rate, c.channels as usize),
             _ => (30000.0, 0),

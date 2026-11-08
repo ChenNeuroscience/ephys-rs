@@ -23,7 +23,7 @@ use super::settings::{BUTTON_GAP, all_power, title};
 use super::tone::Tone;
 use super::{Alarm, AlarmKind, AlarmState, AlarmStates, Alarms, Phase, Source};
 use crate::core::engine::{
-    Category, Context, Control, Flow, Input, Node, NodeInfo, NodeThread, Output, Pass, PassState,
+    Category, Control, Flow, Input, Node, NodeInfo, NodeThread, Output, Pass, PassState, UiContext,
 };
 use crate::core::exchange::Shared;
 use crate::core::gui::widgets::Icon;
@@ -162,7 +162,7 @@ impl Node<Edges> for AlarmViewer {
         category: Category::Visualisation,
         description: "How an Alarm Processor's alarms stand, with switches for them and for sound.",
     };
-    const HAS_VIEW: bool = true;
+    const HAS_CUSTOM_UI: bool = true;
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
     fn inputs(&self) -> Vec<Input<Edges>> {
@@ -213,11 +213,11 @@ impl Node<Edges> for AlarmViewer {
         });
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, _context: &mut Context<Edges>) {
+    fn settings_ui(&mut self, ui: &mut egui::Ui, _context: &mut UiContext<Edges>) {
         ui.weak("The Alarm Processor has the alarms' settings.");
     }
 
-    fn view_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
+    fn custom_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
         let (Some(DataStream::AlarmStates(stream)), Some(Setting::Alarms(alarms))) =
             (context.inputs[0], context.controls[ALARMS].as_ref())
         else {
@@ -608,7 +608,7 @@ fn detail(alarm: &Alarm, stream: AlarmStates) -> String {
 mod tests {
     use super::*;
     use crate::Nodes;
-    use crate::core::engine::{Graph, NodeSet, Port, Role};
+    use crate::core::engine::{Graph, NodeSet, Port, PortRole};
     use crate::core::exchange::Exchange;
     use crate::standard_components::alarms::Selection;
     use crate::standard_components::alarms::processor::AlarmProcessor;
@@ -659,8 +659,8 @@ mod tests {
             *node = AlarmProcessor { alarms };
         }
         let (from, to) = (
-            Port { node: viewer, role: Role::Control, index: 0 },
-            Port { node: processor, role: Role::Setting, index: 0 },
+            Port { node: viewer, role: PortRole::Control, index: 0 },
+            Port { node: processor, role: PortRole::Setting, index: 0 },
         );
         graph.connect(from, to).unwrap();
         let exchange = Arc::new(Exchange::default());
@@ -680,7 +680,7 @@ mod tests {
                     running,
                     locked,
                     None,
-                    |node, context| node.view_ui(ui, context),
+                    |node, context| node.custom_ui(ui, context),
                 );
             },
             graph,
@@ -1067,8 +1067,8 @@ mod tests {
             node.alarms = alarms;
         }
         let port = |node, role, index| Port { node, role, index };
-        graph.connect(port(board, Role::Output, 1), port(processor, Role::Input, 3)).unwrap();
-        graph.connect(port(processor, Role::Output, 0), port(viewer, Role::Input, 0)).unwrap();
+        graph.connect(port(board, PortRole::Output, 1), port(processor, PortRole::Input, 3)).unwrap();
+        graph.connect(port(processor, PortRole::Output, 0), port(viewer, PortRole::Input, 0)).unwrap();
 
         let snapshot = Snapshot::new(0, graph, None);
         let runner = Runner::start(&snapshot, 2);

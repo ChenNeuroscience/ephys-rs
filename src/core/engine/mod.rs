@@ -5,7 +5,6 @@
 //! declared with `node_set!` and `edge_types!`. Dispatch to a type is a plain `match`, with no dynamic
 //! loading.
 
-mod context;
 mod edge;
 mod graph;
 mod node;
@@ -14,8 +13,8 @@ mod node_threads;
 mod pass;
 mod plan;
 mod run;
+mod ui_context;
 
-pub use context::*;
 pub use edge::*;
 pub use graph::*;
 pub use node::*;
@@ -24,3 +23,4 @@ pub use node_threads::*;
 pub use pass::*;
 pub use plan::*;
 pub use run::*;
+pub use ui_context::*;

@@ -14,7 +14,9 @@ use realfft::num_complex::Complex;
 use realfft::{RealFftPlanner, RealToComplex};
 use serde::{Deserialize, Serialize};
 
-use crate::core::engine::{Category, Context, DataStreamType, EdgeInfo, EdgeType, Input, Node, NodeInfo, Output, Pass};
+use crate::core::engine::{
+    Category, DataStreamType, EdgeInfo, EdgeType, Input, Node, NodeInfo, Output, Pass, UiContext,
+};
 use crate::standard_components::ephys::{Continuous, ContinuousBuffer};
 use crate::standard_components::widgets::{input_summary, require_input, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind};
@@ -161,7 +163,7 @@ impl Node<Edges> for Spectrum {
         }
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
+    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
         let rate = match context.inputs[0] {
             Some(DataStream::Continuous(c)) => c.sample_rate,
             _ => 30000.0,

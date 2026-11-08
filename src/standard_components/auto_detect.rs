@@ -6,7 +6,7 @@ use eframe::egui;
 use serde::{Deserialize, Serialize};
 
 use crate::Edges;
-use crate::core::engine::Context;
+use crate::core::engine::UiContext;
 
 /// The trigger.
 pub const AUTO_DETECT: &str = "auto detect";
@@ -126,7 +126,7 @@ impl PercentMultiple {
 
 /// A button for the auto-detect trigger (of the node's own settings, or of the setting `control` connects to),
 /// and how it's going: for this node's window, and a viewer's.
-pub fn auto_detect_ui(ui: &mut egui::Ui, context: &mut Context<Edges>, control: Option<usize>, tip: &str) {
+pub fn auto_detect_ui(ui: &mut egui::Ui, context: &mut UiContext<Edges>, control: Option<usize>, tip: &str) {
     ui.horizontal(|ui| {
         // While detecting, it can be stopped.
         if let Some(progress) = context.trigger_progress(control, AUTO_DETECT) {
@@ -150,7 +150,7 @@ pub fn auto_detect_ui(ui: &mut egui::Ui, context: &mut Context<Edges>, control: 
 }
 
 /// Whether the node's auto-detect is going (its settings for it can't change meanwhile).
-pub fn detecting(context: &Context<Edges>) -> bool {
+pub fn detecting(context: &UiContext<Edges>) -> bool {
     context.trigger_progress(None, AUTO_DETECT).is_some()
 }
 

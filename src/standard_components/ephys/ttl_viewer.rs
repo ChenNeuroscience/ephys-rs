@@ -6,7 +6,7 @@ use std::collections::VecDeque;
 use eframe::egui::{self, Align2, FontId, Pos2, Shape, Stroke};
 use serde::{Deserialize, Serialize};
 
-use crate::core::engine::{Category, Context, EdgeType, Input, Node, NodeInfo, Output, Pass, PassState};
+use crate::core::engine::{Category, EdgeType, Input, Node, NodeInfo, Output, Pass, PassState, UiContext};
 use crate::standard_components::ephys::Events;
 use crate::standard_components::pool::{Pool, SharedPool};
 use crate::standard_components::preview;
@@ -93,7 +93,7 @@ impl Node<Edges> for TtlViewer {
         description: "Digital inputs' levels over time, a row per line, with how many times each has gone up since \
                       acquisition, and recording, started.",
     };
-    const HAS_VIEW: bool = true;
+    const HAS_CUSTOM_UI: bool = true;
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
     fn inputs(&self) -> Vec<Input<Edges>> {
@@ -173,7 +173,7 @@ impl Node<Edges> for TtlViewer {
         });
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, _context: &mut Context<Edges>) {
+    fn settings_ui(&mut self, ui: &mut egui::Ui, _context: &mut UiContext<Edges>) {
         settings_grid(ui, |ui| {
             setting(ui, "Span", |ui| {
                 ui.add(egui::DragValue::new(&mut self.span).range(0.1..=LONGEST).speed(0.05).suffix(" s"))
@@ -181,7 +181,7 @@ impl Node<Edges> for TtlViewer {
         });
     }
 
-    fn view_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
+    fn custom_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
         let locked = context.locked;
         ui.horizontal(|ui| {
             ui.add_enabled_ui(!locked, |ui| {
@@ -336,7 +336,7 @@ mod tests {
                     true,
                     false,
                     None,
-                    |node, context| node.view_ui(ui, context),
+                    |node, context| node.custom_ui(ui, context),
                 );
             },
             graph,

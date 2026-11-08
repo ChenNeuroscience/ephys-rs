@@ -1,4 +1,4 @@
-//! What a node's window works with (`Context`): its inputs, the settings its controls see, the run's exchange, and
+//! What a node's window works with (`UiContext`): its inputs, the settings its controls see, the run's exchange, and
 //! the buttons every node has (`NodeToolbar`).
 
 use std::sync::Arc;
@@ -10,7 +10,7 @@ use crate::core::exchange::{Exchange, Shared};
 use crate::core::theme::Colours;
 
 /// What a node's UI gets to work with besides its own settings.
-pub struct Context<'a, E: Edges> {
+pub struct UiContext<'a, E: Edges> {
     /// For each input, the data stream connected to it, if any.
     pub inputs: &'a [Option<E::DataStream>],
     /// For each control, the current value of the setting it's connected to, if any. Changing a value
@@ -38,7 +38,7 @@ pub struct Context<'a, E: Edges> {
     pub tools: Option<&'a mut dyn NodeToolbar>,
 }
 
-impl<E: Edges> Context<'_, E> {
+impl<E: Edges> UiContext<'_, E> {
     /// The node's shared `T` (see `crate::core::exchange`), if a run's passes have made one. A run stopped leaves it as it
     /// was: that's a pause, so what's shown stays, and `running` says which it is.
     pub fn shared<T: Shared>(&self) -> Option<Arc<T>> {
@@ -117,13 +117,13 @@ impl<E: Edges> Context<'_, E> {
 /// What the GUI does for a node's window: the buttons every node has, each on its own or all together (those that
 /// change the graph, its settings, enabling and deleting it, only there in advanced mode, giving `None` otherwise);
 /// and triggering pass triggers (see `Node::triggers`), and opening other nodes' windows. A view uses these through its
-/// `Context`.
+/// `UiContext`.
 pub trait NodeToolbar {
-    /// Triggers a pass trigger (see `Context::trigger`).
+    /// Triggers a pass trigger (see `UiContext::trigger`).
     fn trigger(&mut self, control: Option<usize>, name: &'static str);
     fn can_trigger(&self, control: Option<usize>, name: &'static str) -> bool;
     fn trigger_progress(&self, control: Option<usize>, name: &'static str) -> Option<f32>;
-    /// Stops a trigger triggered (see `Context::cancel_trigger`).
+    /// Stops a trigger triggered (see `UiContext::cancel_trigger`).
     fn cancel_trigger(&mut self, control: Option<usize>, name: &'static str);
     fn open_control_target(&mut self, control: usize);
 

@@ -21,7 +21,7 @@
 use eframe::egui::{self, Align2, FontId, Pos2, Rect, Sense, Shape, Stroke};
 use serde::{Deserialize, Serialize};
 
-use crate::core::engine::{Category, Context, Control, EdgeType, Input, Node, NodeInfo, Output, Pass};
+use crate::core::engine::{Category, Control, EdgeType, Input, Node, NodeInfo, Output, Pass, UiContext};
 use crate::core::gui::widgets::{Icon, small_toggle_button};
 use crate::standard_components::auto_detect::auto_detect_ui;
 use crate::standard_components::ephys::reference::{
@@ -185,7 +185,7 @@ impl Node<Edges> for LfpViewer {
                       (theta, say). Sets an Continuous Gain's gains, a Channel Selector's channels and a Reference's \
                       reference channels.",
     };
-    const HAS_VIEW: bool = true;
+    const HAS_CUSTOM_UI: bool = true;
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
     fn inputs(&self) -> Vec<Input<Edges>> {
@@ -277,14 +277,14 @@ impl Node<Edges> for LfpViewer {
         ]
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, _context: &mut Context<Edges>) {
+    fn settings_ui(&mut self, ui: &mut egui::Ui, _context: &mut UiContext<Edges>) {
         settings_grid(ui, |ui| {
             setting(ui, "Span", |ui| ui.add(self.span_field()));
             setting(ui, "Scale", |ui| ui.add(self.scale_field()));
         });
     }
 
-    fn view_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
+    fn custom_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
         let locked = context.locked;
         let Some(DataStream::Continuous(stream)) = context.inputs[0] else {
             return preview::unconnected(ui, context.theme, "Connect a continuous data stream to view it");
@@ -359,7 +359,7 @@ impl LfpViewer {
     fn toolbar(
         &mut self,
         ui: &mut egui::Ui,
-        context: &mut Context<Edges>,
+        context: &mut UiContext<Edges>,
         stream: Continuous,
         applied: bool,
         reference: Option<&mut Reference>,
@@ -835,7 +835,7 @@ fn reference_ui(ui: &mut egui::Ui, reference: &mut Reference, channels: u32, row
 
 /// The gains (a Continuous Gain's: what the continuous data's recorded at), compactly: the range one for all
 /// fits, or that they're each channel's (as each row shows); and detecting them from the data.
-fn gains_ui(ui: &mut egui::Ui, context: &mut Context<Edges>, gains: &mut Gains, channels: u32) {
+fn gains_ui(ui: &mut egui::Ui, context: &mut UiContext<Edges>, gains: &mut Gains, channels: u32) {
     let label = ui.strong("Gain");
     let label = label.on_hover_text(
         "The gains the continuous data's recorded at. Each row shows the range its gain fits (dashed, if it's within \

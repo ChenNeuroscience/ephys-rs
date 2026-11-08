@@ -8,7 +8,7 @@ use eframe::egui::{self, RichText};
 use serde::{Deserialize, Serialize};
 
 use crate::core::engine::{Graph, NodeId, NodeSet};
-use crate::core::formats::{Formats, Layers, Saved};
+use crate::core::formats::{Formats, Layers, SavedPart};
 use crate::core::theme::Colours;
 
 /// What's on the clipboard.
@@ -83,7 +83,7 @@ impl<N: NodeSet> PasteSettings<N> {
         for copied in &mut clip.nodes {
             let kind = copied.node.get("type").and_then(|t| t.as_str()).unwrap_or_default().to_string();
             formats
-                .upgrade(&clip.formats, Saved::Node(&kind), &mut copied.node)
+                .upgrade(&clip.formats, SavedPart::Node(&kind), &mut copied.node)
                 .map_err(|problem| format!("The copied settings can't be pasted. {problem}"))?;
         }
         let rows = clip

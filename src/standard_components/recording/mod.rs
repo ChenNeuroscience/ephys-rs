@@ -346,7 +346,7 @@ mod tests {
 
     use super::Location;
     use crate::Nodes;
-    use crate::core::engine::{Graph, NodeId, NodeSet, Port, Recording, Role, Runner, Snapshot};
+    use crate::core::engine::{Graph, NodeId, NodeSet, Port, PortRole, Recording, Runner, Snapshot};
     use crate::standard_components::ephys::board::{Source, serve_test_board};
 
     fn add(graph: &mut Graph<Nodes>, name: &str) -> NodeId {
@@ -356,7 +356,7 @@ mod tests {
 
     fn link(graph: &mut Graph<Nodes>, from: NodeId, output: usize, to: NodeId, input: usize) {
         let port = |node, role, index| Port { node, role, index };
-        graph.connect(port(from, Role::Output, output), port(to, Role::Input, input)).unwrap();
+        graph.connect(port(from, PortRole::Output, output), port(to, PortRole::Input, input)).unwrap();
     }
 
     /// Files that can fail to write, and finish as one path.
@@ -414,9 +414,9 @@ mod tests {
                 };
             }
             let port = |node, role, index| crate::core::engine::Port { node, role, index };
-            use crate::core::engine::Role;
-            let input =
-                (0..8).find(|&i| graph.connect(port(board, Role::Output, 0), port(writer, Role::Input, i)).is_ok());
+            use crate::core::engine::PortRole;
+            let input = (0..8)
+                .find(|&i| graph.connect(port(board, PortRole::Output, 0), port(writer, PortRole::Input, i)).is_ok());
             assert!(input.is_some(), "{name} records continuous data");
             let snapshot = Snapshot::new(0, graph, None);
             let recording = snapshot.with_recording(1, Some(Arc::new(Recording::default())));

@@ -11,7 +11,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::OnceLock;
 
 use super::pass::*;
-use super::{DataStreamSet, Edges, Graph, NodeId, NodeSet, Port, Role};
+use super::{DataStreamSet, Edges, Graph, NodeId, NodeSet, Port, PortRole};
 
 type DataStream<N> = <<N as NodeSet>::Edges as Edges>::DataStream;
 
@@ -245,7 +245,7 @@ impl<N: NodeSet> Plan<N> {
             let (Some(entry), Some(state)) = (graph.get(id), resolved.get(&id)) else { continue };
             let mut inputs: Vec<Option<usize>> = (0..state.inputs.len())
                 .map(|index| {
-                    let edge = graph.live_edge_into(Port { node: id, role: Role::Input, index })?;
+                    let edge = graph.live_edge_into(Port { node: id, role: PortRole::Input, index })?;
                     buffer_of.get(&(edge.from.node, edge.from.port)).copied()
                 })
                 .collect();
@@ -288,7 +288,7 @@ impl<N: NodeSet> Plan<N> {
                     takes.push(true);
                 } else {
                     // Copied once the node making it has run, before anything edits it in place.
-                    let edge = graph.live_edge_into(Port { node: id, role: Role::Input, index: input });
+                    let edge = graph.live_edge_into(Port { node: id, role: PortRole::Input, index: input });
                     let maker = edge.and_then(|e| steps.iter_mut().find(|s: &&mut Step| s.id == e.from.node));
                     let Some(maker) = maker else {
                         takes.push(false);
@@ -411,7 +411,7 @@ mod tests {
 
     fn link(graph: &mut Graph<Nodes>, from: NodeId, output: usize, to: NodeId, input: usize) {
         let port = |node, role, index| Port { node, role, index };
-        graph.connect(port(from, Role::Output, output), port(to, Role::Input, input)).unwrap();
+        graph.connect(port(from, PortRole::Output, output), port(to, PortRole::Input, input)).unwrap();
     }
 
     fn position(plan: &Plan<Nodes>, id: NodeId) -> usize {

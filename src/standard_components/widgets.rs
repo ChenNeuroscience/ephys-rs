@@ -2,7 +2,7 @@
 
 use eframe::egui;
 
-use crate::core::engine::{Context, EdgeSet};
+use crate::core::engine::{EdgeSet, UiContext};
 use crate::core::gui::widgets::{Icon, small_icon_button, small_toggle_button};
 use crate::core::theme::Colours;
 use crate::{DataStream, Edges};
@@ -119,7 +119,7 @@ pub fn mark_mixed(ui: &egui::Ui, button: &egui::Response) {
 
 /// A settings button, in the part of a view it's about, that opens the window of the node control `control` connects to:
 /// `what` is that node. It's greyed out while the control's not connected.
-pub fn open_settings_button(ui: &mut egui::Ui, context: &mut Context<Edges>, control: usize, what: &str) {
+pub fn open_settings_button(ui: &mut egui::Ui, context: &mut UiContext<Edges>, control: usize, what: &str) {
     let tip = format!("Open the {what}'s settings");
     let connected = context.control_connected(control);
     let button = ui.add_enabled_ui(connected, |ui| small_icon_button(ui, Icon::Settings, what, &tip)).inner;

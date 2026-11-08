@@ -8,7 +8,7 @@ use eframe::egui;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use super::{Context, Edges, Kind, NodeThread, Pass, PoolStatus, ThreadContext};
+use super::{Edges, Kind, NodeThread, Pass, PoolStatus, ThreadContext, UiContext};
 
 /// What a node's for, to people: its colour on the graph, and where it's offered. Nothing about how it runs depends
 /// on it.
@@ -103,8 +103,9 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     /// nodes without it can run for several passes at once.
     type State: PassState;
 
-    /// Whether the node's window is a view of its own (a viewer, say) rather than just its settings.
-    const HAS_VIEW: bool = false;
+    /// Whether the node's window is a UI of its own (`custom_ui`: a viewer's, say), rather than the standard one: its
+    /// settings (`settings_ui`), with its name, warnings and ports.
+    const HAS_CUSTOM_UI: bool = false;
 
     /// Whether it's listed in the basic view, unless that's been set for it (see `NodeEntry::basic`). By convention,
     /// nodes with a view are; but it's up to each.
@@ -134,9 +135,10 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
         Vec::new()
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<E>);
+    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<E>);
 
-    fn view_ui(&mut self, _ui: &mut egui::Ui, _context: &mut Context<E>) {}
+    /// Its window, if it has a UI of its own (see `HAS_CUSTOM_UI`).
+    fn custom_ui(&mut self, _ui: &mut egui::Ui, _context: &mut UiContext<E>) {}
 
     /// The state for the first pass. `inputs` has the data stream connected to each input, if any.
     fn initial_state(&self, _inputs: &[Option<E::DataStream>]) -> Self::State {
@@ -172,7 +174,7 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     }
 
     /// The pass triggers of one of the node's settings (by index): what can be triggered through it, as well as set,
-    /// while running: "auto detect", say. A control connected to it can trigger one (`Context::trigger`), as can the
+    /// while running: "auto detect", say. A control connected to it can trigger one (`UiContext::trigger`), as can the
     /// node's own window; its passes take it (`Pass::triggered`), and may update its settings when they're done
     /// (`Pass::trigger_settings_update`).
     fn triggers(&self, _setting: usize) -> &'static [&'static str] {

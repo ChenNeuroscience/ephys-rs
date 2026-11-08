@@ -5,7 +5,7 @@
 use eframe::egui::{self, RichText};
 use serde::{Deserialize, Serialize};
 
-use crate::core::engine::{Category, Context, Input, Node, NodeInfo, Output, Pass, SettingPort};
+use crate::core::engine::{Category, Input, Node, NodeInfo, Output, Pass, SettingPort, UiContext};
 use crate::core::gui::widgets::{Icon, small_icon_button};
 use crate::standard_components::ephys::{Event, Events};
 use crate::standard_components::tracking::pipeline::{Pipeline, timing_led_on};
@@ -119,7 +119,7 @@ impl Node<Edges> for PositionDetector {
         }
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
+    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
         let size = match context.inputs[0] {
             Some(DataStream::Video(video)) => [video.width as f32, video.height as f32],
             _ => [640.0, 480.0],

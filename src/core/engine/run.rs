@@ -759,7 +759,7 @@ pub fn default_workers() -> usize {
 
 #[cfg(test)]
 pub mod tests {
-    use super::super::{Port, Role};
+    use super::super::{Port, PortRole};
     use super::*;
 
     use crate::Buffer;
@@ -772,7 +772,7 @@ pub mod tests {
 
     fn link(graph: &mut Graph<Nodes>, from: NodeId, output: usize, to: NodeId, input: usize) {
         let port = |node, role, index| Port { node, role, index };
-        graph.connect(port(from, Role::Output, output), port(to, Role::Input, input)).unwrap();
+        graph.connect(port(from, PortRole::Output, output), port(to, PortRole::Input, input)).unwrap();
     }
 
     #[test]

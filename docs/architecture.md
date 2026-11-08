@@ -107,7 +107,7 @@ shown the same way, in the dispatcher.
 
 The passes never wait on the GUI, nor it on them. Each run has an [`Exchange`](../src/core/exchange.rs):
 
-- Each node keeps there whatever its passes and its window share, of any type (`Pass::shared`, `Context::shared`).
+- Each node keeps there whatever its passes and its window share, of any type (`Pass::shared`, `UiContext::shared`).
   The engine and GUI don't treat any of it specially. The usual thing is a [pool](../src/standard_components/pool.rs)
   of buffers, as between nodes' threads and the passes: passes fill buffers (or swap their own in) and queue them;
   the window reads the newest, giving the rest back. The dev tools show each such pool on the GUI's thread.
@@ -128,7 +128,7 @@ next pass.
 [`gui`](../src/core/gui/mod.rs) is an egui app: menus and a toolbar, a dockable layout of panes, and a status bar.
 The app is in **basic** or **advanced** mode: in basic mode, the home pane shows the version, with a link to the About
 window, the components (viewers, to begin with) and [quick actions](quick-actions.md); in advanced mode, the graph, and each pane has a settings menu. What a
-pane shows in each mode is up to it (`Context::advanced`). Where panes go when they're opened is the
+pane shows in each mode is up to it (`UiContext::advanced`). Where panes go when they're opened is the
 [layout](quick-actions.md#the-layout)'s to say ([`layout.rs`](../src/core/layout.rs)): windows take steps towards a
 default layout, a column on the left and two groups one above another on the right.
 

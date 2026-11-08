@@ -1,6 +1,6 @@
 //! Themes: a set of colours named by what they're for (surfaces, text, controls...), which everything draws
 //! with. The themes themselves are supplied by the program. egui's own widgets get them as its `Visuals`; the
-//! graph and node windows use them directly (nodes get them in `engine::Context`), and can derive further
+//! graph and node windows use them directly (nodes get them in `engine::UiContext`), and can derive further
 //! colours of their own from them.
 
 use eframe::egui::{self, Color32, Shadow, Stroke};

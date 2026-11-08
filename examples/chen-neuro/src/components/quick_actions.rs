@@ -14,7 +14,7 @@
 //!   real devices, while any is synthetic.
 
 use super::Nodes;
-use ephys_rs::core::engine::{Graph, NodeId, NodeSet, Port, Role};
+use ephys_rs::core::engine::{Graph, NodeId, NodeSet, Port, PortRole};
 use ephys_rs::core::layout::{Pane, WindowState};
 use ephys_rs::core::quick_action::{Arrangement, QuickAction, QuickChange, QuickState, Tab};
 use ephys_rs::standard_components::alarms::processor::AlarmProcessor;
@@ -114,10 +114,10 @@ impl Change {
     }
 
     /// Connects an output to an input (or a control to a setting), if the input (or control) is free.
-    fn link(&mut self, from: (NodeId, Role, usize), to: (NodeId, Role, usize)) {
+    fn link(&mut self, from: (NodeId, PortRole, usize), to: (NodeId, PortRole, usize)) {
         let (from, to) = (port(from), port(to));
         let free = match to.role {
-            Role::Input => !self.linked(to),
+            PortRole::Input => !self.linked(to),
             _ => !self.linked(from),
         };
         if free && self.graph.connect(from, to).is_ok() {
@@ -146,11 +146,11 @@ impl Change {
     }
 }
 
-fn port((node, role, index): (NodeId, Role, usize)) -> Port {
+fn port((node, role, index): (NodeId, PortRole, usize)) -> Port {
     Port { node, role, index }
 }
 
-use Role::{Control, Input, Output, Setting};
+use PortRole::{Control, Input, Output, Setting};
 
 /// A real board: the Open Ephys acquisition board, generation 1 or 2.
 fn real_board() -> board::Source {
@@ -520,7 +520,7 @@ mod tests {
     }
 
     /// What feeds a port, by the label of the node.
-    fn feeding(graph: &Graph<Nodes>, node: NodeId, role: Role, index: usize) -> Option<String> {
+    fn feeding(graph: &Graph<Nodes>, node: NodeId, role: PortRole, index: usize) -> Option<String> {
         let edge = graph.edge_into(Port { node, role, index })?;
         Some(graph.get(edge.from.node)?.label.clone())
     }

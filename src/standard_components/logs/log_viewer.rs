@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use eframe::egui::{self, RichText};
 use serde::{Deserialize, Serialize};
 
-use crate::core::engine::{Category, Context, Input, Node, NodeInfo, Output, Pass, PassState};
+use crate::core::engine::{Category, Input, Node, NodeInfo, Output, Pass, PassState, UiContext};
 use crate::core::exchange::Shared;
 use crate::standard_components::preview;
 use crate::standard_components::widgets::require_input;
@@ -75,7 +75,7 @@ impl Node<Edges> for LogViewer {
         category: Category::Visualisation,
         description: "Log lines as they come, each with its time.",
     };
-    const HAS_VIEW: bool = true;
+    const HAS_CUSTOM_UI: bool = true;
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
     fn inputs(&self) -> Vec<Input<Edges>> {
@@ -97,11 +97,11 @@ impl Node<Edges> for LogViewer {
         }
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, _context: &mut Context<Edges>) {
+    fn settings_ui(&mut self, ui: &mut egui::Ui, _context: &mut UiContext<Edges>) {
         ui.weak("Nothing to set.");
     }
 
-    fn view_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
+    fn custom_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
         let history = context.shared::<LogHistory>();
         let mut entries = history.as_ref().map(|history| history.entries.lock().unwrap());
         ui.horizontal(|ui| {
@@ -172,7 +172,7 @@ mod tests {
                     |node, context| {
                         // As the run's window has: it's made for it by its passes.
                         context.exchange.unwrap().shared(viewer, LogHistory::default);
-                        node.view_ui(ui, context)
+                        node.custom_ui(ui, context)
                     },
                 );
             },

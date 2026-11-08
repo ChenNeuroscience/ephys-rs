@@ -96,7 +96,7 @@ pub fn run<C: Components>(path: Option<PathBuf>) -> eframe::Result {
                 cc.storage.and_then(|s| eframe::get_value(s, BASE_DIRECTORY_KEY));
             let formats: Formats = cc.storage.and_then(|s| eframe::get_value(s, FORMATS_KEY)).unwrap_or_default();
             if let Some(Err(problem)) =
-                saved.as_mut().map(|s| app.formats.upgrade(&formats, formats::Saved::BaseDirectory, s))
+                saved.as_mut().map(|s| app.formats.upgrade(&formats, formats::SavedPart::BaseDirectory, s))
             {
                 log::warn!("The base directory kept from last time can't be read: {problem}");
                 saved = None;
@@ -412,7 +412,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             .transpose()
             .map_err(|e| e.to_string())?
             .unwrap_or_default();
-        self.formats.upgrade(&formats, formats::Saved::Project, &mut value)?;
+        self.formats.upgrade(&formats, formats::SavedPart::Project, &mut value)?;
         let file: SaveFile<N, A> = serde_json::from_value(value).map_err(|e| e.to_string())?;
         // The mode stays as it is, opening a file (it starts basic, each time the app does).
         let mode = self.layout.mode;
@@ -1193,7 +1193,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         for id in self.layout.floating() {
             let started = Instant::now();
             let Some(entry) = self.graph.get(id) else { continue };
-            let has_view = entry.node.has_view();
+            let has_custom_ui = entry.node.has_custom_ui();
             let beside = self.canvas.to_screen(egui::pos2(entry.pos[0] + NODE_WIDTH + 20.0, entry.pos[1]));
             let title = entry.label.clone();
             let colour = style::category_colour(entry.node.info().category);
@@ -1204,7 +1204,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                 .collapsible(false)
                 .frame(egui::Frame::window(&ctx.global_style()).inner_margin(0).corner_radius(2))
                 .default_pos(beside)
-                .default_size(if has_view { [820.0, 520.0] } else { [340.0, 460.0] })
+                .default_size(if has_custom_ui { [820.0, 520.0] } else { [340.0, 460.0] })
                 .resizable(true)
                 .show(ctx, |ui| {
                     clicks = docking::floating_header(ui, &title, colour);
@@ -1676,7 +1676,7 @@ impl<N: NodeSet, A: AnnotationSet> History<N, A> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::engine::Role;
+    use crate::core::engine::PortRole;
     use crate::core::layout::WindowState;
     use crate::standard_components::themes::THEMES;
     use crate::{AnnotationTypes, Nodes};
@@ -1877,7 +1877,7 @@ mod tests {
         let app = harness.state();
         assert_eq!(app.graph.edges().len(), edges + 1);
         // Named after chen-neuro's own.
-        let gain = Port { node: node_named(app, "Continuous Gain 2"), role: Role::Input, index: 0 };
+        let gain = Port { node: node_named(app, "Continuous Gain 2"), role: PortRole::Input, index: 0 };
         let board = node_named(app, "Acquisition Board");
         assert_eq!(app.graph.edge_into(gain).map(|e| e.from.node), Some(board));
     }
@@ -2521,7 +2521,7 @@ mod tests {
         let detector = node_named(harness.state(), "Spike Detector");
         let over = harness.state().graph.get(detector).unwrap().pos;
         let pixels = egui::ColorImage::new([40, 30], vec![egui::Color32::RED; 1200]);
-        let (_, image, _) = Image::pasted(&crate::core::annotation::Pasted::Image(&pixels)).unwrap();
+        let (_, image, _) = Image::pasted(&crate::core::annotation::PastedContent::Image(&pixels)).unwrap();
         let annotation = Annotation { pos: over, size: [80.0, 60.0], kind: AnnotationTypes::Image(image) };
         let id = harness.state_mut().annotations.add(annotation);
         harness.run_steps(2);
@@ -2775,8 +2775,8 @@ mod tests {
     }
 
     /// A layer whose one step changes a Spike Detector's waveform, as a node type's step would.
-    fn pre_was_8(what: formats::Saved, value: &mut serde_json::Value) {
-        if what == formats::Saved::Node("SpikeDetector") {
+    fn pre_was_8(what: formats::SavedPart, value: &mut serde_json::Value) {
+        if what == formats::SavedPart::Node("SpikeDetector") {
             value["settings"]["pre"] = 12.into();
         }
     }
@@ -2964,11 +2964,11 @@ mod tests {
         let link = |graph: &mut Graph<Nodes>, from, to| graph.connect(from, to).unwrap();
         let port_of = |node, role, index| engine::Port { node, role, index };
         for (output, input) in [(0, 2), (1, 4), (2, 5)] {
-            link(&mut graph, port_of(vr, Role::Output, output), port_of(ltx, Role::Input, input));
+            link(&mut graph, port_of(vr, PortRole::Output, output), port_of(ltx, PortRole::Input, input));
         }
-        link(&mut graph, port_of(ltx, Role::Control, 0), port_of(vr, Role::Setting, 0));
+        link(&mut graph, port_of(ltx, PortRole::Control, 0), port_of(vr, PortRole::Setting, 0));
         let viewer = graph.add(Nodes::LogViewer(Default::default()), [300.0, 300.0]);
-        link(&mut graph, port_of(vr, Role::Output, 2), port_of(viewer, Role::Input, 0));
+        link(&mut graph, port_of(vr, PortRole::Output, 2), port_of(viewer, PortRole::Input, 0));
 
         let mut harness = harness();
         harness.state_mut().graph = graph;

@@ -13,7 +13,7 @@ An annotation type is a struct implementing [`AnnotationType`](../src/core/annot
 - `INFO`: its name, description, and size when added without being drawn out; `MIN_SIZE`.
 - `paint_icon`: its tool's icon in the graph's toolbar. Drawing with the tool makes one (`drawn`, told which way it
   was drawn); `DRAWN = false` instead asks for one when the tool's chosen (`choose`: an image from a file, say).
-  `pasted`: what's pasted onto the canvas (`Pasted`: an image, or text) is offered to each type, which says how well
+  `pasted`: what's pasted onto the canvas (`PastedContent`: an image, or text) is offered to each type, which says how well
   it suits it (`Fit`: `Possible`, `Good` or `Best`) and makes one. The best fit wins; of two as good, the first in
   `annotation_set!`. As it stands, an image makes an image; a single short line, a heading; text in markdown, a
   markdown note; other text, a sticky note. (Settings copied from nodes don't come here: they're recognised, and pasted

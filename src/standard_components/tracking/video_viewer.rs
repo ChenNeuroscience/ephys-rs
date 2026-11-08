@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use super::tracker_view::{FrameView, show_frame};
 use crate::core::engine::{
-    Category, Context, DataStreamType, EdgeType, Input, Node, NodeInfo, Output, PASS_DURATION, Pass,
+    Category, DataStreamType, EdgeType, Input, Node, NodeInfo, Output, PASS_DURATION, Pass, UiContext,
 };
 use crate::standard_components::pool::{Pool, SharedPool, WINDOW_BUFFERS};
 use crate::standard_components::preview;
@@ -31,7 +31,7 @@ impl crate::core::engine::PassState for Showing {
 impl Node<Edges> for VideoViewer {
     const INFO: NodeInfo =
         NodeInfo { name: "Video Viewer", category: Category::Visualisation, description: "The latest video frame." };
-    const HAS_VIEW: bool = true;
+    const HAS_CUSTOM_UI: bool = true;
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
     type State = Showing;
@@ -73,11 +73,11 @@ impl Node<Edges> for VideoViewer {
         pool.send_as_of(sequence, frames);
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, _context: &mut Context<Edges>) {
+    fn settings_ui(&mut self, ui: &mut egui::Ui, _context: &mut UiContext<Edges>) {
         ui.checkbox(&mut self.crosshair, "Crosshair");
     }
 
-    fn view_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
+    fn custom_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
         let locked = context.locked;
         ui.horizontal(|ui| {
             ui.add_enabled_ui(!locked, |ui| ui.checkbox(&mut self.crosshair, "Crosshair"));

@@ -23,10 +23,10 @@ use eframe::egui::{
 use super::Event;
 use super::icons::eye;
 use super::style;
-use crate::core::annotation::{Annotation, AnnotationId, AnnotationSet, AnnotationUi, Annotations, Pasted};
+use crate::core::annotation::{Annotation, AnnotationId, AnnotationSet, AnnotationUi, Annotations, PastedContent};
 use crate::core::engine::{
-    Dimension, Edge, EdgeInfo, EdgeSet, Edges, Graph, KindKey, NodeEntry, NodeId, NodeSet, NodeState, Port, Resolved,
-    Role,
+    Dimension, Edge, EdgeInfo, EdgeSet, Edges, Graph, KindKey, NodeEntry, NodeId, NodeSet, NodeState, Port, PortRole,
+    Resolved,
 };
 use crate::core::layout::Pane;
 use crate::core::theme::Colours;
@@ -97,7 +97,7 @@ struct Layout {
     header: Rect,
     zoom: f32,
     /// Where each port is, and whether it's on the right.
-    ports: HashMap<(Role, usize), (Pos2, bool)>,
+    ports: HashMap<(PortRole, usize), (Pos2, bool)>,
     /// Between the data and settings ports, if it has both.
     divider: Option<f32>,
     /// Where a warning's shown, in the header's right corner.
@@ -111,13 +111,13 @@ pub fn node_size<E: Edges>(state: &NodeState<E>) -> egui::Vec2 {
 
 /// How many rows of settings and controls a node has, if `settings` are showing.
 fn settings_rows<E: Edges>(state: &NodeState<E>, settings: bool) -> usize {
-    if settings { state.count(Role::Setting) + state.count(Role::Control) } else { 0 }
+    if settings { state.count(PortRole::Setting) + state.count(PortRole::Control) } else { 0 }
 }
 
 /// A node's size on the graph (unzoomed): its header and a row per port, with a divider between the data and
 /// settings ports, if it has both.
 fn size_with<E: Edges>(state: &NodeState<E>, settings: bool) -> egui::Vec2 {
-    let data_rows = state.count(Role::Output) + state.count(Role::Input);
+    let data_rows = state.count(PortRole::Output) + state.count(PortRole::Input);
     let settings_rows = settings_rows(state, settings);
     let divider = if settings_rows > 0 && data_rows > 0 { DIVIDER } else { 0.0 };
     egui::vec2(NODE_WIDTH, HEADER + 2.0 * PAD + ROW * (data_rows + settings_rows) as f32 + divider)
@@ -128,7 +128,7 @@ impl Layout {
     fn new<E: Edges>(pos: [f32; 2], state: &NodeState<E>, to_screen: &TSTransform, settings: bool) -> Self {
         let zoom = to_screen.scaling;
         let count = |role| state.count(role);
-        let data_rows = count(Role::Output) + count(Role::Input);
+        let data_rows = count(PortRole::Output) + count(PortRole::Input);
         let settings_rows = settings_rows(state, settings);
         let divider = if settings_rows > 0 && data_rows > 0 { DIVIDER } else { 0.0 };
         let height = size_with(state, settings).y;
@@ -139,7 +139,7 @@ impl Layout {
 
         let mut ports = HashMap::new();
         let mut row = 0;
-        for role in [Role::Output, Role::Input, Role::Setting, Role::Control] {
+        for role in [PortRole::Output, PortRole::Input, PortRole::Setting, PortRole::Control] {
             if role.dimension() == Dimension::Settings && !settings {
                 continue;
             }
@@ -295,7 +295,7 @@ fn both_ways(painter: &Painter, at: Pos2, direction: Vec2, size: f32, colour: Co
 
 /// Whether a control only reads the setting it's linked to.
 fn read_only<E: Edges>(resolved: &Resolved<E>, port: Port) -> bool {
-    port.role == Role::Control
+    port.role == PortRole::Control
         && resolved.get(&port.node).and_then(|s| s.controls.get(port.index)).is_some_and(|c| c.read_only)
 }
 
@@ -840,8 +840,8 @@ impl Canvas {
         }
         let made = ui.input(|i| {
             i.events.iter().find_map(|e| match e {
-                egui::Event::PasteImage(image) => A::pasted(&Pasted::Image(image)),
-                egui::Event::Paste(text) if !text.trim().is_empty() => A::pasted(&Pasted::Text(text.trim())),
+                egui::Event::PasteImage(image) => A::pasted(&PastedContent::Image(image)),
+                egui::Event::Paste(text) if !text.trim().is_empty() => A::pasted(&PastedContent::Text(text.trim())),
                 _ => None,
             })
         });
@@ -1083,12 +1083,12 @@ impl Canvas {
             let (kind, description) = state.info(port.role, port.index).map_or(("?", ""), |i| (i.name, i.description));
             let summary = state.summary(port.role, port.index).unwrap_or_else(|| "not connected".into());
             let help = match port.role {
-                Role::Input | Role::Output => "Drag to connect; click to add or pick a node to connect",
-                Role::Setting => "Other nodes can edit this. Drag to a control to link them",
-                Role::Control if state.controls.get(port.index).is_some_and(|c| c.read_only) => {
+                PortRole::Input | PortRole::Output => "Drag to connect; click to add or pick a node to connect",
+                PortRole::Setting => "Other nodes can edit this. Drag to a control to link them",
+                PortRole::Control if state.controls.get(port.index).is_some_and(|c| c.read_only) => {
                     "Reads a setting of another node, without changing it. Drag to a setting to link them"
                 }
-                Role::Control => "Edits a setting of another node. Drag to a setting to link them",
+                PortRole::Control => "Edits a setting of another node. Drag to a setting to link them",
             };
             response.on_hover_text(format!("{name} ({kind} {}): {summary}\n{description}\n\n{help}", port.role.name()));
         }
@@ -1374,7 +1374,7 @@ fn paint_node<N: NodeSet>(
             if connected || port.role.is_source() { colours.text_primary } else { colours.text_secondary };
         painter.text(name_pos, align, name, font(12.5), fade(name_colour));
         // Outputs and settings also show what they carry, on the far side.
-        if matches!(port.role, Role::Output | Role::Setting) {
+        if matches!(port.role, PortRole::Output | PortRole::Setting) {
             let (summary, colour) = match state.summary(port.role, port.index) {
                 Some(summary) => (summary, colours.text_secondary),
                 None => ("—".into(), colours.text_disabled),
@@ -1386,7 +1386,7 @@ fn paint_node<N: NodeSet>(
             };
             painter.text(at, align, summary, font(11.0), fade(colour));
         }
-        let read_only = port.role == Role::Control && state.controls.get(port.index).is_some_and(|c| c.read_only);
+        let read_only = port.role == PortRole::Control && state.controls.get(port.index).is_some_and(|c| c.read_only);
         paint_port(painter, port, pos, colour, connected, read_only, ports, z, fade);
     }
 }
@@ -1441,7 +1441,7 @@ mod tests {
     use super::*;
 
     /// Which side of its node a port's drawn on.
-    fn drawn_on_right(name: &str, role: Role, index: usize) -> bool {
+    fn drawn_on_right(name: &str, role: PortRole, index: usize) -> bool {
         use crate::Nodes;
         let type_index = Nodes::TYPES.iter().position(|t| t.name == name).unwrap();
         let state = NodeState::unconnected(&Nodes::create(type_index));
@@ -1453,10 +1453,10 @@ mod tests {
 
     #[test]
     fn a_port_can_be_on_the_other_side_from_others_like_it() {
-        assert!(drawn_on_right("Spike Gain", Role::Setting, 0), "settings are on the right");
-        assert!(!drawn_on_right("Write LTX", Role::Control, 0), "controls on the left");
-        assert!(drawn_on_right("Write LTX", Role::Control, 4), "but what comes after recording flows onward");
-        assert!(!drawn_on_right("Run Command", Role::Setting, 0), "into what it connects to");
+        assert!(drawn_on_right("Spike Gain", PortRole::Setting, 0), "settings are on the right");
+        assert!(!drawn_on_right("Write LTX", PortRole::Control, 0), "controls on the left");
+        assert!(drawn_on_right("Write LTX", PortRole::Control, 4), "but what comes after recording flows onward");
+        assert!(!drawn_on_right("Run Command", PortRole::Setting, 0), "into what it connects to");
     }
 
     #[test]

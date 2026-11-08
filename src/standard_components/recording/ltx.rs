@@ -39,8 +39,8 @@ use super::{
     status_ui,
 };
 use crate::core::engine::{
-    Category, Context, Control, DataStreamType, EdgeSet, Flow, Input, Node, NodeInfo, NodeThread, Output,
-    PASS_DURATION, Pass, PoolStatus, ThreadContext,
+    Category, Control, DataStreamType, EdgeSet, Flow, Input, Node, NodeInfo, NodeThread, Output, PASS_DURATION, Pass,
+    PoolStatus, ThreadContext, UiContext,
 };
 use crate::standard_components::ephys::reference::parse_channels;
 use crate::standard_components::ephys::{ChannelSelection, Continuous, Event, Events};
@@ -286,7 +286,7 @@ impl Node<Edges> for WriteLtx {
         });
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
+    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
         settings_grid(ui, |ui| {
             location_ui(ui, &mut self.location, context.base_directory);
             setting(ui, "File prefix", |ui| ui.text_edit_singleline(&mut self.prefix));

@@ -82,17 +82,17 @@ pub fn node_ui<N: NodeSet>(
     events: &mut Vec<Event>,
 ) {
     let Some(state) = resolved.get(&id) else { return };
-    let has_view = graph.get(id).is_some_and(|e| e.node.has_view());
+    let has_custom_ui = graph.get(id).is_some_and(|e| e.node.has_custom_ui());
     let running = runner.is_some();
     // A view stays live while recording (changes it makes to settings are undone: see `App::lock`). It finds what
     // its passes share with it in `shared`; triggers need a run, to go to.
     let live = runner.map(|r| r.exchange());
-    if has_view {
+    if has_custom_ui {
         let Some(mut tools) = NodeTools::new(graph, id, advanced, live, &mut *events) else { return };
         let tools = Some(&mut tools as &mut dyn crate::core::engine::NodeToolbar);
         let streams = &state.input_streams;
         graph.edit(id, streams, colours, shared, base_directory, running, locked, tools, |node: &mut N, context| {
-            node.view_ui(ui, context)
+            node.custom_ui(ui, context)
         });
     } else {
         node_window::show(ui, graph, resolved, colours, live, shared, base_directory, locked, advanced, id, events);

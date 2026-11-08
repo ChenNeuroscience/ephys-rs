@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use super::settings::alarms_ui;
 use super::{Alarm, AlarmKind, AlarmState, AlarmStates, Alarms, Phase, Source};
-use crate::core::engine::{Category, Context, Input, Node, NodeInfo, Output, Pass, PassState, SettingPort};
+use crate::core::engine::{Category, Input, Node, NodeInfo, Output, Pass, PassState, SettingPort, UiContext};
 use crate::standard_components::widgets::require_input;
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
 
@@ -325,7 +325,7 @@ impl Node<Edges> for AlarmProcessor {
         }
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
+    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
         alarms_ui(ui, &mut self.alarms, streams(context.inputs));
     }
 }

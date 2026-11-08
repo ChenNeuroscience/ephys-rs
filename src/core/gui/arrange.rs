@@ -97,7 +97,7 @@ pub fn arrange<N: NodeSet>(graph: &Graph<N>) -> HashMap<NodeId, [f32; 2]> {
 mod tests {
     use super::*;
     use crate::Nodes;
-    use crate::core::engine::{Port, Role};
+    use crate::core::engine::{Port, PortRole};
 
     #[test]
     fn data_flows_left_to_right_in_columns() {
@@ -112,10 +112,10 @@ mod tests {
         let detector = add(&mut graph, "Spike Detector", [20.0, 0.0]);
         let lfp = add(&mut graph, "LFP Viewer", [30.0, 0.0]);
         let port = |node, role, index| Port { node, role, index };
-        graph.connect(port(board, Role::Output, 0), port(detector, Role::Input, 0)).unwrap();
-        graph.connect(port(detector, Role::Output, 0), port(viewer, Role::Input, 0)).unwrap();
-        graph.connect(port(board, Role::Output, 0), port(lfp, Role::Input, 0)).unwrap();
-        graph.connect(port(viewer, Role::Control, 0), port(detector, Role::Setting, 0)).unwrap();
+        graph.connect(port(board, PortRole::Output, 0), port(detector, PortRole::Input, 0)).unwrap();
+        graph.connect(port(detector, PortRole::Output, 0), port(viewer, PortRole::Input, 0)).unwrap();
+        graph.connect(port(board, PortRole::Output, 0), port(lfp, PortRole::Input, 0)).unwrap();
+        graph.connect(port(viewer, PortRole::Control, 0), port(detector, PortRole::Setting, 0)).unwrap();
         let placed = arrange(&graph);
         let x = |id| placed[&id][0];
         assert!(x(board) < x(detector) && x(detector) < x(viewer), "{placed:?}");

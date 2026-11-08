@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use super::capture::{self, Capture, Shape, State, Status};
 use super::{AUX_PER_HEADSTAGE, Bandwidth, BoardInfo, Config, Headstage, OpalKellyKind, PORTS, SAMPLE_RATES, Source};
 use crate::core::engine::{
-    Category, Context, Flow, Node, NodeInfo, NodeThread, Output, Pass, PoolStatus, ThreadContext,
+    Category, Flow, Node, NodeInfo, NodeThread, Output, Pass, PoolStatus, ThreadContext, UiContext,
 };
 use crate::core::gui::widgets::{Icon, small_icon_button};
 use crate::standard_components::ephys::{Continuous, Events};
@@ -215,7 +215,7 @@ impl Node<Edges> for AcquisitionBoard {
         });
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
+    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
         let theme = context.theme;
         settings_grid(ui, |ui| {
             setting(ui, "Board", |ui| source_ui(ui, &mut self.source));

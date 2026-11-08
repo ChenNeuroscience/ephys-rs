@@ -19,7 +19,7 @@ use eframe::egui::{self, Color32, RichText};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use crate::core::engine::{Category, Context, EdgeInfo, EdgeType, Node, NodeInfo, Output, SettingPort};
+use crate::core::engine::{Category, EdgeInfo, EdgeType, Node, NodeInfo, Output, SettingPort, UiContext};
 use crate::core::gui::widgets::{Icon, help_link, small_icon_button};
 use crate::core::theme::Colours;
 use crate::standard_components::recording::expand;
@@ -770,7 +770,7 @@ impl RunCommand {
         }
     }
 
-    fn window(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
+    fn window(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
         ui.horizontal(|ui| context.node_toolbar(ui));
         ui.horizontal(|ui| {
             ui.label("Runs a program on files, in a terminal window of its own.");
@@ -1159,7 +1159,7 @@ impl Node<Edges> for RunCommand {
         description: "Runs a program on files, in a terminal: by hand, or on files sent to it (by a writer, after recording).",
     };
 
-    const HAS_VIEW: bool = true;
+    const HAS_CUSTOM_UI: bool = true;
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
     fn outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {
@@ -1189,11 +1189,11 @@ impl Node<Edges> for RunCommand {
         }
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
+    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
         self.window(ui, context);
     }
 
-    fn view_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
+    fn custom_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
         self.window(ui, context);
     }
 }
@@ -1205,7 +1205,7 @@ mod tests {
 
     use super::*;
     use crate::Nodes;
-    use crate::core::engine::{Graph, NodeSet, Port, Recording, Role, Runner, Snapshot};
+    use crate::core::engine::{Graph, NodeSet, Port, PortRole, Recording, Runner, Snapshot};
     use crate::core::triggers::{DirectTriggers, Triggered};
     use crate::standard_components::ephys::board::{Source, serve_test_board};
     use crate::standard_components::recording::Location;
@@ -1611,8 +1611,8 @@ mod tests {
             c.settings.regex = true;
         }
         let port = |node, role, index| Port { node, role, index };
-        graph.connect(port(board, Role::Output, 0), port(writer, Role::Input, 0)).unwrap();
-        graph.connect(port(writer, Role::Control, 0), port(command, Role::Setting, 0)).unwrap();
+        graph.connect(port(board, PortRole::Output, 0), port(writer, PortRole::Input, 0)).unwrap();
+        graph.connect(port(writer, PortRole::Control, 0), port(command, PortRole::Setting, 0)).unwrap();
 
         let direct = Arc::new(DirectTriggers::default());
         let snapshot = Snapshot::new(0, graph.clone(), None);
@@ -1686,14 +1686,14 @@ mod tests {
         }
         if writer {
             let writer = add(&mut graph, "Write Raw");
-            let from = Port { node: writer, role: Role::Control, index: 0 };
-            graph.connect(from, Port { node: id, role: Role::Setting, index: 0 }).unwrap();
+            let from = Port { node: writer, role: PortRole::Control, index: 0 };
+            graph.connect(from, Port { node: id, role: PortRole::Setting, index: 0 }).unwrap();
         }
         let inputs: [Option<DataStream>; 0] = [];
         let mut harness = egui_kittest::Harness::builder().with_size([560.0, 580.0]).wgpu().build_ui_state(
             move |ui, graph: &mut Graph<Nodes>| {
                 graph.edit(id, &inputs, &THEMES[0].colours, None, None, false, false, None, |node, context| {
-                    node.view_ui(ui, context)
+                    node.custom_ui(ui, context)
                 });
             },
             graph,

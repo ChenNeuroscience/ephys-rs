@@ -7,7 +7,7 @@ use sci_rs::signal::filter::sosfilt_item;
 use serde::{Deserialize, Serialize};
 
 use crate::Buffer;
-use crate::core::engine::{Category, Context, Input, Node, NodeInfo, Output, Pass};
+use crate::core::engine::{Category, Input, Node, NodeInfo, Output, Pass, UiContext};
 use crate::standard_components::ephys::ContinuousBuffer;
 use crate::standard_components::widgets::format_rate;
 use crate::standard_components::widgets::{input_summary, require_input, setting, settings_grid};
@@ -95,7 +95,7 @@ impl Node<Edges> for BandPassFilter {
         warnings
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
+    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
         settings_grid(ui, |ui| {
             setting(ui, "Low cut-off", |ui| {
                 ui.add(egui::DragValue::new(&mut self.low_hz).range(0.1..=20000.0).speed(1.0).suffix(" Hz"))

@@ -7,7 +7,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use super::{
-    Context, Control, Edges, Input, NodeInfo, NodeThread, Output, Pass, PoolStatus, SettingPort, ThreadContext,
+    Control, Edges, Input, NodeInfo, NodeThread, Output, Pass, PoolStatus, SettingPort, ThreadContext, UiContext,
 };
 
 /// The closed set of node types a program is built with, as an enum with one variant per type. Implemented
@@ -23,7 +23,7 @@ pub trait NodeSet: Clone + PartialEq + Serialize + DeserializeOwned + Send + Syn
     /// A node of the given type, with default settings.
     fn create(type_index: usize) -> Self;
     fn type_index(&self) -> usize;
-    fn has_view(&self) -> bool;
+    fn has_custom_ui(&self) -> bool;
     fn show_in_basic_default(&self) -> bool;
     fn inputs(&self) -> Vec<Input<Self::Edges>>;
     fn outputs(&self, inputs: &[Option<<Self::Edges as Edges>::DataStream>]) -> Vec<Output<Self::Edges>>;
@@ -31,8 +31,8 @@ pub trait NodeSet: Clone + PartialEq + Serialize + DeserializeOwned + Send + Syn
     fn settings(&self) -> Vec<SettingPort<Self::Edges>>;
     fn set_setting(&mut self, index: usize, value: <Self::Edges as Edges>::Setting);
     fn controls(&self) -> Vec<Control<Self::Edges>>;
-    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Self::Edges>);
-    fn view_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Self::Edges>);
+    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Self::Edges>);
+    fn custom_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Self::Edges>);
     fn in_place(&self, output: usize) -> Option<usize>;
     fn takes(&self, input: usize) -> bool;
     fn runs_given(&self, inputs: &[bool], outputs: &[bool]) -> bool;
@@ -124,8 +124,8 @@ macro_rules! node_set {
                 unreachable!()
             }
 
-            fn has_view(&self) -> bool {
-                match self { $($name::$variant(_) => <$ty as $crate::core::engine::Node<$edges>>::HAS_VIEW),+ }
+            fn has_custom_ui(&self) -> bool {
+                match self { $($name::$variant(_) => <$ty as $crate::core::engine::Node<$edges>>::HAS_CUSTOM_UI),+ }
             }
 
             fn show_in_basic_default(&self) -> bool {
@@ -159,12 +159,12 @@ macro_rules! node_set {
                 match self { $($name::$variant(n) => $crate::core::engine::Node::controls(n)),+ }
             }
 
-            fn settings_ui(&mut self, ui: &mut eframe::egui::Ui, context: &mut $crate::core::engine::Context<$edges>) {
+            fn settings_ui(&mut self, ui: &mut eframe::egui::Ui, context: &mut $crate::core::engine::UiContext<$edges>) {
                 match self { $($name::$variant(n) => $crate::core::engine::Node::settings_ui(n, ui, context)),+ }
             }
 
-            fn view_ui(&mut self, ui: &mut eframe::egui::Ui, context: &mut $crate::core::engine::Context<$edges>) {
-                match self { $($name::$variant(n) => $crate::core::engine::Node::view_ui(n, ui, context)),+ }
+            fn custom_ui(&mut self, ui: &mut eframe::egui::Ui, context: &mut $crate::core::engine::UiContext<$edges>) {
+                match self { $($name::$variant(n) => $crate::core::engine::Node::custom_ui(n, ui, context)),+ }
             }
 
             fn in_place(&self, output: usize) -> Option<usize> {

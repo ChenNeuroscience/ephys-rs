@@ -10,7 +10,7 @@
 use eframe::egui::{self, Color32, RichText};
 use serde::{Deserialize, Serialize};
 
-use crate::core::engine::{Category, Context, EdgeInfo, EdgeType, Input, Node, NodeInfo, Output, Pass, SettingPort};
+use crate::core::engine::{Category, EdgeInfo, EdgeType, Input, Node, NodeInfo, Output, Pass, SettingPort, UiContext};
 use crate::core::gui::widgets::{Icon, small_toggle_button};
 use crate::standard_components::ephys::{Continuous, ContinuousBuffer};
 use crate::standard_components::widgets::{all_checkbox, input_summary, require_input, setting, settings_grid};
@@ -457,7 +457,7 @@ impl Node<Edges> for Reference {
         warnings
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
+    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
         let count = match context.inputs[0] {
             Some(DataStream::Continuous(c)) => c.channels,
             _ => 64,

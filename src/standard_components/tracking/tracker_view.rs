@@ -16,7 +16,7 @@ use super::camera::capture::State;
 use super::camera::node::camera_settings_ui;
 use super::led_chart::{self, History};
 use super::position_detector::{calibration_ui, crop_ui, detection_ui, timing_led_ui};
-use crate::core::engine::{Category, Context, Control, EdgeType, Input, Node, NodeInfo, Output, Pass};
+use crate::core::engine::{Category, Control, EdgeType, Input, Node, NodeInfo, Output, Pass, UiContext};
 use crate::core::theme::Colours;
 use crate::standard_components::pool::{Pool, SharedPool};
 use crate::standard_components::preview;
@@ -112,7 +112,7 @@ impl Node<Edges> for TrackerView {
                       adjust. Through its controls, adjusts the camera and the position detector too. Without video, \
                       shows where the positions are.",
     };
-    const HAS_VIEW: bool = true;
+    const HAS_CUSTOM_UI: bool = true;
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
     type State = Tracking;
@@ -215,12 +215,12 @@ impl Node<Edges> for TrackerView {
         });
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
+    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
         let size = frame_size(context);
         self.controls_ui(ui, context, size);
     }
 
-    fn view_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
+    fn custom_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
         // The node's toolbar, along the top.
         if context.tools.is_some() {
             ui.horizontal(|ui| context.node_toolbar(ui));
@@ -246,7 +246,13 @@ impl Node<Edges> for TrackerView {
 impl TrackerView {
     /// The settings above the camera, as tall as they are (so closing sections makes room for the camera), up
     /// to a height that dragging their bottom edge sets. Returns the room left below.
-    fn controls_above(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>, size: [f32; 2], area: Rect) -> Rect {
+    fn controls_above(
+        &mut self,
+        ui: &mut egui::Ui,
+        context: &mut UiContext<Edges>,
+        size: [f32; 2],
+        area: Rect,
+    ) -> Rect {
         // The most it's to take, and how tall the settings were last time.
         let fit_id = ui.scope_id().with("tracker controls above");
         let (most, tall) = ui.data(|d| d.get_temp::<(f32, f32)>(fit_id)).unwrap_or((area.height() * 0.4, f32::MAX));
@@ -277,7 +283,7 @@ impl TrackerView {
     }
 
     /// The camera, with what's detected drawn over it, and the LED chart beside or below it.
-    fn camera_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>, arrangement: Arrangement) {
+    fn camera_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>, arrangement: Arrangement) {
         let pool = context.shared::<Pool<TrackerDisplay>>();
         let reading = pool.as_deref().and_then(Pool::newest);
         let display = reading.as_deref();
@@ -336,7 +342,7 @@ impl TrackerView {
 
     /// The camera's and the detector's settings (through the controls), in sections whose headers say what's
     /// shown over the video and lock what can be changed.
-    fn controls_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>, size: [f32; 2]) {
+    fn controls_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>, size: [f32; 2]) {
         if positions_only(context) {
             return positions_settings_ui(ui, context);
         }
@@ -473,12 +479,12 @@ impl TrackerView {
 }
 
 /// Whether it's only got positions to show, with no video.
-fn positions_only(context: &Context<Edges>) -> bool {
+fn positions_only(context: &UiContext<Edges>) -> bool {
     context.inputs[0].is_none() && context.inputs[1].is_some()
 }
 
 /// The window the positions range over: the crop's, if there's one, otherwise a frame's. Sized so it's never empty.
-fn positions_window(context: &Context<Edges>) -> [f32; 4] {
+fn positions_window(context: &UiContext<Edges>) -> [f32; 4] {
     let crop = match &context.controls[1] {
         Some(Setting::Detection(detection)) => detection.crop.bounds(),
         _ => None,
@@ -491,7 +497,7 @@ fn positions_window(context: &Context<Edges>) -> [f32; 4] {
 }
 
 /// Where positions are in their window, with the path recorded, looking as they do over video.
-fn positions_ui(ui: &mut egui::Ui, context: &Context<Edges>, display: Option<&TrackerDisplay>) {
+fn positions_ui(ui: &mut egui::Ui, context: &UiContext<Edges>, display: Option<&TrackerDisplay>) {
     let Some(display) = display else {
         return preview::unconnected(ui, context.theme, "Press Play to see the positions");
     };
@@ -532,7 +538,7 @@ fn positions_ui(ui: &mut egui::Ui, context: &Context<Edges>, display: Option<&Tr
 }
 
 /// What's known of positions without video, which there's nothing to adjust of.
-fn positions_settings_ui(ui: &mut egui::Ui, context: &Context<Edges>) {
+fn positions_settings_ui(ui: &mut egui::Ui, context: &UiContext<Edges>) {
     let source = match context.inputs[1] {
         Some(DataStream::Positions(positions)) => positions.source,
         _ => "",
@@ -612,7 +618,7 @@ fn stats_ui(ui: &mut egui::Ui, stats: Option<&CaptureStats>, connected: bool, de
 }
 
 /// The size of the frames coming in, or a likely one if none are.
-fn frame_size(context: &Context<Edges>) -> [f32; 2] {
+fn frame_size(context: &UiContext<Edges>) -> [f32; 2] {
     match context.inputs[0] {
         Some(DataStream::Video(video)) => [video.width as f32, video.height as f32],
         _ => [640.0, 480.0],
@@ -830,7 +836,7 @@ mod tests {
 
     use super::*;
     use crate::Nodes;
-    use crate::core::engine::{Graph, NodeId, NodeSet, Port, Role, Runner, Snapshot};
+    use crate::core::engine::{Graph, NodeId, NodeSet, Port, PortRole, Runner, Snapshot};
 
     #[test]
     fn lays_out_by_the_window_shape() {
@@ -870,9 +876,9 @@ mod tests {
         let detector = add(&mut graph, "Position Detector");
         let view = add(&mut graph, "Tracker View");
         let port = |node, role, index| Port { node, role, index };
-        graph.connect(port(camera, Role::Output, 0), port(detector, Role::Input, 0)).unwrap();
-        graph.connect(port(camera, Role::Output, 0), port(view, Role::Input, 0)).unwrap();
-        graph.connect(port(detector, Role::Output, 0), port(view, Role::Input, 1)).unwrap();
+        graph.connect(port(camera, PortRole::Output, 0), port(detector, PortRole::Input, 0)).unwrap();
+        graph.connect(port(camera, PortRole::Output, 0), port(view, PortRole::Input, 0)).unwrap();
+        graph.connect(port(detector, PortRole::Output, 0), port(view, PortRole::Input, 1)).unwrap();
         let first = Snapshot::new(0, graph.clone(), None);
         let runner = Runner::start(&first, 2);
 
@@ -898,9 +904,9 @@ mod tests {
         let detector = add(&mut graph, "Position Detector");
         let view = add(&mut graph, "Tracker View");
         let port = |node, role, index| Port { node, role, index };
-        graph.connect(port(camera, Role::Output, 0), port(detector, Role::Input, 0)).unwrap();
-        graph.connect(port(camera, Role::Output, 0), port(view, Role::Input, 0)).unwrap();
-        graph.connect(port(detector, Role::Output, 0), port(view, Role::Input, 1)).unwrap();
+        graph.connect(port(camera, PortRole::Output, 0), port(detector, PortRole::Input, 0)).unwrap();
+        graph.connect(port(camera, PortRole::Output, 0), port(view, PortRole::Input, 0)).unwrap();
+        graph.connect(port(detector, PortRole::Output, 0), port(view, PortRole::Input, 1)).unwrap();
         // Over the test scene's big LED, in the middle of the frame.
         if let Some(Nodes::PositionDetector(d)) = graph.get_mut(detector).map(|e| &mut e.node) {
             let center = [320.5, 240.5];
@@ -932,9 +938,9 @@ mod tests {
         let detector = add(&mut graph, "Position Detector");
         let view = add(&mut graph, "Tracker View");
         let port = |node, role, index| Port { node, role, index };
-        graph.connect(port(camera, Role::Output, 0), port(detector, Role::Input, 0)).unwrap();
-        graph.connect(port(camera, Role::Output, 0), port(view, Role::Input, 0)).unwrap();
-        graph.connect(port(detector, Role::Output, 0), port(view, Role::Input, 1)).unwrap();
+        graph.connect(port(camera, PortRole::Output, 0), port(detector, PortRole::Input, 0)).unwrap();
+        graph.connect(port(camera, PortRole::Output, 0), port(view, PortRole::Input, 0)).unwrap();
+        graph.connect(port(detector, PortRole::Output, 0), port(view, PortRole::Input, 1)).unwrap();
         let first = Snapshot::new(0, graph.clone(), None);
         let runner = Runner::start(&first, 2);
 
@@ -992,12 +998,12 @@ mod tests {
         let detector = add(&mut graph, "Position Detector");
         let view = add(&mut graph, "Tracker View");
         let port = |node, role, index| Port { node, role, index };
-        graph.connect(port(camera, Role::Output, 0), port(detector, Role::Input, 0)).unwrap();
-        graph.connect(port(camera, Role::Output, 0), port(view, Role::Input, 0)).unwrap();
-        graph.connect(port(detector, Role::Output, 0), port(view, Role::Input, 1)).unwrap();
-        graph.connect(port(camera, Role::Output, 1), port(view, Role::Input, 2)).unwrap();
-        graph.connect(port(view, Role::Control, 0), port(camera, Role::Setting, 0)).unwrap();
-        graph.connect(port(view, Role::Control, 1), port(detector, Role::Setting, 0)).unwrap();
+        graph.connect(port(camera, PortRole::Output, 0), port(detector, PortRole::Input, 0)).unwrap();
+        graph.connect(port(camera, PortRole::Output, 0), port(view, PortRole::Input, 0)).unwrap();
+        graph.connect(port(detector, PortRole::Output, 0), port(view, PortRole::Input, 1)).unwrap();
+        graph.connect(port(camera, PortRole::Output, 1), port(view, PortRole::Input, 2)).unwrap();
+        graph.connect(port(view, PortRole::Control, 0), port(camera, PortRole::Setting, 0)).unwrap();
+        graph.connect(port(view, PortRole::Control, 1), port(detector, PortRole::Setting, 0)).unwrap();
         if let Some(Nodes::PositionDetector(d)) = graph.get_mut(detector).map(|e| &mut e.node) {
             d.detection.crop = Crop::Rectangle { center: [320.0, 240.0], width: 420.0, height: 300.0, angle: 0.3 };
             d.detection.rulers.push(Ruler { a: [110.0, 420.0], b: [470.0, 420.0], length_cm: 100.0 });
@@ -1070,7 +1076,7 @@ mod tests {
                     true,
                     false,
                     None,
-                    |node, context| node.view_ui(ui, context),
+                    |node, context| node.custom_ui(ui, context),
                 );
             },
             graph,
@@ -1097,8 +1103,8 @@ mod tests {
         let vr = add(&mut graph, "VR Computer");
         let view = add(&mut graph, "Tracker View");
         let port = |node, role, index| Port { node, role, index };
-        graph.connect(port(vr, Role::Output, 0), port(view, Role::Input, 1)).unwrap();
-        graph.connect(port(view, Role::Control, 1), port(vr, Role::Setting, 0)).unwrap();
+        graph.connect(port(vr, PortRole::Output, 0), port(view, PortRole::Input, 1)).unwrap();
+        graph.connect(port(view, PortRole::Control, 1), port(vr, PortRole::Setting, 0)).unwrap();
         let window = [
             ("window_min_x", "0"),
             ("window_max_x", "800"),
@@ -1137,7 +1143,7 @@ mod tests {
                     true,
                     false,
                     None,
-                    |node, context| node.view_ui(ui, context),
+                    |node, context| node.custom_ui(ui, context),
                 );
             },
             graph,

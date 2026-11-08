@@ -50,7 +50,7 @@ read-only, just see) the setting: a viewer setting a detector's thresholds, a wr
 They carry no data, so can point anywhere, upstream included; a setting can have several controls, a control one
 setting. A setting's type is its value (a list of thresholds, say), implementing `EdgeType`; it needn't be `Copy`.
 
-When a node's window edits a control's value (`Context::controls`), the graph sets it on the setting's node
+When a node's window edits a control's value (`UiContext::controls`), the graph sets it on the setting's node
 (`Node::set_setting`), as an edit. A setting can also offer triggers (see [Nodes](nodes.md#triggers)).
 
 Settings edges are drawn dashed, with arrows both ways (dotted when read-only); the legend has one row for each, not a

@@ -23,7 +23,7 @@ pub const MIN_SIZE: [f32; 2] = [80.0, 50.0];
 
 /// Something pasted onto the canvas.
 #[derive(Clone, Copy, Debug)]
-pub enum Pasted<'a> {
+pub enum PastedContent<'a> {
     Image(&'a ColorImage),
     /// Text, trimmed (and not empty).
     Text(&'a str),
@@ -100,7 +100,7 @@ pub trait AnnotationType: Default + Clone + PartialEq + Serialize + DeserializeO
     /// One showing what's been pasted onto the canvas, if this type can: how well it suits it, the annotation, and
     /// its natural size (which the canvas scales down to fit the view). Of the types that can, the one that suits it
     /// best makes it (of two as good, the first in `annotation_set!`).
-    fn pasted(_pasted: &Pasted) -> Option<(Fit, Self, [f32; 2])> {
+    fn pasted(_pasted: &PastedContent) -> Option<(Fit, Self, [f32; 2])> {
         None
     }
 
@@ -147,7 +147,7 @@ pub trait AnnotationSet: Clone + PartialEq + Serialize + DeserializeOwned + 'sta
     fn type_index(&self) -> usize;
     fn fill(&self, theme: &Colours) -> Color32;
     /// An annotation of the type that best suits what's pasted (see `AnnotationType::pasted`), and its size.
-    fn pasted(pasted: &Pasted) -> Option<(Self, [f32; 2])>;
+    fn pasted(pasted: &PastedContent) -> Option<(Self, [f32; 2])>;
     fn settings_ui(&mut self, ui: &mut egui::Ui);
     fn toolbar_ui(&mut self, ui: &mut egui::Ui);
     fn paint_icon(type_index: usize, painter: &Painter, rect: Rect);
@@ -274,7 +274,7 @@ macro_rules! annotation_set {
                 match self { $($name::$variant(a) => $crate::core::annotation::AnnotationType::fill(a, theme)),+ }
             }
 
-            fn pasted(pasted: &$crate::core::annotation::Pasted) -> Option<(Self, [f32; 2])> {
+            fn pasted(pasted: &$crate::core::annotation::PastedContent) -> Option<(Self, [f32; 2])> {
                 let mut best: Option<($crate::core::annotation::Fit, Self, [f32; 2])> = None;
                 $(
                     if let Some((fit, a, size)) = <$ty as $crate::core::annotation::AnnotationType>::pasted(pasted)

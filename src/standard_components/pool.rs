@@ -14,7 +14,7 @@
 //! queued, so none are lost if the window's closed) and queue it as of their pass (`send_as_of`); the window reads
 //! the newest (`newest`), giving back the one it was reading and any older, and holds on to it for as long as it
 //! likes. A pool shared with a window lives in the run's exchange (see `crate::core::exchange`), where `SharedPool`
-//! finds or makes it from the passes, and `Context::shared::<Pool<T>>` from the window.
+//! finds or makes it from the passes, and `UiContext::shared::<Pool<T>>` from the window.
 //!
 //! Passes never wait on it. The empty and full buffers are on lock-free queues (crossbeam's bounded channels), so
 //! taking and giving back is a few atomic operations; only a writer's thread blocks, waiting for a buffer to write.
@@ -251,7 +251,7 @@ impl<T> Deref for Newest<'_, T> {
 }
 
 /// A node's pool in the run's exchange, kept in its state: found (or made) by the first pass that asks for it, so the
-/// node's window (or the dev tools) can find it too (`Context::shared::<Pool<T>>`). A node whose state is only working
+/// node's window (or the dev tools) can find it too (`UiContext::shared::<Pool<T>>`). A node whose state is only working
 /// memory has one on each worker (see `PassState::CARRIED_OVER`): they find the same pool.
 pub struct SharedPool<T> {
     pool: Option<Arc<Pool<T>>>,

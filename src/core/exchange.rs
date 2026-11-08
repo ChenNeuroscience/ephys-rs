@@ -1,7 +1,7 @@
 //! What a run's passes and the GUI share, without either waiting on the other.
 //!
 //! Each run has an `Exchange`. In it, each node can keep things of any type its passes and its window (or the dev
-//! tools) both reach: `Pass::shared` finds or makes one, and `Context::shared` (or `ThreadContext::shared`) finds it.
+//! tools) both reach: `Pass::shared` finds or makes one, and `UiContext::shared` (or `ThreadContext::shared`) finds it.
 //! What they are, and how they're used, is up to the node: the exchange only keeps them for the run, and doesn't
 //! make or move anything per pass. The usual one is a `standard_components::pool::Pool` of buffers, which the passes
 //! fill and the window reads the newest of. Anything kept can say where its buffers are (`Shared::pool`), for

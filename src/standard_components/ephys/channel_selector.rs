@@ -5,7 +5,7 @@
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 
-use crate::core::engine::{Category, Context, Input, Node, NodeInfo, Output, Pass, PassState, SettingPort};
+use crate::core::engine::{Category, Input, Node, NodeInfo, Output, Pass, PassState, SettingPort, UiContext};
 use crate::standard_components::ephys::reference::{channels_ui, parse_channels};
 use crate::standard_components::ephys::{ChannelSelection, Continuous};
 use crate::standard_components::widgets::{inline_block, input_summary, power, require_input};
@@ -118,7 +118,7 @@ impl Node<Edges> for ChannelSelector {
         }
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
+    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
         let count = match context.inputs[0] {
             Some(DataStream::Continuous(c)) => c.channels,
             _ => 64,
@@ -181,7 +181,7 @@ mod tests {
     #[test]
     fn nothing_selected_runs_records_and_draws_everything_after_it() {
         use crate::core::base_directory::Place;
-        use crate::core::engine::{Graph, NodeSet, Port, Recording, Role, Runner, Snapshot};
+        use crate::core::engine::{Graph, NodeSet, Port, PortRole, Recording, Runner, Snapshot};
         use crate::standard_components::ephys::board::{Source, serve_test_board};
         use crate::standard_components::themes::THEMES;
         use crate::{Nodes, example_graph};
@@ -213,19 +213,19 @@ mod tests {
                     let id = graph.add(node, [0.0, 0.0]);
                     added.push(id);
                     for (input, port) in inputs {
-                        graph.connect(port, Port { node: id, role: Role::Input, index: input }).unwrap();
+                        graph.connect(port, Port { node: id, role: PortRole::Input, index: input }).unwrap();
                     }
                 }
             }
             added
         };
-        let selected = Port { node: selector, role: Role::Output, index: 0 };
+        let selected = Port { node: selector, role: PortRole::Output, index: 0 };
         let first = takers(&mut graph, &[(Kind::Continuous, selected)]);
         let resolved = graph.resolve();
         let made: Vec<(Kind, Port)> = (first.iter())
             .flat_map(|&node| {
                 let outputs = resolved[&node].outputs.iter().enumerate();
-                outputs.map(move |(index, o)| (o.kind, Port { node, role: Role::Output, index }))
+                outputs.map(move |(index, o)| (o.kind, Port { node, role: PortRole::Output, index }))
             })
             .filter(|(kind, _)| matches!(kind, Kind::Spikes | Kind::Spectra))
             .collect();
@@ -255,8 +255,8 @@ mod tests {
             let mut harness = egui_kittest::Harness::builder().with_size([800.0, 600.0]).build_ui(|ui| {
                 graph.edit(id, &inputs, &THEMES[0].colours, exchange, None, true, false, None, |node, context| {
                     node.settings_ui(ui, context);
-                    if node.has_view() {
-                        node.view_ui(ui, context);
+                    if node.has_custom_ui() {
+                        node.custom_ui(ui, context);
                     }
                 });
             });

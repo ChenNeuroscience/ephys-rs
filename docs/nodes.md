@@ -18,7 +18,7 @@ another node can edit).
 - `warnings(inputs)`: what's wrong (an input not connected, say), shown on the graph and in its window.
 - `settings()` and `set_setting`: the settings other nodes can edit through settings edges (see [Edges](edges.md)).
 - `controls()`: the other side, settings of other nodes this one can see and edit (or only read, `read_only`), in its
-  `Context::controls`.
+  `UiContext::controls`.
 
 ## Running
 
@@ -54,9 +54,9 @@ settings: the latest, as of the pass.
 
 ## Its window
 
-Double-clicking a node opens its window: `view_ui` if it has a view (`HAS_VIEW`), otherwise `settings_ui`, with its
-name, warnings and ports. `SHOW_IN_BASIC_DEFAULT` says whether it's listed in the basic view, till that's set for it: by convention,
-nodes with a view are. Both get a [`Context`](../src/core/engine/context.rs):
+Double-clicking a node opens its window: `custom_ui` if it has a UI of its own (`HAS_CUSTOM_UI`), otherwise the
+standard one, `settings_ui`, with its name, warnings and ports. `SHOW_IN_BASIC_DEFAULT` says whether it's listed in the basic view, till that's set for it: by convention,
+nodes with a view are. Both get a [`UiContext`](../src/core/engine/ui_context.rs):
 
 - `inputs`: the streams on its inputs; `controls`: the values of the settings its controls see, to edit.
 - `shared::<T>()`: what its passes share with it in the run's [exchange](../src/core/exchange.rs), or the last run's
@@ -83,7 +83,7 @@ are full examples.
 The engine doesn't hand anything to a node's window itself. Each run has an [`Exchange`](../src/core/exchange.rs),
 where a node keeps whatever its passes and its window (or the dev tools: `ThreadContext::shared`) both reach, of any
 type implementing `Shared`: `Pass::shared(make)` finds or makes it (keep the `Arc` in the node's state, rather than
-finding it every pass), and `Context::shared` finds it. A `Shared` can report a pool of buffers (`Shared::pool`),
+finding it every pass), and `UiContext::shared` finds it. A `Shared` can report a pool of buffers (`Shared::pool`),
 which the dev tools show on the GUI.
 
 The usual thing to share is a [`Pool`](../src/standard_components/pool.rs) of buffers: the same cross-thread pool
@@ -97,7 +97,7 @@ shown: SharedPool<TracesDisplay>,
 // In process: fill a buffer (an earlier send's, to overwrite), and queue it as of the pass.
 state.shown.send_newest(pass, |display| display.fill_from(...));
 
-// In view_ui: the newest queued, held for as long as the view likes.
+// In custom_ui: the newest queued, held for as long as the view likes.
 let pool = context.shared::<Pool<TracesDisplay>>();
 let Some(display) = pool.as_deref().and_then(Pool::newest) else { return };
 ```
@@ -112,9 +112,9 @@ does this with frames.
 Anything sent to a node is a trigger, and there are two kinds, by how it gets there.
 
 A setting can offer **pass triggers** (`triggers(setting)`), as well as be set: "auto detect", say. A control connected to
-it triggers one (`Context::trigger(Some(control), name)`), as can the node's own window (`None`); the node's next pass
+it triggers one (`UiContext::trigger(Some(control), name)`), as can the node's own window (`None`); the node's next pass
 takes it (`Pass::triggered`), reports progress (`Pass::trigger_progress`), and finishes (`Pass::trigger_done`).
-Meanwhile it can be stopped (`Context::cancel_trigger`): the passes then see `Pass::trigger_cancelled`, and abandon it. Since
+Meanwhile it can be stopped (`UiContext::cancel_trigger`): the passes then see `Pass::trigger_cancelled`, and abandon it. Since
 passes can't change the graph, it triggers an update of what it finds (`Pass::trigger_settings_update(setting, value)`),
 and the GUI applies it as an edit. The [Continuous Gain](../src/standard_components/ephys/continuous_gain.rs), [Spike Gain](../src/standard_components/spikes/spike_gain.rs) and
 [Spike Detector](../src/standard_components/spikes/spike_detector.rs) work this way, triggered from the Spike Viewer.
@@ -154,7 +154,7 @@ onward, like data.
 Not everything a node does belongs to a pass. The nodes in the Other category aren't about data as it's acquired: [Run
 Command](../src/standard_components/other/run_command.rs) runs a program in a terminal of its own, with or without a run.
 The terminal's a separate process, which can be stopped from the node, and which carries on if the app quits.
-A node's UI can see what's connected to its settings (`Context::controlled_by`): while a writer's connected, it's all Run
+A node's UI can see what's connected to its settings (`UiContext::controlled_by`): while a writer's connected, it's all Run
 Command runs on, so it says so and doesn't offer files of its own.
 
 ## Testing

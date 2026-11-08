@@ -158,20 +158,20 @@ mod tests {
     #[test]
     fn what_is_pasted_becomes_the_annotation_that_suits_it_best() {
         use crate::AnnotationTypes;
-        use crate::core::annotation::{AnnotationSet, Pasted};
-        let made = |pasted: Pasted| AnnotationTypes::pasted(&pasted).map(|(a, _)| a.info().name);
-        assert_eq!(made(Pasted::Image(&red_square())), Some("Image"));
-        assert_eq!(made(Pasted::Text("Recording room 2")), Some("Heading"), "a short line");
-        assert_eq!(made(Pasted::Text("Check the ground wire.\nThen the reference.")), Some("Sticky Note"));
-        assert_eq!(made(Pasted::Text("# Protocol\n- check impedances\n- **then** record")), Some("Markdown"));
+        use crate::core::annotation::{AnnotationSet, PastedContent};
+        let made = |pasted: PastedContent| AnnotationTypes::pasted(&pasted).map(|(a, _)| a.info().name);
+        assert_eq!(made(PastedContent::Image(&red_square())), Some("Image"));
+        assert_eq!(made(PastedContent::Text("Recording room 2")), Some("Heading"), "a short line");
+        assert_eq!(made(PastedContent::Text("Check the ground wire.\nThen the reference.")), Some("Sticky Note"));
+        assert_eq!(made(PastedContent::Text("# Protocol\n- check impedances\n- **then** record")), Some("Markdown"));
         let long = "A long note. ".repeat(40);
-        assert_eq!(made(Pasted::Text(long.trim())), Some("Sticky Note"), "of those that can, the first");
+        assert_eq!(made(PastedContent::Text(long.trim())), Some("Sticky Note"), "of those that can, the first");
     }
 
     #[test]
     fn a_pasted_image_becomes_an_annotation_of_its_shape() {
-        let (_, image, size) =
-            image::Image::pasted(&crate::core::annotation::Pasted::Image(&red_square())).expect("images take them");
+        let (_, image, size) = image::Image::pasted(&crate::core::annotation::PastedContent::Image(&red_square()))
+            .expect("images take them");
         assert_eq!(image.pixels, [4, 3]);
         assert_eq!(size, [4.0, 3.0], "its natural size, for the canvas to fit to the view");
         assert_eq!(image.aspect(), 4.0 / 3.0, "and it keeps its shape");

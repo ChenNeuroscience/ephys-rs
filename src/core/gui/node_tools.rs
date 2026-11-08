@@ -1,14 +1,14 @@
 //! The buttons every node has, for its window (see `NodeToolbar`): copying and pasting its settings; and in advanced
 //! mode, its settings menu (whether it shows in basic mode, and the pane's own options), enabling it, and deleting
 //! it. A node's default window has them beside its name; a view puts them
-//! where it likes, through its `Context`.
+//! where it likes, through its `UiContext`.
 
 use eframe::egui;
 
 use super::Event;
 use super::icons::Icon;
 use super::toolbar;
-use crate::core::engine::{Graph, NodeId, NodeSet, NodeToolbar, Port, Role};
+use crate::core::engine::{Graph, NodeId, NodeSet, NodeToolbar, Port, PortRole};
 use crate::core::exchange::Exchange;
 
 /// A node's toolbar, for a frame: what it shows, and where what's clicked goes.
@@ -43,7 +43,7 @@ impl<'e> NodeTools<'e> {
         let own_triggers = (0..node.settings().len()).flat_map(|s| node.triggers(s).iter().copied()).collect();
         let controls = (0..node.controls().len())
             .map(|index| {
-                let edge = graph.live_edges_from(Port { node: id, role: Role::Control, index }).next()?;
+                let edge = graph.live_edges_from(Port { node: id, role: PortRole::Control, index }).next()?;
                 Some((edge.to.node, graph.get(edge.to.node)?.node.triggers(edge.to.port)))
             })
             .collect();

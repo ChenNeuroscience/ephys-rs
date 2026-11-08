@@ -36,7 +36,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, RichText};
 use ephys_rs::core::engine::{
-    Category, Context, Flow, Node, NodeInfo, NodeThread, Output, Pass, SettingPort, ThreadContext,
+    Category, Flow, Node, NodeInfo, NodeThread, Output, Pass, SettingPort, ThreadContext, UiContext,
 };
 use ephys_rs::standard_components::ephys::{Event, Events, EventsBuffer};
 use ephys_rs::standard_components::logs::{LogLines, LogLinesBuffer};
@@ -548,7 +548,7 @@ impl Node<Edges> for VrComputer {
         receiving.shown.send_newest(pass, |shown| shown.clone_from(&status.lock().unwrap()));
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
+    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
         egui::Grid::new("vr computer").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
             ui.label("IP address");
             ui.text_edit_singleline(&mut self.ip);

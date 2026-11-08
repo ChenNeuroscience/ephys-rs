@@ -1,4 +1,4 @@
-//! A node's window, for a node without a view of its own (see `Node::HAS_VIEW`): its name (to edit), what it is,
+//! A node's window, for a node without a UI of its own (see `Node::HAS_CUSTOM_UI`): its name (to edit), what it is,
 //! any problems, its settings, and what its ports carry and are connected to.
 
 use eframe::egui::{self, RichText};
@@ -6,7 +6,7 @@ use eframe::egui::{self, RichText};
 use super::node_tools::NodeTools;
 use super::{Event, style};
 use crate::core::engine::NodeToolbar;
-use crate::core::engine::{Graph, NodeId, NodeSet, Port, Resolved, Role};
+use crate::core::engine::{Graph, NodeId, NodeSet, Port, PortRole, Resolved};
 use crate::core::theme::Colours;
 
 /// The window of a node without a view of its own: what it is, its settings, and its connections. `live` is the run's
@@ -81,10 +81,10 @@ pub fn show<N: NodeSet>(
         });
         ui.add_space(8.0);
         for (role, title) in [
-            (Role::Input, "Inputs"),
-            (Role::Output, "Outputs"),
-            (Role::Setting, "Settings"),
-            (Role::Control, "Controls"),
+            (PortRole::Input, "Inputs"),
+            (PortRole::Output, "Outputs"),
+            (PortRole::Setting, "Settings"),
+            (PortRole::Control, "Controls"),
         ] {
             if state.count(role) == 0 {
                 continue;
@@ -94,10 +94,12 @@ pub fn show<N: NodeSet>(
                 let port = Port { node: id, role, index };
                 // What it carries (or a setting's value); a control, whether it's connected.
                 let detail = match role {
-                    Role::Input | Role::Output => state.summary(role, index).unwrap_or_else(|| "not connected".into()),
-                    Role::Setting => state.summary(role, index).unwrap_or_default(),
-                    Role::Control if graph.edges_from(port).next().is_some() => "connected".into(),
-                    Role::Control => "not connected".into(),
+                    PortRole::Input | PortRole::Output => {
+                        state.summary(role, index).unwrap_or_else(|| "not connected".into())
+                    }
+                    PortRole::Setting => state.summary(role, index).unwrap_or_default(),
+                    PortRole::Control if graph.edges_from(port).next().is_some() => "connected".into(),
+                    PortRole::Control => "not connected".into(),
                 };
                 ui.horizontal(|ui| {
                     let (dot, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());

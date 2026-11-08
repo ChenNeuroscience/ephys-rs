@@ -3,7 +3,7 @@
 //! versions can read it.
 //!
 //! Each part is a `Layer`: the core's (`CORE`), the standard components', a build's own (see `Components::FORMATS`).
-//! When a part changes what it saves, it adds a `Step`, which brings what's saved from its previous format to the new
+//! When a part changes what it saves, it adds an `Upgrade`, which brings what's saved from its previous format to the new
 //! one, as JSON, before anything's read into types. Steps never need changing after, as they don't depend on the types
 //! as they are now. Reading something, the core's steps go first, then each other layer's, in order; each layer from
 //! the format it was saved in. A layer can stop reading its oldest formats by raising `oldest` and dropping their steps:
@@ -15,7 +15,7 @@ use serde_json::Value;
 
 /// What a step is looking at.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Saved<'a> {
+pub enum SavedPart<'a> {
     /// A whole project, as saved, or beside a recording: its graph, annotations, layout and base directory. Its steps
     /// are then run on its nodes and base directory too.
     Project,
@@ -26,7 +26,7 @@ pub enum Saved<'a> {
 }
 
 /// Brings what's saved from a layer's format `n` to `n + 1`, given what it is. It leaves alone what it isn't about.
-pub type Step = fn(Saved, &mut Value);
+pub type Upgrade = fn(SavedPart, &mut Value);
 
 /// The formats of a part of the program.
 pub struct Layer {
@@ -36,7 +36,7 @@ pub struct Layer {
     pub oldest: u32,
     /// From `oldest`: the first brings what's saved from `oldest` to `oldest + 1`, and so on. It writes the format
     /// after the last (see `current`).
-    pub steps: &'static [Step],
+    pub steps: &'static [Upgrade],
 }
 
 impl Layer {
@@ -77,7 +77,7 @@ impl Layers {
     /// Brings `value`, a `what` saved in `formats`, up to date, or says why it can't be: it's from a format too old to
     /// read, or newer than this program. Layers it doesn't know of (another build's) are left alone: what of theirs
     /// there is can't be read anyway.
-    pub fn upgrade(&self, formats: &Formats, what: Saved, value: &mut Value) -> Result<(), String> {
+    pub fn upgrade(&self, formats: &Formats, what: SavedPart, value: &mut Value) -> Result<(), String> {
         let saved = |layer: &Layer| formats.get(layer.name).copied().unwrap_or(0);
         for layer in &self.0 {
             let (saved, name) = (saved(layer), layer.name);
@@ -106,20 +106,20 @@ impl Layers {
 }
 
 /// `step`, on `value`, and, for a project, on its nodes and base directory.
-fn apply(step: Step, what: Saved, value: &mut Value) {
+fn apply(step: Upgrade, what: SavedPart, value: &mut Value) {
     step(what, value);
-    if what != Saved::Project {
+    if what != SavedPart::Project {
         return;
     }
     if let Some(nodes) = value.pointer_mut("/graph/nodes").and_then(Value::as_object_mut) {
         for node in nodes.values_mut().filter_map(|entry| entry.get_mut("node")) {
             if let Some(kind) = node.get("type").and_then(Value::as_str).map(str::to_string) {
-                step(Saved::Node(&kind), node);
+                step(SavedPart::Node(&kind), node);
             }
         }
     }
     if let Some(base_directory) = value.get_mut("base_directory").filter(|b| !b.is_null()) {
-        step(Saved::BaseDirectory, base_directory);
+        step(SavedPart::BaseDirectory, base_directory);
     }
 }
 
@@ -136,26 +136,26 @@ mod tests {
         }
     }
 
-    fn core_project(what: Saved, value: &mut Value) {
-        if what == Saved::Project {
+    fn core_project(what: SavedPart, value: &mut Value) {
+        if what == SavedPart::Project {
             note(value, "core 0→1");
         }
     }
 
-    fn std_writer(what: Saved, value: &mut Value) {
-        if what == Saved::Node("WriteLtx") {
+    fn std_writer(what: SavedPart, value: &mut Value) {
+        if what == SavedPart::Node("WriteLtx") {
             note(value, "std 3→4");
         }
     }
 
-    fn std_base_directory(what: Saved, value: &mut Value) {
-        if what == Saved::BaseDirectory {
+    fn std_base_directory(what: SavedPart, value: &mut Value) {
+        if what == SavedPart::BaseDirectory {
             note(value, "std 4→5");
         }
     }
 
-    fn build_any_node(what: Saved, value: &mut Value) {
-        if let Saved::Node(kind) = what {
+    fn build_any_node(what: SavedPart, value: &mut Value) {
+        if let SavedPart::Node(kind) = what {
             note(value, &format!("build {kind}"));
         }
     }
@@ -192,17 +192,19 @@ mod tests {
     #[test]
     fn a_project_is_brought_up_to_date_layer_by_layer_from_the_format_it_was_in() {
         let mut old = project();
-        layers().upgrade(&formats(&[("std", 3)]), Saved::Project, &mut old).unwrap();
+        layers().upgrade(&formats(&[("std", 3)]), SavedPart::Project, &mut old).unwrap();
         assert_eq!(old["seen"], json!(["core 0→1"]), "the core's first: missing is 0");
         assert_eq!(old["graph"]["nodes"]["1"]["node"]["seen"], json!(["std 3→4", "build WriteLtx"]));
         assert_eq!(old["graph"]["nodes"]["2"]["node"]["seen"], json!(["build LfpViewer"]));
         assert_eq!(old["base_directory"]["seen"], json!(["std 4→5"]));
 
         let mut current = project();
-        layers().upgrade(&layers().current(), Saved::Project, &mut current).unwrap();
+        layers().upgrade(&layers().current(), SavedPart::Project, &mut current).unwrap();
         assert_eq!(current, project(), "nothing to do");
         let mut part_way = project();
-        layers().upgrade(&formats(&[("core", 1), ("std", 4), ("build", 1)]), Saved::Project, &mut part_way).unwrap();
+        layers()
+            .upgrade(&formats(&[("core", 1), ("std", 4), ("build", 1)]), SavedPart::Project, &mut part_way)
+            .unwrap();
         assert_eq!(part_way["base_directory"]["seen"], json!(["std 4→5"]), "only what's after");
         assert_eq!(part_way["graph"]["nodes"]["1"]["node"]["seen"], json!([]));
     }
@@ -210,18 +212,18 @@ mod tests {
     #[test]
     fn a_node_on_its_own_is_brought_up_to_date_the_same_way() {
         let mut node = json!({"type": "WriteLtx", "seen": []});
-        layers().upgrade(&formats(&[("std", 3)]), Saved::Node("WriteLtx"), &mut node).unwrap();
+        layers().upgrade(&formats(&[("std", 3)]), SavedPart::Node("WriteLtx"), &mut node).unwrap();
         assert_eq!(node["seen"], json!(["std 3→4", "build WriteLtx"]));
     }
 
     #[test]
     fn what_is_too_old_or_too_new_is_refused_saying_so() {
         let mut value = project();
-        let newer = layers().upgrade(&formats(&[("std", 6)]), Saved::Project, &mut value).unwrap_err();
+        let newer = layers().upgrade(&formats(&[("std", 6)]), SavedPart::Project, &mut value).unwrap_err();
         assert!(newer.contains("newer version") && newer.contains("std format 6"), "{newer}");
-        let older = layers().upgrade(&formats(&[("std", 2)]), Saved::Project, &mut value).unwrap_err();
+        let older = layers().upgrade(&formats(&[("std", 2)]), SavedPart::Project, &mut value).unwrap_err();
         assert!(older.contains("too old") && older.contains("std format 2"), "{older}");
         assert_eq!(value, project(), "untouched");
-        layers().upgrade(&formats(&[("std", 3), ("another build", 9)]), Saved::Project, &mut value).unwrap();
+        layers().upgrade(&formats(&[("std", 3), ("another build", 9)]), SavedPart::Project, &mut value).unwrap();
     }
 }

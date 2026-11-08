@@ -39,7 +39,7 @@ pub enum Pane {
     Node(NodeId),
 }
 
-/// Basic or advanced: what the home pane shows, and what panes offer (each pane decides: see `Context::advanced`).
+/// Basic or advanced: what the home pane shows, and what panes offer (each pane decides: see `UiContext::advanced`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 pub enum Mode {
     /// The viewers, large, and quick actions: for most people, most of the time.

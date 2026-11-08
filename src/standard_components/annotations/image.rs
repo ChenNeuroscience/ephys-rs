@@ -5,7 +5,7 @@ use eframe::egui::{self, Color32, Painter, Rect, Shape, Stroke};
 use serde::{Deserialize, Serialize};
 
 use super::{encode, encode_pasted, image_size, image_uri};
-use crate::core::annotation::{AnnotationInfo, AnnotationType, AnnotationUi, Fit, Pasted};
+use crate::core::annotation::{AnnotationInfo, AnnotationType, AnnotationUi, Fit, PastedContent};
 use crate::core::theme::Colours;
 
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -63,8 +63,8 @@ impl AnnotationType for Image {
     }
 
     /// An image pasted: what it's for.
-    fn pasted(pasted: &Pasted) -> Option<(Fit, Self, [f32; 2])> {
-        let Pasted::Image(image) = pasted else { return None };
+    fn pasted(pasted: &PastedContent) -> Option<(Fit, Self, [f32; 2])> {
+        let PastedContent::Image(image) = pasted else { return None };
         let (data, pixels) = encode_pasted(image)?;
         let image = Image { data, pixels };
         let size = image.natural_size();

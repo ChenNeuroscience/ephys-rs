@@ -7,7 +7,7 @@
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 
-use crate::core::engine::{Category, Context, Input, Node, NodeInfo, Output, Pass, SettingPort};
+use crate::core::engine::{Category, Input, Node, NodeInfo, Output, Pass, SettingPort, UiContext};
 use crate::standard_components::auto_detect::{
     AUTO_DETECT, Distribution, PercentMultiple, SAMPLING, auto_detect_ui, detecting,
 };
@@ -158,7 +158,7 @@ impl Node<Edges> for ContinuousGain {
         }
     }
 
-    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut Context<Edges>) {
+    fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
         let channels = match context.inputs[0] {
             Some(DataStream::Continuous(c)) => Channels { count: c.channels as usize, group_size: 1 },
             _ => Channels { count: 0, group_size: 1 },
