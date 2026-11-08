@@ -22,7 +22,8 @@ macros below use. (`cargo install --git` installs programs, so here that's chen-
 A build lists its types with `nodes_enum!` (node types, in the order the add-node menu offers them) and
 `annotations_enum!`, then implements [`Components`](../src/core/mod.rs) with them, its themes, quick actions and base
 directories, and calls `core::gui::run`. Each macro makes an enum with a variant per type, which forwards the traits'
-methods to the variant's type, so the core works with one concrete type (`Nodes`, say) without trait objects.
+methods to the variant's type, so the core works with one concrete type (`Nodes`, say) without trait objects: the
+enum dispatch pattern.
 
 A build can also say what its version is, with `Components::version`. It's shown in the status bar, and `--version`
 prints it. The recommendation, for a build for a whole lab, is `core::build_version`: the lab's name, the build's

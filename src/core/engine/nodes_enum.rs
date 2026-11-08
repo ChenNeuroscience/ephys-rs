@@ -12,7 +12,8 @@ use super::{
 };
 
 /// The closed set of node types a program is built with, as an enum with one variant per type. Implemented
-/// by `nodes_enum!`, and forwards each `Node` method to the variant's type.
+/// by `nodes_enum!`, and forwards each `Node` method to the variant's type: enum dispatch, as the `enum_dispatch` crate
+/// does it, by hand, as `Node` (with its associated types and consts) can't be a trait object.
 #[allow(clippy::type_complexity)]
 pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + Sync + 'static {
     /// The edge types its node types use.
