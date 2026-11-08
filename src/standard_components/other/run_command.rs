@@ -1183,6 +1183,11 @@ impl Node<Edges> for RunCommand {
         }
     }
 
+    /// Never in a pass: it's sent what to do (see `on_trigger`), and has nothing to do with the data going by.
+    fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool]) -> crate::core::engine::TreeShake {
+        crate::core::engine::TreeShake::needing_all(false, inputs.len())
+    }
+
     fn triggers(&self, _setting: usize) -> &'static [crate::TriggerKind] {
         &[crate::TriggerKind::RunOnFiles]
     }

@@ -26,6 +26,7 @@
 //! their own, as they are (whatever a reader makes of a key with a space in it, or one that's the same as another header),
 //! except that line breaks are written as spaces, as a header's a line.
 
+use crate::core::engine::TreeShake;
 use std::fs::File;
 use std::io::{self, BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -180,6 +181,11 @@ impl Node<Edges> for WriteLtx {
         description: "Records tetrode spikes, continuous data (at 5 kHz), positions, digital inputs, a timing LED's \
                       changes and log lines in the LTX format, for legacy tetrode analysis code.",
     };
+
+    /// Only while it's given something to record: otherwise there'd be nothing to write, but files all the same.
+    fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool]) -> TreeShake {
+        TreeShake::needing_all(inputs.contains(&true), inputs.len())
+    }
 
     fn inputs(&self) -> Vec<Input<Edges>> {
         vec![

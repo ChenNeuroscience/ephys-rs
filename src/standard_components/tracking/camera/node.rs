@@ -1,7 +1,6 @@
 //! Video from a camera, captured on a thread of its own (see `capture`) into a pool of buffers, which each pass swaps
 //! for its own.
 
-use crate::core::engine::TreeShake;
 use eframe::egui::{self, RichText};
 use serde::{Deserialize, Serialize};
 
@@ -44,11 +43,6 @@ impl Node<Edges> for Camera {
         description: "Video from a camera: a FLIR camera (via the Spinnaker SDK), or the fake camera in \
                       synthetic_streams/.",
     };
-
-    /// A source: it runs, with nothing upstream, whether or not anything's using what it makes.
-    fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool]) -> TreeShake {
-        TreeShake::needing_all(true, inputs.len())
-    }
 
     type State = Capturing;
 

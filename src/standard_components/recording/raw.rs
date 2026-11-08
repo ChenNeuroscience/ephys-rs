@@ -15,6 +15,7 @@
 //! Samples are numbered, and timed, from the start of recording.
 
 use crate::core::engine::BufferUsage;
+use crate::core::engine::TreeShake;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -115,6 +116,11 @@ impl Node<Edges> for WriteRaw {
         category: Category::Recording,
         description: "Records continuous data and digital inputs as they are, in Open Ephys's binary format.",
     };
+
+    /// Only while it's given something to record: otherwise there'd be nothing to write, but files all the same.
+    fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool]) -> TreeShake {
+        TreeShake::needing_all(inputs.contains(&true), inputs.len())
+    }
 
     fn inputs(&self) -> Vec<Input<Edges>> {
         vec![Input { name: "continuous", kind: Kind::Continuous }, Input { name: "events", kind: Kind::Events }]

@@ -36,7 +36,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, RichText};
 use ephys_rs::core::engine::{
-    Category, Flow, Node, NodeInfo, NodeThread, Output, Pass, SettingPort, ThreadContext, TreeShake, UiContext,
+    Category, Flow, Node, NodeInfo, NodeThread, Output, Pass, SettingPort, ThreadContext, UiContext,
 };
 use ephys_rs::standard_components::ephys::{Event, Events, EventsBuffer};
 use ephys_rs::standard_components::logs::{LogLines, LogLinesBuffer};
@@ -435,11 +435,6 @@ impl Node<Edges> for VrComputer {
         description: "Positions, TTLs, log lines and settings from the computer running a VR task, over TCP as a JSON \
                       object a line.",
     };
-
-    /// A source: it runs, with nothing upstream, whether or not anything's using what it makes.
-    fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool]) -> TreeShake {
-        TreeShake::needing_all(true, inputs.len())
-    }
 
     type State = Receiving;
 

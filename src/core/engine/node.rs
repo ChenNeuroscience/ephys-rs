@@ -191,14 +191,14 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     /// It settles as long as more in use never makes a node run or need less; one that keeps changing its mind runs,
     /// and needs, whatever either of its last two answers did (see `settle`, in `plan`).
     ///
-    /// By default, it needs every input, and runs if any's in use, whether or not its outputs are: what it does may
-    /// matter beyond the graph (a viewer, a writer). A node without inputs (a source) says so for itself: it isn't run
-    /// otherwise. A node that only makes data for others runs only while they're in use, as the processing nodes do.
-    /// A node needn't need an input (a viewer with part of its view hidden, say): then the plan doesn't count it as in
-    /// use for what feeds it. Changing settings changes the plan (a new epoch), so they're for what's switched on and
-    /// off, not what changes pass to pass.
+    /// By default, it runs, needing every input, whatever's in use: leaving it is always correct, only maybe slower. A
+    /// node that only makes data for others runs only while something needs it, as the processing nodes do. One whose
+    /// running matters beyond the graph says when: a writer only while it's given something to record. A node needn't
+    /// need an input (a viewer with part of its view hidden, say): then the plan doesn't count it as in use for what
+    /// feeds it. Changing settings changes the plan (a new epoch), so they're for what's switched on and off, not what
+    /// changes pass to pass.
     fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool]) -> TreeShake {
-        TreeShake::needing_all(inputs.contains(&true), inputs.len())
+        TreeShake::needing_all(true, inputs.len())
     }
 
     /// How the node uses its buffers, given how many inputs and outputs it has: which outputs it can make in place,

@@ -515,11 +515,13 @@ mod tests {
         let board = add(&mut graph, "Acquisition Board");
         let viewer = add(&mut graph, "LFP Viewer");
         let alone = add(&mut graph, "TTL Viewer");
+        let writer = add(&mut graph, "Write Raw");
         link(&mut graph, board, 0, viewer, 0);
         let runs = |graph: &Graph<Nodes>, id| Plan::new(graph).steps.iter().any(|s| s.id == id);
-        assert!(runs(&graph, board), "a source says it would, for itself");
+        assert!(runs(&graph, board), "a source runs, as nodes do unless they say otherwise");
         assert!(runs(&graph, viewer), "something's running on its input");
-        assert!(!runs(&graph, alone), "nothing is: there's nothing to show");
+        assert!(runs(&graph, alone), "nor need it say otherwise: there's just nothing to show");
+        assert!(!runs(&graph, writer), "a writer only with something to record");
         let lone = add(&mut graph, "Camera");
         assert!(runs(&graph, lone), "with no inputs, it runs whether or not anything needs it");
         graph.get_mut(board).unwrap().disabled = true;

@@ -24,8 +24,8 @@ The parts of the API are there for three different reasons, and it helps to know
   `outputs`), its settings (`settings`, `set_setting`) and the settings of others it can see (`controls`), `process`
   and the `State` it carries from pass to pass, the triggers it takes, and `prepare_to_record`.
 - **Optimisation: how cheaply it runs.** Leaving these at their defaults is always correct, only slower or using more
-  memory: `evaluate_buffer_usage`, `evaluate_tree_shake` (one exception: a node without inputs has to say it runs),
-  working memory instead of state (`CARRIED_OVER = false`), and pools for buffers its threads swap.
+  memory: `evaluate_buffer_usage`, `evaluate_tree_shake` (one exception: a writer says it only runs with something
+  to record, or it would write empty files), working memory instead of state (`CARRIED_OVER = false`), and pools for buffers its threads swap.
 - **The experience of using it: how it looks and behaves for people.** These change nothing it computes: its category,
   name and description (`INFO`), `warnings`, its window (`settings_ui`, or `custom_ui` with `HAS_CUSTOM_UI`), whether
   it's in the basic view (`SHOW_IN_BASIC_DEFAULT`), and how its threads show in the dev tools (`threads`,
@@ -71,10 +71,10 @@ settings: the latest, as of the pass.
   neighbours again, if what they're told has changed, until nothing does. So the answer must depend only on what it's
   told and its settings; and if more in use never makes a node run or need less, it always settles. A node whose
   answer keeps changing is asked only so many times, then runs, and needs each input, if either of its last two
-  answers did, with a warning in the console. By default, a node needs every input and runs if any's in use, whether
-  or not its outputs are, as what it does may matter beyond the graph (a viewer, a writer). A node without inputs (a
-  source) says so for itself. A node that only makes data for others runs only while they're in use, as the
-  processing nodes do. A node with an output that can't be known doesn't run. Settings change the plan, so what a
+  answers did, with a warning in the console. By default, a node runs, needing every input, whatever's in use: the
+  path without the optimisation, so leaving it is always correct. A node that only makes data for others runs only
+  while they're in use, as the processing nodes do. A writer runs only while it's given something to record, as
+  what it does matters beyond the graph. Run Command never runs in a pass: it's only ever sent things to do. A node with an output that can't be known doesn't run. Settings change the plan, so what a
   node needs is for what's switched on and off, not what changes pass to pass.
 
 ## Its window
