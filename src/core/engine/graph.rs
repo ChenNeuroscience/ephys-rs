@@ -510,6 +510,7 @@ impl<N: NodesEnum> Graph<N> {
     /// Works out every node's ports and data streams, from the sources down.
     pub fn resolve(&self) -> Resolved<N::Edges> {
         let mut resolved: Resolved<N::Edges> = Resolved::new();
+        let in_loops = self.trigger_loops();
         for id in self.topological_order() {
             let entry = &self.nodes[&id];
             let node = &entry.node;
@@ -522,6 +523,11 @@ impl<N: NodesEnum> Graph<N> {
                 })
                 .collect();
             let mut state = NodeState::new(node, input_streams);
+            if in_loops.contains(&id) {
+                state.warnings.push(
+                    "In a loop of triggers: what it sets off can set it off again, over and over (Stop ends it)".into(),
+                );
+            }
             // A disabled node makes nothing, and has nothing to warn about.
             if entry.disabled {
                 for output in &mut state.outputs {
@@ -532,6 +538,33 @@ impl<N: NodesEnum> Graph<N> {
             resolved.insert(id, state);
         }
         resolved
+    }
+
+    /// The nodes in a loop of triggers: of live settings edges into settings that take a trigger (see `Node::triggers`),
+    /// so what a node sets off can, in the end, set it off again.
+    pub fn trigger_loops(&self) -> std::collections::HashSet<NodeId> {
+        let mut next: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+        for edge in self.edges.iter().filter(|e| e.dimension == Dimension::Settings && self.is_live(e)) {
+            let takes = self.nodes.get(&edge.to.node).is_some_and(|n| !n.node.triggers(edge.to.port).is_empty());
+            if takes {
+                next.entry(edge.from.node).or_default().push(edge.to.node);
+            }
+        }
+        // A node's in a loop if it can be reached from what it leads to.
+        let reaches_itself = |start: NodeId| {
+            let mut seen = std::collections::HashSet::new();
+            let mut stack: Vec<NodeId> = next.get(&start).cloned().unwrap_or_default();
+            while let Some(id) = stack.pop() {
+                if id == start {
+                    return true;
+                }
+                if seen.insert(id) {
+                    stack.extend(next.get(&id).into_iter().flatten().copied());
+                }
+            }
+            false
+        };
+        next.keys().copied().filter(|&id| reaches_itself(id)).collect()
     }
 
     /// For each of a node's controls, the current value of the setting it's connected to, if any.

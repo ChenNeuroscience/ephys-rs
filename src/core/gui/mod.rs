@@ -918,6 +918,8 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
     fn deliver_triggers(&mut self) {
         let locked = self.locked();
         for (id, triggered) in self.direct_triggers.take() {
+            // What it can trigger in turn, through its controls.
+            let triggers = self.graph.control_triggers(id, &self.direct_triggers);
             let Some(entry) = self.graph.get_mut(id) else { continue };
             match triggered {
                 Triggered::SettingsUpdate { setting, value } => {
@@ -933,7 +935,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                 Triggered::Trigger(_) if entry.disabled => {}
                 Triggered::Trigger(trigger) => {
                     if let Some(trigger) = trigger.take::<<N::Edges as engine::Edges>::Trigger>() {
-                        entry.node.on_trigger(trigger);
+                        entry.node.on_trigger(trigger, &triggers);
                     }
                 }
             }

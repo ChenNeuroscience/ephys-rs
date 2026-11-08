@@ -19,13 +19,13 @@ use eframe::egui::{self, Color32, RichText};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use crate::core::engine::{Category, EdgeInfo, EdgeType, Node, NodeInfo, Output, SettingPort, UiContext};
+use crate::core::engine::{Category, Control, EdgeInfo, EdgeType, Node, NodeInfo, Output, SettingPort, UiContext};
 use crate::core::gui::widgets::{Icon, help_link, small_icon_button};
 use crate::core::theme::Colours;
-use crate::core::triggers::{Delivery, TriggerType};
+use crate::core::triggers::{ControlTriggers, Delivery, TriggerHandle, TriggerType};
 use crate::standard_components::recording::expand;
 use crate::standard_components::widgets::{combo, setting, settings_grid};
-use crate::{DataStream, Edges, Setting};
+use crate::{DataStream, Edges, Setting, SettingKind, Trigger, TriggerKind};
 
 /// The trigger of a command setting, delivered directly (see `crate::core::triggers`): run it on these files. Whatever sends them,
 /// and whenever: a writer's are what it's just finished recording.
@@ -54,6 +54,22 @@ pub enum Mode {
     Once,
 }
 
+/// When what's connected after it (to its "after running" control) is sent the files it ran on, once it's done. Never if
+/// it was stopped.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub enum Then {
+    /// If every command succeeded.
+    #[default]
+    OnSuccess,
+    /// If any failed.
+    OnFailure,
+    /// Either way.
+    Always,
+}
+
+/// Its control, sending the files it ran on to what's connected, once it's done (see `Then`).
+const AFTER_RUNNING: usize = 0;
+
 /// What to run, and on what.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -73,6 +89,8 @@ pub struct CommandSettings {
     pub arguments: String,
     /// Whether the terminal's left to close once everything's run, if nothing failed, rather than waiting to be read.
     pub close_on_success: bool,
+    /// When what's connected after it runs.
+    pub then: Then,
 }
 
 impl Default for CommandSettings {
@@ -87,6 +105,7 @@ impl Default for CommandSettings {
             mode: Mode::default(),
             arguments,
             close_on_success: true,
+            then: Then::default(),
         }
     }
 }
@@ -594,6 +613,32 @@ struct JobState {
     settings: Option<CommandSettings>,
     /// What went wrong the last time it tried to run.
     problem: Option<String>,
+    /// What to send on, once it's done, if anything's connected after it.
+    chain: Option<Chain>,
+}
+
+/// What's sent on once a lot's run (see `Then`): the files it ran on, to what's connected after it, and when.
+struct Chain {
+    handle: TriggerHandle<Trigger>,
+    then: Then,
+    files: Vec<PathBuf>,
+}
+
+impl Chain {
+    /// Sends the files on, if the runs, as they ended, call for it: never if any was stopped (or didn't run).
+    fn send_after(self, runs: &[Progress]) {
+        let stopped = runs.iter().any(|r| matches!(r.outcome, Outcome::Ended { code: None, .. } | Outcome::NotRun));
+        let failed = runs.iter().any(|r| matches!(r.outcome, Outcome::Ended { code: Some(code), .. } if code != 0));
+        let send = !stopped
+            && match self.then {
+                Then::OnSuccess => !failed,
+                Then::OnFailure => failed,
+                Then::Always => true,
+            };
+        if send {
+            self.handle.trigger(RunOnFiles(self.files));
+        }
+    }
 }
 
 /// What's been run. Not a setting: every copy of the node (in undo's history, say) has the same one, and they're equal.
@@ -634,8 +679,9 @@ impl Job {
         (state.terminal.is_some() || state.settings.as_ref() == Some(settings)).then(|| state.runs.clone())
     }
 
-    /// Runs `runs`, made with `settings`, in turn in a new terminal, unless it's running already.
-    fn start(&self, settings: &CommandSettings, runs: &[Run]) {
+    /// Runs `runs`, made with `settings`, in turn in a new terminal, unless it's running already; then, as `chain`
+    /// says, sends on what they ran on.
+    fn start(&self, settings: &CommandSettings, runs: &[Run], chain: Option<Chain>) {
         {
             let mut state = self.0.lock().unwrap();
             if state.terminal.is_some() {
@@ -645,6 +691,7 @@ impl Job {
             state.problem = None;
             state.runs = runs.iter().map(|run| Progress { shown: run.shown(), outcome: Outcome::Waiting }).collect();
             state.settings = Some(settings.clone());
+            state.chain = chain;
         }
         let how =
             How { together: settings.mode == Mode::EachTogether, close: settings.close_on_success, ..How::default() };
@@ -655,7 +702,7 @@ impl Job {
             }
             Err(problem) => {
                 let mut state = self.0.lock().unwrap();
-                (state.runs, state.settings) = (Vec::new(), None);
+                (state.runs, state.settings, state.chain) = (Vec::new(), None, None);
                 drop(state);
                 self.fail(problem);
             }
@@ -669,7 +716,7 @@ impl Job {
             loop {
                 std::thread::sleep(Duration::from_millis(50));
                 let mut state = job.0.lock().unwrap();
-                let JobState { terminal, runs, .. } = &mut *state;
+                let JobState { terminal, runs, chain, .. } = &mut *state;
                 let Some(open) = terminal else { return };
                 let now = Instant::now();
                 open.update(runs, now);
@@ -681,6 +728,10 @@ impl Job {
                             Outcome::Waiting => Outcome::NotRun,
                             ended => ended,
                         };
+                    }
+                    // Sent on before it's done, so whatever sees it done sees what it sent.
+                    if let Some(chain) = chain.take() {
+                        chain.send_after(runs);
                     }
                     *terminal = None;
                     return;
@@ -769,10 +820,15 @@ pub struct RunCommand {
 }
 
 impl RunCommand {
-    /// Runs the program on `files`, or says why it can't.
-    fn run_on(&self, files: Result<Vec<PathBuf>, String>) {
-        match files.and_then(|files| self.settings.runs(&files)) {
-            Ok(runs) => self.job.start(&self.settings, &runs),
+    /// Runs the program on `files`, or says why it can't; then sends them on through `after`, if that's connected,
+    /// as the settings say (see `Then`).
+    fn run_on(&self, files: Result<Vec<PathBuf>, String>, after: Option<TriggerHandle<Trigger>>) {
+        let runs = files.and_then(|files| Ok((self.settings.runs(&files)?, files)));
+        match runs {
+            Ok((runs, files)) => {
+                let chain = after.map(|handle| Chain { handle, then: self.settings.then, files });
+                self.job.start(&self.settings, &runs, chain)
+            }
             Err(problem) => self.job.fail(problem),
         }
     }
@@ -797,7 +853,8 @@ impl RunCommand {
         // How many files picked here match, of how many.
         let matched = preview.picked.as_ref().ok().map(Vec::len);
         let counts = preview.listed.zip(matched).map(|(listed, matched)| (matched, listed));
-        self.settings_section(ui, senders, counts, locked || running);
+        let chained = context.control_connected(AFTER_RUNNING);
+        self.settings_section(ui, senders, counts, chained, locked || running);
         ui.add_space(6.0);
         let (picked, runs) = (&preview.picked, &preview.runs);
         let results = job.runs_with(&self.settings);
@@ -828,8 +885,11 @@ impl RunCommand {
                 } else {
                     run.on_hover_text("Open a terminal, and run these there")
                 };
-                if run.clicked() {
-                    self.run_on(picked.clone());
+                // As if it were sent them: so it's the same, after, either way.
+                if run.clicked()
+                    && let Ok(files) = picked
+                {
+                    context.trigger(None, RunOnFiles(files.clone()));
                 }
                 if connected {
                     ui.weak(format!("Run triggered by {}", any_of(senders)));
@@ -882,6 +942,7 @@ impl RunCommand {
         ui: &mut egui::Ui,
         senders: &[String],
         counts: Option<(usize, usize)>,
+        chained: bool,
         disabled: bool,
     ) {
         let listed = counts.map(|(_, listed)| listed);
@@ -965,6 +1026,16 @@ impl RunCommand {
                         "Otherwise it waits, so what they said can be read. It always does if one fails.",
                     )
                 });
+                // Only with something connected after it to run.
+                if chained {
+                    let thens = [
+                        (Then::OnSuccess, "If every command succeeds"),
+                        (Then::OnFailure, "If any fails"),
+                        (Then::Always, "Whether they succeed or fail"),
+                    ];
+                    setting(ui, "Then", |ui| combo(ui, "then", &mut settings.then, &thens));
+                    help(ui, &["Runs what's connected after it on the same files. Not if it's stopped"]);
+                }
             });
         });
     }
@@ -1177,6 +1248,11 @@ impl Node<Edges> for RunCommand {
         vec![SettingPort { name: "command", value: self.settings.clone().into(), on_right: false }]
     }
 
+    /// What's connected after it, run on the same files once it's done (see `Then`).
+    fn controls(&self) -> Vec<Control<Edges>> {
+        vec![Control { name: "after running", kind: SettingKind::Command, read_only: true, on_right: true }]
+    }
+
     fn set_setting(&mut self, _index: usize, value: Setting) {
         if let Setting::Command(settings) = value {
             self.settings = settings;
@@ -1192,10 +1268,10 @@ impl Node<Edges> for RunCommand {
         &[crate::TriggerKind::RunOnFiles]
     }
 
-    /// Runs the program on the files sent.
-    fn on_trigger(&mut self, trigger: crate::Trigger) {
-        if let crate::Trigger::RunOnFiles(RunOnFiles(paths)) = trigger {
-            self.run_on(self.settings.matching(paths));
+    /// Runs the program on the files sent (by hand, too), and then, as it says, what's connected after it.
+    fn on_trigger(&mut self, trigger: Trigger, triggers: &ControlTriggers<Trigger>) {
+        if let Trigger::RunOnFiles(RunOnFiles(paths)) = trigger {
+            self.run_on(self.settings.matching(paths), triggers.handle(AFTER_RUNNING, TriggerKind::RunOnFiles));
         }
     }
 
@@ -1215,7 +1291,7 @@ mod tests {
 
     use super::*;
     use crate::Nodes;
-    use crate::core::engine::{Graph, NodesEnum, Port, PortRole, Recording, Runner, Snapshot};
+    use crate::core::engine::{Graph, NodeId, NodesEnum, Port, PortRole, Recording, Runner, Snapshot};
     use crate::core::triggers::{DirectTriggers, Triggered};
     use crate::standard_components::ephys::board::{Source, serve_test_board};
     use crate::standard_components::recording::Location;
@@ -1246,6 +1322,21 @@ mod tests {
 
     fn wait_for_job(job: &Job) {
         wait_until("it should have finished", || !job.running());
+    }
+
+    /// Run (by hand, or sent files), what's connected after it is sent the files once it's done.
+    #[test]
+    fn what_runs_after_is_sent_the_files_it_ran_on_once_its_done() {
+        let direct = Arc::new(DirectTriggers::default());
+        let kinds: &'static [TriggerKind] = &[TriggerKind::RunOnFiles];
+        let triggers = ControlTriggers::<Trigger>::new(direct.clone(), vec![vec![(NodeId(9), kinds)]]);
+        let mut node = RunCommand { settings: settings("/bin/sleep", "0.2"), ..Default::default() };
+        node.on_trigger(Trigger::RunOnFiles(RunOnFiles(paths(&["a.dat"]))), &triggers);
+        assert!(direct.take().is_empty(), "not till it's done");
+        wait_for_job(&node.job);
+        let sent = direct.take();
+        let [(NodeId(9), Triggered::Trigger(trigger))] = &sent[..] else { panic!("sent once, to what's after it") };
+        assert_eq!(trigger.key(), TriggerKind::RunOnFiles.into());
     }
 
     /// A path to have a program leave something at.
@@ -1424,7 +1515,7 @@ mod tests {
         let mut runs = settings("/bin/sh", script).runs(std::slice::from_ref(&first)).unwrap();
         runs.extend(settings("/usr/bin/touch", "{file}").runs(std::slice::from_ref(&second)).unwrap());
         let job = Job::default();
-        job.start(&CommandSettings::default(), &runs);
+        job.start(&CommandSettings::default(), &runs, None);
         let started = first.with_file_name(format!("{}.started", first.file_name().unwrap().to_str().unwrap()));
         wait_until("it should have started", || started.exists());
         std::fs::remove_file(started).unwrap();
@@ -1469,6 +1560,7 @@ mod tests {
         job.start(
             &CommandSettings::default(),
             &settings("/usr/bin/touch", "{file}").runs(std::slice::from_ref(&after)).unwrap(),
+            None,
         );
         wait_until("it should have run", || after.exists());
         wait_for_job(&job);
@@ -1483,6 +1575,7 @@ mod tests {
         job.start(
             &CommandSettings::default(),
             &settings("/usr/bin/touch", "{file}").runs(std::slice::from_ref(&other)).unwrap(),
+            None,
         );
         assert!(job.problem().unwrap().contains("still running"));
         assert_eq!(job.runs_with(&CommandSettings::default()).unwrap().len(), 2, "what's running is shown");
@@ -1497,7 +1590,7 @@ mod tests {
     fn it_times_each_run_and_keeps_its_exit_code() {
         let command = settings("/bin/sh", "-c 'sleep 0.3; exit \"$0\"' {file}");
         let job = Job::default();
-        job.start(&command, &command.runs(&paths(&["0", "3"])).unwrap());
+        job.start(&command, &command.runs(&paths(&["0", "3"])).unwrap(), None);
         wait_for_job(&job);
         let outcomes = outcomes(&job, &command);
         let [Outcome::Ended { took, code: Some(0) }, Outcome::Ended { code: Some(3), .. }] = outcomes[..] else {
@@ -1522,7 +1615,7 @@ mod tests {
         runs.extend(settings("/usr/bin/touch", "{files}").runs(std::slice::from_ref(&arrives)).unwrap());
         let command = CommandSettings { mode: Mode::EachTogether, ..CommandSettings::default() };
         let job = Job::default();
-        job.start(&command, &runs);
+        job.start(&command, &runs, None);
         wait_for_job(&job);
         let outcomes = outcomes(&job, &command);
         assert!(outcomes.iter().all(|o| matches!(o, Outcome::Ended { code: Some(0), .. })), "{outcomes:?}");
@@ -1577,10 +1670,10 @@ mod tests {
     #[test]
     fn a_problem_is_shown_until_it_runs_again() {
         let mut node = RunCommand::default();
-        node.run_on(Ok(Vec::new()));
+        node.run_on(Ok(Vec::new()), None);
         assert_eq!(node.job.problem().as_deref(), Some("There's no program to run"));
         node.settings = settings("/usr/bin/true", "");
-        node.run_on(Ok(Vec::new()));
+        node.run_on(Ok(Vec::new()), None);
         assert_eq!(node.job.problem(), None);
         wait_for_job(&node.job);
     }
@@ -1644,7 +1737,7 @@ mod tests {
         let (to, Triggered::Trigger(trigger)) = waiting.into_iter().next().unwrap() else { panic!() };
         assert_eq!((to, trigger.key()), (command, crate::TriggerKind::RunOnFiles.into()));
         let Some(Nodes::RunCommand(node)) = graph.get_mut(command).map(|e| &mut e.node) else { panic!() };
-        Node::on_trigger(node, trigger.take::<crate::Trigger>().unwrap());
+        Node::on_trigger(node, trigger.take::<crate::Trigger>().unwrap(), &ControlTriggers::none());
         wait_for_job(&node.job);
         assert_eq!(node.job.problem(), None);
         let said_text = std::fs::read_to_string(&said).unwrap();
@@ -1756,6 +1849,43 @@ mod tests {
         harness.snapshot("run_command_last_run");
     }
 
+    /// When to run what's after it is only asked with something connected after it. See tests/snapshots/.
+    #[test]
+    fn when_what_runs_after_runs_is_only_asked_with_something_after_it() {
+        use egui_kittest::kittest::Queryable;
+        let then_shown = |chained: bool| {
+            let mut graph = Graph::<Nodes>::default();
+            let index = Nodes::TYPES.iter().position(|t| t.name == "Run Command").unwrap();
+            let [id, after] = [0, 1].map(|_| graph.add(Nodes::create(index), [0.0, 0.0]));
+            if let Some(Nodes::RunCommand(node)) = graph.get_mut(id).map(|e| &mut e.node) {
+                node.settings = settings("klusta", "{file} --overwrite");
+                node.settings.files = paths(&["/recordings/trial a.set"]);
+            }
+            if chained {
+                let from = Port { node: id, role: PortRole::Control, index: AFTER_RUNNING };
+                graph.connect(from, Port { node: after, role: PortRole::Setting, index: 0 }).unwrap();
+            }
+            let inputs: [Option<DataStream>; 0] = [];
+            let mut harness = egui_kittest::Harness::builder().with_size([560.0, 560.0]).wgpu().build_ui_state(
+                move |ui, graph: &mut Graph<Nodes>| {
+                    graph.edit(id, &inputs, &THEMES[0].colours, None, None, false, false, None, |node, context| {
+                        node.custom_ui(ui, context)
+                    });
+                },
+                graph,
+            );
+            THEMES[0].apply(&harness.ctx);
+            harness.run_steps(3);
+            let shown = harness.query_by_label("Then").is_some();
+            if chained {
+                harness.snapshot("run_command_then");
+            }
+            shown
+        };
+        assert!(!then_shown(false));
+        assert!(then_shown(true));
+    }
+
     #[test]
     fn a_connected_writer_is_all_it_runs_on() {
         let mut harness = window_harness(true);
@@ -1774,6 +1904,86 @@ mod tests {
         assert!(harness.query_by_label("Run triggered by Write Raw").is_some());
         assert!(!disabled(&harness, "Browse…"), "what to run's still up to you");
         harness.snapshot("run_command_connected");
+    }
+}
+
+/// What runs after it, and loops of what runs after what, which can be checked anywhere.
+#[cfg(test)]
+mod chain_tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::Nodes;
+    use crate::core::engine::{Graph, NodeId, NodesEnum, Port, PortRole};
+    use crate::core::triggers::{DirectTriggers, Triggered};
+
+    /// Whether `then`, after runs that ended with these codes (`None` if stopped; not there if not run), sends the
+    /// files on to what's connected after it.
+    fn sends(then: Then, runs: &[Option<Option<i64>>]) -> bool {
+        let direct = Arc::new(DirectTriggers::default());
+        let kinds: &'static [TriggerKind] = &[TriggerKind::RunOnFiles];
+        let triggers = ControlTriggers::<Trigger>::new(direct.clone(), vec![vec![(NodeId(2), kinds)]]);
+        let handle = triggers.handle(AFTER_RUNNING, TriggerKind::RunOnFiles).unwrap();
+        let progress = runs.iter().map(|run| Progress {
+            shown: String::new(),
+            outcome: match run {
+                Some(code) => Outcome::Ended { took: Duration::ZERO, code: *code },
+                None => Outcome::NotRun,
+            },
+        });
+        Chain { handle, then, files: vec![PathBuf::from("a.dat")] }.send_after(&progress.collect::<Vec<_>>());
+        let sent: Vec<(NodeId, Option<Trigger>)> = direct
+            .take()
+            .into_iter()
+            .map(|(node, triggered)| match triggered {
+                Triggered::Trigger(trigger) => (node, trigger.take::<Trigger>()),
+                Triggered::SettingsUpdate { .. } => panic!("not a settings update"),
+            })
+            .collect();
+        match &sent[..] {
+            [] => false,
+            [(NodeId(2), Some(Trigger::RunOnFiles(RunOnFiles(files))))] => {
+                assert_eq!(files, &[PathBuf::from("a.dat")], "the files it ran on");
+                true
+            }
+            _ => panic!("sent once, to what's connected"),
+        }
+    }
+
+    #[test]
+    fn what_runs_after_is_sent_the_files_as_then_says_and_never_once_stopped() {
+        let thens = [Then::OnSuccess, Then::OnFailure, Then::Always];
+        let (ok, failed) = ([Some(Some(0)), Some(Some(0))], [Some(Some(0)), Some(Some(2))]);
+        assert_eq!(thens.map(|then| sends(then, &ok)), [true, false, true]);
+        assert_eq!(thens.map(|then| sends(then, &failed)), [false, true, true]);
+        let (stopped, not_run) = ([Some(Some(1)), Some(None)], [Some(Some(0)), None]);
+        assert_eq!(thens.map(|then| sends(then, &stopped)), [false; 3]);
+        assert_eq!(thens.map(|then| sends(then, &not_run)), [false; 3]);
+    }
+
+    #[test]
+    fn commands_running_after_each_other_round_a_loop_are_warned_of() {
+        let mut graph = Graph::<Nodes>::default();
+        let index = Nodes::TYPES.iter().position(|t| t.name == "Run Command").unwrap();
+        let [a, b, c] = [0, 1, 2].map(|_| graph.add(Nodes::create(index), [0.0, 0.0]));
+        let after = |from, to| {
+            let control = Port { node: from, role: PortRole::Control, index: AFTER_RUNNING };
+            (control, Port { node: to, role: PortRole::Setting, index: 0 })
+        };
+        let looped = |graph: &Graph<Nodes>| {
+            let resolved = graph.resolve();
+            [a, b, c].map(|id| resolved[&id].warnings.iter().any(|w| w.contains("loop of triggers")))
+        };
+        for (from, to) in [after(a, b), after(b, c)] {
+            graph.connect(from, to).unwrap();
+        }
+        assert_eq!(looped(&graph), [false; 3], "one after another");
+        let (from, to) = after(c, a);
+        graph.connect(from, to).unwrap();
+        assert_eq!(looped(&graph), [true; 3], "and round again");
+        let edge = graph.edge_into(to).unwrap();
+        graph.set_edge_disabled(edge, true);
+        assert_eq!(looped(&graph), [false; 3], "not with an edge of it disabled");
     }
 }
 
@@ -1925,7 +2135,7 @@ mod windows_tests {
     fn a_terminal_can_be_stopped() {
         let job = Job::default();
         let ping = ["-n", "60", "127.0.0.1"].map(String::from).to_vec();
-        job.start(&CommandSettings::default(), &[Run { program: "ping".into(), arguments: ping }]);
+        job.start(&CommandSettings::default(), &[Run { program: "ping".into(), arguments: ping }], None);
         assert_eq!(job.problem(), None);
         std::thread::sleep(Duration::from_secs(1));
         assert!(job.running());

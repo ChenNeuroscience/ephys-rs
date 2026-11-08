@@ -183,6 +183,13 @@ it sends the paths of the files once they're finished (not when recording stops,
 something was recorded. The [Run Command](../src/standard_components/other/run_command.rs) node takes it, and neither
 knows what's at the other end: anything can send files to run on.
 
+Run Command has an "after running" control of its own: once what it ran is done, it sends the same files on to what's
+connected there (another Run Command, say), if every command succeeded, if any failed, or either way, as its "Then"
+setting says (only shown while something's connected), but never if it was stopped. Run by hand, it sends itself the
+files, so it's the same either way. A loop of settings edges into settings that take triggers (one Run Command after
+another, round to the first) could go on for ever: the graph warns of it on each node in the loop (see
+`Graph::trigger_loops`), and Stop ends it.
+
 Settings sit on the right of a node on the graph and controls on the left, unless a port's `on_right` says otherwise: the
 "after recording" control's on the right, and Run Command's setting on the left, as what passes between them flows
 onward, like data.

@@ -38,7 +38,11 @@ pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + S
     fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool]) -> TreeShake;
     fn evaluate_buffer_usage(&self, inputs: usize, outputs: usize) -> BufferUsage;
     fn triggers(&self, setting: usize) -> &'static [super::TriggerKind<Self::Edges>];
-    fn on_trigger(&mut self, trigger: <Self::Edges as Edges>::Trigger);
+    fn on_trigger(
+        &mut self,
+        trigger: <Self::Edges as Edges>::Trigger,
+        triggers: &crate::core::triggers::ControlTriggers<<Self::Edges as Edges>::Trigger>,
+    );
     /// Whether the node carries state from one pass to the next.
     fn has_state(&self) -> bool;
     /// Why it does (see `PassState::WHY`).
@@ -211,8 +215,12 @@ macro_rules! nodes_enum {
             }
 
 
-            fn on_trigger(&mut self, trigger: <$edges as $crate::core::engine::Edges>::Trigger) {
-                match self { $($name::$variant(n) => $crate::core::engine::Node::on_trigger(n, trigger)),+ }
+            fn on_trigger(
+                &mut self,
+                trigger: <$edges as $crate::core::engine::Edges>::Trigger,
+                triggers: &$crate::core::triggers::ControlTriggers<<$edges as $crate::core::engine::Edges>::Trigger>,
+            ) {
+                match self { $($name::$variant(n) => $crate::core::engine::Node::on_trigger(n, trigger, triggers)),+ }
             }
 
             fn has_state(&self) -> bool {

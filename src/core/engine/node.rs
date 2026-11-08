@@ -217,8 +217,9 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
         &[]
     }
 
-    /// One of its direct `triggers`, sent to it: `trigger.take::<T>()` has it as what it is.
-    fn on_trigger(&mut self, _trigger: E::Trigger) {}
+    /// One of its direct `triggers`, sent to it, with what its own controls can trigger in turn (directly, from any
+    /// thread, whenever: see `ControlTriggers::handle`).
+    fn on_trigger(&mut self, _trigger: E::Trigger, _triggers: &crate::core::triggers::ControlTriggers<E::Trigger>) {}
 
     /// Does the node's work for one pass: reads its inputs and fills its outputs, which are already sized for
     /// the data streams they carry. When an output is being made in place (see `evaluate_buffer_usage`), its input is `None`
