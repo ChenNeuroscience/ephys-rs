@@ -83,6 +83,10 @@ const DDR_BLOCK_SIZE: u32 = 32;
 /// Samples in each read from the board.
 const SAMPLES_PER_BLOCK_USB2: usize = 300;
 const SAMPLES_PER_BLOCK_USB3: usize = 256;
+/// How long a read waits for data before giving up, in milliseconds: FrontPanel's own is 10 seconds, which a read of
+/// more than the board will ever send (the end of the data, once it's stopped) would wait out. Well over the slowest
+/// read while it's running: a block, at the slowest sample rate, 1 kHz.
+const READ_TIMEOUT_MS: c_int = 1000;
 
 // Endpoints.
 const WIRE_IN_RESET_RUN: c_int = 0x00;
@@ -271,6 +275,20 @@ impl FrontPanel {
     }
 }
 
+impl FrontPanel {
+    /// Has reads give up after `READ_TIMEOUT_MS`, if the library can (it's been able to for years, but isn't needed for
+    /// anything else, so an old one without it isn't refused).
+    fn set_read_timeout(&self) {
+        // Safety: FrontPanel's `okFrontPanel_SetTimeout(okFrontPanel_HANDLE, int)`, in milliseconds.
+        let set =
+            unsafe { self.api._library.get::<unsafe extern "system" fn(Handle, c_int)>(b"okFrontPanel_SetTimeout") };
+        match set {
+            Ok(set) => unsafe { set(self.handle, READ_TIMEOUT_MS) },
+            Err(_) => log::debug!("FrontPanel can't set a timeout for reads: stopping the board may take a while"),
+        }
+    }
+}
+
 impl Drop for FrontPanel {
     fn drop(&mut self) {
         unsafe {
@@ -324,6 +342,7 @@ pub fn open(kind: OpalKellyKind, bitfile: Option<&str>, library: Option<&str>) -
             format!("no Rhythm board (an Opal Kelly XEM6010 or XEM6310) found; Opal Kelly devices: {found}"),
         ));
     };
+    fp.set_read_timeout();
     unsafe { (api.okFrontPanel_LoadDefaultPLLConfiguration)(handle) };
     let mut board = OpalKelly { fp, kind, usb3, enabled_streams: 0, running: false };
     board.configure_fpga(bitfile)?;
@@ -465,7 +484,10 @@ impl OpalKelly {
         Ok(())
     }
 
-    fn flush(&self) {
+    /// Empties what the board has waiting. Over USB 3, reads are of whole blocks: a part block is read as a whole one,
+    /// waiting for the rest, unless `whole_blocks` (once it's stopped, when the rest won't come: what's left of a block
+    /// is cleared when it's reset, closing it).
+    fn flush(&self, whole_blocks: bool) {
         let limit = Instant::now() + Duration::from_secs(2);
         let mut buf = Vec::new();
         loop {
@@ -475,7 +497,14 @@ impl OpalKelly {
             }
             let bytes = (2 * words).min(1 << 20);
             let block = USB3_BLOCK_SIZE as usize;
-            let bytes = if self.usb3 { bytes.div_ceil(block) * block } else { bytes };
+            let bytes = match (self.usb3, whole_blocks) {
+                (false, _) => bytes,
+                (true, false) => bytes.div_ceil(block) * block,
+                (true, true) => bytes / block * block,
+            };
+            if bytes == 0 {
+                break;
+            }
             if self.read_bytes(bytes, &mut buf).is_err() {
                 break;
             }
@@ -598,7 +627,7 @@ impl Transport for OpalKelly {
     }
 
     fn start(&mut self) -> io::Result<()> {
-        self.flush();
+        self.flush(false);
         self.set_continuous(true);
         self.run();
         self.running = true;
@@ -620,7 +649,7 @@ impl Transport for OpalKelly {
         if self.running {
             self.set_continuous(false);
             self.set_max_time_step(0);
-            self.flush();
+            self.flush(true);
             self.running = false;
         }
     }
