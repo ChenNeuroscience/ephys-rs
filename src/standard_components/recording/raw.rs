@@ -14,6 +14,7 @@
 //!
 //! Samples are numbered, and timed, from the start of recording.
 
+use crate::core::engine::BufferUsage;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -143,8 +144,8 @@ impl Node<Edges> for WriteRaw {
 
     /// It takes its buffers, swapping them into the chunk for its thread (the plan copies them for it, if something
     /// else needs them after it).
-    fn takes(&self, _input: usize) -> bool {
-        true
+    fn evaluate_buffer_usage(&self, inputs: usize, outputs: usize) -> BufferUsage {
+        BufferUsage { takes: vec![true; inputs], ..BufferUsage::none(inputs, outputs) }
     }
 
     fn thread_pool(&self, _thread: usize, context: &ThreadContext) -> Option<PoolStatus> {

@@ -7,7 +7,8 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use super::{
-    Control, Edges, Input, NodeInfo, NodeThread, Output, Pass, PoolStatus, SettingPort, ThreadContext, UiContext,
+    BufferUsage, Control, Edges, Input, NodeInfo, NodeThread, Output, Pass, PoolStatus, SettingPort, ThreadContext,
+    TreeShake, UiContext,
 };
 
 /// The closed set of node types a program is built with, as an enum with one variant per type. Implemented
@@ -33,10 +34,8 @@ pub trait NodeSet: Clone + PartialEq + Serialize + DeserializeOwned + Send + Syn
     fn controls(&self) -> Vec<Control<Self::Edges>>;
     fn settings_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Self::Edges>);
     fn custom_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Self::Edges>);
-    fn in_place(&self, output: usize) -> Option<usize>;
-    fn takes(&self, input: usize) -> bool;
-    fn runs_given(&self, inputs: &[bool], outputs: &[bool]) -> bool;
-    fn needs(&self, input: usize) -> bool;
+    fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool]) -> TreeShake;
+    fn evaluate_buffer_usage(&self, inputs: usize, outputs: usize) -> BufferUsage;
     fn triggers(&self, setting: usize) -> &'static [crate::core::triggers::TriggerKind];
     fn direct_triggers(&self, setting: usize) -> &'static [crate::core::triggers::TriggerKind];
     fn on_trigger(&mut self, trigger: crate::core::triggers::AnyTrigger);
@@ -167,16 +166,16 @@ macro_rules! node_set {
                 match self { $($name::$variant(n) => $crate::core::engine::Node::custom_ui(n, ui, context)),+ }
             }
 
-            fn in_place(&self, output: usize) -> Option<usize> {
-                match self { $($name::$variant(n) => $crate::core::engine::Node::in_place(n, output)),+ }
+            fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool]) -> $crate::core::engine::TreeShake {
+                match self {
+                    $($name::$variant(n) => $crate::core::engine::Node::evaluate_tree_shake(n, inputs, outputs)),+
+                }
             }
 
-            fn runs_given(&self, inputs: &[bool], outputs: &[bool]) -> bool {
-                match self { $($name::$variant(n) => $crate::core::engine::Node::runs_given(n, inputs, outputs)),+ }
-            }
-
-            fn needs(&self, input: usize) -> bool {
-                match self { $($name::$variant(n) => $crate::core::engine::Node::needs(n, input)),+ }
+            fn evaluate_buffer_usage(&self, inputs: usize, outputs: usize) -> $crate::core::engine::BufferUsage {
+                match self {
+                    $($name::$variant(n) => $crate::core::engine::Node::evaluate_buffer_usage(n, inputs, outputs)),+
+                }
             }
 
             fn triggers(&self, setting: usize) -> &'static [$crate::core::triggers::TriggerKind] {
@@ -189,10 +188,6 @@ macro_rules! node_set {
 
             fn on_trigger(&mut self, trigger: $crate::core::triggers::AnyTrigger) {
                 match self { $($name::$variant(n) => $crate::core::engine::Node::on_trigger(n, trigger)),+ }
-            }
-
-            fn takes(&self, input: usize) -> bool {
-                match self { $($name::$variant(n) => $crate::core::engine::Node::takes(n, input)),+ }
             }
 
             fn has_state(&self) -> bool {

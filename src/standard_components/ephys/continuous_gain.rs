@@ -4,6 +4,7 @@
 //! its window): its passes sample each channel for a while, then have its mean, plus a multiple of a percentile's distance
 //! from it, reach the output range, which is the only thing that range is for. Sign doesn't count.
 
+use crate::core::engine::{BufferUsage, TreeShake};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 
@@ -78,8 +79,8 @@ impl Node<Edges> for ContinuousGain {
     };
 
     /// Only while it's given something, and something needs what it makes.
-    fn runs_given(&self, inputs: &[bool], outputs: &[bool]) -> bool {
-        inputs.iter().any(|&used| used) && outputs.iter().any(|&used| used)
+    fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool]) -> TreeShake {
+        TreeShake::needing_all(inputs.contains(&true) && outputs.contains(&true), inputs.len())
     }
 
     fn inputs(&self) -> Vec<Input<Edges>> {
@@ -94,8 +95,9 @@ impl Node<Edges> for ContinuousGain {
         require_input(inputs, "a continuous data stream")
     }
 
-    fn in_place(&self, _output: usize) -> Option<usize> {
-        Some(0)
+    /// Its output's made in place, from its input.
+    fn evaluate_buffer_usage(&self, inputs: usize, outputs: usize) -> BufferUsage {
+        BufferUsage { in_place: vec![Some(0); outputs], ..BufferUsage::none(inputs, outputs) }
     }
 
     fn settings(&self) -> Vec<SettingPort<Edges>> {

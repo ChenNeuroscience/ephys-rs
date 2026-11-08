@@ -1,3 +1,4 @@
+use crate::core::engine::BufferUsage;
 use eframe::egui::{self, Align2, Color32, FontId, Stroke};
 use serde::{Deserialize, Serialize};
 
@@ -49,8 +50,8 @@ impl Node<Edges> for VideoViewer {
     }
 
     /// Takes the pass's frames, to show the last.
-    fn takes(&self, _input: usize) -> bool {
-        true
+    fn evaluate_buffer_usage(&self, inputs: usize, outputs: usize) -> BufferUsage {
+        BufferUsage { takes: vec![true; inputs], ..BufferUsage::none(inputs, outputs) }
     }
 
     fn initial_state(&self, inputs: &[Option<DataStream>]) -> Showing {

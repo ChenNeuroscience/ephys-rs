@@ -2,7 +2,7 @@
 //! buffers, and where data's copied. Worked out once, when the snapshot's taken, for every pass of it (see `run`).
 //!
 //! Nodes don't copy their inputs: a node that would hand an input's data on (to a thread of its own, say, or its
-//! window) takes its buffer (see `Node::takes`), swapping it for one of its own. The plan decides when that needs a
+//! window) takes its buffer (see `BufferUsage::takes`), swapping it for one of its own. The plan decides when that needs a
 //! copy: if the node can be the last to read the data, it takes the buffer itself; otherwise the plan copies the data
 //! into a buffer of the node's own, as soon as it's made, which the node takes instead (a copy point). Each run has
 //! an `Exchange` where nodes keep what their passes and windows share (see `crate::core::exchange`).
@@ -11,7 +11,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::OnceLock;
 
 use super::pass::*;
-use super::{DataStreamSet, Edges, Graph, NodeId, NodeSet, Port, PortRole};
+use super::{BufferUsage, DataStreamSet, Edges, Graph, NodeId, NodeSet, Port, PortRole, TreeShake};
 
 type DataStream<N> = <<N as NodeSet>::Edges as Edges>::DataStream;
 
@@ -25,7 +25,7 @@ pub struct Step {
     pub outputs: Vec<usize>,
     /// For each output, the input it's made from in place (taking over its buffer), if it is.
     pub in_place: Vec<Option<usize>>,
-    /// For each input, whether the node takes its buffer (see `Node::takes`): being the last to read it, or a copy.
+    /// For each input, whether the node takes its buffer (see `BufferUsage::takes`): being the last to read it, or a copy.
     pub takes: Vec<bool>,
     /// Copies of outputs the plan makes once the node's run, for nodes taking them that can't be the last to read
     /// them: from the output's buffer, into the taker's own.
@@ -51,13 +51,13 @@ pub struct CopyPoint {
 /// it's ready before anything runs.
 ///
 /// The nodes that run are those whose outputs are all known (so can have buffers). Each output gets a buffer
-/// of its own, except where a node can make an output in place from an input (see `Node::in_place`): then
+/// of its own, except where a node can make an output in place from an input (see `BufferUsage::in_place`): then
 /// the output takes over the input's buffer, as long as every other node reading that data can run before
 /// it. Within a pass everything runs on one thread, in an order of our choosing, so the plan orders the
 /// nodes to make that so: the other readers first (they only read, e.g. viewers copying what they show),
 /// then the one editing in place. Only if another reader depends on the editor's output can't it be.
 ///
-/// Likewise a node taking an input's buffer (see `Node::takes`) takes it if every other reader of the data can run
+/// Likewise a node taking an input's buffer (see `BufferUsage::takes`) takes it if every other reader of the data can run
 /// first, and no one's editing it in place; otherwise the plan copies it for the node into a buffer of its own, once
 /// it's made. Otherwise nodes run in the graph's order.
 pub struct Plan<N: NodeSet> {
@@ -72,31 +72,32 @@ pub struct Plan<N: NodeSet> {
     bytes: OnceLock<Vec<usize>>,
 }
 
-/// A data edge, as `settle` sees it: from an output to an input, and whether the node it goes to needs it.
+/// A data edge, as `settle` sees it: from an output to an input.
 struct Link {
     from: super::PortRef,
     to: super::PortRef,
-    needed: bool,
 }
 
-/// How many times a node's asked whether it runs before its answer's taken as it stands (see `settle`).
+/// How many times a node's asked for its tree shake before its answer's taken as it stands (see `settle`).
 const SETTLE_ASKS: usize = 8;
 
-/// Which of `nodes` (each with how many inputs and outputs it has, upstream first) run, as each `answer`s, given which
-/// of its inputs have something running into them that it needs, and which of its outputs have something running
-/// that needs them (see `Node::runs_given`). Everything starts out running, and each is asked in turn; when one's
-/// answer changes, its neighbours are asked again, if what they'd be told has changed, until nothing does.
+/// Which of `nodes` (each with how many inputs and outputs it has, upstream first) run, and which inputs each needs,
+/// as each `answer`s (see `Node::evaluate_tree_shake`), given which of its inputs have something running into them,
+/// and which of its outputs have something running that needs them. Everything starts out running and needing
+/// everything, and each is asked in turn; when one's answer changes, its neighbours are asked again, if what they'd be
+/// told has changed, until nothing does.
 ///
-/// A node's answer can keep changing, if more in use can make it stop: so after `SETTLE_ASKS`, it's asked once more,
-/// and runs if either of its last two answers was yes, for good. Running when it needn't is better than not when it
-/// should. That's warned of, by its `label`.
+/// A node's answer can keep changing, if more in use can make it run or need less: so after `SETTLE_ASKS`, it's asked
+/// once more, and runs, and needs each input, if either of its last two answers did, for good. Running when it needn't
+/// is better than not when it should. That's warned of, by its `label`.
 fn settle(
     nodes: &[(NodeId, usize, usize)],
     links: &[Link],
-    answer: impl Fn(NodeId, &[bool], &[bool]) -> bool,
+    answer: impl Fn(NodeId, &[bool], &[bool]) -> TreeShake,
     label: impl Fn(NodeId) -> String,
-) -> Vec<NodeId> {
-    let mut runs: Vec<NodeId> = nodes.iter().map(|(id, _, _)| *id).collect();
+) -> Vec<(NodeId, Vec<bool>)> {
+    let mut shakes: HashMap<NodeId, TreeShake> =
+        nodes.iter().map(|&(id, inputs, _)| (id, TreeShake::needing_all(true, inputs))).collect();
     let mut told: HashMap<NodeId, (Vec<bool>, Vec<bool>)> = HashMap::new();
     let mut asks: HashMap<NodeId, usize> = HashMap::new();
     let mut queue: VecDeque<(NodeId, usize, usize)> = nodes.iter().copied().collect();
@@ -106,35 +107,33 @@ fn settle(
             continue;
         }
         let port = |port| super::PortRef { node: id, port };
-        let inputs: Vec<bool> = (0..input_count)
-            .map(|i| links.iter().any(|l| l.to == port(i) && l.needed && runs.contains(&l.from.node)))
-            .collect();
-        let outputs: Vec<bool> = (0..output_count)
-            .map(|o| links.iter().any(|l| l.from == port(o) && l.needed && runs.contains(&l.to.node)))
-            .collect();
+        let runs = |node: NodeId| shakes.get(&node).is_some_and(|s| s.runs);
+        let needs = |to: super::PortRef| shakes.get(&to.node).is_some_and(|s| s.runs && s.needs[to.port]);
+        let inputs: Vec<bool> =
+            (0..input_count).map(|i| links.iter().any(|l| l.to == port(i) && runs(l.from.node))).collect();
+        let outputs: Vec<bool> =
+            (0..output_count).map(|o| links.iter().any(|l| l.from == port(o) && needs(l.to))).collect();
         if told.get(&id) == Some(&(inputs.clone(), outputs.clone())) {
             continue;
         }
-        let was = runs.contains(&id);
-        let mut runs_now = answer(id, &inputs, &outputs);
+        let was = shakes[&id].clone();
+        let mut now = answer(id, &inputs, &outputs);
+        assert_eq!(now.needs.len(), input_count, "{}: a need for each input", label(id));
         if asked == SETTLE_ASKS {
-            runs_now |= was;
+            now.runs |= was.runs;
+            now.needs.iter_mut().zip(&was.needs).for_each(|(now, was)| *now |= was);
             log::warn!(
-                "{} kept changing its mind about whether to run, given what it's connected to: it {}",
+                "{} kept changing its mind about whether to run, or what it needs, given what it's connected to: it {}",
                 label(id),
-                if runs_now { "runs" } else { "doesn't run" }
+                if now.runs { "runs" } else { "doesn't run" }
             );
         }
         asks.insert(id, asked + 1);
         told.insert(id, (inputs, outputs));
-        if runs_now == was {
+        if now == was {
             continue;
         }
-        if runs_now {
-            runs.push(id);
-        } else {
-            runs.retain(|r| *r != id);
-        }
+        shakes.insert(id, now);
         // What it's connected to is told something different now.
         for link in links.iter().filter(|l| l.from.node == id || l.to.node == id) {
             let other = if link.from.node == id { link.to.node } else { link.from.node };
@@ -146,7 +145,7 @@ fn settle(
         }
     }
     // In the order they were given.
-    nodes.iter().map(|(id, _, _)| *id).filter(|id| runs.contains(id)).collect()
+    nodes.iter().filter_map(|(id, _, _)| shakes.remove(id).filter(|s| s.runs).map(|s| (*id, s.needs))).collect()
 }
 
 impl<N: NodeSet> Plan<N> {
@@ -156,7 +155,6 @@ impl<N: NodeSet> Plan<N> {
         // Which nodes run is up to them (see `settle`): of those that can, not disabled, with every output known.
         let data: Vec<&super::Edge> =
             graph.edges().iter().filter(|e| e.dimension == super::Dimension::Data && graph.is_live(e)).collect();
-        let needed = |e: &super::Edge| graph.get(e.to.node).is_some_and(|n| n.node.needs(e.to.port));
         let can_run: Vec<(NodeId, usize, usize)> = topological
             .iter()
             .filter(|id| graph.get(**id).is_some_and(|e| !e.disabled))
@@ -164,18 +162,29 @@ impl<N: NodeSet> Plan<N> {
             .filter(|(_, s)| s.outputs.iter().all(|o| o.stream.is_some()))
             .map(|(id, s)| (id, s.inputs.len(), s.outputs.len()))
             .collect();
-        let links: Vec<Link> = data.iter().map(|e| Link { from: e.from, to: e.to, needed: needed(e) }).collect();
-        let runs = settle(
+        let links: Vec<Link> = data.iter().map(|e| Link { from: e.from, to: e.to }).collect();
+        let shaken = settle(
             &can_run,
             &links,
-            |id, inputs, outputs| graph.get(id).is_some_and(|e| e.node.runs_given(inputs, outputs)),
+            |id, inputs, outputs| match graph.get(id) {
+                Some(e) => e.node.evaluate_tree_shake(inputs, outputs),
+                None => TreeShake::needing_all(false, inputs.len()),
+            },
             |id| graph.get(id).map_or_else(|| format!("{id:?}"), |e| e.label.clone()),
         );
-        let data_edges: Vec<&super::Edge> = data
+        let runs: Vec<NodeId> = shaken.iter().map(|(id, _)| *id).collect();
+        let needs: HashMap<NodeId, Vec<bool>> = shaken.into_iter().collect();
+        let needed = |node: NodeId, input: usize| needs.get(&node).is_some_and(|n| n[input]);
+        // How each node that runs uses its buffers.
+        let usage: HashMap<NodeId, BufferUsage> = runs
             .iter()
-            .copied()
-            .filter(|e| runs.contains(&e.from.node) && runs.contains(&e.to.node) && needed(e))
+            .filter_map(|&id| {
+                let (entry, state) = (graph.get(id)?, resolved.get(&id)?);
+                Some((id, entry.node.evaluate_buffer_usage(state.inputs.len(), state.outputs.len())))
+            })
             .collect();
+        let data_edges: Vec<&super::Edge> =
+            data.iter().copied().filter(|e| runs.contains(&e.from.node) && needed(e.to.node, e.to.port)).collect();
         // Which nodes must run before which: those feeding them, and those reading data another edits in place.
         let mut before: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
         for edge in &data_edges {
@@ -186,9 +195,9 @@ impl<N: NodeSet> Plan<N> {
         let mut in_place: HashMap<(NodeId, usize), usize> = HashMap::new();
         let mut claimed: Vec<(NodeId, usize)> = Vec::new();
         for &id in &runs {
-            let (Some(entry), Some(state)) = (graph.get(id), resolved.get(&id)) else { continue };
-            for output in 0..state.outputs.len() {
-                let Some(input) = entry.node.in_place(output) else { continue };
+            let Some(usage) = usage.get(&id) else { continue };
+            for (output, &input) in usage.in_place.iter().enumerate() {
+                let Some(input) = input else { continue };
                 let Some(edge) = data_edges.iter().find(|e| e.to.node == id && e.to.port == input) else { continue };
                 let source = (edge.from.node, edge.from.port);
                 if claimed.contains(&source) {
@@ -214,8 +223,8 @@ impl<N: NodeSet> Plan<N> {
         // Pick the inputs taken: those whose data no one edits in place, whose other readers can run first.
         let mut taken: Vec<(NodeId, usize)> = Vec::new();
         for &id in &runs {
-            let (Some(entry), Some(state)) = (graph.get(id), resolved.get(&id)) else { continue };
-            for input in (0..state.inputs.len()).filter(|&i| entry.node.takes(i)) {
+            let Some(usage) = usage.get(&id) else { continue };
+            for input in (0..usage.takes.len()).filter(|&i| usage.takes[i]) {
                 let Some(edge) = data_edges.iter().find(|e| e.to.node == id && e.to.port == input) else { continue };
                 let source = (edge.from.node, edge.from.port);
                 if claimed.contains(&source) {
@@ -282,7 +291,7 @@ impl<N: NodeSet> Plan<N> {
                     takes.push(false);
                     continue;
                 };
-                if !(entry.node.takes(input) && entry.node.needs(input)) {
+                if !(usage[&id].takes[input] && needed(id, input)) {
                     takes.push(false);
                 } else if taken.contains(&(id, input)) {
                     takes.push(true);
@@ -426,7 +435,7 @@ mod tests {
         let filter = add(&mut graph, "Band-pass Filter");
         link(&mut graph, board, 0, gain, 0);
         link(&mut graph, gain, 0, filter, 0);
-        // Something needing the filter's output, so it runs (see `Node::needs`).
+        // Something needing the filter's output, so it runs (see `Node::evaluate_tree_shake`).
         let end = add(&mut graph, "LFP Viewer");
         link(&mut graph, filter, 0, end, 0);
         // Board (continuous and events), then gain and filter working in the board's continuous buffer.
@@ -525,23 +534,36 @@ mod tests {
     fn a_node_that_keeps_changing_its_mind_ends_up_running() {
         use std::cell::Cell;
         let (a, b) = (NodeId(1), NodeId(2));
-        let links = [Link {
-            from: super::super::PortRef { node: a, port: 0 },
-            to: super::super::PortRef { node: b, port: 0 },
-            needed: true,
-        }];
+        let links =
+            [Link { from: super::super::PortRef { node: a, port: 0 }, to: super::super::PortRef { node: b, port: 0 } }];
         let asked = Cell::new(0);
         // a runs only while nothing uses what it makes, and b only while it's given something: round they'd go.
         let answer = |id, inputs: &[bool], outputs: &[bool]| {
             asked.set(asked.get() + 1);
-            if id == a { !outputs[0] } else { inputs[0] }
+            let runs = if id == a { !outputs[0] } else { inputs[0] };
+            TreeShake::needing_all(runs, inputs.len())
         };
         let runs = settle(&[(a, 0, 1), (b, 1, 0)], &links, answer, |id| format!("{id:?}"));
-        assert_eq!(runs, [a, b], "running, when in doubt, and what it feeds with it");
+        assert_eq!(runs, [(a, vec![]), (b, vec![true])], "running, when in doubt, and what it feeds with it");
         assert!(asked.get() <= 2 * (SETTLE_ASKS + 1), "{} asks", asked.get());
 
-        let steady = |_, inputs: &[bool], _: &[bool]| inputs.is_empty() || inputs[0];
-        assert_eq!(settle(&[(a, 0, 1), (b, 1, 0)], &links, steady, |_| String::new()), [a, b]);
+        let steady =
+            |_, inputs: &[bool], _: &[bool]| TreeShake::needing_all(inputs.is_empty() || inputs[0], inputs.len());
+        assert_eq!(settle(&[(a, 0, 1), (b, 1, 0)], &links, steady, |_| String::new()), runs);
+
+        // b needs what a makes only while it's not given it: round they'd go, so it needs it, and a runs.
+        asked.set(0);
+        let needy = |id, inputs: &[bool], outputs: &[bool]| {
+            asked.set(asked.get() + 1);
+            if id == a {
+                TreeShake::needing_all(outputs[0], 0)
+            } else {
+                TreeShake { runs: true, needs: vec![!inputs[0]] }
+            }
+        };
+        let runs = settle(&[(a, 0, 1), (b, 1, 0)], &links, needy, |id| format!("{id:?}"));
+        assert_eq!(runs, [(a, vec![]), (b, vec![true])], "needing it, when in doubt");
+        assert!(asked.get() <= 2 * (SETTLE_ASKS + 1), "{} asks", asked.get());
     }
 
     #[test]

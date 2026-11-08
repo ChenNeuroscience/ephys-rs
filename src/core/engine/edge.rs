@@ -60,7 +60,7 @@ pub trait DataStreamType: EdgeType + Copy {
     fn bytes(buffer: &Self::Buffer) -> usize;
 
     /// Copies `from` into `to`, a buffer of the same data stream, without allocating (for the plan, copying for a
-    /// node taking a buffer it can't be the last to read: see `Node::takes`).
+    /// node taking a buffer it can't be the last to read: see `BufferUsage::takes`).
     fn copy(from: &Self::Buffer, to: &mut Self::Buffer);
 }
 

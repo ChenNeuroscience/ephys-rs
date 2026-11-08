@@ -1,6 +1,6 @@
 //! The LFP Viewer: scrolling traces of continuous data, a row per channel, each at a fixed height (scrolled
 //! through), each with a y axis of the scale chosen, and beside each, its spectrum over a band of interest (from a
-//! Spectrum node, which only runs while the spectrum's on: see `Node::needs`). The time's along the bottom, after the last
+//! Spectrum node, which only runs while the spectrum's on: see `Node::evaluate_tree_shake`). The time's along the bottom, after the last
 //! channel.
 //!
 //! Each pass adds its samples to a few seconds' worth for each channel shown, kept as the lowest and highest
@@ -18,6 +18,7 @@
 //!   own at the top, with what's particular to each: otherwise that's in the toolbar. Each reference has a colour, for
 //!   telling which row's which column: the channels are neutral, to leave the colours to them.
 
+use crate::core::engine::TreeShake;
 use eframe::egui::{self, Align2, FontId, Pos2, Rect, Sense, Shape, Stroke};
 use serde::{Deserialize, Serialize};
 
@@ -196,9 +197,12 @@ impl Node<Edges> for LfpViewer {
         ]
     }
 
-    /// The spectra only while they're shown: otherwise, the Spectrum node needn't run at all.
-    fn needs(&self, input: usize) -> bool {
-        input != 1 || self.spectrum
+    /// The spectra only while they're shown: otherwise, the Spectrum node needn't run at all. It runs while it's
+    /// given something it needs.
+    fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool]) -> TreeShake {
+        let needs: Vec<bool> = (0..inputs.len()).map(|input| input != 1 || self.spectrum).collect();
+        let given = inputs.iter().zip(&needs).any(|(&used, &needed)| used && needed);
+        TreeShake { runs: given, needs }
     }
 
     fn outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {

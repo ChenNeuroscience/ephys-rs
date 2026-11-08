@@ -7,6 +7,7 @@
 //! Its settings are one setting (`reference`), which another node can edit through a settings edge. Besides the
 //! referenced data, it outputs the references themselves: a channel each.
 
+use crate::core::engine::{BufferUsage, TreeShake};
 use eframe::egui::{self, Color32, RichText};
 use serde::{Deserialize, Serialize};
 
@@ -368,14 +369,15 @@ impl Node<Edges> for Reference {
     };
 
     /// Only while it's given something, and something needs what it makes.
-    fn runs_given(&self, inputs: &[bool], outputs: &[bool]) -> bool {
-        inputs.iter().any(|&used| used) && outputs.iter().any(|&used| used)
+    fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool]) -> TreeShake {
+        TreeShake::needing_all(inputs.contains(&true) && outputs.contains(&true), inputs.len())
     }
 
     type State = Referencing;
 
-    fn in_place(&self, _output: usize) -> Option<usize> {
-        Some(0)
+    /// Its output's made in place, from its input.
+    fn evaluate_buffer_usage(&self, inputs: usize, outputs: usize) -> BufferUsage {
+        BufferUsage { in_place: vec![Some(0); outputs], ..BufferUsage::none(inputs, outputs) }
     }
 
     fn settings(&self) -> Vec<SettingPort<Edges>> {

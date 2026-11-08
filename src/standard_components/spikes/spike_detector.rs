@@ -8,6 +8,7 @@
 //! spikes always fit the buffer (see `Spikes`). A spike is only found once its whole waveform has come, so
 //! those near the end of a pass come with the next, which carries on from the end of this one.
 
+use crate::core::engine::TreeShake;
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 
@@ -135,8 +136,8 @@ impl Node<Edges> for SpikeDetector {
     };
 
     /// Only while it's given something, and something needs what it makes.
-    fn runs_given(&self, inputs: &[bool], outputs: &[bool]) -> bool {
-        inputs.iter().any(|&used| used) && outputs.iter().any(|&used| used)
+    fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool]) -> TreeShake {
+        TreeShake::needing_all(inputs.contains(&true) && outputs.contains(&true), inputs.len())
     }
 
     type State = Detector;

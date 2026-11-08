@@ -24,8 +24,8 @@ The parts of the API are there for three different reasons, and it helps to know
   `outputs`), its settings (`settings`, `set_setting`) and the settings of others it can see (`controls`), `process`
   and the `State` it carries from pass to pass, the triggers it takes, and `prepare_to_record`.
 - **Optimisation: how cheaply it runs.** Leaving these at their defaults is always correct, only slower or using more
-  memory: `in_place`, `takes`, `needs`, working memory instead of state (`CARRIED_OVER = false`), pools for buffers its
-  threads swap, and `runs_given` (one exception: a node without inputs has to say it runs).
+  memory: `evaluate_buffer_usage`, `evaluate_tree_shake` (one exception: a node without inputs has to say it runs),
+  working memory instead of state (`CARRIED_OVER = false`), and pools for buffers its threads swap.
 - **The experience of using it: how it looks and behaves for people.** These change nothing it computes: its category,
   name and description (`INFO`), `warnings`, its window (`settings_ui`, or `custom_ui` with `HAS_CUSTOM_UI`), whether
   it's in the basic view (`SHOW_IN_BASIC_DEFAULT`), and how its threads show in the dev tools (`threads`,
@@ -53,26 +53,29 @@ settings: the latest, as of the pass.
   implements `PassState`, saying why it's needed (`WHY`, shown in the dev tools at the sync point it makes). State
   that's only working memory (nothing carried over: `CARRIED_OVER = false`) is each worker's own, and makes no sync
   point. State is fresh each epoch.
-- **In place.** `in_place(output)` names an input whose buffer the output can be made in, when nothing else needs that
-  data after it. Then the input's `None` in the pass, and the output already holds its data.
-- **Taking.** `takes(input)`: the node takes the input's buffer, to do as it likes with (swap it for one of its own,
-  say, to hand to its thread or window). Nodes don't copy their inputs; the plan decides when a copy's needed.
-  `Pass::take_input` always gives the node a buffer: the input's own, if no one edits that data in place and every
-  other reader can run first, otherwise a copy the plan makes as soon as the data's made (a copy point, in the dev
-  tools). A node that only reads an input doesn't take it.
-- **Whether it runs.** It's up to the node: `runs_given(inputs, outputs)`, given which of its inputs have something
-  running into them that it needs, and which of its outputs have something running that needs them. The plan starts
-  with everything that can run running, asks each node in turn, upstream first, and whenever one's answer changes, asks
-  its neighbours again, if what they're told has changed, until nothing does. So the answer must depend only on what
-  it's told; and if more in use never makes a node stop, it always settles. A node whose answer keeps changing is asked
-  only so many times, then runs if either of its last two answers was yes, with a warning in the console. By default, a node runs if any input's in use, whether or not its outputs are, as what it does may
-  matter beyond the graph (a viewer, a writer). A node without inputs (a source) says so for itself. A node that only
-  makes data for others runs only while they're in use, as the processing nodes do. A node with an output that can't
-  be known doesn't run.
-- **Needs.** `needs(input)`: whether it needs an input's data now, given its settings. If not, the plan doesn't pass it,
-  and it doesn't count as in use, for it or what feeds it (the LFP viewer's spectrum, switched off, stops the
-  [Spectrum](../src/standard_components/ephys/spectrum.rs) node). Changing it changes the plan, so it's for what's
-  switched on and off.
+- **Buffer usage.** `evaluate_buffer_usage(inputs, outputs)`, asked once per plan, says how the node uses its buffers
+  (a `BufferUsage`):
+  - **In place.** `in_place[output]` names an input whose buffer the output can be made in, when nothing else needs
+    that data after it. Then the input's `None` in the pass, and the output already holds its data.
+  - **Taking.** `takes[input]`: the node takes the input's buffer, to do as it likes with (swap it for one of its own,
+    say, to hand to its thread or window). Nodes don't copy their inputs; the plan decides when a copy's needed.
+    `Pass::take_input` always gives the node a buffer: the input's own, if no one edits that data in place and every
+    other reader can run first, otherwise a copy the plan makes as soon as the data's made (a copy point, in the dev
+    tools). A node that only reads an input doesn't take it.
+- **The tree shake: whether it runs, and what it needs.** It's up to the node: `evaluate_tree_shake(inputs, outputs)`,
+  given which of its inputs have something running into them, and which of its outputs have something running that
+  needs them, says whether it runs, and which inputs it needs (a `TreeShake`). An input it doesn't need isn't passed,
+  and doesn't count as in use for what feeds it (the LFP viewer's spectrum, switched off, stops the
+  [Spectrum](../src/standard_components/ephys/spectrum.rs) node). The plan starts with everything that can run running
+  and needing everything, asks each node in turn, upstream first, and whenever one's answer changes, asks its
+  neighbours again, if what they're told has changed, until nothing does. So the answer must depend only on what it's
+  told and its settings; and if more in use never makes a node run or need less, it always settles. A node whose
+  answer keeps changing is asked only so many times, then runs, and needs each input, if either of its last two
+  answers did, with a warning in the console. By default, a node needs every input and runs if any's in use, whether
+  or not its outputs are, as what it does may matter beyond the graph (a viewer, a writer). A node without inputs (a
+  source) says so for itself. A node that only makes data for others runs only while they're in use, as the
+  processing nodes do. A node with an output that can't be known doesn't run. Settings change the plan, so what a
+  node needs is for what's switched on and off, not what changes pass to pass.
 
 ## Its window
 

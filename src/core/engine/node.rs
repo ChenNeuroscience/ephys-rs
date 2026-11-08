@@ -92,6 +92,45 @@ impl PassState for () {
     const WHY: &'static str = "";
 }
 
+/// What a node says in the tree shake (see `Node::evaluate_tree_shake`): whether it runs, and which inputs' data
+/// it needs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TreeShake {
+    pub runs: bool,
+    /// For each input, whether it needs its data. If not, the plan doesn't count it as in use for what feeds it.
+    pub needs: Vec<bool>,
+}
+
+impl TreeShake {
+    /// Running or not, needing each of its `inputs`.
+    pub fn needing_all(runs: bool, inputs: usize) -> Self {
+        TreeShake { runs, needs: vec![true; inputs] }
+    }
+}
+
+/// How a node uses its buffers (see `Node::evaluate_buffer_usage`). Leaving it at `none` is always correct, only
+/// using more memory, or copying more.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BufferUsage {
+    /// For each output, an input it can be made from in place, editing the input's data where it is. The plan
+    /// decides, before running, whether it can be: it can if every other node reading that data can run first. The
+    /// output must be the same data stream as the input.
+    pub in_place: Vec<Option<usize>>,
+    /// For each input, whether the node takes its buffer, to do as it likes with the data (swap it for another just
+    /// as big, say, to hand to its thread or window), rather than only reading it. Nodes don't copy their inputs:
+    /// the plan does, when it needs to. The pass always gives the node a buffer to take (see `Pass::take_input`):
+    /// the input's own if no node edits that data in place and every other node reading it can run first, otherwise
+    /// a copy the plan makes as soon as the data's made.
+    pub takes: Vec<bool>,
+}
+
+impl BufferUsage {
+    /// Reading each of its `inputs`, and making each of its `outputs` in a buffer of its own.
+    pub fn none(inputs: usize, outputs: usize) -> Self {
+        BufferUsage { in_place: vec![None; outputs], takes: vec![false; inputs] }
+    }
+}
+
 /// A node type. Implementors are plain settings structs, saved with the graph.
 ///
 /// The ports may depend on the settings, and the output data streams on what is connected to the inputs; the
@@ -146,32 +185,28 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
         Self::State::default()
     }
 
-    /// An input that an output can be made from in place, editing the input's data where it is. The plan
-    /// decides, before running, whether it can be: it can if every other node reading that data can run
-    /// first. The output must be the same data stream as the input.
-    fn in_place(&self, _output: usize) -> Option<usize> {
-        None
-    }
-
-    /// Whether the node runs, given which of its inputs (by index) have something running into them that it needs, and
-    /// which of its outputs have something running that needs them. The plan starts with everything that can run
-    /// running, and asks again whenever what a node would be told changes, until nothing does; so the answer must
-    /// depend on nothing else. It settles as long as more in use never makes a node stop; one that keeps changing its
-    /// mind runs (see `settle`, in `run`).
+    /// The tree shake: whether the node runs, and which of its inputs' data it needs, given which of its inputs (by
+    /// index) have something running into them, and which of its outputs have something running that needs them. The
+    /// plan starts with everything that can run running and needing everything, and asks again whenever what a node
+    /// would be told changes, until nothing does; so the answer must depend only on what it's told, and its settings.
+    /// It settles as long as more in use never makes a node run or need less; one that keeps changing its mind runs,
+    /// and needs, whatever either of its last two answers did (see `settle`, in `plan`).
     ///
-    /// By default, it runs if any input's in use, whether or not its outputs are: what it does may matter beyond the
-    /// graph (a viewer, a writer). A node without inputs (a source) says so for itself: it isn't run otherwise. A node
-    /// that only makes data for others runs only while they're in use, as the processing nodes do.
-    fn runs_given(&self, inputs: &[bool], _outputs: &[bool]) -> bool {
-        inputs.iter().any(|&used| used)
+    /// By default, it needs every input, and runs if any's in use, whether or not its outputs are: what it does may
+    /// matter beyond the graph (a viewer, a writer). A node without inputs (a source) says so for itself: it isn't run
+    /// otherwise. A node that only makes data for others runs only while they're in use, as the processing nodes do.
+    /// A node needn't need an input (a viewer with part of its view hidden, say): then the plan doesn't count it as in
+    /// use for what feeds it. Changing settings changes the plan (a new epoch), so they're for what's switched on and
+    /// off, not what changes pass to pass.
+    fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool]) -> TreeShake {
+        TreeShake::needing_all(inputs.contains(&true), inputs.len())
     }
 
-    /// Whether the node needs an input's data now, given its settings (a viewer with part of its view hidden might
-    /// not). If not, the plan doesn't give it the data, and it doesn't count, for either it or what feeds it, in
-    /// deciding whether they run. Changing what's needed changes the plan (a new epoch), so it's for what's switched
-    /// on and off, not what changes pass to pass.
-    fn needs(&self, _input: usize) -> bool {
-        true
+    /// How the node uses its buffers, given how many inputs and outputs it has: which outputs it can make in place,
+    /// and which inputs it takes (see `BufferUsage`). Asked once per plan. By default, it reads its inputs and makes
+    /// its outputs in buffers of their own.
+    fn evaluate_buffer_usage(&self, inputs: usize, outputs: usize) -> BufferUsage {
+        BufferUsage::none(inputs, outputs)
     }
 
     /// The pass triggers of one of the node's settings (by index): what can be triggered through it, as well as set,
@@ -191,17 +226,8 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     /// One of its `direct_triggers`, sent to it: `trigger.take::<T>()` has it as what it is.
     fn on_trigger(&mut self, _trigger: AnyTrigger) {}
 
-    /// Whether the node takes an input's buffer, to do as it likes with the data (swap it for another just as big,
-    /// say, to hand to its thread or window), rather than only reading it. Nodes don't copy their inputs: the plan
-    /// does, when it needs to. The pass always gives the node a buffer to take (see `Pass::take_input`): the input's
-    /// own if no node edits that data in place and every other node reading it can run first, otherwise a copy the
-    /// plan makes as soon as the data's made.
-    fn takes(&self, _input: usize) -> bool {
-        false
-    }
-
     /// Does the node's work for one pass: reads its inputs and fills its outputs, which are already sized for
-    /// the data streams they carry. When an output is being made in place (see `in_place`), its input is `None`
+    /// the data streams they carry. When an output is being made in place (see `evaluate_buffer_usage`), its input is `None`
     /// in the pass, and the output's buffer already holds the input's data to transform.
     fn process(&self, _pass: &mut Pass<E>, _state: &mut Self::State) {}
 

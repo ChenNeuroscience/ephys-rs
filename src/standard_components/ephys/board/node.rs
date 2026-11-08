@@ -2,6 +2,7 @@
 //! inputs, acquired on a thread of its own (see `capture`) into a pool of buffers, which each pass swaps for its
 //! own.
 
+use crate::core::engine::TreeShake;
 use eframe::egui::{self, RichText};
 use serde::{Deserialize, Serialize};
 
@@ -91,8 +92,8 @@ impl Node<Edges> for AcquisitionBoard {
     };
 
     /// A source: it runs, with nothing upstream, whether or not anything's using what it makes.
-    fn runs_given(&self, _inputs: &[bool], _outputs: &[bool]) -> bool {
-        true
+    fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool]) -> TreeShake {
+        TreeShake::needing_all(true, inputs.len())
     }
 
     type State = Acquiring;

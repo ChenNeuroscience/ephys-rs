@@ -138,7 +138,7 @@ source that stops looks like a low rate.
 
 The buttons for all the alarms are only shortcuts, setting each one, so there's no separate on or off to go out of step.
 
-An input's only needed while an alarm that's on watches it (`Node::needs`), so switching the last one off changes the
+An input's only needed while an alarm that's on watches it (`Node::evaluate_tree_shake`), so switching the last one off changes the
 plan, and starts a new epoch. While
 recording the graph can't change, so the viewer only ignores what it's switched off, and saves that in the settings
 once recording's stopped, if its window's open by then (otherwise it's lost when the run stops). An alarm off when

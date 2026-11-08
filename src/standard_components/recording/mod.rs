@@ -4,7 +4,7 @@
 //! A writer's passes only hand their inputs out, in chunks to a thread of its own (`Writing`), which writes them to
 //! disk. So passes never wait on the disk. The chunks are a pool (see `crate::standard_components::pool`), made
 //! before recording and handed back once written, so nothing's allocated; a writer that takes its inputs (see
-//! `Node::takes`) swaps them into a chunk rather than copying.
+//! `BufferUsage::takes`) swaps them into a chunk rather than copying.
 //!
 //! Where a writer writes is its `Location`: the base directory (see `crate::core::base_directory`), a subdirectory of
 //! it, or a directory of its own.

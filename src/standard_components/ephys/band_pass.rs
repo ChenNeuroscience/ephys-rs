@@ -1,6 +1,7 @@
 //! The Band-pass Filter: a Butterworth band-pass on every channel, as Open Ephys's filter node has, designed and
 //! run as second-order sections by sci-rs (a port of SciPy's `butter` and `sosfilt`).
 
+use crate::core::engine::{BufferUsage, TreeShake};
 use eframe::egui;
 use sci_rs::signal::filter::design::{DigitalFilter, FilterBandType, FilterOutputType, Sos, butter_dyn};
 use sci_rs::signal::filter::sosfilt_item;
@@ -37,8 +38,8 @@ impl Node<Edges> for BandPassFilter {
     };
 
     /// Only while it's given something, and something needs what it makes.
-    fn runs_given(&self, inputs: &[bool], outputs: &[bool]) -> bool {
-        inputs.iter().any(|&used| used) && outputs.iter().any(|&used| used)
+    fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool]) -> TreeShake {
+        TreeShake::needing_all(inputs.contains(&true) && outputs.contains(&true), inputs.len())
     }
 
     type State = Filters;
@@ -50,8 +51,9 @@ impl Node<Edges> for BandPassFilter {
         filters
     }
 
-    fn in_place(&self, _output: usize) -> Option<usize> {
-        Some(0)
+    /// Its output's made in place, from its input.
+    fn evaluate_buffer_usage(&self, inputs: usize, outputs: usize) -> BufferUsage {
+        BufferUsage { in_place: vec![Some(0); outputs], ..BufferUsage::none(inputs, outputs) }
     }
 
     fn process(&self, pass: &mut Pass<Edges>, filters: &mut Filters) {

@@ -4,6 +4,7 @@
 //! it's triggered ("auto detect", from its window or a Spike Viewer's): its passes sample each channel's spikes for a
 //! while, then have a multiple of the biggest reach the output range, which is the only thing that range is for.
 
+use crate::core::engine::{BufferUsage, TreeShake};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 
@@ -64,8 +65,8 @@ impl Node<Edges> for SpikeGain {
     };
 
     /// Only while it's given something, and something needs what it makes.
-    fn runs_given(&self, inputs: &[bool], outputs: &[bool]) -> bool {
-        inputs.iter().any(|&used| used) && outputs.iter().any(|&used| used)
+    fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool]) -> TreeShake {
+        TreeShake::needing_all(inputs.contains(&true) && outputs.contains(&true), inputs.len())
     }
 
     fn inputs(&self) -> Vec<Input<Edges>> {
@@ -80,8 +81,9 @@ impl Node<Edges> for SpikeGain {
         require_input(inputs, "spikes")
     }
 
-    fn in_place(&self, _output: usize) -> Option<usize> {
-        Some(0)
+    /// Its output's made in place, from its input.
+    fn evaluate_buffer_usage(&self, inputs: usize, outputs: usize) -> BufferUsage {
+        BufferUsage { in_place: vec![Some(0); outputs], ..BufferUsage::none(inputs, outputs) }
     }
 
     fn settings(&self) -> Vec<SettingPort<Edges>> {

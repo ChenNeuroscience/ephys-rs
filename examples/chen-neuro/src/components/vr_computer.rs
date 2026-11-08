@@ -36,7 +36,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, RichText};
 use ephys_rs::core::engine::{
-    Category, Flow, Node, NodeInfo, NodeThread, Output, Pass, SettingPort, ThreadContext, UiContext,
+    Category, Flow, Node, NodeInfo, NodeThread, Output, Pass, SettingPort, ThreadContext, TreeShake, UiContext,
 };
 use ephys_rs::standard_components::ephys::{Event, Events, EventsBuffer};
 use ephys_rs::standard_components::logs::{LogLines, LogLinesBuffer};
@@ -437,8 +437,8 @@ impl Node<Edges> for VrComputer {
     };
 
     /// A source: it runs, with nothing upstream, whether or not anything's using what it makes.
-    fn runs_given(&self, _inputs: &[bool], _outputs: &[bool]) -> bool {
-        true
+    fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool]) -> TreeShake {
+        TreeShake::needing_all(true, inputs.len())
     }
 
     type State = Receiving;

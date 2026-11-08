@@ -3,9 +3,10 @@
 //!
 //! It keeps about four seconds of each channel, averaged down to about 1 kHz, and works out a few channels' spectra
 //! each pass (by real FFT, Hann windowed), so each is fresh every few passes, smoothed over the last few. Each pass
-//! passes on the latest of them all. It only runs while something needs them (see `Node::needs`): the LFP Viewer,
+//! passes on the latest of them all. It only runs while something needs them (see `Node::evaluate_tree_shake`): the LFP Viewer,
 //! with its spectrum on.
 
+use crate::core::engine::TreeShake;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -121,8 +122,8 @@ impl Node<Edges> for Spectrum {
     };
 
     /// Only while it's given something, and something needs what it makes.
-    fn runs_given(&self, inputs: &[bool], outputs: &[bool]) -> bool {
-        inputs.iter().any(|&used| used) && outputs.iter().any(|&used| used)
+    fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool]) -> TreeShake {
+        TreeShake::needing_all(inputs.contains(&true) && outputs.contains(&true), inputs.len())
     }
 
     fn inputs(&self) -> Vec<Input<Edges>> {

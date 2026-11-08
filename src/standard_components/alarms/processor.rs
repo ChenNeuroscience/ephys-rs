@@ -1,9 +1,10 @@
 //! The Alarm Processor: measures spikes, LFP, positions and TTLs over each alarm's period, and says whether each is
-//! within its range. An input's only needed while an alarm that's on watches it (see `Node::needs`). Each measure's
+//! within its range. An input's only needed while an alarm that's on watches it (see `Node::evaluate_tree_shake`). Each measure's
 //! counted in bins, a
 //! small fraction of the period each, so however long the period, a window is the same small size, and what's selected
 //! can change without waiting for a new period. An alarm doesn't go off until it's seen a whole period.
 
+use crate::core::engine::TreeShake;
 use std::collections::VecDeque;
 
 use eframe::egui;
@@ -235,6 +236,13 @@ pub fn streams(inputs: &[Option<DataStream>]) -> AlarmStates {
     states
 }
 
+impl AlarmProcessor {
+    /// Whether an alarm that's on watches an input.
+    fn needs(&self, input: usize) -> bool {
+        Source::ALL.get(input).is_some_and(|source| self.alarms.watches(*source))
+    }
+}
+
 impl Node<Edges> for AlarmProcessor {
     type State = Watching;
 
@@ -245,9 +253,12 @@ impl Node<Edges> for AlarmProcessor {
                       chosen for each: for the Alarm Viewer, which shows them.",
     };
 
-    /// Only while it's given something, and something needs what it makes.
-    fn runs_given(&self, inputs: &[bool], outputs: &[bool]) -> bool {
-        inputs.iter().any(|&used| used) && outputs.iter().any(|&used| used)
+    /// Only the inputs an alarm that's on watches; and only while it's given one of those, and something needs what
+    /// it makes.
+    fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool]) -> TreeShake {
+        let needs: Vec<bool> = (0..inputs.len()).map(|input| self.needs(input)).collect();
+        let given = inputs.iter().zip(&needs).any(|(&used, &needed)| used && needed);
+        TreeShake { runs: given && outputs.contains(&true), needs }
     }
 
     fn inputs(&self) -> Vec<Input<Edges>> {
@@ -257,10 +268,6 @@ impl Node<Edges> for AlarmProcessor {
             Input { name: "positions", kind: Kind::Positions },
             Input { name: "ttl", kind: Kind::Events },
         ]
-    }
-
-    fn needs(&self, input: usize) -> bool {
-        Source::ALL.get(input).is_some_and(|source| self.alarms.watches(*source))
     }
 
     fn outputs(&self, inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {

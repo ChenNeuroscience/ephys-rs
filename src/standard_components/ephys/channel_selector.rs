@@ -2,6 +2,7 @@
 //! those while the selection's on, or all of them while it's off. The selection's a setting, which an LFP Viewer downstream
 //! can choose: look through all the channels, click the numbers of the ones to keep, then apply it.
 
+use crate::core::engine::TreeShake;
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 
@@ -57,8 +58,8 @@ impl Node<Edges> for ChannelSelector {
     };
 
     /// Only while it's given something, and something needs what it makes.
-    fn runs_given(&self, inputs: &[bool], outputs: &[bool]) -> bool {
-        inputs.iter().any(|&used| used) && outputs.iter().any(|&used| used)
+    fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool]) -> TreeShake {
+        TreeShake::needing_all(inputs.contains(&true) && outputs.contains(&true), inputs.len())
     }
 
     type State = Passed;

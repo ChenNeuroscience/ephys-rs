@@ -60,11 +60,12 @@ each node a [`Pass`](../src/core/engine/pass.rs); their module docs are the deta
 - A pass runs every node in the plan's order, on buffers the worker made for the plan before it ran any pass, so
   nothing's allocated per pass. Each node reads its inputs from the buffers of the nodes before it, and fills its own.
 - The **plan** (`Plan::new`) decides which nodes run, in what order, on which buffers:
-  - Only nodes whose outputs are known, which aren't disabled, and whose outputs something needs (`Node::needs`), run.
-    Sources, and nodes without outputs (viewers, writers), always do.
-  - An output can be made **in place** in an input's buffer (`Node::in_place`), as long as the other readers of that
+  - Only nodes whose outputs are known and which aren't disabled can run. Which of those do, and which inputs each
+    needs, is up to each, in the tree shake (`Node::evaluate_tree_shake`), given what's running around it: processing
+    nodes run only while something needs what they make; sources, viewers and writers run anyway.
+  - An output can be made **in place** in an input's buffer (`BufferUsage::in_place`), as long as the other readers of that
     data can run first.
-  - A node can **take** an input's buffer (`Node::takes`), to do as it likes with (swap for one of its own, say).
+  - A node can **take** an input's buffer (`BufferUsage::takes`), to do as it likes with (swap for one of its own, say).
     Nodes never copy their inputs: the plan does, when it must. The taker gets the buffer itself if it can be the
     last to read it; otherwise the plan copies the data into a buffer of the taker's own as soon as it's made (a
     copy point), before anything edits it in place.

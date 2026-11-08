@@ -20,7 +20,7 @@ pub struct Pass<'a, E: Edges> {
     pub node: NodeId,
     /// For each input, this pass's data on it, if it's connected (and not taken: see `take_input`).
     pub inputs: &'a [Option<&'a Buffer<E>>],
-    /// For each input, its buffer, if the node's taking it (see `Node::takes`).
+    /// For each input, its buffer, if the node's taking it (see `BufferUsage::takes`).
     pub(super) taken: &'a mut [Option<Buffer<E>>],
     /// For each output, a buffer to fill.
     pub outputs: &'a mut [Buffer<E>],
@@ -92,7 +92,7 @@ impl<'a, E: Edges> Pass<'a, E> {
         }
     }
 
-    /// The buffer of an input the node takes (see `Node::takes`), if it's connected: to swap for another just as big
+    /// The buffer of an input the node takes (see `BufferUsage::takes`), if it's connected: to swap for another just as big
     /// (of the same data stream), which the pass carries on with. The data's the node's to do as it likes with.
     pub fn take_input(&mut self, index: usize) -> Option<&mut Buffer<E>> {
         self.taken.get_mut(index)?.as_mut()

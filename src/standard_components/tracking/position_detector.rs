@@ -2,6 +2,7 @@
 //! can also be a timing LED, in a spot of its own: its coming on and going off are the `pos ttl` output's ups and downs,
 //! timed by the camera's clock, as the positions are.
 
+use crate::core::engine::TreeShake;
 use eframe::egui::{self, RichText};
 use serde::{Deserialize, Serialize};
 
@@ -45,8 +46,8 @@ impl Node<Edges> for PositionDetector {
     };
 
     /// Only while it's given something, and something needs what it makes.
-    fn runs_given(&self, inputs: &[bool], outputs: &[bool]) -> bool {
-        inputs.iter().any(|&used| used) && outputs.iter().any(|&used| used)
+    fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool]) -> TreeShake {
+        TreeShake::needing_all(inputs.contains(&true) && outputs.contains(&true), inputs.len())
     }
 
     type State = Finding;
