@@ -9,7 +9,7 @@ Electrophysiology software derived from [Open Ephys](https://github.com/open-eph
 
 ## A quick tour
 
-![A tour of the chen-neuro build of ephys-rs: live spikes, LFP and tracking, recording, the graph, and the developer tools](assets/tour.gif)
+![A tour of the chen-neuro build of ephys-rs: live spikes, LFP and tracking, alarms, recording (with a script run on each recording, and stopping when left unattended), the graph, and the developer tools](assets/tour.gif)
 
 This is the Chen lab's build, [chen-neuro](examples/chen-neuro), so its quick actions and the way it names recordings are specific to that lab. Yours can differ: see [a build for your lab](#a-build-for-your-lab).
 

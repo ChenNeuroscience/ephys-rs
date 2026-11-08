@@ -238,6 +238,10 @@ fn make_tour() {
     tour.only(tracker);
     tour.wait(2.0);
     tour.shot("LED tracking from video");
+    let alarms = tour.id("Alarm Viewer");
+    tour.only(alarms);
+    tour.wait(2.0);
+    tour.shot("Alarms on spikes, LFP and position");
 
     // Recording, without writing anything.
     tour.app().layout = layout;
@@ -251,6 +255,12 @@ fn make_tour() {
     tour.app().base_directories.current().unwrap().recording_started(&place);
     tour.wait(3.0);
     tour.shot("Record to LTX format");
+    // As if no one had touched it for most of an hour.
+    tour.app().idle_extra = Duration::from_secs(57 * 60 + 30);
+    tour.wait(1.0);
+    tour.shot("Stops itself if left unattended");
+    tour.app().idle_extra = Duration::ZERO;
+    tour.wait(1.0);
     tour.app().set_recording(None);
     tour.app().graph.get_mut(writer).unwrap().disabled = false;
     tour.wait(1.0);
@@ -276,6 +286,23 @@ fn make_tour() {
     tour.park_pointer();
     tour.wait(1.0);
     tour.shot("Every pass and frame, timed");
+
+    // A script to run on each recording, once it's written.
+    let ltx_pos = tour.app().graph.get(writer).unwrap().pos;
+    let mut command = crate::standard_components::other::run_command::RunCommand::default();
+    command.settings.program = "python3".into();
+    command.settings.arguments = "sort_tetrodes.py {file}".into();
+    command.settings.pattern = ".set".into();
+    let run = tour.app().graph.add(Nodes::RunCommand(command), [ltx_pos[0] + 280.0, ltx_pos[1]]);
+    tour.app().graph.get_mut(run).unwrap().label = "Sort tetrodes".into();
+    let (from, to) = (
+        engine::Port { node: writer, role: engine::PortRole::Control, index: 4 },
+        engine::Port { node: run, role: engine::PortRole::Setting, index: 0 },
+    );
+    tour.app().graph.connect(from, to).unwrap();
+    tour.only(run);
+    tour.wait(1.0);
+    tour.shot("Run your scripts on each recording");
 
     // The graph.
     tour.app().layout = Layout::default();
