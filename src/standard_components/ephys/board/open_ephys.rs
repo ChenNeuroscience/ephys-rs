@@ -86,8 +86,8 @@ impl OpenEphysSettings {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
                 format!(
-                    "{what} not found: the Open Ephys GUI's acquisition board plugin wasn't found. Install it, or \
-                     choose its folder in Settings… › {}",
+                    "{what} not found: nothing's in Open Ephys's default location. Install the Open Ephys GUI and \
+                     its Acquisition Board plugin, or choose the folder the files are in, in Settings… › {}",
                     Self::NAME
                 ),
             ));
@@ -122,12 +122,15 @@ impl GlobalSettings for OpenEphysSettings {
             ui.label(small("•  install "));
             ui.hyperlink_to(RichText::new("the Open Ephys GUI").small(), "https://open-ephys.org/gui");
             ui.label(small(
-                " and its Acquisition Board plugin (and Intan RHD USB plugin, for Intan's board), which put them, \
-                 and the drivers, in a folder of the GUI's.",
+                " and its Acquisition Board plugin (and Intan RHD USB plugin, for Intan's board), which install them, \
+                 and the drivers, in Open Ephys's default location.",
             ));
         });
         ui.add_space(6.0);
-        ui.label(small("Then say which folder they're in: the GUI's is found by itself."));
+        ui.label(small(
+            "Then choose the folder they're in. Until you do, ephys-rs looks in Open Ephys's default location \
+             (where the Open Ephys GUI installs them).",
+        ));
         ui.add_space(2.0);
         ui.horizontal(|ui| {
             ui.label("Folder");
@@ -136,7 +139,7 @@ impl GlobalSettings for OpenEphysSettings {
                 None => ui.label(RichText::new("not found").small().color(colours.warning)),
             };
             if self.folder.is_none() {
-                ui.label(small("(the Open Ephys GUI's)"));
+                ui.label(small("(Open Ephys's default location)"));
             }
         });
         ui.horizontal(|ui| {
@@ -145,7 +148,7 @@ impl GlobalSettings for OpenEphysSettings {
             {
                 self.folder = Some(folder);
             }
-            if self.folder.is_some() && ui.button("Use the Open Ephys GUI's").clicked() {
+            if self.folder.is_some() && ui.button("Use Open Ephys's default location").clicked() {
                 self.folder = None;
             }
         });
