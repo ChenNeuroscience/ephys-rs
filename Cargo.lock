@@ -439,7 +439,7 @@ dependencies = [
 
 [[package]]
 name = "chen-neuro"
-version = "0.1010.0"
+version = "0.1011.0"
 dependencies = [
  "chrono",
  "eframe",
@@ -1067,7 +1067,7 @@ checksum = "cfc1cc505827f4c23eedc297975a0fd038268d41293f389dd8ff3b574aefab19"
 
 [[package]]
 name = "ephys-rs"
-version = "0.161.0"
+version = "0.162.0"
 dependencies = [
  "arboard",
  "base64",

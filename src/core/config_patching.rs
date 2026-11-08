@@ -1,13 +1,14 @@
-//! Config patches: everything saved that's read back (projects, the settings saved beside recordings, settings copied
-//! to the clipboard, and what the app keeps between runs) says which version of each part of the program wrote it, so
-//! later versions can patch it up to date.
+//! Config patches: all the config the app reads back says which version of each part of the program wrote it, so later
+//! versions can patch it up to date: saved files (projects, and the settings saved beside recordings), settings pasted
+//! from the clipboard, and the base directory's settings in the app's stored preferences.
 //!
 //! Each part has a `PatchSet`: the core's (`crate::core::config_patches`), the standard components'
 //! (`crate::standard_components::config_patches`), a build's own. When a part changes what it saves, it adds a `Patch`,
 //! which changes what was saved before to what's saved now, as JSON, before anything's read into types. Think of a
 //! patch as a script: it's given the config coming in (`IncomingConfig`): the versions that wrote it
 //! (`written_before` is the usual test), and the JSON, always shaped as a project (`{"graph": {"nodes": {...}}, "base_directory": ...}`), and does as it likes. What isn't a
-//! project is put in one for it: copied nodes in its graph, the base directory kept between runs as its base directory,
+//! project is put in one for it: copied nodes in its graph, the base directory's settings from the app's preferences as its
+//! base directory,
 //! with nothing else. Every patch is applied to everything read. Patches never need changing after, as they don't
 //! depend on the types as they are now. Which sets there are, and in what order they're applied, is up to the build
 //! (`Components::CONFIG_PATCHES`).
@@ -20,8 +21,9 @@ use serde_json::Value;
 /// was written before versions were.
 pub type Versions = BTreeMap<String, String>;
 
-/// Config coming in, to patch: from a file, the clipboard (copied, maybe, to lab notes, and back, long after), or
-/// what the app keeps between runs.
+/// Config coming in, to patch: a saved file (a project, or the settings saved beside a recording), settings pasted from
+/// the clipboard (copied, maybe, to lab notes, and back, long after), or the base directory's settings from the app's
+/// stored preferences.
 pub struct IncomingConfig {
     /// The versions that wrote it.
     pub versions: Versions,
