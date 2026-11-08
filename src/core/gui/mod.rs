@@ -384,7 +384,6 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
     }
 
     /// The latest version of the graph, with all its configuration.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn snapshot(&self) -> Snapshot<N> {
         self.history.current.snapshot.clone()
     }

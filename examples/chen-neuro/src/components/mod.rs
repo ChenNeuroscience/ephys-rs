@@ -73,7 +73,6 @@ pub const THEMES: &[Theme] = &[DARK, LIGHT, china::CHINA];
 pub const BASE_DIRECTORIES: &[BaseDirectoryType] = &[A_DIRECTORY, trials::TRIALS];
 
 /// The program's parts, for the core.
-#[cfg_attr(test, allow(dead_code))]
 pub struct ChenNeuro;
 
 impl Components for ChenNeuro {

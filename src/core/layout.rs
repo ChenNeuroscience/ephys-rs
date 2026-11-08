@@ -70,7 +70,6 @@ pub enum WindowState {
 
 /// Which side of a group a new one goes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[allow(dead_code)] // all of them, for quick actions to place panes as they like
 pub enum Side {
     Left,
     Right,
@@ -301,7 +300,6 @@ impl Layout {
     }
 
     /// The groups of tabs showing (with a tab showing), as laid out (see `rects`).
-    #[allow(dead_code)] // for quick actions
     pub fn groups(&self) -> Vec<TileId> {
         self.groups_in(&self.rects())
     }

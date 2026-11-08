@@ -128,7 +128,6 @@ impl DataStreamType for Continuous {
 
 /// A digital event: a line going high or low, at a sample within the pass.
 #[derive(Clone, Copy, Debug)]
-#[allow(dead_code)] // read by viewers and writers, once they're fed real data
 pub struct Event {
     pub sample: u32,
     pub line: u8,

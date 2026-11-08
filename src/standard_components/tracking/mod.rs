@@ -68,7 +68,6 @@ impl EdgeType for Positions {
 
 /// Where the LEDs were in one frame.
 #[derive(Clone, Copy, Debug)]
-#[allow(dead_code)] // the time and calibration are for writers
 pub struct PositionSample {
     /// The camera's frame id and timestamp (seconds, in the camera's clock).
     pub frame: u64,
