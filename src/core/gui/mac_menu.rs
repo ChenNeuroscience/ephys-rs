@@ -7,8 +7,8 @@ use std::sync::mpsc;
 use eframe::egui;
 use muda::{CheckMenuItem, IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 
-use super::RECENT_FILES;
 use super::actions::{self, Action, MENUS, MenuEntry};
+use super::preferences::MOST_RECENT_FILES;
 use crate::core::annotation::AnnotationInfo;
 use crate::core::theme::Theme;
 
@@ -36,6 +36,8 @@ struct Builder<'a> {
     recent: Option<Submenu>,
     checkable: &'a dyn Fn(Action) -> bool,
     annotations: &'static [AnnotationInfo],
+    /// Annotation types hidden in Settings, by name: not among the drawing tools.
+    hidden: &'a std::collections::BTreeSet<String>,
     themes: &'static [Theme],
 }
 
@@ -53,11 +55,14 @@ impl Builder<'_> {
                 MenuEntry::Action(Action::Quit) => {}
                 MenuEntry::Action(action) => items.push(self.action(*action)),
                 MenuEntry::DrawTools => {
-                    items.extend((0..self.annotations.len()).map(|i| self.action(Action::DrawTool(i))));
+                    let shown =
+                        (0..self.annotations.len()).filter(|&i| !self.hidden.contains(self.annotations[i].name));
+                    let tools: Vec<usize> = shown.collect();
+                    items.extend(tools.into_iter().map(|i| self.action(Action::DrawTool(i))));
                 }
                 MenuEntry::Themes => items.extend((0..self.themes.len()).map(|i| self.action(Action::Theme(i)))),
                 // Filled in by `show_recent`.
-                MenuEntry::RecentFiles => self.actions.extend((0..RECENT_FILES).map(Action::OpenRecent)),
+                MenuEntry::RecentFiles => self.actions.extend((0..MOST_RECENT_FILES).map(Action::OpenRecent)),
                 MenuEntry::Separator => items.push(Box::new(PredefinedMenuItem::separator())),
                 MenuEntry::Submenu(title, inner) => items.push(Box::new(self.submenu(title, inner)?)),
             }
@@ -95,10 +100,18 @@ impl MacMenu {
         ctx: &egui::Context,
         checkable: &dyn Fn(Action) -> bool,
         annotations: &'static [AnnotationInfo],
+        hidden: &std::collections::BTreeSet<String>,
         themes: &'static [Theme],
     ) -> Option<Self> {
-        let mut builder =
-            Builder { actions: vec![Action::Quit], checks: Vec::new(), recent: None, checkable, annotations, themes };
+        let mut builder = Builder {
+            actions: vec![Action::Quit],
+            checks: Vec::new(),
+            recent: None,
+            checkable,
+            annotations,
+            hidden,
+            themes,
+        };
         let app = Submenu::with_items(
             "ephys-rs",
             true,

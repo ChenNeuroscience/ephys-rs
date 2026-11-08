@@ -31,6 +31,8 @@ impl Layout {
 
 /// What the panes need to draw themselves, for one frame.
 pub struct Panes<'a, N: NodeSet, A: AnnotationSet> {
+    /// The annotation types hidden in Settings: not among the drawing tools.
+    pub hidden_annotations: &'a std::collections::BTreeSet<String>,
     pub graph: &'a mut Graph<N>,
     pub annotations: &'a mut Annotations<A>,
     pub resolved: &'a Resolved<N::Edges>,
@@ -235,7 +237,13 @@ impl<N: NodeSet, A: AnnotationSet> Panes<'_, N, A> {
             Pane::Home => {
                 // The line under the toolbar right under it, so its margins above and below are the same.
                 ui.spacing_mut().item_spacing.y = 0.0;
-                toolbar::graph_toolbar::<A>(ui, self.graph_tools, self.canvas.tool, self.events);
+                toolbar::graph_toolbar::<A>(
+                    ui,
+                    self.graph_tools,
+                    self.canvas.tool,
+                    self.hidden_annotations,
+                    self.events,
+                );
                 ui.add(egui::Separator::default().spacing(1.0));
                 self.canvas.show(
                     ui,

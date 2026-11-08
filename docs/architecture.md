@@ -138,17 +138,19 @@ What's kept between runs, whatever file's open, is in the app's preferences: the
 writes to (the theme, the base directories, the recent files and the settings, under the `*_KEY`s in
 [`gui`](../src/core/gui/mod.rs)). File › Open Recent lists the last 10 files opened or saved, as does the basic view while the graph's empty.
 
-File › Settings… ([`preferences`](../src/core/gui/preferences.rs)) has the rest of the preferences:
+File › Settings… ([`preferences`](../src/core/gui/preferences.rs)) has the rest of the preferences, in sections:
 
-- **Stopping when no one's using ephys-rs.** Recording stops after an hour without mouse or keyboard input, and
-  acquisition after two, by default; each can be off, or longer or shorter, but recording's never longer than
+- **Auto stop.** Recording stops after an hour without mouse or keyboard input, and acquisition after two, by
+  default; each can be off, or longer or shorter (in hours and minutes), but recording's never longer than
   acquisition. The GUI keeps track: in the last minutes before, a warning counts down (any input carries on), and
   after, a notice says what stopped, and when. Running and recording don't depend on the GUI, so a modal doesn't get in
   their way.
-- **Node types.** Which can be added to a graph (from the add-node menu), from the next start: nodes already in a graph
-  are left as they are, as are quick actions.
+- **Nodes, Annotations, Base directories.** Which types are offered: node types in the add-node menu, annotation types
+  among the drawing tools, base directory types to choose from. From the next start, and only what's offered: nodes
+  and annotations already in a graph, the base directory in use, and quick actions are left as they are.
+- **Recent files.** How many are kept (10, by default), and clearing them.
 
-![Settings](../tests/snapshots/settings.png)
+![Settings](../tests/snapshots/settings_auto_stop.png)
 
 ![Basic mode, after the standard LTX quick action](../tests/snapshots/standard_ltx_layout.png)
 

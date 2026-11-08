@@ -9,7 +9,7 @@ use super::canvas::Tool;
 use super::icons::{self, Icon};
 use super::{App, Event};
 use crate::core::annotation::AnnotationSet;
-use crate::core::base_directory::BaseDirectoryContext;
+use crate::core::base_directory::{BaseDirectoryContext, BaseDirectoryType};
 use crate::core::engine::NodeSet;
 use crate::core::layout::{Mode, Pane};
 
@@ -32,9 +32,15 @@ pub struct GraphTools {
     pub arrange: bool,
 }
 
-/// The graph's toolbar, along the top of its pane: adding nodes, and drawing annotations; duplicating and deleting;
-/// arranging and framing it.
-pub fn graph_toolbar<A: AnnotationSet>(ui: &mut egui::Ui, tools: GraphTools, tool: Tool, events: &mut Vec<Event>) {
+/// The graph's toolbar, along the top of its pane: adding nodes, and drawing annotations (those not `hidden`, by
+/// name); duplicating and deleting; arranging and framing it.
+pub fn graph_toolbar<A: AnnotationSet>(
+    ui: &mut egui::Ui,
+    tools: GraphTools,
+    tool: Tool,
+    hidden: &std::collections::BTreeSet<String>,
+    events: &mut Vec<Event>,
+) {
     let ctx = ui.ctx().clone();
     egui::Frame::new().inner_margin(egui::Margin::symmetric(6, 4)).show(ui, |ui| {
         ui.horizontal(|ui| {
@@ -47,7 +53,7 @@ pub fn graph_toolbar<A: AnnotationSet>(ui: &mut egui::Ui, tools: GraphTools, too
                 perform(Action::AddNode, Some(add.rect.left_bottom()));
             }
             // A tool for drawing each type of annotation.
-            for (index, info) in A::TYPES.iter().enumerate() {
+            for (index, info) in A::TYPES.iter().enumerate().filter(|(_, info)| !hidden.contains(info.name)) {
                 let tip = format!("{}: {}", info.name, info.description);
                 let paint = |painter: &egui::Painter, rect: Rect, _: egui::Color32, _: bool| {
                     A::paint_icon(index, painter, rect)
@@ -154,7 +160,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
                 }
                 MenuEntry::Action(action) => self.menu_item(ui, *action, chosen),
                 MenuEntry::DrawTools => {
-                    for index in 0..A::TYPES.len() {
+                    for index in (0..A::TYPES.len()).filter(|&i| !self.hidden.annotations.contains(A::TYPES[i].name)) {
                         self.menu_item(ui, Action::DrawTool(index), chosen);
                     }
                 }
@@ -293,7 +299,11 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             let button = tool_button(ui, Icon::Settings, tip, !recording, false);
             let chosen = self.base_directories.chosen();
             egui::Popup::menu(&button).show(|ui| {
-                for (index, kind) in types.iter().enumerate() {
+                // Those hidden in Settings aren't offered, unless one's in use.
+                let offered = |&(index, kind): &(usize, &BaseDirectoryType)| {
+                    chosen == Some(index) || !self.hidden.base_directories.contains(kind.name)
+                };
+                for (index, kind) in types.iter().enumerate().filter(offered) {
                     let item = egui::Button::new((check(chosen == Some(index)), kind.name));
                     if ui.add(item).on_hover_text(kind.description).clicked() {
                         self.base_directories.choose(index);

@@ -1,24 +1,33 @@
-//! The app's preferences (Settings…), kept between sessions as the recent files are: stopping recording and acquisition
-//! when no one's been using the app for a while, and which node types can be added to a graph.
+//! The app's preferences (Settings…), kept between sessions with the recent files: stopping recording and acquisition
+//! when no one's been using the app for a while; which node, annotation and base directory types are offered; and how
+//! many recent files are kept.
 //!
-//! Unattended stopping is the GUI's: it notes when there was last input (`App::last_input`), warns in the last minutes
-//! before a stop (any input carries on), stops, and says it did. Recording stops no later than acquisition, as stopping
+//! Auto stop is the GUI's: it notes when there was last input (`App::last_input`), warns in the last minutes before a
+//! stop (any input carries on), stops, and says it did. Recording stops no later than acquisition, as stopping
 //! acquisition stops it too.
+//!
+//! What's offered applies from the next start (`App::hidden`): it's only what can be added, or chosen, so nothing
+//! already in a graph, or in use, changes under anyone.
 
 use std::collections::BTreeSet;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use eframe::egui::{self, RichText};
 use serde::{Deserialize, Serialize};
 
 use super::dialog;
+use crate::core::annotation::AnnotationInfo;
+use crate::core::base_directory::BaseDirectoryType;
 use crate::core::engine::{Category, NodeInfo};
 use crate::core::theme::Colours;
 
 /// How long before a stop it's warned of: five minutes, or half the limit, if that's shorter.
 const WARNING: Duration = Duration::from_secs(5 * 60);
-/// The longest a limit can be, in minutes: a day.
-const LONGEST: u32 = 24 * 60;
+/// The longest a limit can be, in hours: a day.
+const LONGEST_HOURS: u32 = 24;
+/// The most recent files that can be kept.
+pub const MOST_RECENT_FILES: usize = 50;
 
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -27,8 +36,10 @@ pub struct Preferences {
     pub stop_recording: IdleLimit,
     /// Stop acquisition (the graph running) after this long without input.
     pub stop_acquisition: IdleLimit,
-    /// Node types that can't be added to a graph, by name (see `NodeInfo::name`). From the next start.
-    pub hidden_types: BTreeSet<String>,
+    /// What isn't offered, from the next start.
+    pub hidden: Hidden,
+    /// How many recent files are kept (up to `MOST_RECENT_FILES`).
+    pub recent_files: usize,
 }
 
 impl Default for Preferences {
@@ -36,9 +47,20 @@ impl Default for Preferences {
         Preferences {
             stop_recording: IdleLimit { on: true, minutes: 60 },
             stop_acquisition: IdleLimit { on: true, minutes: 120 },
-            hidden_types: BTreeSet::new(),
+            hidden: Hidden::default(),
+            recent_files: 10,
         }
     }
+}
+
+/// The types that aren't offered, by name: node types aren't in the add-node menu, annotation types aren't among the
+/// drawing tools, and base directory types can't be chosen (unless one's in use).
+#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Hidden {
+    pub nodes: BTreeSet<String>,
+    pub annotations: BTreeSet<String>,
+    pub base_directories: BTreeSet<String>,
 }
 
 /// A limit on how long something carries on without input. Its time's kept while it's off, for when it's on again.
@@ -99,6 +121,26 @@ impl Preferences {
             false => self.stop_recording.minutes,
         }
     }
+
+    /// How many recent files are kept, within what can be.
+    pub fn recent_files(&self) -> usize {
+        self.recent_files.min(MOST_RECENT_FILES)
+    }
+}
+
+/// `minutes`, as it's shown: "45 min", "2 h", "1 h 30 min".
+pub fn minutes_text(minutes: u32) -> String {
+    match (minutes / 60, minutes % 60) {
+        (0, m) => format!("{m} min"),
+        (h, 0) => format!("{h} h"),
+        (h, m) => format!("{h} h {m} min"),
+    }
+}
+
+/// `left`, as a countdown: "4:59".
+pub fn countdown(left: Duration) -> String {
+    let seconds = left.as_secs();
+    format!("{}:{:02}", seconds / 60, seconds % 60)
 }
 
 /// Whether `event` is someone using the app: the mouse or keyboard.
@@ -119,142 +161,207 @@ pub fn is_input(event: &egui::Event) -> bool {
     )
 }
 
-/// `minutes`, as it's shown: "45 min", "2 h", "1 h 30 min".
-pub fn minutes_text(minutes: u32) -> String {
-    match (minutes / 60, minutes % 60) {
-        (0, m) => format!("{m} min"),
-        (h, 0) => format!("{h} h"),
-        (h, m) => format!("{h} h {m} min"),
-    }
+/// The types the program has, to offer or not.
+pub struct Types<'a> {
+    pub nodes: &'a [NodeInfo],
+    pub annotations: &'a [AnnotationInfo],
+    pub base_directories: &'a [BaseDirectoryType],
 }
 
-/// Minutes, from what's typed: "90", "90 min", "2h", "1 h 30 min", "1.5h", "1:30".
-pub fn parse_minutes(text: &str) -> Option<f64> {
-    let text = text.trim().to_lowercase();
-    if let Some((h, m)) = text.split_once(':') {
-        return Some(h.trim().parse::<f64>().ok()? * 60.0 + m.trim().parse::<f64>().ok()?);
-    }
-    let mut total = 0.0;
-    let mut rest = text.as_str();
-    let mut any = false;
-    while !rest.is_empty() {
-        rest = rest.trim_start();
-        let number_end = rest.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(rest.len());
-        let number: f64 = rest[..number_end].parse().ok()?;
-        rest = rest[number_end..].trim_start();
-        let unit_end = rest.find(|c: char| !c.is_alphabetic()).unwrap_or(rest.len());
-        total += match &rest[..unit_end] {
-            "h" | "hr" | "hrs" | "hour" | "hours" => number * 60.0,
-            "" | "m" | "min" | "mins" | "minute" | "minutes" => number,
-            _ => return None,
-        };
-        rest = &rest[unit_end..];
-        any = true;
-    }
-    any.then_some(total)
+/// A part of the Settings window, chosen on its left.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Section {
+    #[default]
+    AutoStop,
+    Nodes,
+    Annotations,
+    BaseDirectories,
+    RecentFiles,
 }
 
-/// `left`, as a countdown: "4:59".
-pub fn countdown(left: Duration) -> String {
-    let seconds = left.as_secs();
-    format!("{}:{:02}", seconds / 60, seconds % 60)
-}
+impl Section {
+    const ALL: [Section; 5] =
+        [Section::AutoStop, Section::Nodes, Section::Annotations, Section::BaseDirectories, Section::RecentFiles];
 
-/// The Settings window, editing `preferences` as it goes. `hidden_at_start` are the node types hidden since the app
-/// started (from `types`), to say a restart's needed when they're changed. Returns whether it's still open.
-pub fn show(
-    ctx: &egui::Context,
-    preferences: &mut Preferences,
-    types: &[NodeInfo],
-    hidden_at_start: &BTreeSet<String>,
-    colours: &Colours,
-) -> bool {
-    let mut close = false;
-    let body = |ui: &mut egui::Ui| {
-        ui.label(RichText::new("When no one's using ephys-rs").strong());
-        egui::Grid::new("unattended").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-            let acquisition_on = preferences.stop_acquisition.on;
-            let acquisition = preferences.stop_acquisition.minutes;
-            let most = if acquisition_on { acquisition } else { LONGEST };
-            limit_row(ui, "Stop recording", &mut preferences.stop_recording, most);
-            ui.end_row();
-            limit_row(ui, "Stop acquisition", &mut preferences.stop_acquisition, LONGEST);
-            ui.end_row();
-        });
-        // Acquisition's limit may have come down past recording's.
-        if preferences.stop_acquisition.on {
-            preferences.stop_recording.minutes = preferences.recording_minutes();
+    fn name(self) -> &'static str {
+        match self {
+            Section::AutoStop => "Auto stop",
+            Section::Nodes => "Nodes",
+            Section::Annotations => "Annotations",
+            Section::BaseDirectories => "Base directories",
+            Section::RecentFiles => "Recent files",
         }
-        ui.label(
-            RichText::new(
-                "With no mouse or keyboard input in ephys-rs for that long. A warning shows a few minutes before, and \
-                 any input carries on. Recording stops no later than acquisition.",
-            )
-            .small()
-            .color(colours.text_secondary),
-        );
+    }
+}
 
-        ui.add_space(8.0);
-        ui.separator();
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("Node types").strong());
-            let all = preferences.hidden_types.is_empty();
-            if ui.add_enabled(!all, egui::Button::new("Allow all").small()).clicked() {
-                preferences.hidden_types.clear();
-            }
-        });
-        ui.label(
-            RichText::new(
-                "Which can be added to a graph. Nodes already in a graph stay as they are. Changes apply when \
-                 ephys-rs next starts.",
-            )
-            .small()
-            .color(colours.text_secondary),
-        );
-        egui::ScrollArea::vertical().max_height(260.0).auto_shrink([false, true]).show(ui, |ui| {
-            for category in Category::ALL {
-                let in_category: Vec<&NodeInfo> = types.iter().filter(|t| t.category == category).collect();
-                if in_category.is_empty() {
-                    continue;
-                }
-                ui.label(RichText::new(category.name()).small().weak());
-                ui.horizontal_wrapped(|ui| {
-                    for info in in_category {
-                        let mut on = !preferences.hidden_types.contains(info.name);
-                        if ui.checkbox(&mut on, info.name).on_hover_text(info.description).changed() {
-                            match on {
-                                true => preferences.hidden_types.remove(info.name),
-                                false => preferences.hidden_types.insert(info.name.to_string()),
-                            };
+/// The Settings window, while it's open: which section's shown.
+#[derive(Default)]
+pub struct SettingsWindow {
+    pub section: Section,
+}
+
+/// How tall the sections are, so the window doesn't change size between them: what's longer scrolls.
+const SECTION_HEIGHT: f32 = 340.0;
+
+impl SettingsWindow {
+    /// Shows it, editing `preferences` (and `recent`, the recent files) as it goes. `hidden_at_start` is what's been
+    /// hidden since the app started (of `types`), to say a restart's needed when that's changed. Returns whether it's
+    /// still open.
+    pub fn show(
+        &mut self,
+        ctx: &egui::Context,
+        preferences: &mut Preferences,
+        recent: &mut Vec<PathBuf>,
+        types: &Types,
+        hidden_at_start: &Hidden,
+        colours: &Colours,
+    ) -> bool {
+        let mut close = false;
+        let restart = preferences.hidden != *hidden_at_start;
+        let has = |section: Section| match section {
+            Section::Annotations => !types.annotations.is_empty(),
+            Section::BaseDirectories => !types.base_directories.is_empty(),
+            _ => true,
+        };
+        let body = |ui: &mut egui::Ui| {
+            let size = egui::vec2(ui.available_width(), SECTION_HEIGHT);
+            ui.allocate_ui_with_layout(size, egui::Layout::left_to_right(egui::Align::Min), |ui| {
+                ui.set_height(SECTION_HEIGHT);
+                ui.vertical(|ui| {
+                    ui.set_width(130.0);
+                    for section in Section::ALL.into_iter().filter(|s| has(*s)) {
+                        if ui.selectable_label(self.section == section, section.name()).clicked() {
+                            self.section = section;
                         }
                     }
                 });
+                ui.separator();
+                ui.vertical(|ui| {
+                    egui::ScrollArea::vertical().max_height(SECTION_HEIGHT).auto_shrink([false, false]).show(
+                        ui,
+                        |ui| {
+                            self.section_ui(ui, preferences, recent, types, colours);
+                        },
+                    );
+                });
+            });
+        };
+        let footer = |ui: &mut egui::Ui| {
+            if restart {
+                ui.label(
+                    RichText::new("Restart ephys-rs to apply the change to what's offered").color(colours.warning),
+                );
             }
-        });
-        if preferences.hidden_types != *hidden_at_start {
+            close = dialog::at_right(ui, |ui| ui.button("OK").clicked());
+        };
+        let dismissed = dialog::show(ctx, "Settings", 640.0, colours, body, footer);
+        !close && !dismissed
+    }
+
+    fn section_ui(
+        &self,
+        ui: &mut egui::Ui,
+        preferences: &mut Preferences,
+        recent: &mut Vec<PathBuf>,
+        types: &Types,
+        colours: &Colours,
+    ) {
+        let note = |ui: &mut egui::Ui, text: &str| {
+            ui.label(RichText::new(text).small().color(colours.text_secondary));
             ui.add_space(4.0);
-            ui.label(RichText::new("Restart ephys-rs to apply the change to node types.").color(colours.warning));
+        };
+        const OFFERED: &str = "Applies when ephys-rs next starts.";
+        match self.section {
+            Section::AutoStop => {
+                note(
+                    ui,
+                    "Stop when no one's used ephys-rs (the mouse or keyboard, in its window) for a while. A warning \
+                     shows a few minutes before, and any input carries on. Recording stops no later than acquisition.",
+                );
+                egui::Grid::new("auto stop").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+                    let most = match preferences.stop_acquisition.on {
+                        true => preferences.stop_acquisition.minutes,
+                        false => LONGEST_HOURS * 60,
+                    };
+                    limit_row(ui, "Stop recording", &mut preferences.stop_recording, most);
+                    ui.end_row();
+                    limit_row(ui, "Stop acquisition", &mut preferences.stop_acquisition, LONGEST_HOURS * 60);
+                    ui.end_row();
+                });
+                // Acquisition's limit may have come down past recording's.
+                preferences.stop_recording.minutes = preferences.recording_minutes();
+            }
+            Section::Nodes => {
+                note(ui, &format!("Which node types can be added to a graph. Nodes already in one stay. {OFFERED}"));
+                for category in Category::ALL {
+                    let in_category = types.nodes.iter().filter(|t| t.category == category);
+                    let items: Vec<(&str, &str)> = in_category.map(|t| (t.name, t.description)).collect();
+                    if items.is_empty() {
+                        continue;
+                    }
+                    ui.label(RichText::new(category.name()).small().weak());
+                    checklist(ui, &items, &mut preferences.hidden.nodes);
+                    ui.add_space(4.0);
+                }
+            }
+            Section::Annotations => {
+                note(ui, &format!("Which annotations can be drawn on the graph. Those already on it stay. {OFFERED}"));
+                let items: Vec<(&str, &str)> = types.annotations.iter().map(|t| (t.name, t.description)).collect();
+                checklist(ui, &items, &mut preferences.hidden.annotations);
+            }
+            Section::BaseDirectories => {
+                note(
+                    ui,
+                    &format!("Which base directories can be chosen for recordings. The one in use stays. {OFFERED}"),
+                );
+                let items: Vec<(&str, &str)> = types.base_directories.iter().map(|t| (t.name, t.description)).collect();
+                checklist(ui, &items, &mut preferences.hidden.base_directories);
+            }
+            Section::RecentFiles => {
+                note(ui, "The files last opened or saved, in File › Open Recent, and the basic view's start.");
+                ui.horizontal(|ui| {
+                    let label = ui.label("Keep the last");
+                    let count = egui::DragValue::new(&mut preferences.recent_files).range(0..=MOST_RECENT_FILES);
+                    ui.add(count).labelled_by(label.id);
+                    ui.label("files");
+                });
+                recent.truncate(preferences.recent_files());
+                ui.add_space(4.0);
+                let clear = egui::Button::new(format!("Clear the list ({})", recent.len()));
+                if ui.add_enabled(!recent.is_empty(), clear).clicked() {
+                    recent.clear();
+                }
+            }
         }
-    };
-    let footer = |ui: &mut egui::Ui| {
-        close = dialog::at_right(ui, |ui| ui.button("OK").clicked());
-    };
-    let dismissed = dialog::show(ctx, "Settings", 520.0, colours, body, footer);
-    !close && !dismissed
+    }
 }
 
-/// A limit's row: whether it's on, and after how long (at most `most` minutes).
+/// A checkbox a line for each of `items` (its name, and what it is), on unless it's `hidden`.
+fn checklist(ui: &mut egui::Ui, items: &[(&str, &str)], hidden: &mut BTreeSet<String>) {
+    for &(name, description) in items {
+        let mut on = !hidden.contains(name);
+        if ui.checkbox(&mut on, name).on_hover_text(description).changed() {
+            match on {
+                true => hidden.remove(name),
+                false => hidden.insert(name.to_string()),
+            };
+        }
+    }
+}
+
+/// A limit's row: whether it's on, and after how long, in hours and minutes (at most `most` minutes, in all). Minutes
+/// past an hour become hours.
 fn limit_row(ui: &mut egui::Ui, name: &str, limit: &mut IdleLimit, most: u32) {
     ui.checkbox(&mut limit.on, name);
     ui.add_enabled_ui(limit.on, |ui| {
         ui.horizontal(|ui| {
             ui.label("after");
-            let time = egui::DragValue::new(&mut limit.minutes)
-                .range(1..=most.max(1))
-                .speed(1.0)
-                .custom_formatter(|m, _| minutes_text(m as u32))
-                .custom_parser(parse_minutes);
-            ui.add(time).on_hover_text("Drag, or type a time: 90, 2h, 1h 30m, 1:30");
+            let (mut hours, mut minutes) = (limit.minutes / 60, limit.minutes % 60);
+            let h = ui.add(egui::DragValue::new(&mut hours).range(0..=LONGEST_HOURS).suffix(" h"));
+            let m = ui.add(egui::DragValue::new(&mut minutes).range(0..=LONGEST_HOURS * 60).suffix(" min"));
+            if h.changed() || m.changed() {
+                limit.minutes = (hours * 60 + minutes).clamp(1, most.max(1));
+            }
             ui.label("without input");
         });
     });
@@ -307,41 +414,76 @@ mod tests {
     }
 
     #[test]
-    fn times_are_shown_and_typed_in_hours_and_minutes() {
+    fn times_are_shown_in_hours_and_minutes() {
         assert_eq!([45, 60, 90, 120].map(minutes_text), ["45 min", "1 h", "1 h 30 min", "2 h"]);
-        for (typed, m) in [("90", 90.0), ("90 min", 90.0), ("2h", 120.0), ("1 h 30 min", 90.0), ("1.5h", 90.0)] {
-            assert_eq!(parse_minutes(typed), Some(m), "{typed}");
-        }
-        assert_eq!(parse_minutes("1:30"), Some(90.0));
-        assert_eq!(parse_minutes(&minutes_text(90)), Some(90.0), "what's shown can be typed back");
-        assert_eq!(parse_minutes("soon"), None);
-        assert_eq!(parse_minutes(""), None);
         assert_eq!(countdown(Duration::from_secs(299)), "4:59");
+    }
+
+    /// Typed in, minutes past an hour become hours; and recording's limit stays within `most`.
+    #[test]
+    fn minutes_past_an_hour_become_hours() {
+        use egui_kittest::kittest::Queryable as _;
+        let mut harness = egui_kittest::Harness::builder().with_size([500.0, 120.0]).build_ui_state(
+            |ui, p: &mut Preferences| {
+                egui::Grid::new("limits").show(ui, |ui| {
+                    limit_row(ui, "Stop recording", &mut p.stop_recording, 150);
+                    ui.end_row();
+                });
+            },
+            Preferences::default(),
+        );
+        let type_minutes = |harness: &mut egui_kittest::Harness<Preferences>, from: &str, typed: &str| {
+            harness.run();
+            harness.get_by_value(from).click();
+            harness.run();
+            harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+            harness.event(egui::Event::Text(typed.into()));
+            harness.key_press(egui::Key::Enter);
+            harness.run();
+        };
+        type_minutes(&mut harness, "0 min", "75");
+        assert_eq!(harness.state().stop_recording.minutes, 135, "1 h and 75 min");
+        assert!(harness.query_by_value("2 h").is_some() && harness.query_by_value("15 min").is_some());
+        type_minutes(&mut harness, "15 min", "59");
+        assert_eq!(harness.state().stop_recording.minutes, 150, "at most what it can be");
     }
 
     /// See tests/snapshots/.
     #[test]
     fn the_settings_window() {
-        use crate::Nodes;
+        use crate::core::annotation::AnnotationSet;
         use crate::core::engine::NodeSet;
         use crate::standard_components::themes::THEMES;
-        let mut preferences = Preferences::default();
-        preferences.hidden_types.insert("Spectrum".into());
-        let mut harness = egui_kittest::Harness::builder().with_size([700.0, 760.0]).wgpu().build_ui_state(
-            |ui, preferences: &mut Preferences| {
-                show(ui.ctx(), preferences, Nodes::TYPES, &BTreeSet::new(), &THEMES[0].colours);
-            },
-            preferences,
-        );
-        THEMES[0].apply(&harness.ctx);
-        harness.run_steps(3);
-        harness.snapshot("settings");
+        use crate::{AnnotationTypes, Nodes};
+        let mut results = egui_kittest::SnapshotResults::new();
+        for section in [Section::AutoStop, Section::Nodes, Section::RecentFiles] {
+            let mut preferences = Preferences::default();
+            preferences.hidden.nodes.insert("Spectrum".into());
+            let mut window = SettingsWindow { section };
+            let types = Types {
+                nodes: Nodes::TYPES,
+                annotations: AnnotationTypes::TYPES,
+                base_directories: crate::components::BASE_DIRECTORIES,
+            };
+            let mut recent = vec![PathBuf::from("/a.json"), PathBuf::from("/b.json")];
+            let mut harness = egui_kittest::Harness::builder().with_size([760.0, 600.0]).wgpu().build_ui_state(
+                move |ui, preferences: &mut Preferences| {
+                    let colours = &THEMES[0].colours;
+                    window.show(ui.ctx(), preferences, &mut recent, &types, &Hidden::default(), colours);
+                },
+                preferences,
+            );
+            THEMES[0].apply(&harness.ctx);
+            harness.run_steps(3);
+            results.add(harness.try_snapshot(format!("settings_{}", section.name().to_lowercase().replace(' ', "_"))));
+        }
     }
 
     #[test]
     fn preferences_from_an_older_version_keep_what_they_have() {
-        let p: Preferences = serde_json::from_str(r#"{"hidden_types": ["Spectrum"]}"#).unwrap();
+        let p: Preferences = serde_json::from_str(r#"{"hidden": {"nodes": ["Spectrum"]}}"#).unwrap();
         assert_eq!(p.stop_recording, Preferences::default().stop_recording);
-        assert!(p.hidden_types.contains("Spectrum"));
+        assert_eq!(p.recent_files, 10);
+        assert!(p.hidden.nodes.contains("Spectrum") && p.hidden.annotations.is_empty());
     }
 }

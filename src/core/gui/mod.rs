@@ -102,7 +102,7 @@ pub fn run<C: Components>(path: Option<PathBuf>) -> eframe::Result {
             app.base_directories = BaseDirectories::new(app.base_directories.types(), saved.as_ref());
             app.recent = cc.storage.and_then(|s| eframe::get_value(s, RECENT_KEY)).unwrap_or_default();
             app.preferences = cc.storage.and_then(|s| eframe::get_value(s, PREFERENCES_KEY)).unwrap_or_default();
-            app.hidden_types = app.preferences.hidden_types.clone();
+            app.hidden = app.preferences.hidden.clone();
             // After the preferences: what a file has comes first.
             if let Some(path) = path {
                 app.open_path(path);
@@ -112,7 +112,9 @@ pub fn run<C: Components>(path: Option<PathBuf>) -> eframe::Result {
             #[cfg(target_os = "macos")]
             {
                 let checkable = |a| app.checked(a).is_some();
-                app.mac_menu = mac_menu::MacMenu::install(&cc.egui_ctx, &checkable, C::Annotations::TYPES, C::THEMES);
+                let hidden = &app.hidden.annotations;
+                app.mac_menu =
+                    mac_menu::MacMenu::install(&cc.egui_ctx, &checkable, C::Annotations::TYPES, hidden, C::THEMES);
             }
             Ok(Box::new(app))
         }),
@@ -133,8 +135,6 @@ const RECENT_KEY: &str = "recent files";
 const VERSIONS_KEY: &str = "versions";
 /// Where the app's preferences (Settings…) are kept.
 const PREFERENCES_KEY: &str = "preferences";
-/// How many recent files are kept.
-const RECENT_FILES: usize = 10;
 
 /// What's in a file: its graph and annotations.
 type Saved<N, A> = (Arc<Graph<N>>, Arc<Annotations<A>>);
@@ -236,10 +236,10 @@ pub struct App<N: NodeSet, A: AnnotationSet> {
     recent: Vec<PathBuf>,
     /// The app's preferences (Settings…), kept with them.
     preferences: preferences::Preferences,
-    /// The node types hidden since the app started: those the add-node menu leaves out, till it starts again.
-    hidden_types: std::collections::BTreeSet<String>,
-    /// Whether the Settings window is open.
-    settings_open: bool,
+    /// What's been hidden since the app started (see `preferences::Hidden`): not offered, till it starts again.
+    hidden: preferences::Hidden,
+    /// The Settings window, while it's open.
+    settings: Option<preferences::SettingsWindow>,
     /// When there was last mouse or keyboard input (egui's time, in seconds), for stopping what's unattended (see
     /// `preferences`).
     last_input: f64,
@@ -312,8 +312,8 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             saved_base_directory: None,
             recent: Vec::new(),
             preferences: Default::default(),
-            hidden_types: Default::default(),
-            settings_open: false,
+            hidden: Default::default(),
+            settings: None,
             last_input: 0.0,
             stopped_unattended: Vec::new(),
             closing: false,
@@ -405,7 +405,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         let path = std::path::absolute(path).unwrap_or_else(|_| path.to_owned());
         self.recent.retain(|recent| *recent != path);
         self.recent.insert(0, path);
-        self.recent.truncate(RECENT_FILES);
+        self.recent.truncate(self.preferences.recent_files());
     }
 
     fn file_name(&self) -> String {
@@ -703,11 +703,16 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
 
     /// The Settings window, while it's open.
     fn settings_window(&mut self, ctx: &egui::Context) {
-        if !self.settings_open {
-            return;
-        }
         let colours = self.colours();
-        self.settings_open = preferences::show(ctx, &mut self.preferences, N::TYPES, &self.hidden_types, colours);
+        let Some(window) = &mut self.settings else { return };
+        let types = preferences::Types {
+            nodes: N::TYPES,
+            annotations: A::TYPES,
+            base_directories: self.base_directories.types(),
+        };
+        if !window.show(ctx, &mut self.preferences, &mut self.recent, &types, &self.hidden, colours) {
+            self.settings = None;
+        }
     }
 
     /// Has the nodes prepare to record (see `Node::prepare_to_record`), on a thread of their own: once they're
@@ -1108,7 +1113,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
             }
             Action::ToggleDevTools => self.layout.toggle_dev_tools(),
             Action::About => self.about = Some(about::About::default()),
-            Action::Settings => self.settings_open = true,
+            Action::Settings => self.settings = Some(Default::default()),
             Action::Source => ctx.open_url(egui::OpenUrl::new_tab(self.source)),
             Action::Play => {
                 if self.runner.is_some() {
@@ -1405,7 +1410,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
 
     fn create_menu(&mut self, ctx: &egui::Context, resolved: &Resolved<N::Edges>) {
         let Some(menu) = &mut self.menu else { return };
-        let (choice, keep) = menu.show(ctx, &self.graph, resolved, &self.hidden_types);
+        let (choice, keep) = menu.show(ctx, &self.graph, resolved, &self.hidden.nodes);
         let (scene, from) = (menu.scene, menu.from);
         if !keep {
             self.menu = None;
@@ -1527,6 +1532,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         let offered = self.offered();
         egui::CentralPanel::default().frame(background).show(ui, |ui| {
             let mut panes = Panes {
+                hidden_annotations: &self.hidden.annotations,
                 graph: &mut self.graph,
                 annotations: &mut self.annotations,
                 resolved: &resolved,
@@ -2343,34 +2349,35 @@ mod tests {
         std::fs::create_dir_all(&directory).unwrap();
         let path = |i: usize| directory.join(format!("{i}.json"));
         harness.state_mut().recent.clear();
-        for i in 0..RECENT_FILES + 2 {
+        let kept = preferences::Preferences::default().recent_files;
+        for i in 0..kept + 2 {
             assert!(harness.state_mut().save_to(&context, path(i)));
         }
-        assert_eq!(harness.state().recent.len(), RECENT_FILES, "the oldest go");
-        assert_eq!(harness.state().recent[0], path(RECENT_FILES + 1), "latest first");
+        assert_eq!(harness.state().recent.len(), kept, "the oldest go");
+        assert_eq!(harness.state().recent[0], path(kept + 1), "latest first");
 
         // Opening one moves it to the top, without listing it twice.
         harness.state_mut().open_recent(&context, 3);
-        assert_eq!(harness.state().path, Some(path(RECENT_FILES - 2)));
-        assert_eq!(harness.state().recent[0], path(RECENT_FILES - 2));
-        assert_eq!(harness.state().recent.len(), RECENT_FILES);
+        assert_eq!(harness.state().path, Some(path(kept - 2)));
+        assert_eq!(harness.state().recent[0], path(kept - 2));
+        assert_eq!(harness.state().recent.len(), kept);
 
         // One that's gone comes off the list, and what's open stays open.
-        std::fs::remove_file(path(RECENT_FILES + 1)).unwrap();
+        std::fs::remove_file(path(kept + 1)).unwrap();
         harness.state_mut().open_recent(&context, 1);
-        assert_eq!(harness.state().recent.len(), RECENT_FILES - 1);
-        assert!(!harness.state().recent.contains(&path(RECENT_FILES + 1)));
-        assert_eq!(harness.state().path, Some(path(RECENT_FILES - 2)));
+        assert_eq!(harness.state().recent.len(), kept - 1);
+        assert!(!harness.state().recent.contains(&path(kept + 1)));
+        assert_eq!(harness.state().path, Some(path(kept - 2)));
 
         // In the File menu.
         harness.get_by_label("File").click();
         harness.run_steps(2);
         harness.get_by_label("Open Recent").hover();
         harness.run_steps(3);
-        let name = crate::core::gui::actions::recent_name(&path(RECENT_FILES));
+        let name = crate::core::gui::actions::recent_name(&path(kept));
         harness.get_by_label(&name).click();
         harness.run_steps(3);
-        assert_eq!(harness.state().path, Some(path(RECENT_FILES)));
+        assert_eq!(harness.state().path, Some(path(kept)));
         std::fs::remove_dir_all(&directory).unwrap();
     }
 
@@ -2935,11 +2942,33 @@ mod tests {
         harness.state_mut().perform(&ctx, Action::Play);
     }
 
+    /// Annotation types hidden in Settings aren't among the drawing tools, from when the app starts; and only so many
+    /// recent files are kept, as Settings says.
+    #[test]
+    fn hidden_annotations_are_not_drawing_tools_and_recent_files_are_kept_as_set() {
+        use crate::core::annotation::AnnotationSet;
+        let mut harness = harness();
+        let name = AnnotationTypes::TYPES[0].name;
+        let tool = |harness: &Harness<TestApp>| harness.query_by_label_contains(&format!("{name}: ")).is_some();
+        assert!(tool(&harness));
+        harness.state_mut().hidden.annotations.insert(name.into());
+        harness.run_steps(2);
+        assert!(!tool(&harness));
+
+        let app = harness.state_mut();
+        app.preferences.recent_files = 3;
+        for i in 0..5 {
+            app.remember(Path::new(&format!("/recent-{i}.json")));
+        }
+        assert_eq!(app.recent.len(), 3);
+        assert_eq!(app.recent[0], PathBuf::from("/recent-4.json"));
+    }
+
     /// Node types hidden in Settings aren't offered for adding to a graph, from when the app starts.
     #[test]
     fn hidden_node_types_are_not_offered() {
         let mut harness = harness();
-        harness.state_mut().hidden_types.insert("Spike Detector".into());
+        harness.state_mut().hidden.nodes.insert("Spike Detector".into());
         let ctx = harness.ctx.clone();
         harness.state_mut().perform(&ctx, Action::AddNode);
         harness.run_steps(2);
