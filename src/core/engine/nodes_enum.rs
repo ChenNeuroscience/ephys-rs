@@ -82,6 +82,34 @@ pub fn is_state<S: 'static>() -> bool {
 ///
 /// where `Edges` was declared with `edge_types!`. Saved graphs name each node by its variant, so renaming a
 /// variant breaks existing files.
+///
+/// That makes the enum, a variant holding a node of each type, and `NodesEnum` for it, each of whose methods is a
+/// `match` with an arm for each variant, handing on to that type's `Node`:
+///
+/// ```ignore
+/// #[derive(Clone, PartialEq, Serialize, Deserialize)]
+/// #[serde(tag = "type", content = "settings")]
+/// pub enum Nodes {
+///     Gain(gain::Gain),
+///     Writer(writer::Writer),
+/// }
+///
+/// impl NodesEnum for Nodes {
+///     type Edges = Edges;
+///     const TYPES: &'static [NodeInfo] = &[<gain::Gain as Node<Edges>>::INFO, <writer::Writer as Node<Edges>>::INFO];
+///
+///     fn process(&self, pass: &mut Pass<Edges>, state: Option<&mut (dyn Any + Send)>) {
+///         match self {
+///             Nodes::Gain(n) => Node::process(n, pass, /* its state, as its own type */),
+///             Nodes::Writer(n) => Node::process(n, pass, /* … */),
+///         }
+///     }
+///     // … and so on, for each method
+/// }
+/// ```
+///
+/// So there's no dynamic dispatch: each call is a branch on which variant it is, then a call to the type's own method
+/// (see `NodesEnum`).
 #[macro_export]
 macro_rules! nodes_enum {
     (edges: $edges:ty; $(#[$meta:meta])* $vis:vis enum $name:ident { $($variant:ident($ty:ty)),+ $(,)? }) => {
