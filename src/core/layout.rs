@@ -299,11 +299,7 @@ impl Layout {
         matches!(self.tree.tiles.get(parent), Some(Tile::Container(Container::Tabs(_)))).then_some(parent)
     }
 
-    /// The groups of tabs showing (with a tab showing), as laid out (see `rects`).
-    pub fn groups(&self) -> Vec<TileId> {
-        self.groups_in(&self.rects())
-    }
-
+    /// The groups of tabs showing (with a tab showing), as laid out (`rects`).
     fn groups_in(&self, rects: &HashMap<TileId, Rect>) -> Vec<TileId> {
         let tiles = &self.tree.tiles;
         let mut groups: Vec<TileId> = rects
