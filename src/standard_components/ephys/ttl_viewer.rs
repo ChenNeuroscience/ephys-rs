@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::engine::{Category, EdgeType, Input, Node, NodeInfo, Output, Pass, PassState, UiContext};
 use crate::standard_components::ephys::Events;
+use crate::standard_components::plots;
 use crate::standard_components::pool::Pool;
-use crate::standard_components::preview;
 use crate::standard_components::widgets::{TIME_AXIS_HEIGHT, require_input, time_axis_ui};
 use crate::{Buffer, DataStream, Edges, Kind};
 
@@ -189,19 +189,19 @@ impl Node<Edges> for TtlViewer {
             context.node_toolbar(ui);
         });
         let Some(DataStream::Events(stream)) = context.inputs[0] else {
-            return preview::unconnected(ui, context.theme, "Connect events to view them");
+            return plots::unconnected(ui, context.theme, "Connect events to view them");
         };
         let pool = context.shared::<Pool<LinesDisplay>>();
         let Some(display) = pool.and_then(Pool::newest).filter(|d| d.lines > 0) else {
             let message = format!("{} · press Play to see them", stream.summary());
-            return preview::unconnected(ui, context.theme, &message);
+            return plots::unconnected(ui, context.theme, &message);
         };
         let theme = context.theme;
         let area = ui.available_rect_before_wrap();
         ui.painter().rect_filled(area, 2.0, theme.surface_sunken);
         let row = self.line_height.clamp(12.0, 200.0);
         egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| Self::lines_ui(ui, &display, row, theme));
-        preview::repaint_with_data(ui, context.running);
+        plots::repaint_with_data(ui, context.running);
     }
 }
 

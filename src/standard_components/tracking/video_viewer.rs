@@ -6,8 +6,8 @@ use super::tracker_view::{FrameView, show_frame};
 use crate::core::engine::{
     Category, DataStreamType, EdgeType, Input, Node, NodeInfo, Output, PASS_DURATION, Pass, UiContext,
 };
+use crate::standard_components::plots;
 use crate::standard_components::pool::{Pool, WINDOW_BUFFERS};
-use crate::standard_components::preview;
 use crate::standard_components::tracking::VideoBuffer;
 use crate::standard_components::tracking::overlay::Overlays;
 use crate::standard_components::widgets::require_input;
@@ -74,13 +74,13 @@ impl Node<Edges> for VideoViewer {
             context.node_toolbar(ui);
         });
         let Some(DataStream::Video(stream)) = context.inputs[0] else {
-            return preview::unconnected(ui, context.theme, "Connect video to view it");
+            return plots::unconnected(ui, context.theme, "Connect video to view it");
         };
         // The last of the latest frames sent.
         let pool = context.shared::<Pool<VideoBuffer>>();
         let Some(frames) = pool.and_then(Pool::newest).filter(|f| f.frames > 0 && f.width > 0) else {
             let message = if context.running { "Waiting for frames…" } else { "Press Play to see the video" };
-            return preview::unconnected(ui, context.theme, message);
+            return plots::unconnected(ui, context.theme, message);
         };
         let last = frames.frames - 1;
         let frame =
@@ -100,6 +100,6 @@ impl Node<Edges> for VideoViewer {
             FontId::proportional(11.0),
             Color32::WHITE,
         );
-        preview::repaint_with_data(ui, context.running);
+        plots::repaint_with_data(ui, context.running);
     }
 }

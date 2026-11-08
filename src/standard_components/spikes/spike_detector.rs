@@ -424,7 +424,7 @@ mod tests {
     fn noise(channels: u32, samples: usize, seed: u64) -> Vec<Vec<f32>> {
         (0..channels as u64)
             .map(|c| {
-                (0..samples).map(|s| 10.0 * crate::standard_components::preview::noise(seed + c, s as i64)).collect()
+                (0..samples).map(|s| 10.0 * crate::standard_components::plots::noise(seed + c, s as i64)).collect()
             })
             .collect()
     }

@@ -10,8 +10,8 @@ use eframe::egui::{self, RichText};
 use serde::{Deserialize, Serialize};
 
 use crate::core::engine::{Category, Input, Node, NodeInfo, Output, Pass, PassState, PoolStatus, Shared, UiContext};
+use crate::standard_components::plots;
 use crate::standard_components::pool::Pool;
-use crate::standard_components::preview;
 use crate::standard_components::widgets::require_input;
 use crate::{Buffer, DataStream, Edges, Kind};
 
@@ -123,7 +123,7 @@ impl Node<Edges> for LogViewer {
         });
         if entries.is_empty() {
             let message = if context.running { "No log lines yet" } else { "Press Play to see the log" };
-            return preview::unconnected(ui, context.theme, message);
+            return plots::unconnected(ui, context.theme, message);
         }
         let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
         let scroll = egui::ScrollArea::both().auto_shrink(false).stick_to_bottom(true);
@@ -136,7 +136,7 @@ impl Node<Edges> for LogViewer {
                 });
             }
         });
-        preview::repaint_with_data(ui, context.running);
+        plots::repaint_with_data(ui, context.running);
     }
 }
 

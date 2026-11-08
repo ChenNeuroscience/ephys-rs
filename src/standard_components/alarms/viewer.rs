@@ -30,8 +30,8 @@ use crate::core::engine::{
 };
 use crate::core::gui::widgets::Icon;
 use crate::core::theme::Colours;
+use crate::standard_components::plots;
 use crate::standard_components::pool::Pool;
-use crate::standard_components::preview;
 use crate::standard_components::widgets::{mark_mixed, open_settings_button, require_input};
 use crate::standard_components::widgets::{power, small_toggle};
 use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
@@ -281,7 +281,7 @@ impl Node<Edges> for AlarmViewer {
             (context.inputs[0], context.controls[ALARMS].as_ref())
         else {
             ui.horizontal(|ui| context.node_toolbar(ui));
-            return preview::unconnected(ui, context.theme, "Connect an Alarm Processor's alarms and its setting");
+            return plots::unconnected(ui, context.theme, "Connect an Alarm Processor's alarms and its setting");
         };
         let mut alarms = alarms.clone();
         let (locked, theme) = (context.locked, context.theme);
@@ -309,7 +309,7 @@ impl Node<Edges> for AlarmViewer {
             }
         });
         context.controls[ALARMS] = Some(Setting::Alarms(alarms));
-        preview::repaint_with_data(ui, context.running);
+        plots::repaint_with_data(ui, context.running);
     }
 }
 

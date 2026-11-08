@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::engine::{Category, Control, EdgeType, Input, Node, NodeInfo, Output, Pass, UiContext};
 use crate::standard_components::auto_detect::AutoDetect;
+use crate::standard_components::plots;
 use crate::standard_components::pool::Pool;
-use crate::standard_components::preview;
 use crate::standard_components::spikes::{
     Channels, DEFAULT_RANGE_UV, DEFAULT_THRESHOLD_UV, Gains, Polarity, Spikes, Thresholds, range_step, threshold_step,
 };
@@ -264,7 +264,7 @@ impl Node<Edges> for SpikeViewer {
     fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
         let locked = context.locked;
         let Some(DataStream::Spikes(stream)) = context.inputs[0] else {
-            return preview::unconnected(ui, context.theme, "Connect spikes to view them");
+            return plots::unconnected(ui, context.theme, "Connect spikes to view them");
         };
         let pool = context.shared::<Pool<RecentDisplay>>();
         let reading = pool.and_then(Pool::newest).filter(|d| d.stream.is_some());
@@ -294,7 +294,7 @@ impl Node<Edges> for SpikeViewer {
         if let Some(gains) = gains {
             context.controls[GAINS_CONTROL] = Some(Setting::Gains(gains));
         }
-        preview::repaint_with_data(ui, context.running);
+        plots::repaint_with_data(ui, context.running);
     }
 }
 

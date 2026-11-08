@@ -195,7 +195,7 @@ fn u32_at(buf: &[u8], offset: usize) -> u32 {
 pub fn serve_test_board() -> String {
     use std::net::TcpListener;
 
-    use crate::standard_components::preview::{noise, spike_shape};
+    use crate::standard_components::plots::{noise, spike_shape};
 
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let address = listener.local_addr().unwrap().to_string();

@@ -30,8 +30,8 @@ use crate::standard_components::ephys::reference::{
 };
 use crate::standard_components::ephys::spectrum::{Spectra, SpectraBuffer};
 use crate::standard_components::ephys::{ChannelSelection, Continuous, ContinuousBuffer};
+use crate::standard_components::plots;
 use crate::standard_components::pool::Pool;
-use crate::standard_components::preview;
 use crate::standard_components::spikes::{Channels, GainScope, Gains};
 use crate::standard_components::widgets::{
     TIME_AXIS_HEIGHT, inline_block, open_settings_button, require_input, time_axis_ui,
@@ -285,7 +285,7 @@ impl Node<Edges> for LfpViewer {
     fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
         let locked = context.locked;
         let Some(DataStream::Continuous(stream)) = context.inputs[0] else {
-            return preview::unconnected(ui, context.theme, "Connect a continuous data stream to view it");
+            return plots::unconnected(ui, context.theme, "Connect a continuous data stream to view it");
         };
         let mut selection = match &context.controls[SELECTION] {
             Some(Setting::ChannelSelection(s)) => Some(s.clone()),
@@ -307,7 +307,7 @@ impl Node<Edges> for LfpViewer {
 
         let Some(display) = display else {
             let message = format!("{} · press Play to see the traces", stream.summary());
-            return preview::unconnected(ui, context.theme, &message);
+            return plots::unconnected(ui, context.theme, &message);
         };
         let spectra = match (&display.spectra, context.inputs[1]) {
             (Some(buffer), Some(DataStream::Spectra(stream))) => Some((buffer, stream)),
@@ -338,7 +338,7 @@ impl Node<Edges> for LfpViewer {
         if let Some(gains) = gains {
             context.controls[GAINS] = Some(Setting::Gains(gains));
         }
-        preview::repaint_with_data(ui, context.running);
+        plots::repaint_with_data(ui, context.running);
     }
 }
 

@@ -18,8 +18,8 @@ use crate::core::engine::{
     Category, Control, EdgeType, Input, Node, NodeInfo, Output, Pass, PoolStatus, Shared, UiContext,
 };
 use crate::core::theme::Colours;
+use crate::standard_components::plots;
 use crate::standard_components::pool::Pool;
-use crate::standard_components::preview;
 use crate::standard_components::tracking::VideoBuffer;
 use crate::standard_components::tracking::overlay::{self, Drag, Overlay, Overlays, Xform};
 use crate::standard_components::tracking::pipeline::{Blob, row_spans};
@@ -340,7 +340,7 @@ impl TrackerView {
                 (_, Some(State::Problem(problem))) => format!("No video: {problem}"),
                 _ => "Waiting for frames…".to_string(),
             };
-            return preview::unconnected(ui, context.theme, &message);
+            return plots::unconnected(ui, context.theme, &message);
         };
         let detection = match &context.controls[1] {
             Some(Setting::Detection(detection)) => Some(detection.clone()),
@@ -371,7 +371,7 @@ impl TrackerView {
             None => format!("{length:.0} px"),
         };
         path_ui(ui, rect, xf, &mut context.ui_state::<TrackerUi>().path, length, context.theme);
-        preview::repaint_with_data(ui, context.running);
+        plots::repaint_with_data(ui, context.running);
     }
 
     /// The camera's and the detector's settings (through the controls), in sections whose headers say what's
@@ -533,7 +533,7 @@ fn positions_window(context: &UiContext<Edges>) -> [f32; 4] {
 /// Where positions are in their window, with the path recorded, looking as they do over video.
 fn positions_ui(ui: &mut egui::Ui, context: &UiContext<Edges>, display: Option<&TrackerDisplay>) {
     let Some(display) = display else {
-        return preview::unconnected(ui, context.theme, "Press Play to see the positions");
+        return plots::unconnected(ui, context.theme, "Press Play to see the positions");
     };
     let [min_x, min_y, max_x, max_y] = positions_window(context);
     let (width, height) = (max_x - min_x, max_y - min_y);
@@ -566,7 +566,7 @@ fn positions_ui(ui: &mut egui::Ui, context: &UiContext<Edges>, display: Option<&
         None => format!("{length:.0} px"),
     };
     path_ui(ui, rect, xf, &mut context.ui_state::<TrackerUi>().path, length, context.theme);
-    preview::repaint_with_data(ui, context.running);
+    plots::repaint_with_data(ui, context.running);
 }
 
 /// What's known of positions without video, which there's nothing to adjust of.
@@ -782,7 +782,7 @@ pub fn show_frame(
     overlays: &Overlays,
     theme: &Colours,
 ) -> (Rect, egui::Response) {
-    let area = preview::plot_area(ui, theme);
+    let area = plots::plot_area(ui, theme);
     let image = egui::vec2(frame.width as f32, frame.height as f32);
     let scale = (area.width() / image.x).min(area.height() / image.y);
     let rect = Rect::from_center_size(area.center(), image * scale);
