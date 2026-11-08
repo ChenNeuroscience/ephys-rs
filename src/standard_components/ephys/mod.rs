@@ -1,10 +1,11 @@
 //! Electrophysiology: continuous voltages and digital events, from an acquisition board, re-referenced,
-//! filtered, scaled and viewed.
+//! filtered, downsampled, scaled and viewed.
 
 pub mod band_pass;
 pub mod board;
 pub mod channel_selector;
 pub mod continuous_gain;
+pub mod downsample;
 pub mod lfp_viewer;
 pub mod reference;
 pub mod spectrum;

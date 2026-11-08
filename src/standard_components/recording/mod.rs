@@ -3,8 +3,9 @@
 //!
 //! A writer's passes only hand their inputs out, in chunks to a thread of its own (`Writing`), which writes them to
 //! disk. So passes never wait on the disk. The chunks are a pool (see `crate::standard_components::pool`), made
-//! before recording and handed back once written, so nothing's allocated; a writer that takes its inputs (see
-//! `BufferUsage::takes`) swaps them into a chunk rather than copying.
+//! before recording and handed back once written, so nothing's allocated. The writers take their inputs (see
+//! `BufferUsage::takes`), swapping them into a chunk rather than copying, so whatever they make of the data to write
+//! (LTX's bytes, say) is made on their thread, not in the passes.
 //!
 //! Where a writer writes is its `Location`: the base directory (see `crate::core::base_directory`), a subdirectory of
 //! it, or a directory of its own.
@@ -435,6 +436,7 @@ mod tests {
 
     #[test]
     fn records_while_recording_and_finishes_the_files() {
+        use crate::standard_components::ephys::downsample::Downsample;
         let dir = std::env::temp_dir().join(format!("ephys-rs-recording-{}", std::process::id()));
         let mut graph = Graph::default();
         let board = add(&mut graph, "Acquisition Board");
@@ -444,9 +446,12 @@ mod tests {
         let detector = add(&mut graph, "Spike Detector");
         let ltx = add(&mut graph, "Write LTX");
         let raw = add(&mut graph, "Write Raw");
+        // The EEG at LTX's 5 kHz.
+        let downsample = graph.add(Nodes::Downsample(Downsample { rate_hz: 5000.0 }), [0.0, 0.0]);
         link(&mut graph, board, 0, detector, 0);
         link(&mut graph, detector, 0, ltx, 0);
-        link(&mut graph, board, 0, ltx, 1);
+        link(&mut graph, board, 0, downsample, 0);
+        link(&mut graph, downsample, 0, ltx, 1);
         link(&mut graph, board, 0, raw, 0);
         link(&mut graph, board, 1, raw, 1);
         // LTX in the base directory, raw in a subdirectory of it.

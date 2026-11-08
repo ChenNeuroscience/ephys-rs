@@ -21,6 +21,7 @@ use ephys_rs::standard_components::alarms::processor::AlarmProcessor;
 use ephys_rs::standard_components::alarms::{AlarmKind, Source};
 use ephys_rs::standard_components::ephys::band_pass::BandPassFilter;
 use ephys_rs::standard_components::ephys::board::{self, node::AcquisitionBoard, opal_kelly::OpalKellyKind};
+use ephys_rs::standard_components::ephys::downsample::Downsample;
 use ephys_rs::standard_components::tracking::camera::{self, node::Camera};
 
 use super::vr_computer::VrComputer;
@@ -168,7 +169,7 @@ fn real_camera() -> camera::Source {
 /// reference channels, and showing the reference), with a Spectrum of it too; the board's digital
 /// inputs → TTL Viewer; Camera → Position Detector → Tracker View (setting the camera's and detector's settings).
 /// Write LTX records the spikes (at their gains), the LFP branch's data as EEG (the channels selected, band-passed,
-/// through a Continuous Gain), the positions (with the detector's settings), the digital inputs and the timing LED, if
+/// downsampled to 5 kHz, through a Continuous Gain), the positions (with the detector's settings), the digital inputs and the timing LED, if
 /// there is one. An Alarm Processor (in the basic view, for its settings) watches the spikes, the LFP branch and the
 /// positions, with the timing LED connected to add an alarm for, for an Alarm Viewer with switches for it. New boards and cameras are real. Recordings go in a directory for each subject, day and trial.
 fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
@@ -237,8 +238,14 @@ fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
     // Recording it all.
     let ltx = change.upsert("Write LTX", Some(gain));
     change.link((gain, Output, 0), (ltx, Input, 0));
-    let continuous_gain = change.upsert("Continuous Gain", Some(lfp));
-    change.link((lfp, Output, 0), (continuous_gain, Input, 0));
+    // The EEG, at LTX's 5 kHz.
+    let downsample = match change.find(|n| matches!(n, Nodes::Downsample(d) if d.rate_hz == 5000.0)) {
+        Some(downsample) => downsample,
+        None => change.add(Nodes::Downsample(Downsample { rate_hz: 5000.0 }), Some(lfp)),
+    };
+    change.link((lfp, Output, 0), (downsample, Input, 0));
+    let continuous_gain = change.upsert("Continuous Gain", Some(downsample));
+    change.link((downsample, Output, 0), (continuous_gain, Input, 0));
     change.link((continuous_gain, Output, 0), (ltx, Input, 1));
     change.link((lfp_viewer, Control, 0), (continuous_gain, Setting, 0));
     change.link((lfp_viewer, Control, 2), (reference, Setting, 0));
@@ -479,7 +486,9 @@ mod tests {
         let lfp =
             graph.iter().find(|(_, e)| matches!(&e.node, Nodes::BandPassFilter(f) if f.high_hz <= 500.0)).unwrap().0;
         assert_eq!(fed, vec![lfp], "only the LFP branch");
-        assert_eq!(feeding(named("Continuous Gain")), lfp, "the EEG written is the LFP branch's, after the selection");
+        let downsample = named("Downsample");
+        assert_eq!(feeding(named("Continuous Gain")), downsample, "the EEG written is at 5 kHz");
+        assert_eq!(feeding(downsample), lfp, "the LFP branch's, after the selection");
         // The alarms watch all but the TTLs, with no timing LED to expect them from.
         let alarm_processor = named("Alarm Processor");
         let inputs = &resolved[&alarm_processor].input_streams;

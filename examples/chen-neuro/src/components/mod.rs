@@ -15,7 +15,7 @@ use ephys_rs::standard_components::alarms::{processor, viewer};
 use ephys_rs::standard_components::annotations::{arrow, group_box, heading, image, markdown, sticky_note};
 use ephys_rs::standard_components::base_directories::A_DIRECTORY;
 use ephys_rs::standard_components::ephys::{
-    band_pass, board, channel_selector, continuous_gain, lfp_viewer, reference, spectrum, ttl_viewer,
+    band_pass, board, channel_selector, continuous_gain, downsample, lfp_viewer, reference, spectrum, ttl_viewer,
 };
 use ephys_rs::standard_components::logs::log_viewer;
 use ephys_rs::standard_components::other::run_command;
@@ -35,6 +35,7 @@ nodes_enum! {
         Reference(reference::Reference),
         ChannelSelector(channel_selector::ChannelSelector),
         BandPassFilter(band_pass::BandPassFilter),
+        Downsample(downsample::Downsample),
         Spectrum(spectrum::Spectrum),
         ContinuousGain(continuous_gain::ContinuousGain),
         SpikeDetector(spike_detector::SpikeDetector),

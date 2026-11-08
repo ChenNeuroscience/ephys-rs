@@ -345,7 +345,7 @@
       {
         "dimension": "Data",
         "from": {
-          "node": 14,
+          "node": 20,
           "port": 0
         },
         "to": {
@@ -473,9 +473,20 @@
           "node": 18,
           "port": 0
         }
+      },
+      {
+        "dimension": "Data",
+        "from": {
+          "node": 14,
+          "port": 0
+        },
+        "to": {
+          "node": 20,
+          "port": 0
+        }
       }
     ],
-    "next_id": 20,
+    "next_id": 21,
     "nodes": {
       "1": {
         "label": "Acquisition Board",
@@ -634,7 +645,7 @@
           "type": "ContinuousGain"
         },
         "pos": [
-          840.0,
+          1120.0,
           528.0
         ]
       },
@@ -870,6 +881,19 @@
         "pos": [
           1960.0,
           752.0
+        ]
+      },
+      "20": {
+        "label": "Downsample",
+        "node": {
+          "settings": {
+            "rate_hz": 5000.0
+          },
+          "type": "Downsample"
+        },
+        "pos": [
+          840.0,
+          528.0
         ]
       }
     }

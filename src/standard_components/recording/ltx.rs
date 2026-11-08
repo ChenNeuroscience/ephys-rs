@@ -14,8 +14,8 @@
 //! duration are filled in at the end. Timestamps count 96 kHz ticks from the start of recording, and multi-byte
 //! values are big-endian. Spikes' samples are -128 to 127: their waveforms should come as int8 values (as floats),
 //! multiplied into them by a Spike Gain, whose gains (connected, read-only, to `gains`) are recorded in the `.set`
-//! file, with the full scale, as Axona's are (`gain_ch_0`..., `ADC_fullscale_mv`). The EEG (its `eeg` input, kept at
-//! 5 kHz) should come as int8 values too, multiplied into them by a Continuous Gain, whose gains (connected, read-only,
+//! file, with the full scale, as Axona's are (`gain_ch_0`..., `ADC_fullscale_mv`). The EEG (its `eeg` input) should
+//! come at 5 kHz (from a Downsample), as int8 values too, multiplied into them by a Continuous Gain, whose gains (connected, read-only,
 //! to `eeg gains`) are recorded likewise, as `EEG_gain_1`... in the `.set` file, and `gain` in each `.egf` file. Which
 //! channel each EEG channel is (from the Channel Selector choosing them, connected to `eeg selection`) is recorded as
 //! `EEG_ch_1`... in the `.set` file, and `chan_name` in each `.egf` file.
@@ -26,7 +26,7 @@
 //! their own, as they are (whatever a reader makes of a key with a space in it, or one that's the same as another header),
 //! except that line breaks are written as spaces, as a header's a line.
 
-use crate::core::engine::TreeShake;
+use crate::core::engine::{BufferUsage, DataStreamsEnum, TreeShake};
 use std::fs::File;
 use std::io::{self, BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -40,15 +40,15 @@ use super::{
     status_ui,
 };
 use crate::core::engine::{
-    Category, Control, DataStreamType, EdgeTypesEnum, Flow, Input, Node, NodeInfo, NodeThread, Output, PASS_DURATION,
-    Pass, PoolStatus, ThreadContext, UiContext,
+    Category, Control, EdgeTypesEnum, Flow, Input, Node, NodeInfo, NodeThread, Output, PASS_DURATION, Pass, PoolStatus,
+    ThreadContext, UiContext,
 };
 use crate::standard_components::ephys::reference::parse_channels;
-use crate::standard_components::ephys::{ChannelSelection, Continuous, Event, Events};
-use crate::standard_components::logs::{LINES_PER_PASS, LogLines};
+use crate::standard_components::ephys::{ChannelSelection, Continuous, Events};
+use crate::standard_components::logs::LogLines;
 use crate::standard_components::pool::{Pool, SharedPool};
 use crate::standard_components::spikes::{Gains, Spikes};
-use crate::standard_components::tracking::{Crop, Detection, PositionSample, Positions};
+use crate::standard_components::tracking::{Crop, Detection, Positions};
 use crate::standard_components::widgets::{require_input, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
 
@@ -57,8 +57,8 @@ use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
 const AFTER_RECORDING: usize = 4;
 
 const TIMEBASE: f64 = 96000.0;
-/// The continuous data's rate, once downsampled.
-const EGF_RATE: u32 = 5000;
+/// The EEG's rate.
+const EGF_RATE: f32 = 5000.0;
 /// Samples stored for each channel of a spike.
 const SPIKE_SAMPLES: usize = 50;
 const SPIKE_CHANNELS: usize = 4;
@@ -93,70 +93,40 @@ struct Streams {
 /// While running: the writer's thread while recording, and its status for the window.
 #[derive(Default)]
 pub struct Recorder {
-    streams: Streams,
     writing: Option<Writing<Chunk>>,
-    /// Continuous samples so far while recording: the EEG keeps every so many (see `egf_step`), carrying on from
-    /// pass to pass.
-    continuous_samples: u64,
     shown: SharedPool<Status>,
 }
 
 impl crate::core::engine::PassState for Recorder {
-    const WHY: &'static str = "The writer's thread while recording, which each pass's copy goes to, in order, \
+    const WHY: &'static str = "The writer's thread while recording, which each pass's data goes to, in order, \
                                so the files are written in order.";
 }
 
-/// A pass's data, copied for the writer's thread (keeping only what's written).
-#[derive(Default)]
+/// A pass's data, for the writer's thread: in buffers like the passes' own, to swap with them. For each input, its
+/// buffer if it's connected, and whether the pass gave it any data.
 pub struct Chunk {
-    /// Each spike's group and peak (a sample of its pass), and their waveforms (as in `SpikesBuffer`).
-    spikes: Vec<(u32, i32)>,
-    waveforms: Vec<f32>,
-    spike_pass_samples: usize,
-    /// The continuous data the EEG keeps (at 5 kHz), channel after channel, `continuous_len` samples each.
-    continuous: Vec<f32>,
-    continuous_len: usize,
-    positions: Vec<PositionSample>,
-    events: Vec<Event>,
-    event_pass_samples: usize,
-    position_events: Vec<Event>,
-    position_event_pass_samples: usize,
-    /// The log lines, one after another, and each one's time and length.
-    log: Vec<u8>,
-    log_lines: Vec<(f64, u32)>,
+    inputs: [Option<Buffer>; INPUTS],
+    given: [bool; INPUTS],
 }
 
+/// Its inputs: spikes, eeg, positions, events, pos ttl and log.
+const INPUTS: usize = 6;
+
 impl Chunk {
-    /// Empty, with room for a pass of `streams`, so it doesn't grow as it's filled.
+    /// Empty, with a buffer for each of `streams`.
     fn new(streams: Streams) -> Self {
-        let spikes = streams.spikes.map(|s| s.buffer(PASS_DURATION));
-        let eeg = streams.continuous.map_or(0, |c| {
-            let kept = egf_step(c.sample_rate).map_or(0, |step| c.buffer(PASS_DURATION).capacity.div_ceil(step));
-            c.channels as usize * kept
-        });
-        Chunk {
-            spikes: Vec::with_capacity(spikes.as_ref().map_or(0, |s| s.spikes.capacity())),
-            waveforms: Vec::with_capacity(spikes.as_ref().map_or(0, |s| s.waveforms.capacity())),
-            continuous: Vec::with_capacity(eeg),
-            positions: Vec::with_capacity(streams.positions.map_or(0, |p| p.buffer(PASS_DURATION).samples.capacity())),
-            events: Vec::with_capacity(streams.events.map_or(0, |e| e.buffer(PASS_DURATION).events.capacity())),
-            position_events: Vec::with_capacity(
-                streams.position_events.map_or(0, |e| e.buffer(PASS_DURATION).events.capacity()),
-            ),
-            log: Vec::with_capacity(streams.log.map_or(0, |l| l.width as usize * LINES_PER_PASS)),
-            log_lines: Vec::with_capacity(streams.log.map_or(0, |_| LINES_PER_PASS)),
-            ..Default::default()
-        }
+        let inputs = streams.inputs().map(|stream| stream.map(|s| s.buffer(PASS_DURATION)));
+        Chunk { inputs, given: [false; INPUTS] }
+    }
+
+    /// Input `index`'s data, if the pass gave it any.
+    fn input(&self, index: usize) -> Option<&Buffer> {
+        self.inputs[index].as_ref().filter(|_| self.given[index])
     }
 
     /// The memory one takes.
     fn bytes(&self) -> usize {
-        self.spikes.capacity() * size_of::<(u32, i32)>()
-            + (self.waveforms.capacity() + self.continuous.capacity()) * size_of::<f32>()
-            + self.positions.capacity() * size_of::<PositionSample>()
-            + (self.events.capacity() + self.position_events.capacity()) * size_of::<Event>()
-            + self.log.capacity()
-            + self.log_lines.capacity() * size_of::<(f64, u32)>()
+        self.inputs.iter().flatten().map(<DataStream as DataStreamsEnum>::bytes).sum()
     }
 
     /// The writer's thread, with a pool of chunks for `streams`, writing to `files`.
@@ -220,9 +190,9 @@ impl Node<Edges> for WriteLtx {
             warnings.push(format!("LTX spikes are in tetrodes: groups of 4, not {}", spikes.group_size));
         }
         if let Some(DataStream::Continuous(continuous)) = inputs[1]
-            && egf_step(continuous.sample_rate).is_none()
+            && continuous.sample_rate != EGF_RATE
         {
-            warnings.push(format!("LTX continuous data is {EGF_RATE} Hz: the input's rate must be a multiple"));
+            warnings.push(format!("LTX's EEG is {EGF_RATE} Hz: downsample it first (with a Downsample)"));
         }
         if inputs[4].is_some() && inputs[2].is_none() {
             warnings.push("Connect the positions too, so the pos ttl's times can be compared with them".into());
@@ -236,8 +206,14 @@ impl Node<Edges> for WriteLtx {
             link: "buffer pool",
             flow: Flow::FromPasses,
             why: super::WHY_A_THREAD,
-            swaps: false,
+            swaps: true,
         }]
+    }
+
+    /// It takes its buffers, swapping them into the chunk for its thread, which makes what it writes of them (the
+    /// plan copies them for it, if something else needs them after it).
+    fn evaluate_buffer_usage(&self, inputs: usize, outputs: usize) -> BufferUsage {
+        BufferUsage { takes: vec![true; inputs], ..BufferUsage::none(inputs, outputs) }
     }
 
     fn thread_pool(&self, _thread: usize, context: &ThreadContext) -> Option<PoolStatus> {
@@ -247,10 +223,6 @@ impl Node<Edges> for WriteLtx {
     fn thread_ui(&self, _thread: usize, ui: &mut egui::Ui, context: &ThreadContext) {
         let pool = context.shared::<Pool<Status>>();
         status_ui(ui, pool.as_deref().and_then(Pool::newest).as_deref(), true, context.theme);
-    }
-
-    fn initial_state(&self, inputs: &[Option<DataStream>]) -> Recorder {
-        Recorder { streams: Streams::of(inputs), ..Default::default() }
     }
 
     /// Opens the files, and starts the thread to write them.
@@ -267,11 +239,10 @@ impl Node<Edges> for WriteLtx {
         Some(Box::new(Chunk::writing(&base, streams, files, after_recording(triggers, AFTER_RECORDING))))
     }
 
-    /// While recording, copies the pass's data for the writer's thread.
+    /// While recording, hands the pass's data to the writer's thread, swapping the buffers it's in for a chunk's.
     fn process(&self, pass: &mut Pass<Edges>, recorder: &mut Recorder) {
         match (pass.recording, &recorder.writing) {
             (true, None) => {
-                recorder.continuous_samples = 0;
                 let writing = pass.take_prepared::<Writing<Chunk>>();
                 recorder.writing = Some(writing.unwrap_or_else(|| Writing::failed("it wasn't prepared to record")));
             }
@@ -281,8 +252,14 @@ impl Node<Edges> for WriteLtx {
         if let Some(writing) = &recorder.writing
             && let Some(mut chunk) = writing.chunk()
         {
-            let step = recorder.streams.continuous.and_then(|c| egf_step(c.sample_rate));
-            copy(pass, &mut chunk, step, &mut recorder.continuous_samples);
+            let Chunk { inputs, given } = &mut chunk;
+            for (index, (buffer, given)) in inputs.iter_mut().zip(given).enumerate() {
+                *given = false;
+                if let (Some(buffer), Some(taken)) = (buffer, pass.take_input(index)) {
+                    std::mem::swap(taken, buffer);
+                    *given = true;
+                }
+            }
             writing.send(chunk);
         }
         let writing = &recorder.writing;
@@ -334,6 +311,18 @@ impl WriteLtx {
 }
 
 impl Streams {
+    /// Each input's, in order.
+    fn inputs(self) -> [Option<DataStream>; INPUTS] {
+        [
+            self.spikes.map(DataStream::Spikes),
+            self.continuous.map(DataStream::Continuous),
+            self.positions.map(DataStream::Positions),
+            self.events.map(DataStream::Events),
+            self.position_events.map(DataStream::Events),
+            self.log.map(DataStream::LogLines),
+        ]
+    }
+
     fn of(inputs: &[Option<DataStream>]) -> Self {
         let events = |index: usize| match inputs.get(index) {
             Some(Some(DataStream::Events(events))) => Some(*events),
@@ -401,67 +390,9 @@ fn axona_gain(gain: f32) -> f32 {
     (FULL_SCALE_UV * gain / 128.0 * 10.0).round() / 10.0
 }
 
-/// Copies a pass's inputs into `chunk`: of the continuous data, only what the EEG keeps, every `step`th sample
-/// (counting from the `continuous_samples` so far).
-fn copy(pass: &Pass<Edges>, chunk: &mut Chunk, step: Option<usize>, continuous_samples: &mut u64) {
-    chunk.spikes.clear();
-    chunk.waveforms.clear();
-    chunk.spike_pass_samples = 0;
-    if let Some(Some(Buffer::Spikes(spikes))) = pass.inputs.first() {
-        chunk.spikes.extend(spikes.spikes.iter().map(|s| (s.group, s.sample)));
-        chunk.waveforms.extend_from_slice(&spikes.waveforms);
-        chunk.spike_pass_samples = spikes.pass_samples;
-    }
-    chunk.continuous.clear();
-    chunk.continuous_len = 0;
-    if let (Some(Some(Buffer::Continuous(continuous))), Some(step)) = (pass.inputs.get(1), step) {
-        let first = keeping_from(*continuous_samples, step);
-        for channel in 0..continuous.channels {
-            chunk.continuous.extend(continuous.channel(channel).iter().skip(first).step_by(step));
-        }
-        chunk.continuous_len = continuous.len.saturating_sub(first).div_ceil(step);
-        *continuous_samples += continuous.len as u64;
-    }
-    chunk.positions.clear();
-    if let Some(Some(Buffer::Positions(positions))) = pass.inputs.get(2) {
-        chunk.positions.extend_from_slice(&positions.samples);
-    }
-    chunk.events.clear();
-    chunk.event_pass_samples = 0;
-    if let Some(Some(Buffer::Events(events))) = pass.inputs.get(3) {
-        chunk.events.extend_from_slice(&events.events);
-        chunk.event_pass_samples = events.pass_samples;
-    }
-    chunk.position_events.clear();
-    chunk.position_event_pass_samples = 0;
-    if let Some(Some(Buffer::Events(events))) = pass.inputs.get(4) {
-        chunk.position_events.extend_from_slice(&events.events);
-        chunk.position_event_pass_samples = events.pass_samples;
-    }
-    chunk.log.clear();
-    chunk.log_lines.clear();
-    if let Some(Some(Buffer::LogLines(log))) = pass.inputs.get(5) {
-        for (time, line) in log.lines() {
-            chunk.log.extend_from_slice(line);
-            chunk.log_lines.push((time, line.len() as u32));
-        }
-    }
-}
-
 /// The Axona format's full scale for a gain of 1, in µV: its `.set` files give each channel's gain `g` for spikes
 /// recorded over ±`FULL_SCALE_UV / g` (as 8-bit samples), and the full scale as `ADC_fullscale_mv`.
 pub const FULL_SCALE_UV: f32 = 1_500_000.0;
-
-/// How many samples to step for each 5 kHz sample, if the rate's a multiple of 5 kHz.
-/// The first of the next samples to keep, keeping every `step`th, with `so_far` before them.
-fn keeping_from(so_far: u64, step: usize) -> usize {
-    (step - (so_far % step as u64) as usize) % step
-}
-
-fn egf_step(rate: f32) -> Option<usize> {
-    let rate = rate.round() as u32;
-    (rate >= EGF_RATE && rate.is_multiple_of(EGF_RATE)).then_some((rate / EGF_RATE) as usize)
-}
 
 /// A value as a signed byte, saturating.
 fn to_i8(value: f32) -> u8 {
@@ -578,7 +509,7 @@ struct LtxFiles {
     set: LtxFile,
     tetrodes: Vec<Tetrode>,
     egf: Vec<Egf>,
-    /// Samples of continuous data so far (for which to keep at 5 kHz), and of the spikes' and events' passes.
+    /// Samples of the spikes' and events' passes so far.
     spike_samples: i64,
     event_samples: u64,
     position_event_samples: u64,
@@ -633,7 +564,7 @@ impl LtxFiles {
         }
 
         let mut egf = Vec::new();
-        if let Some(continuous) = streams.continuous.filter(|c| egf_step(c.sample_rate).is_some()) {
+        if let Some(continuous) = streams.continuous.filter(|c| c.sample_rate == EGF_RATE) {
             if streams.spikes.is_none() {
                 set.header("ADC_fullscale_mv", FULL_SCALE_UV / 1000.0)?;
             }
@@ -775,12 +706,12 @@ fn open_pos(mut f: LtxFile, positions: Positions, detection: Option<&Detection>)
 impl Files<Chunk> for LtxFiles {
     fn write(&mut self, chunk: &Chunk) -> io::Result<u64> {
         let mut bytes = 0;
-        if let Some(spikes) = self.streams.spikes {
+        if let (Some(spikes), Some(Buffer::Spikes(buffer))) = (self.streams.spikes, chunk.input(0)) {
             let (k, samples) = (spikes.group_size as usize, spikes.waveform_samples() as usize);
-            for (i, &(group, sample)) in chunk.spikes.iter().enumerate() {
-                let Some(tetrode) = self.tetrodes.get_mut(group as usize) else { continue };
-                let seconds = (self.spike_samples + sample as i64) as f64 / spikes.sample_rate as f64;
-                let waveform = &chunk.waveforms[i * k * samples..(i + 1) * k * samples];
+            for (i, spike) in buffer.spikes.iter().enumerate() {
+                let Some(tetrode) = self.tetrodes.get_mut(spike.group as usize) else { continue };
+                let seconds = (self.spike_samples + spike.sample as i64) as f64 / spikes.sample_rate as f64;
+                let waveform = &buffer.waveforms[i * k * samples..(i + 1) * k * samples];
                 self.record.clear();
                 for channel in 0..SPIKE_CHANNELS {
                     self.record.extend_from_slice(&ticks(seconds));
@@ -794,13 +725,15 @@ impl Files<Chunk> for LtxFiles {
                 tetrode.spikes += 1;
                 bytes += self.record.len() as u64;
             }
-            self.spike_samples += chunk.spike_pass_samples as i64;
+            self.spike_samples += buffer.pass_samples as i64;
         }
 
-        if chunk.continuous_len > 0 {
-            let len = chunk.continuous_len;
+        if let Some(Buffer::Continuous(continuous)) = chunk.input(1).filter(|_| !self.egf.is_empty()) {
             for (channel, egf) in self.egf.iter_mut().enumerate() {
-                let values = &chunk.continuous[channel * len..(channel + 1) * len];
+                let values = continuous.channel(channel);
+                if values.is_empty() {
+                    continue;
+                }
                 self.record.clear();
                 // Already int8 values (from an Continuous Gain), as floats: just made integers.
                 self.record.extend(values.iter().map(|&v| to_i8(v)));
@@ -810,8 +743,8 @@ impl Files<Chunk> for LtxFiles {
             }
         }
 
-        if let Some(pos) = &mut self.pos {
-            for sample in &chunk.positions {
+        if let (Some(pos), Some(Buffer::Positions(positions))) = (&mut self.pos, chunk.input(2)) {
+            for sample in &positions.samples {
                 let first = *self.first_position.get_or_insert(sample.time);
                 self.record.clear();
                 self.record.extend_from_slice(&ticks(sample.time - first));
@@ -836,18 +769,21 @@ impl Files<Chunk> for LtxFiles {
             }
         }
 
-        if let (Some(ttl), Some(events)) = (&mut self.ttl, self.streams.events) {
-            for event in &chunk.events {
+        if let (Some(ttl), Some(events), Some(Buffer::Events(buffer))) =
+            (&mut self.ttl, self.streams.events, chunk.input(3))
+        {
+            for event in &buffer.events {
                 let seconds = (self.event_samples + event.sample as u64) as f64 / events.sample_rate as f64;
                 let line = format!("ttl_{} {seconds} {}\r\n", event.line + 1, event.high as u8);
                 ttl.data(line.as_bytes())?;
                 bytes += line.len() as u64;
             }
-            self.event_samples += chunk.event_pass_samples as u64;
+            self.event_samples += buffer.pass_samples as u64;
         }
 
-        if let (Some(ttl), Some(events)) = (&mut self.pos_ttl, self.streams.position_events) {
-            for event in &chunk.position_events {
+        let position_events = (&mut self.pos_ttl, self.streams.position_events, chunk.input(4));
+        if let (Some(ttl), Some(events), Some(Buffer::Events(buffer))) = position_events {
+            for event in &buffer.events {
                 let seconds = match event.time {
                     Some(time) => time - *self.first_position.get_or_insert(time),
                     None => (self.position_event_samples + event.sample as u64) as f64 / events.sample_rate as f64,
@@ -856,14 +792,11 @@ impl Files<Chunk> for LtxFiles {
                 ttl.data(line.as_bytes())?;
                 bytes += line.len() as u64;
             }
-            self.position_event_samples += chunk.position_event_pass_samples as u64;
+            self.position_event_samples += buffer.pass_samples as u64;
         }
 
-        if let Some(log) = &mut self.log {
-            let mut text = chunk.log.as_slice();
-            for &(time, length) in &chunk.log_lines {
-                let (line, rest) = text.split_at(length as usize);
-                text = rest;
+        if let (Some(log), Some(Buffer::LogLines(lines))) = (&mut self.log, chunk.input(5)) {
+            for (time, line) in lines.lines() {
                 let seconds = time - *self.first_position.get_or_insert(time);
                 self.record.clear();
                 write!(self.record, "{seconds:.6} ")?;
@@ -902,7 +835,17 @@ impl Files<Chunk> for LtxFiles {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::standard_components::ephys::Event;
     use crate::standard_components::spikes::Spike;
+    use crate::standard_components::tracking::PositionSample;
+
+    impl Chunk {
+        /// Input `index`'s buffer, as given data by a pass.
+        fn give(&mut self, index: usize) -> &mut Buffer {
+            self.given[index] = true;
+            self.inputs[index].as_mut().expect("connected")
+        }
+    }
     use crate::standard_components::tracking::pipeline::Blob;
     use crate::standard_components::tracking::{CAMERA_TRACKER, TimingLed};
 
@@ -923,19 +866,6 @@ mod tests {
     fn data(bytes: &[u8]) -> &[u8] {
         let find = |token: &[u8]| bytes.windows(token.len()).position(|w| w == token).unwrap();
         &bytes[find(b"data_start") + 10..find(b"\r\ndata_end")]
-    }
-
-    #[test]
-    fn the_eeg_keeps_every_step_th_sample_across_passes() {
-        // Keeping every 6th of passes 4, 9 and 5 samples long: samples 0, 6 and 12 (of 18).
-        let (mut so_far, mut kept) = (0u64, Vec::new());
-        for len in [4usize, 9, 5] {
-            let first = keeping_from(so_far, 6);
-            kept.extend((first..len).step_by(6).map(|t| so_far + t as u64));
-            assert_eq!(len.saturating_sub(first).div_ceil(6), (first..len).step_by(6).count());
-            so_far += len as u64;
-        }
-        assert_eq!(kept, vec![0, 6, 12]);
     }
 
     #[test]
@@ -963,15 +893,18 @@ mod tests {
         };
         let event = |sample, line, high, time| Event { sample, line, high, time };
         // Positions start at 100 s by the camera's clock; the LED comes on 0.25 s later, and goes off 0.3 s after that.
-        let mut chunk = Chunk { event_pass_samples: 20, ..Default::default() };
-        chunk.positions.push(sample(100.0));
-        chunk.events.push(event(10, 1, true, None));
-        chunk.events.push(event(15, 1, false, None));
+        let mut chunk = Chunk::new(streams);
+        let Buffer::Positions(positions) = chunk.give(2) else { unreachable!() };
+        positions.samples.push(sample(100.0));
+        let Buffer::Events(events) = chunk.give(3) else { unreachable!() };
+        events.pass_samples = 20;
+        events.events.extend([event(10, 1, true, None), event(15, 1, false, None)]);
         files.write(&chunk).unwrap();
-        chunk.events.clear();
-        chunk.positions[0] = sample(100.25);
-        chunk.position_events.push(event(0, 0, true, Some(100.25)));
-        chunk.position_events.push(event(0, 0, false, Some(100.55)));
+        chunk.given[3] = false;
+        let Buffer::Positions(positions) = chunk.give(2) else { unreachable!() };
+        positions.samples[0] = sample(100.25);
+        let Buffer::Events(events) = chunk.give(4) else { unreachable!() };
+        events.events.extend([event(0, 0, true, Some(100.25)), event(0, 0, false, Some(100.55))]);
         files.write(&chunk).unwrap();
         files.finish().unwrap();
 
@@ -1013,17 +946,19 @@ mod tests {
         let detection = Detection { crop, timing_led, custom: custom.into(), ..Default::default() };
         let recorded = Recorded { detection: Some(detection.clone()), ..Default::default() };
         let mut files = Box::new(LtxFiles::open(&base, Local::now(), streams, recorded).unwrap());
-        let mut chunk = Chunk::default();
-        chunk.positions.push(PositionSample {
+        let mut chunk = Chunk::new(streams);
+        let Buffer::Positions(positions) = chunk.give(2) else { unreachable!() };
+        positions.samples.push(PositionSample {
             frame: 0,
             time: 1.5,
             leds: [None, None],
             timing_led: None,
             pixels_per_metre: f32::NAN,
         });
-        chunk.position_events.push(Event { sample: 0, line: 0, high: true, time: Some(2.0) });
-        chunk.log.extend_from_slice(b"first linesecond");
-        chunk.log_lines.extend([(1.75, 10), (4.0, 6)]);
+        let Buffer::Events(events) = chunk.give(4) else { unreachable!() };
+        events.events.push(Event { sample: 0, line: 0, high: true, time: Some(2.0) });
+        let Buffer::LogLines(log) = chunk.give(5) else { unreachable!() };
+        assert!(log.push(1.75, "first line") && log.push(4.0, "second"));
         files.write(&chunk).unwrap();
         files.finish().unwrap();
 
@@ -1058,7 +993,7 @@ mod tests {
             Spikes { channels: 4, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32, polarity: Default::default() };
         let streams = Streams {
             spikes: Some(spikes),
-            continuous: Some(Continuous { channels: 2, sample_rate: 30000.0 }),
+            continuous: Some(Continuous { channels: 2, sample_rate: EGF_RATE }),
             positions: Some(Positions { fps: 50.0, width: 640, height: 480, source: CAMERA_TRACKER }),
             events: None,
             position_events: None,
@@ -1077,17 +1012,22 @@ mod tests {
         let mut files = Box::new(LtxFiles::open(&base, Local::now(), streams, recorded).unwrap());
 
         // A spike 300 samples into the second pass of 600: at 900 samples, 30 ms, 2880 ticks.
-        let mut chunk = Chunk { spike_pass_samples: 600, ..Default::default() };
+        let mut chunk = Chunk::new(streams);
+        let Buffer::Spikes(buffer) = chunk.give(0) else { unreachable!() };
+        buffer.pass_samples = 600;
         files.write(&chunk).unwrap();
-        let spike = Spike { sample: 300, group: 0, channel: 0 };
-        chunk.spikes.push((spike.group, spike.sample));
+        let Buffer::Spikes(buffer) = chunk.give(0) else { unreachable!() };
+        buffer.spikes.push(Spike { sample: 300, group: 0, channel: 0 });
         // As int8 values (from a Spike Gain), from -80.
-        chunk.waveforms = (0..160).map(|i| i as f32 - 80.0).collect();
-        // Two samples kept on each channel (at 5 kHz), as int8 values.
-        chunk.continuous = vec![0.0, 30.0, 60.0, 90.0];
-        chunk.continuous_len = 2;
+        buffer.waveforms = (0..160).map(|i| i as f32 - 80.0).collect();
+        // Two samples on each channel (at 5 kHz), as int8 values.
+        let Buffer::Continuous(continuous) = chunk.give(1) else { unreachable!() };
+        continuous.len = 2;
+        continuous.channel_mut(0).copy_from_slice(&[0.0, 30.0]);
+        continuous.channel_mut(1).copy_from_slice(&[60.0, 90.0]);
         let blob = Blob { x: 100.0, y: 50.0, area: 30 };
-        chunk.positions.push(PositionSample {
+        let Buffer::Positions(positions) = chunk.give(2) else { unreachable!() };
+        positions.samples.push(PositionSample {
             frame: 1,
             time: 5.0,
             leds: [Some(blob), None],
