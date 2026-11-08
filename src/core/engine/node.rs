@@ -209,21 +209,16 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
         BufferUsage::none(inputs, outputs)
     }
 
-    /// The pass triggers of one of the node's settings (by index): what can be triggered through it, as well as set,
-    /// while running: "auto detect", say. A control connected to it can trigger one (`UiContext::trigger`), as can the
-    /// node's own window; its passes take it (`Pass::triggered`), and may update its settings when they're done
-    /// (`Pass::trigger_settings_update`).
+    /// The triggers of one of the node's settings (by index): what can be sent through it, as well as its value being
+    /// set: "auto detect", say. A control connected to it can send one (`UiContext::trigger`, or a `TriggerHandle`), as
+    /// can the node's own window. How it's delivered is up to the trigger (see `crate::core::triggers`): a pass
+    /// trigger's taken by a pass (`Pass::triggered`), which may update the node's settings when it's done
+    /// (`Pass::trigger_settings_update`); a direct trigger goes to `on_trigger`.
     fn triggers(&self, _setting: usize) -> &'static [TriggerKind] {
         &[]
     }
 
-    /// The direct triggers of one of the node's settings (by index): what can be triggered through it without a pass, or
-    /// a run, delivered to `on_trigger` on the GUI's thread. See `crate::core::triggers`.
-    fn direct_triggers(&self, _setting: usize) -> &'static [TriggerKind] {
-        &[]
-    }
-
-    /// One of its `direct_triggers`, sent to it: `trigger.take::<T>()` has it as what it is.
+    /// One of its direct `triggers`, sent to it: `trigger.take::<T>()` has it as what it is.
     fn on_trigger(&mut self, _trigger: AnyTrigger) {}
 
     /// Does the node's work for one pass: reads its inputs and fills its outputs, which are already sized for

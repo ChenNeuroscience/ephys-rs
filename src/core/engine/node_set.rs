@@ -37,7 +37,6 @@ pub trait NodeSet: Clone + PartialEq + Serialize + DeserializeOwned + Send + Syn
     fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool]) -> TreeShake;
     fn evaluate_buffer_usage(&self, inputs: usize, outputs: usize) -> BufferUsage;
     fn triggers(&self, setting: usize) -> &'static [crate::core::triggers::TriggerKind];
-    fn direct_triggers(&self, setting: usize) -> &'static [crate::core::triggers::TriggerKind];
     fn on_trigger(&mut self, trigger: crate::core::triggers::AnyTrigger);
     /// Whether the node carries state from one pass to the next.
     fn has_state(&self) -> bool;
@@ -182,9 +181,6 @@ macro_rules! node_set {
                 match self { $($name::$variant(n) => $crate::core::engine::Node::triggers(n, setting)),+ }
             }
 
-            fn direct_triggers(&self, setting: usize) -> &'static [$crate::core::triggers::TriggerKind] {
-                match self { $($name::$variant(n) => $crate::core::engine::Node::direct_triggers(n, setting)),+ }
-            }
 
             fn on_trigger(&mut self, trigger: $crate::core::triggers::AnyTrigger) {
                 match self { $($name::$variant(n) => $crate::core::engine::Node::on_trigger(n, trigger)),+ }

@@ -553,7 +553,7 @@ impl<N: NodeSet> Graph<N> {
         let count = self.get(id).map_or(0, |entry| entry.node.controls().len());
         let control = |index| {
             let edges = self.live_edges_from(Port { node: id, role: PortRole::Control, index });
-            edges.filter_map(|e| Some((e.to.node, self.get(e.to.node)?.node.direct_triggers(e.to.port)))).collect()
+            edges.filter_map(|e| Some((e.to.node, self.get(e.to.node)?.node.triggers(e.to.port)))).collect()
         };
         crate::core::triggers::ControlTriggers::new(triggers.clone(), (0..count).map(control).collect())
     }

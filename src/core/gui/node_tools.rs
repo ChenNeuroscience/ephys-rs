@@ -10,7 +10,7 @@ use super::icons::Icon;
 use super::toolbar;
 use crate::core::engine::{Graph, NodeId, NodeSet, NodeToolbar, Port, PortRole};
 use crate::core::exchange::Exchange;
-use crate::core::triggers::{AnyTrigger, TriggerKind};
+use crate::core::triggers::{AnyTrigger, Delivery, TriggerKind};
 
 /// A node's toolbar, for a frame: what it shows, and where what's clicked goes.
 pub struct NodeTools<'e> {
@@ -24,7 +24,7 @@ pub struct NodeTools<'e> {
     /// it's connected to, if it is.
     pub own_triggers: Vec<TriggerKind>,
     pub controls: Vec<Option<(NodeId, &'static [TriggerKind])>>,
-    /// Where pass triggers go, while running.
+    /// Where pass triggers go, while running. Direct triggers go through `events`.
     pub exchange: Option<&'e Exchange>,
     /// What's clicked becomes these.
     pub events: &'e mut Vec<Event>,
@@ -67,16 +67,23 @@ impl<'e> NodeTools<'e> {
 
 impl NodeToolbar for NodeTools<'_> {
     fn trigger(&mut self, control: Option<usize>, trigger: AnyTrigger) {
-        if let (Some(node), Some(exchange)) = (self.trigger_node(control, trigger.kind()), self.exchange) {
-            exchange.trigger(node, trigger);
+        let Some(node) = self.trigger_node(control, trigger.kind()) else { return };
+        match (trigger.kind().delivery, self.exchange) {
+            (Delivery::Pass, Some(exchange)) => exchange.trigger(node, trigger),
+            (Delivery::Pass, None) => {}
+            (Delivery::Direct, _) => self.events.push(Event::Trigger(node, trigger)),
         }
     }
 
     fn can_trigger(&self, control: Option<usize>, kind: TriggerKind) -> bool {
-        self.exchange.is_some() && self.trigger_node(control, kind).is_some()
+        let running = self.exchange.is_some() || kind.delivery == Delivery::Direct;
+        running && self.trigger_node(control, kind).is_some()
     }
 
     fn trigger_progress(&self, control: Option<usize>, kind: TriggerKind) -> Option<f32> {
+        if kind.delivery != Delivery::Pass {
+            return None;
+        }
         self.exchange?.trigger_progress(self.trigger_node(control, kind)?, kind)
     }
 
@@ -154,5 +161,44 @@ impl NodeToolbar for NodeTools<'_> {
             self.events.push(Event::Delete(self.id));
         }
         Some(button)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Nodes;
+    use crate::core::triggers::Trigger;
+    use crate::standard_components::auto_detect::AutoDetect;
+    use crate::standard_components::other::run_command::RunOnFiles;
+
+    /// A direct trigger is sent whether or not anything's running, to the app (as an event); a pass trigger only to a
+    /// run.
+    #[test]
+    fn a_trigger_goes_the_way_it_is_delivered() {
+        let mut graph = Graph::<Nodes>::default();
+        let add = |graph: &mut Graph<Nodes>, name: &str| {
+            let index = Nodes::TYPES.iter().position(|t| t.name == name).unwrap();
+            graph.add(Nodes::create(index), [0.0, 0.0])
+        };
+        let (command, gain) = (add(&mut graph, "Run Command"), add(&mut graph, "Spike Gain"));
+        let exchange = Exchange::default();
+        for running in [false, true] {
+            let live = running.then_some(&exchange);
+            let mut events = Vec::new();
+            let mut tools = NodeTools::new(&graph, command, true, live, &mut events).unwrap();
+            assert!(tools.can_trigger(None, RunOnFiles::KIND), "running or not");
+            assert!(!tools.can_trigger(None, AutoDetect::KIND), "not what it takes");
+            tools.trigger(None, AnyTrigger::new(RunOnFiles(Vec::new())));
+            assert_eq!(tools.trigger_progress(None, RunOnFiles::KIND), None, "no progress to say");
+            assert!(matches!(events.as_slice(), [Event::Trigger(node, _)] if *node == command));
+
+            let mut events = Vec::new();
+            let mut tools = NodeTools::new(&graph, gain, true, live, &mut events).unwrap();
+            assert_eq!(tools.can_trigger(None, AutoDetect::KIND), running, "only to a run");
+            tools.trigger(None, AnyTrigger::new(AutoDetect));
+            assert!(events.is_empty());
+            assert_eq!(exchange.trigger_progress(gain, AutoDetect::KIND), running.then_some(0.0));
+        }
     }
 }

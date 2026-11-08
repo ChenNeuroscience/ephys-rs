@@ -8,7 +8,7 @@
 //! the dev tools to show. Once a run's stopped, its windows still find what's in its exchange, so
 //! what they show stays, until the next run, or until the graph changes in a way that would start a new epoch.
 //!
-//! The other way, the GUI can trigger a node's pass triggers (see `Node::triggers`): "auto detect", say. A pass of the
+//! The other way, the GUI can send a node pass triggers (see `crate::core::triggers`): "auto detect", say. A pass of the
 //! node takes it (`Pass::triggered`), says how it's getting on (`Pass::trigger_progress`) and when it's done. And the
 //! passes, which can't change the graph, can trigger an update of one of the node's settings
 //! (`Pass::trigger_settings_update`): a direct trigger (see `crate::core::triggers`), which doesn't wait for a pass.
@@ -175,6 +175,7 @@ mod tests {
     struct Level(f32);
     impl Trigger for Level {
         const NAME: &'static str = "level";
+        const DELIVERY: crate::core::triggers::Delivery = crate::core::triggers::Delivery::Pass;
     }
 
     #[test]

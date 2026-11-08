@@ -1,16 +1,16 @@
-//! Triggers that go straight to a node, on the GUI's thread, without needing a pass, or even a run: from a thread that's
-//! outlived the run that started it, say.
+//! Triggers: something a node's sent, through a settings edge or by the node itself, as well as its settings being set.
 //!
-//! A trigger's sent to a node, through a settings edge or by the node itself, and which way it's delivered is the
-//! difference between the two kinds. A pass trigger waits in the run's exchange for a pass to take it (see
-//! `crate::core::exchange`): "auto detect" needs the data going by. A direct trigger goes to the app's `DirectTriggers`,
-//! which it delivers as soon as it can, whether anything's running or not.
+//! Each is a `Trigger`, a type of its own carrying what it needs to, which a node says its settings take
+//! (`Node::triggers`). How it's delivered is up to the trigger (`Trigger::DELIVERY`), and sending one is the same either
+//! way (`UiContext::trigger`). A pass trigger waits in the run's exchange for a pass to take it (see
+//! `crate::core::exchange`): "auto detect" needs the data going by, so it needs a run, and says how it's getting on. A
+//! direct trigger goes to the app's `DirectTriggers`, which it delivers to `Node::on_trigger` on the GUI's thread as
+//! soon as it can, whether anything's running or not: from a thread that's outlived the run that started it, say. A
+//! node sends one through a control with a `TriggerHandle`, from `ControlTriggers`, which it can keep for later and
+//! use from any thread.
 //!
-//! Every setting takes one direct trigger without saying so: a new value for it (`Pass::trigger_settings_update`), which
-//! the app applies as an edit, unless settings are locked. The rest are `Trigger`s, each a type of its own carrying what
-//! it needs to, which a node says its settings take (`Node::direct_triggers`), and which go to `Node::on_trigger`. A node
-//! sends one through a control with a `TriggerHandle`, from `ControlTriggers`, which it can keep for later and use from
-//! any thread. Pass triggers are `Trigger`s too (see `Node::triggers`).
+//! Every setting also takes a direct update of its value, without saying so (`Pass::trigger_settings_update`), which
+//! the app applies as an edit, unless settings are locked.
 
 use std::any::{Any, TypeId};
 use std::marker::PhantomData;
@@ -25,8 +25,20 @@ use super::engine::NodeId;
 pub trait Trigger: Sized + Send + 'static {
     /// What it's called where it's shown: in the dev tools, say.
     const NAME: &'static str;
+    /// How it gets to the node.
+    const DELIVERY: Delivery;
     /// Its kind, for a node to list (`&[AutoDetect::KIND]`, say).
     const KIND: TriggerKind = TriggerKind::of::<Self>();
+}
+
+/// How a trigger gets to the node it's sent to.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Delivery {
+    /// To a pass, which takes it (`Pass::triggered`) with the data going by, says how it's getting on, and when it's
+    /// done. Only while running.
+    Pass,
+    /// Straight to the node, on the GUI's thread (`Node::on_trigger`), running or not.
+    Direct,
 }
 
 /// A kind of trigger, without what one carries: what a node says its settings take, and what a trigger's progress is
@@ -35,11 +47,12 @@ pub trait Trigger: Sized + Send + 'static {
 pub struct TriggerKind {
     id: TypeId,
     pub name: &'static str,
+    pub delivery: Delivery,
 }
 
 impl TriggerKind {
     pub const fn of<T: Trigger>() -> Self {
-        TriggerKind { id: TypeId::of::<T>(), name: T::NAME }
+        TriggerKind { id: TypeId::of::<T>(), name: T::NAME, delivery: T::DELIVERY }
     }
 }
 
@@ -71,7 +84,7 @@ impl AnyTrigger {
 pub enum Triggered {
     /// A new value for the node's setting `setting` (by index).
     SettingsUpdate { setting: usize, value: Box<dyn Any + Send> },
-    /// One of the node's direct triggers (see `Node::direct_triggers`).
+    /// One of the node's direct triggers (see `Node::triggers`).
     Trigger(AnyTrigger),
 }
 
@@ -94,6 +107,12 @@ impl DirectTriggers {
         if let Some(ctx) = self.wake.get() {
             ctx.request_repaint();
         }
+    }
+
+    /// Sends node `node` the direct trigger `trigger`.
+    pub fn trigger(&self, node: NodeId, trigger: AnyTrigger) {
+        debug_assert_eq!(trigger.kind().delivery, Delivery::Direct, "{}", trigger.kind().name);
+        self.send(node, Triggered::Trigger(trigger));
     }
 
     /// Triggers an update of node `node`'s setting `setting` (by index) to `value`.
@@ -140,13 +159,13 @@ impl<T: Trigger + Clone> TriggerHandle<T> {
     /// Sends `trigger` (cloned for each node).
     pub fn trigger(&self, trigger: T) {
         for node in &self.nodes {
-            self.triggers.send(*node, Triggered::Trigger(AnyTrigger::new(trigger.clone())));
+            self.triggers.trigger(*node, AnyTrigger::new(trigger.clone()));
         }
     }
 }
 
-/// What a node's controls can trigger directly: for each control, the nodes it connects to, and the direct triggers of
-/// the setting of theirs it connects to.
+/// What a node's controls can trigger directly: for each control, the nodes it connects to, and the triggers of the
+/// setting of theirs it connects to.
 pub struct ControlTriggers {
     triggers: Arc<DirectTriggers>,
     controls: Vec<Vec<(NodeId, &'static [TriggerKind])>>,
@@ -162,8 +181,10 @@ impl ControlTriggers {
         ControlTriggers { triggers: Arc::default(), controls: Vec::new() }
     }
 
-    /// A handle on the direct trigger `T` of what control `control` connects to, if that takes one.
+    /// A handle on the trigger `T` of what control `control` connects to, if that takes one. Only a direct trigger: a
+    /// handle can outlive the run, which a pass trigger needs.
     pub fn handle<T: Trigger>(&self, control: usize) -> Option<TriggerHandle<T>> {
+        const { assert!(matches!(T::DELIVERY, Delivery::Direct), "a handle is only on a direct trigger") };
         let kind = TriggerKind::of::<T>();
         let targets = self.controls.get(control)?.iter();
         let nodes: Vec<NodeId> = targets.filter(|(_, kinds)| kinds.contains(&kind)).map(|(node, _)| *node).collect();
@@ -179,10 +200,12 @@ mod tests {
     struct Go(u32);
     impl Trigger for Go {
         const NAME: &'static str = "go";
+        const DELIVERY: Delivery = Delivery::Direct;
     }
     struct Stop;
     impl Trigger for Stop {
         const NAME: &'static str = "stop";
+        const DELIVERY: Delivery = Delivery::Pass;
     }
 
     #[test]

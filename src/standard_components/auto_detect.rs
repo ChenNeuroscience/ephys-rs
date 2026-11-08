@@ -7,13 +7,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::Edges;
 use crate::core::engine::UiContext;
-use crate::core::triggers::Trigger;
+use crate::core::triggers::{Delivery, Trigger};
 
 /// The trigger: sample the data for a while, then choose settings from it.
 pub struct AutoDetect;
 
 impl Trigger for AutoDetect {
     const NAME: &'static str = "auto detect";
+    const DELIVERY: Delivery = Delivery::Pass;
 }
 /// How long the passes can sample for, in seconds.
 pub const SAMPLING: std::ops::RangeInclusive<f32> = 4.0..=60.0;

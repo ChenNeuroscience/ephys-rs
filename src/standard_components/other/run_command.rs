@@ -22,18 +22,19 @@ use serde::{Deserialize, Serialize};
 use crate::core::engine::{Category, EdgeInfo, EdgeType, Node, NodeInfo, Output, SettingPort, UiContext};
 use crate::core::gui::widgets::{Icon, help_link, small_icon_button};
 use crate::core::theme::Colours;
-use crate::core::triggers::{AnyTrigger, Trigger};
+use crate::core::triggers::{AnyTrigger, Delivery, Trigger};
 use crate::standard_components::recording::expand;
 use crate::standard_components::widgets::{combo, setting, settings_grid};
 use crate::{DataStream, Edges, Setting};
 
-/// The direct trigger of a command setting (see `crate::core::triggers`): run it on these files. Whatever sends them,
+/// The trigger of a command setting, delivered directly (see `crate::core::triggers`): run it on these files. Whatever sends them,
 /// and whenever: a writer's are what it's just finished recording.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RunOnFiles(pub Vec<PathBuf>);
 
 impl Trigger for RunOnFiles {
     const NAME: &'static str = "run on files";
+    const DELIVERY: Delivery = Delivery::Direct;
 }
 
 /// In the arguments: replaced by a file, running the program once for each.
@@ -1182,7 +1183,7 @@ impl Node<Edges> for RunCommand {
         }
     }
 
-    fn direct_triggers(&self, _setting: usize) -> &'static [crate::core::triggers::TriggerKind] {
+    fn triggers(&self, _setting: usize) -> &'static [crate::core::triggers::TriggerKind] {
         &[RunOnFiles::KIND]
     }
 

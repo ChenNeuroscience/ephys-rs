@@ -147,6 +147,8 @@ pub enum Event {
     },
     /// Open a node's window (see `Layout::toggle`), or close it: from a pane, if it's done from one.
     ToggleWindow(NodeId, Option<Pane>),
+    /// Send a node a direct trigger (see `crate::core::triggers`).
+    Trigger(NodeId, crate::core::triggers::AnyTrigger),
     /// Open a node's window (see `Layout::open`), or bring it to the front if it's open: from a pane, if it's done
     /// from one.
     OpenWindow(NodeId, Option<Pane>),
@@ -1244,6 +1246,7 @@ impl<N: NodeSet, A: AnnotationSet> App<N, A> {
         match event {
             Event::OpenMenu { screen, scene, from } => self.menu = Some(CreateMenu::new(screen, scene, from)),
             Event::ToggleWindow(id, from) => self.layout.toggle(id, from),
+            Event::Trigger(id, trigger) => self.direct_triggers.trigger(id, trigger),
             Event::OpenWindow(id, from) => self.layout.open(id, from),
             Event::FloatWindow(id) => self.layout.float(id),
             Event::Duplicate(id) => {

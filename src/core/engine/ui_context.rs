@@ -70,26 +70,26 @@ impl<E: Edges> UiContext<'_, E> {
         }
     }
 
-    /// Sends `trigger`, a pass trigger (see `Node::triggers`), to the setting that control `control` connects to, or
-    /// (with `None`) to the node's own. Nothing, if it can't be (see `can_trigger`).
+    /// Sends `trigger` (see `Node::triggers`) to the setting that control `control` connects to, or (with `None`) to
+    /// the node's own, however it's delivered. Nothing, if it can't be (see `can_trigger`).
     pub fn trigger<T: Trigger>(&mut self, control: Option<usize>, trigger: T) {
         if let Some(tools) = &mut self.tools {
             tools.trigger(control, AnyTrigger::new(trigger));
         }
     }
 
-    /// Whether a pass trigger `T` can be sent: the graph running, and (for a control) connected to a setting that takes
-    /// it.
+    /// Whether a trigger `T` can be sent: to a setting that takes it (for a control, the one it's connected to), and for
+    /// a pass trigger, the graph running.
     pub fn can_trigger<T: Trigger>(&self, control: Option<usize>) -> bool {
         self.tools.as_ref().is_some_and(|t| t.can_trigger(control, TriggerKind::of::<T>()))
     }
 
-    /// How far along the trigger `T` is (0 to 1), if it's been sent and isn't done.
+    /// How far along the pass trigger `T` is (0 to 1), if it's been sent and isn't done. Never, for a direct trigger.
     pub fn trigger_progress<T: Trigger>(&self, control: Option<usize>) -> Option<f32> {
         self.tools.as_ref().and_then(|t| t.trigger_progress(control, TriggerKind::of::<T>()))
     }
 
-    /// Stops the trigger `T`, if it's been sent and isn't done: the node abandons what it was doing for it.
+    /// Stops the pass trigger `T`, if it's been sent and isn't done: the node abandons what it was doing for it.
     pub fn cancel_trigger<T: Trigger>(&mut self, control: Option<usize>) {
         if let Some(tools) = &mut self.tools {
             tools.cancel_trigger(control, TriggerKind::of::<T>());
@@ -118,10 +118,10 @@ impl<E: Edges> UiContext<'_, E> {
 
 /// What the GUI does for a node's window: the buttons every node has, each on its own or all together (those that
 /// change the graph, its settings, enabling and deleting it, only there in advanced mode, giving `None` otherwise);
-/// and triggering pass triggers (see `Node::triggers`), and opening other nodes' windows. A view uses these through its
+/// and sending triggers (see `Node::triggers`), and opening other nodes' windows. A view uses these through its
 /// `UiContext`.
 pub trait NodeToolbar {
-    /// Sends a pass trigger (see `UiContext::trigger`).
+    /// Sends a trigger (see `UiContext::trigger`).
     fn trigger(&mut self, control: Option<usize>, trigger: AnyTrigger);
     fn can_trigger(&self, control: Option<usize>, kind: TriggerKind) -> bool;
     fn trigger_progress(&self, control: Option<usize>, kind: TriggerKind) -> Option<f32>;

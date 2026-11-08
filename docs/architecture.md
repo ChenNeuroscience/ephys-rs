@@ -115,9 +115,10 @@ The passes never wait on the GUI, nor it on them. Each run has an [`Exchange`](.
 - **Direct triggers** ([`triggers.rs`](../src/core/triggers.rs)) don't wait for a pass: the app delivers them on the GUI's
   thread, running or not, so they belong to it rather than a run. A setting's update from a pass is one.
 - Once a run's stopped, the app keeps its exchange, so everything goes on showing what it last had, until the next
-  run, or until the graph changes in a way that would start a new epoch (`Plan::same_shape`). Triggers need a run.
-- The GUI can **trigger** a node's pass triggers (`Node::triggers`): `AutoDetect`, say, from a viewer through a settings
-  edge, or from the node's own window. A pass takes it (`Pass::triggered`), says how it's going, and when it's done.
+  run, or until the graph changes in a way that would start a new epoch (`Plan::same_shape`). Pass triggers need a run.
+- The GUI can **trigger** a node (`Node::triggers`), from another node's window through a settings edge, or from the
+  node's own. A pass trigger (`AutoDetect`, say) goes to the run's exchange: a pass takes it (`Pass::triggered`), says
+  how it's going, and when it's done. A direct one goes to the app, as above. Which is up to the trigger's type.
 - Passes can't change the graph, but can **trigger an update** of a setting (`Pass::trigger_settings_update`), which the
   GUI applies as an edit, unless settings are locked.
 
