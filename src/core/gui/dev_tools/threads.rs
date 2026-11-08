@@ -378,9 +378,10 @@ fn gui_thread<N: NodesEnum>(
             return;
         };
         for step in plan.steps() {
-            for (_, pool) in exchange.pools(step.id) {
+            for (name, pool) in exchange.pools(step.id) {
                 let row = pool_row(ui, colours, window_pool(pool), |ui| {
                     node_chip(ui, graph, step.id, None);
+                    ui.label(small(name, colours.text_secondary));
                 });
                 anchors.displays.push((step.id, row.with_max_x(ui.max_rect().right())));
             }
@@ -600,18 +601,19 @@ fn step_row<N: NodesEnum>(
     ui.painter().add(Shape::line(vec![tip + vec2(-3.5, -3.0), tip, tip + vec2(-3.5, 3.0)], stroke));
     for (o, &b) in step.outputs.iter().enumerate() {
         let name = output_names.get(o).copied().unwrap_or("output");
-        let stream = plan.buffers().get(b).map(|s| s.summary()).unwrap_or_default();
+        // What's in it, if there's more to say than its kind.
+        let stream = plan.buffers().get(b).map(|s| s.summary()).filter(|s| !s.is_empty());
+        let stream = stream.map(|s| format!(" ({s})")).unwrap_or_default();
         match step.in_place[o] {
             Some(input) => {
                 let input = input_names.get(input).copied().unwrap_or("input");
-                let text = format!(
-                    "Makes {name} ({stream}) in place: edits buffer {b}, where {input} was, so nothing's copied"
-                );
+                let text =
+                    format!("Makes {name}{stream} in place: edits buffer {b}, where {input} was, so nothing's copied");
                 buffer_tag(ui, plan, b, colours).on_hover_text(&text);
                 badge(ui, Glyph::InPlace, colours.success, &text);
             }
             None => {
-                buffer_tag(ui, plan, b, colours).on_hover_text(format!("Fills {name} ({stream}) in buffer {b}"));
+                buffer_tag(ui, plan, b, colours).on_hover_text(format!("Fills {name}{stream} in buffer {b}"));
             }
         }
     }
@@ -726,7 +728,10 @@ fn memory<N: NodesEnum>(
                 for (b, stream) in plan.buffers().iter().enumerate() {
                     buffer_tag(ui, plan, b, colours);
                     ui.label(small(
-                        format!("{} · {}", stream_info::<N>(stream).name, stream.summary()),
+                        match stream.summary() {
+                            summary if summary.is_empty() => stream_info::<N>(stream).name.to_string(),
+                            summary => format!("{} · {summary}", stream_info::<N>(stream).name),
+                        },
                         colours.text_primary,
                     ));
                     // The first step to fill it, and any making outputs in place in it after.
@@ -879,9 +884,9 @@ fn thread_pool(pool: PoolStatus, dots: &[Color32]) -> Pooled<'_> {
 /// A pool a node shares with its window. Passes skipping sending doesn't lose anything that's recorded.
 fn window_pool(pool: PoolStatus) -> Pooled<'static> {
     let mut tip = format!(
-        "A pool of {} buffers the node's passes fill (or swap their own into) for its window, which reads the newest \
-         and gives the rest back: {} queued, {} empty; the rest being filled, or read. Neither waits on the other. {} \
-         sent so far.",
+        "A pool of {} buffers the node's passes fill (or swap their own into) for its window, which takes them (the \
+         newest, or every one, as the node needs) and gives them back: {} queued, {} empty; the rest being filled, or \
+         read. Neither waits on the other. {} sent so far.",
         pool.size, pool.full, pool.empty, pool.swaps
     );
     if pool.overflows > 0 {

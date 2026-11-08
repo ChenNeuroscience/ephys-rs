@@ -16,9 +16,9 @@ use super::camera::capture::State;
 use super::camera::node::camera_settings_ui;
 use super::led_chart::{self, History};
 use super::position_detector::{calibration_ui, crop_ui, detection_ui, timing_led_ui};
-use crate::core::engine::{Category, Control, EdgeType, Input, Node, NodeInfo, Output, Pass, UiContext};
+use crate::core::engine::{Category, Control, EdgeType, Input, Node, NodeInfo, Output, Pass, PoolStatus, UiContext};
 use crate::core::theme::Colours;
-use crate::standard_components::pool::{Pool, SharedPool};
+use crate::standard_components::pool::{Pool, SharedPool, WINDOW_BUFFERS};
 use crate::standard_components::preview;
 use crate::standard_components::tracking::VideoBuffer;
 use crate::standard_components::tracking::overlay::{self, Drag, Overlay, Overlays, Xform};
@@ -38,12 +38,13 @@ pub struct TrackerView {
     pub camera_locked: bool,
 }
 
-/// The tracker's state while running: the LEDs' recent sizes, the path while recording, and what it last copied
-/// for its window.
+/// The tracker's state while running: the LEDs' recent sizes, the path while recording (what's not been sent to the
+/// window yet), and what it last copied for its window.
 #[derive(Default)]
 pub struct Tracking {
     history: History,
-    path: Arc<Mutex<Path>>,
+    path: Option<Arc<TrackedPath>>,
+    pending: Vec<PathUpdate>,
     recording: bool,
     /// The LEDs in the latest position, for showing without video, when a pass might have none.
     latest: [Option<Blob>; 2],
@@ -51,8 +52,54 @@ pub struct Tracking {
 }
 
 /// Where the animal's been while recording: the middle of the LEDs found in each frame (in pixels), NaN where
-/// none were. Shared with the window, which can clear it; recording starting clears it too.
+/// none were. The window keeps it, and can clear it; recording starting clears it too.
 pub type Path = Vec<[f32; 2]>;
+
+/// What a pass sends the window of the path, in order (see `Pool::send_pending`).
+pub enum PathUpdate {
+    /// Recording's started: the path so far goes.
+    Restart,
+    Point([f32; 2]),
+}
+
+/// The path sent to the window, and what it's kept of it.
+pub struct TrackedPath {
+    sent: Pool<Vec<PathUpdate>>,
+    /// Only the window takes this, so passes never wait on it.
+    kept: Mutex<Path>,
+}
+
+impl Default for TrackedPath {
+    fn default() -> Self {
+        TrackedPath { sent: Pool::new((0..WINDOW_BUFFERS).map(|_| Vec::new()), 0), kept: Mutex::default() }
+    }
+}
+
+impl crate::core::exchange::Shared for TrackedPath {
+    fn name(&self) -> &'static str {
+        "path"
+    }
+
+    fn pool(&self) -> Option<PoolStatus> {
+        Some(self.sent.status())
+    }
+}
+
+impl TrackedPath {
+    /// For the window: the path, with what's been sent since it last looked.
+    fn kept(&self) -> std::sync::MutexGuard<'_, Path> {
+        let mut kept = self.kept.lock().unwrap();
+        self.sent.receive_all(|updates| {
+            for update in updates {
+                match update {
+                    PathUpdate::Restart => kept.clear(),
+                    PathUpdate::Point(point) => kept.push(point),
+                }
+            }
+        });
+        kept
+    }
+}
 
 impl crate::core::engine::PassState for Tracking {
     const WHY: &'static str = "The LEDs' sizes over the last few seconds, for the chart, which each pass adds \
@@ -101,7 +148,6 @@ pub struct TrackerDisplay {
     timing_led: Option<bool>,
     history: History,
     stats: Option<CaptureStats>,
-    path: Option<Arc<Mutex<Path>>>,
 }
 
 impl Node<Edges> for TrackerView {
@@ -153,9 +199,11 @@ impl Node<Edges> for TrackerView {
     /// Records the LEDs' sizes, and keeps the pass's last frame, the LEDs found in it and the camera's stats. A
     /// pass without a frame is only shown if the camera isn't running, to say why.
     fn process(&self, pass: &mut Pass<Edges>, tracking: &mut Tracking) {
-        let Tracking { history, path, recording, latest, shown } = tracking;
+        let Tracking { history, path, pending, recording, latest, shown } = tracking;
+        let path = path.get_or_insert_with(|| pass.shared(TrackedPath::default));
         if pass.recording && !*recording {
-            path.lock().unwrap().clear();
+            pending.clear();
+            pending.push(PathUpdate::Restart);
         }
         *recording = pass.recording;
         if let Some(Buffer::Positions(positions)) = pass.inputs[1] {
@@ -165,11 +213,11 @@ impl Node<Edges> for TrackerView {
                 led_chart::record(history, sample.time, [area(sample.leds[0]), area(sample.leds[1])], timing_on);
                 *latest = sample.leds;
             }
-            if pass.recording && !positions.samples.is_empty() {
-                let mut path = path.lock().unwrap();
-                path.extend(positions.samples.iter().map(|sample| middle(&sample.leds)));
+            if pass.recording {
+                pending.extend(positions.samples.iter().map(|sample| PathUpdate::Point(middle(&sample.leds))));
             }
         }
+        path.sent.send_pending(pending);
         let video = match pass.inputs[0] {
             Some(Buffer::Video(video)) if video.frames > 0 => Some(video),
             _ => None,
@@ -209,9 +257,6 @@ impl Node<Edges> for TrackerView {
             }
             display.history.clear();
             display.history.extend(history.iter().copied());
-            if display.path.as_ref().is_none_or(|p| !Arc::ptr_eq(p, path)) {
-                display.path = Some(path.clone());
-            }
         });
     }
 
@@ -326,7 +371,7 @@ impl TrackerView {
         } else {
             overlay::draw(&ui.painter_at(rect), xf, &Detection::default(), &self.overlays, &display.leds, false);
         }
-        if let Some(path) = &display.path {
+        if let Some(path) = context.shared::<TrackedPath>() {
             let calibration = match &context.controls[1] {
                 Some(Setting::Detection(detection)) => detection.pixels_per_metre(),
                 _ => None,
@@ -335,7 +380,7 @@ impl TrackerView {
                 Some(ppm) => format!("{:.2} m", length / ppm),
                 None => format!("{length:.0} px"),
             };
-            path_ui(ui, rect, xf, path, length, context.theme);
+            path_ui(ui, rect, xf, &path, length, context.theme);
         }
         preview::repaint_with_data(ui, context.running);
     }
@@ -527,12 +572,12 @@ fn positions_ui(ui: &mut egui::Ui, context: &UiContext<Edges>, display: Option<&
         egui::FontId::proportional(11.0),
         context.theme.text_secondary,
     );
-    if let Some(path) = &display.path {
+    if let Some(path) = context.shared::<TrackedPath>() {
         let length = |length: f32| match detection.pixels_per_metre() {
             Some(ppm) => format!("{:.2} m", length / ppm),
             None => format!("{length:.0} px"),
         };
-        path_ui(ui, rect, xf, path, length, context.theme);
+        path_ui(ui, rect, xf, &path, length, context.theme);
     }
     preview::repaint_with_data(ui, context.running);
 }
@@ -641,11 +686,11 @@ fn path_ui(
     ui: &mut egui::Ui,
     frame: Rect,
     xf: Xform,
-    path: &Mutex<Path>,
+    path: &TrackedPath,
     length_text: impl Fn(f32) -> String,
     theme: &Colours,
 ) {
-    let mut path = path.lock().unwrap();
+    let mut path = path.kept();
     if path.is_empty() {
         return;
     }
@@ -837,6 +882,33 @@ mod tests {
     use super::*;
     use crate::Nodes;
     use crate::core::engine::{Graph, NodeId, NodesEnum, Port, PortRole, Runner, Snapshot};
+
+    /// The path's sent to the window while recording, a pass at a time, and goes when recording starts again.
+    #[test]
+    fn the_path_is_sent_while_recording_and_restarts_with_it() {
+        use crate::standard_components::tracking::{PositionSample, PositionsBuffer};
+        let (exchange, view, mut tracking) =
+            (crate::core::exchange::Exchange::default(), NodeId(0), Tracking::default());
+        let mut run_pass = |recording: bool, x: f32| {
+            let leds = [Some(Blob { x, y: 1.0, area: 9 }), None];
+            let sample = PositionSample { frame: 0, time: 0.0, leds, timing_led: None, pixels_per_metre: f32::NAN };
+            let positions = Buffer::Positions(PositionsBuffer { samples: vec![sample] });
+            let inputs = [None, Some(&positions), None];
+            let mut pass = Pass::new(0, 0.02, &inputs, &mut []);
+            (pass.exchange, pass.node, pass.recording) = (&exchange, view, recording);
+            TrackerView::default().process(&mut pass, &mut tracking);
+        };
+        let xs = |exchange: &crate::core::exchange::Exchange| {
+            exchange.get::<TrackedPath>(view).unwrap().kept().iter().map(|p| p[0]).collect::<Vec<_>>()
+        };
+        run_pass(false, 1.0);
+        run_pass(true, 2.0);
+        run_pass(true, 3.0);
+        assert_eq!(xs(&exchange), [2.0, 3.0], "only while recording");
+        run_pass(false, 4.0);
+        run_pass(true, 5.0);
+        assert_eq!(xs(&exchange), [5.0], "a new recording, a new path");
+    }
 
     #[test]
     fn lays_out_by_the_window_shape() {
@@ -1123,14 +1195,12 @@ mod tests {
             .map(|i| [400.0 + 300.0 * (i as f32 / 30.0).cos(), 200.0 + 140.0 * (i as f32 / 20.0).sin()])
             .collect();
         let [x, y] = *path.last().unwrap();
-        let display = TrackerDisplay {
-            leds: vec![Blob { x, y, area: 30 }],
-            path: Some(Arc::new(Mutex::new(path))),
-            ..Default::default()
-        };
+        let display = TrackerDisplay { leds: vec![Blob { x, y, area: 30 }], ..Default::default() };
         let inputs = resolved[&view].input_streams.clone();
         let exchange = crate::core::exchange::Exchange::default();
         exchange.shared(view, || Pool::holding(display));
+        let mut sent = std::iter::once(PathUpdate::Restart).chain(path.into_iter().map(PathUpdate::Point)).collect();
+        exchange.shared(view, TrackedPath::default).sent.send_pending(&mut sent);
         let before = graph.clone();
         let mut harness = egui_kittest::Harness::builder().with_size([900.0, 500.0]).wgpu().build_ui_state(
             |ui, graph: &mut Graph<Nodes>| {

@@ -13,7 +13,8 @@
 //! For a window, only the newest matters: passes fill a buffer (`reuse`: an empty one, or failing that the oldest
 //! queued, so none are lost if the window's closed) and queue it as of their pass (`send_as_of`); the window reads
 //! the newest (`newest`), giving back the one it was reading and any older, and holds on to it for as long as it
-//! likes. A pool shared with a window lives in the run's exchange (see `crate::core::exchange`), where `SharedPool`
+//! likes. A window that needs everything, not only the newest (each line of a log, say), takes every buffer, in order
+//! (`send_pending`, `receive_all`). A pool shared with a window lives in the run's exchange (see `crate::core::exchange`), where `SharedPool`
 //! finds or makes it from the passes, and `UiContext::shared::<Pool<T>>` from the window.
 //!
 //! Passes never wait on it. The empty and full buffers are on lock-free queues (crossbeam's bounded channels), so
@@ -43,8 +44,10 @@ pub struct Pool<T> {
 }
 
 impl<T: Send + Sync + 'static> exchange::Shared for Pool<T> {
+    /// What its buffers hold: their type's name.
     fn name(&self) -> &'static str {
-        "pool"
+        let name = std::any::type_name::<T>();
+        name.rsplit("::").next().unwrap_or(name)
     }
 
     fn pool(&self) -> Option<PoolStatus> {
@@ -236,6 +239,32 @@ impl<T> Pool<T> {
         let pool = Pool::new([], 0);
         *pool.shared.reading.write().unwrap() = Some((0, value));
         pool
+    }
+}
+
+/// For a window that's sent everything, not only the newest (each line of a log, say): passes add what's new to
+/// what's pending (in their state), and send it whenever there's an empty buffer; the window takes every buffer, in
+/// order, keeping what it likes. If the window isn't taking them (it's closed, say), what's new waits in `pending`.
+impl<T> Pool<Vec<T>> {
+    /// Sends what's `pending`, if there is any and a buffer's empty: swapped, so `pending` is left with the empty
+    /// buffer's memory.
+    pub fn send_pending(&self, pending: &mut Vec<T>) {
+        if pending.is_empty() {
+            return;
+        }
+        if let Ok(mut buffer) = self.shared.empty.1.try_recv() {
+            buffer.clear();
+            std::mem::swap(&mut buffer, pending);
+            self.send(buffer);
+        }
+    }
+
+    /// For the window: everything sent, in order, giving the buffers back.
+    pub fn receive_all(&self, mut receive: impl FnMut(std::vec::Drain<'_, T>)) {
+        while let Some(mut buffer) = self.try_full() {
+            receive(buffer.drain(..));
+            self.give_back(buffer);
+        }
     }
 }
 

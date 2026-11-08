@@ -17,17 +17,22 @@
 //! If every worker is busy and passes queue up, the dispatcher drops passes (counting them) rather than
 //! falling ever further behind.
 //!
+//! Workers report each pass they run to the GUI on a queue of its own, for the stats, never waiting on it.
+//!
 //! When the graph changes while running, the new snapshot is swapped in between passes if its plan has the
 //! same shape (the same nodes and buffers, as after a change of settings): nodes see their new settings on
 //! the next pass and adjust (keeping their state). Otherwise it starts a new epoch, with its own node state
 //! and pass queue. Workers make buffers for the new plan as they come free (once they've nothing of the old
 //! one queued), and the dispatcher only sends passes for it once a worker is ready, to the workers that are;
 //! until then, passes carry on with the old one. So a worker is never handed a pass it isn't ready to run.
+//! Snapshots and epochs are swapped in atomically (`ArcSwap`), so a pass takes the latest as it starts, waiting on
+//! nothing.
 //!
 //!
 //! What each pass is given is in `pass`, and how it's planned in `plan`.
 
 use std::any::Any;
+use std::cell::RefCell;
 use std::cell::UnsafeCell;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -35,6 +40,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use arc_swap::{ArcSwap, ArcSwapOption};
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError};
 use crossbeam_utils::CachePadded;
 
@@ -284,7 +290,8 @@ struct Shared {
     busy: AtomicUsize,
     completed: AtomicU64,
     dropped: AtomicU64,
-    recent: Mutex<VecDeque<Record>>,
+    /// Where workers report to the GUI.
+    reports: Reports,
     /// Where nodes leave things for their windows.
     exchange: Arc<Exchange>,
     /// What each worker is up to.
@@ -295,8 +302,32 @@ struct Shared {
     epochs: AtomicU64,
     /// The newest version a pass has run against.
     newest_used: AtomicU64,
-    /// Versions first run against, since they were last asked for.
-    first_uses: Mutex<Vec<FirstUse>>,
+}
+
+/// What a worker tells the GUI: a pass it's run, or that it's the first to run against a version.
+enum Report {
+    Pass(Record),
+    FirstUse(FirstUse),
+}
+
+/// The queue workers report on, for the GUI to take off (see `Received`). A worker never waits on it: if the GUI
+/// hasn't taken them (it's not drawing, say), reports are dropped.
+struct Reports(Sender<Report>, Receiver<Report>);
+
+impl Default for Reports {
+    fn default() -> Self {
+        // A good few seconds' worth.
+        let (sender, receiver) = crossbeam_channel::bounded(1024);
+        Reports(sender, receiver)
+    }
+}
+
+/// What the GUI's taken off the reports queue: the passes run over the last `PASS_TIMES`, and the versions first
+/// run against since it last asked.
+#[derive(Default)]
+struct Received {
+    recent: VecDeque<Record>,
+    first_uses: Vec<FirstUse>,
 }
 
 /// The first pass to run against a version (a later one, if passes never ran against those before it).
@@ -377,7 +408,8 @@ struct Job {
 /// that changes the plan starts a new epoch, which the dispatcher moves on to once a worker is ready for it.
 struct Epoch<N: NodesEnum> {
     number: u64,
-    snapshot: Mutex<Snapshot<N>>,
+    /// Swapped for a newer one as settings change: each pass runs against the latest when it starts.
+    snapshot: ArcSwap<Snapshot<N>>,
     plan: Arc<Plan<N>>,
     slots: RunSlots,
     /// How many workers have a workspace for this epoch, ready to run its passes.
@@ -398,7 +430,7 @@ impl<N: NodesEnum> Epoch<N> {
         let number = shared.epochs.fetch_add(1, Ordering::Relaxed) + 1;
         Epoch {
             number,
-            snapshot: Mutex::new(snapshot.clone()),
+            snapshot: ArcSwap::from_pointee(snapshot.clone()),
             plan,
             slots,
             ready: AtomicUsize::new(0),
@@ -439,8 +471,8 @@ fn let_go_of(states: Vec<StateSlot>) {
 
 /// The epochs a run has: the newest (which workers prepare for), and the one being dispatched.
 struct Epochs<N: NodesEnum> {
-    wanted: Mutex<Arc<Epoch<N>>>,
-    running: Mutex<Option<Arc<Epoch<N>>>>,
+    wanted: ArcSwap<Epoch<N>>,
+    running: ArcSwapOption<Epoch<N>>,
 }
 
 /// The graph running: a dispatcher and a pool of workers, until dropped.
@@ -451,6 +483,8 @@ pub struct Runner<N: NodesEnum> {
     workers: usize,
     /// The version of the latest snapshot given to the run.
     version: AtomicU64,
+    /// The GUI's, from the workers' reports.
+    received: RefCell<Received>,
 }
 
 impl<N: NodesEnum> Runner<N> {
@@ -469,7 +503,7 @@ impl<N: NodesEnum> Runner<N> {
         let epoch = Arc::new(Epoch::new(snapshot, workers, shared.clone()));
         log::info!("Running on {workers} workers, {} ms passes", PASS_DURATION * 1000.0);
         log::debug!("Epoch {} for version {}: {}", epoch.number, snapshot.version, describe(&epoch.plan));
-        let epochs = Arc::new(Epochs { wanted: Mutex::new(epoch), running: Mutex::new(None) });
+        let epochs = Arc::new(Epochs { wanted: ArcSwap::new(epoch), running: ArcSwapOption::empty() });
 
         let mut threads = Vec::new();
         for index in 0..workers {
@@ -482,13 +516,14 @@ impl<N: NodesEnum> Runner<N> {
         let dispatcher = move || dispatch(&dispatcher_epochs, &dispatcher_shared);
         threads.push(std::thread::Builder::new().name("pass dispatcher".into()).spawn(dispatcher).expect("dispatcher"));
 
-        Runner { epochs, shared, threads, workers, version: AtomicU64::new(snapshot.version) }
+        let (version, received) = (AtomicU64::new(snapshot.version), RefCell::default());
+        Runner { epochs, shared, threads, workers, version, received }
     }
 
     /// The graph of the latest snapshot given to the run.
     #[cfg(test)]
     pub fn graph(&self) -> Arc<Graph<N>> {
-        self.epochs.wanted.lock().unwrap().snapshot.lock().unwrap().graph.clone()
+        self.epochs.wanted.load().snapshot.load().graph.clone()
     }
 
     /// Where the run's nodes leave things for their windows.
@@ -514,46 +549,65 @@ impl<N: NodesEnum> Runner<N> {
         if self.version.swap(snapshot.version, Ordering::Relaxed) == snapshot.version {
             return true;
         }
-        let mut wanted = self.epochs.wanted.lock().unwrap();
+        // Only the GUI updates it, so nothing changes it in between.
+        let wanted = self.epochs.wanted.load();
         if Arc::ptr_eq(&wanted.plan, &snapshot.plan) || wanted.plan.same_shape(&snapshot.plan) {
-            *wanted.snapshot.lock().unwrap() = snapshot.clone();
+            wanted.snapshot.store(Arc::new(snapshot.clone()));
             log::trace!("Version {} carries on epoch {}", snapshot.version, wanted.number);
             true
         } else {
-            *wanted = Arc::new(Epoch::new(snapshot, self.workers, self.shared.clone()));
+            let epoch = Arc::new(Epoch::new(snapshot, self.workers, self.shared.clone()));
             log::info!(
                 "Version {} changes the plan: epoch {}, {}",
                 snapshot.version,
-                wanted.number,
-                describe(&wanted.plan)
+                epoch.number,
+                describe(&epoch.plan)
             );
+            self.epochs.wanted.store(epoch);
             false
         }
     }
 
     /// The versions passes have started running against since this was last asked.
     pub fn first_uses(&self) -> Vec<FirstUse> {
-        std::mem::take(&mut *self.shared.first_uses.lock().unwrap())
+        std::mem::take(&mut self.received().first_uses)
+    }
+
+    /// What the workers have reported, taking what's waiting off the queue, and forgetting passes older than
+    /// `PASS_TIMES`.
+    fn received(&self) -> std::cell::RefMut<'_, Received> {
+        let mut received = self.received.borrow_mut();
+        for report in self.shared.reports.1.try_iter() {
+            match report {
+                Report::Pass(record) => received.recent.push_back(record),
+                Report::FirstUse(first) => received.first_uses.push(first),
+            }
+        }
+        let now = Instant::now();
+        while received.recent.front().is_some_and(|r| now - r.finished > PASS_TIMES) {
+            received.recent.pop_front();
+        }
+        received
     }
 
     /// The plan passes are being dispatched for, once they are.
     #[cfg(test)]
     fn running_plan(&self) -> Option<Arc<Plan<N>>> {
-        self.epochs.running.lock().unwrap().as_ref().map(|e| e.plan.clone())
+        self.epochs.running.load().as_ref().map(|e| e.plan.clone())
     }
 
     /// Everything about the run as of now: its epochs, workers and dispatcher, and the stats.
     pub fn inspect(&self) -> RunInfo<N> {
         let info = |epoch: &Epoch<N>| EpochInfo {
             number: epoch.number,
-            version: epoch.snapshot.lock().unwrap().version,
+            version: epoch.snapshot.load().version,
             plan: epoch.plan.clone(),
             ready: epoch.ready.load(Ordering::Relaxed),
             queued: epoch.receiver.len(),
             step_times: epoch.slots.times.iter().map(StepTimes::get).collect(),
         };
-        let running = self.epochs.running.lock().unwrap().as_deref().map(info);
-        let wanted = self.epochs.wanted.lock().unwrap().clone();
+        let running = self.epochs.running.load().as_deref().map(info);
+        let wanted = self.epochs.wanted.load_full();
         let preparing = (running.as_ref().map(|r| r.number) != Some(wanted.number)).then(|| info(&wanted));
         let workers = self
             .shared
@@ -582,17 +636,21 @@ impl<N: NodesEnum> Runner<N> {
     /// Each pass run over the last few seconds: when its data was due (seconds on the acquisition clock), and how
     /// long it took to run (in seconds), in order.
     pub fn pass_times(&self) -> Vec<[f64; 2]> {
-        let recent = self.shared.recent.lock().unwrap();
-        let mut times: Vec<[f64; 2]> =
-            recent.iter().map(|r| [(r.sequence + 1) as f64 * PASS_DURATION, r.time.as_secs_f64()]).collect();
+        let mut times: Vec<[f64; 2]> = self
+            .received()
+            .recent
+            .iter()
+            .map(|r| [(r.sequence + 1) as f64 * PASS_DURATION, r.time.as_secs_f64()])
+            .collect();
         times.sort_by(|a, b| a[0].total_cmp(&b[0]));
         times
     }
 
     pub fn stats(&self) -> Stats {
         let now = Instant::now();
-        let recent = self.shared.recent.lock().unwrap();
-        let last_second: Vec<&Record> = recent.iter().filter(|r| now - r.finished <= Duration::from_secs(1)).collect();
+        let received = self.received();
+        let last_second: Vec<&Record> =
+            received.recent.iter().filter(|r| now - r.finished <= Duration::from_secs(1)).collect();
         let count = last_second.len();
         let total: Duration = last_second.iter().map(|r| r.time).sum();
         Stats {
@@ -634,7 +692,7 @@ fn work<N: NodesEnum>(epochs: &Epochs<N>, shared: &Shared, index: usize) {
     slot.pass.store(IDLE, Ordering::Relaxed);
     let mut mine: Option<(Arc<Epoch<N>>, Workspace<N>)> = None;
     loop {
-        let wanted = epochs.wanted.lock().unwrap().clone();
+        let wanted = epochs.wanted.load();
         let behind = match &mine {
             None => true,
             Some((epoch, _)) => !Arc::ptr_eq(epoch, &wanted) && epoch.receiver.is_empty(),
@@ -644,8 +702,7 @@ fn work<N: NodesEnum>(epochs: &Epochs<N>, shared: &Shared, index: usize) {
             if let Some((_, workspace)) = mine.take() {
                 shared.memory.fetch_sub(workspace.bytes(), Ordering::Relaxed);
             }
-            let graph = wanted.snapshot.lock().unwrap().graph.clone();
-            let workspace = wanted.plan.workspace(&graph);
+            let workspace = wanted.plan.workspace(&wanted.snapshot.load().graph);
             let bytes = workspace.bytes();
             shared.memory.fetch_add(bytes, Ordering::Relaxed);
             slot.memory.store(bytes, Ordering::Relaxed);
@@ -656,7 +713,7 @@ fn work<N: NodesEnum>(epochs: &Epochs<N>, shared: &Shared, index: usize) {
                 wanted.number,
                 bytes as f64 / 1e6
             );
-            mine = Some((wanted, workspace));
+            mine = Some((arc_swap::Guard::into_inner(wanted), workspace));
         }
         let Some((epoch, workspace)) = &mut mine else { unreachable!() };
         match epoch.receiver.recv_timeout(IDLE_CHECK) {
@@ -664,10 +721,10 @@ fn work<N: NodesEnum>(epochs: &Epochs<N>, shared: &Shared, index: usize) {
                 shared.busy.fetch_add(1, Ordering::Relaxed);
                 slot.pass.store(job.sequence, Ordering::Relaxed);
                 let start = Instant::now();
-                let snapshot = epoch.snapshot.lock().unwrap().clone();
+                let snapshot = epoch.snapshot.load_full();
                 if shared.newest_used.fetch_max(snapshot.version, Ordering::Relaxed) < snapshot.version {
                     let first = FirstUse { version: snapshot.version, sequence: job.sequence, at: start };
-                    shared.first_uses.lock().unwrap().push(first);
+                    let _ = shared.reports.0.try_send(Report::FirstUse(first));
                 }
                 let pass = PassId { epoch: epoch.number, sequence: job.sequence, node: None, node_type: None };
                 epoch.plan.run(&snapshot, pass, workspace, &epoch.slots);
@@ -678,11 +735,7 @@ fn work<N: NodesEnum>(epochs: &Epochs<N>, shared: &Shared, index: usize) {
                 shared.completed.fetch_add(1, Ordering::Relaxed);
                 let (time, lag) = (finished - start, finished.saturating_duration_since(job.due));
                 let record = Record { sequence: job.sequence, finished, time, lag };
-                let mut recent = shared.recent.lock().unwrap();
-                recent.push_back(record);
-                while recent.front().is_some_and(|r| finished - r.finished > PASS_TIMES) {
-                    recent.pop_front();
-                }
+                let _ = shared.reports.0.try_send(Report::Pass(record));
             }
             Err(_) if shared.stop.load(Ordering::Relaxed) => break,
             Err(RecvTimeoutError::Timeout) => {}
@@ -704,7 +757,7 @@ fn dispatch<N: NodesEnum>(epochs: &Epochs<N>, shared: &Shared) {
     // Passes dropped in a row, so a run of them is reported once.
     let mut dropping = 0u64;
     while !shared.stop.load(Ordering::Relaxed) {
-        let wanted = epochs.wanted.lock().unwrap().clone();
+        let wanted = epochs.wanted.load_full();
         let dispatching = current.as_ref().is_some_and(|(epoch, _)| Arc::ptr_eq(epoch, &wanted));
         // Move on to the wanted epoch once a worker's ready for it.
         let sender = if !dispatching && wanted.ready.load(Ordering::Acquire) > 0 {
@@ -718,7 +771,7 @@ fn dispatch<N: NodesEnum>(epochs: &Epochs<N>, shared: &Shared) {
             }
             wanted.begin(sequence);
             log::debug!("Epoch {} running from pass {sequence}", wanted.number);
-            *epochs.running.lock().unwrap() = Some(wanted.clone());
+            epochs.running.store(Some(wanted.clone()));
             current = Some((wanted, sender)); // dropping the old epoch's sender ends its passes
         }
         let Some((_, sender)) = &current else {

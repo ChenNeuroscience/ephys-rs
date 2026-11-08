@@ -15,7 +15,8 @@
 
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use super::engine::{NodeId, PoolStatus};
 use super::triggers::{AnyTrigger, DirectTriggers, TriggerKey, TriggersEnum};
@@ -46,8 +47,37 @@ pub struct Exchange {
     shared: Mutex<HashMap<(NodeId, TypeId), Entry>>,
     /// Pass triggers triggered, until they're done: how far along each is (0 until a pass takes it).
     triggers: Mutex<HashMap<(NodeId, TriggerKey), PassTrigger>>,
+    /// How many there are, so passes needn't take the lock when there are none, as there almost never are. Set
+    /// with the lock held (see `Triggers`).
+    pending: AtomicUsize,
     /// Where direct triggers go: the app's.
     direct: Arc<DirectTriggers>,
+}
+
+/// The pass triggers, locked, which counts them as it's let go of.
+struct Triggers<'a> {
+    map: MutexGuard<'a, HashMap<(NodeId, TriggerKey), PassTrigger>>,
+    pending: &'a AtomicUsize,
+}
+
+impl Drop for Triggers<'_> {
+    fn drop(&mut self) {
+        self.pending.store(self.map.len(), Ordering::Release);
+    }
+}
+
+impl std::ops::Deref for Triggers<'_> {
+    type Target = HashMap<(NodeId, TriggerKey), PassTrigger>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.map
+    }
+}
+
+impl std::ops::DerefMut for Triggers<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.map
+    }
 }
 
 /// A pass trigger triggered: waiting for a pass to take it, or taken, and how far along (0 to 1).
@@ -71,13 +101,16 @@ impl Exchange {
 
     /// Triggers node `node`'s pass trigger `trigger`: its next pass takes it.
     pub fn trigger(&self, node: NodeId, trigger: AnyTrigger) {
-        self.triggers.lock().unwrap().insert((node, trigger.key()), PassTrigger::Triggered(trigger));
+        self.triggers().insert((node, trigger.key()), PassTrigger::Triggered(trigger));
     }
 
     /// How far along node `node`'s trigger of kind `kind` is (0 to 1), if it's been triggered and isn't done (or
     /// stopped).
     pub fn trigger_progress(&self, node: NodeId, kind: impl Into<TriggerKey>) -> Option<f32> {
-        self.triggers.lock().unwrap().get(&(node, kind.into())).and_then(|t| match t {
+        if self.pending.load(Ordering::Acquire) == 0 {
+            return None;
+        }
+        self.triggers().get(&(node, kind.into())).and_then(|t| match t {
             PassTrigger::Triggered(_) => Some(0.0),
             PassTrigger::Running(progress) => Some(*progress),
             PassTrigger::Cancelled => None,
@@ -87,7 +120,7 @@ impl Exchange {
     /// Stops node `node`'s trigger of kind `kind`, if it's been triggered: its passes abandon what they were doing.
     pub fn cancel(&self, node: NodeId, kind: impl Into<TriggerKey>) {
         let kind = kind.into();
-        let mut triggers = self.triggers.lock().unwrap();
+        let mut triggers = self.triggers();
         match triggers.get(&(node, kind)) {
             // Not taken yet: as if it hadn't been triggered.
             Some(PassTrigger::Triggered(_)) => {
@@ -102,7 +135,10 @@ impl Exchange {
 
     /// For `Pass`: whether node `node`'s trigger of kind `kind` has been stopped, forgetting it if so.
     pub(crate) fn take_cancel(&self, node: NodeId, kind: TriggerKey) -> bool {
-        let mut triggers = self.triggers.lock().unwrap();
+        if self.pending.load(Ordering::Acquire) == 0 {
+            return false;
+        }
+        let mut triggers = self.triggers();
         let cancelled = matches!(triggers.get(&(node, kind)), Some(PassTrigger::Cancelled));
         if cancelled {
             triggers.remove(&(node, kind));
@@ -112,7 +148,10 @@ impl Exchange {
 
     /// For `Pass`: node `node`'s trigger of kind `kind`, of the program's `T`, if it's been triggered, taking it.
     pub(crate) fn take_trigger<T: TriggersEnum>(&self, node: NodeId, kind: T::Kind) -> Option<T> {
-        let mut triggers = self.triggers.lock().unwrap();
+        if self.pending.load(Ordering::Acquire) == 0 {
+            return None;
+        }
+        let mut triggers = self.triggers();
         let state = triggers.get_mut(&(node, kind.into()))?;
         if !matches!(state, PassTrigger::Triggered(_)) {
             return None;
@@ -123,7 +162,7 @@ impl Exchange {
 
     /// For `Pass`: how far along a trigger taken is, or (`None`) that it's done.
     pub(crate) fn set_trigger_progress(&self, node: NodeId, kind: TriggerKey, progress: Option<f32>) {
-        let mut triggers = self.triggers.lock().unwrap();
+        let mut triggers = self.triggers();
         match progress {
             // Not over a stop the pass hasn't seen yet.
             Some(_) if matches!(triggers.get(&(node, kind)), Some(PassTrigger::Cancelled)) => {}
@@ -134,6 +173,11 @@ impl Exchange {
                 triggers.remove(&(node, kind));
             }
         }
+    }
+
+    /// The pass triggers, locked; counted in `pending` when let go of.
+    fn triggers(&self) -> Triggers<'_> {
+        Triggers { map: self.triggers.lock().unwrap(), pending: &self.pending }
     }
 
     /// Node `node`'s shared `T`, made with `make` if it hasn't one yet (see `Pass::shared`).

@@ -112,7 +112,9 @@ The passes never wait on the GUI, nor it on them. Each run has an [`Exchange`](.
 - Each node keeps there whatever its passes and its window share, of any type (`Pass::shared`, `UiContext::shared`).
   The engine and GUI don't treat any of it specially. The usual thing is a [pool](../src/standard_components/pool.rs)
   of buffers, as between nodes' threads and the passes: passes fill buffers (or swap their own in) and queue them;
-  the window reads the newest, giving the rest back. The dev tools show each such pool on the GUI's thread.
+  the window reads the newest, giving the rest back. A window that needs everything sent, not only the newest (a log's
+  lines, the tracker's path), takes every buffer, in order, and keeps what it likes on its own side; until it does,
+  what's new waits in the node's state. The dev tools show each such pool on the GUI's thread.
 - **Direct triggers** ([`triggers.rs`](../src/core/triggers.rs)) don't wait for a pass: the app delivers them on the GUI's
   thread, running or not, so they belong to it rather than a run. A setting's update from a pass is one.
 - Once a run's stopped, the app keeps its exchange, so everything goes on showing what it last had, until the next
