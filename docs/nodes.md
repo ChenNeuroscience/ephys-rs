@@ -69,7 +69,7 @@ nodes with a view are. Both get a [`UiContext`](../src/core/engine/ui_context.rs
   settings menu.
 - `node_toolbar_buttons`: the same, with buttons of the pane's own beside them, at the right of the toolbar.
 - `controlled_by`: for each setting, the names of the nodes with a control connected to it.
-- `trigger`, `can_trigger`, `trigger_progress`, `open_control_target`: see below.
+- `trigger`, `can_trigger`, `trigger_progress`, `cancel_trigger`, `open_control_target`: see below.
 
 Help that's more than a tooltip (examples, a cheat sheet) goes behind `widgets::help_link`: dimmed text with a dotted
 underline, its help in a popup while the pointer's over it, or, clicked, until something else is. `widgets::with_help`
@@ -109,21 +109,25 @@ does this with frames.
 
 ## Triggers
 
-Anything sent to a node is a trigger, and there are two kinds, by how it gets there.
+Anything sent to a node is a trigger. Each is a type of its own implementing
+[`Trigger`](../src/core/triggers.rs), carrying whatever it needs to (`AutoDetect` nothing; `RunOnFiles` the files), with
+a name to show; a node lists the kinds a setting takes (`&[AutoDetect::KIND]`). There are two ways one's delivered.
 
-A setting can offer **pass triggers** (`triggers(setting)`), as well as be set: "auto detect", say. A control connected to
-it triggers one (`UiContext::trigger(Some(control), name)`), as can the node's own window (`None`); the node's next pass
-takes it (`Pass::triggered`), reports progress (`Pass::trigger_progress`), and finishes (`Pass::trigger_done`).
-Meanwhile it can be stopped (`UiContext::cancel_trigger`): the passes then see `Pass::trigger_cancelled`, and abandon it. Since
+A setting can take **pass triggers** (`triggers(setting)`), as well as be set: `AutoDetect`, say. A control connected to
+it sends one (`UiContext::trigger(Some(control), AutoDetect)`), as can the node's own window (`None`); the node's next
+pass takes it (`Pass::triggered::<AutoDetect>()`, which gives it back), reports progress (`Pass::trigger_progress`), and
+finishes (`Pass::trigger_done`). Meanwhile it can be stopped (`UiContext::cancel_trigger`): the passes then see
+`Pass::trigger_cancelled`, and abandon it. Since
 passes can't change the graph, it triggers an update of what it finds (`Pass::trigger_settings_update(setting, value)`),
 and the GUI applies it as an edit. The [Continuous Gain](../src/standard_components/ephys/continuous_gain.rs), [Spike Gain](../src/standard_components/spikes/spike_gain.rs) and
 [Spike Detector](../src/standard_components/spikes/spike_detector.rs) work this way, triggered from the Spike Viewer.
 
 **Direct triggers** ([`triggers.rs`](../src/core/triggers.rs)) need no pass, or even a run: they're delivered on the GUI's
 thread, whatever's going on. Every setting takes one without saying so, the settings update above, which isn't applied
-while settings are locked. A setting can offer others (`direct_triggers(setting)`), which reach `Node::on_trigger`, with
-whatever was sent. A node sends one through a control with a `TriggerHandle`, from the `ControlTriggers` it's given in
-`prepare_to_record`, which it can keep and use from any thread.
+while settings are locked. A setting can take others (`direct_triggers(setting)`), which reach `Node::on_trigger` as an
+`AnyTrigger`, taken as what it is with `take::<RunOnFiles>()`. A node sends one through a control with a
+`TriggerHandle<T>`, from the `ControlTriggers` it's given in `prepare_to_record` (`handle::<RunOnFiles>(control)`), which
+it can keep and use from any thread.
 
 ## Threads of its own
 
@@ -140,7 +144,7 @@ from a pool, for its thread to write; see [`recording`](../src/standard_componen
 it returns comes back to the first pass that records (`Pass::take_prepared`). Passes see `Pass::recording`. The graph
 can't change while recording, so everything that records has prepared.
 
-A writer has an "after recording" control. Connected to a setting with the `run_command::RUN_ON_FILES` direct trigger,
+A writer has an "after recording" control. Connected to a setting with the `run_command::RunOnFiles` direct trigger,
 it sends the paths of the files once they're finished (not when recording stops, which is sooner), and only if
 something was recorded. The [Run Command](../src/standard_components/other/run_command.rs) node takes it, and neither
 knows what's at the other end: anything can send files to run on.

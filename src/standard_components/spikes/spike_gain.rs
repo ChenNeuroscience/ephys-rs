@@ -8,7 +8,8 @@ use eframe::egui;
 use serde::{Deserialize, Serialize};
 
 use crate::core::engine::{Category, Input, Node, NodeInfo, Output, Pass, SettingPort, UiContext};
-use crate::standard_components::auto_detect::{AUTO_DETECT, SAMPLING, auto_detect_ui, detecting};
+use crate::core::triggers::Trigger;
+use crate::standard_components::auto_detect::{AutoDetect, SAMPLING, auto_detect_ui, detecting};
 use crate::standard_components::spikes::{
     Channels, DEFAULT_RANGE_UV, GainScope, Gains, Polarity, RANGES_UV, SpikesBuffer,
 };
@@ -93,8 +94,8 @@ impl Node<Edges> for SpikeGain {
         }
     }
 
-    fn triggers(&self, _setting: usize) -> &'static [&'static str] {
-        &[AUTO_DETECT]
+    fn triggers(&self, _setting: usize) -> &'static [crate::core::triggers::TriggerKind] {
+        &[AutoDetect::KIND]
     }
 
     /// Multiplies each channel's waveforms by its gain (saying so on the spikes); and, when triggered, samples the
@@ -116,21 +117,21 @@ impl Node<Edges> for SpikeGain {
         let Some(Buffer::Spikes(spikes)) = pass.outputs.first() else { return };
         let channels = spikes.gains.len();
         let layout = Channels { count: channels, group_size: spikes.group_size };
-        if pass.triggered(AUTO_DETECT) {
+        if pass.triggered::<AutoDetect>().is_some() {
             let seconds = self.sampling.clamp(*SAMPLING.start(), *SAMPLING.end()) as f64;
             gaining.sampling = Some(Sampling { elapsed: 0.0, seconds, peaks: vec![0.0; channels] });
         }
-        if gaining.sampling.is_some() && pass.trigger_cancelled(AUTO_DETECT) {
+        if gaining.sampling.is_some() && pass.trigger_cancelled::<AutoDetect>() {
             gaining.sampling = None;
         }
         if let Some(sampling) = &mut gaining.sampling {
             sampling.add(spikes, gaining.polarity, pass.duration);
-            pass.trigger_progress(AUTO_DETECT, (sampling.elapsed / sampling.seconds) as f32);
+            pass.trigger_progress::<AutoDetect>((sampling.elapsed / sampling.seconds) as f32);
             if sampling.elapsed >= sampling.seconds {
                 let mut gains = self.gains.clone();
                 gains.set_ranges(&sampling.choose(self.multiple, &spikes.thresholds), layout);
                 pass.trigger_settings_update(0, Setting::Gains(gains));
-                pass.trigger_done(AUTO_DETECT);
+                pass.trigger_done::<AutoDetect>();
                 gaining.sampling = None;
             }
         }
@@ -303,7 +304,7 @@ mod tests {
         let passes = (4.0 / PASS_DURATION).round() as u64;
         let mut outputs = [Buffer::Spikes(buffer)];
         let exchange = Pass::<Edges>::new(0, PASS_DURATION, &[], &mut []).exchange;
-        exchange.trigger(NodeId(0), AUTO_DETECT);
+        exchange.trigger(NodeId(0), crate::core::triggers::AnyTrigger::new(AutoDetect));
         for sequence in 0..passes {
             let Buffer::Spikes(spikes) = &mut outputs[0] else { unreachable!() };
             spikes.clear();
@@ -318,7 +319,11 @@ mod tests {
             gain.process(&mut pass, &mut state);
             assert_eq!(state.sampling.is_some(), sequence + 1 < passes, "samples for 4 s, at pass {sequence}");
         }
-        assert_eq!(exchange.trigger_progress(NodeId(0), AUTO_DETECT), None, "done");
+        assert_eq!(
+            exchange.trigger_progress(NodeId(0), crate::core::triggers::TriggerKind::of::<AutoDetect>()),
+            None,
+            "done"
+        );
         let updates = exchange.direct_triggers().take_settings_updates();
         let Some(Setting::Gains(gains)) = updates[0].2.downcast_ref::<Setting>() else { panic!() };
         let close = |a: f32, b: f32| (a - b).abs() < 0.01;
@@ -343,7 +348,7 @@ mod tests {
         let mut state = gain.initial_state(&[Some(DataStream::Spikes(stream))]);
         let mut outputs = [Buffer::Spikes(stream.buffer(PASS_DURATION))];
         let exchange = Pass::<Edges>::new(0, PASS_DURATION, &[], &mut []).exchange;
-        exchange.trigger(NodeId(0), AUTO_DETECT);
+        exchange.trigger(NodeId(0), crate::core::triggers::AnyTrigger::new(AutoDetect));
         let mut run = |sequence| {
             let mut pass = Pass::new(sequence, PASS_DURATION, &[], &mut outputs);
             pass.exchange = exchange;
@@ -351,14 +356,21 @@ mod tests {
         };
         run(0);
         run(1);
-        assert!(exchange.trigger_progress(NodeId(0), AUTO_DETECT).is_some(), "sampling");
-        exchange.cancel(NodeId(0), AUTO_DETECT);
-        assert_eq!(exchange.trigger_progress(NodeId(0), AUTO_DETECT), None, "stopped, as far as the GUI's concerned");
+        assert!(
+            exchange.trigger_progress(NodeId(0), crate::core::triggers::TriggerKind::of::<AutoDetect>()).is_some(),
+            "sampling"
+        );
+        exchange.cancel(NodeId(0), crate::core::triggers::TriggerKind::of::<AutoDetect>());
+        assert_eq!(
+            exchange.trigger_progress(NodeId(0), crate::core::triggers::TriggerKind::of::<AutoDetect>()),
+            None,
+            "stopped, as far as the GUI's concerned"
+        );
         for sequence in 2..600 {
             run(sequence);
         }
         assert!(exchange.direct_triggers().take_settings_updates().is_empty(), "nothing chosen");
-        assert_eq!(exchange.trigger_progress(NodeId(0), AUTO_DETECT), None);
+        assert_eq!(exchange.trigger_progress(NodeId(0), crate::core::triggers::TriggerKind::of::<AutoDetect>()), None);
     }
 
     /// Its window, a gain for each tetrode. See tests/snapshots/.

@@ -7,9 +7,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::Edges;
 use crate::core::engine::UiContext;
+use crate::core::triggers::Trigger;
 
-/// The trigger.
-pub const AUTO_DETECT: &str = "auto detect";
+/// The trigger: sample the data for a while, then choose settings from it.
+pub struct AutoDetect;
+
+impl Trigger for AutoDetect {
+    const NAME: &'static str = "auto detect";
+}
 /// How long the passes can sample for, in seconds.
 pub const SAMPLING: std::ops::RangeInclusive<f32> = 4.0..=60.0;
 
@@ -129,14 +134,14 @@ impl PercentMultiple {
 pub fn auto_detect_ui(ui: &mut egui::Ui, context: &mut UiContext<Edges>, control: Option<usize>, tip: &str) {
     ui.horizontal(|ui| {
         // While detecting, it can be stopped.
-        if let Some(progress) = context.trigger_progress(control, AUTO_DETECT) {
+        if let Some(progress) = context.trigger_progress::<AutoDetect>(control) {
             if ui.button("Stop").on_hover_text("Stop detecting, leaving things as they were").clicked() {
-                context.cancel_trigger(control, AUTO_DETECT);
+                context.cancel_trigger::<AutoDetect>(control);
             }
             ui.add(egui::ProgressBar::new(progress).desired_width(80.0).show_percentage());
             return;
         }
-        let can = context.can_trigger(control, AUTO_DETECT) && !context.locked;
+        let can = context.can_trigger::<AutoDetect>(control) && !context.locked;
         let why = if context.locked { "Not while recording" } else { "Only while acquiring: it needs data" };
         if ui
             .add_enabled(can, egui::Button::new("Auto detect"))
@@ -144,14 +149,14 @@ pub fn auto_detect_ui(ui: &mut egui::Ui, context: &mut UiContext<Edges>, control
             .on_disabled_hover_text(why)
             .clicked()
         {
-            context.trigger(control, AUTO_DETECT);
+            context.trigger(control, AutoDetect);
         }
     });
 }
 
 /// Whether the node's auto-detect is going (its settings for it can't change meanwhile).
 pub fn detecting(context: &UiContext<Edges>) -> bool {
-    context.trigger_progress(None, AUTO_DETECT).is_some()
+    context.trigger_progress::<AutoDetect>(None).is_some()
 }
 
 #[cfg(test)]

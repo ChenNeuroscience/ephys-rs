@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use crate::core::exchange::Exchange;
+use crate::core::triggers::{Trigger, TriggerKind};
 
 use super::{Buffer, Edges, NodeId, Recording};
 
@@ -55,26 +56,26 @@ impl<'a, E: Edges> Pass<'a, E> {
         self.exchange.shared(self.node, make)
     }
 
-    /// Whether the node's trigger `name` (see `Node::triggers`) has been triggered, taking it if so: the node then says
-    /// how it's getting on (`trigger_progress`) until it's done (`trigger_done`).
-    pub fn triggered(&self, name: &'static str) -> bool {
-        self.exchange.take_trigger(self.node, name)
+    /// The node's pass trigger `T` (see `Node::triggers`), if it's been triggered, taking it: the node then says how
+    /// it's getting on (`trigger_progress`) until it's done (`trigger_done`).
+    pub fn triggered<T: Trigger>(&self) -> Option<T> {
+        self.exchange.take_trigger::<T>(self.node)
     }
 
-    /// Whether the node's trigger `name`, taken, has been stopped since: the node should abandon what it's doing
-    /// for it (it's then done).
-    pub fn trigger_cancelled(&self, name: &'static str) -> bool {
-        self.exchange.take_cancel(self.node, name)
+    /// Whether the node's trigger `T`, taken, has been stopped since: the node should abandon what it's doing for it
+    /// (it's then done).
+    pub fn trigger_cancelled<T: Trigger>(&self) -> bool {
+        self.exchange.take_cancel(self.node, TriggerKind::of::<T>())
     }
 
-    /// How far along the node's trigger `name` is, from 0 to 1, for the GUI to show.
-    pub fn trigger_progress(&self, name: &'static str, progress: f32) {
-        self.exchange.set_trigger_progress(self.node, name, Some(progress.clamp(0.0, 1.0)));
+    /// How far along the node's trigger `T` is, from 0 to 1, for the GUI to show.
+    pub fn trigger_progress<T: Trigger>(&self, progress: f32) {
+        self.exchange.set_trigger_progress(self.node, TriggerKind::of::<T>(), Some(progress.clamp(0.0, 1.0)));
     }
 
-    /// The node's trigger `name` is done.
-    pub fn trigger_done(&self, name: &'static str) {
-        self.exchange.set_trigger_progress(self.node, name, None);
+    /// The node's trigger `T` is done.
+    pub fn trigger_done<T: Trigger>(&self) {
+        self.exchange.set_trigger_progress(self.node, TriggerKind::of::<T>(), None);
     }
 
     /// Triggers an update of the node's setting `setting` (by index) to `value`, which the app applies as an edit

@@ -19,7 +19,7 @@ pub mod ltx;
 mod npy;
 pub mod raw;
 
-use crate::standard_components::other::run_command::RUN_ON_FILES;
+use crate::standard_components::other::run_command::RunOnFiles;
 use std::io;
 use std::path::PathBuf;
 
@@ -65,13 +65,13 @@ pub trait Files<C>: Send {
     fn finish(self: Box<Self>) -> io::Result<Vec<PathBuf>>;
 }
 
-/// Sends what's been recorded to what control `control` is connected to, with `RUN_ON_FILES`, if it has that trigger,
+/// Sends what's been recorded to what control `control` is connected to, as `RunOnFiles`, if it takes that trigger,
 /// once the files are finished. Not if it failed.
 pub fn after_recording(triggers: &ControlTriggers, control: usize) -> Option<OnFinished> {
-    let handle = triggers.handle(control, RUN_ON_FILES)?;
+    let handle = triggers.handle::<RunOnFiles>(control)?;
     Some(Box::new(move |result| {
         if let Ok(paths) = result {
-            handle.trigger(paths);
+            handle.trigger(RunOnFiles(paths));
         }
     }))
 }

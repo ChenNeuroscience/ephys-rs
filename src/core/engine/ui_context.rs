@@ -8,6 +8,7 @@ use eframe::egui;
 use super::{Edges, NodeId};
 use crate::core::exchange::{Exchange, Shared};
 use crate::core::theme::Colours;
+use crate::core::triggers::{AnyTrigger, Trigger, TriggerKind};
 
 /// What a node's UI gets to work with besides its own settings.
 pub struct UiContext<'a, E: Edges> {
@@ -69,28 +70,29 @@ impl<E: Edges> UiContext<'_, E> {
         }
     }
 
-    /// Triggers the pass trigger `name` (see `Node::triggers`) of the setting that control `control` connects to, or (with
-    /// `None`) of the node's own. Nothing, if it can't be (see `can_trigger`).
-    pub fn trigger(&mut self, control: Option<usize>, name: &'static str) {
+    /// Sends `trigger`, a pass trigger (see `Node::triggers`), to the setting that control `control` connects to, or
+    /// (with `None`) to the node's own. Nothing, if it can't be (see `can_trigger`).
+    pub fn trigger<T: Trigger>(&mut self, control: Option<usize>, trigger: T) {
         if let Some(tools) = &mut self.tools {
-            tools.trigger(control, name);
+            tools.trigger(control, AnyTrigger::new(trigger));
         }
     }
 
-    /// Whether the pass trigger can be triggered: the graph running, and (for a control) connected to a setting that has it.
-    pub fn can_trigger(&self, control: Option<usize>, name: &'static str) -> bool {
-        self.tools.as_ref().is_some_and(|t| t.can_trigger(control, name))
+    /// Whether a pass trigger `T` can be sent: the graph running, and (for a control) connected to a setting that takes
+    /// it.
+    pub fn can_trigger<T: Trigger>(&self, control: Option<usize>) -> bool {
+        self.tools.as_ref().is_some_and(|t| t.can_trigger(control, TriggerKind::of::<T>()))
     }
 
-    /// How far along the trigger is (0 to 1), if it's been triggered and isn't done.
-    pub fn trigger_progress(&self, control: Option<usize>, name: &'static str) -> Option<f32> {
-        self.tools.as_ref().and_then(|t| t.trigger_progress(control, name))
+    /// How far along the trigger `T` is (0 to 1), if it's been sent and isn't done.
+    pub fn trigger_progress<T: Trigger>(&self, control: Option<usize>) -> Option<f32> {
+        self.tools.as_ref().and_then(|t| t.trigger_progress(control, TriggerKind::of::<T>()))
     }
 
-    /// Stops the trigger, if it's been triggered and isn't done: the node abandons what it was doing for it.
-    pub fn cancel_trigger(&mut self, control: Option<usize>, name: &'static str) {
+    /// Stops the trigger `T`, if it's been sent and isn't done: the node abandons what it was doing for it.
+    pub fn cancel_trigger<T: Trigger>(&mut self, control: Option<usize>) {
         if let Some(tools) = &mut self.tools {
-            tools.cancel_trigger(control, name);
+            tools.cancel_trigger(control, TriggerKind::of::<T>());
         }
     }
 
@@ -119,12 +121,12 @@ impl<E: Edges> UiContext<'_, E> {
 /// and triggering pass triggers (see `Node::triggers`), and opening other nodes' windows. A view uses these through its
 /// `UiContext`.
 pub trait NodeToolbar {
-    /// Triggers a pass trigger (see `UiContext::trigger`).
-    fn trigger(&mut self, control: Option<usize>, name: &'static str);
-    fn can_trigger(&self, control: Option<usize>, name: &'static str) -> bool;
-    fn trigger_progress(&self, control: Option<usize>, name: &'static str) -> Option<f32>;
-    /// Stops a trigger triggered (see `UiContext::cancel_trigger`).
-    fn cancel_trigger(&mut self, control: Option<usize>, name: &'static str);
+    /// Sends a pass trigger (see `UiContext::trigger`).
+    fn trigger(&mut self, control: Option<usize>, trigger: AnyTrigger);
+    fn can_trigger(&self, control: Option<usize>, kind: TriggerKind) -> bool;
+    fn trigger_progress(&self, control: Option<usize>, kind: TriggerKind) -> Option<f32>;
+    /// Stops a trigger sent (see `UiContext::cancel_trigger`).
+    fn cancel_trigger(&mut self, control: Option<usize>, kind: TriggerKind);
     fn open_control_target(&mut self, control: usize);
 
     /// Whether the app's in advanced mode.

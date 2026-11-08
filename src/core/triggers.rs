@@ -7,23 +7,72 @@
 //! which it delivers as soon as it can, whether anything's running or not.
 //!
 //! Every setting takes one direct trigger without saying so: a new value for it (`Pass::trigger_settings_update`), which
-//! the app applies as an edit, unless settings are locked. The rest are named (`Node::direct_triggers`), carry whatever
-//! their sender gives them, and go to `Node::on_trigger`. A node sends one through a control with a `TriggerHandle`, from
-//! `ControlTriggers`, which it can keep for later and use from any thread.
+//! the app applies as an edit, unless settings are locked. The rest are `Trigger`s, each a type of its own carrying what
+//! it needs to, which a node says its settings take (`Node::direct_triggers`), and which go to `Node::on_trigger`. A node
+//! sends one through a control with a `TriggerHandle`, from `ControlTriggers`, which it can keep for later and use from
+//! any thread. Pass triggers are `Trigger`s too (see `Node::triggers`).
 
-use std::any::Any;
+use std::any::{Any, TypeId};
+use std::marker::PhantomData;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use eframe::egui;
 
 use super::engine::NodeId;
 
+/// Something a node can be sent, through a settings edge or by itself: a type of its own, carrying whatever it needs
+/// to (`RunOnFiles` its files, say), so what's sent is what's taken, whichever way it's delivered.
+pub trait Trigger: Sized + Send + 'static {
+    /// What it's called where it's shown: in the dev tools, say.
+    const NAME: &'static str;
+    /// Its kind, for a node to list (`&[AutoDetect::KIND]`, say).
+    const KIND: TriggerKind = TriggerKind::of::<Self>();
+}
+
+/// A kind of trigger, without what one carries: what a node says its settings take, and what a trigger's progress is
+/// kept by.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct TriggerKind {
+    id: TypeId,
+    pub name: &'static str,
+}
+
+impl TriggerKind {
+    pub const fn of<T: Trigger>() -> Self {
+        TriggerKind { id: TypeId::of::<T>(), name: T::NAME }
+    }
+}
+
+/// A trigger of some kind, on its way: taken as what it is by whatever it's for.
+pub struct AnyTrigger {
+    kind: TriggerKind,
+    trigger: Box<dyn Any + Send>,
+}
+
+impl AnyTrigger {
+    pub fn new<T: Trigger>(trigger: T) -> Self {
+        AnyTrigger { kind: TriggerKind::of::<T>(), trigger: Box::new(trigger) }
+    }
+
+    pub fn kind(&self) -> TriggerKind {
+        self.kind
+    }
+
+    /// It, if it's a `T`; otherwise, itself back.
+    pub fn take<T: Trigger>(self) -> Result<T, Self> {
+        match self.trigger.downcast::<T>() {
+            Ok(trigger) => Ok(*trigger),
+            Err(trigger) => Err(AnyTrigger { kind: self.kind, trigger }),
+        }
+    }
+}
+
 /// What a direct trigger's for.
 pub enum Triggered {
     /// A new value for the node's setting `setting` (by index).
     SettingsUpdate { setting: usize, value: Box<dyn Any + Send> },
-    /// The node's trigger `name`, with what its sender gave it.
-    Named { name: &'static str, payload: Box<dyn Any + Send> },
+    /// One of the node's direct triggers (see `Node::direct_triggers`).
+    Trigger(AnyTrigger),
 }
 
 /// The direct triggers waiting to be delivered: the app's, so they outlive any run.
@@ -62,7 +111,7 @@ impl DirectTriggers {
     pub fn take_settings_updates(&self) -> Vec<(NodeId, usize, Box<dyn Any + Send>)> {
         let updates = self.take().into_iter().filter_map(|(node, triggered)| match triggered {
             Triggered::SettingsUpdate { setting, value } => Some((node, setting, value)),
-            Triggered::Named { .. } => None,
+            Triggered::Trigger(_) => None,
         });
         updates.collect()
     }
@@ -72,26 +121,26 @@ impl Drop for DirectTriggers {
     /// Whatever's left never got to its node: the app closed first, while a thread finished up.
     fn drop(&mut self) {
         for (node, triggered) in self.take() {
-            if let Triggered::Named { name, .. } = triggered {
+            if let Triggered::Trigger(trigger) = triggered {
+                let name = trigger.kind().name;
                 log::warn!("Node {}'s \"{name}\" was triggered as the app closed, and didn't happen", node.0);
             }
         }
     }
 }
 
-/// A named direct trigger of one or more nodes, to use whenever, from any thread (see `ControlTriggers`).
-pub struct TriggerHandle {
+/// A direct trigger of one or more nodes, a `T`, to send whenever, from any thread (see `ControlTriggers`).
+pub struct TriggerHandle<T> {
     triggers: Arc<DirectTriggers>,
     nodes: Vec<NodeId>,
-    name: &'static str,
+    kind: PhantomData<fn(T)>,
 }
 
-impl TriggerHandle {
-    /// Triggers it, with `payload` (cloned for each node).
-    pub fn trigger<T: Clone + Send + 'static>(&self, payload: T) {
+impl<T: Trigger + Clone> TriggerHandle<T> {
+    /// Sends `trigger` (cloned for each node).
+    pub fn trigger(&self, trigger: T) {
         for node in &self.nodes {
-            let payload = Box::new(payload.clone());
-            self.triggers.send(*node, Triggered::Named { name: self.name, payload });
+            self.triggers.send(*node, Triggered::Trigger(AnyTrigger::new(trigger.clone())));
         }
     }
 }
@@ -100,11 +149,11 @@ impl TriggerHandle {
 /// the setting of theirs it connects to.
 pub struct ControlTriggers {
     triggers: Arc<DirectTriggers>,
-    controls: Vec<Vec<(NodeId, &'static [&'static str])>>,
+    controls: Vec<Vec<(NodeId, &'static [TriggerKind])>>,
 }
 
 impl ControlTriggers {
-    pub fn new(triggers: Arc<DirectTriggers>, controls: Vec<Vec<(NodeId, &'static [&'static str])>>) -> Self {
+    pub fn new(triggers: Arc<DirectTriggers>, controls: Vec<Vec<(NodeId, &'static [TriggerKind])>>) -> Self {
         ControlTriggers { triggers, controls }
     }
 
@@ -113,11 +162,12 @@ impl ControlTriggers {
         ControlTriggers { triggers: Arc::default(), controls: Vec::new() }
     }
 
-    /// A handle on the direct trigger `name` of what control `control` connects to, if that has one.
-    pub fn handle(&self, control: usize, name: &'static str) -> Option<TriggerHandle> {
+    /// A handle on the direct trigger `T` of what control `control` connects to, if that takes one.
+    pub fn handle<T: Trigger>(&self, control: usize) -> Option<TriggerHandle<T>> {
+        let kind = TriggerKind::of::<T>();
         let targets = self.controls.get(control)?.iter();
-        let nodes: Vec<NodeId> = targets.filter(|(_, names)| names.contains(&name)).map(|(node, _)| *node).collect();
-        (!nodes.is_empty()).then(|| TriggerHandle { triggers: self.triggers.clone(), nodes, name })
+        let nodes: Vec<NodeId> = targets.filter(|(_, kinds)| kinds.contains(&kind)).map(|(node, _)| *node).collect();
+        (!nodes.is_empty()).then(|| TriggerHandle { triggers: self.triggers.clone(), nodes, kind: PhantomData })
     }
 }
 
@@ -125,25 +175,43 @@ impl ControlTriggers {
 mod tests {
     use super::*;
 
+    #[derive(Clone, Debug, PartialEq)]
+    struct Go(u32);
+    impl Trigger for Go {
+        const NAME: &'static str = "go";
+    }
+    struct Stop;
+    impl Trigger for Stop {
+        const NAME: &'static str = "stop";
+    }
+
     #[test]
-    fn a_control_triggers_what_it_connects_to_that_has_the_trigger() {
+    fn a_control_triggers_what_it_connects_to_that_takes_the_trigger() {
         let triggers = Arc::new(DirectTriggers::default());
-        let both: &'static [&'static str] = &["go", "stop"];
-        let neither: &'static [&'static str] = &[];
+        let both: &'static [TriggerKind] = &[Go::KIND, Stop::KIND];
+        let neither: &'static [TriggerKind] = &[];
         let controls = vec![vec![], vec![(NodeId(1), both), (NodeId(2), neither), (NodeId(3), both)]];
         let controls = ControlTriggers::new(triggers.clone(), controls);
-        assert!(controls.handle(0, "go").is_none(), "connected to nothing");
-        assert!(controls.handle(1, "other").is_none(), "nothing has it");
-        assert!(controls.handle(2, "go").is_none(), "no such control");
-        controls.handle(1, "go").unwrap().trigger(7_u32);
-        let delivered: Vec<(NodeId, u32)> = triggers
+        assert!(controls.handle::<Go>(0).is_none(), "connected to nothing");
+        assert!(controls.handle::<Go>(2).is_none(), "no such control");
+        controls.handle::<Go>(1).unwrap().trigger(Go(7));
+        let delivered: Vec<(NodeId, Go)> = triggers
             .take()
             .into_iter()
             .map(|(node, triggered)| match triggered {
-                Triggered::Named { name: "go", payload } => (node, *payload.downcast::<u32>().unwrap()),
+                Triggered::Trigger(trigger) => (node, trigger.take::<Go>().ok().unwrap()),
                 _ => panic!(),
             })
             .collect();
-        assert_eq!(delivered, vec![(NodeId(1), 7), (NodeId(3), 7)]);
+        assert_eq!(delivered, vec![(NodeId(1), Go(7)), (NodeId(3), Go(7))]);
+    }
+
+    #[test]
+    fn a_trigger_is_taken_as_what_it_is() {
+        let trigger = AnyTrigger::new(Go(3));
+        assert_eq!(trigger.kind(), TriggerKind::of::<Go>());
+        assert_eq!(trigger.kind().name, "go");
+        let trigger = trigger.take::<Stop>().err().expect("not a Stop");
+        assert_eq!(trigger.take::<Go>().ok(), Some(Go(3)));
     }
 }

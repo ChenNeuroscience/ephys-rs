@@ -10,6 +10,7 @@ use super::icons::Icon;
 use super::toolbar;
 use crate::core::engine::{Graph, NodeId, NodeSet, NodeToolbar, Port, PortRole};
 use crate::core::exchange::Exchange;
+use crate::core::triggers::{AnyTrigger, TriggerKind};
 
 /// A node's toolbar, for a frame: what it shows, and where what's clicked goes.
 pub struct NodeTools<'e> {
@@ -21,8 +22,8 @@ pub struct NodeTools<'e> {
     pub advanced: bool,
     /// The triggers of the node's own settings; and for each of its controls, the node and the triggers of the setting
     /// it's connected to, if it is.
-    pub own_triggers: Vec<&'static str>,
-    pub controls: Vec<Option<(NodeId, &'static [&'static str])>>,
+    pub own_triggers: Vec<TriggerKind>,
+    pub controls: Vec<Option<(NodeId, &'static [TriggerKind])>>,
     /// Where pass triggers go, while running.
     pub exchange: Option<&'e Exchange>,
     /// What's clicked becomes these.
@@ -51,36 +52,37 @@ impl<'e> NodeTools<'e> {
         Some(NodeTools { id, show_in_basic, enabled, advanced, own_triggers, controls, exchange, events })
     }
 
-    /// The node whose trigger `name` is meant, if it has one: the node's own, or the one a control connects to.
-    fn trigger_node(&self, control: Option<usize>, name: &'static str) -> Option<NodeId> {
+    /// The node whose trigger of kind `kind` is meant, if it takes one: the node itself, or the one a control connects
+    /// to.
+    fn trigger_node(&self, control: Option<usize>, kind: TriggerKind) -> Option<NodeId> {
         match control {
-            None => self.own_triggers.contains(&name).then_some(self.id),
+            None => self.own_triggers.contains(&kind).then_some(self.id),
             Some(control) => {
                 let (node, triggers) = self.controls.get(control).copied().flatten()?;
-                triggers.contains(&name).then_some(node)
+                triggers.contains(&kind).then_some(node)
             }
         }
     }
 }
 
 impl NodeToolbar for NodeTools<'_> {
-    fn trigger(&mut self, control: Option<usize>, name: &'static str) {
-        if let (Some(node), Some(exchange)) = (self.trigger_node(control, name), self.exchange) {
-            exchange.trigger(node, name);
+    fn trigger(&mut self, control: Option<usize>, trigger: AnyTrigger) {
+        if let (Some(node), Some(exchange)) = (self.trigger_node(control, trigger.kind()), self.exchange) {
+            exchange.trigger(node, trigger);
         }
     }
 
-    fn can_trigger(&self, control: Option<usize>, name: &'static str) -> bool {
-        self.exchange.is_some() && self.trigger_node(control, name).is_some()
+    fn can_trigger(&self, control: Option<usize>, kind: TriggerKind) -> bool {
+        self.exchange.is_some() && self.trigger_node(control, kind).is_some()
     }
 
-    fn trigger_progress(&self, control: Option<usize>, name: &'static str) -> Option<f32> {
-        self.exchange?.trigger_progress(self.trigger_node(control, name)?, name)
+    fn trigger_progress(&self, control: Option<usize>, kind: TriggerKind) -> Option<f32> {
+        self.exchange?.trigger_progress(self.trigger_node(control, kind)?, kind)
     }
 
-    fn cancel_trigger(&mut self, control: Option<usize>, name: &'static str) {
-        if let (Some(node), Some(exchange)) = (self.trigger_node(control, name), self.exchange) {
-            exchange.cancel(node, name);
+    fn cancel_trigger(&mut self, control: Option<usize>, kind: TriggerKind) {
+        if let (Some(node), Some(exchange)) = (self.trigger_node(control, kind), self.exchange) {
+            exchange.cancel(node, kind);
         }
     }
 

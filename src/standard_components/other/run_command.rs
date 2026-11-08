@@ -1,5 +1,5 @@
 //! Runs a program on files, in a terminal of its own, whatever the graph's doing: by hand, on files picked here, or by
-//! itself, on files sent to it with `RUN_ON_FILES` (by a writer, once it's finished recording them, say). It's nothing
+//! itself, on files sent to it with `RunOnFiles` (by a writer, once it's finished recording them, say). It's nothing
 //! to do with passes: the files come as a direct trigger (see `crate::core::triggers`).
 //!
 //! The terminal's a process apart, running a script written here, so its output's there, not here, and it carries on if
@@ -22,13 +22,19 @@ use serde::{Deserialize, Serialize};
 use crate::core::engine::{Category, EdgeInfo, EdgeType, Node, NodeInfo, Output, SettingPort, UiContext};
 use crate::core::gui::widgets::{Icon, help_link, small_icon_button};
 use crate::core::theme::Colours;
+use crate::core::triggers::{AnyTrigger, Trigger};
 use crate::standard_components::recording::expand;
 use crate::standard_components::widgets::{combo, setting, settings_grid};
 use crate::{DataStream, Edges, Setting};
 
-/// The direct trigger of a command setting (see `crate::core::triggers`): run it on the files sent with it, a
-/// `Vec<PathBuf>`. Whatever sends them, and whenever: a writer's are what it's just finished recording.
-pub const RUN_ON_FILES: &str = "run on files";
+/// The direct trigger of a command setting (see `crate::core::triggers`): run it on these files. Whatever sends them,
+/// and whenever: a writer's are what it's just finished recording.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RunOnFiles(pub Vec<PathBuf>);
+
+impl Trigger for RunOnFiles {
+    const NAME: &'static str = "run on files";
+}
 
 /// In the arguments: replaced by a file, running the program once for each.
 const EACH_FILE: &str = "{file}";
@@ -1176,16 +1182,14 @@ impl Node<Edges> for RunCommand {
         }
     }
 
-    fn direct_triggers(&self, _setting: usize) -> &'static [&'static str] {
-        &[RUN_ON_FILES]
+    fn direct_triggers(&self, _setting: usize) -> &'static [crate::core::triggers::TriggerKind] {
+        &[RunOnFiles::KIND]
     }
 
-    /// Runs the program on what's been recorded.
-    fn on_trigger(&mut self, name: &'static str, payload: Box<dyn std::any::Any + Send>) {
-        if name == RUN_ON_FILES
-            && let Ok(paths) = payload.downcast::<Vec<PathBuf>>()
-        {
-            self.run_on(self.settings.matching(*paths));
+    /// Runs the program on the files sent.
+    fn on_trigger(&mut self, trigger: AnyTrigger) {
+        if let Ok(RunOnFiles(paths)) = trigger.take::<RunOnFiles>() {
+            self.run_on(self.settings.matching(paths));
         }
     }
 
@@ -1631,10 +1635,10 @@ mod tests {
 
         let waiting = direct.take();
         assert_eq!(waiting.len(), 1, "once the files are finished");
-        let (to, Triggered::Named { name, payload }) = waiting.into_iter().next().unwrap() else { panic!() };
-        assert_eq!((to, name), (command, RUN_ON_FILES));
+        let (to, Triggered::Trigger(trigger)) = waiting.into_iter().next().unwrap() else { panic!() };
+        assert_eq!((to, trigger.kind()), (command, RunOnFiles::KIND));
         let Some(Nodes::RunCommand(node)) = graph.get_mut(command).map(|e| &mut e.node) else { panic!() };
-        Node::on_trigger(node, name, payload);
+        Node::on_trigger(node, trigger);
         wait_for_job(&node.job);
         assert_eq!(node.job.problem(), None);
         let said_text = std::fs::read_to_string(&said).unwrap();

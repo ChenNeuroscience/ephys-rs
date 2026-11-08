@@ -115,7 +115,7 @@ The passes never wait on the GUI, nor it on them. Each run has an [`Exchange`](.
   thread, running or not, so they belong to it rather than a run. A setting's update from a pass is one.
 - Stopping is a pause: the app keeps the run's exchange, so everything goes on showing what it last had, until the next
   run, or until the graph changes in a way that would start a new epoch (`Plan::same_shape`). Triggers need a run.
-- The GUI can **trigger** a node's pass triggers (`Node::triggers`): "auto detect", say, from a viewer through a settings
+- The GUI can **trigger** a node's pass triggers (`Node::triggers`): `AutoDetect`, say, from a viewer through a settings
   edge, or from the node's own window. A pass takes it (`Pass::triggered`), says how it's going, and when it's done.
 - Passes can't change the graph, but can **trigger an update** of a setting (`Pass::trigger_settings_update`), which the
   GUI applies as an edit, unless settings are locked.

@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use super::engine::{NodeId, PoolStatus};
-use super::triggers::DirectTriggers;
+use super::triggers::{AnyTrigger, DirectTriggers, Trigger, TriggerKind};
 
 /// Something a node's passes and its window share (see `Exchange`).
 pub trait Shared: Any + Send + Sync {
@@ -45,15 +45,14 @@ pub struct Exchange {
     /// What each node shares, by type.
     shared: Mutex<HashMap<(NodeId, TypeId), Entry>>,
     /// Pass triggers triggered, until they're done: how far along each is (0 until a pass takes it).
-    triggers: Mutex<HashMap<(NodeId, &'static str), Trigger>>,
+    triggers: Mutex<HashMap<(NodeId, TriggerKind), PassTrigger>>,
     /// Where direct triggers go: the app's.
     direct: Arc<DirectTriggers>,
 }
 
 /// A pass trigger triggered: waiting for a pass to take it, or taken, and how far along (0 to 1).
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum Trigger {
-    Triggered,
+enum PassTrigger {
+    Triggered(AnyTrigger),
     Running(f32),
     /// Stopped by the GUI, until a pass sees it has been.
     Cancelled,
@@ -70,68 +69,68 @@ impl Exchange {
         &self.direct
     }
 
-    /// Triggers node `node`'s pass trigger `name`: its next pass takes it.
-    pub fn trigger(&self, node: NodeId, name: &'static str) {
-        self.triggers.lock().unwrap().insert((node, name), Trigger::Triggered);
+    /// Triggers node `node`'s pass trigger `trigger`: its next pass takes it.
+    pub fn trigger(&self, node: NodeId, trigger: AnyTrigger) {
+        self.triggers.lock().unwrap().insert((node, trigger.kind()), PassTrigger::Triggered(trigger));
     }
 
-    /// How far along node `node`'s trigger `name` is (0 to 1), if it's been triggered and isn't done (or stopped).
-    pub fn trigger_progress(&self, node: NodeId, name: &'static str) -> Option<f32> {
-        self.triggers.lock().unwrap().get(&(node, name)).and_then(|t| match t {
-            Trigger::Triggered => Some(0.0),
-            Trigger::Running(progress) => Some(*progress),
-            Trigger::Cancelled => None,
+    /// How far along node `node`'s trigger of kind `kind` is (0 to 1), if it's been triggered and isn't done (or
+    /// stopped).
+    pub fn trigger_progress(&self, node: NodeId, kind: TriggerKind) -> Option<f32> {
+        self.triggers.lock().unwrap().get(&(node, kind)).and_then(|t| match t {
+            PassTrigger::Triggered(_) => Some(0.0),
+            PassTrigger::Running(progress) => Some(*progress),
+            PassTrigger::Cancelled => None,
         })
     }
 
-    /// Stops node `node`'s trigger `name`, if it's been triggered: its passes abandon what they were doing.
-    pub fn cancel(&self, node: NodeId, name: &'static str) {
+    /// Stops node `node`'s trigger of kind `kind`, if it's been triggered: its passes abandon what they were doing.
+    pub fn cancel(&self, node: NodeId, kind: TriggerKind) {
         let mut triggers = self.triggers.lock().unwrap();
-        match triggers.get(&(node, name)) {
+        match triggers.get(&(node, kind)) {
             // Not taken yet: as if it hadn't been triggered.
-            Some(Trigger::Triggered) => {
-                triggers.remove(&(node, name));
+            Some(PassTrigger::Triggered(_)) => {
+                triggers.remove(&(node, kind));
             }
-            Some(Trigger::Running(_)) => {
-                triggers.insert((node, name), Trigger::Cancelled);
+            Some(PassTrigger::Running(_)) => {
+                triggers.insert((node, kind), PassTrigger::Cancelled);
             }
             _ => {}
         }
     }
 
-    /// For `Pass`: whether node `node`'s trigger `name` has been stopped, forgetting it if so.
-    pub(crate) fn take_cancel(&self, node: NodeId, name: &'static str) -> bool {
+    /// For `Pass`: whether node `node`'s trigger of kind `kind` has been stopped, forgetting it if so.
+    pub(crate) fn take_cancel(&self, node: NodeId, kind: TriggerKind) -> bool {
         let mut triggers = self.triggers.lock().unwrap();
-        let cancelled = triggers.get(&(node, name)) == Some(&Trigger::Cancelled);
+        let cancelled = matches!(triggers.get(&(node, kind)), Some(PassTrigger::Cancelled));
         if cancelled {
-            triggers.remove(&(node, name));
+            triggers.remove(&(node, kind));
         }
         cancelled
     }
 
-    /// For `Pass`: whether node `node`'s trigger `name` has been triggered, taking it if so.
-    pub(crate) fn take_trigger(&self, node: NodeId, name: &'static str) -> bool {
+    /// For `Pass`: node `node`'s trigger `T`, if it's been triggered, taking it.
+    pub(crate) fn take_trigger<T: Trigger>(&self, node: NodeId) -> Option<T> {
         let mut triggers = self.triggers.lock().unwrap();
-        match triggers.get_mut(&(node, name)) {
-            Some(trigger @ Trigger::Triggered) => {
-                *trigger = Trigger::Running(0.0);
-                true
-            }
-            _ => false,
+        let state = triggers.get_mut(&(node, TriggerKind::of::<T>()))?;
+        if !matches!(state, PassTrigger::Triggered(_)) {
+            return None;
         }
+        let PassTrigger::Triggered(trigger) = std::mem::replace(state, PassTrigger::Running(0.0)) else { return None };
+        trigger.take::<T>().ok()
     }
 
     /// For `Pass`: how far along a trigger taken is, or (`None`) that it's done.
-    pub(crate) fn set_trigger_progress(&self, node: NodeId, name: &'static str, progress: Option<f32>) {
+    pub(crate) fn set_trigger_progress(&self, node: NodeId, kind: TriggerKind, progress: Option<f32>) {
         let mut triggers = self.triggers.lock().unwrap();
         match progress {
             // Not over a stop the pass hasn't seen yet.
-            Some(_) if triggers.get(&(node, name)) == Some(&Trigger::Cancelled) => {}
+            Some(_) if matches!(triggers.get(&(node, kind)), Some(PassTrigger::Cancelled)) => {}
             Some(progress) => {
-                triggers.insert((node, name), Trigger::Running(progress));
+                triggers.insert((node, kind), PassTrigger::Running(progress));
             }
             None => {
-                triggers.remove(&(node, name));
+                triggers.remove(&(node, kind));
             }
         }
     }
@@ -171,6 +170,26 @@ impl Exchange {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug, PartialEq)]
+    struct Level(f32);
+    impl Trigger for Level {
+        const NAME: &'static str = "level";
+    }
+
+    #[test]
+    fn a_pass_trigger_is_taken_with_what_it_carries_once() {
+        let exchange = Exchange::default();
+        let node = NodeId(1);
+        exchange.trigger(node, AnyTrigger::new(Level(0.5)));
+        assert_eq!(exchange.trigger_progress(node, Level::KIND), Some(0.0), "waiting");
+        assert_eq!(exchange.take_trigger::<Level>(NodeId(2)), None, "another node's");
+        assert_eq!(exchange.take_trigger::<Level>(node), Some(Level(0.5)));
+        assert_eq!(exchange.take_trigger::<Level>(node), None, "taken");
+        assert_eq!(exchange.trigger_progress(node, Level::KIND), Some(0.0), "running, till it's done");
+        exchange.set_trigger_progress(node, Level::KIND, None);
+        assert_eq!(exchange.trigger_progress(node, Level::KIND), None);
+    }
 
     #[derive(Default)]
     struct Counter(std::sync::atomic::AtomicU32);

@@ -843,7 +843,7 @@ fn gains_ui(ui: &mut egui::Ui, context: &mut UiContext<Edges>, gains: &mut Gains
     );
     let layout = Channels { count: channels as usize, group_size: 1 };
     let detecting =
-        context.trigger_progress(Some(GAINS), crate::standard_components::auto_detect::AUTO_DETECT).is_some();
+        context.trigger_progress::<crate::standard_components::auto_detect::AutoDetect>(Some(GAINS)).is_some();
     if gains.scope == GainScope::All {
         let mut range = gains.range_uv(0);
         let speed = range * 0.01;

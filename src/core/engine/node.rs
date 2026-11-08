@@ -9,6 +9,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use super::{Edges, Kind, NodeThread, Pass, PoolStatus, ThreadContext, UiContext};
+use crate::core::triggers::{AnyTrigger, TriggerKind};
 
 /// What a node's for, to people: its colour on the graph, and where it's offered. Nothing about how it runs depends
 /// on it.
@@ -177,18 +178,18 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     /// while running: "auto detect", say. A control connected to it can trigger one (`UiContext::trigger`), as can the
     /// node's own window; its passes take it (`Pass::triggered`), and may update its settings when they're done
     /// (`Pass::trigger_settings_update`).
-    fn triggers(&self, _setting: usize) -> &'static [&'static str] {
+    fn triggers(&self, _setting: usize) -> &'static [TriggerKind] {
         &[]
     }
 
     /// The direct triggers of one of the node's settings (by index): what can be triggered through it without a pass, or
     /// a run, delivered to `on_trigger` on the GUI's thread. See `crate::core::triggers`.
-    fn direct_triggers(&self, _setting: usize) -> &'static [&'static str] {
+    fn direct_triggers(&self, _setting: usize) -> &'static [TriggerKind] {
         &[]
     }
 
-    /// One of its `direct_triggers`, with what was sent with it.
-    fn on_trigger(&mut self, _name: &'static str, _payload: Box<dyn Any + Send>) {}
+    /// One of its `direct_triggers`, sent to it: `trigger.take::<T>()` has it as what it is.
+    fn on_trigger(&mut self, _trigger: AnyTrigger) {}
 
     /// Whether the node takes an input's buffer, to do as it likes with the data (swap it for another just as big,
     /// say, to hand to its thread or window), rather than only reading it. Nodes don't copy their inputs: the plan
