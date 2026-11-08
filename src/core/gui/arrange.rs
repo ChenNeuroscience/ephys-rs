@@ -67,16 +67,19 @@ pub fn arrange<N: NodeSet>(graph: &Graph<N>) -> HashMap<NodeId, [f32; 2]> {
             *weights.entry((from, to)).or_default() += weight;
         }
     }
+    // Nodes something leads to, which aren't placed as sources.
+    let led_to: std::collections::HashSet<NodeId> = weights.keys().map(|&(_, to)| to).collect();
     let mut pairs: Vec<_> = weights.into_iter().collect();
     pairs.sort_by_key(|((a, b), _)| (a.0, b.0)); // the same arrangement every time
-    // Nodes without inputs (sources) are pulled to the first column, by edges from a start node that isn't shown. (One
-    // that a settings edge counting as data leads to can't go further left than that edge lets it.)
+    // Nodes without inputs that nothing leads to (sources) are pulled to the first column, by edges from a start node
+    // that isn't shown. Not one a settings edge counting as data leads to (Run Command): it couldn't go further left
+    // anyway, and the pull, a long edge across every column, would drag it up or down out of line with what leads to it.
     let edge = |weight| EdgeLabel { weight, minlen: 1, ..Default::default() };
     layered.set_node(START, NodeLabel { width: 1.0, height: 1.0, ..Default::default() });
     let mut ids: Vec<NodeId> = sizes.keys().copied().collect();
     ids.sort_by_key(|id| id.0);
     for id in ids {
-        if graph.get(id).is_some_and(|e| e.node.inputs().is_empty()) {
+        if graph.get(id).is_some_and(|e| e.node.inputs().is_empty()) && !led_to.contains(&id) {
             layered.set_edge_with_label(START, key(id), edge(START_WEIGHT));
         }
     }
@@ -165,5 +168,23 @@ mod tests {
         let edge = graph.edge_into(port(command, PortRole::Setting, 0)).unwrap();
         graph.set_edge_disabled(edge, true);
         assert_eq!(arrange(&graph), placed, "disabled");
+    }
+
+    /// In the example rig, Run Command goes beside the writer that triggers it, above the Alarm Viewer (which goes beside
+    /// the Alarm Processor, below the writer), so the edges don't cross.
+    #[test]
+    fn a_node_placed_by_a_settings_edge_stays_in_line_with_what_leads_to_it() {
+        let mut graph = crate::example_graph();
+        let find = |graph: &Graph<Nodes>, label: &str| graph.iter().find(|(_, e)| e.label == label).unwrap().0;
+        let index = Nodes::TYPES.iter().position(|t| t.name == "Run Command").unwrap();
+        let command = graph.add(Nodes::create(index), [0.0, 0.0]);
+        let writer = find(&graph, "Write LTX");
+        let port = |node, role, index| Port { node, role, index };
+        graph.connect(port(writer, PortRole::Control, 4), port(command, PortRole::Setting, 0)).unwrap();
+        let placed = arrange(&graph);
+        let (alarms, processor) = (find(&graph, "Alarm Viewer"), find(&graph, "Alarm Processor"));
+        assert!(placed[&writer][1] < placed[&processor][1], "as the rig is: {placed:?}");
+        assert_eq!(placed[&command][0], placed[&alarms][0], "the same column");
+        assert!(placed[&command][1] < placed[&alarms][1], "{placed:?}");
     }
 }
