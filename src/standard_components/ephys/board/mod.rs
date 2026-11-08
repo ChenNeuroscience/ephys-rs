@@ -9,6 +9,7 @@
 
 pub mod capture;
 mod fake;
+mod liboni;
 pub mod node;
 mod oni;
 pub mod opal_kelly;
@@ -215,8 +216,8 @@ pub enum Source {
     },
     /// The generation 3 Open Ephys Acquisition Board.
     Oni {
-        /// liboni, if it isn't found automatically; blank to search.
-        library: String,
+        /// liboni's FT600 driver, if it isn't found automatically; blank to search.
+        driver: String,
     },
 }
 
@@ -248,6 +249,6 @@ pub fn open(source: &Source) -> io::Result<Box<dyn Board>> {
         Source::OpalKelly { board, bitfile, library } => {
             Box::new(opal_kelly::open(*board, blank_as_none(bitfile).as_deref(), blank_as_none(library).as_deref())?)
         }
-        Source::Oni { library } => Box::new(oni::open(blank_as_none(library).as_deref())?),
+        Source::Oni { driver } => Box::new(oni::open(blank_as_none(driver).as_deref())?),
     })
 }

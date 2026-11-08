@@ -238,9 +238,9 @@ impl Node<Edges> for AcquisitionBoard {
                         setting(ui, "Bitfile", |ui| path(ui, bitfile));
                         setting(ui, "Library", |ui| path(ui, library));
                     }
-                    Source::Oni { library } => {
-                        setting(ui, "Library", |ui| {
-                            ui.add(egui::TextEdit::singleline(library).hint_text("found automatically"))
+                    Source::Oni { driver } => {
+                        setting(ui, "Driver", |ui| {
+                            ui.add(egui::TextEdit::singleline(driver).hint_text("found automatically"))
                         });
                     }
                 }
@@ -343,7 +343,7 @@ fn source_ui(ui: &mut egui::Ui, source: &mut Source) -> egui::Response {
     let choices = [
         Source::default(),
         Source::OpalKelly { board: OpalKellyKind::OpenEphys, bitfile: String::new(), library: String::new() },
-        Source::Oni { library: String::new() },
+        Source::Oni { driver: String::new() },
     ];
     egui::ComboBox::from_id_salt("board")
         .selected_text(name(source))

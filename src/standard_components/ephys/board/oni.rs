@@ -1,14 +1,14 @@
 //! The generation 3 Open Ephys Acquisition Board, which runs Rhythm firmware behind an ONI (Open Neuro
 //! Interface) controller over USB 3 (an FTDI FT600). Ported from the Open Ephys acquisition board plugin
-//! (`Rhd2000ONIBoard`, `AcqBoardONI`).
+//! (`Rhd2000ONIBoard`, `AcqBoardONI`); liboni, the ONI host library, is ported in `liboni`.
 //!
-//! liboni (and its FT600 driver, `onidriver_ft600`, which it loads in turn) is loaded at runtime: it comes with
-//! the Open Ephys GUI's acquisition board plugin, and is looked for where the GUI puts it. FTDI's D3XX driver
-//! must be installed too.
+//! liboni's FT600 driver, `libonidriver_ft600`, is a library loaded at runtime, as it's built on FTDI's own: it
+//! comes with the program, and is otherwise looked for where the Open Ephys GUI puts it. On Windows, FTDI's D3XX
+//! USB driver must be installed too.
 //!
 //! This is the transport: the rest is in `rhythm`, shared with the earlier boards. Not yet tried on hardware.
 
-use std::ffi::{CStr, CString, c_char, c_int, c_void};
+use std::ffi::{c_char, c_int, c_void};
 use std::io;
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -16,32 +16,18 @@ use std::time::{Duration, Instant};
 
 use libloading::Library;
 
+use super::liboni::{self, Context, Driver, Stream};
 use super::opal_kelly::search_dirs;
 use super::rhythm::{RhythmBoard, Transport, sample_bytes};
 
-type Ctx = *mut c_void;
-
-/// A frame from liboni.
-#[repr(C)]
-struct Frame {
-    time: u64,
-    dev_idx: u32,
-    data_sz: u32,
-    data: *mut c_char,
-}
-
+/// liboni's driver for the board's USB 3 chip.
 #[cfg(windows)]
-const LIBRARY_NAME: &str = "liboni.dll";
+const DRIVER_NAME: &str = "libonidriver_ft600.dll";
 #[cfg(target_os = "macos")]
-const LIBRARY_NAME: &str = "liboni.dylib";
+const DRIVER_NAME: &str = "libonidriver_ft600.dylib";
 #[cfg(all(unix, not(target_os = "macos")))]
-const LIBRARY_NAME: &str = "liboni.so";
+const DRIVER_NAME: &str = "libonidriver_ft600.so";
 
-const ONI_OPT_RUNNING: c_int = 2;
-const ONI_OPT_RESET: c_int = 3;
-const ONI_OPT_RESETACQCOUNTER: c_int = 6;
-const ONI_OPT_BLOCKREADSIZE: c_int = 10;
-const ONI_EBADCONTROLLER: c_int = -29;
 const BLOCK_READ_SIZE: u32 = 24 * 1024;
 
 const DEVICE_INFO: u32 = 254;
@@ -78,23 +64,25 @@ const LED_ENABLE: u32 = 4;
 /// Frames read at a time while running.
 const FRAMES_PER_READ: usize = 128;
 
-macro_rules! oni_api {
+type DriverCtx = *mut c_void;
+
+macro_rules! driver_api {
     ($($name:ident($($arg:ty),*) -> $ret:ty;)*) => {
         #[allow(non_snake_case)]
-        struct Api {
+        struct DriverApi {
             $($name: unsafe extern "C" fn($($arg),*) -> $ret,)*
             _library: Library,
         }
 
-        impl Api {
+        impl DriverApi {
             /// # Safety
-            /// `library` must be liboni, whose functions have these signatures.
-            unsafe fn from_library(library: Library) -> Result<Api, String> {
+            /// `library` must be a liboni driver, whose functions have these signatures.
+            unsafe fn from_library(library: Library) -> Result<DriverApi, String> {
                 unsafe {
-                    Ok(Api {
+                    Ok(DriverApi {
                         $($name: *library
                             .get::<unsafe extern "C" fn($($arg),*) -> $ret>(stringify!($name))
-                            .map_err(|e| format!("liboni is missing {}: {e}", stringify!($name)))?,)*
+                            .map_err(|e| format!("the FT600 driver is missing {}: {e}", stringify!($name)))?,)*
                         _library: library,
                     })
                 }
@@ -103,40 +91,39 @@ macro_rules! oni_api {
     };
 }
 
-oni_api! {
-    oni_create_ctx(*const c_char) -> Ctx;
-    oni_init_ctx(Ctx, c_int) -> c_int;
-    oni_destroy_ctx(Ctx) -> c_int;
-    oni_set_opt(Ctx, c_int, *const c_void, usize) -> c_int;
-    oni_read_reg(Ctx, u32, u32, *mut u32) -> c_int;
-    oni_write_reg(Ctx, u32, u32, u32) -> c_int;
-    oni_read_frame(Ctx, *mut *mut Frame) -> c_int;
-    oni_create_frame(Ctx, *mut *mut Frame, u32, *const c_void, usize) -> c_int;
-    oni_write_frame(Ctx, *const Frame) -> c_int;
-    oni_destroy_frame(*mut Frame) -> ();
-    oni_error_str(c_int) -> *const c_char;
+driver_api! {
+    oni_driver_create_ctx() -> DriverCtx;
+    oni_driver_destroy_ctx(DriverCtx) -> c_int;
+    oni_driver_init(DriverCtx, c_int) -> c_int;
+    oni_driver_read_stream(DriverCtx, c_int, *mut c_void, usize) -> c_int;
+    oni_driver_write_stream(DriverCtx, c_int, *const c_char, usize) -> c_int;
+    oni_driver_read_config(DriverCtx, c_int, *mut u32) -> c_int;
+    oni_driver_write_config(DriverCtx, c_int, u32) -> c_int;
+    oni_driver_set_opt_callback(DriverCtx, c_int, *const c_void, usize) -> c_int;
 }
 
-impl Api {
-    /// Loads the library once it's found (it's never unloaded); until then, tries again each time.
-    fn get(path: Option<&str>) -> io::Result<&'static Api> {
-        static API: OnceLock<Api> = OnceLock::new();
+impl DriverApi {
+    /// Loads the driver once it's found (it's never unloaded); until then, tries again each time.
+    fn get(path: Option<&str>) -> io::Result<&'static DriverApi> {
+        static API: OnceLock<DriverApi> = OnceLock::new();
         if let Some(api) = API.get() {
             return Ok(api);
         }
         let candidates: Vec<PathBuf> = match path {
             Some(p) => vec![p.into()],
-            None => std::iter::once(LIBRARY_NAME.into())
-                .chain(search_dirs().into_iter().map(|d| d.join(LIBRARY_NAME)))
+            None => search_dirs()
+                .into_iter()
+                .map(|d| d.join(DRIVER_NAME))
+                .chain(std::iter::once(DRIVER_NAME.into()))
                 .collect(),
         };
         let mut errors = Vec::new();
         for candidate in &candidates {
-            // Safety: loading a library runs its initialisers; liboni's are benign.
+            // Safety: loading a library runs its initialisers; the driver's are benign.
             match unsafe { Library::new(candidate) } {
                 Ok(library) => {
-                    // Safety: it's liboni, by name.
-                    let api = unsafe { Api::from_library(library) }.map_err(io::Error::other)?;
+                    // Safety: it's the FT600 driver, by name.
+                    let api = unsafe { DriverApi::from_library(library) }.map_err(io::Error::other)?;
                     return Ok(API.get_or_init(|| api));
                 }
                 Err(e) => errors.push(format!("{}: {e}", candidate.display())),
@@ -144,49 +131,89 @@ impl Api {
         }
         Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!(
-                "liboni not found (it comes with the Open Ephys GUI's acquisition board plugin). Tried {}",
-                errors.join("; ")
-            ),
+            format!("liboni's FT600 driver ({DRIVER_NAME}) not found. Tried {}", errors.join("; ")),
         ))
-    }
-
-    fn error(&self, code: c_int, what: &str) -> io::Error {
-        let message = unsafe { CStr::from_ptr((self.oni_error_str)(code)) }.to_string_lossy().into_owned();
-        io::Error::other(format!("{what} failed: {message} ({code})"))
     }
 }
 
+/// The FT600 driver, with a context of its own.
+struct Ft600 {
+    api: &'static DriverApi,
+    ctx: DriverCtx,
+}
+
+impl Ft600 {
+    fn new(api: &'static DriverApi) -> io::Result<Ft600> {
+        let ctx = unsafe { (api.oni_driver_create_ctx)() };
+        if ctx.is_null() {
+            return Err(io::Error::other("the FT600 driver couldn't make a context"));
+        }
+        Ok(Ft600 { api, ctx })
+    }
+}
+
+impl Driver for Ft600 {
+    fn init(&mut self, host_index: i32) -> liboni::Result<()> {
+        liboni::check(unsafe { (self.api.oni_driver_init)(self.ctx, host_index) }).map(drop)
+    }
+
+    fn read_stream(&mut self, stream: Stream, data: &mut [u8]) -> liboni::Result<usize> {
+        let code = unsafe {
+            (self.api.oni_driver_read_stream)(self.ctx, stream as c_int, data.as_mut_ptr().cast(), data.len())
+        };
+        liboni::check(code).map(|n| n as usize)
+    }
+
+    fn write_stream(&mut self, data: &[u8]) -> liboni::Result<usize> {
+        let code = unsafe { (self.api.oni_driver_write_stream)(self.ctx, 0, data.as_ptr().cast(), data.len()) };
+        liboni::check(code).map(|n| n as usize)
+    }
+
+    fn read_config(&mut self, register: u32) -> liboni::Result<u32> {
+        let mut value = 0;
+        liboni::check(unsafe { (self.api.oni_driver_read_config)(self.ctx, register as c_int, &mut value) })?;
+        Ok(value)
+    }
+
+    fn write_config(&mut self, register: u32, value: u32) -> liboni::Result<()> {
+        liboni::check(unsafe { (self.api.oni_driver_write_config)(self.ctx, register as c_int, value) }).map(drop)
+    }
+
+    fn set_opt_callback(&mut self, option: i32, value: u32) -> liboni::Result<()> {
+        let value: *const u32 = &value;
+        let code = unsafe { (self.api.oni_driver_set_opt_callback)(self.ctx, option, value.cast(), size_of::<u32>()) };
+        liboni::check(code).map(drop)
+    }
+}
+
+impl Drop for Ft600 {
+    fn drop(&mut self) {
+        unsafe { (self.api.oni_driver_destroy_ctx)(self.ctx) };
+    }
+}
+
+// The driver's context is only used from the thread that owns the board.
+unsafe impl Send for Ft600 {}
+
 /// Talks to a generation 3 board through liboni.
 pub struct Oni {
-    api: &'static Api,
-    ctx: Ctx,
+    context: Context<Ft600>,
     device_id: u32,
     enabled_streams: u32,
     running: bool,
 }
 
-// The context is only used from the thread that owns the board.
-unsafe impl Send for Oni {}
-
-/// Opens the board. `library` overrides where liboni is looked for.
-pub fn open(library: Option<&str>) -> io::Result<RhythmBoard<Oni>> {
-    let api = Api::get(library)?;
-    let driver = CString::new("ft600").unwrap();
-    let ctx = unsafe { (api.oni_create_ctx)(driver.as_ptr()) };
-    if ctx.is_null() {
-        return Err(io::Error::other("liboni couldn't load its FT600 driver (onidriver_ft600)"));
+/// Opens the board. `driver` overrides where liboni's FT600 driver is looked for.
+pub fn open(driver: Option<&str>) -> io::Result<RhythmBoard<Oni>> {
+    let mut context = Context::new(Ft600::new(DriverApi::get(driver)?)?);
+    match context.init(-1) {
+        Ok(()) => {}
+        Err(liboni::Error(liboni::EBADCONTROLLER)) => {
+            return Err(io::Error::other("the board's gateware needs updating (to 2.0.0 or later) for this software"));
+        }
+        Err(e) => return Err(io::Error::other(format!("opening the generation 3 board failed: {e}"))),
     }
-    let code = unsafe { (api.oni_init_ctx)(ctx, -1) };
-    if code != 0 {
-        unsafe { (api.oni_destroy_ctx)(ctx) };
-        return Err(if code == ONI_EBADCONTROLLER {
-            io::Error::other("the board's gateware needs updating (to 2.0.0 or later) for this software")
-        } else {
-            api.error(code, "opening the generation 3 board")
-        });
-    }
-    let mut board = Oni { api, ctx, device_id: 0, enabled_streams: 1, running: false };
+    let mut board = Oni { context, device_id: 0, enabled_streams: 1, running: false };
     // Memory on the board must be ready first.
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
@@ -204,35 +231,26 @@ pub fn open(library: Option<&str>) -> io::Result<RhythmBoard<Oni>> {
 }
 
 impl Oni {
-    fn read_register(&self, device: u32, register: u32) -> io::Result<u32> {
-        let mut value = 0;
-        let code = unsafe { (self.api.oni_read_reg)(self.ctx, device, register, &mut value) };
-        if code != 0 {
-            return Err(self.api.error(code, "reading a register"));
-        }
-        Ok(value)
+    fn read_register(&mut self, device: u32, register: u32) -> io::Result<u32> {
+        self.context.read_reg(device, register).map_err(|e| io::Error::other(format!("reading a register failed: {e}")))
     }
 
-    fn write_register(&self, device: u32, register: u32, value: u32) {
-        unsafe { (self.api.oni_write_reg)(self.ctx, device, register, value) };
+    fn write_register(&mut self, device: u32, register: u32, value: u32) {
+        let _ = self.context.write_reg(device, register, value);
     }
 
     /// Writes the bits of `mask`, keeping the rest.
-    fn write_masked(&self, device: u32, register: u32, value: u32, mask: u32) {
+    fn write_masked(&mut self, device: u32, register: u32, value: u32, mask: u32) {
         if let Ok(old) = self.read_register(device, register) {
             self.write_register(device, register, (old & !mask) | (value & mask));
         }
     }
 
-    fn set_opt(&self, option: c_int, value: u32) {
-        unsafe { (self.api.oni_set_opt)(self.ctx, option, &value as *const u32 as *const c_void, size_of::<u32>()) };
-    }
-
     /// Resets the controller (needed whenever the frames' size changes).
-    fn reset(&self) {
+    fn reset(&mut self) {
         std::thread::sleep(Duration::from_millis(50));
-        self.set_opt(ONI_OPT_RESET, 1);
-        self.set_opt(ONI_OPT_BLOCKREADSIZE, BLOCK_READ_SIZE);
+        let _ = self.context.reset();
+        let _ = self.context.set_block_read_size(BLOCK_READ_SIZE);
     }
 
     /// The firmware's settings that aren't the board's business (DACs, digital outputs...), as the plugin's
@@ -255,54 +273,34 @@ impl Oni {
         Ok(())
     }
 
-    fn write_ttl_out(&self, lines: u32) {
-        let mut frame: *mut Frame = std::ptr::null_mut();
-        let data = lines as i32;
-        let code = unsafe {
-            (self.api.oni_create_frame)(self.ctx, &mut frame, DEVICE_TTL, &data as *const i32 as *const c_void, 4)
-        };
-        if code >= 0 && !frame.is_null() {
-            unsafe {
-                (self.api.oni_write_frame)(self.ctx, frame);
-                (self.api.oni_destroy_frame)(frame);
-            }
-        }
+    fn write_ttl_out(&mut self, lines: u32) {
+        let _ = self.context.write_frame(DEVICE_TTL, &lines.to_le_bytes());
     }
 
-    fn run(&self) {
-        self.set_opt(ONI_OPT_RESETACQCOUNTER, 2);
+    fn run(&mut self) {
+        let _ = self.context.reset_acq_counter(2);
     }
 
-    fn halt(&self) {
-        self.set_opt(ONI_OPT_RUNNING, 0);
+    fn halt(&mut self) {
+        let _ = self.context.set_running(false);
     }
 
     /// Reads frames until one from the Rhythm device comes, appending its sample to `buf`.
-    fn read_sample(&self, buf: &mut Vec<u8>) -> io::Result<()> {
+    fn read_sample(&mut self, buf: &mut Vec<u8>) -> io::Result<()> {
         let expected = sample_bytes(self.enabled_streams);
         loop {
-            let mut frame: *mut Frame = std::ptr::null_mut();
-            let code = unsafe { (self.api.oni_read_frame)(self.ctx, &mut frame) };
-            if code < 0 {
-                return Err(self.api.error(code, "reading from the board"));
+            let frame = self
+                .context
+                .read_frame()
+                .map_err(|e| io::Error::other(format!("reading from the board failed: {e}")))?;
+            if frame.dev_idx != DEVICE_RHYTHM {
+                continue;
             }
-            // Safety: liboni gave us this frame, and it's destroyed below.
-            let (device, data) = unsafe {
-                let f = &*frame;
-                (f.dev_idx, std::slice::from_raw_parts(f.data as *const u8, f.data_sz as usize))
-            };
-            let result = if device != DEVICE_RHYTHM {
-                None
-            } else if data.len() != 8 + expected {
-                Some(Err(io::Error::new(io::ErrorKind::InvalidData, "a sample of the wrong size from the board")))
-            } else {
-                buf.extend_from_slice(&data[8..]); // after the hub's clock
-                Some(Ok(()))
-            };
-            unsafe { (self.api.oni_destroy_frame)(frame) };
-            if let Some(result) = result {
-                return result;
+            if frame.data.len() != 8 + expected {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "a sample of the wrong size from the board"));
             }
+            buf.extend_from_slice(&frame.data[8..]); // after the hub's clock
+            return Ok(());
         }
     }
 }
@@ -446,6 +444,5 @@ impl Transport for Oni {
 impl Drop for Oni {
     fn drop(&mut self) {
         self.stop();
-        unsafe { (self.api.oni_destroy_ctx)(self.ctx) };
     }
 }

@@ -2,10 +2,10 @@
 //! Open Ephys Acquisition Board before generation 3, and Intan's RHD USB Interface Board. Ported from the
 //! Open Ephys acquisition board plugins (`Rhd2000EvalBoard`, `AcqBoardOpalKelly`).
 //!
-//! Opal Kelly's FrontPanel library is loaded at runtime, so building needs nothing from Opal Kelly and machines
-//! without it just get an error when this board is selected. The FPGA is configured from a bitfile: the Open
-//! Ephys GUI's plugins come with them (`rhd2000.bit`, `rhd2000_usb3.bit`, `intan_rhd_usb.bit`), as does the
-//! library, and they're looked for where the GUI puts them.
+//! Opal Kelly's FrontPanel library is loaded at runtime, so building needs nothing from Opal Kelly. The FPGA is
+//! configured from a bitfile (`rhd2000.bit`, `rhd2000_usb3.bit`, `intan_rhd_usb.bit`). The library and the Open Ephys
+//! bitfiles come with the program, from the Open Ephys acquisition board plugin's release (see scripts/package.py),
+//! and are otherwise looked for where the Open Ephys GUI puts them.
 //!
 //! This is the transport: the rest is in `rhythm`, shared with the generation 3 board. Not yet tried on hardware.
 
@@ -68,11 +68,11 @@ impl OpalKellyKind {
 }
 
 #[cfg(windows)]
-const LIBRARY_NAME: &str = "okFrontPanel.dll";
+const LIBRARY_NAMES: &[&str] = &["okFrontPanel.dll"];
 #[cfg(target_os = "macos")]
-const LIBRARY_NAME: &str = "libokFrontPanel.dylib";
+const LIBRARY_NAMES: &[&str] = &["libokFrontPanel.1.dylib", "libokFrontPanel.dylib"];
 #[cfg(all(unix, not(target_os = "macos")))]
-const LIBRARY_NAME: &str = "libokFrontPanel.so";
+const LIBRARY_NAMES: &[&str] = &["libokFrontPanel.so"];
 
 const XEM6010LX45: c_int = 13;
 const XEM6310LX45: c_int = 21;
@@ -170,7 +170,8 @@ frontpanel_api! {
     okFrontPanel_Close(Handle) -> ();
 }
 
-/// Where the Open Ephys GUI keeps what its plugins come with, and next to this program.
+/// Where the boards' libraries and bitfiles are looked for: with this program (next to it, or in its macOS app's
+/// Frameworks and Resources), then where the Open Ephys GUI keeps what its plugins come with.
 pub(super) fn search_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Ok(exe) = std::env::current_exe()
@@ -178,6 +179,10 @@ pub(super) fn search_dirs() -> Vec<PathBuf> {
     {
         dirs.push(dir.to_path_buf());
         dirs.push(dir.join("shared"));
+        if cfg!(target_os = "macos") {
+            dirs.push(dir.join("../Frameworks"));
+            dirs.push(dir.join("../Resources"));
+        }
     }
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let saved_state: Vec<PathBuf> = if cfg!(windows) {
@@ -214,8 +219,10 @@ impl Api {
         }
         let candidates: Vec<PathBuf> = match path {
             Some(p) => vec![p.into()],
-            None => std::iter::once(LIBRARY_NAME.into())
-                .chain(search_dirs().into_iter().map(|d| d.join(LIBRARY_NAME)))
+            None => search_dirs()
+                .into_iter()
+                .flat_map(|d| LIBRARY_NAMES.iter().map(move |name| d.join(name)))
+                .chain(LIBRARY_NAMES.iter().map(PathBuf::from))
                 .collect(),
         };
         let mut errors = Vec::new();
@@ -232,11 +239,7 @@ impl Api {
         }
         Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!(
-                "Opal Kelly's FrontPanel library not found (it comes with the Open Ephys GUI's acquisition board \
-                 plugin). Tried {}",
-                errors.join("; ")
-            ),
+            format!("Opal Kelly's FrontPanel library not found. Tried {}", errors.join("; ")),
         ))
     }
 }
@@ -358,13 +361,7 @@ impl OpalKelly {
             None => search_dirs().into_iter().map(|d| d.join(name)).filter(|p| p.exists()).collect(),
         };
         let Some(path) = candidates.first() else {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!(
-                    "bitfile {name} not found: set where it is (it comes with the Open Ephys GUI's acquisition \
-                     board plugin)"
-                ),
-            ));
+            return Err(io::Error::new(io::ErrorKind::NotFound, format!("bitfile {name} not found: set where it is")));
         };
         let c_path = CString::new(path.to_string_lossy().as_bytes()).map_err(io::Error::other)?;
         let api = self.fp.api;

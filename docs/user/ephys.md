@@ -29,8 +29,10 @@ Samples from an acquisition board's headstages, and its digital (TTL) inputs, al
 - an **Intan RHD USB Interface Board**;
 - the **fake board** in `synthetic_streams/`, for trying things without hardware.
 
-The real boards need the drivers and libraries that come with the Open Ephys GUI's acquisition board plugin: install
-the Open Ephys GUI and its plugin, and ephys-rs finds them where it put them.
+What the real boards need comes with ephys-rs: the libraries and bitfiles the Open Ephys GUI's acquisition board
+plugin has. On Windows, the boards' USB drivers must be installed once too: run **Install USB drivers.cmd**, which
+comes with ephys-rs, as the Open Ephys GUI's installer would. Intan's own board needs Intan's bitfile, set under
+**Bitfile**.
 
 **Settings**
 
