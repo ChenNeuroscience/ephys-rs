@@ -151,7 +151,7 @@ A node can keep state on the GUI's side, as `type UiState` (and `()` for none): 
 the graph has it, whether its window's shown or not, and doesn't save it. Its window gets it with
 `UiContext::ui_state::<T>()`, borrowed from the app rather than the context, so the context can still be used. A
 direct trigger gets it too (`on_trigger`). It's the place for anything that isn't a setting, such as a job the node has
-started (as [Run Command](../src/standard_components/other/run_command.rs) does): the node itself is cloned for undo's
+started (as [Run Command](../src/standard_components/other/run_command/mod.rs) does): the node itself is cloned for undo's
 history and when it's duplicated, and compared every frame, so it should hold only its settings.
 
 Work that isn't drawing, but has to happen whether the window's shown or not, goes in `gui_background(context)`: the app
@@ -214,7 +214,7 @@ Passes see `Pass::recording`. The graph can't change while recording, so everyth
 
 A writer has an "after recording" control. Connected to a setting that takes the `run_command::RunOnFiles` trigger (a direct one),
 it sends the paths of the files once they're finished (not when recording stops, which is sooner), and only if
-something was recorded. The [Run Command](../src/standard_components/other/run_command.rs) node takes it, and neither
+something was recorded. The [Run Command](../src/standard_components/other/run_command/mod.rs) node takes it, and neither
 knows what's at the other end: anything can send files to run on.
 
 Run Command has an "after running" control of its own: once what it ran is done, it sends the same files on to what's
@@ -243,7 +243,7 @@ found and where to get it.
 ## Work outside a run
 
 Not everything a node does belongs to a pass. The nodes in the Other category aren't about data as it's acquired: [Run
-Command](../src/standard_components/other/run_command.rs) runs a program in a terminal of its own, with or without a run.
+Command](../src/standard_components/other/run_command/mod.rs) runs a program in a terminal of its own, with or without a run.
 The terminal's a separate process, which can be stopped from the node, and which carries on if the app quits.
 A node's UI can see what's connected to its settings (`UiContext::controlled_by`): while a writer's connected, it's all Run
 Command runs on, so it says so and doesn't offer files of its own.
