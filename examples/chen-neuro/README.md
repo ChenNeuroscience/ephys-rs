@@ -78,7 +78,7 @@ video input it shows the current position and the recording's path in the window
 nothing to adjust, so it doesn't need telling it's locked, and it edits nothing. It looks as it does with a camera as far
 as it can: the window's drawn as the crop, the position as the first LED, and the LED sizes chart shows the dummy size.
 
-The [Log Viewer](../../src/standard/logs/log_viewer.rs) shows the log lines with their times, as the VR computer
+The [Log Viewer](../../standard/src/logs/log_viewer.rs) shows the log lines with their times, as the VR computer
 sent them, so not counted from anything: it's added and removed with the VR Computer by the quick actions.
 
 `Positions::source` says where positions come from, and is `position_metadata_source` in the `.pos` file, and the prefix of

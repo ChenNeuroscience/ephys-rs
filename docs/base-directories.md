@@ -33,7 +33,7 @@ A kind of base directory is a [`BaseDirectoryType`](../src/base_directory.rs): a
 - `save`: what it keeps, between runs of the program and in saved files, as JSON. Only what's chosen: a saved file
   counts as changed when this does, so a count of recordings, say, would mark it changed after each one.
 
-The standard one, in [`base_directories.rs`](../src/standard/base_directories.rs), is **A directory**: a
+The standard one, in [`base_directories.rs`](../standard/src/base_directories.rs), is **A directory**: a
 button to open it, the directory, clicked to choose another, and a file prefix, if you want one, clicked to change it
 in place. Recordings are named after the prefix and when they start (`mouse1_2026-11-03_143005`), so one doesn't write
 over the last; with no prefix, the writers name them. The pieces are there for others to use: `directory_ui`,
@@ -59,7 +59,7 @@ chen-neuro adds another, in [`trials.rs`](../examples/chen-neuro/src/components/
 When recording's asked for, the GUI asks the base directory in use where the recording goes. Every node then gets it as it
 prepares to record (`Node::prepare_to_record`), and from its passes while recording (`Pass::base_directory`). Its
 window gets it too (`UiContext::base_directory`), to show where it'll write. The standard writers have a
-[`Location`](../src/standard/recording/mod.rs): the base directory, a subdirectory of it, or a directory
+[`Location`](../standard/src/recording/mod.rs): the base directory, a subdirectory of it, or a directory
 of their own. They use the base directory's prefix, if it has one, otherwise their own and the time. A prefix is only
 text: what it's the start of is up to the writer, so Write LTX's files and Write Raw's folder share it, and the
 toolbar calls it a file prefix as that's the usual case.

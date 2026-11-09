@@ -52,8 +52,9 @@ and this one's in [`examples/chen-neuro/`](../examples/chen-neuro/src/components
 
 - `x` is the build's: examples/chen-neuro/Cargo.toml's minor version, from 900. It's what's released, so every commit counts it up,
   including those that only change the core. Commits of nothing but Markdown (the README, these docs) count up neither.
-- `y` is the core's: the root Cargo.toml's minor version. Only commits that change the library (`src/`, or the root
-  Cargo.toml) count it up.
+- `y` is the core's: the minor version of the workspace's, in the root Cargo.toml, which the framework and the
+  standard components both have. Only commits that change them (`src/`, `standard/`, or the root Cargo.toml) count it
+  up.
 
 Both are counts of changes (not semver). A pre-commit hook, [`.githooks/pre-commit`](../.githooks/pre-commit), counts
 them, bumping the Cargo.toml files and Cargo.lock and staging them. Turn it on once per clone:
@@ -74,8 +75,8 @@ base directory's settings in the app's stored preferences. Later versions patch 
 [`config_patching.rs`](../src/config_patching.rs).
 
 Each part has a set of patches, saving its crate's version: the core's
-([`core/config_patches`](../src/config_patches): the project's structure), the standard components'
-([`standard/config_patches`](../src/standard/config_patches): their node types and base
+([`config_patches`](../src/config_patches): the project's structure), the standard components'
+([`standard/config_patches`](../standard/src/config_patches): their node types and base
 directories), and a build's own (as [chen-neuro's](../examples/chen-neuro/src/components/config_patches)). Each is a
 folder with a patch in each file, listed in order in its `mod.rs` as `PATCHES`, starting with an example that does
 nothing (`example.rs`, to copy). Which sets a build has, and the order they're applied in, is up to it

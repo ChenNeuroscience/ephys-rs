@@ -1,7 +1,8 @@
 # Edges
 
 What can flow along an edge is declared like node types are: each edge type is a small struct, gathered by
-`edge_types!` in [`standard`](../src/standard/mod.rs) (and re-exported at the crate's root, as `ephys_rs::Edges` and so on), with
+`edge_types!` at the root of the standard components (as `ephys_rs_standard::Edges` and so on, in
+[`standard/src/lib.rs`](../standard/src/lib.rs)), with
 the kinds the standard components are written against. The traits are in [`edge.rs`](../src/engine/edge.rs).
 
 ```rust
@@ -34,7 +35,7 @@ the legend, and a short summary: "64 ch · 30 kHz") and `DataStreamType`:
 
 - `type Buffer`: how a pass's worth is held.
 - `buffer(duration)`: an empty buffer with room for a pass. Buffers are made before running and reused for every pass,
-  so it should allow for a pass that's a little longer than usual: [`Continuous`](../src/standard/ephys/mod.rs)
+  so it should allow for a pass that's a little longer than usual: [`Continuous`](../standard/src/ephys/mod.rs)
   has room for a quarter more, so a source can catch up after a hiccup.
 - `bytes(buffer)`: its memory, for the dev tools.
 

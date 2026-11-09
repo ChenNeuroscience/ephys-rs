@@ -6,19 +6,20 @@
 
 There are three parts:
 
-- The framework: the crate's own modules ([`src/lib.rs`](../src/lib.rs) lists them), `ephys_rs::engine`,
-  `ephys_rs::gui` and the rest: the graph engine, the GUI, and the traits everything else implements. It knows nothing
-  about particular node, edge or annotation types, and never uses `standard` (a test checks).
-- [`ephys_rs::standard`](../src/standard/mod.rs): the node, edge and annotation types, themes and base
-  directory most labs will need, grouped by feature (`ephys`, `spikes`, `tracking`, `recording`...).
+- The framework, the `ephys-rs` crate, in [`src/`](../src/lib.rs): `ephys_rs::engine`, `ephys_rs::gui` and the rest,
+  the graph engine, the GUI, and the traits everything else implements. It knows nothing about particular node, edge or
+  annotation types, and doesn't depend on the standard components.
+- The standard components, the `ephys-rs-standard` crate, in [`standard/`](../standard/src/lib.rs): the node, edge and
+  annotation types, themes and base directory most labs will need, grouped by feature (`ephys`, `spikes`, `tracking`,
+  `recording`...), and the kinds of data and settings they share (`ephys_rs_standard::Edges`, `DataStream`...).
 - A custom build: a program that declares which components it's made of, including any of its own, and runs them.
   [`examples/chen-neuro/`](../examples/chen-neuro/src/components/mod.rs) is one, and what this repository builds and releases: the standard
   components, with quick actions for the LTX rig and a base directory for subjects, dates and trials.
 
-The first two are the `ephys-rs` library, at the root of the repository; `examples/chen-neuro/` is a program in the same workspace,
-so `cargo run` runs it, and its binary is called `ephys-rs` too. A build of your own starts with
-`cargo add --git https://github.com/ChenNeuroscience/ephys-rs ephys-rs`, as well as `serde` and `eframe`, which the
-macros below use. (`cargo install --git` installs programs, so here that's chen-neuro.)
+All three are in one workspace, and the two libraries share a version (ephys-rs's: see
+[versions](development.md#versions)). `cargo run` runs chen-neuro, whose binary is called `ephys-rs` too. A build of
+your own starts with `cargo add --git https://github.com/ChenNeuroscience/ephys-rs ephys-rs ephys-rs-standard`, as well
+as `serde` and `eframe`, which the macros below use. (`cargo install --git` installs programs, so here that's chen-neuro.)
 
 A build lists its types with `nodes_enum!` (node types, in the order the add-node menu offers them) and
 `annotations_enum!`, then implements [`Components`](../src/lib.rs) with them, its themes, quick actions and base
@@ -36,12 +37,16 @@ Help › About shows the version, with `Components::ABOUT` under it: markdown sa
 Source Code, and a link in About, go to `Components::SOURCE`, which is this repository unless a fork changes it.
 
 So a build can add nodes, annotations, themes, quick actions and base directories of its own. The kinds of data stream,
-setting and trigger are the exception: they're declared once, with `edge_types!` in [`lib.rs`](../src/lib.rs), as the standard
-components are written against them, and adding one means adding it there. There's no loading of code at run time, and
+setting and trigger are the exception: they're declared once, with `edge_types!` in the standard components'
+[`lib.rs`](../standard/src/lib.rs), as they're written against them, and adding one means adding it there. There's no loading of code at run time, and
 no stable interface between versions.
 
-The app's tests are in the library, as they use its internals, but they're of the whole program: `lib.rs` compiles
-chen-neuro's components into them. Its own tests run there too.
+The app's tests are in the framework, as they use its internals, but they're of the whole program: its `lib.rs`
+compiles the standard components and chen-neuro's into them, as modules (`crate::standard`, which the standard
+components call themselves, and `crate::components`), and their own tests run there too. A dev-dependency on them
+instead would bring in a second copy of the framework, which the tests' types couldn't be mixed with. So the standard
+components' own test build is empty (their build script sets `standard_crate`, which the framework's doesn't), and
+chen-neuro's binary isn't tested.
 
 ## The graph and snapshots
 
@@ -98,7 +103,7 @@ dev tools with why they're needed:
   files being written in order).
 
 Between such a thread and the passes is a **pool** of buffers shaped like the passes' own
-([`pool.rs`](../src/standard/pool.rs)), swapped rather than copied. A board's capture thread decodes
+([`pool.rs`](../standard/src/pool.rs)), swapped rather than copied. A board's capture thread decodes
 straight into a pass's buffers, and each pass swaps whatever's arrived for its own (giving the old one back to
 fill). A writer's pass swaps the buffers it takes into a chunk from its pool, and its thread gives the chunk back
 once written. Pools hold about a second, so a slow pass or a stalling disk is absorbed. Passes never wait on a pool:
@@ -114,7 +119,7 @@ The passes never wait on the GUI, nor it on them.
 
 - Each node says what its passes share with the GUI (`Node::Shared`; see [`shared.rs`](../src/engine/shared.rs)),
   made for each epoch, for its data streams then (`Pass::shared`, `UiContext::shared`). The engine and GUI don't treat
-  any of it specially. The usual thing is a [pool](../src/standard/pool.rs)
+  any of it specially. The usual thing is a [pool](../standard/src/pool.rs)
   of buffers, as between nodes' threads and the passes: passes fill buffers (or swap their own in) and queue them;
   the window reads the newest, giving the rest back. A window that needs everything sent, not only the newest (a log's
   lines, the tracker's path), takes every buffer, in order, and keeps what it likes on its own side; until it does,
