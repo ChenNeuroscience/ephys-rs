@@ -962,10 +962,27 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                 }
                 Triggered::Trigger(_) if entry.disabled => {}
                 Triggered::Trigger(trigger) => {
-                    let Some(ui_state) = self.ui_states.get_by_type(entry.node.type_index(), id) else { continue };
-                    if let Some(trigger) = trigger.take::<<N::Edges as engine::Edges>::Trigger>() {
-                        entry.node.on_trigger(trigger, &mut **ui_state.borrow_mut(), &triggers);
-                    }
+                    let Some(trigger) = trigger.take::<<N::Edges as engine::Edges>::Trigger>() else { continue };
+                    // The same context as its window's (see `background`), resolved now: it's rare.
+                    let resolved = self.graph.resolve();
+                    let (Some(state), Some(ui_state)) = (resolved.get(&id), self.ui_states.get(&self.graph, id)) else {
+                        continue;
+                    };
+                    let shared = shared(&self.runner, &self.last_run);
+                    let (colours, base, running) =
+                        (self.colours(), self.base_directories.place(), self.runner.is_some());
+                    self.graph.edit(
+                        id,
+                        &state.input_streams,
+                        colours,
+                        shared.as_deref(),
+                        Some(ui_state),
+                        base.as_ref(),
+                        running,
+                        locked,
+                        None,
+                        |node, context| node.on_trigger(trigger, context, &triggers),
+                    );
                 }
             }
         }
@@ -1788,13 +1805,8 @@ pub(crate) struct UiStates(HashMap<NodeId, (usize, crate::core::engine::UiStateC
 impl UiStates {
     /// Node `id`'s, if it's kept, for a node of its type.
     pub(crate) fn get<N: NodesEnum>(&self, graph: &Graph<N>, id: NodeId) -> Option<&crate::core::engine::UiStateCell> {
-        self.get_by_type(graph.get(id)?.node.type_index(), id)
-    }
-
-    /// Node `id`'s, if it's kept, for a node of type `kind` (see `NodesEnum::type_index`).
-    fn get_by_type(&self, kind: usize, id: NodeId) -> Option<&crate::core::engine::UiStateCell> {
-        let (of, state) = self.0.get(&id)?;
-        (*of == kind).then_some(state)
+        let (kind, state) = self.0.get(&id)?;
+        (graph.get(id)?.node.type_index() == *kind).then_some(state)
     }
 
     /// Keeps one for each of `graph`'s nodes, as it starts for those without one, letting go of the rest.

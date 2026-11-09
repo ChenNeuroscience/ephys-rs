@@ -740,11 +740,11 @@ impl Node<Edges> for RunCommand {
     }
 
     /// Runs the program on the files sent (by hand, too), and then, as it says, what's connected after it.
-    fn on_trigger(&mut self, trigger: Trigger, state: &mut CommandState, triggers: &ControlTriggers<Trigger>) {
+    fn on_trigger(&mut self, trigger: Trigger, context: &mut UiContext<Edges>, triggers: &ControlTriggers<Trigger>) {
         if let Trigger::RunOnFiles(RunOnFiles(paths)) = trigger {
             let (files, after) =
                 (self.settings.matching(paths), triggers.handle(AFTER_RUNNING, TriggerKind::RunOnFiles));
-            self.run_on(&state.job, files, after);
+            self.run_on(&context.ui_state::<CommandState>().job, files, after);
         }
     }
 
@@ -793,6 +793,18 @@ mod tests {
         assert!(done(), "{what}");
     }
 
+    /// Sends `node` `trigger`, as the app does, with a context and a `UiState` of its own; what it ran.
+    fn send(node: RunCommand, trigger: Trigger, triggers: &ControlTriggers<Trigger>) -> Job {
+        let mut graph = Graph::<Nodes>::default();
+        let id = graph.add(Nodes::RunCommand(node), [0.0, 0.0]);
+        let state: crate::core::engine::UiStateCell = std::cell::RefCell::new(Box::new(CommandState::default()));
+        let colours = &THEMES[0].colours;
+        graph.edit(id, &[], colours, None, Some(&state), None, false, false, None, |node, context| {
+            node.on_trigger(trigger, context, triggers)
+        });
+        state.borrow().downcast_ref::<CommandState>().unwrap().job.clone()
+    }
+
     fn wait_for_job(job: &Job) {
         wait_until("it should have finished", || !job.running());
     }
@@ -803,11 +815,10 @@ mod tests {
         let direct = Arc::new(DirectTriggers::default());
         let kinds: &'static [TriggerKind] = &[TriggerKind::RunOnFiles];
         let triggers = ControlTriggers::<Trigger>::new(direct.clone(), vec![vec![(NodeId(9), kinds)]]);
-        let mut node = RunCommand { settings: settings("/bin/sleep", "0.2") };
-        let mut state = CommandState::default();
-        node.on_trigger(Trigger::RunOnFiles(RunOnFiles(paths(&["a.dat"]))), &mut state, &triggers);
+        let node = RunCommand { settings: settings("/bin/sleep", "0.2") };
+        let job = send(node, Trigger::RunOnFiles(RunOnFiles(paths(&["a.dat"]))), &triggers);
         assert!(direct.take().is_empty(), "not till it's done");
-        wait_for_job(&state.job);
+        wait_for_job(&job);
         let sent = direct.take();
         let [(NodeId(9), Triggered::Trigger(trigger))] = &sent[..] else { panic!("sent once, to what's after it") };
         assert_eq!(trigger.key(), TriggerKind::RunOnFiles.into());
@@ -1201,10 +1212,9 @@ mod tests {
         let (to, Triggered::Trigger(trigger)) = waiting.into_iter().next().unwrap() else { panic!() };
         assert_eq!((to, trigger.key()), (command, crate::TriggerKind::RunOnFiles.into()));
         let Some(Nodes::RunCommand(node)) = graph.get_mut(command).map(|e| &mut e.node) else { panic!() };
-        let mut state = CommandState::default();
-        Node::on_trigger(node, trigger.take::<crate::Trigger>().unwrap(), &mut state, &ControlTriggers::none());
-        wait_for_job(&state.job);
-        assert_eq!(state.job.problem(), None);
+        let job = send(node.clone(), trigger.take::<crate::Trigger>().unwrap(), &ControlTriggers::none());
+        wait_for_job(&job);
+        assert_eq!(job.problem(), None);
         let said_text = std::fs::read_to_string(&said).unwrap();
         let lines: Vec<&str> = said_text.lines().collect();
         assert_eq!(lines.len(), 2, "one file matches: {lines:?}");

@@ -42,11 +42,10 @@ pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + S
     fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool]) -> TreeShake;
     fn evaluate_buffer_usage(&self, inputs: usize, outputs: usize) -> BufferUsage;
     fn triggers(&self, setting: usize) -> &'static [super::TriggerKind<Self::Edges>];
-    /// `ui_state` is the node's `UiState` (as made by `new_ui_state`).
     fn on_trigger(
         &mut self,
         trigger: <Self::Edges as Edges>::Trigger,
-        ui_state: &mut dyn Any,
+        context: &mut UiContext<Self::Edges>,
         triggers: &crate::core::triggers::ControlTriggers<<Self::Edges as Edges>::Trigger>,
     );
     /// Whether the node carries state from one pass to the next.
@@ -232,14 +231,11 @@ macro_rules! nodes_enum {
             fn on_trigger(
                 &mut self,
                 trigger: <$edges as $crate::core::engine::Edges>::Trigger,
-                ui_state: &mut dyn std::any::Any,
+                context: &mut $crate::core::engine::UiContext<$edges>,
                 triggers: &$crate::core::triggers::ControlTriggers<<$edges as $crate::core::engine::Edges>::Trigger>,
             ) {
-                const OWN: &str = "the node's own Node::UiState";
                 match self {
-                    $($name::$variant(n) => {
-                        $crate::core::engine::Node::on_trigger(n, trigger, ui_state.downcast_mut().expect(OWN), triggers)
-                    }),+
+                    $($name::$variant(n) => $crate::core::engine::Node::on_trigger(n, trigger, context, triggers)),+
                 }
             }
 

@@ -255,13 +255,13 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
         &[]
     }
 
-    /// One of its direct `triggers`, sent to it, with its state on the GUI's side (see `UiState`: where work it starts,
-    /// and isn't a setting, can be kept), and what its own controls can trigger in turn (directly, from any thread,
-    /// whenever: see `ControlTriggers::handle`).
+    /// One of its direct `triggers`, sent to it, on the GUI's thread, with the same context as its window's (so its
+    /// `UiState`, where work it starts, and isn't a setting, can be kept), and what its own controls can trigger in turn
+    /// (directly, from any thread, whenever: see `ControlTriggers::handle`).
     fn on_trigger(
         &mut self,
         _trigger: E::Trigger,
-        _ui_state: &mut Self::UiState,
+        _context: &mut UiContext<E>,
         _triggers: &crate::core::triggers::ControlTriggers<E::Trigger>,
     ) {
     }
