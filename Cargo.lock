@@ -448,11 +448,12 @@ dependencies = [
 
 [[package]]
 name = "chen-neuro"
-version = "0.1061.0"
+version = "0.1062.0"
 dependencies = [
  "chrono",
  "eframe",
  "ephys-rs",
+ "ephys-rs-standard",
  "log",
  "serde",
  "serde_json",
@@ -1076,7 +1077,7 @@ checksum = "cfc1cc505827f4c23eedc297975a0fd038268d41293f389dd8ff3b574aefab19"
 
 [[package]]
 name = "ephys-rs"
-version = "0.212.0"
+version = "0.213.0"
 dependencies = [
  "arboard",
  "arc-swap",
@@ -1099,6 +1100,30 @@ dependencies = [
  "libloading 0.9.0",
  "log",
  "muda",
+ "realfft",
+ "regex",
+ "rfd",
+ "sci-rs",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "ephys-rs-standard"
+version = "0.213.0"
+dependencies = [
+ "base64",
+ "chrono",
+ "cpal",
+ "crossbeam-channel",
+ "eframe",
+ "egui",
+ "egui_commonmark",
+ "egui_plot",
+ "ephys-rs",
+ "image",
+ "libloading 0.9.0",
+ "log",
  "realfft",
  "regex",
  "rfd",

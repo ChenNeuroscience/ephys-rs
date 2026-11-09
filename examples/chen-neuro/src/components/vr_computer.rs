@@ -34,17 +34,17 @@ use std::sync::{Arc, Mutex, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use crate::standard::ephys::{Event, Events, EventsBuffer};
+use crate::standard::logs::{LogLines, LogLinesBuffer};
+use crate::standard::pool::Pool;
+use crate::standard::tracking::pipeline::Blob;
+use crate::standard::tracking::{Crop, Detection, PositionSample, Positions, PositionsBuffer, Ruler, TimingLed};
+use crate::standard::widgets::{named_settings_grid, setting};
+use crate::standard::{Buffer, DataStream, Edges, Kind, Setting};
 use eframe::egui::{self, RichText};
 use ephys_rs::engine::{
     Category, Flow, Node, NodeInfo, NodeThread, Output, Pass, SettingPort, ThreadContext, UiContext,
 };
-use ephys_rs::standard::ephys::{Event, Events, EventsBuffer};
-use ephys_rs::standard::logs::{LogLines, LogLinesBuffer};
-use ephys_rs::standard::pool::Pool;
-use ephys_rs::standard::tracking::pipeline::Blob;
-use ephys_rs::standard::tracking::{Crop, Detection, PositionSample, Positions, PositionsBuffer, Ruler, TimingLed};
-use ephys_rs::standard::widgets::{named_settings_grid, setting};
-use ephys_rs::{Buffer, DataStream, Edges, Kind, Setting};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 

@@ -15,15 +15,15 @@
 //!   real devices, while any is synthetic.
 
 use super::{NodeType, Nodes};
+use crate::standard::alarms::processor::AlarmProcessor;
+use crate::standard::alarms::{AlarmKind, Source};
+use crate::standard::ephys::band_pass::BandPassFilter;
+use crate::standard::ephys::board::{self, node::AcquisitionBoard, opal_kelly::OpalKellyKind};
+use crate::standard::ephys::downsample::Downsample;
+use crate::standard::tracking::camera::{self, node::Camera};
 use ephys_rs::engine::{Graph, NodeId, NodesEnum, Port, PortRole};
 use ephys_rs::layout::{Pane, WindowState};
 use ephys_rs::quick_action::{Arrangement, QuickAction, QuickChange, QuickState, Tab};
-use ephys_rs::standard::alarms::processor::AlarmProcessor;
-use ephys_rs::standard::alarms::{AlarmKind, Source};
-use ephys_rs::standard::ephys::band_pass::BandPassFilter;
-use ephys_rs::standard::ephys::board::{self, node::AcquisitionBoard, opal_kelly::OpalKellyKind};
-use ephys_rs::standard::ephys::downsample::Downsample;
-use ephys_rs::standard::tracking::camera::{self, node::Camera};
 
 use super::vr_computer::VrComputer;
 

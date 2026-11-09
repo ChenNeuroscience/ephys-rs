@@ -4,10 +4,9 @@
 //! (`theme`), the log (`console`), triggers sent to passes (`pass_triggers`) and those that don't need a pass
 //! (`triggers`), threads finishing in the background (`background`), how plots over time lay out time (`time_axis`),
 //! quick actions (`quick_action`), and the GUI (`gui`). None of it knows about particular node, edge or annotation
-//! types, or themes: those are in `standard` (the standard components), and a program's own. A program lists the parts
-//! it's made of and runs them: see `Components`, `gui::run`, and `examples/chen-neuro/` for one. The kinds of data and
-//! settings the standard components share (`Edges`, `DataStream`, `Setting`...) are declared in `standard`, and
-//! re-exported here.
+//! types, or themes: those are in the ephys-rs-standard crate (the standard components, in standard/), and a program's
+//! own. A program lists the parts it's made of and runs them: see `Components`, `gui::run`, and `examples/chen-neuro/`
+//! for one.
 
 pub mod annotation;
 pub mod background;
@@ -23,12 +22,9 @@ pub mod layout;
 pub mod pass_triggers;
 pub mod quick_action;
 pub mod search_folders;
-pub mod standard;
 pub mod theme;
 pub mod time_axis;
 pub mod triggers;
-
-pub use standard::{Buffer, DataStream, Edges, Kind, Setting, SettingKind, Trigger, TriggerKind};
 
 /// `version` ("0.12.0", as Cargo has it) as it's shown: "v0.12".
 fn shown_version(version: &str) -> String {
@@ -109,55 +105,19 @@ mod tests {
         assert_eq!(shown_version("1.2.3"), "v1.2.3", "if a build's using all of it");
         assert_eq!(build_version("chen-neuro", "0.900.0"), "chen-neuro v0.x (ephys-rs v0.y)", "as tests show it");
     }
-
-    /// The framework knows nothing of the standard components, so a build can do without them: outside `standard`, and
-    /// outside tests and comments, nothing names them, or the kinds of data and settings they declare.
-    #[test]
-    fn the_framework_does_not_use_the_standard_components() {
-        const STANDARD: [&str; 9] = [
-            "standard::",
-            "crate::Edges",
-            "crate::DataStream",
-            "crate::Kind",
-            "crate::Buffer",
-            "crate::Setting",
-            "crate::SettingKind",
-            "crate::Trigger",
-            "crate::TriggerKind",
-        ];
-        fn check(dir: &std::path::Path, found: &mut Vec<String>) {
-            for entry in std::fs::read_dir(dir).unwrap() {
-                let path = entry.unwrap().path();
-                let name = path.file_name().unwrap().to_string_lossy();
-                if path.is_dir() {
-                    if name != "standard" && name != "tests" {
-                        check(&path, found);
-                    }
-                    continue;
-                }
-                if path.extension().is_none_or(|e| e != "rs") || name == "lib.rs" {
-                    continue;
-                }
-                let text = std::fs::read_to_string(&path).unwrap();
-                // Up to its tests, which are of the whole program.
-                let code = text.lines().take_while(|line| !line.starts_with("#[cfg(test)]"));
-                for (number, line) in code.enumerate() {
-                    let line = line.trim_start();
-                    if !line.starts_with("//") && STANDARD.iter().any(|s| line.contains(s)) {
-                        found.push(format!("{}:{}: {line}", path.display(), number + 1));
-                    }
-                }
-            }
-        }
-        let mut found = Vec::new();
-        check(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut found);
-        assert!(found.is_empty(), "the framework uses the standard components:\n{}", found.join("\n"));
-    }
 }
 
-// The tests are of the whole program: chen-neuro's.
+// The tests are of the whole program, chen-neuro's, so they build its components and the standard components here, as
+// it has them: `crate::components` and `crate::standard`, whose code reaches the framework as `ephys_rs`. (A
+// dev-dependency on them would bring in a second copy of the framework, which the tests' couldn't be mixed with.)
 #[cfg(test)]
 extern crate self as ephys_rs;
+#[cfg(test)]
+#[path = "../standard/src/lib.rs"]
+#[allow(dead_code, reason = "what's public is for builds, not all of which the tests use")]
+mod standard;
+#[cfg(test)]
+use standard::{Buffer, DataStream, Edges, Kind, Setting, SettingKind, Trigger, TriggerKind};
 #[cfg(test)]
 #[path = "../examples/chen-neuro/src/components/mod.rs"]
 mod components;

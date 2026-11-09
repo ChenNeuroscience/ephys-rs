@@ -1,29 +1,34 @@
 #!/bin/sh
-# Every commit but those of Markdown alone counts the build's version up, as that's what's released, and the core's too
-# if the library changed: the x and y of "chen-neuro v0.x (ephys-rs v0.y)", each its Cargo.toml's minor version (not
-# semver, just a count). See docs/development.md. Turn on with: git config core.hooksPath .githooks
+# Every commit but those of Markdown alone counts the build's version up, as that's what's released, and ephys-rs's too
+# if the framework or the standard components changed: the x and y of "chen-neuro v0.x (ephys-rs v0.y)", each its
+# Cargo.toml's minor version (not semver, just a count; the root's is the workspace's, which both libraries have). See
+# docs/development.md. Turn on with: git config core.hooksPath .githooks
 set -e
 cd "$(git rev-parse --show-toplevel)"
 
 # Text alone isn't a change to the program, and CI doesn't build it.
 git diff --cached --name-only | grep -qv '\.md$' || exit 0
 
-# Counts up the version in $1, of package $2.
+# Counts up the version in $1, of the packages after it.
 count_up() {
-    current=$(sed -n 's/^version = "0\.\([0-9][0-9]*\)\.0"$/\1/p' "$1" | head -n 1)
+    manifest=$1
+    shift
+    current=$(sed -n 's/^version = "0\.\([0-9][0-9]*\)\.0"$/\1/p' "$manifest" | head -n 1)
     if [ -z "$current" ]; then
-        echo "pre-commit: $1's version isn't 0.x.0" >&2
+        echo "pre-commit: $manifest's version isn't 0.x.0" >&2
         exit 1
     fi
     next=$((current + 1))
-    sed -i.bak "s/^version = \"0\.$current\.0\"$/version = \"0.$next.0\"/" "$1"
-    sed -i.bak "/^name = \"$2\"$/{n;s/^version = \".*\"$/version = \"0.$next.0\"/;}" Cargo.lock
-    rm -f "$1.bak" Cargo.lock.bak
-    git add "$1" Cargo.lock
-    echo "pre-commit: $2 v0.$next"
+    sed -i.bak "s/^version = \"0\.$current\.0\"$/version = \"0.$next.0\"/" "$manifest"
+    for package in "$@"; do
+        sed -i.bak "/^name = \"$package\"$/{n;s/^version = \".*\"$/version = \"0.$next.0\"/;}" Cargo.lock
+    done
+    rm -f "$manifest.bak" Cargo.lock.bak
+    git add "$manifest" Cargo.lock
+    echo "pre-commit: $1 v0.$next"
 }
 
-if ! git diff --cached --quiet -- src Cargo.toml; then
-    count_up Cargo.toml ephys-rs
+if ! git diff --cached --quiet -- src standard Cargo.toml; then
+    count_up Cargo.toml ephys-rs ephys-rs-standard
 fi
 count_up examples/chen-neuro/Cargo.toml chen-neuro

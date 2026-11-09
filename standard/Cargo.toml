@@ -1,0 +1,32 @@
+[package]
+name = "ephys-rs-standard"
+# ephys-rs's: its config patches save it.
+version.workspace = true
+edition = "2024"
+description = "The standard components of ephys-rs: its node, edge and annotation types, themes and the rest"
+publish = false
+
+[lib]
+# Its tests run with the framework's, which are of the whole program (see ../src/lib.rs).
+test = false
+doctest = false
+
+[dependencies]
+ephys-rs.workspace = true
+crossbeam-channel.workspace = true
+log.workspace = true
+eframe.workspace = true
+egui.workspace = true
+egui_commonmark.workspace = true
+egui_plot.workspace = true
+libloading.workspace = true
+rfd.workspace = true
+sci-rs.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+image.workspace = true
+base64.workspace = true
+realfft.workspace = true
+cpal.workspace = true
+regex.workspace = true

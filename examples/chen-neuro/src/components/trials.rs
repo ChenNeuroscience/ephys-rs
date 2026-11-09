@@ -6,12 +6,10 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use crate::standard::base_directories::{PathEdit, directory_ui, name_piece, open_button, path_chip, path_separator};
+use crate::standard::recording::{NO_BASE, expand};
 use eframe::egui::{self, RichText};
 use ephys_rs::base_directory::{BaseDirectory, BaseDirectoryContext, BaseDirectoryType, Place};
-use ephys_rs::standard::base_directories::{
-    PathEdit, directory_ui, name_piece, open_button, path_chip, path_separator,
-};
-use ephys_rs::standard::recording::{NO_BASE, expand};
 use serde::{Deserialize, Serialize};
 
 pub const TRIALS: BaseDirectoryType = BaseDirectoryType {

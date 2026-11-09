@@ -1,15 +1,21 @@
 [package]
 name = "ephys-rs"
-version = "0.212.0"
+version.workspace = true
 edition = "2024"
 description = "Electrophysiology acquisition, processing and recording, built around a node graph"
 publish = false
 
 [workspace]
-members = ["examples/chen-neuro"]
-default-members = [".", "examples/chen-neuro"]
+members = ["standard", "examples/chen-neuro"]
+default-members = [".", "standard", "examples/chen-neuro"]
 
-[dependencies]
+# The framework's and the standard components', which are released together: ephys-rs's version (see
+# docs/development.md), counted up by the pre-commit hook.
+[workspace.package]
+version = "0.213.0"
+
+# Versions shared by the framework, the standard components and builds.
+[workspace.dependencies]
 crossbeam-channel = "0.5"
 crossbeam-utils = "0.8"
 log = "0.4"
@@ -35,8 +41,43 @@ fs4 = { version = "1.1.0", default-features = false, features = ["sync"] }
 cpal = "0.18.2"
 regex = "1.13.1"
 arc-swap = "1"
+muda = "0.21"
+ephys-rs = { path = "." }
+ephys-rs-standard = { path = "standard" }
+
+[dependencies]
+crossbeam-channel.workspace = true
+crossbeam-utils.workspace = true
+log.workspace = true
+eframe.workspace = true
+egui.workspace = true
+egui_commonmark.workspace = true
+egui_plot.workspace = true
+egui_tiles.workspace = true
+rfd.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+cansi.workspace = true
+chrono.workspace = true
+egui_extras.workspace = true
+image.workspace = true
+dugong.workspace = true
+arboard.workspace = true
+fs4.workspace = true
+arc-swap.workspace = true
+
+[lints.rust]
+# Set by the standard components' build script, whose source the tests build too.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(standard_crate)"] }
 
 [dev-dependencies]
+# The tests are of the whole program, so build the standard components' source too (see src/lib.rs).
+libloading.workspace = true
+sci-rs.workspace = true
+base64.workspace = true
+realfft.workspace = true
+cpal.workspace = true
+regex.workspace = true
 egui_kittest = { version = "0.37", features = ["wgpu", "snapshot"] }
 # For making the README's tour (see scripts/make_tour.sh).
 image = { version = "0.25", default-features = false, features = ["gif"] }
@@ -53,4 +94,4 @@ codegen-units = 1
 debug = "line-tables-only"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-muda = "0.21"
+muda.workspace = true

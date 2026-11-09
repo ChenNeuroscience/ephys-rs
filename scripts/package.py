@@ -76,10 +76,13 @@ def package(exe, output, platform):
         shutil.copy2(name, output / name)
     commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     compiler = subprocess.check_output(["rustc", "-vV"], text=True)
-    def minor(manifest):
-        return tomllib.loads(Path(manifest).read_text(encoding="utf-8"))["package"]["version"].split(".")[1]
+    def manifest(path):
+        return tomllib.loads(Path(path).read_text(encoding="utf-8"))
 
-    versions = f"Version: v0.{minor('examples/chen-neuro/Cargo.toml')}\nCore version: ephys-rs v0.{minor('Cargo.toml')}"
+    build = manifest("examples/chen-neuro/Cargo.toml")["package"]["version"].split(".")[1]
+    # The framework's and the standard components', which have the workspace's.
+    library = manifest("Cargo.toml")["workspace"]["package"]["version"].split(".")[1]
+    versions = f"Version: v0.{build}\nCore version: ephys-rs v0.{library}"
     (output / "BUILD.txt").write_text(f"{versions}\nSource commit: {commit}\n\n{compiler}", encoding="utf-8")
     (output / "THIRD_PARTY_NOTICES.txt").write_text(notices(), encoding="utf-8")
     checksums = [f"{hashlib.sha256(item.read_bytes()).hexdigest()}  {item.name}\n"

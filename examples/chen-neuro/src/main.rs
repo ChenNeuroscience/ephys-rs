@@ -10,6 +10,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod components;
+// As `crate::standard`, which the library's tests, that build these components too, have as well.
+use ephys_rs_standard as standard;
 
 fn main() -> eframe::Result {
     ephys_rs::gui::run::<components::ChenNeuro>(std::env::args().nth(1).map(Into::into))
