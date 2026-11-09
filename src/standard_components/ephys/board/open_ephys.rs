@@ -52,9 +52,24 @@ const PLUGIN_1_1: &str =
 const PLUGIN_1_1: &str =
     "https://openephys.jfrog.io/artifactory/AcquisitionBoard-plugin/linux/AcquisitionBoard-linux_1.1.6-API10.zip";
 
-/// The boards' USB drivers, for Windows: FTDI's for generation 3, Opal Kelly's for the rest.
-const USB_DRIVERS: &str =
-    "https://github.com/open-ephys/plugin-GUI/tree/560c995500f7f1438c6c3646311ff11776da49bb/Resources/DLLs";
+/// The boards' USB drivers, on Windows: installed into Windows, not used from the folder. What each is, which boards
+/// use it, and where to get it.
+const DRIVERS: &[(&str, &str, &str)] = &[
+    (
+        "Opal Kelly USB driver",
+        "Gen 1/2, Intan USB",
+        "https://github.com/open-ephys/plugin-GUI/blob/560c995500f7f1438c6c3646311ff11776da49bb/Resources/DLLs/\
+         FrontPanelUSB-DriverOnly-4.5.5.exe",
+    ),
+    (
+        "FTDI USB driver",
+        "Gen 3",
+        "https://github.com/open-ephys/plugin-GUI/tree/560c995500f7f1438c6c3646311ff11776da49bb/Resources/DLLs/\
+         WU_FTD3XX_Driver",
+    ),
+];
+/// Whether the boards need drivers installed.
+const NEEDS_DRIVERS: bool = cfg!(windows);
 
 /// The files the boards use: what each is, its names, which boards use it, and where to get it on its own.
 const FILES: &[(&str, &[&str], &str, &str)] = &[
@@ -126,12 +141,13 @@ impl GlobalSettings for OpenEphysSettings {
                 });
             };
             option(ui, "A.", &mut |ui| {
-                ui.label(small("Download each file from its \"get\" link into a folder of your choosing"));
-                if cfg!(windows) {
-                    ui.label(small(", install "));
-                    ui.hyperlink_to(RichText::new("the boards' USB drivers").small(), USB_DRIVERS);
-                }
-                ui.label(small(", and choose that folder here."));
+                ui.label(small(if NEEDS_DRIVERS {
+                    "Download each file from its \"get\" link into a folder of your choosing, and choose that \
+                     folder here. Also install the Windows drivers listed below."
+                } else {
+                    "Download each file from its \"get\" link into a folder of your choosing, and choose that \
+                     folder here."
+                }));
             });
             option(ui, "B.", &mut |ui| {
                 ui.label(small("Install "));
@@ -143,46 +159,81 @@ impl GlobalSettings for OpenEphysSettings {
             });
         });
         ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            ui.label("Folder");
-            match self.folder() {
-                Some(folder) => ui.label(RichText::new(folder.display().to_string()).small()),
-                None => ui.label(RichText::new("not found").small().color(colours.warning)),
-            };
-            if self.folder.is_none() {
-                ui.label(small("(Open Ephys's default location)"));
-            }
-        });
-        ui.horizontal(|ui| {
-            if ui.button("Choose…").clicked()
-                && let Some(folder) = rfd::FileDialog::new().pick_folder()
-            {
-                self.folder = Some(folder);
-            }
-            if self.folder.is_some() && ui.button("Use Open Ephys's default location").clicked() {
-                self.folder = None;
-            }
-        });
-        ui.add_space(8.0);
-        egui::Grid::new("open ephys files").num_columns(4).spacing([12.0, 4.0]).show(ui, |ui| {
+        // The folder and its files, boxed; the drivers below, outside it, in the same columns.
+        let frame = egui::Frame::group(ui.style());
+        let inset = frame.inner_margin.left as f32 + frame.stroke.width;
+        frame.show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Folder");
+                match self.folder() {
+                    Some(folder) => ui.label(RichText::new(folder.display().to_string()).small()),
+                    None => ui.label(RichText::new("not found").small().color(colours.warning)),
+                };
+            });
+            ui.horizontal(|ui| {
+                if ui.button("Choose…").clicked()
+                    && let Some(folder) = rfd::FileDialog::new().pick_folder()
+                {
+                    self.folder = Some(folder);
+                }
+                if self.folder.is_some() && ui.button("Use Open Ephys's default location").clicked() {
+                    self.folder = None;
+                }
+            });
+            ui.add_space(6.0);
             for (what, names, boards, url) in FILES {
-                ui.label(*what);
-                ui.label(RichText::new(*boards).small().color(colours.text_secondary));
-                ui.hyperlink_to(RichText::new("get").small(), *url).on_hover_text(*url);
-                match self.file(what, names) {
+                row(ui, colours, what, boards, url, |ui| match self.file(what, names) {
                     // In the folder above: its name says which it is.
                     Ok(path) => {
                         let name = path.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned());
-                        ui.label(RichText::new(name).small()).on_hover_text(path.display().to_string())
+                        ui.label(RichText::new(name).small()).on_hover_text(path.display().to_string());
                     }
-                    Err(_) => ui.label(RichText::new("not found").small().color(colours.warning)),
-                };
-                ui.end_row();
+                    Err(_) => {
+                        ui.label(RichText::new("not found").small().color(colours.warning));
+                    }
+                });
             }
         });
+        if NEEDS_DRIVERS {
+            ui.add_space(4.0);
+            for (what, boards, url) in DRIVERS {
+                ui.horizontal(|ui| {
+                    ui.add_space(inset);
+                    row(ui, colours, what, boards, url, |ui| {
+                        ui.label(small("installed into Windows: not checked"));
+                    });
+                });
+            }
+        }
         ui.add_space(4.0);
         search_folders::note(ui, colours, search_folders::LOADED_ONCE);
     }
+}
+
+/// The widths of a file's row's columns before the last: what it is, which boards use it, and its link.
+const COLUMNS: [f32; 3] = [140.0, 110.0, 24.0];
+
+/// A file's row: what it is, which boards use it, a link to get it, then `last` (whether it's found, say).
+fn row(ui: &mut egui::Ui, colours: &Colours, what: &str, boards: &str, url: &str, last: impl FnOnce(&mut egui::Ui)) {
+    let cell = |ui: &mut egui::Ui, width: f32, add: &mut dyn FnMut(&mut egui::Ui)| {
+        let size = egui::vec2(width, ui.spacing().interact_size.y);
+        ui.allocate_ui_with_layout(size, egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            ui.set_min_width(width);
+            add(ui);
+        });
+    };
+    ui.horizontal(|ui| {
+        cell(ui, COLUMNS[0], &mut |ui| {
+            ui.label(what);
+        });
+        cell(ui, COLUMNS[1], &mut |ui| {
+            ui.label(RichText::new(boards).small().color(colours.text_secondary));
+        });
+        cell(ui, COLUMNS[2], &mut |ui| {
+            ui.hyperlink_to(RichText::new("get").small(), url).on_hover_text(url);
+        });
+        last(ui);
+    });
 }
 
 /// Where the Open Ephys GUI keeps what its plugins come with: a `shared` folder for each plugin API it's had, the
