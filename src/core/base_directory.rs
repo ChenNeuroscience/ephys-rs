@@ -52,11 +52,11 @@ pub trait BaseDirectory: Send {
     /// Its section of the main toolbar.
     fn toolbar_ui(&mut self, ui: &mut egui::Ui, context: &BaseDirectoryContext);
 
-    /// Where recordings go: the recording going on, while there is one, otherwise the next. `None` if there's
-    /// nowhere (none chosen yet, say).
-    fn place(&self) -> Option<Place>;
+    /// Where recordings go: the recording going on, while there is one, otherwise the next, were it to start `now`
+    /// (to name it by). `None` if there's nowhere (none chosen yet, say).
+    fn place(&self, now: &chrono::DateTime<chrono::Local>) -> Option<Place>;
 
-    /// A recording's started, in `place` (what `place()` said when it was asked for).
+    /// A recording's started, in `place` (what `place` said when it was asked for).
     fn recording_started(&mut self, _place: &Place) {}
 
     /// The recording's stopped.
@@ -130,9 +130,14 @@ impl BaseDirectories {
         Some(self.current.as_mut()?.1.as_mut())
     }
 
-    /// Where recordings go (see `BaseDirectory::place`).
+    /// Where recordings go, if one started now (see `BaseDirectory::place`).
     pub fn place(&self) -> Option<Place> {
-        self.current.as_ref()?.1.place()
+        self.place_at(&chrono::Local::now())
+    }
+
+    /// Where recordings go, if one started at `start` (see `BaseDirectory::place`).
+    pub fn place_at(&self, start: &chrono::DateTime<chrono::Local>) -> Option<Place> {
+        self.current.as_ref()?.1.place(start)
     }
 
     /// What to keep, between runs of the program and in saved files: which is in use, and what each has.
@@ -156,7 +161,7 @@ mod tests {
     impl BaseDirectory for Named {
         fn toolbar_ui(&mut self, _ui: &mut egui::Ui, _context: &BaseDirectoryContext) {}
 
-        fn place(&self) -> Option<Place> {
+        fn place(&self, _now: &chrono::DateTime<chrono::Local>) -> Option<Place> {
             Some(Place::directory(&self.0))
         }
 

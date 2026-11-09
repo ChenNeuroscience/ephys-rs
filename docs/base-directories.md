@@ -25,7 +25,9 @@ A kind of base directory is a [`BaseDirectoryType`](../src/core/base_directory.r
   buttons, use `core::gui::widgets::toolbar_button`.
 - `place`: where the next recording goes, or the one going on: a directory, and perhaps a prefix, which writers then
   use rather than their own. It's the whole of the name of what's written, but the extension, so it should be
-  different for each recording: writers don't check, and would write over the last.
+  different for each recording: writers don't check, and would write over the last. It's given the time the next one
+  would start (`now`): when it's asked as recording starts, the recording's start time, so a name with the time in it
+  matches the rest of the recording's.
 - `recording_started` and `recording_stopped`: `recording_started` is told where the recording went, as what's
   next may have changed by then (the writers' files may already be there, say).
 - `save`: what it keeps, between runs of the program and in saved files, as JSON. Only what's chosen: a saved file

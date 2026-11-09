@@ -726,7 +726,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         let triggers = self.direct_triggers.clone();
         // When it starts, as far as names and dates go: now, not once the nodes are ready, which can be a while.
         let start = chrono::Local::now();
-        let base = self.base_directories.place();
+        let base = self.base_directories.place_at(&start);
         match &base {
             Some(base) => log::info!("Preparing to record, in {}", base),
             None => log::info!("Preparing to record"),

@@ -321,7 +321,8 @@ impl BaseDirectory for Trials {
         });
     }
 
-    fn place(&self) -> Option<Place> {
+    /// Named by today's date, as the toolbar shows it, rather than `_now`'s: they can only differ at midnight.
+    fn place(&self, _now: &chrono::DateTime<chrono::Local>) -> Option<Place> {
         Some(self.recording.clone().unwrap_or_else(|| self.place_of(&today(), self.next())))
     }
 
@@ -360,22 +361,23 @@ mod tests {
 
     #[test]
     fn the_next_trial_is_after_the_last_on_disk() {
+        let now = chrono::Local::now();
         let base = std::env::temp_dir().join(format!("ephys-rs-trials-{}", std::process::id()));
         let mut trials = Trials { directory: base.display().to_string(), subject: "r123".into(), ..Default::default() };
         let day = base.join("r123").join(today());
         let name = |trial: &str| format!("r123 {} {trial}", today());
         let named = |trial: &str| Some(Place { directory: day.clone(), prefix: Some(name(trial)) });
-        assert_eq!(trials.place(), named("a"), "nothing's there yet");
+        assert_eq!(trials.place(&now), named("a"), "nothing's there yet");
 
         // A recording: its settings are there (and a writer's files, say) by when it stops.
         std::fs::create_dir_all(&day).unwrap();
-        let place = trials.place().unwrap();
+        let place = trials.place(&now).unwrap();
         trials.recording_started(&place);
         std::fs::write(day.join(format!("{}.ephys-rs.json", name("a"))), "").unwrap();
         trials.looked.take();
-        assert_eq!(trials.place(), named("a"), "where the recording is, whatever's on disk by now");
+        assert_eq!(trials.place(&now), named("a"), "where the recording is, whatever's on disk by now");
         trials.recording_stopped();
-        assert_eq!(trials.place(), named("b"));
+        assert_eq!(trials.place(&now), named("b"));
 
         // After the last, leaving any gap; other days', and other things, don't count.
         std::fs::create_dir(day.join(name("b"))).unwrap();
@@ -384,20 +386,20 @@ mod tests {
         std::fs::write(day.join("r123 2000-01-01 x.set"), "").unwrap();
         std::fs::write(day.join(format!("r999 {} x.set", today())), "").unwrap();
         trials.looked.take();
-        assert_eq!(trials.place(), named("e"));
+        assert_eq!(trials.place(&now), named("e"));
 
         // Chosen by hand: for the next recording, then carrying on from it.
         trials.chosen = Some((today(), 6));
-        assert_eq!(trials.place(), named("f"));
-        trials.recording_started(&trials.place().unwrap());
+        assert_eq!(trials.place(&now), named("f"));
+        trials.recording_started(&trials.place(&now).unwrap());
         std::fs::write(day.join(format!("{}.set", name("f"))), "").unwrap();
         trials.recording_stopped();
-        assert_eq!(trials.place(), named("g"));
+        assert_eq!(trials.place(&now), named("g"));
 
         // What's kept is what was chosen: what's next is on disk.
         let saved = trials.save();
         assert_eq!(saved, serde_json::json!({ "directory": base.display().to_string(), "subject": "r123" }));
-        assert_eq!(Trials::from_saved(Some(&saved)).place(), named("g"));
+        assert_eq!(Trials::from_saved(Some(&saved)).place(&now), named("g"));
         std::fs::remove_dir_all(&base).unwrap();
     }
 }

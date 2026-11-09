@@ -238,12 +238,12 @@ impl BaseDirectory for Chosen {
         });
     }
 
-    fn place(&self) -> Option<Place> {
+    fn place(&self, now: &chrono::DateTime<chrono::Local>) -> Option<Place> {
         if self.recording.is_some() {
             return self.recording.clone();
         }
         let prefix = self.prefix.trim();
-        let prefix = (!prefix.is_empty()).then(|| session_name(prefix, &chrono::Local::now()));
+        let prefix = (!prefix.is_empty()).then(|| session_name(prefix, now));
         Some(Place { directory: expand(&self.directory), prefix })
     }
 
@@ -275,18 +275,19 @@ mod tests {
 
     #[test]
     fn a_prefix_is_optional_and_stays_the_same_through_a_recording() {
+        use chrono::TimeZone;
+        let (start, later) = (chrono::Local.with_ymd_and_hms(2026, 1, 1, 14, 30, 5).unwrap(), chrono::Local::now());
         let mut chosen = Chosen { directory: "/r".into(), ..Default::default() };
-        assert_eq!(chosen.place(), Some(Place::directory("/r")), "the writers name it");
+        assert_eq!(chosen.place(&start), Some(Place::directory("/r")), "the writers name it");
 
         chosen.prefix = "mouse1".into();
-        let place = chosen.place().unwrap();
+        let place = chosen.place(&start).unwrap();
         let prefix = place.prefix.clone().unwrap();
-        assert!(prefix.starts_with("mouse1_20"), "with when it starts, so as not to write over the last: {prefix}");
+        assert!(prefix.starts_with("mouse1_2026"), "with when it starts, so as not to write over the last: {prefix}");
         chosen.recording_started(&place);
-        std::thread::sleep(std::time::Duration::from_millis(1100));
-        assert_eq!(chosen.place().as_ref(), Some(&place), "whatever the time");
+        assert_eq!(chosen.place(&later).as_ref(), Some(&place), "whatever the time");
         chosen.recording_stopped();
-        assert_ne!(chosen.place().as_ref(), Some(&place), "the next one's its own");
+        assert_ne!(chosen.place(&later).as_ref(), Some(&place), "the next one's its own");
 
         let saved = chosen.save();
         assert_eq!(saved, serde_json::json!({ "directory": "/r", "prefix": "mouse1" }));
