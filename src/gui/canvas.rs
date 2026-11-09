@@ -1136,7 +1136,8 @@ impl Canvas {
         // Dropped on a node with nowhere to connect: say why.
         let Some(state) = resolved.get(&node) else { return };
         let Some(kind) = resolved.get(&port.node).and_then(|s| s.kind(port.role, port.index)) else { return };
-        let reason = state.find(node, port.role.partner(), kind).and_then(|p| graph.check(port, p).err());
+        let from = &resolved[&port.node];
+        let reason = state.find(node, from, (port.role, port.index)).and_then(|p| graph.check(port, p).err());
         let reason = reason.map(|e| e.to_string()).unwrap_or_else(|| {
             let label = graph.get(node).map_or("", |e| e.label.as_str());
             let kind = crate::engine::edge_info::<N::Edges>(kind).name;

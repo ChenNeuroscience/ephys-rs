@@ -724,6 +724,11 @@ impl Node<Edges> for RunCommand {
         vec![Control { name: "after running", kind: SettingKind::Command, read_only: true, on_right: true }]
     }
 
+    /// The files it ran on, once it's done (see `Then`).
+    fn sends(&self, _control: usize) -> &'static [TriggerKind] {
+        &[TriggerKind::RunOnFiles]
+    }
+
     fn set_setting(&mut self, _index: usize, value: Setting) {
         if let Setting::Command(settings) = value {
             self.settings = settings;

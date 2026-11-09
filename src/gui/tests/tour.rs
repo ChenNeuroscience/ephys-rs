@@ -287,22 +287,11 @@ fn make_tour() {
     tour.wait(1.0);
     tour.shot("Every pass and frame, timed");
 
-    // A script to run on each recording, once it's written.
-    let ltx_pos = tour.app().graph.get(writer).unwrap().pos;
-    let mut command = crate::standard::other::run_command::RunCommand::default();
-    command.settings.program = "python3".into();
-    command.settings.arguments = "sort_tetrodes.py {file}".into();
-    command.settings.pattern = ".set".into();
-    let run = tour.app().graph.add(Nodes::RunCommand(command), [ltx_pos[0] + 280.0, ltx_pos[1]]);
-    tour.app().graph.get_mut(run).unwrap().label = "Sort tetrodes".into();
-    let (from, to) = (
-        engine::Port { node: writer, role: engine::PortRole::Control, index: 4 },
-        engine::Port { node: run, role: engine::PortRole::Setting, index: 0 },
-    );
-    tour.app().graph.connect(from, to).unwrap();
-    tour.only(run);
+    // Each recording's positions put on the board's clock, once it's written: the quick action connected it.
+    let sync = tour.id("Sync Positions");
+    tour.only(sync);
     tour.wait(1.0);
-    tour.shot("Run your scripts on each recording");
+    tour.shot("Positions synced to the board after recording");
 
     // The graph.
     tour.app().layout = Layout::default();

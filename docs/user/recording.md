@@ -74,3 +74,25 @@ The commands to run are listed at the bottom, as they'll run. After a run, each 
 <img src="../../tests/snapshots/run_command_last_run.png" alt="How each command went last time">
 
 The terminal runs apart from ephys-rs, so it carries on if ephys-rs quits.
+
+## Sync Positions
+
+> **Other.** ◇ `sync` (connect Write LTX's `after recording` here).
+
+<img src="../../tests/snapshots/sync_positions_synced.png" alt="Sync Positions, having synced a recording">
+
+Puts an LTX recording's positions on the board's clock, using the timing LED's pulses, which both the camera and one of
+the board's digital inputs saw. The standard LTX quick action connects it to Write LTX, so it runs on each recording
+once it's written. It runs inside ephys-rs, not in a terminal.
+
+**Recording**: a `.set` file, picked by hand, or sent by Write LTX. The rest is found beside it: the positions
+(`name.pos`), the board's TTLs (`name.ttl`) and the timing LED's TTLs (`name.pos.ttl`). The window lists the three
+files, and says if any are missing.
+
+**Board's TTL line**: the board's digital input that the timing LED's pulses go to.
+
+Before syncing, the positions as recorded are copied to `name.pos.original` (or `name (2).pos.original`, and so on, if
+that name's taken), and the synced positions are written to `name.pos`. Synced again, it starts from that original,
+not from the synced positions, and says so:
+
+<img src="../../tests/snapshots/sync_positions_synced_again.png" alt="Sync Positions, syncing again from the original">

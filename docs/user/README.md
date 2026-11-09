@@ -34,7 +34,8 @@ The same setup runs either way: basic mode is just a simpler view of it.
   - [Spikes](spikes.md): the Spike Detector, Spike Gain and Spike Viewer.
   - [Tracking](tracking.md): the Camera, Position Detector, Tracker View and Video Viewer.
   - [Alarms and logs](alarms-and-logs.md): the Alarm Processor and Alarm Viewer, and the Log Viewer.
-  - [Recording](recording.md): Write LTX and Write Raw, and Run Command for processing what's recorded.
+  - [Recording](recording.md): Write LTX and Write Raw; Run Command, for processing what's recorded, and Sync
+    Positions, for putting positions on the board's clock.
 - [Keyboard shortcuts](main-window.md#keyboard-shortcuts)
 
 ## A typical session

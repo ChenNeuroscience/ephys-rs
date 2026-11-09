@@ -185,6 +185,11 @@ impl Node<Edges> for WriteLtx {
         ]
     }
 
+    /// What it recorded, once it's finished (see `after_recording`).
+    fn sends(&self, control: usize) -> &'static [crate::TriggerKind] {
+        if control == AFTER_RECORDING { &[crate::TriggerKind::RunOnFiles] } else { &[] }
+    }
+
     fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
         let mut warnings = require_input(inputs, "something to record");
         if let Some(DataStream::Spikes(spikes)) = inputs[0]

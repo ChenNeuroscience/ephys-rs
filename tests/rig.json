@@ -484,9 +484,20 @@
           "node": 20,
           "port": 0
         }
+      },
+      {
+        "dimension": "Settings",
+        "from": {
+          "node": 6,
+          "port": 4
+        },
+        "to": {
+          "node": 21,
+          "port": 0
+        }
       }
     ],
-    "next_id": 21,
+    "next_id": 22,
     "nodes": {
       "1": {
         "label": "Acquisition Board",
@@ -894,6 +905,22 @@
         "pos": [
           840.0,
           528.0
+        ]
+      },
+      "21": {
+        "label": "Sync Positions",
+        "node": {
+          "settings": {
+            "settings": {
+              "board_line": 1,
+              "set_file": ""
+            }
+          },
+          "type": "SyncPositions"
+        },
+        "pos": [
+          1960.0,
+          448.0
         ]
       }
     }

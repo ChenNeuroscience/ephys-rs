@@ -2866,7 +2866,7 @@ mod tests {
             serde_json::json!({ "types": { "Subject, date and trial": { "directory": "/nowhere/recordings" } } });
         let types = crate::components::BASE_DIRECTORIES;
         app.base_directories = BaseDirectories::new(types, Some(&saved));
-        let mut harness = Harness::builder().with_size([1400.0, 850.0]).wgpu().build_ui_state(run_app, app);
+        let mut harness = Harness::builder().with_size([1400.0, 920.0]).wgpu().build_ui_state(run_app, app);
         harness.run_steps(3);
         assert_eq!(harness.state().layout.mode, Mode::Basic, "it starts in the basic view");
         harness.snapshot("basic_empty");

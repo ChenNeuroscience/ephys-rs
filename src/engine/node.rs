@@ -255,6 +255,13 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
         &[]
     }
 
+    /// The triggers one of its controls (by index) sends: it connects to a setting that takes one of them, whatever
+    /// the setting's kind, as well as to one of its own kind, since what it sends is all that passes between them (a
+    /// writer's "after recording" control sends files to whatever takes them, say).
+    fn sends(&self, _control: usize) -> &'static [super::TriggerKind<E>] {
+        &[]
+    }
+
     /// One of its direct `triggers`, sent to it, on the GUI's thread, with the same context as its window's (so its
     /// `UiState`, where work it starts, and isn't a setting, can be kept), and what its own controls can trigger in turn
     /// (directly, from any thread, whenever: see `ControlTriggers::handle`).

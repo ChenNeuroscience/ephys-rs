@@ -16,7 +16,7 @@ use ephys_rs::standard::ephys::{
     band_pass, board, channel_selector, continuous_gain, downsample, lfp_viewer, reference, spectrum, ttl_viewer,
 };
 use ephys_rs::standard::logs::log_viewer;
-use ephys_rs::standard::other::run_command;
+use ephys_rs::standard::other::{run_command, sync_positions};
 use ephys_rs::standard::recording::{ltx, raw};
 use ephys_rs::standard::spikes::{spike_detector, spike_gain, spike_viewer};
 use ephys_rs::standard::themes::{DARK, LIGHT};
@@ -52,6 +52,7 @@ nodes_enum! {
         WriteLtx(ltx::WriteLtx),
         WriteRaw(raw::WriteRaw),
         RunCommand(run_command::RunCommand),
+        SyncPositions(sync_positions::SyncPositions),
     }
     pub enum NodeType;
 }

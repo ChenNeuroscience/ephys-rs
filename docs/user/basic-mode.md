@@ -8,8 +8,8 @@ Basic mode is for running experiments without thinking about the graph. It's whe
 
 With nothing set up, the home pane offers your recent files, and the *quick actions* your build has. A quick action
 is a ready-made change to the setup. Chen-neuro's "Standard LTX graph" adds a whole tetrode rig in one click: an
-acquisition board and a camera, with spikes, EEG, digital inputs and positions viewed and recorded. Your lab's build
-will have its own.
+acquisition board and a camera, with spikes, EEG, digital inputs and positions viewed and recorded, and each
+recording's positions put on the board's clock once it's written. Your lab's build will have its own.
 
 ![Recent files in the basic view](../../tests/snapshots/basic_recent_files.png)
 

@@ -56,6 +56,7 @@ pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + S
     fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool]) -> TreeShake;
     fn evaluate_buffer_usage(&self, inputs: usize, outputs: usize) -> BufferUsage;
     fn triggers(&self, setting: usize) -> &'static [super::TriggerKind<Self::Edges>];
+    fn sends(&self, control: usize) -> &'static [super::TriggerKind<Self::Edges>];
     fn on_trigger(
         &mut self,
         trigger: <Self::Edges as Edges>::Trigger,
@@ -262,6 +263,10 @@ macro_rules! nodes_enum {
 
             fn triggers(&self, setting: usize) -> &'static [$crate::engine::TriggerKind<$edges>] {
                 match self { $($name::$variant(n) => $crate::engine::Node::triggers(n, setting)),+ }
+            }
+
+            fn sends(&self, control: usize) -> &'static [$crate::engine::TriggerKind<$edges>] {
+                match self { $($name::$variant(n) => $crate::engine::Node::sends(n, control)),+ }
             }
 
 

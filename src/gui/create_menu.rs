@@ -25,8 +25,8 @@ pub struct CreateMenu {
 /// The port on a new node of type `node_type` that `from` would connect to, if any. The port's node is a
 /// placeholder.
 pub fn port_on_new<N: NodesEnum>(from: Port, resolved: &Resolved<N::Edges>, node_type: N::Type) -> Option<Port> {
-    let kind = resolved.get(&from.node)?.kind(from.role, from.index)?;
-    NodeState::unconnected(&N::create(node_type)).find(NodeId(0), from.role.partner(), kind)
+    let from_state = resolved.get(&from.node)?;
+    NodeState::unconnected(&N::create(node_type)).find(NodeId(0), from_state, (from.role, from.index))
 }
 
 impl CreateMenu {

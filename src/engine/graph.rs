@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    Control, Dimension, EdgeInfo, EdgeTypesEnum, Edges, Input, Node, NodesEnum, Output, Plan, SettingPort, UiContext,
-    same_processing,
+    Control, Dimension, EdgeInfo, EdgeTypesEnum, Edges, Input, Node, NodesEnum, Output, Plan, SettingPort, TriggerKind,
+    UiContext, same_processing,
 };
 use crate::theme::Colours;
 
@@ -166,6 +166,9 @@ pub struct NodeState<E: Edges> {
     pub settings: Vec<SettingPort<E>>,
     pub controls: Vec<Control<E>>,
     pub warnings: Vec<String>,
+    /// For each setting, the triggers it takes (`Node::triggers`), and for each control, those it sends (`Node::sends`).
+    pub takes: Vec<&'static [TriggerKind<E>]>,
+    pub sends: Vec<&'static [TriggerKind<E>]>,
 }
 
 /// Identifies an edge type: its dimension, and its index in that dimension's `EdgeTypesEnum::KINDS`.
@@ -181,6 +184,8 @@ impl<E: Edges> NodeState<E> {
             input_streams,
             settings: node.settings(),
             controls: node.controls(),
+            takes: (0..node.settings().len()).map(|s| node.triggers(s)).collect(),
+            sends: (0..node.controls().len()).map(|c| node.sends(c)).collect(),
         }
     }
 
@@ -192,6 +197,8 @@ impl<E: Edges> NodeState<E> {
             input_streams,
             settings: node.settings(),
             controls: node.controls(),
+            takes: (0..node.settings().len()).map(|s| node.triggers(s)).collect(),
+            sends: (0..node.controls().len()).map(|c| node.sends(c)).collect(),
         }
     }
 
@@ -259,9 +266,30 @@ impl<E: Edges> NodeState<E> {
             .flat_map(move |role| (0..self.count(role)).map(move |index| Port { node, role, index }))
     }
 
-    /// The first port with `role` and `kind`.
-    pub fn find(&self, node: NodeId, role: PortRole, kind: KindKey) -> Option<Port> {
-        (0..self.count(role)).find(|&i| self.kind(role, i) == Some(kind)).map(|index| Port { node, role, index })
+    /// Whether its port `(role, index)` could connect to `other`'s port `to`: a partner of the same kind, or a control
+    /// and a setting, either way round, with a trigger the control sends that the setting takes (see `Node::sends`).
+    pub fn fits(&self, (role, index): (PortRole, usize), other: &Self, to: (PortRole, usize)) -> bool {
+        if role.partner() != to.0 {
+            return false;
+        }
+        let kind = self.kind(role, index);
+        if kind.is_some() && kind == other.kind(to.0, to.1) {
+            return true;
+        }
+        let (control, setting) = match role {
+            PortRole::Control => ((self, index), (other, to.1)),
+            PortRole::Setting => ((other, to.1), (self, index)),
+            _ => return false,
+        };
+        let sends = control.0.sends.get(control.1).copied().unwrap_or_default();
+        let takes = setting.0.takes.get(setting.1).copied().unwrap_or_default();
+        sends.iter().any(|kind| takes.contains(kind))
+    }
+
+    /// The first of its ports that `from`'s port `port` fits (see `fits`).
+    pub fn find(&self, node: NodeId, from: &Self, port: (PortRole, usize)) -> Option<Port> {
+        let role = port.0.partner();
+        (0..self.count(role)).find(|&i| from.fits(port, self, (role, i))).map(|index| Port { node, role, index })
     }
 }
 
@@ -417,7 +445,8 @@ impl<N: NodesEnum> Graph<N> {
             return Err(ConnectError::SameNode);
         }
         let dimension = from.role.dimension();
-        if from_kind != to_kind {
+        let state = |port: Port| NodeState::unconnected(&self.nodes[&port.node].node);
+        if !state(from).fits((from.role, from.index), &state(to), (to.role, to.index)) {
             let name = |kind| edge_info::<N::Edges>(kind).name;
             return Err(ConnectError::KindMismatch { dimension, from: name(from_kind), to: name(to_kind) });
         }
@@ -485,11 +514,13 @@ impl<N: NodesEnum> Graph<N> {
 
     /// Drops edges whose ports no longer exist or no longer match, e.g. after a settings change removed a port.
     pub fn prune_edges(&mut self) {
-        let valid: Vec<bool> = self
-            .edges
-            .iter()
-            .map(|e| matches!((self.kind(e.source()), self.kind(e.target())), (Some(a), Some(b)) if a == b))
-            .collect();
+        let fits = |e: &Edge| {
+            let (from, to) = (e.source(), e.target());
+            let (Some(a), Some(b)) = (self.nodes.get(&from.node), self.nodes.get(&to.node)) else { return false };
+            let (a, b) = (NodeState::unconnected(&a.node), NodeState::unconnected(&b.node));
+            a.fits((from.role, from.index), &b, (to.role, to.index))
+        };
+        let valid: Vec<bool> = self.edges.iter().map(fits).collect();
         let mut valid = valid.into_iter();
         self.edges.retain(|_| valid.next().unwrap());
         let edges = &self.edges;

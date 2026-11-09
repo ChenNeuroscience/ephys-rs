@@ -21,7 +21,7 @@ pub mod tracking;
 pub mod widgets;
 
 use ephys::{reference, spectrum};
-use other::run_command;
+use other::{run_command, sync_positions};
 use tracking::camera;
 
 crate::edge_types! {
@@ -46,6 +46,7 @@ crate::edge_types! {
         Detection(tracking::Detection),
         Alarms(alarms::Alarms),
         Command(run_command::CommandSettings),
+        Sync(sync_positions::SyncSettings),
     }
     triggers: pub enum Trigger, TriggerKind {
         AutoDetect(auto_detect::AutoDetect),

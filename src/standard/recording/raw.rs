@@ -133,6 +133,11 @@ impl Node<Edges> for WriteRaw {
         vec![Control { name: "after recording", kind: crate::SettingKind::Command, read_only: true, on_right: true }]
     }
 
+    /// What it recorded, once it's finished (see `after_recording`).
+    fn sends(&self, _control: usize) -> &'static [crate::TriggerKind] {
+        &[crate::TriggerKind::RunOnFiles]
+    }
+
     fn outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {
         Vec::new()
     }
