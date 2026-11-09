@@ -1,9 +1,9 @@
 # Nodes
 
-A node type is a struct of its settings implementing [`Node`](../src/core/engine/node.rs), listed in `nodes_enum!` in
+A node type is a struct of its settings implementing [`Node`](../src/engine/node.rs), listed in `nodes_enum!` in
 a program's components (the [chen-neuro's](../examples/chen-neuro/src/components/mod.rs), say). Its settings are saved in the graph's file (with serde), copied and pasted, and undone;
 two nodes of a type differ only in their settings. A simple complete one is the
-[Channel Selector](../src/standard_components/ephys/channel_selector.rs): one input, one output, one setting (which
+[Channel Selector](../src/standard/ephys/channel_selector.rs): one input, one output, one setting (which
 another node can edit).
 
 ![A node's window, and the graph](../tests/snapshots/graph_windows.png)
@@ -45,7 +45,7 @@ The parts of the API are there for three different reasons, and it helps to know
 ## Running
 
 `process(pass, state)` is called once a pass, on a worker thread, with the pass's buffers (see
-[`Pass`](../src/core/engine/pass.rs)): `inputs` to read, `outputs` to fill (already sized: nothing should be allocated
+[`Pass`](../src/engine/pass.rs)): `inputs` to read, `outputs` to fill (already sized: nothing should be allocated
 per pass), the settings its `controls` see, whether it's recording, what it shares with the GUI, and its triggers. `self` is the snapshot's
 settings: the latest, as of the pass.
 
@@ -66,7 +66,7 @@ settings: the latest, as of the pass.
   given which of its inputs have something running into them, and which of its outputs have something running that
   needs them, says whether it runs, and which inputs it needs (a `TreeShake`). An input it doesn't need isn't passed,
   and doesn't count as in use for what feeds it (the LFP viewer's spectrum, switched off, stops the
-  [Spectrum](../src/standard_components/ephys/spectrum.rs) node). The plan starts with everything that can run running
+  [Spectrum](../src/standard/ephys/spectrum.rs) node). The plan starts with everything that can run running
   and needing everything, asks each node in turn, upstream first, and whenever one's answer changes, asks its
   neighbours again, if what they're told has changed, until nothing does. So the answer must depend only on what it's
   told and its settings; and if more in use never makes a node run or need less, it always settles. A node whose
@@ -80,7 +80,7 @@ settings: the latest, as of the pass.
 ## Its window
 
 Double-clicking a node opens its window, `gui_ui`. By default it's the standard window
-([`node_window::standard`](../src/core/gui/node_window.rs)): its name, toolbar, what it is, any problems, and its ports.
+([`node_window::standard`](../src/gui/node_window.rs)): its name, toolbar, what it is, any problems, and its ports.
 A node with settings to set there shows them in the standard window, as most do:
 
 ```rust
@@ -91,7 +91,7 @@ fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
 
 A view of its own (a viewer's, say) draws whatever it likes instead, and says how big its window opens
 (`WINDOW_SIZE`). `SHOW_IN_BASIC_DEFAULT` says whether it's listed in the basic view, till that's set for it: by
-convention, nodes with a view are. It gets a [`UiContext`](../src/core/engine/ui_context.rs):
+convention, nodes with a view are. It gets a [`UiContext`](../src/engine/ui_context.rs):
 
 - `inputs`: the streams on its inputs; `controls`: the values of the settings its controls see, to edit.
 - `shared::<T>()`: what its passes share with it (its `Shared`, which is `T`), or what they did in the last run once
@@ -110,22 +110,22 @@ Help that's more than a tooltip (examples, a cheat sheet) goes behind `widgets::
 underline, its help in a popup while the pointer's over it, or, clicked, until something else is. `widgets::with_help`
 does the same for something else, such as an icon.
 
-The standard components' [`widgets`](../src/standard_components/widgets.rs) has what their windows share, for a build's
+The standard components' [`widgets`](../src/standard/widgets.rs) has what their windows share, for a build's
 nodes too: a grid of settings (`settings_grid`, with a row each from `setting`), sections, toggles and the like.
 
-The [Spike Viewer](../src/standard_components/spikes/spike_viewer.rs) and [LFP Viewer](../src/standard_components/ephys/lfp_viewer.rs)
+The [Spike Viewer](../src/standard/spikes/spike_viewer.rs) and [LFP Viewer](../src/standard/ephys/lfp_viewer.rs)
 are full examples.
 
 ## Sharing with its window
 
 A node says what its passes share with the GUI (its window, and the dev tools: `ThreadContext::shared`) as
-`type Shared` (see [`shared.rs`](../src/core/engine/shared.rs)), and `()` for nothing. One's made for each epoch it
+`type Shared` (see [`shared.rs`](../src/engine/shared.rs)), and `()` for nothing. One's made for each epoch it
 runs in, by `shared(inputs)` (by default, `Default`'s), so it's sized for the data streams of the time. The passes reach
 it with `Pass::shared`, and the window with `UiContext::shared`, both as the type. Once a run's stopped, the app keeps
 its last epoch's, so what's shown stays. It reports its pools of buffers (`Shared::pools`), for the dev tools to show
 on the GUI.
 
-The usual thing to share is a [`Pool`](../src/standard_components/pool.rs) of buffers: the same cross-thread pool
+The usual thing to share is a [`Pool`](../src/standard/pool.rs) of buffers: the same cross-thread pool
 sources and writers use with their threads, which can be `Shared` by itself, or one of several in a struct of the
 node's. For something to show, only the newest matters:
 
@@ -143,7 +143,7 @@ let Some(display) = pool.and_then(Pool::newest) else { return };
 
 Neither side waits: passes don't skip a send while the window's reading, and if the window's closed, passes reuse the
 oldest buffer queued. A node that takes its input can swap it straight in (`Pool::reuse`, then `Pool::send_as_of`), so
-nothing's copied: the [Video Viewer](../src/standard_components/tracking/video_viewer.rs) does this with frames.
+nothing's copied: the [Video Viewer](../src/standard/tracking/video_viewer.rs) does this with frames.
 
 ## On the GUI's side
 
@@ -151,7 +151,7 @@ A node can keep state on the GUI's side, as `type UiState` (and `()` for none): 
 the graph has it, whether its window's shown or not, and doesn't save it. Its window gets it with
 `UiContext::ui_state::<T>()`, borrowed from the app rather than the context, so the context can still be used. A
 direct trigger gets the same context (`on_trigger`), so it too. It's the place for anything that isn't a setting, such as a job the node has
-started (as [Run Command](../src/standard_components/other/run_command/mod.rs) does): the node itself is cloned for undo's
+started (as [Run Command](../src/standard/other/run_command/mod.rs) does): the node itself is cloned for undo's
 history and when it's duplicated, and compared every frame, so it should hold only its settings.
 
 Work that isn't drawing, but has to happen whether the window's shown or not, goes in `gui_background(context)`: the app
@@ -160,13 +160,13 @@ whenever it's woken (see `App::logic`). It gets the same `UiContext` as the wind
 share, keep it in its `UiState`, and edit settings as a window would. It returns when it next needs calling, if it does,
 and the app's woken then. When everything the passes send matters, not only the newest, they send it all, in order
 (`Pool::send_pending`), and `gui_background` takes it (`Pool::receive_all`): the
-[Log Viewer](../src/standard_components/logs/log_viewer.rs) keeps lines this way, the Tracker View its path, and the
-[Alarm Viewer](../src/standard_components/alarms/viewer.rs) keeps track of alarms going off, pipping as they do, with
+[Log Viewer](../src/standard/logs/log_viewer.rs) keeps lines this way, the Tracker View its path, and the
+[Alarm Viewer](../src/standard/alarms/viewer.rs) keeps track of alarms going off, pipping as they do, with
 its window closed too.
 
 ## Triggers
 
-Anything sent to a node is a trigger. Each trigger type implements [`TriggerType`](../src/core/triggers.rs), carrying
+Anything sent to a node is a trigger. Each trigger type implements [`TriggerType`](../src/triggers.rs), carrying
 whatever it needs to (`AutoDetect` nothing; `RunOnFiles` the files), with a name to show, and how it's delivered
 (`DELIVERY`). The program lists them with its edge types, in `edge_types!` (`triggers:`), which makes its `Trigger`
 enum, with a variant for each, and `TriggerKind`, naming them, as it does for data streams and settings: they're sent
@@ -180,9 +180,9 @@ says whether it can be sent now. Only taking it differs, as that's on a differen
   (`Pass::trigger_progress`, shown with `UiContext::trigger_progress`), and finishes (`Pass::trigger_done`). Meanwhile
   it can be stopped (`UiContext::cancel_trigger`): the passes then see `Pass::trigger_cancelled`, and abandon it. Since
   passes can't change the graph, it triggers an update of what it finds (`Pass::trigger_settings_update(setting,
-  value)`), and the GUI applies it as an edit. The [Continuous Gain](../src/standard_components/ephys/continuous_gain.rs),
-  [Spike Gain](../src/standard_components/spikes/spike_gain.rs) and
-  [Spike Detector](../src/standard_components/spikes/spike_detector.rs) work this way, triggered from the Spike Viewer.
+  value)`), and the GUI applies it as an edit. The [Continuous Gain](../src/standard/ephys/continuous_gain.rs),
+  [Spike Gain](../src/standard/spikes/spike_gain.rs) and
+  [Spike Detector](../src/standard/spikes/spike_detector.rs) work this way, triggered from the Spike Viewer.
 - **`Delivery::Direct`** (`RunOnFiles`): needs no pass, or even a run. It's delivered on the GUI's thread, whatever's
   going on, to `Node::on_trigger`, as the `Trigger` (`if let Trigger::RunOnFiles(files) = trigger`), with the same
   `UiContext` as its window's. As well as from a window, a node can send one through a control with a `TriggerHandle`, from the `ControlTriggers` it's given in
@@ -200,9 +200,9 @@ applied while settings are locked.
 A node can run threads (started in `initial_state`, stopped when its state's dropped). It lists them in `threads()`,
 with which way data goes and why it's a thread, draws what each is up to in `thread_ui`, and reports any pool of
 buffers it swaps with the passes in `thread_pool`, all for the dev tools. A source's thread fills buffers shaped like
-the node's outputs from a [`Pool`](../src/standard_components/pool.rs), which `process` swaps into the pass; see the
-[board's capture](../src/standard_components/ephys/board/capture.rs). A writer's passes swap their data into chunks
-from a pool, for its thread to write; see [`recording`](../src/standard_components/recording/mod.rs).
+the node's outputs from a [`Pool`](../src/standard/pool.rs), which `process` swaps into the pass; see the
+[board's capture](../src/standard/ephys/board/capture.rs). A writer's passes swap their data into chunks
+from a pool, for its thread to write; see [`recording`](../src/standard/recording/mod.rs).
 
 ## Recording
 
@@ -213,7 +213,7 @@ Passes see `Pass::recording`. The graph can't change while recording, so everyth
 
 A writer has an "after recording" control. Connected to a setting that takes the `run_command::RunOnFiles` trigger (a direct one),
 it sends the paths of the files once they're finished (not when recording stops, which is sooner), and only if
-something was recorded. The [Run Command](../src/standard_components/other/run_command/mod.rs) node takes it, and neither
+something was recorded. The [Run Command](../src/standard/other/run_command/mod.rs) node takes it, and neither
 knows what's at the other end: anything can send files to run on.
 
 Run Command has an "after running" control of its own: once what it ran is done, it sends the same files on to what's
@@ -230,19 +230,19 @@ onward, like data.
 ## Global settings
 
 Settings for the whole program on this machine, rather than a graph (where a vendor's library is, say), are global
-settings: a type implementing [`GlobalSettings`](../src/core/global_settings.rs), with a `NAME` and a `ui`, which is a
+settings: a type implementing [`GlobalSettings`](../src/global_settings.rs), with a `NAME` and a `ui`, which is a
 tab of its own in Settings…, kept between sessions. A node names those it reads, as `type GlobalSettings` (`()` for
 none, a type, or a pair or triple), and reads them as they are now, from any thread, with `Self::global_settings()`. A
 build has a tab for each type its nodes name, so a component's global settings come with it, without the build listing
-them. The [Acquisition Board](../src/standard_components/ephys/board/open_ephys.rs) reads which folder of the Open
-Ephys GUI's its files come from; the [Camera](../src/standard_components/tracking/camera/spinnaker.rs) where FLIR's SDK
-is, with [`SearchFolders`](../src/core/search_folders.rs): folders to look in first, with a tab's list of them, what's
+them. The [Acquisition Board](../src/standard/ephys/board/open_ephys.rs) reads which folder of the Open
+Ephys GUI's its files come from; the [Camera](../src/standard/tracking/camera/spinnaker.rs) where FLIR's SDK
+is, with [`SearchFolders`](../src/search_folders.rs): folders to look in first, with a tab's list of them, what's
 found and where to get it.
 
 ## Work outside a run
 
 Not everything a node does belongs to a pass. The nodes in the Other category aren't about data as it's acquired: [Run
-Command](../src/standard_components/other/run_command/mod.rs) runs a program in a terminal of its own, with or without a run.
+Command](../src/standard/other/run_command/mod.rs) runs a program in a terminal of its own, with or without a run.
 The terminal's a separate process, which can be stopped from the node, and which carries on if the app quits.
 A node's UI can see what's connected to its settings (`UiContext::controlled_by`): while a writer's connected, it's all Run
 Command runs on, so it says so and doesn't offer files of its own.

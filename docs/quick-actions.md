@@ -5,7 +5,7 @@ node: chen-neuro's "Standard LTX graph", "Use VR computer", "Use synthetic data"
 
 ![Basic mode, with quick actions](../tests/snapshots/basic_after_quick_actions.png)
 
-A [`QuickAction`](../src/core/quick_action.rs) is a name, a description, and a pure function from a
+A [`QuickAction`](../src/quick_action.rs) is a name, a description, and a pure function from a
 `QuickState` (the graph, with all its settings, and the [layout](#the-layout) of panes) to a `QuickChange`, or nothing
 if it doesn't apply (when it's already been done, say), when it isn't offered. Being a pure function, it's undone in
 one step, and easy to test.
@@ -28,7 +28,7 @@ where they'd go.
 
 ## The layout
 
-The [`Layout`](../src/core/layout.rs) of panes (home, the dev tools, the annotation pane and node windows: each a tab
+The [`Layout`](../src/layout.rs) of panes (home, the dev tools, the annotation pane and node windows: each a tab
 in a group, the groups side by side or one above another) has the helpers the app itself uses to place panes, for
 actions to use on their copy:
 

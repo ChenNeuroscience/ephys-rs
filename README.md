@@ -48,11 +48,11 @@ UPDATE_SNAPSHOTS=1 cargo test                  # accept changes to how the GUI l
 
 The code is in three parts:
 
-1. `src/core`: the graph engine, the GUI, and the traits for nodes, annotations and themes. It knows nothing about particular node, edge or annotation types.
-2. `src/standard_components`: the components most labs will need, grouped by feature (`ephys`, `spikes`, `tracking`...).
+1. The framework, the crate's own modules (`src/engine`, `src/gui`...): the graph engine, the GUI, and the traits for nodes, annotations and themes. It knows nothing about particular node, edge or annotation types.
+2. `src/standard`: the components most labs will need, grouped by feature (`ephys`, `spikes`, `tracking`...).
 3. `examples/chen-neuro/`: the Chen lab's build, and what this repository releases. It declares which components it's built with, and adds its own: the LTX quick actions, and the subject, date and trial base directory.
 
-The first two are the `ephys-rs` library. To make your own build, add it to a new program with `cargo add --git https://github.com/ChenNeuroscience/ephys-rs ephys-rs`, and use `examples/chen-neuro/` as a starting point: [custom builds](docs/architecture.md#core-standard-components-and-custom-builds) says what you can add.
+The first two are the `ephys-rs` library. To make your own build, add it to a new program with `cargo add --git https://github.com/ChenNeuroscience/ephys-rs ephys-rs`, and use `examples/chen-neuro/` as a starting point: [custom builds](docs/architecture.md#the-framework-standard-components-and-custom-builds) says what you can add.
 
 To run without real hardware, `synthetic_streams/` has stand-ins, which nodes use by default:
 
@@ -63,7 +63,7 @@ To run without real hardware, `synthetic_streams/` has stand-ins, which nodes us
 ### Working with an agent
 
 - **Start with the docs.** Ask it to read the [developer docs](docs/README.md) first, then describe what you want in terms of your experiment, not the code.
-- **Keep lab-specific work in your build.** Ask before changing `src/core`, as changes there make it harder to take updates.
+- **Keep lab-specific work in your build.** Ask before changing the framework (anything outside `src/standard`), as changes there make it harder to take updates.
 - **Give it evidence.** Paste the console output or a crash report, or point it at a recording, rather than describing what went wrong.
 - **Ask what's been tested.** Have it say what has and hasn't run on real hardware, and whether it could run things on the rig itself or only you could.
 - **Say what it may touch.** If it's on the machine with the hardware attached, it can run the app and read the logs itself, which makes debugging much quicker. Tell it when a device is in use, and where it mustn't write, so it doesn't disturb an experiment or your recordings.

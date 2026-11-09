@@ -47,7 +47,7 @@ one log, so they fix what's shown (`App::problems`), rather than showing each ot
 ## Versions
 
 There are two versions, shown together at the right of the status bar: `chen-neuro v0.x (ephys-rs v0.y)`. A build says
-what it shows, with `Components::version` (see [custom builds](architecture.md#core-standard-components-and-custom-builds)),
+what it shows, with `Components::version` (see [custom builds](architecture.md#the-framework-standard-components-and-custom-builds)),
 and this one's in [`examples/chen-neuro/`](../examples/chen-neuro/src/components/mod.rs).
 
 - `x` is the build's: examples/chen-neuro/Cargo.toml's minor version, from 900. It's what's released, so every commit counts it up,
@@ -62,7 +62,7 @@ them, bumping the Cargo.toml files and Cargo.lock and staging them. Turn it on o
 git config core.hooksPath .githooks
 ```
 
-Anything can ask for them: `core::full_version()` is the whole thing, and `core::version()` the core's alone. Write LTX
+Anything can ask for them: `ephys_rs::full_version()` is the whole thing, and `ephys_rs::version()` the library's alone. Write LTX
 keeps the whole thing in its headers (`created_by`, `data_source`), Write Raw in `structure.oebin` (`recorded_with`), and
 crash reports start with it.
 
@@ -71,11 +71,11 @@ crash reports start with it.
 All the config the app reads back says which version of each part of the program wrote it: saved files (projects, and
 the settings saved beside recordings: `"versions"`), settings copied to the clipboard (`"ephys-rs settings"`), and the
 base directory's settings in the app's stored preferences. Later versions patch it up to date before reading it. See
-[`config_patching.rs`](../src/core/config_patching.rs).
+[`config_patching.rs`](../src/config_patching.rs).
 
 Each part has a set of patches, saving its crate's version: the core's
-([`core/config_patches`](../src/core/config_patches): the project's structure), the standard components'
-([`standard_components/config_patches`](../src/standard_components/config_patches): their node types and base
+([`core/config_patches`](../src/config_patches): the project's structure), the standard components'
+([`standard/config_patches`](../src/standard/config_patches): their node types and base
 directories), and a build's own (as [chen-neuro's](../examples/chen-neuro/src/components/config_patches)). Each is a
 folder with a patch in each file, listed in order in its `mod.rs` as `PATCHES`, starting with an example that does
 nothing (`example.rs`, to copy). Which sets a build has, and the order they're applied in, is up to it
@@ -104,7 +104,7 @@ Release builds keep line tables, so profilers and crash backtraces name lines.
 ## The README's tour
 
 `scripts/make_tour.sh` remakes `assets/tour.gif`: the real app, driven on synthetic data, a frame for each feature with
-a caption. To change what's in it, edit [`tour.rs`](../src/core/gui/tests/tour.rs): each `shot` is a frame. It's an
+a caption. To change what's in it, edit [`tour.rs`](../src/gui/tests/tour.rs): each `shot` is a frame. It's an
 ignored test only because the test harness is what draws the app without a window. It starts its own fake board and
 camera, on ports of their own, and writes nothing but the GIF, and the frames in `target/tour`. As in tests, the date,
 the versions and the disk's free space are fixed.

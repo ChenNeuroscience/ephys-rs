@@ -5,10 +5,10 @@ and arrows. They're saved with the graph and undone with it, but take no part in
 
 ![Drawing a note](../tests/snapshots/graph_drawing_note.png)
 
-An annotation type is a struct implementing [`AnnotationType`](../src/core/annotation.rs), listed in
+An annotation type is a struct implementing [`AnnotationType`](../src/annotation.rs), listed in
 `annotations_enum!` in a program's components (the [chen-neuro's](../examples/chen-neuro/src/components/mod.rs), say); the standard ones are in
-[`annotations`](../src/standard_components/annotations/mod.rs). The simplest is the
-[sticky note](../src/standard_components/annotations/sticky_note.rs).
+[`annotations`](../src/standard/annotations/mod.rs). The simplest is the
+[sticky note](../src/standard/annotations/sticky_note.rs).
 
 - `INFO`: its name, description, and size when added without being drawn out; `MIN_SIZE`.
 - `paint_icon`: its tool's icon in the graph's toolbar. Drawing with the tool makes one (`drawn`, told which way it
@@ -26,7 +26,7 @@ The canvas does what's the same for every annotation: selecting it, dragging it 
 double-clicking to edit it, its menu (edit, delete), and which goes in front. The rest is the type's own:
 
 - `canvas_ui(cx)`: draws it, and takes any interaction of its own, with an
-  [`AnnotationUi`](../src/core/annotation.rs): where it is (its `pos` and `size`, to change), whether it's selected,
+  [`AnnotationUi`](../src/annotation.rs): where it is (its `pos` and `size`, to change), whether it's selected,
   hovered or being edited, and helpers for what annotations share:
   - `card(fill)`: a background, with a shadow if it's opaque, outlined while selected, with grips in its corner.
   - `resize_corner(aspect)`: a corner to resize it by, keeping a shape if it's given one (an image).
@@ -34,7 +34,7 @@ double-clicking to edit it, its menu (edit, delete), and which goes in front. Th
   - `content(add)`: its content, laid out at the size it's shown, so text stays sharp at any zoom.
 - By default, `canvas_ui` is a card resized by its corner, with `fill` (its background), `paint` (anything over it:
   a border) and `content_ui(ui, editing)` (what it shows, and editing it in place). The sticky note, markdown,
-  heading and box use the default; the [image](../src/standard_components/annotations/image.rs) keeps its shape as
-  it's resized, and the [arrow](../src/standard_components/annotations/arrow.rs) is dragged by its ends.
+  heading and box use the default; the [image](../src/standard/annotations/image.rs) keeps its shape as
+  it's resized, and the [arrow](../src/standard/annotations/arrow.rs) is dragged by its ends.
 
 Images pasted into a markdown note are kept with it in the file, and shown from where egui loads them.

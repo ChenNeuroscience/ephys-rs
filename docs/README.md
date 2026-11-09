@@ -4,7 +4,7 @@ How ephys-rs works under the hood, and how to extend it. Start with the architec
 you're working on. For how to use it, see the [user guide](user/README.md).
 
 - [Architecture](architecture.md): the graph and its snapshots, plans, passes and epochs; threads, buffers and pools;
-  how the GUI and the passes talk; the core, standard components and custom builds.
+  how the GUI and the passes talk; the framework, standard components and custom builds.
 - [Nodes](nodes.md): writing a node type, from settings and ports to state, views, threads and triggers.
 - [Edges](edges.md): data streams and settings, and how buffers are made.
 - [Annotations](annotations.md): things on the canvas that aren't part of the graph.

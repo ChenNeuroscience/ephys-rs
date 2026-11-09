@@ -12,17 +12,17 @@ Beside it, the toolbar shows how full the disk it's on is: a bar, and what's fre
 97%, with the size in its tooltip. That's whichever base directory's in use, and needs nothing from it: only
 `place`. (A writer with a directory of its own could be on another disk, which this doesn't show.) It's looked at
 once a minute and when the directory changes, on a thread of its own, as a disk asleep or on the network can take a
-while to answer ([`disk_space.rs`](../src/core/gui/disk_space.rs)).
+while to answer ([`disk_space.rs`](../src/gui/disk_space.rs)).
 
 ## Writing one
 
-A kind of base directory is a [`BaseDirectoryType`](../src/core/base_directory.rs): a name, a description, and
+A kind of base directory is a [`BaseDirectoryType`](../src/base_directory.rs): a name, a description, and
 `make`, which makes a `BaseDirectory` from whatever it saved last time (or nothing). The program lists them in
 `Components::BASE_DIRECTORIES` ([chen-neuro's](../examples/chen-neuro/src/components/mod.rs), say). A `BaseDirectory`:
 
 - `toolbar_ui`: draws its section of the main toolbar, as wide as it likes. `BaseDirectoryContext::recording` says
   whether it's recording, when what decides where a recording goes shouldn't change. To match the toolbar's
-  buttons, use `core::gui::widgets::toolbar_button`.
+  buttons, use `gui::widgets::toolbar_button`.
 - `place`: where the next recording goes, or the one going on: a directory, and perhaps a prefix, which writers then
   use rather than their own. It's the whole of the name of what's written, but the extension, so it should be
   different for each recording: writers don't check, and would write over the last. It's given the time the next one
@@ -33,7 +33,7 @@ A kind of base directory is a [`BaseDirectoryType`](../src/core/base_directory.r
 - `save`: what it keeps, between runs of the program and in saved files, as JSON. Only what's chosen: a saved file
   counts as changed when this does, so a count of recordings, say, would mark it changed after each one.
 
-The standard one, in [`base_directories.rs`](../src/standard_components/base_directories.rs), is **A directory**: a
+The standard one, in [`base_directories.rs`](../src/standard/base_directories.rs), is **A directory**: a
 button to open it, the directory, clicked to choose another, and a file prefix, if you want one, clicked to change it
 in place. Recordings are named after the prefix and when they start (`mouse1_2026-11-03_143005`), so one doesn't write
 over the last; with no prefix, the writers name them. The pieces are there for others to use: `directory_ui`,
@@ -59,7 +59,7 @@ chen-neuro adds another, in [`trials.rs`](../examples/chen-neuro/src/components/
 When recording's asked for, the GUI asks the base directory in use where the recording goes. Every node then gets it as it
 prepares to record (`Node::prepare_to_record`), and from its passes while recording (`Pass::base_directory`). Its
 window gets it too (`UiContext::base_directory`), to show where it'll write. The standard writers have a
-[`Location`](../src/standard_components/recording/mod.rs): the base directory, a subdirectory of it, or a directory
+[`Location`](../src/standard/recording/mod.rs): the base directory, a subdirectory of it, or a directory
 of their own. They use the base directory's prefix, if it has one, otherwise their own and the time. A prefix is only
 text: what it's the start of is up to the writer, so Write LTX's files and Write Raw's folder share it, and the
 toolbar calls it a file prefix as that's the usual case.
