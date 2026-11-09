@@ -45,13 +45,17 @@ pub fn median(values: &mut [f64]) -> Option<f64> {
 pub struct Clock {
     /// (board seconds, offset), in time order.
     points: Vec<(f64, f64)>,
+    /// (camera seconds, offset): the same, by the camera's time, which goes up as the board's does, as offsets change
+    /// far slower than time.
+    by_camera: Vec<(f64, f64)>,
 }
 
 impl Clock {
     /// None if no knot has an offset.
     pub fn new(knots: &[Knot]) -> Option<Self> {
         let points: Vec<_> = knots.iter().filter_map(|k| Some((k.board, k.offset?))).collect();
-        (!points.is_empty()).then_some(Clock { points })
+        let by_camera = points.iter().map(|&(board, offset)| (board - offset, offset)).collect();
+        (!points.is_empty()).then_some(Clock { points, by_camera })
     }
 
     /// The offset at `board` seconds of the board's clock.
@@ -61,9 +65,7 @@ impl Clock {
 
     /// `led` seconds of the camera's clock, on the board's: where the board's time less the offset there is `led`.
     pub fn to_board(&self, led: f64) -> f64 {
-        // By the camera's time at each knot: it goes up as the board's does, as offsets change far slower than time.
-        let by_camera = self.points.iter().map(|&(board, offset)| (board - offset, offset));
-        led + interpolate(&by_camera.collect::<Vec<_>>(), led)
+        led + interpolate(&self.by_camera, led)
     }
 }
 
