@@ -9,7 +9,7 @@
 
 use std::io;
 
-use super::rhd::{self, CHIP_RHD2132, CHIP_RHD2164, CHIP_RHD2216, REGISTER_59_MISO_A, RHD2132_16CH_OFFSET, Registers};
+use super::rhd::{self, Chip, RHD2132_16CH_OFFSET, Registers};
 use super::{
     AUX_VOLTS_PER_BIT, Bandwidth, Board, BoardInfo, Config, Decoded, EPHYS_MICROVOLTS_PER_BIT, Headstage, Samples,
 };
@@ -68,7 +68,7 @@ struct Stream {
     source: u32,
     /// The second stream of an RHD2164 (which has no auxiliary inputs of its own).
     second: bool,
-    chip: i32,
+    chip: Chip,
     channels: usize,
 }
 
@@ -76,7 +76,7 @@ pub struct RhythmBoard<T: Transport> {
     transport: T,
     info: BoardInfo,
     /// The chip found on each data source, by scanning.
-    chips: [Option<i32>; 8],
+    chips: [Option<Chip>; 8],
     streams: Vec<Stream>,
     enabled_streams: u32,
     registers: Registers,
@@ -230,11 +230,9 @@ impl<T: Transport> RhythmBoard<T> {
             self.transport.run_once(SCAN_SAMPLES, &mut self.buf)?;
             for (source, good) in good.iter_mut().enumerate() {
                 let results: Vec<u16> = (0..60).map(|t| self.word(t, self.aux_word(2, source))).collect();
-                let Some((id, register_59)) = rhd::chip_id(&results) else { continue };
-                if id == CHIP_RHD2132 || id == CHIP_RHD2216 || (id == CHIP_RHD2164 && register_59 == REGISTER_59_MISO_A)
-                {
+                if let Some(chip) = rhd::chip(&results) {
                     good.push(delay);
-                    chips[source] = Some(id);
+                    chips[source] = Some(chip);
                 }
             }
         }
@@ -255,13 +253,8 @@ impl<T: Transport> RhythmBoard<T> {
     fn found_headstages(&self) -> Vec<Headstage> {
         let mut headstages = Vec::new();
         for (source, chip) in self.chips.iter().enumerate() {
-            let channels = match chip {
-                Some(CHIP_RHD2164) => 64,
-                Some(CHIP_RHD2132) => 32,
-                Some(CHIP_RHD2216) => 16,
-                _ => continue,
-            };
-            headstages.push(Headstage { port: SOURCES[source].into(), channels });
+            let Some(chip) = chip else { continue };
+            headstages.push(Headstage { port: SOURCES[source].into(), channels: chip.channels() });
         }
         headstages
     }
@@ -278,9 +271,9 @@ impl<T: Transport> RhythmBoard<T> {
                 let stream =
                     |second, channels| Stream { source: source + if second { DDR } else { 0 }, second, chip, channels };
                 match (chip, headstage.channels) {
-                    (CHIP_RHD2164, 64) => streams.extend([stream(false, 32), stream(true, 32)]),
-                    (CHIP_RHD2164, 32) | (CHIP_RHD2132, 32) => streams.push(stream(false, 32)),
-                    (CHIP_RHD2132, 16) | (CHIP_RHD2216, 16) => streams.push(stream(false, 16)),
+                    (Chip::Rhd2164, 64) => streams.extend([stream(false, 32), stream(true, 32)]),
+                    (Chip::Rhd2164, 32) | (Chip::Rhd2132, 32) => streams.push(stream(false, 32)),
+                    (Chip::Rhd2132, 16) | (Chip::Rhd2216, 16) => streams.push(stream(false, 16)),
                     _ => return None,
                 }
             }
@@ -397,7 +390,7 @@ impl<T: Transport> Board for RhythmBoard<T> {
             // Headstage channels: 32 per stream, interleaved stream by stream.
             let mut channel = 0;
             for (stream, s) in self.streams.iter().enumerate() {
-                let offset = if s.chip == CHIP_RHD2132 && s.channels == 16 { RHD2132_16CH_OFFSET } else { 0 };
+                let offset = if s.chip == Chip::Rhd2132 && s.channels == 16 { RHD2132_16CH_OFFSET } else { 0 };
                 for c in 0..s.channels {
                     let raw = self.word(t, 6 + 3 * n + (offset + c) * n + stream);
                     into.ephys.data[channel * into.ephys.capacity + at + i] =

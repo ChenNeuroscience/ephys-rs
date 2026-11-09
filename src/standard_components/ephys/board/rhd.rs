@@ -2,12 +2,37 @@
 //! the boards' FPGAs send them over and over (one sample per command), and telling which chip is on a data
 //! stream. Ported from Intan's `Rhd2000Registers`, as used by the Open Ephys acquisition board plugins.
 
-/// A chip's ID, in register 63.
-pub const CHIP_RHD2132: i32 = 1;
-pub const CHIP_RHD2216: i32 = 2;
-pub const CHIP_RHD2164: i32 = 4;
+/// The chips the boards drive.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Chip {
+    Rhd2132,
+    Rhd2216,
+    Rhd2164,
+}
+
+impl Chip {
+    /// The chip with ID `id` (as in register 63), if it's one of these.
+    fn from_id(id: u16) -> Option<Chip> {
+        match id {
+            1 => Some(Chip::Rhd2132),
+            2 => Some(Chip::Rhd2216),
+            4 => Some(Chip::Rhd2164),
+            _ => None,
+        }
+    }
+
+    /// How many amplifier channels it has.
+    pub fn channels(self) -> u32 {
+        match self {
+            Chip::Rhd2132 => 32,
+            Chip::Rhd2216 => 16,
+            Chip::Rhd2164 => 64,
+        }
+    }
+}
+
 /// Register 59 of an RHD2164 on its first MISO line (the second line, MISO B, reads 58).
-pub const REGISTER_59_MISO_A: i32 = 53;
+const REGISTER_59_MISO_A: u16 = 53;
 /// A 16-channel headstage on an RHD2132 uses its channels 8 to 23.
 pub const RHD2132_16CH_OFFSET: usize = 8;
 
@@ -299,12 +324,16 @@ fn convert(channel: i32) -> u32 {
 }
 
 /// The chip on a data stream, from the results of `Registers::register_config` (the third command slot's
-/// results, sample by sample, starting at the list's start): its ID and register 59, or `None` if no Intan chip
-/// answered. Each command's result comes a sample later.
-pub fn chip_id(results: &[u16]) -> Option<(i32, i32)> {
+/// results, sample by sample, starting at the list's start), or `None` if no chip we know answered (or an RHD2164
+/// answered on its second MISO line). Each command's result comes a sample later.
+pub fn chip(results: &[u16]) -> Option<Chip> {
     let byte = |t: usize| results.get(t).map(|&r| r as u8);
     let name = [24, 25, 26, 32, 33, 34, 35, 36].map(byte);
-    (name == b"RHDINTAN".map(Some)).then(|| (results[19] as i32, results[23] as i32))
+    if name != b"RHDINTAN".map(Some) {
+        return None;
+    }
+    let (chip, register_59) = (Chip::from_id(results[19])?, results[23]);
+    (chip != Chip::Rhd2164 || register_59 == REGISTER_59_MISO_A).then_some(chip)
 }
 
 #[cfg(test)]
@@ -346,9 +375,13 @@ mod tests {
         for (t, c) in [(24, b'R'), (25, b'H'), (26, b'D'), (32, b'I'), (33, b'N'), (34, b'T'), (35, b'A'), (36, b'N')] {
             results[t] = c as u16;
         }
-        results[19] = CHIP_RHD2164 as u16;
-        results[23] = REGISTER_59_MISO_A as u16;
-        assert_eq!(chip_id(&results), Some((CHIP_RHD2164, REGISTER_59_MISO_A)));
-        assert_eq!(chip_id(&[0; 60]), None);
+        results[19] = 4;
+        results[23] = REGISTER_59_MISO_A;
+        assert_eq!(chip(&results), Some(Chip::Rhd2164));
+        results[23] = 58;
+        assert_eq!(chip(&results), None, "on MISO B");
+        results[19] = 1;
+        assert_eq!(chip(&results), Some(Chip::Rhd2132));
+        assert_eq!(chip(&[0; 60]), None);
     }
 }
