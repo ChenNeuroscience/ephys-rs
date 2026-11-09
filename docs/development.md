@@ -192,8 +192,7 @@ Each part has a set of patches, saving its crate's version: the core's
 ([`core/config_patches`](../src/core/config_patches): the project's structure), the standard components'
 ([`standard_components/config_patches`](../src/standard_components/config_patches): their node types and base
 directories), and a build's own (as [chen-neuro's](../examples/chen-neuro/src/components/config_patches)). Each is a
-folder with a patch in each file, listed in order in its `mod.rs` as `PATCHES`, starting with an example that does
-nothing (`example.rs`, to copy). Which sets a build has, and the order they're applied in, is up to it
+folder with a patch in each file, listed in order in its `mod.rs` as `PATCHES`. Which sets a build has, and the order they're applied in, is up to it
 (`Components::CONFIG_PATCHES`, as [chen-neuro's](../examples/chen-neuro/src/components/mod.rs) lists them: the core's,
 the standard components', then its own).
 
@@ -206,6 +205,26 @@ is the usual test: true too for what doesn't say), and the JSON, always shaped a
 nodes, the base directory's settings) is put in one for it, with nothing else. `config.nodes()` goes through its
 nodes. So pasting is patched just as opening is. Test it with something saved before the change, as the patching tests do. A patch is never changed once
 released.
+
+A patch renaming a setting of the Spike Detector, from the version after 0.158.0, say, in
+`standard_components/config_patches/spike_detector_thresholds.rs`, listed as `patches: &[spike_detector_thresholds::patch]`:
+
+```rust
+use crate::core::config_patching::IncomingConfig;
+
+pub fn patch(config: &mut IncomingConfig) {
+    if config.written_before("std", "0.159.0") {
+        for node in config.nodes().filter(|node| node["type"] == "SpikeDetector") {
+            if let Some(old) = node["settings"].as_object_mut().and_then(|s| s.remove("threshold")) {
+                node["settings"]["thresholds"] = old;
+            }
+        }
+    }
+}
+```
+
+The core's patches change the project's structure (`config.json` as a whole), and a build's check its own set's version
+(`written_before("chen-neuro", …)`).
 
 ## Performance
 
