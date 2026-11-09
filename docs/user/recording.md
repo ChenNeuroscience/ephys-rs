@@ -91,8 +91,29 @@ files, and says if any are missing.
 
 **Board's TTL line**: the board's digital input that the timing LED's pulses go to.
 
-Before syncing, the positions as recorded are copied to `name.pos.original` (or `name (2).pos.original`, and so on, if
-that name's taken), and the synced positions are written to `name.pos`. Synced again, it starts from that original,
-not from the synced positions, and says so:
+The board's clock is taken as true, and the positions are put on it in three steps:
+
+1. **Pairing.** Each change of the timing LED, as the camera saw it, is paired with the same change (up with up, down
+   with down) on the board's line, if there's one within **Pair within** seconds by the two clocks, which start at
+   much the same moment. If either side has another within **Alone within**, the change is ambiguous, and not paired.
+   Pulses closer together than that can't be used: random intervals of a few seconds are best.
+2. **Offsets.** Every **Offset every** seconds through the recording, the offset between the clocks is the median of
+   the pairs' within **Median over** seconds either side. Between these, it's taken as changing steadily, and where
+   there are no pairs it's estimated from either side. The chart shows the offset through the recording, over the
+   pairs.
+3. **Resampling.** Each position is put on the board's clock, then in the nearest slot of the rate the positions say
+   they're at (`sample_rate`), from the start of recording. Positions aren't interpolated: where two land in one
+   slot, the nearer is kept and the other dropped, and an empty slot is filled with a position whose LEDs weren't
+   found.
+
+It shows how many changes on each side were paired, ambiguous or unmatched, the clocks' drift, how far the pairs
+scatter about the offset, and how many positions were dropped and added. It warns, there and in the console, if few
+of the LED's changes paired, the pairs scatter by more than half a frame, the offset jumps or drifts more than a
+crystal would, there's a stretch with no pairs, or more than 1% of positions were dropped or added. If it can't sync
+(the board's line never changed, say, or nothing paired), it says why and leaves the files as they are.
+
+Before the synced positions are written to `name.pos`, the positions as recorded are copied to `name.pos.original`
+(or `name (2).pos.original`, and so on, if that name's taken). Synced again, it starts from that original, not from
+the synced positions, and says so:
 
 <img src="../../tests/snapshots/sync_positions_synced_again.png" alt="Sync Positions, syncing again from the original">

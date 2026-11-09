@@ -6,29 +6,38 @@
 //!
 //! The positions as recorded are kept, as `name.pos.original` (or `name (2).pos.original`... if that's taken), and the
 //! synced ones written in their place, saying which original they're from: synced again, they're synced from it, not
-//! from themselves.
+//! from themselves. Nothing's written unless it syncs.
+//!
+//! The board's clock is taken as true. Syncing goes in steps: the timing LED's changes paired with the board's
+//! (`pairs`), the offset between the clocks through the recording (`offsets`), the positions put on the board's clock at
+//! the rate they say they're at (`resample`), then what's worth a warning (`checks`). Its window's in `window`.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use eframe::egui::{self, Color32, RichText};
+use eframe::egui::{self, Color32};
 use serde::{Deserialize, Serialize};
 
 use crate::standard::other::run_command::RunOnFiles;
-use crate::standard::widgets::{setting, settings_grid};
 use crate::{DataStream, Edges, Setting, Trigger};
 use ephys_rs::engine::{Category, EdgeInfo, EdgeType, Node, NodeInfo, Output, SettingPort, UiContext};
-use ephys_rs::theme::Colours;
 use ephys_rs::triggers::ControlTriggers;
 
-mod algorithm;
+mod checks;
 pub mod files;
+mod offsets;
+mod pairs;
+mod resample;
+mod window;
 
-use algorithm::Stats;
-use files::{LtxFile, Plan, Recording};
+use files::{Change, LtxFile, POS_RECORD, Plan, Recording};
+use offsets::{Clock, Knot};
+use pairs::Pairing;
+use resample::Edits;
+pub use window::SyncState;
 
-/// How it syncs, and the recording to sync by hand.
+/// How it syncs, and the recording to sync by hand. Times are in seconds.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SyncSettings {
@@ -36,11 +45,19 @@ pub struct SyncSettings {
     pub set_file: PathBuf,
     /// Which of the board's digital inputs (from 1) the timing LED's pulses go to.
     pub board_line: u32,
+    /// How far apart by their clocks the same change can be, on the board and by the camera.
+    pub within: f64,
+    /// How far from a change any other on the other side makes pairing it ambiguous.
+    pub alone: f64,
+    /// How often through the recording the offset between the clocks is found.
+    pub step: f64,
+    /// How far either side of each step the pairs' offsets are taken the median of.
+    pub around: f64,
 }
 
 impl Default for SyncSettings {
     fn default() -> Self {
-        SyncSettings { set_file: PathBuf::new(), board_line: 1 }
+        SyncSettings { set_file: PathBuf::new(), board_line: 1, within: 1.0, alone: 2.0, step: 30.0, around: 60.0 }
     }
 }
 
@@ -56,15 +73,15 @@ impl EdgeType for SyncSettings {
     }
 }
 
-/// What a run did: the recording's files, what it did to the positions there were, and what it found.
+/// What a run did: the recording's files, what it did to the positions there were, and what syncing found.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Report {
     pub recording: Recording,
     pub plan: Plan,
-    pub stats: Stats,
+    pub synced: Synced,
 }
 
-/// Syncs the recording `set` is the `.set` file of.
+/// Syncs the recording `set` is the `.set` file of. Nothing's written unless it syncs.
 fn run(set: &Path, settings: &SyncSettings) -> Result<Report, String> {
     let recording = Recording::of(set).ok_or_else(|| format!("Not a .set file: {}", set.display()))?;
     for path in [&recording.pos, &recording.ttl, &recording.pos_ttl] {
@@ -77,18 +94,105 @@ fn run(set: &Path, settings: &SyncSettings) -> Result<Report, String> {
         move |e: std::io::Error| format!("{name}: {e}")
     };
     let plan = recording.plan().map_err(failed(&recording.pos))?;
-    if let Plan::Keep { original } = &plan {
-        std::fs::copy(&recording.pos, original).map_err(failed(original))?;
-    }
-    let pos = LtxFile::read(plan.original()).map_err(failed(plan.original()))?;
+    // As recorded, they're the positions themselves, kept as the original once they're synced.
+    let source = match &plan {
+        Plan::Keep { .. } => &recording.pos,
+        Plan::Resync { original } => original,
+    };
+    let pos = LtxFile::read(source).map_err(failed(source))?;
     let board = LtxFile::read(&recording.ttl).map_err(failed(&recording.ttl))?;
     let led = LtxFile::read(&recording.pos_ttl).map_err(failed(&recording.pos_ttl))?;
     let (board, led) = (files::changes(&board)?, files::changes(&led)?);
-    let (mut synced, stats) = algorithm::sync(&pos, &board, &led, settings)?;
-    synced.set_header(files::SYNCED_FROM, file_name(plan.original()));
-    synced.set_header(files::SYNCED_BY, ephys_rs::full_version());
-    synced.write(&recording.pos).map_err(failed(&recording.pos))?;
-    Ok(Report { recording, plan, stats })
+    let (mut out, synced) = sync(&pos, &board, &led, settings)?;
+    if let Plan::Keep { original } = &plan {
+        std::fs::copy(&recording.pos, original).map_err(failed(original))?;
+    }
+    out.set_header(files::SYNCED_FROM, file_name(plan.original()));
+    out.set_header(files::SYNCED_BY, ephys_rs::full_version());
+    out.write(&recording.pos).map_err(failed(&recording.pos))?;
+    Ok(Report { recording, plan, synced })
+}
+
+/// What syncing found and did.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Synced {
+    /// Positions read.
+    pub recorded: usize,
+    /// Their rate, as they say (`sample_rate`).
+    pub rate: f64,
+    pub pairing: Pairing,
+    pub knots: Vec<Knot>,
+    /// How much faster the board's clock runs than the camera's, by the pairs' best straight line, if there are pairs
+    /// apart in time.
+    pub drift_ppm: Option<f64>,
+    /// The median distance of the pairs' offsets from the offset where they are, in seconds.
+    pub scatter: f64,
+    pub edits: Edits,
+    pub warnings: Vec<String>,
+}
+
+/// `pos`, put on the board's clock by `board`'s changes (all its lines) and the timing LED's, `led`: step by step, the
+/// changes paired (`pairs`), the offset between the clocks through the recording (`offsets`), and the positions
+/// resampled on the board's clock (`resample`), then what's worth a warning (`checks`).
+fn sync(pos: &LtxFile, board: &[Change], led: &[Change], settings: &SyncSettings) -> Result<(LtxFile, Synced), String> {
+    if !pos.data.len().is_multiple_of(POS_RECORD) {
+        return Err(format!("The positions aren't whole records of {POS_RECORD} bytes"));
+    }
+    let timebase = files::rate(pos, "timestamp_timebase")?;
+    let rate = files::rate(pos, "sample_rate")?;
+    let missing = pos.header("position_missing_coordinate").and_then(|m| m.parse().ok()).unwrap_or(1023);
+    let line = settings.board_line;
+    let board: Vec<Change> = board.iter().filter(|c| c.line == line).copied().collect();
+    if board.is_empty() {
+        return Err(format!("The board's line {line} never changed: is the timing LED on another?"));
+    }
+    if led.is_empty() {
+        return Err("The camera never saw the timing LED change".into());
+    }
+    let pairing = pairs::pair(&board, led, settings.within, settings.alone);
+    if pairing.pairs.is_empty() {
+        let (b, l) = (pairing.board, pairing.led);
+        return Err(format!(
+            "None of the timing LED's {} changes paired with the board's line {line}'s {} ({} ambiguous, {} unmatched):              is it the right line?",
+            l.changes(),
+            b.changes(),
+            l.ambiguous,
+            l.unmatched
+        ));
+    }
+    let records = pos.data.chunks_exact(POS_RECORD);
+    let last = records.clone().map(files::timestamp).max().unwrap_or(0) as f64 / timebase;
+    let mut offsets: Vec<f64> = pairing.pairs.iter().map(pairs::Pair::offset).collect();
+    let typical = offsets::median(&mut offsets).unwrap_or(0.0);
+    let knots = offsets::knots(&pairing.pairs, settings.step, settings.around, last + typical);
+    let clock = Clock::new(&knots).ok_or("None of the pairs are while there were positions")?;
+    let mut residuals: Vec<f64> = pairing.pairs.iter().map(|p| (p.offset() - clock.offset_at(p.board)).abs()).collect();
+    let scatter = offsets::median(&mut residuals).unwrap_or(0.0);
+    let (data, edits) = resample::resample(&pos.data, timebase, &clock, rate, missing);
+    let mut synced = Synced {
+        recorded: records.len(),
+        rate,
+        drift_ppm: drift_ppm(&pairing.pairs),
+        pairing,
+        knots,
+        scatter,
+        edits,
+        warnings: Vec::new(),
+    };
+    synced.warnings = checks::warnings(&synced);
+    let mut out = LtxFile { headers: pos.headers.clone(), data };
+    out.set_header("num_pos_samples", edits.positions);
+    Ok((out, synced))
+}
+
+/// The slope of the pairs' offsets over the board's time, by least squares, in parts per million.
+fn drift_ppm(pairs: &[pairs::Pair]) -> Option<f64> {
+    let n = pairs.len() as f64;
+    let mean_t = pairs.iter().map(|p| p.board).sum::<f64>() / n;
+    let mean_o = pairs.iter().map(|p| p.offset()).sum::<f64>() / n;
+    let sxx: f64 = pairs.iter().map(|p| (p.board - mean_t).powi(2)).sum();
+    let sxy: f64 = pairs.iter().map(|p| (p.board - mean_t) * (p.offset() - mean_o)).sum();
+    (sxx > 0.0).then(|| sxy / sxx * 1e6)
 }
 
 fn file_name(path: &Path) -> String {
@@ -106,7 +210,7 @@ enum Status {
     },
     Done {
         set: PathBuf,
-        result: Result<Report, String>,
+        result: Result<Box<Report>, String>,
     },
 }
 
@@ -124,7 +228,16 @@ impl Job {
         *status = Status::Running { set: set.clone(), started: Instant::now() };
         let job = self.clone();
         let thread = std::thread::Builder::new().name("sync positions".into()).spawn(move || {
-            let result = run(&set, &settings);
+            let result = run(&set, &settings).map(Box::new);
+            // To the console, and counted in the status bar, as it may have run by itself.
+            match &result {
+                Ok(report) => {
+                    for warning in &report.synced.warnings {
+                        log::warn!("Sync Positions: {}: {warning}", file_name(&set));
+                    }
+                }
+                Err(problem) => log::error!("Sync Positions: {}: {problem}", file_name(&set)),
+            }
             *job.0.lock().unwrap() = Status::Done { set, result };
         });
         match thread {
@@ -138,6 +251,7 @@ impl Job {
     fn fail(&self, problem: String) {
         let mut status = self.0.lock().unwrap();
         if !matches!(*status, Status::Running { .. }) {
+            log::error!("Sync Positions: {problem}");
             *status = Status::Done { set: PathBuf::new(), result: Err(problem) };
         }
     }
@@ -147,213 +261,11 @@ impl Job {
     }
 }
 
-/// What a recording's `.set` file comes to: its files, whether they're there, and what syncing would do.
-struct Preview {
-    set: PathBuf,
-    made: Instant,
-    found: Option<(Recording, [bool; 3], Option<Plan>)>,
-}
-
-/// A Sync Positions' state on the GUI's side (its `UiState`): what it's syncing, or last synced, and what the
-/// recording picked comes to, kept for a second, as it reads the disk.
-#[derive(Default)]
-pub struct SyncState {
-    job: Job,
-    preview: Option<Preview>,
-}
-
-impl SyncState {
-    fn preview(&mut self, set: &Path) -> Option<&(Recording, [bool; 3], Option<Plan>)> {
-        let fresh = self.preview.as_ref().is_some_and(|p| p.set == set && p.made.elapsed() < Duration::from_secs(1));
-        if !fresh {
-            let found = Recording::of(set).map(|recording| {
-                let there = [&recording.pos, &recording.ttl, &recording.pos_ttl].map(|path| path.exists());
-                let plan = recording.plan().ok();
-                (recording, there, plan)
-            });
-            self.preview = Some(Preview { set: set.to_path_buf(), made: Instant::now(), found });
-        }
-        self.preview.as_ref()?.found.as_ref()
-    }
-}
-
 /// Puts positions on the board's clock, after recording.
 #[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SyncPositions {
     pub settings: SyncSettings,
-}
-
-impl SyncPositions {
-    fn window(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
-        ui.horizontal(|ui| context.node_toolbar(ui));
-        ui.label(
-            "Puts a recording's positions on the board's clock, by the timing LED's pulses, which both the camera \
-             and the board saw.",
-        );
-        ui.add_space(6.0);
-        let job = context.ui_state::<SyncState>().job.clone();
-        let (status, locked) = (job.status(), context.locked);
-        let running = matches!(status, Status::Running { .. });
-        // What's connected supplies the recordings, while it is.
-        let senders = context.controlled_by.first().cloned().unwrap_or_default();
-        let connected = !senders.is_empty();
-        let settings = &mut self.settings;
-        ui.add_enabled_ui(!locked && !running, |ui| {
-            settings_grid(ui, |ui| {
-                let label = ui.label("Recording");
-                if connected {
-                    ui.weak(format!("Supplied by {}: disconnect or disable it to pick one yourself", any_of(&senders)));
-                } else {
-                    ui.horizontal(|ui| {
-                        if ui.button("Select .set file…").clicked()
-                            && let Some(set) = rfd::FileDialog::new().add_filter("LTX recording", &["set"]).pick_file()
-                        {
-                            settings.set_file = set;
-                        }
-                        let shown = if settings.set_file.as_os_str().is_empty() {
-                            "none".to_string()
-                        } else {
-                            settings.set_file.display().to_string()
-                        };
-                        ui.add(egui::Label::new(&shown).truncate()).on_hover_text(shown);
-                    })
-                    .response
-                    .labelled_by(label.id);
-                }
-                ui.end_row();
-                setting(ui, "Board's TTL line", |ui| {
-                    ui.add(egui::DragValue::new(&mut settings.board_line).range(1..=64))
-                        .on_hover_text("The board's digital input the timing LED's pulses go to")
-                });
-            });
-        });
-        ui.add_space(6.0);
-        ui.separator();
-        ui.horizontal(|ui| {
-            ui.strong("Files");
-            ui.add_space(6.0);
-            let picked = !self.settings.set_file.as_os_str().is_empty();
-            let run = ui.add_enabled(picked && !locked && !running && !connected, egui::Button::new("Run"));
-            let run = if connected {
-                run.on_disabled_hover_text("It runs by itself on the recordings sent")
-            } else {
-                run.on_hover_text("Sync the positions of the recording picked")
-            };
-            // As if it were sent it: so it's the same either way.
-            if run.clicked() {
-                context.trigger(None, RunOnFiles(vec![self.settings.set_file.clone()]));
-            }
-            if connected {
-                ui.weak(format!("Run triggered by {}", any_of(&senders)));
-            }
-        });
-        let theme = context.theme;
-        // The files of the recording last synced, or being synced, or else of the one picked.
-        let shown = match &status {
-            Status::Running { set, .. } | Status::Done { set, .. } if !set.as_os_str().is_empty() => Some(set.clone()),
-            _ if !connected && !self.settings.set_file.as_os_str().is_empty() => Some(self.settings.set_file.clone()),
-            _ => None,
-        };
-        let done = match &status {
-            Status::Done { result: Ok(report), .. } => Some(report),
-            _ => None,
-        };
-        match shown {
-            Some(set) => match done {
-                Some(report) => files_grid(ui, &report.recording, [true; 3], Some(&report.plan), theme),
-                None => match context.ui_state::<SyncState>().preview(&set) {
-                    Some((recording, there, plan)) => files_grid(ui, recording, *there, plan.as_ref(), theme),
-                    None => {
-                        ui.colored_label(theme.warning, "Not a .set file");
-                    }
-                },
-            },
-            None => {
-                ui.weak("Each recording's .pos, .ttl and .pos.ttl files, found beside its .set file");
-            }
-        }
-        ui.add_space(6.0);
-        match &status {
-            Status::Idle => {}
-            Status::Running { set, started } => {
-                ui.horizontal(|ui| {
-                    ui.add(egui::Spinner::new());
-                    ui.label(format!("Syncing {}… {:.0} s", file_name(set), started.elapsed().as_secs_f64()));
-                });
-                ui.ctx().request_repaint_after(Duration::from_millis(100));
-            }
-            Status::Done { result: Ok(report), .. } => outcome(ui, report, theme),
-            Status::Done { result: Err(problem), .. } => {
-                ui.add(egui::Label::new(RichText::new(problem).color(theme.error)).wrap());
-            }
-        }
-    }
-}
-
-/// The recording's three files: the positions read (their original, if they were synced before), and its TTLs. Any
-/// not there are said to be missing.
-fn files_grid(ui: &mut egui::Ui, recording: &Recording, there: [bool; 3], plan: Option<&Plan>, theme: &Colours) {
-    let (positions, note) = match plan {
-        Some(Plan::Resync { original }) => {
-            (original, format!("the original: {} was synced before", file_name(&recording.pos)))
-        }
-        _ => (&recording.pos, String::new()),
-    };
-    let rows = [
-        ("Positions", positions, note),
-        ("Board's TTLs", &recording.ttl, String::new()),
-        ("Timing LED's TTLs", &recording.pos_ttl, String::new()),
-    ];
-    egui::Grid::new("sync files").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
-        for ((what, path, note), there) in rows.into_iter().zip(there) {
-            ui.label(what);
-            ui.horizontal(|ui| {
-                if there {
-                    ui.label(RichText::new(file_name(path)).monospace());
-                } else {
-                    ui.label(RichText::new(format!("{} · missing", file_name(path))).monospace().color(theme.warning));
-                }
-                if !note.is_empty() {
-                    ui.weak(note);
-                }
-            });
-            ui.end_row();
-        }
-    });
-}
-
-/// What a run did, and what it found.
-fn outcome(ui: &mut egui::Ui, report: &Report, theme: &Colours) {
-    let pos = file_name(&report.recording.pos);
-    ui.label(RichText::new(format!("✔ Synced {pos}")).color(theme.success));
-    ui.label(match &report.plan {
-        Plan::Keep { original } => format!("The positions as recorded are kept as {}.", file_name(original)),
-        Plan::Resync { original } => format!(
-            "{pos} had been synced before, so it was synced again from the positions as recorded, in {}.",
-            file_name(original)
-        ),
-    });
-    ui.add_space(4.0);
-    let stats = &report.stats;
-    egui::Grid::new("sync stats").num_columns(2).spacing([12.0, 2.0]).show(ui, |ui| {
-        let row = |ui: &mut egui::Ui, what: &str, value: String| {
-            ui.weak(what);
-            ui.label(value);
-            ui.end_row();
-        };
-        row(ui, "Positions", format!("{} over {:.1} s", stats.positions, stats.positions_seconds));
-        row(ui, "Board's TTL changes", stats.board_changes.to_string());
-        row(ui, "Timing LED's changes", stats.led_changes.to_string());
-    });
-}
-
-/// `names`, as a list of alternatives.
-fn any_of(names: &[String]) -> String {
-    match names {
-        [others @ .., last] if !others.is_empty() => format!("{} or {last}", others.join(", ")),
-        _ => names.concat(),
-    }
 }
 
 impl Node<Edges> for SyncPositions {
@@ -369,7 +281,7 @@ impl Node<Edges> for SyncPositions {
                       recordings sent to it (by Write LTX, after recording).",
     };
 
-    const WINDOW_SIZE: [f32; 2] = [620.0, 420.0];
+    const WINDOW_SIZE: [f32; 2] = [680.0, 780.0];
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
     fn outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {

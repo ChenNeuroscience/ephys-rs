@@ -1,4 +1,5 @@
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use super::files::{POS_RECORD, SYNCED_FROM};
 use super::*;
@@ -15,7 +16,8 @@ fn scratch(name: &str) -> PathBuf {
     dir
 }
 
-/// A recording, as Write LTX writes one, with `positions` a tenth of a second apart, in `dir`; its `.set` file.
+/// A recording, as Write LTX writes one, with `positions` at 10 Hz, in `dir`, the camera's clock 100 ms behind the
+/// board's; its `.set` file.
 fn recording(dir: &Path, positions: u32) -> PathBuf {
     let set = dir.join("session.set");
     let header = |key: &str, value: &str| (key.to_string(), value.to_string());
@@ -25,7 +27,11 @@ fn recording(dir: &Path, positions: u32) -> PathBuf {
         data.extend_from_slice(&(i * 9600).to_be_bytes());
         data.extend_from_slice(&[0; POS_RECORD - 4]);
     }
-    let headers = vec![header("timestamp_timebase", "96000 hz"), header("num_pos_samples", &positions.to_string())];
+    let headers = vec![
+        header("timestamp_timebase", "96000 hz"),
+        header("sample_rate", "10.000000 hz"),
+        header("num_pos_samples", &positions.to_string()),
+    ];
     LtxFile { headers, data }.write(&dir.join("session.pos")).unwrap();
     let ttl = |lines: &str| LtxFile {
         headers: vec![header("ttl_format", "ttl_<line> <seconds> <state>")],
@@ -36,13 +42,84 @@ fn recording(dir: &Path, positions: u32) -> PathBuf {
     set
 }
 
+/// A ten-minute recording, as a rig might make one, in `dir`: positions at 50 Hz, and the timing LED pulsing every 3 to
+/// 7 s, seen by the camera at the first frame after each change, its clock 5 ms behind the board's at the start and 30
+/// ppm slower. The board misses one pulse, and has one more on its line; its `.set` file.
+fn long_recording(dir: &Path) -> PathBuf {
+    let set = recording(dir, 0);
+    let (fps, seconds) = (50.0, 600.0);
+    let camera = |board: f64| (board - 0.005) / (1.0 + 30e-6);
+    let mut data = Vec::new();
+    for frame in 0..(seconds * fps) as u32 {
+        data.extend_from_slice(&((frame as f64 / fps * 96000.0).round() as u32).to_be_bytes());
+        data.extend_from_slice(&[0, 100, 0, 100, 0, 120, 0, 120, 0, 9, 0, 6, 0, 0, 0, 0]);
+    }
+    let header = |key: &str, value: &str| (key.to_string(), value.to_string());
+    let headers = vec![
+        header("timestamp_timebase", "96000 hz"),
+        header("sample_rate", "50.000000 hz"),
+        header("num_pos_samples", &(seconds * fps).to_string()),
+    ];
+    LtxFile { headers, data }.write(&dir.join("session.pos")).unwrap();
+    let (mut board, mut led) = (String::new(), String::new());
+    let mut t = 1.0;
+    for pulse in 0.. {
+        t += 3.0 + 4.0 * crate::standard::plots::noise(pulse, 1).abs() as f64;
+        if t > seconds - 2.0 {
+            break;
+        }
+        for (at, state) in [(t, 1), (t + 0.5, 0)] {
+            if pulse != 40 {
+                board += &format!("ttl_1 {at:.6} {state}\r\n");
+            }
+            led += &format!("ttl_1 {:.6} {state}\r\n", (camera(at) * fps).ceil() / fps);
+        }
+        if pulse == 70 {
+            board += &format!("ttl_1 {:.6} 1\r\nttl_1 {:.6} 0\r\n", t + 1.2, t + 1.3);
+            // Well before the next.
+            t += 4.0;
+        }
+    }
+    let ttl = |data: String| LtxFile {
+        headers: vec![header("ttl_format", "ttl_<line> <seconds> <state>")],
+        data: data.into(),
+    };
+    ttl(board).write(&dir.join("session.ttl")).unwrap();
+    ttl(led).write(&dir.join("session.pos.ttl")).unwrap();
+    set
+}
+
+#[test]
+fn a_long_recording_is_put_on_the_board_s_clock() {
+    let dir = scratch("long");
+    let report = wait_for(&send(vec![long_recording(&dir)])).unwrap();
+    let synced = &report.synced;
+    assert!(synced.warnings.is_empty(), "{:?}", synced.warnings);
+    // The extra pulse's up has none within 1 s, but it makes the real pulse's up ambiguous, 1.2 s before it, as its
+    // down does the real one's, and itself.
+    assert_eq!((synced.pairing.board.unmatched, synced.pairing.board.ambiguous), (1, 3));
+    assert_eq!((synced.pairing.led.unmatched, synced.pairing.led.ambiguous), (2, 2), "and the missed pulse's");
+    let ppm = synced.drift_ppm.unwrap();
+    assert!((ppm - 30.0).abs() < 5.0, "{ppm} ppm");
+    // The LED's seen up to a frame late, so the offset's about half a frame less than the clocks'.
+    let start = synced.knots[0].offset.unwrap();
+    assert!((start - (0.005 - 0.010)).abs() < 0.003, "{start}");
+    let written = LtxFile::read(&dir.join("session.pos")).unwrap();
+    let records = written.data.len() / POS_RECORD;
+    assert_eq!(records, synced.edits.positions);
+    for (i, record) in written.data.chunks_exact(POS_RECORD).enumerate().step_by(997) {
+        assert_eq!(files::timestamp(record), (i as f64 / 50.0 * 96000.0).round() as u32, "on the 50 Hz grid");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 fn wait_for(job: &Job) -> Result<Report, String> {
     let deadline = Instant::now() + Duration::from_secs(10);
     while matches!(job.status(), Status::Running { .. }) && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(5));
     }
     match job.status() {
-        Status::Done { result, .. } => result,
+        Status::Done { result, .. } => result.map(|report| *report),
         status => panic!("not done: {status:?}"),
     }
 }
@@ -68,11 +145,15 @@ fn the_positions_as_recorded_are_kept_and_the_synced_ones_put_in_their_place() {
     let report = wait_for(&send(others)).unwrap();
     assert_eq!(report.plan, Plan::Keep { original: dir.join("session.pos.original") });
     assert_eq!(std::fs::read(dir.join("session.pos.original")).unwrap(), recorded, "kept as it was");
-    let synced = LtxFile::read(&dir.join("session.pos")).unwrap();
-    assert_eq!(synced.header(SYNCED_FROM), Some("session.pos.original"));
-    let stats = &report.stats;
-    assert_eq!((stats.positions, stats.board_changes, stats.led_changes), (3, 2, 2), "only the board's line 1");
-    assert!((stats.positions_seconds - 0.2).abs() < 1e-9);
+    let written = LtxFile::read(&dir.join("session.pos")).unwrap();
+    assert_eq!(written.header(SYNCED_FROM), Some("session.pos.original"));
+    assert_eq!(written.header("num_pos_samples"), Some("4"));
+    assert_eq!(written.data.len(), 4 * POS_RECORD);
+    let synced = &report.synced;
+    assert_eq!(synced.pairing.board.changes(), 2, "only the board's line 1");
+    assert_eq!(synced.pairing.pairs.len(), 2);
+    // 0, 0.1 and 0.2 s by the camera are 0.1, 0.2 and 0.3 s by the board, after a slot with none.
+    assert_eq!((synced.recorded, synced.edits.positions, synced.edits.added), (3, 4, 1));
     assert!(!dir.join("session.pos.writing").exists());
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -88,13 +169,13 @@ fn synced_again_its_from_the_original_not_itself() {
     synced.write(&dir.join("session.pos")).unwrap();
     let report = wait_for(&send(vec![set.clone()])).unwrap();
     assert_eq!(report.plan, Plan::Resync { original: dir.join("session.pos.original") });
-    assert_eq!(report.stats.positions, 3, "the original's");
+    assert_eq!(report.synced.recorded, 3, "the original's");
     assert!(!dir.join("session (2).pos.original").exists(), "nothing more kept");
     // Recorded again over the synced ones, they're the positions as recorded: kept, beside the first.
     recording(&dir, 4);
     let report = wait_for(&send(vec![set])).unwrap();
     assert_eq!(report.plan, Plan::Keep { original: dir.join("session (2).pos.original") });
-    assert_eq!(report.stats.positions, 4);
+    assert_eq!(report.synced.recorded, 4);
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -108,6 +189,31 @@ fn it_says_what_it_cant_sync() {
     assert_eq!(
         wait_for(&send(vec![dir.join("session.pos")])).unwrap_err(),
         "There's no .set file among the files sent"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn what_cant_be_synced_is_left_as_it_is() {
+    let dir = scratch("unsynced");
+    let set = recording(&dir, 3);
+    let recorded = std::fs::read(dir.join("session.pos")).unwrap();
+    let header = vec![("ttl_format".to_string(), "ttl_<line> <seconds> <state>".to_string())];
+    LtxFile { headers: header.clone(), data: b"ttl_3 0.5 1\r\n".to_vec() }.write(&dir.join("session.ttl")).unwrap();
+    let problem = wait_for(&send(vec![set.clone()])).unwrap_err();
+    assert_eq!(problem, "The board's line 1 never changed: is the timing LED on another?");
+    assert!(!dir.join("session.pos.original").exists(), "nothing kept, as nothing's changed");
+    assert_eq!(std::fs::read(dir.join("session.pos")).unwrap(), recorded);
+    // A second later than the LED's: too far to pair.
+    LtxFile { headers: header, data: b"ttl_1 1.5 1\r\nttl_1 2.5 0\r\n".to_vec() }
+        .write(&dir.join("session.ttl"))
+        .unwrap();
+    let problem = wait_for(&send(vec![set])).unwrap_err();
+    assert!(
+        problem.starts_with(
+            "None of the timing LED's 2 changes paired with the board's line 1's 2 (0 ambiguous, 2 unmatched)"
+        ),
+        "{problem}"
     );
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -128,10 +234,9 @@ fn window_harness(ran: Option<&Path>) -> egui_kittest::Harness<'static, Graph<No
         }
         None => Job::default(),
     };
-    let state: ephys_rs::engine::UiStateCell =
-        std::cell::RefCell::new(Box::new(SyncState { job, ..Default::default() }));
+    let state: ephys_rs::engine::UiStateCell = std::cell::RefCell::new(Box::new(SyncState::with(job)));
     let inputs: [Option<DataStream>; 0] = [];
-    let mut harness = egui_kittest::Harness::builder().with_size([620.0, 380.0]).wgpu().build_ui_state(
+    let mut harness = egui_kittest::Harness::builder().with_size([680.0, 780.0]).wgpu().build_ui_state(
         move |ui, graph: &mut Graph<Nodes>| {
             graph.edit(
                 id,
@@ -166,7 +271,7 @@ fn window() {
 fn it_shows_what_it_did() {
     use egui_kittest::kittest::Queryable;
     let dir = scratch("window");
-    let set = recording(&dir, 3);
+    let set = long_recording(&dir);
     let mut results = egui_kittest::SnapshotResults::new();
     for again in [false, true] {
         let mut harness = window_harness(Some(&set));

@@ -211,11 +211,11 @@ pub fn set_timestamp(record: &mut [u8], ticks: u32) {
     record[..4].copy_from_slice(&ticks.to_be_bytes());
 }
 
-/// A positions file's timebase, in ticks a second.
-pub fn timebase(file: &LtxFile) -> Result<f64, String> {
-    let value = file.header("timestamp_timebase").ok_or("The positions have no timestamp_timebase")?;
+/// A positions file's rate header, `key` (`timestamp_timebase`, `sample_rate`), a second: as `50.000000 hz`.
+pub fn rate(file: &LtxFile, key: &str) -> Result<f64, String> {
+    let value = file.header(key).ok_or_else(|| format!("The positions have no {key}"))?;
     let hz = value.trim_end_matches("hz").trim().parse::<f64>();
-    hz.ok().filter(|hz| *hz > 0.0).ok_or_else(|| format!("The positions' timestamp_timebase isn't a rate: {value}"))
+    hz.ok().filter(|hz| *hz > 0.0).ok_or_else(|| format!("The positions' {key} isn't a rate: {value}"))
 }
 
 #[cfg(test)]
