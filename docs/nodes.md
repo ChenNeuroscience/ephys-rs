@@ -155,7 +155,7 @@ started (as [Run Command](../src/standard_components/other/run_command.rs) does)
 history and when it's duplicated, and compared every frame, so it should hold only its settings.
 
 Work that isn't drawing, but has to happen whether the window's shown or not, goes in `gui_background(context)`: the app
-calls it on the GUI's thread every time round, before each frame, and, while the window's hidden (minimised, say),
+calls it on the GUI's thread on every frame, before drawing it, and, while the window's hidden (minimised, say),
 whenever it's woken (see `App::logic`). It gets the same `UiContext` as the window, so it can take what the passes
 share, keep it in its `UiState`, and edit settings as a window would. It returns when it next needs calling, if it does,
 and the app's woken then. When everything the passes send matters, not only the newest, they send it all, in order

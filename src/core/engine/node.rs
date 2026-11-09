@@ -203,7 +203,7 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     }
 
     /// Its work on the GUI's thread that isn't drawing, whether its window's shown or not: taking what its passes send
-    /// (see `Shared`), say, or timing something. The app calls it every time round, before each frame, and while its
+    /// (see `Shared`), say, or timing something. The app calls it on every frame, before drawing it, and while its
     /// window's hidden (minimised, say) whenever it's woken. It returns when it next needs calling, if it does, and the
     /// app's woken then. It can edit the node's settings, and what its controls see, as a window does. By default,
     /// nothing.

@@ -508,7 +508,7 @@ impl Process {
     }
 }
 
-/// How a lot's run in a terminal: all at once, or in turn; and whether the terminal's left to close if they all succeed.
+/// How a batch of runs is run in a terminal: all at once, or in turn; and whether the terminal's left to close if they all succeed.
 #[derive(Clone, Copy, Default)]
 struct How {
     together: bool,
@@ -606,9 +606,9 @@ impl Drop for Terminal {
 /// How it's going.
 #[derive(Default)]
 struct JobState {
-    /// The terminal it's running a lot in, if it is: one at a time.
+    /// The terminal it's running a batch of runs in, if it is: one batch at a time.
     terminal: Option<Terminal>,
-    /// The runs of that lot, or the last, and the settings they were of: they're shown until those change.
+    /// The runs of that batch, or the last, and the settings they were of: they're shown until those change.
     runs: Vec<Progress>,
     settings: Option<CommandSettings>,
     /// What went wrong the last time it tried to run.
@@ -617,7 +617,7 @@ struct JobState {
     chain: Option<Chain>,
 }
 
-/// What's sent on once a lot's run (see `Then`): the files it ran on, to what's connected after it, and when.
+/// What's sent on once a batch has run (see `Then`): the files it ran on, to what's connected after it, and when.
 struct Chain {
     handle: TriggerHandle<Trigger>,
     then: Then,
@@ -661,7 +661,7 @@ impl Job {
         self.0.lock().unwrap().terminal.is_some()
     }
 
-    /// The runs of the lot going, or of the last, if that was with `settings`.
+    /// The runs of the batch going, or of the last, if that was with `settings`.
     fn runs_with(&self, settings: &CommandSettings) -> Option<Vec<Progress>> {
         let state = self.0.lock().unwrap();
         (state.terminal.is_some() || state.settings.as_ref() == Some(settings)).then(|| state.runs.clone())
