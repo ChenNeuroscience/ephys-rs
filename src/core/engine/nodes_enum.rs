@@ -19,7 +19,7 @@ pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + S
     /// The edge types its node types use.
     type Edges: Edges;
 
-    /// Indexed by type index.
+    /// Indexed by type index (see `create`, which panics if it isn't one of these).
     const TYPES: &'static [NodeInfo];
 
     /// A node of the given type, with default settings.
@@ -139,28 +139,14 @@ macro_rules! nodes_enum {
             const TYPES: &'static [$crate::core::engine::NodeInfo] =
                 &[$(<$ty as $crate::core::engine::Node<$edges>>::INFO),+];
 
-            #[allow(unused_assignments)]
             fn create(type_index: usize) -> Self {
-                let mut i = 0;
-                $(
-                    if i == type_index {
-                        return $name::$variant(<$ty>::default());
-                    }
-                    i += 1;
-                )+
-                panic!("no node type {type_index}")
+                const CREATE: &[fn() -> $name] = &[$(|| $name::$variant(<$ty>::default())),+];
+                CREATE[type_index]()
             }
 
-            #[allow(unused_assignments)]
             fn type_index(&self) -> usize {
-                let mut i = 0;
-                $(
-                    if let $name::$variant(_) = self {
-                        return i;
-                    }
-                    i += 1;
-                )+
-                unreachable!()
+                const IS: &[fn(&$name) -> bool] = &[$(|n| matches!(n, $name::$variant(_))),+];
+                IS.iter().position(|is| is(self)).expect("one of them")
             }
 
             fn window_size(&self) -> [f32; 2] {
