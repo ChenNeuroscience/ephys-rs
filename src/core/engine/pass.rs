@@ -118,10 +118,10 @@ impl<'a, E: Edges> Pass<'a, E> {
         self.prepared?.base_directory()
     }
 
-    /// What the node prepared to record (see `Node::prepare_to_record`), if it did and it's of type `T`: given once,
-    /// to the first pass that asks while recording.
+    /// What the node prepared to record (see `Node::prepare_to_record`), which is `T`, if it did: given once, to the
+    /// first pass that asks while recording.
     pub fn take_prepared<T: 'static>(&self) -> Option<T> {
         let prepared = self.prepared?.take(self.node)?;
-        prepared.downcast().ok().map(|b| *b)
+        Some(*prepared.downcast().expect("what the node's own prepare_to_record made"))
     }
 }
