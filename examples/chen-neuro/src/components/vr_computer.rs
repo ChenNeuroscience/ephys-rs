@@ -35,17 +35,15 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, RichText};
-use ephys_rs::core::engine::{
+use ephys_rs::engine::{
     Category, Flow, Node, NodeInfo, NodeThread, Output, Pass, SettingPort, ThreadContext, UiContext,
 };
-use ephys_rs::standard_components::ephys::{Event, Events, EventsBuffer};
-use ephys_rs::standard_components::logs::{LogLines, LogLinesBuffer};
-use ephys_rs::standard_components::pool::Pool;
-use ephys_rs::standard_components::tracking::pipeline::Blob;
-use ephys_rs::standard_components::tracking::{
-    Crop, Detection, PositionSample, Positions, PositionsBuffer, Ruler, TimingLed,
-};
-use ephys_rs::standard_components::widgets::{named_settings_grid, setting};
+use ephys_rs::standard::ephys::{Event, Events, EventsBuffer};
+use ephys_rs::standard::logs::{LogLines, LogLinesBuffer};
+use ephys_rs::standard::pool::Pool;
+use ephys_rs::standard::tracking::pipeline::Blob;
+use ephys_rs::standard::tracking::{Crop, Detection, PositionSample, Positions, PositionsBuffer, Ruler, TimingLed};
+use ephys_rs::standard::widgets::{named_settings_grid, setting};
 use ephys_rs::{Buffer, DataStream, Edges, Kind, Setting};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -423,7 +421,7 @@ pub struct Receiving {
     told: bool,
 }
 
-impl ephys_rs::core::engine::PassState for Receiving {
+impl ephys_rs::engine::PassState for Receiving {
     const WHY: &'static str = "The connection to the VR computer: each pass takes the messages that have come since \
                                the last, in order.";
 }
@@ -548,7 +546,7 @@ impl Node<Edges> for VrComputer {
     }
 
     fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
-        ephys_rs::core::gui::node_window::standard(self, ui, context, |node, ui, context| {
+        ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, context| {
             named_settings_grid(ui, "vr computer", |ui| {
                 setting(ui, "IP address", |ui| ui.text_edit_singleline(&mut node.ip));
                 setting(ui, "Port", |ui| ui.add(egui::DragValue::new(&mut node.port)));
@@ -606,7 +604,7 @@ fn status_ui(ui: &mut egui::Ui, status: &Status, warning: egui::Color32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ephys_rs::core::engine::{DataStreamType, PASS_DURATION};
+    use ephys_rs::engine::{DataStreamType, PASS_DURATION};
     use std::io::Write;
     use std::net::TcpListener;
 

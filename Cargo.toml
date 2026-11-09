@@ -1,6 +1,6 @@
 [package]
 name = "ephys-rs"
-version = "0.210.0"
+version = "0.211.0"
 edition = "2024"
 description = "Electrophysiology acquisition, processing and recording, built around a node graph"
 publish = false
@@ -49,7 +49,7 @@ opt-level = 2
 [profile.release]
 lto = "thin"
 codegen-units = 1
-# Which line each function's at, for crash reports' backtraces (see core::crash): no slower.
+# Which line each function's at, for crash reports' backtraces (see ephys_rs::crash): no slower.
 debug = "line-tables-only"
 
 [target.'cfg(target_os = "macos")'.dependencies]

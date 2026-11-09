@@ -6,23 +6,23 @@ pub mod quick_actions;
 pub mod trials;
 pub mod vr_computer;
 
-use ephys_rs::core::base_directory::BaseDirectoryType;
-use ephys_rs::core::config_patching::PatchSet;
-use ephys_rs::core::quick_action::QuickAction;
-use ephys_rs::core::theme::Theme;
-use ephys_rs::core::{Components, build_version};
-use ephys_rs::standard_components::alarms::{processor, viewer};
-use ephys_rs::standard_components::annotations::{arrow, group_box, heading, image, markdown, sticky_note};
-use ephys_rs::standard_components::base_directories::A_DIRECTORY;
-use ephys_rs::standard_components::ephys::{
+use ephys_rs::base_directory::BaseDirectoryType;
+use ephys_rs::config_patching::PatchSet;
+use ephys_rs::quick_action::QuickAction;
+use ephys_rs::standard::alarms::{processor, viewer};
+use ephys_rs::standard::annotations::{arrow, group_box, heading, image, markdown, sticky_note};
+use ephys_rs::standard::base_directories::A_DIRECTORY;
+use ephys_rs::standard::ephys::{
     band_pass, board, channel_selector, continuous_gain, downsample, lfp_viewer, reference, spectrum, ttl_viewer,
 };
-use ephys_rs::standard_components::logs::log_viewer;
-use ephys_rs::standard_components::other::run_command;
-use ephys_rs::standard_components::recording::{ltx, raw};
-use ephys_rs::standard_components::spikes::{spike_detector, spike_gain, spike_viewer};
-use ephys_rs::standard_components::themes::{DARK, LIGHT};
-use ephys_rs::standard_components::tracking::{camera, position_detector, tracker_view, video_viewer};
+use ephys_rs::standard::logs::log_viewer;
+use ephys_rs::standard::other::run_command;
+use ephys_rs::standard::recording::{ltx, raw};
+use ephys_rs::standard::spikes::{spike_detector, spike_gain, spike_viewer};
+use ephys_rs::standard::themes::{DARK, LIGHT};
+use ephys_rs::standard::tracking::{camera, position_detector, tracker_view, video_viewer};
+use ephys_rs::theme::Theme;
+use ephys_rs::{Components, build_version};
 use ephys_rs::{Edges, annotations_enum, nodes_enum};
 
 // In the order they're offered in the add-node menu.
@@ -97,15 +97,12 @@ impl Components for ChenNeuro {
 
 /// The config patches of what's saved, in the order they're applied: the core's, the standard components', and this
 /// build's own.
-pub const CONFIG_PATCHES: &[PatchSet] = &[
-    ephys_rs::core::config_patches::PATCHES,
-    ephys_rs::standard_components::config_patches::PATCHES,
-    config_patches::PATCHES,
-];
+pub const CONFIG_PATCHES: &[PatchSet] =
+    &[ephys_rs::config_patches::PATCHES, ephys_rs::standard::config_patches::PATCHES, config_patches::PATCHES];
 
 /// The graph in tests/rig.json, for tests.
 #[cfg(test)]
-pub fn example_graph() -> ephys_rs::core::engine::Graph<Nodes> {
+pub fn example_graph() -> ephys_rs::engine::Graph<Nodes> {
     let file: serde_json::Value = serde_json::from_str(include_str!("../../../../tests/rig.json")).unwrap();
     serde_json::from_value(file["graph"].clone()).unwrap()
 }

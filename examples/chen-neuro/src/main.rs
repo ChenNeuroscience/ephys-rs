@@ -12,5 +12,5 @@
 mod components;
 
 fn main() -> eframe::Result {
-    ephys_rs::core::gui::run::<components::ChenNeuro>(std::env::args().nth(1).map(Into::into))
+    ephys_rs::gui::run::<components::ChenNeuro>(std::env::args().nth(1).map(Into::into))
 }

@@ -2,7 +2,7 @@
 //! gold what stands out. Views of data stay nearly black, so traces and spikes can be read, with jade for success.
 
 use eframe::egui::Color32;
-use ephys_rs::core::theme::{Colours, Theme};
+use ephys_rs::theme::{Colours, Theme};
 
 pub const CHINA: Theme = Theme {
     name: "China",

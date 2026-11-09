@@ -1,17 +1,17 @@
 //! Where chen-neuro's recordings go: a directory for each subject, within one chosen, and in it, one for each day, with
 //! a file prefix mirroring them: the subject, day and trial ("r2405 2026-11-03 a"). See
-//! `ephys_rs::core::base_directory`.
+//! `ephys_rs::base_directory`.
 
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, RichText};
-use ephys_rs::core::base_directory::{BaseDirectory, BaseDirectoryContext, BaseDirectoryType, Place};
-use ephys_rs::standard_components::base_directories::{
+use ephys_rs::base_directory::{BaseDirectory, BaseDirectoryContext, BaseDirectoryType, Place};
+use ephys_rs::standard::base_directories::{
     PathEdit, directory_ui, name_piece, open_button, path_chip, path_separator,
 };
-use ephys_rs::standard_components::recording::{NO_BASE, expand};
+use ephys_rs::standard::recording::{NO_BASE, expand};
 use serde::{Deserialize, Serialize};
 
 pub const TRIALS: BaseDirectoryType = BaseDirectoryType {

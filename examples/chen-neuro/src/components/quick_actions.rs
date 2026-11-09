@@ -14,15 +14,15 @@
 //!   real devices, while any is synthetic.
 
 use super::{NodeType, Nodes};
-use ephys_rs::core::engine::{Graph, NodeId, NodesEnum, Port, PortRole};
-use ephys_rs::core::layout::{Pane, WindowState};
-use ephys_rs::core::quick_action::{Arrangement, QuickAction, QuickChange, QuickState, Tab};
-use ephys_rs::standard_components::alarms::processor::AlarmProcessor;
-use ephys_rs::standard_components::alarms::{AlarmKind, Source};
-use ephys_rs::standard_components::ephys::band_pass::BandPassFilter;
-use ephys_rs::standard_components::ephys::board::{self, node::AcquisitionBoard, opal_kelly::OpalKellyKind};
-use ephys_rs::standard_components::ephys::downsample::Downsample;
-use ephys_rs::standard_components::tracking::camera::{self, node::Camera};
+use ephys_rs::engine::{Graph, NodeId, NodesEnum, Port, PortRole};
+use ephys_rs::layout::{Pane, WindowState};
+use ephys_rs::quick_action::{Arrangement, QuickAction, QuickChange, QuickState, Tab};
+use ephys_rs::standard::alarms::processor::AlarmProcessor;
+use ephys_rs::standard::alarms::{AlarmKind, Source};
+use ephys_rs::standard::ephys::band_pass::BandPassFilter;
+use ephys_rs::standard::ephys::board::{self, node::AcquisitionBoard, opal_kelly::OpalKellyKind};
+use ephys_rs::standard::ephys::downsample::Downsample;
+use ephys_rs::standard::tracking::camera::{self, node::Camera};
 
 use super::vr_computer::VrComputer;
 
@@ -332,7 +332,7 @@ fn set_disabled(graph: &mut Graph<Nodes>, ids: &[NodeId], disabled: bool) {
 
 /// The VR Computer that's in use, if there is one.
 fn live_vr(graph: &Graph<Nodes>) -> Option<NodeId> {
-    let live = |e: &ephys_rs::core::engine::NodeEntry<Nodes>| matches!(e.node, Nodes::VrComputer(_)) && !e.disabled;
+    let live = |e: &ephys_rs::engine::NodeEntry<Nodes>| matches!(e.node, Nodes::VrComputer(_)) && !e.disabled;
     graph.iter().find(|(_, e)| live(e)).map(|(id, _)| id)
 }
 
@@ -446,7 +446,7 @@ fn real(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ephys_rs::core::quick_action::Layout;
+    use ephys_rs::quick_action::Layout;
 
     fn run(name: &str, graph: &Graph<Nodes>) -> Option<QuickChange<Nodes>> {
         let action = QUICK_ACTIONS.iter().find(|a| a.name == name).expect("action");
@@ -479,7 +479,7 @@ mod tests {
         let fed: Vec<NodeId> = graph
             .edges()
             .iter()
-            .filter(|e| e.from.node == selector && e.dimension == ephys_rs::core::engine::Dimension::Data)
+            .filter(|e| e.from.node == selector && e.dimension == ephys_rs::engine::Dimension::Data)
             .map(|e| e.to.node)
             .collect();
         let lfp =
@@ -502,8 +502,8 @@ mod tests {
         // The LFP Viewer sets the EEG's gains, the selection and the spikes' reference.
         let lfp_viewer = named("LFP Viewer");
         let controls = |port| {
-            let from = ephys_rs::core::engine::PortRef { node: lfp_viewer, port };
-            let settings = graph.edges().iter().filter(|e| e.dimension == ephys_rs::core::engine::Dimension::Settings);
+            let from = ephys_rs::engine::PortRef { node: lfp_viewer, port };
+            let settings = graph.edges().iter().filter(|e| e.dimension == ephys_rs::engine::Dimension::Settings);
             settings.into_iter().find(|e| e.from == from).map(|e| e.to.node)
         };
         assert_eq!(controls(0), Some(named("Continuous Gain")));
@@ -516,8 +516,8 @@ mod tests {
         assert!((0..4).all(into), "Write LTX records spikes, EEG, positions and digital inputs");
         // With the EEG's selection and gains.
         let ltx_controls = |port| {
-            let from = ephys_rs::core::engine::PortRef { node: ltx, port };
-            graph.edges().iter().find(|e| e.dimension == ephys_rs::core::engine::Dimension::Settings && e.from == from)
+            let from = ephys_rs::engine::PortRef { node: ltx, port };
+            graph.edges().iter().find(|e| e.dimension == ephys_rs::engine::Dimension::Settings && e.from == from)
         };
         assert_eq!(ltx_controls(2).map(|e| e.to.node), Some(selector));
         assert_eq!(ltx_controls(3).map(|e| e.to.node), Some(named("Continuous Gain")));
