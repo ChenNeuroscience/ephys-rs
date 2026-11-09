@@ -867,7 +867,9 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::NodeType;
     use crate::Nodes;
+    use crate::core::engine::NodeTypeEnum;
     use crate::core::engine::{Graph, NodeId, NodesEnum, Port, PortRole, Runner, Snapshot};
 
     /// The path's sent to the window while recording, a pass at a time, and goes when recording starts again.
@@ -916,8 +918,8 @@ mod tests {
     }
 
     fn add(graph: &mut Graph<Nodes>, name: &str) -> NodeId {
-        let index = Nodes::TYPES.iter().position(|t| t.name == name).unwrap();
-        graph.add(Nodes::create(index), [0.0, 0.0])
+        let node_type = NodeType::named(name).unwrap();
+        graph.add(Nodes::create(node_type), [0.0, 0.0])
     }
 
     /// The LEDs in the view's latest display, once it has a frame.

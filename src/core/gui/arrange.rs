@@ -113,15 +113,17 @@ pub fn arrange<N: NodesEnum>(graph: &Graph<N>) -> HashMap<NodeId, [f32; 2]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::NodeType;
     use crate::Nodes;
+    use crate::core::engine::NodeTypeEnum;
     use crate::core::engine::{Port, PortRole};
 
     #[test]
     fn data_flows_left_to_right_in_columns() {
         let mut graph = Graph::<Nodes>::default();
         let add = |graph: &mut Graph<Nodes>, name: &str, pos: [f32; 2]| {
-            let index = Nodes::TYPES.iter().position(|t| t.name == name).unwrap();
-            graph.add(Nodes::create(index), pos)
+            let node_type = NodeType::named(name).unwrap();
+            graph.add(Nodes::create(node_type), pos)
         };
         // All in a heap, the viewer before the detector.
         let viewer = add(&mut graph, "Spike Viewer", [0.0, 0.0]);
@@ -151,8 +153,8 @@ mod tests {
     fn a_node_with_only_settings_edges_is_placed_by_them() {
         let mut graph = Graph::<Nodes>::default();
         let add = |graph: &mut Graph<Nodes>, name: &str| {
-            let index = Nodes::TYPES.iter().position(|t| t.name == name).unwrap();
-            graph.add(Nodes::create(index), [0.0, 0.0])
+            let node_type = NodeType::named(name).unwrap();
+            graph.add(Nodes::create(node_type), [0.0, 0.0])
         };
         let command = add(&mut graph, "Run Command");
         let board = add(&mut graph, "Acquisition Board");
@@ -176,8 +178,8 @@ mod tests {
     fn a_node_placed_by_a_settings_edge_stays_in_line_with_what_leads_to_it() {
         let mut graph = crate::example_graph();
         let find = |graph: &Graph<Nodes>, label: &str| graph.iter().find(|(_, e)| e.label == label).unwrap().0;
-        let index = Nodes::TYPES.iter().position(|t| t.name == "Run Command").unwrap();
-        let command = graph.add(Nodes::create(index), [0.0, 0.0]);
+        let node_type = NodeType::RunCommand;
+        let command = graph.add(Nodes::create(node_type), [0.0, 0.0]);
         let writer = find(&graph, "Write LTX");
         let port = |node, role, index| Port { node, role, index };
         graph.connect(port(writer, PortRole::Control, 4), port(command, PortRole::Setting, 0)).unwrap();

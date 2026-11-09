@@ -11,6 +11,20 @@ use super::{
     ThreadContext, TreeShake, UiContext,
 };
 
+/// The node types a program is built with, as a fieldless enum, one variant each (`NodesEnum::Type`): what the add-node
+/// menu offers, say, or a node's type. Made by `nodes_enum!`, in the same order.
+pub trait NodeTypeEnum: Copy + Eq + std::hash::Hash + std::fmt::Debug + Send + Sync + 'static {
+    /// Every type, in the order they're declared (the add-node menu's).
+    const ALL: &'static [Self];
+
+    fn info(self) -> &'static NodeInfo;
+
+    /// The type called `name` (its `NodeInfo::name`), if there is one.
+    fn named(name: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|t| t.info().name == name)
+    }
+}
+
 /// The closed set of node types a program is built with, as an enum with one variant per type. Implemented
 /// by `nodes_enum!`, and forwards each `Node` method to the variant's type: enum dispatch, as the `enum_dispatch` crate
 /// does it, by hand, as `Node` (with its associated types and consts) can't be a trait object.
@@ -19,12 +33,12 @@ pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + S
     /// The edge types its node types use.
     type Edges: Edges;
 
-    /// Indexed by type index (see `create`, which panics if it isn't one of these).
-    const TYPES: &'static [NodeInfo];
+    /// Its node types, without their settings.
+    type Type: NodeTypeEnum;
 
-    /// A node of the given type, with default settings.
-    fn create(type_index: usize) -> Self;
-    fn type_index(&self) -> usize;
+    /// A node of type `node_type`, with default settings.
+    fn create(node_type: Self::Type) -> Self;
+    fn node_type(&self) -> Self::Type;
     fn window_size(&self) -> [f32; 2];
     fn show_in_basic_default(&self) -> bool;
     /// The global settings its node types read, each type once, in the order of the node types that first name them.
@@ -71,7 +85,7 @@ pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + S
     fn thread_pool(&self, thread: usize, context: &ThreadContext) -> Option<PoolStatus>;
 
     fn info(&self) -> &'static NodeInfo {
-        &Self::TYPES[self.type_index()]
+        self.node_type().info()
     }
 }
 
@@ -80,7 +94,8 @@ pub fn is_state<S: 'static>() -> bool {
     TypeId::of::<S>() != TypeId::of::<()>()
 }
 
-/// Declares the enum of node types a program is built with, and implements `NodesEnum` for it:
+/// Declares the enum of node types a program is built with, and implements `NodesEnum` for it, and the enum of just
+/// their types, named after it, implementing `NodeTypeEnum`:
 ///
 /// ```ignore
 /// nodes_enum! {
@@ -89,6 +104,7 @@ pub fn is_state<S: 'static>() -> bool {
 ///         Gain(gain::Gain),
 ///         Writer(writer::Writer),
 ///     }
+///     pub enum NodeType;
 /// }
 /// ```
 ///
@@ -96,7 +112,8 @@ pub fn is_state<S: 'static>() -> bool {
 /// variant breaks existing files.
 ///
 /// That makes the enum, a variant holding a node of each type, and `NodesEnum` for it, each of whose methods is a
-/// `match` with an arm for each variant, handing on to that type's `Node`:
+/// `match` with an arm for each variant, handing on to that type's `Node`; and the enum of types, with the same
+/// variants, holding nothing:
 ///
 /// ```ignore
 /// #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -106,9 +123,15 @@ pub fn is_state<S: 'static>() -> bool {
 ///     Writer(writer::Writer),
 /// }
 ///
+/// #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+/// pub enum NodeType {
+///     Gain,
+///     Writer,
+/// }
+///
 /// impl NodesEnum for Nodes {
 ///     type Edges = Edges;
-///     const TYPES: &'static [NodeInfo] = &[<gain::Gain as Node<Edges>>::INFO, <writer::Writer as Node<Edges>>::INFO];
+///     type Type = NodeType;
 ///
 ///     fn process(&self, pass: &mut Pass<Edges>, state: Option<&mut (dyn Any + Send)>) {
 ///         match self {
@@ -124,7 +147,11 @@ pub fn is_state<S: 'static>() -> bool {
 /// (see `NodesEnum`).
 #[macro_export]
 macro_rules! nodes_enum {
-    (edges: $edges:ty; $(#[$meta:meta])* $vis:vis enum $name:ident { $($variant:ident($ty:ty)),+ $(,)? }) => {
+    (
+        edges: $edges:ty;
+        $(#[$meta:meta])* $vis:vis enum $name:ident { $($variant:ident($ty:ty)),+ $(,)? }
+        $(#[$type_meta:meta])* $type_vis:vis enum $type_name:ident;
+    ) => {
         $(#[$meta])*
         #[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
         #[serde(tag = "type", content = "settings")]
@@ -132,20 +159,30 @@ macro_rules! nodes_enum {
             $($variant($ty)),+
         }
 
+        $(#[$type_meta])*
+        #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+        $type_vis enum $type_name {
+            $($variant),+
+        }
+
+        impl $crate::core::engine::NodeTypeEnum for $type_name {
+            const ALL: &'static [Self] = &[$($type_name::$variant),+];
+
+            fn info(self) -> &'static $crate::core::engine::NodeInfo {
+                match self { $($type_name::$variant => &<$ty as $crate::core::engine::Node<$edges>>::INFO),+ }
+            }
+        }
+
         impl $crate::core::engine::NodesEnum for $name {
             type Edges = $edges;
+            type Type = $type_name;
 
-            const TYPES: &'static [$crate::core::engine::NodeInfo] =
-                &[$(<$ty as $crate::core::engine::Node<$edges>>::INFO),+];
-
-            fn create(type_index: usize) -> Self {
-                const CREATE: &[fn() -> $name] = &[$(|| $name::$variant(<$ty>::default())),+];
-                CREATE[type_index]()
+            fn create(node_type: $type_name) -> Self {
+                match node_type { $($type_name::$variant => $name::$variant(<$ty>::default())),+ }
             }
 
-            fn type_index(&self) -> usize {
-                const IS: &[fn(&$name) -> bool] = &[$(|n| matches!(n, $name::$variant(_))),+];
-                IS.iter().position(|is| is(self)).expect("one of them")
+            fn node_type(&self) -> $type_name {
+                match self { $($name::$variant(_) => $type_name::$variant),+ }
             }
 
             fn window_size(&self) -> [f32; 2] {

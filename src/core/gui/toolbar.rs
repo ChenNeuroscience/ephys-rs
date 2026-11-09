@@ -8,7 +8,7 @@ use super::actions::{self, Action, MENUS, MenuEntry};
 use super::canvas::Tool;
 use super::icons::{self, Icon};
 use super::{App, Event};
-use crate::core::annotation::AnnotationsEnum;
+use crate::core::annotation::{AnnotationTypeEnum, AnnotationsEnum};
 use crate::core::base_directory::{BaseDirectoryContext, BaseDirectoryType};
 use crate::core::engine::NodesEnum;
 use crate::core::layout::{Mode, Pane};
@@ -53,13 +53,14 @@ pub fn graph_toolbar<A: AnnotationsEnum>(
                 perform(Action::AddNode, Some(add.rect.left_bottom()));
             }
             // A tool for drawing each type of annotation.
-            for (index, info) in A::TYPES.iter().enumerate().filter(|(_, info)| !hidden.contains(info.name)) {
+            for &annotation_type in A::Type::ALL.iter().filter(|t| !hidden.contains(t.info().name)) {
+                let info = annotation_type.info();
                 let tip = format!("{}: {}", info.name, info.description);
                 let paint = |painter: &egui::Painter, rect: Rect, _: egui::Color32, _: bool| {
-                    A::paint_icon(index, painter, rect)
+                    annotation_type.paint_icon(painter, rect)
                 };
-                if icon_button(ui, &paint, &tip, &tip, BUTTON, 16.0, true, tool == Tool::Draw(index)).clicked() {
-                    perform(Action::DrawTool(index), None);
+                if icon_button(ui, &paint, &tip, &tip, BUTTON, 16.0, true, tool == Tool::Draw(info.name)).clicked() {
+                    perform(Action::DrawTool(info.name), None);
                 }
             }
             ui.separator();
@@ -128,7 +129,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
     /// For actions that are on or off (a panel showing, the theme in use), whether they're on.
     pub(super) fn checked(&self, action: Action) -> Option<bool> {
         match action {
-            Action::DrawTool(index) => Some(self.canvas.tool == Tool::Draw(index)),
+            Action::DrawTool(name) => Some(self.canvas.tool == Tool::Draw(name)),
             Action::ToggleDevTools => Some(self.layout.is_shown(Pane::DevTools)),
             Action::Advanced => Some(self.layout.mode == Mode::Advanced),
             Action::Theme(index) => Some(self.theme == index),
@@ -160,8 +161,9 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                 }
                 MenuEntry::Action(action) => self.menu_item(ui, *action, chosen),
                 MenuEntry::DrawTools => {
-                    for index in (0..A::TYPES.len()).filter(|&i| !self.hidden.annotations.contains(A::TYPES[i].name)) {
-                        self.menu_item(ui, Action::DrawTool(index), chosen);
+                    let names = A::Type::ALL.iter().map(|t| t.info().name);
+                    for name in names.filter(|name| !self.hidden.annotations.contains(*name)) {
+                        self.menu_item(ui, Action::DrawTool(name), chosen);
                     }
                 }
                 MenuEntry::Themes => {
@@ -185,7 +187,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
 
     fn menu_item(&self, ui: &mut egui::Ui, action: Action, chosen: &mut Option<Action>) {
         let on = self.checked(action) == Some(true);
-        let mut button = egui::Button::new((check(on), action.name(A::TYPES, self.themes)));
+        let mut button = egui::Button::new((check(on), action.name(self.themes)));
         if let Some(shortcut) = action.shortcut() {
             button = button.shortcut_text(ui.ctx().format_shortcut(&shortcut));
         }

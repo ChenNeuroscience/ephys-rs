@@ -51,4 +51,4 @@ extern crate self as ephys_rs;
 #[path = "../examples/chen-neuro/src/components/mod.rs"]
 mod components;
 #[cfg(test)]
-use components::{AnnotationTypes, Nodes, example_graph};
+use components::{AnnotationKind, AnnotationTypes, NodeType, Nodes, example_graph};

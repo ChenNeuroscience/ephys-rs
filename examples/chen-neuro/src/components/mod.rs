@@ -53,6 +53,7 @@ nodes_enum! {
         WriteRaw(raw::WriteRaw),
         RunCommand(run_command::RunCommand),
     }
+    pub enum NodeType;
 }
 
 annotations_enum! {
@@ -64,6 +65,7 @@ annotations_enum! {
         Box(group_box::GroupBox),
         Arrow(arrow::Arrow),
     }
+    pub enum AnnotationKind;
 }
 
 /// The first is the default.

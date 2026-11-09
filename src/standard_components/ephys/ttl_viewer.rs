@@ -267,6 +267,7 @@ impl TtlViewer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::NodeType;
     use crate::standard_components::ephys::{Event, EventsBuffer};
 
     fn events(list: &[(u32, u8, bool)], pass_samples: usize) -> crate::Buffer {
@@ -303,8 +304,8 @@ mod tests {
         use crate::core::engine::{Graph, NodesEnum};
         use crate::standard_components::themes::THEMES;
         let mut graph = Graph::<Nodes>::default();
-        let index = Nodes::TYPES.iter().position(|t| t.name == "TTL Viewer").unwrap();
-        let viewer = graph.add(Nodes::create(index), [0.0, 0.0]);
+        let node_type = NodeType::TtlViewer;
+        let viewer = graph.add(Nodes::create(node_type), [0.0, 0.0]);
         let changes = (0..8)
             .flat_map(|line| {
                 (0..4).map(move |i| Change { line, time: 0.5 + i as f64 + line as f64 * 0.1, high: i % 2 == 0 })

@@ -23,7 +23,9 @@ use eframe::egui::{
 use super::Event;
 use super::icons::eye;
 use super::style;
-use crate::core::annotation::{Annotation, AnnotationId, AnnotationUi, Annotations, AnnotationsEnum, PastedContent};
+use crate::core::annotation::{
+    Annotation, AnnotationId, AnnotationTypeEnum, AnnotationUi, Annotations, AnnotationsEnum, PastedContent,
+};
 use crate::core::engine::{
     Dimension, Edge, EdgeInfo, EdgeTypesEnum, Edges, Graph, KindKey, NodeEntry, NodeId, NodeState, NodesEnum, Port,
     PortRole, Resolved,
@@ -91,8 +93,8 @@ pub enum Tool {
     /// Select and move things, and connect ports.
     #[default]
     Select,
-    /// Draw out an annotation of a type (by index), then go back to selecting.
-    Draw(usize),
+    /// Draw out an annotation of a type (by its name: see `AnnotationTypeEnum::named`), then go back to selecting.
+    Draw(&'static str),
 }
 
 /// Where a node and its parts are, on screen.
@@ -500,7 +502,10 @@ impl Canvas {
 
         let drawn = match self.tool {
             Tool::Select => None,
-            Tool::Draw(index) => self.draw_annotation(ui, rect, index, annotations, selection),
+            Tool::Draw(name) => {
+                let annotation_type = A::Type::named(name);
+                annotation_type.and_then(|t| self.draw_annotation(ui, rect, t, annotations, selection))
+            }
         };
         self.background(ui, &background, selection, events);
         let marquee = self.marquee.zip(pointer).map(|(start, p)| Rect::from_two_pos(self.to_screen * start, p));
@@ -601,11 +606,13 @@ impl Canvas {
         // Those above the graph (images), over the nodes, and grabbed before them.
         self.annotations(ui, &painter, graph, annotations, selection, events, true);
 
-        if let (Some(r), Tool::Draw(index)) = (drawn, self.tool) {
+        if let (Some(r), Tool::Draw(name)) = (drawn, self.tool)
+            && let Some(annotation_type) = A::Type::named(name)
+        {
             painter.rect(
                 r,
                 4.0 * zoom,
-                A::create(index).fill(self.colours).gamma_multiply(0.6),
+                A::create(annotation_type).fill(self.colours).gamma_multiply(0.6),
                 Stroke::new(1.0, self.colours.text_secondary),
                 StrokeKind::Inside,
             );
@@ -623,7 +630,7 @@ impl Canvas {
         &mut self,
         ui: &mut egui::Ui,
         rect: Rect,
-        type_index: usize,
+        annotation_type: A::Type,
         annotations: &mut Annotations<A>,
         selection: &mut Selection,
     ) -> Option<Rect> {
@@ -642,8 +649,8 @@ impl Canvas {
             let end = to_scene * p;
             [end.x < start.x, end.y < start.y]
         });
-        let default_size = Vec2::from(A::TYPES[type_index].default_size);
-        let min_size = A::min_size(type_index);
+        let default_size = Vec2::from(annotation_type.info().default_size);
+        let min_size = annotation_type.min_size();
         let drawn = if response.drag_stopped() {
             self.drawing = None;
             outline.map(|r| to_scene * r)
@@ -659,7 +666,7 @@ impl Canvas {
             } else {
                 drawn.size().max(min_size.into())
             };
-            let kind = A::drawn(type_index, flipped);
+            let kind = A::drawn(annotation_type, flipped);
             let annotation = Annotation { pos: drawn.min.into(), size: size.into(), kind };
             let id = annotations.add(annotation);
             selection.only_annotation(id);
@@ -859,11 +866,11 @@ impl Canvas {
     /// the view.
     pub fn insert_chosen<A: AnnotationsEnum>(
         &mut self,
-        type_index: usize,
+        annotation_type: A::Type,
         annotations: &mut Annotations<A>,
         selection: &mut Selection,
     ) {
-        if let Some((kind, size)) = A::choose(type_index) {
+        if let Some((kind, size)) = A::choose(annotation_type) {
             let centre = self.view_centre();
             self.place(annotations, selection, kind, size, centre);
         }
@@ -957,7 +964,7 @@ impl Canvas {
                 painter,
                 theme: self.colours,
                 id,
-                min_size: A::min_size(annotation.kind.type_index()),
+                min_size: annotation.kind.annotation_type().min_size(),
                 pos: &mut annotation.pos,
                 size: &mut annotation.size,
                 selected: selection.annotations.contains(&id),
@@ -1450,9 +1457,9 @@ mod tests {
 
     /// Which side of its node a port's drawn on.
     fn drawn_on_right(name: &str, role: PortRole, index: usize) -> bool {
-        use crate::Nodes;
-        let type_index = Nodes::TYPES.iter().position(|t| t.name == name).unwrap();
-        let state = NodeState::unconnected(&Nodes::create(type_index));
+        use crate::core::engine::NodeTypeEnum;
+        use crate::{NodeType, Nodes};
+        let state = NodeState::unconnected(&Nodes::create(NodeType::named(name).unwrap()));
         let layout = Layout::new([0.0, 0.0], &state, &TSTransform::IDENTITY, true);
         let port = Port { node: NodeId(0), role, index };
         assert_eq!(layout.port(port).unwrap().x == layout.rect.right(), layout.on_right(port));

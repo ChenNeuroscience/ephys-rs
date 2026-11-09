@@ -661,7 +661,9 @@ fn detail(alarm: &Alarm, stream: AlarmStates) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::NodeType;
     use crate::Nodes;
+    use crate::core::engine::NodeTypeEnum;
     use crate::core::engine::{Graph, NodesEnum, Port, PortRole};
     use crate::core::engine::{NodeId, SharedByNode};
     use crate::standard_components::alarms::Selection;
@@ -749,8 +751,8 @@ mod tests {
     ) -> (egui_kittest::Harness<'static, Graph<Nodes>>, Gui, crate::core::engine::NodeId) {
         let mut graph = Graph::<Nodes>::default();
         let add = |graph: &mut Graph<Nodes>, name: &str| {
-            let index = Nodes::TYPES.iter().position(|t| t.name == name).unwrap();
-            graph.add(Nodes::create(index), [0.0, 0.0])
+            let node_type = NodeType::named(name).unwrap();
+            graph.add(Nodes::create(node_type), [0.0, 0.0])
         };
         let (processor, viewer) = (add(&mut graph, "Alarm Processor"), add(&mut graph, "Alarm Viewer"));
         if let Some(Nodes::AlarmProcessor(node)) = graph.get_mut(processor).map(|e| &mut e.node) {
@@ -1138,8 +1140,8 @@ mod tests {
 
         let mut graph = Graph::<Nodes>::default();
         let add = |graph: &mut Graph<Nodes>, name: &str| {
-            let index = Nodes::TYPES.iter().position(|t| t.name == name).unwrap();
-            graph.add(Nodes::create(index), [0.0, 0.0])
+            let node_type = NodeType::named(name).unwrap();
+            graph.add(Nodes::create(node_type), [0.0, 0.0])
         };
         let (board, processor, viewer) =
             (add(&mut graph, "Acquisition Board"), add(&mut graph, "Alarm Processor"), add(&mut graph, "Alarm Viewer"));

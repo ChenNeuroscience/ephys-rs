@@ -294,6 +294,7 @@ fn copy(input: &SpikesBuffer, output: &mut SpikesBuffer) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::NodeType;
     use crate::core::engine::{DataStreamType, NodeId, PASS_DURATION};
     use crate::standard_components::spikes::{DEFAULT_THRESHOLD_UV, Spike};
 
@@ -397,8 +398,8 @@ mod tests {
         use crate::standard_components::spikes::Spikes;
         use crate::standard_components::themes::THEMES;
         let mut graph = Graph::<Nodes>::default();
-        let index = Nodes::TYPES.iter().position(|t| t.name == "Spike Gain").unwrap();
-        let id = graph.add(Nodes::create(index), [0.0, 0.0]);
+        let node_type = NodeType::SpikeGain;
+        let id = graph.add(Nodes::create(node_type), [0.0, 0.0]);
         let spikes =
             Spikes { channels: 8, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32, polarity: Default::default() };
         if let Some(Nodes::SpikeGain(gain)) = graph.get_mut(id).map(|e| &mut e.node) {

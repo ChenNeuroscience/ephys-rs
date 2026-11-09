@@ -346,13 +346,13 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::Location;
-    use crate::Nodes;
-    use crate::core::engine::{Graph, NodeId, NodesEnum, Port, PortRole, Recording, Runner, Snapshot};
+    use crate::core::engine::{Graph, NodeId, NodeTypeEnum, NodesEnum, Port, PortRole, Recording, Runner, Snapshot};
     use crate::standard_components::ephys::board::{Source, serve_test_board};
+    use crate::{NodeType, Nodes};
 
     fn add(graph: &mut Graph<Nodes>, name: &str) -> NodeId {
-        let index = Nodes::TYPES.iter().position(|t| t.name == name).unwrap();
-        graph.add(Nodes::create(index), [0.0, 0.0])
+        let node_type = NodeType::named(name).unwrap();
+        graph.add(Nodes::create(node_type), [0.0, 0.0])
     }
 
     fn link(graph: &mut Graph<Nodes>, from: NodeId, output: usize, to: NodeId, input: usize) {

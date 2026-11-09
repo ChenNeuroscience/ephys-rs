@@ -23,7 +23,9 @@ A build lists its types with `nodes_enum!` (node types, in the order the add-nod
 `annotations_enum!`, then implements [`Components`](../src/core/mod.rs) with them, its themes, quick actions and base
 directories, and calls `core::gui::run`. Each macro makes an enum with a variant per type, which forwards the traits'
 methods to the variant's type, so the core works with one concrete type (`Nodes`, say) without trait objects: the
-enum dispatch pattern.
+enum dispatch pattern. Each also makes a second enum, named in the macro call, of just the types, with the same variants
+holding nothing (`NodeType`, say, implementing `NodeTypeEnum`): for a node's type, or the add-node menu's, rather than an
+index or a name.
 
 A build can also say what its version is, with `Components::version`. It's shown in the status bar, and `--version`
 prints it. The recommendation, for a build for a whole lab, is `core::build_version`: the lab's name, the build's

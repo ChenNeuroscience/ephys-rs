@@ -4,11 +4,11 @@
 
 use eframe::egui::{self, Id, Key, Order, Pos2, RichText};
 
-use crate::core::engine::{Category, Graph, NodeId, NodeState, NodesEnum, Port, Resolved};
+use crate::core::engine::{Category, Graph, NodeId, NodeState, NodeTypeEnum, NodesEnum, Port, Resolved};
 
-/// What's chosen in the menu: a new node, of a type (by index), or a port already in the graph.
-pub enum Choice {
-    New(usize),
+/// What's chosen in the menu: a new node, of a type (`NodesEnum::Type`), or a port already in the graph.
+pub enum Choice<T> {
+    New(T),
     Existing(Port),
 }
 
@@ -22,11 +22,11 @@ pub struct CreateMenu {
     focused: bool,
 }
 
-/// The port on a new node of type `type_index` that `from` would connect to, if any. The port's node is a
+/// The port on a new node of type `node_type` that `from` would connect to, if any. The port's node is a
 /// placeholder.
-pub fn port_on_new<N: NodesEnum>(from: Port, resolved: &Resolved<N::Edges>, type_index: usize) -> Option<Port> {
+pub fn port_on_new<N: NodesEnum>(from: Port, resolved: &Resolved<N::Edges>, node_type: N::Type) -> Option<Port> {
     let kind = resolved.get(&from.node)?.kind(from.role, from.index)?;
-    NodeState::unconnected(&N::create(type_index)).find(NodeId(0), from.role.partner(), kind)
+    NodeState::unconnected(&N::create(node_type)).find(NodeId(0), from.role.partner(), kind)
 }
 
 impl CreateMenu {
@@ -41,12 +41,12 @@ impl CreateMenu {
         graph: &Graph<N>,
         resolved: &Resolved<N::Edges>,
         hidden: &std::collections::BTreeSet<String>,
-    ) -> (Option<Choice>, bool) {
+    ) -> (Option<Choice<N::Type>>, bool) {
         let needle = self.search.to_lowercase();
         let matches = |name: &str| name.to_lowercase().contains(&needle);
         let from = self.from;
-        let types: Vec<usize> = (0..N::TYPES.len())
-            .filter(|&t| matches(N::TYPES[t].name) && !hidden.contains(N::TYPES[t].name))
+        let types: Vec<N::Type> = (N::Type::ALL.iter().copied())
+            .filter(|t| matches(t.info().name) && !hidden.contains(t.info().name))
             .filter(|&t| from.is_none_or(|from| port_on_new::<N>(from, resolved, t).is_some()))
             .collect();
         let existing: Vec<(Port, String)> = from
@@ -94,14 +94,14 @@ impl CreateMenu {
 
                     egui::ScrollArea::vertical().max_height(380.0).show(ui, |ui| {
                         for category in Category::ALL {
-                            let in_category: Vec<usize> =
-                                types.iter().copied().filter(|t| N::TYPES[*t].category == category).collect();
+                            let in_category: Vec<N::Type> =
+                                types.iter().copied().filter(|t| t.info().category == category).collect();
                             if in_category.is_empty() {
                                 continue;
                             }
                             ui.label(RichText::new(category.name()).small().weak());
                             for t in in_category {
-                                let info = &N::TYPES[t];
+                                let info = t.info();
                                 if ui.selectable_label(false, info.name).on_hover_text(info.description).clicked() {
                                     choice = Some(Choice::New(t));
                                 }

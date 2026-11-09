@@ -41,7 +41,7 @@ pub struct Panes<'a, N: NodesEnum, A: AnnotationsEnum> {
     /// What the running nodes' passes share with the GUI, or what the last run's shared, once it's stopped.
     pub shared: Option<&'a crate::core::engine::SharedByNode>,
     /// Each node's state on the GUI's side (see `Node::UiState`).
-    pub(crate) ui_states: &'a super::UiStates,
+    pub(crate) ui_states: &'a super::UiStates<N>,
     /// The base directory recordings go in (see `crate::core::base_directory`).
     pub base_directory: Option<&'a crate::core::base_directory::Place>,
     /// The latest snapshot of the graph.

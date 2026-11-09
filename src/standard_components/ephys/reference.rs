@@ -649,6 +649,7 @@ pub fn channels_ui(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::NodeType;
     use crate::core::engine::{DataStreamType, PASS_DURATION};
 
     /// Runs one pass of `channels` (each a few samples) through `reference`.
@@ -825,8 +826,8 @@ mod tests {
         use crate::standard_components::themes::THEMES;
         let mut graph = Graph::<Nodes>::default();
         use egui_kittest::kittest::Queryable as _;
-        let index = Nodes::TYPES.iter().position(|t| t.name == "Reference").unwrap();
-        let id = graph.add(Nodes::create(index), [0.0, 0.0]);
+        let node_type = NodeType::Reference;
+        let id = graph.add(Nodes::create(node_type), [0.0, 0.0]);
         if let Some(Nodes::Reference(reference)) = graph.get_mut(id).map(|e| &mut e.node) {
             reference.list[0].channels = "1-3, 5-8, 13".into();
         }

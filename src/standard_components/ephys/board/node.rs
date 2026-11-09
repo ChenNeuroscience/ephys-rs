@@ -434,6 +434,7 @@ fn detect_ui(ui: &mut egui::Ui, board: &mut AcquisitionBoard, theme: &crate::cor
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::NodeType;
     use crate::Nodes;
     use crate::core::engine::{Graph, NodesEnum};
     use crate::standard_components::themes::THEMES;
@@ -442,8 +443,8 @@ mod tests {
     #[test]
     fn settings_window() {
         let mut graph = Graph::<Nodes>::default();
-        let index = Nodes::TYPES.iter().position(|t| t.name == "Acquisition Board").unwrap();
-        let board = graph.add(Nodes::create(index), [0.0, 0.0]);
+        let node_type = NodeType::AcquisitionBoard;
+        let board = graph.add(Nodes::create(node_type), [0.0, 0.0]);
         let info = BoardInfo {
             description: "Fake acquisition board (synthetic_streams/fake_acquisition_board.py)".into(),
             headstages: vec![Headstage { port: "A1".into(), channels: 64 }],

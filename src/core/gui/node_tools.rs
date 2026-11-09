@@ -168,8 +168,10 @@ impl NodeToolbar for NodeTools<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::NodeType;
     use crate::Nodes;
     use crate::TriggerKind;
+    use crate::core::engine::NodeTypeEnum;
     use crate::standard_components::auto_detect::AutoDetect;
     use crate::standard_components::other::run_command::RunOnFiles;
 
@@ -179,8 +181,8 @@ mod tests {
     fn a_trigger_goes_the_way_it_is_delivered() {
         let mut graph = Graph::<Nodes>::default();
         let add = |graph: &mut Graph<Nodes>, name: &str| {
-            let index = Nodes::TYPES.iter().position(|t| t.name == name).unwrap();
-            graph.add(Nodes::create(index), [0.0, 0.0])
+            let node_type = NodeType::named(name).unwrap();
+            graph.add(Nodes::create(node_type), [0.0, 0.0])
         };
         let (command, gain) = (add(&mut graph, "Run Command"), add(&mut graph, "Spike Gain"));
         let triggers = PassTriggers::default();

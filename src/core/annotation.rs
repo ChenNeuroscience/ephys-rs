@@ -128,49 +128,70 @@ pub trait AnnotationType: Default + Clone + PartialEq + Serialize + DeserializeO
     fn paint_icon(painter: &Painter, rect: Rect);
 }
 
+/// The annotation types a program is built with, as a fieldless enum, one variant each (`AnnotationsEnum::Type`): the
+/// toolbar's tools, say. Made by `annotations_enum!`, in the same order. What a type is, rather than an annotation of it.
+pub trait AnnotationTypeEnum: Copy + Eq + std::hash::Hash + std::fmt::Debug + 'static {
+    /// Every type, in the order they're declared.
+    const ALL: &'static [Self];
+
+    fn info(self) -> &'static AnnotationInfo;
+    /// The smallest an annotation of the type can be made (its `AnnotationType::MIN_SIZE`).
+    fn min_size(self) -> [f32; 2];
+    /// Whether annotations of the type are drawn out, or made with `AnnotationsEnum::choose`.
+    fn is_drawn(self) -> bool;
+    /// Paints the type's icon (for the toolbar's tool to draw one) to fill `rect`.
+    fn paint_icon(self, painter: &Painter, rect: Rect);
+
+    /// The type called `name` (its `AnnotationInfo::name`), if there is one.
+    fn named(name: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|t| t.info().name == name)
+    }
+}
+
 /// The closed set of annotation types a program is built with, as an enum with one variant per type.
 /// Implemented by `annotations_enum!`, and forwards each `AnnotationType` method to the variant's type.
 pub trait AnnotationsEnum: Clone + PartialEq + Serialize + DeserializeOwned + 'static {
-    /// Indexed by type index. The functions that take one panic if it isn't one of these.
-    const TYPES: &'static [AnnotationInfo];
+    /// Its annotation types, without their content.
+    type Type: AnnotationTypeEnum;
 
-    fn create(type_index: usize) -> Self;
-    fn drawn(type_index: usize, flipped: [bool; 2]) -> Self;
-    fn min_size(type_index: usize) -> [f32; 2];
-    /// Whether annotations of a type are drawn out, or made with `choose`.
-    fn is_drawn(type_index: usize) -> bool;
-    fn choose(type_index: usize) -> Option<(Self, [f32; 2])>;
+    fn create(annotation_type: Self::Type) -> Self;
+    fn drawn(annotation_type: Self::Type, flipped: [bool; 2]) -> Self;
+    fn choose(annotation_type: Self::Type) -> Option<(Self, [f32; 2])>;
     fn canvas_ui(&mut self, cx: &mut AnnotationUi) -> bool;
     fn hit(&self, rect: Rect, at: Pos2, zoom: f32) -> bool;
     fn behind(&self) -> bool;
     fn above_graph(&self) -> bool;
-    fn type_index(&self) -> usize;
+    fn annotation_type(&self) -> Self::Type;
     fn fill(&self, theme: &Colours) -> Color32;
     /// An annotation of the type that best suits what's pasted (see `AnnotationType::pasted`), and its size.
     fn pasted(pasted: &PastedContent) -> Option<(Self, [f32; 2])>;
     fn settings_ui(&mut self, ui: &mut egui::Ui);
     fn toolbar_ui(&mut self, ui: &mut egui::Ui);
-    fn paint_icon(type_index: usize, painter: &Painter, rect: Rect);
 
     fn info(&self) -> &'static AnnotationInfo {
-        &Self::TYPES[self.type_index()]
+        self.annotation_type().info()
     }
 }
 
-/// Declares the enum of annotation types a program is built with, and implements `AnnotationsEnum` for it:
+/// Declares the enum of annotation types a program is built with, and implements `AnnotationsEnum` for it, and the enum
+/// of just their types, named after it, with the same variants holding nothing, implementing `AnnotationTypeEnum`:
 ///
 /// ```ignore
 /// annotations_enum! {
 ///     pub enum AnnotationTypes {
 ///         StickyNote(sticky_note::StickyNote),
 ///     }
+///     pub enum AnnotationKind;
 /// }
 /// ```
 ///
 /// Saved files name each annotation by its variant, so renaming a variant breaks existing files.
 #[macro_export]
 macro_rules! annotations_enum {
-    ($(#[$meta:meta])* $vis:vis enum $name:ident { $($variant:ident($ty:ty)),+ $(,)? }) => {
+    (
+        $(#[$meta:meta])* $vis:vis enum $name:ident { $($variant:ident($ty:ty)),+ $(,)? }
+        $(#[$type_meta:meta])* $type_vis:vis enum $type_name:ident;
+    ) => {
         $(#[$meta])*
         #[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
         #[serde(tag = "type", content = "content")]
@@ -178,35 +199,49 @@ macro_rules! annotations_enum {
             $($variant($ty)),+
         }
 
+        $(#[$type_meta])*
+        #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+        $type_vis enum $type_name {
+            $($variant),+
+        }
+
+        impl $crate::core::annotation::AnnotationTypeEnum for $type_name {
+            const ALL: &'static [Self] = &[$($type_name::$variant),+];
+
+            fn info(self) -> &'static $crate::core::annotation::AnnotationInfo {
+                match self { $($type_name::$variant => &<$ty as $crate::core::annotation::AnnotationType>::INFO),+ }
+            }
+
+            fn min_size(self) -> [f32; 2] {
+                match self { $($type_name::$variant => <$ty as $crate::core::annotation::AnnotationType>::MIN_SIZE),+ }
+            }
+
+            fn is_drawn(self) -> bool {
+                match self { $($type_name::$variant => <$ty as $crate::core::annotation::AnnotationType>::DRAWN),+ }
+            }
+
+            fn paint_icon(self, painter: &eframe::egui::Painter, rect: eframe::egui::Rect) {
+                match self { $($type_name::$variant => <$ty as $crate::core::annotation::AnnotationType>::paint_icon(painter, rect)),+ }
+            }
+        }
+
         impl $crate::core::annotation::AnnotationsEnum for $name {
-            const TYPES: &'static [$crate::core::annotation::AnnotationInfo] =
-                &[$(<$ty as $crate::core::annotation::AnnotationType>::INFO),+];
+            type Type = $type_name;
 
-            fn create(type_index: usize) -> Self {
-                const CREATE: &[fn() -> $name] = &[$(|| $name::$variant(<$ty>::default())),+];
-                CREATE[type_index]()
+            fn create(annotation_type: $type_name) -> Self {
+                match annotation_type { $($type_name::$variant => $name::$variant(<$ty>::default())),+ }
             }
 
-            fn drawn(type_index: usize, flipped: [bool; 2]) -> Self {
-                const DRAWN: &[fn([bool; 2]) -> $name] =
-                    &[$(|flipped| $name::$variant(<$ty as $crate::core::annotation::AnnotationType>::drawn(flipped))),+];
-                DRAWN[type_index](flipped)
+            fn drawn(annotation_type: $type_name, flipped: [bool; 2]) -> Self {
+                match annotation_type {
+                    $($type_name::$variant => $name::$variant(<$ty as $crate::core::annotation::AnnotationType>::drawn(flipped))),+
+                }
             }
 
-            fn min_size(type_index: usize) -> [f32; 2] {
-                const MIN_SIZES: &[[f32; 2]] = &[$(<$ty as $crate::core::annotation::AnnotationType>::MIN_SIZE),+];
-                MIN_SIZES[type_index]
-            }
-
-            fn is_drawn(type_index: usize) -> bool {
-                const DRAWN: &[bool] = &[$(<$ty as $crate::core::annotation::AnnotationType>::DRAWN),+];
-                DRAWN[type_index]
-            }
-
-            fn choose(type_index: usize) -> Option<(Self, [f32; 2])> {
-                const CHOOSE: &[fn() -> Option<($name, [f32; 2])>] =
-                    &[$(|| <$ty as $crate::core::annotation::AnnotationType>::choose().map(|(a, size)| ($name::$variant(a), size))),+];
-                CHOOSE[type_index]()
+            fn choose(annotation_type: $type_name) -> Option<(Self, [f32; 2])> {
+                match annotation_type {
+                    $($type_name::$variant => <$ty as $crate::core::annotation::AnnotationType>::choose().map(|(a, size)| ($name::$variant(a), size))),+
+                }
             }
 
             fn canvas_ui(&mut self, cx: &mut $crate::core::annotation::AnnotationUi) -> bool {
@@ -225,9 +260,8 @@ macro_rules! annotations_enum {
                 match self { $($name::$variant(a) => $crate::core::annotation::AnnotationType::above_graph(a)),+ }
             }
 
-            fn type_index(&self) -> usize {
-                const IS: &[fn(&$name) -> bool] = &[$(|a| matches!(a, $name::$variant(_))),+];
-                IS.iter().position(|is| is(self)).expect("one of them")
+            fn annotation_type(&self) -> $type_name {
+                match self { $($name::$variant(_) => $type_name::$variant),+ }
             }
 
             fn fill(&self, theme: &$crate::core::theme::Colours) -> eframe::egui::Color32 {
@@ -252,12 +286,6 @@ macro_rules! annotations_enum {
 
             fn toolbar_ui(&mut self, ui: &mut eframe::egui::Ui) {
                 match self { $($name::$variant(a) => $crate::core::annotation::AnnotationType::toolbar_ui(a, ui)),+ }
-            }
-
-            fn paint_icon(type_index: usize, painter: &eframe::egui::Painter, rect: eframe::egui::Rect) {
-                const PAINT: &[fn(&eframe::egui::Painter, eframe::egui::Rect)] =
-                    &[$(<$ty as $crate::core::annotation::AnnotationType>::paint_icon),+];
-                PAINT[type_index](painter, rect)
             }
         }
     };

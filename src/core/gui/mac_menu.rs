@@ -9,7 +9,6 @@ use muda::{CheckMenuItem, IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuI
 
 use super::actions::{self, Action, MENUS, MenuEntry};
 use super::preferences::MOST_RECENT_FILES;
-use crate::core::annotation::AnnotationInfo;
 use crate::core::theme::Theme;
 
 /// The menu bar, while it's shown: what's clicked comes back as `Action`s, and the checkmarks and recent files are
@@ -35,7 +34,8 @@ struct Builder<'a> {
     checks: Vec<(Action, CheckMenuItem)>,
     recent: Option<Submenu>,
     checkable: &'a dyn Fn(Action) -> bool,
-    annotations: &'static [AnnotationInfo],
+    /// The annotation types' names, for the drawing tools.
+    annotations: Vec<&'static str>,
     /// Annotation types hidden in Settings, by name: not among the drawing tools.
     hidden: &'a std::collections::BTreeSet<String>,
     themes: &'static [Theme],
@@ -44,7 +44,7 @@ struct Builder<'a> {
 impl Builder<'_> {
     fn item(&self, action: Action) -> MenuItem {
         let accelerator = (action == Action::Quit).then(|| "CmdOrCtrl+Q".parse().ok()).flatten();
-        MenuItem::with_id(id(action), action.name(self.annotations, self.themes), true, accelerator)
+        MenuItem::with_id(id(action), action.name(self.themes), true, accelerator)
     }
 
     fn items(&mut self, entries: &[MenuEntry]) -> Option<Vec<Box<dyn IsMenuItem>>> {
@@ -55,10 +55,9 @@ impl Builder<'_> {
                 MenuEntry::Action(Action::Quit) => {}
                 MenuEntry::Action(action) => items.push(self.action(*action)),
                 MenuEntry::DrawTools => {
-                    let shown =
-                        (0..self.annotations.len()).filter(|&i| !self.hidden.contains(self.annotations[i].name));
-                    let tools: Vec<usize> = shown.collect();
-                    items.extend(tools.into_iter().map(|i| self.action(Action::DrawTool(i))));
+                    let shown = self.annotations.iter().copied().filter(|name| !self.hidden.contains(*name));
+                    let tools: Vec<&'static str> = shown.collect();
+                    items.extend(tools.into_iter().map(|name| self.action(Action::DrawTool(name))));
                 }
                 MenuEntry::Themes => items.extend((0..self.themes.len()).map(|i| self.action(Action::Theme(i)))),
                 // Filled in by `show_recent`.
@@ -73,7 +72,7 @@ impl Builder<'_> {
     fn action(&mut self, action: Action) -> Box<dyn IsMenuItem> {
         self.actions.push(action);
         if (self.checkable)(action) {
-            let name = action.name(self.annotations, self.themes);
+            let name = action.name(self.themes);
             let check = CheckMenuItem::with_id(id(action), name, true, false, None);
             self.checks.push((action, check.clone()));
             Box::new(check)
@@ -99,7 +98,7 @@ impl MacMenu {
     pub fn install(
         ctx: &egui::Context,
         checkable: &dyn Fn(Action) -> bool,
-        annotations: &'static [AnnotationInfo],
+        annotations: Vec<&'static str>,
         hidden: &std::collections::BTreeSet<String>,
         themes: &'static [Theme],
     ) -> Option<Self> {

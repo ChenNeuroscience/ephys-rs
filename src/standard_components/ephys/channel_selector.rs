@@ -210,8 +210,8 @@ mod tests {
         // A node of each type taking what `from` has, of the kinds in `kinds`.
         let takers = |graph: &mut Graph<Nodes>, from: &[(Kind, Port)]| {
             let mut added = Vec::new();
-            for index in 0..Nodes::TYPES.len() {
-                let node = Nodes::create(index);
+            for &node_type in <crate::NodeType as crate::core::engine::NodeTypeEnum>::ALL {
+                let node = Nodes::create(node_type);
                 let inputs: Vec<_> = (node.inputs().iter().enumerate())
                     .filter_map(|(input, i)| from.iter().find(|(kind, _)| *kind == i.kind).map(|f| (input, f.1)))
                     .collect();
@@ -287,8 +287,8 @@ mod tests {
         let mut harness = egui_kittest::Harness::builder().with_size([340.0, 220.0]).wgpu().build_ui_state(
             |ui, selector: &mut ChannelSelector| {
                 let mut graph = Graph::<crate::Nodes>::default();
-                let index = crate::Nodes::TYPES.iter().position(|t| t.name == "Channel Selector").unwrap();
-                let id = graph.add(crate::Nodes::create(index), [0.0, 0.0]);
+                let node_type = crate::NodeType::ChannelSelector;
+                let id = graph.add(crate::Nodes::create(node_type), [0.0, 0.0]);
                 let stream = Continuous { channels: 16, sample_rate: 30000.0 };
                 let inputs = [Some(DataStream::Continuous(stream))];
                 graph.edit(id, &inputs, &THEMES[0].colours, None, None, None, false, false, None, |_, context| {

@@ -781,12 +781,14 @@ impl<N: NodesEnum> Clone for Snapshot<N> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::NodeType;
     use crate::Nodes;
+    use crate::core::engine::NodeTypeEnum;
     use crate::standard_components::{ephys, spikes};
     use crate::{DataStream, Setting};
 
     fn create(name: &str) -> Nodes {
-        Nodes::create(Nodes::TYPES.iter().position(|t| t.name == name).unwrap())
+        Nodes::create(NodeType::named(name).unwrap())
     }
 
     fn port(node: NodeId, role: PortRole, index: usize) -> Port {

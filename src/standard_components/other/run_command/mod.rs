@@ -763,7 +763,9 @@ mod tests {
 
     use super::terminal::{How, shell_script, write_private};
     use super::*;
+    use crate::NodeType;
     use crate::Nodes;
+    use crate::core::engine::NodeTypeEnum;
     use crate::core::engine::{Graph, NodeId, NodesEnum, Port, PortRole, Recording, Runner, Snapshot};
     use crate::core::triggers::{DirectTriggers, Triggered};
     use crate::standard_components::ephys::board::{Source, serve_test_board};
@@ -1170,8 +1172,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ephys-rs-after-recording-{}", std::process::id()));
         let said = std::env::temp_dir().join(format!("ephys-rs-after-recording-{}.txt", std::process::id()));
         let add = |graph: &mut Graph<Nodes>, name: &str| {
-            let index = Nodes::TYPES.iter().position(|t| t.name == name).unwrap();
-            graph.add(Nodes::create(index), [0.0, 0.0])
+            let node_type = NodeType::named(name).unwrap();
+            graph.add(Nodes::create(node_type), [0.0, 0.0])
         };
         let mut graph = Graph::default();
         let (board, writer, command) =
@@ -1234,8 +1236,8 @@ mod tests {
     fn window_harness_with(writer: bool, ran: bool) -> egui_kittest::Harness<'static, Graph<Nodes>> {
         let mut graph = Graph::<Nodes>::default();
         let add = |graph: &mut Graph<Nodes>, name: &str| {
-            let index = Nodes::TYPES.iter().position(|t| t.name == name).unwrap();
-            graph.add(Nodes::create(index), [0.0, 0.0])
+            let node_type = NodeType::named(name).unwrap();
+            graph.add(Nodes::create(node_type), [0.0, 0.0])
         };
         let id = add(&mut graph, "Run Command");
         let job = Job::default();
@@ -1335,8 +1337,8 @@ mod tests {
         use egui_kittest::kittest::Queryable;
         let then_shown = |chained: bool| {
             let mut graph = Graph::<Nodes>::default();
-            let index = Nodes::TYPES.iter().position(|t| t.name == "Run Command").unwrap();
-            let [id, after] = [0, 1].map(|_| graph.add(Nodes::create(index), [0.0, 0.0]));
+            let node_type = NodeType::RunCommand;
+            let [id, after] = [0, 1].map(|_| graph.add(Nodes::create(node_type), [0.0, 0.0]));
             if let Some(Nodes::RunCommand(node)) = graph.get_mut(id).map(|e| &mut e.node) {
                 node.settings = settings("klusta", "{file} --overwrite");
                 node.settings.files = paths(&["/recordings/trial a.set"]);
@@ -1402,6 +1404,7 @@ mod chain_tests {
     use std::sync::Arc;
 
     use super::*;
+    use crate::NodeType;
     use crate::Nodes;
     use crate::core::engine::{Graph, NodeId, NodesEnum, Port, PortRole};
     use crate::core::triggers::{DirectTriggers, Triggered};
@@ -1453,8 +1456,8 @@ mod chain_tests {
     #[test]
     fn commands_running_after_each_other_round_a_loop_are_warned_of() {
         let mut graph = Graph::<Nodes>::default();
-        let index = Nodes::TYPES.iter().position(|t| t.name == "Run Command").unwrap();
-        let [a, b, c] = [0, 1, 2].map(|_| graph.add(Nodes::create(index), [0.0, 0.0]));
+        let node_type = NodeType::RunCommand;
+        let [a, b, c] = [0, 1, 2].map(|_| graph.add(Nodes::create(node_type), [0.0, 0.0]));
         let after = |from, to| {
             let control = Port { node: from, role: PortRole::Control, index: AFTER_RUNNING };
             (control, Port { node: to, role: PortRole::Setting, index: 0 })

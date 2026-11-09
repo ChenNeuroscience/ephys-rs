@@ -225,8 +225,8 @@ pub fn stopped(ctx: &egui::Context, stopped: &[Stopped], colours: &Colours) -> (
 
 /// The types the program has, to offer or not.
 pub struct Types<'a> {
-    pub nodes: &'a [NodeInfo],
-    pub annotations: &'a [AnnotationInfo],
+    pub nodes: &'a [&'static NodeInfo],
+    pub annotations: &'a [&'static AnnotationInfo],
     pub base_directories: &'a [BaseDirectoryType],
     /// The global settings its nodes read: a section each, after the app's own.
     pub global: &'a [GlobalSettingsType],
@@ -532,10 +532,10 @@ mod tests {
     /// See tests/snapshots/.
     #[test]
     fn the_settings_window() {
-        use crate::core::annotation::AnnotationsEnum;
-        use crate::core::engine::NodesEnum;
+        use crate::Nodes;
+        use crate::core::annotation::AnnotationTypeEnum;
+        use crate::core::engine::{NodeTypeEnum, NodesEnum};
         use crate::standard_components::themes::THEMES;
-        use crate::{AnnotationTypes, Nodes};
         let mut results = egui_kittest::SnapshotResults::new();
         let global = Nodes::global_settings_types();
         // The Spinnaker cameras' tab: what it finds is the same anywhere without the SDK (the others' differ, with
@@ -546,8 +546,8 @@ mod tests {
             preferences.hidden.nodes.insert("Spectrum".into());
             let mut window = SettingsWindow { section };
             let types = Types {
-                nodes: Nodes::TYPES,
-                annotations: AnnotationTypes::TYPES,
+                nodes: &crate::NodeType::ALL.iter().map(|t| t.info()).collect::<Vec<_>>(),
+                annotations: &crate::AnnotationKind::ALL.iter().map(|t| t.info()).collect::<Vec<_>>(),
                 base_directories: crate::components::BASE_DIRECTORIES,
                 global: &global.clone(),
             };

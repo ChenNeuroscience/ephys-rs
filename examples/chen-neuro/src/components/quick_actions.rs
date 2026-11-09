@@ -13,7 +13,7 @@
 //! - Using synthetic data (the fake board and camera in `synthetic_streams`), while any board or camera is real; and
 //!   real devices, while any is synthetic.
 
-use super::Nodes;
+use super::{NodeType, Nodes};
 use ephys_rs::core::engine::{Graph, NodeId, NodesEnum, Port, PortRole};
 use ephys_rs::core::layout::{Pane, WindowState};
 use ephys_rs::core::quick_action::{Arrangement, QuickAction, QuickChange, QuickState, Tab};
@@ -78,11 +78,10 @@ impl Change {
         self.graph.iter().find(|(_, e)| matches(&e.node)).map(|(id, _)| id)
     }
 
-    /// The first node of type `name`, or a new one, after `after` (if given).
-    fn upsert(&mut self, name: &str, after: Option<NodeId>) -> NodeId {
-        let index = Nodes::TYPES.iter().position(|t| t.name == name).expect("node type");
-        let found = self.graph.iter().find(|(_, e)| e.node.info().name == name).map(|(id, _)| id);
-        found.unwrap_or_else(|| self.add(Nodes::create(index), after))
+    /// The first node of type `node_type`, or a new one, after `after` (if given).
+    fn upsert(&mut self, node_type: NodeType, after: Option<NodeId>) -> NodeId {
+        let found = self.graph.iter().find(|(_, e)| e.node.node_type() == node_type).map(|(id, _)| id);
+        found.unwrap_or_else(|| self.add(Nodes::create(node_type), after))
     }
 
     /// Adds `node` after `after` along the data's flow, below whatever's there; or, with nothing before it, below
@@ -181,7 +180,7 @@ fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
             change.add(Nodes::AcquisitionBoard(AcquisitionBoard { source: real_board(), ..Default::default() }), None)
         }
     };
-    let reference = change.upsert("Reference", Some(board));
+    let reference = change.upsert(NodeType::Reference, Some(board));
     change.link((board, Output, 0), (reference, Input, 0));
 
     // Spikes.
@@ -190,17 +189,17 @@ fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
         None => change.add(Nodes::BandPassFilter(Default::default()), Some(reference)),
     };
     change.link((reference, Output, 0), (band, Input, 0));
-    let detector = change.upsert("Spike Detector", Some(band));
+    let detector = change.upsert(NodeType::SpikeDetector, Some(band));
     change.link((band, Output, 0), (detector, Input, 0));
-    let gain = change.upsert("Spike Gain", Some(detector));
+    let gain = change.upsert(NodeType::SpikeGain, Some(detector));
     change.link((detector, Output, 0), (gain, Input, 0));
-    let spike_viewer = change.upsert("Spike Viewer", Some(gain));
+    let spike_viewer = change.upsert(NodeType::SpikeViewer, Some(gain));
     change.link((gain, Output, 0), (spike_viewer, Input, 0));
     change.link((spike_viewer, Control, 0), (detector, Setting, 0));
     change.link((spike_viewer, Control, 1), (gain, Setting, 0));
 
     // EEG: only some channels, chosen in the LFP Viewer.
-    let selector = change.upsert("Channel Selector", Some(board));
+    let selector = change.upsert(NodeType::ChannelSelector, Some(board));
     change.link((board, Output, 0), (selector, Input, 0));
     let lfp = match change.find(|n| matches!(n, Nodes::BandPassFilter(f) if f.high_hz <= 500.0)) {
         Some(lfp) => lfp,
@@ -210,15 +209,15 @@ fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
         }
     };
     change.link((selector, Output, 0), (lfp, Input, 0));
-    let spectrum = change.upsert("Spectrum", Some(lfp));
+    let spectrum = change.upsert(NodeType::Spectrum, Some(lfp));
     change.link((lfp, Output, 0), (spectrum, Input, 0));
-    let lfp_viewer = change.upsert("LFP Viewer", Some(spectrum));
+    let lfp_viewer = change.upsert(NodeType::LfpViewer, Some(spectrum));
     change.link((lfp, Output, 0), (lfp_viewer, Input, 0));
     change.link((spectrum, Output, 0), (lfp_viewer, Input, 1));
     change.link((lfp_viewer, Control, 1), (selector, Setting, 0));
 
     // Digital inputs.
-    let ttl_viewer = change.upsert("TTL Viewer", Some(board));
+    let ttl_viewer = change.upsert(NodeType::TtlViewer, Some(board));
     change.link((board, Output, 1), (ttl_viewer, Input, 0));
 
     // Positions.
@@ -226,9 +225,9 @@ fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
         Some(camera) => camera,
         None => change.add(Nodes::Camera(Camera { source: real_camera(), ..Default::default() }), None),
     };
-    let positions = change.upsert("Position Detector", Some(camera));
+    let positions = change.upsert(NodeType::PositionDetector, Some(camera));
     change.link((camera, Output, 0), (positions, Input, 0));
-    let tracker = change.upsert("Tracker View", Some(positions));
+    let tracker = change.upsert(NodeType::TrackerView, Some(positions));
     change.link((camera, Output, 0), (tracker, Input, 0));
     change.link((positions, Output, 0), (tracker, Input, 1));
     change.link((camera, Output, 1), (tracker, Input, 2));
@@ -236,7 +235,7 @@ fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
     change.link((tracker, Control, 1), (positions, Setting, 0));
 
     // Recording it all.
-    let ltx = change.upsert("Write LTX", Some(gain));
+    let ltx = change.upsert(NodeType::WriteLtx, Some(gain));
     change.link((gain, Output, 0), (ltx, Input, 0));
     // The EEG, at LTX's 5 kHz.
     let downsample = match change.find(|n| matches!(n, Nodes::Downsample(d) if d.rate_hz == 5000.0)) {
@@ -244,7 +243,7 @@ fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
         None => change.add(Nodes::Downsample(Downsample { rate_hz: 5000.0 }), Some(lfp)),
     };
     change.link((lfp, Output, 0), (downsample, Input, 0));
-    let continuous_gain = change.upsert("Continuous Gain", Some(downsample));
+    let continuous_gain = change.upsert(NodeType::ContinuousGain, Some(downsample));
     change.link((downsample, Output, 0), (continuous_gain, Input, 0));
     change.link((continuous_gain, Output, 0), (ltx, Input, 1));
     change.link((lfp_viewer, Control, 0), (continuous_gain, Setting, 0));
@@ -279,7 +278,7 @@ fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
     change.link((lfp, Output, 0), (alarm_processor, Input, 1));
     change.link((positions, Output, 0), (alarm_processor, Input, 2));
     change.link((positions, Output, 1), (alarm_processor, Input, 3));
-    let alarm_viewer = change.upsert("Alarm Viewer", Some(alarm_processor));
+    let alarm_viewer = change.upsert(NodeType::AlarmViewer, Some(alarm_processor));
     change.link((alarm_processor, Output, 0), (alarm_viewer, Input, 0));
     change.link((alarm_viewer, Control, 0), (alarm_processor, Setting, 0));
 
@@ -359,7 +358,7 @@ fn use_vr(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
     if let Some(ltx) = change.find(|n| matches!(n, Nodes::WriteLtx(_))) {
         change.link((vr, Output, 2), (ltx, Input, 5));
     }
-    let log_viewer = change.upsert("Log Viewer", Some(vr));
+    let log_viewer = change.upsert(NodeType::LogViewer, Some(vr));
     set_disabled(&mut change.graph, &[log_viewer], false);
     change.link((vr, Output, 2), (log_viewer, Input, 0));
     change.changed = true;

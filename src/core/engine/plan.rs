@@ -409,6 +409,8 @@ pub fn same_processing<N: NodesEnum>(a: &Graph<N>, b: &Graph<N>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::NodeType;
+    use crate::core::engine::NodeTypeEnum;
     use std::sync::Arc;
 
     use super::super::Snapshot;
@@ -416,8 +418,8 @@ mod tests {
     use crate::Nodes;
 
     fn add(graph: &mut Graph<Nodes>, name: &str) -> NodeId {
-        let index = Nodes::TYPES.iter().position(|t| t.name == name).unwrap();
-        graph.add(Nodes::create(index), [0.0, 0.0])
+        let node_type = NodeType::named(name).unwrap();
+        graph.add(Nodes::create(node_type), [0.0, 0.0])
     }
 
     fn link(graph: &mut Graph<Nodes>, from: NodeId, output: usize, to: NodeId, input: usize) {

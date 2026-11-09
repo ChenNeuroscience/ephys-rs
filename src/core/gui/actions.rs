@@ -5,7 +5,6 @@ use std::path::Path;
 
 use eframe::egui::{Key, KeyboardShortcut, Modifiers};
 
-use crate::core::annotation::AnnotationInfo;
 use crate::core::theme::Theme;
 
 /// Something the user can do from a menu, a toolbar or a shortcut: each is done the same way, whichever.
@@ -33,8 +32,8 @@ pub enum Action {
     ToggleDisabled,
     /// Opens the menu of node types.
     AddNode,
-    /// Picks the tool for drawing annotations of a type (by index) on the graph.
-    DrawTool(usize),
+    /// Picks the tool for drawing annotations of a type (by its name: see `AnnotationTypeEnum::named`) on the graph.
+    DrawTool(&'static str),
     /// Shows the home pane: the basic view, or in advanced mode the graph.
     Home,
     /// Turns advanced mode on or off: the graph in the home pane, and panes' settings (see `Mode`).
@@ -165,8 +164,8 @@ const SHORTCUT_ORDER: [Action; 19] = [
 ];
 
 impl Action {
-    /// Its name in menus. Annotation tools and themes are named from the program's `annotations` and `themes`.
-    pub fn name<'a>(self, annotations: &'a [AnnotationInfo], themes: &'a [Theme]) -> &'a str {
+    /// Its name in menus. Themes are named from the program's `themes`.
+    pub fn name(self, themes: &[Theme]) -> &str {
         match self {
             Action::New => "New",
             Action::Open => "Open…",
@@ -190,7 +189,7 @@ impl Action {
             Action::PasteSettings => "Paste Settings…",
             Action::ToggleDisabled => "Disable or Enable",
             Action::AddNode => "Node…",
-            Action::DrawTool(index) => annotations.get(index).map_or("?", |a| a.name),
+            Action::DrawTool(name) => name,
             Action::Home => "Home",
             Action::Advanced => "Advanced Mode",
             Action::CloseHome => "Close Home",

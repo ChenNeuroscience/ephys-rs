@@ -41,10 +41,12 @@ use eframe::egui::{self, Id, Key, Modifiers, Pos2, RichText, ViewportCommand};
 use serde::{Deserialize, Serialize};
 
 use crate::core::Components;
-use crate::core::annotation::{Annotation, AnnotationId, Annotations, AnnotationsEnum};
+use crate::core::annotation::{Annotation, AnnotationId, AnnotationTypeEnum, Annotations, AnnotationsEnum};
 use crate::core::base_directory::{BaseDirectories, BaseDirectoryType, Place};
 use crate::core::config_patching::{self, PatchSets, Versions};
-use crate::core::engine::{self, Graph, NodeId, NodesEnum, Port, PortRef, Resolved, Runner, Snapshot, Stats};
+use crate::core::engine::{
+    self, Graph, NodeId, NodeTypeEnum, NodesEnum, Port, PortRef, Resolved, Runner, Snapshot, Stats,
+};
 use crate::core::layout::{Layout, Mode, Pane};
 use crate::core::theme::{Colours, Theme};
 use crate::core::triggers::Triggered;
@@ -117,9 +119,11 @@ pub fn run<C: Components>(path: Option<PathBuf>) -> eframe::Result {
             #[cfg(target_os = "macos")]
             {
                 let checkable = |a| app.checked(a).is_some();
+                let annotation_names = <C::Annotations as AnnotationsEnum>::Type::ALL.iter().map(|t| t.info().name);
+                let annotation_names = annotation_names.collect();
                 let hidden = &app.hidden.annotations;
                 app.mac_menu =
-                    mac_menu::MacMenu::install(&cc.egui_ctx, &checkable, C::Annotations::TYPES, hidden, C::THEMES);
+                    mac_menu::MacMenu::install(&cc.egui_ctx, &checkable, annotation_names, hidden, C::THEMES);
             }
             Ok(Box::new(app))
         }),
@@ -253,7 +257,7 @@ pub struct App<N: NodesEnum, A: AnnotationsEnum> {
     /// What's unattended, as of the last time round: drawn as a warning, while it's one.
     unattended: preferences::Unattended,
     /// Each node's state on the GUI's side (see `Node::UiState`), while the graph has the node.
-    ui_states: UiStates,
+    ui_states: UiStates<N>,
     /// What's been stopped for being unattended, until that's been seen.
     stopped_unattended: Vec<preferences::Stopped>,
     /// The user has said to close despite unsaved changes.
@@ -706,8 +710,8 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         let Some(window) = &mut self.settings else { return };
         let global = N::global_settings_types();
         let types = preferences::Types {
-            nodes: N::TYPES,
-            annotations: A::TYPES,
+            nodes: &N::Type::ALL.iter().map(|t| t.info()).collect::<Vec<_>>(),
+            annotations: &A::Type::ALL.iter().map(|t| t.info()).collect::<Vec<_>>(),
             base_directories: self.base_directories.types(),
             global: &global,
         };
@@ -1168,11 +1172,13 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                 self.theme = index;
                 self.themes[index].apply(ctx);
             }
-            Action::DrawTool(index) if !A::is_drawn(index) => {
-                self.canvas.insert_chosen(index, &mut self.annotations, &mut self.selection);
-            }
-            Action::DrawTool(index) => {
-                let tool = Tool::Draw(index);
+            Action::DrawTool(name) => {
+                let Some(annotation_type) = A::Type::named(name) else { return };
+                if !annotation_type.is_drawn() {
+                    self.canvas.insert_chosen(annotation_type, &mut self.annotations, &mut self.selection);
+                    return;
+                }
+                let tool = Tool::Draw(name);
                 self.canvas.tool = if self.canvas.tool == tool { Tool::Select } else { tool };
             }
         }
@@ -1456,7 +1462,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             }
         };
         match choice {
-            Some(Choice::New(type_index)) => {
+            Some(Choice::New(node_type)) => {
                 // Beside the port it's connected to, on the side its edge leaves from.
                 let pos = match from {
                     Some(port) if resolved.get(&port.node).is_some_and(|s| s.on_right(port.role, port.index)) => {
@@ -1465,10 +1471,10 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                     Some(_) => [scene.x - NODE_WIDTH - 40.0, scene.y - HEADER],
                     None => [scene.x - NODE_WIDTH / 2.0, scene.y - HEADER / 2.0],
                 };
-                let id = self.graph.add(N::create(type_index), pos);
+                let id = self.graph.add(N::create(node_type), pos);
                 self.selection.only(id);
                 if let Some(from) = from
-                    && let Some(port) = create_menu::port_on_new::<N>(from, resolved, type_index)
+                    && let Some(port) = create_menu::port_on_new::<N>(from, resolved, node_type)
                 {
                     connect(self, from, Port { node: id, ..port });
                 }
@@ -1799,22 +1805,27 @@ fn unattended_what(stopping: preferences::Stopping, recording: bool) -> &'static
 
 /// Each node's state on the GUI's side (see `Node::UiState`), by node, with the type of node it's for: a file opened can
 /// have other nodes with the same ids.
-#[derive(Default)]
-pub(crate) struct UiStates(HashMap<NodeId, (usize, crate::core::engine::UiStateCell)>);
+pub(crate) struct UiStates<N: NodesEnum>(HashMap<NodeId, (N::Type, crate::core::engine::UiStateCell)>);
 
-impl UiStates {
+impl<N: NodesEnum> Default for UiStates<N> {
+    fn default() -> Self {
+        UiStates(HashMap::new())
+    }
+}
+
+impl<N: NodesEnum> UiStates<N> {
     /// Node `id`'s, if it's kept, for a node of its type.
-    pub(crate) fn get<N: NodesEnum>(&self, graph: &Graph<N>, id: NodeId) -> Option<&crate::core::engine::UiStateCell> {
+    pub(crate) fn get(&self, graph: &Graph<N>, id: NodeId) -> Option<&crate::core::engine::UiStateCell> {
         let (kind, state) = self.0.get(&id)?;
-        (graph.get(id)?.node.type_index() == *kind).then_some(state)
+        (graph.get(id)?.node.node_type() == *kind).then_some(state)
     }
 
     /// Keeps one for each of `graph`'s nodes, as it starts for those without one, letting go of the rest.
-    fn keep<N: NodesEnum>(&mut self, graph: &Graph<N>) {
-        let kind = |id: NodeId| graph.get(id).map(|entry| entry.node.type_index());
+    fn keep(&mut self, graph: &Graph<N>) {
+        let kind = |id: NodeId| graph.get(id).map(|entry| entry.node.node_type());
         self.0.retain(|id, (of, _)| kind(*id) == Some(*of));
         for (id, entry) in graph.iter() {
-            self.0.entry(id).or_insert_with(|| (entry.node.type_index(), entry.node.new_ui_state().into()));
+            self.0.entry(id).or_insert_with(|| (entry.node.node_type(), entry.node.new_ui_state().into()));
         }
     }
 }
@@ -1928,6 +1939,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> History<N, A> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::NodeType;
     use crate::core::engine::PortRole;
     use crate::core::layout::WindowState;
     use crate::standard_components::themes::THEMES;
@@ -2016,7 +2028,7 @@ mod tests {
         let mut harness = harness();
         let notes = harness.state().annotations.ids().count();
         let ctx = harness.ctx.clone();
-        harness.state_mut().perform(&ctx, Action::DrawTool(0));
+        harness.state_mut().perform(&ctx, Action::DrawTool("Sticky Note"));
         let start = on_node(&harness, "Camera", [0.0, 140.0]);
         pointer(&mut harness, start, Some(true));
         pointer(&mut harness, start + egui::vec2(100.0, 50.0), None);
@@ -2077,10 +2089,10 @@ mod tests {
         };
         let mut graph = Graph::<Nodes>::default();
         assert!(names(&graph).is_empty(), "nothing to explain on an empty graph");
-        let camera = Nodes::TYPES.iter().position(|t| t.name == "Camera").unwrap();
+        let camera = NodeType::Camera;
         graph.add(Nodes::create(camera), [0.0, 0.0]);
         assert_eq!(names(&graph), vec![("Data", vec!["video", "camera stats"]), ("Settings", vec!["camera"])]);
-        let detector = Nodes::TYPES.iter().position(|t| t.name == "Spike Detector").unwrap();
+        let detector = NodeType::SpikeDetector;
         graph.add(Nodes::create(detector), [0.0, 0.0]);
         assert_eq!(
             names(&graph),
@@ -2201,8 +2213,8 @@ mod tests {
         use crate::core::triggers::ControlTriggers;
         use crate::standard_components::other::run_command::RunOnFiles;
         let mut harness = harness();
-        let index = Nodes::TYPES.iter().position(|t| t.name == "Run Command").unwrap();
-        let id = harness.state_mut().graph.add(Nodes::create(index), [0.0, 0.0]);
+        let node_type = NodeType::RunCommand;
+        let id = harness.state_mut().graph.add(Nodes::create(node_type), [0.0, 0.0]);
         let ran = std::env::temp_dir().join(format!("ephys-rs-direct-trigger-{}", std::process::id()));
         if let Some(Nodes::RunCommand(node)) = harness.state_mut().graph.get_mut(id).map(|e| &mut e.node) {
             node.settings.program = "/usr/bin/touch".into();
@@ -3091,9 +3103,9 @@ mod tests {
     /// recent files are kept, as Settings says.
     #[test]
     fn hidden_annotations_are_not_drawing_tools_and_recent_files_are_kept_as_set() {
-        use crate::core::annotation::AnnotationsEnum;
+        use crate::core::annotation::AnnotationTypeEnum;
         let mut harness = harness();
-        let name = AnnotationTypes::TYPES[0].name;
+        let name = crate::AnnotationKind::ALL[0].info().name;
         let tool = |harness: &Harness<TestApp>| harness.query_by_label_contains(&format!("{name}: ")).is_some();
         assert!(tool(&harness));
         harness.state_mut().hidden.annotations.insert(name.into());

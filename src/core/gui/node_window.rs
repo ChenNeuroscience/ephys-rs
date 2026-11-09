@@ -90,6 +90,7 @@ pub fn standard<E: Edges, N: Node<E>>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::NodeType;
     use crate::Nodes;
     use crate::core::engine::Graph;
     use crate::core::engine::NodesEnum;
@@ -102,8 +103,8 @@ mod tests {
         use egui_kittest::kittest::{NodeT as _, Queryable as _};
         let disabled = |running: bool| {
             let mut graph = Graph::<Nodes>::default();
-            let index = Nodes::TYPES.iter().position(|t| t.name == "Spike Gain").unwrap();
-            let id = graph.add(Nodes::create(index), [0.0, 0.0]);
+            let node_type = NodeType::SpikeGain;
+            let id = graph.add(Nodes::create(node_type), [0.0, 0.0]);
             let resolved = graph.resolve();
             let triggers = crate::core::pass_triggers::PassTriggers::default();
             let mut harness = egui_kittest::Harness::builder().with_size([520.0, 500.0]).wgpu().build_ui_state(
@@ -126,8 +127,8 @@ mod tests {
     #[test]
     fn the_scroll_bar_is_at_the_edge_of_the_pane() {
         let mut graph = Graph::<Nodes>::default();
-        let index = Nodes::TYPES.iter().position(|t| t.name == "Reference").unwrap();
-        let id = graph.add(Nodes::create(index), [0.0, 0.0]);
+        let node_type = NodeType::Reference;
+        let id = graph.add(Nodes::create(node_type), [0.0, 0.0]);
         let resolved = graph.resolve();
         let mut harness = egui_kittest::Harness::builder().with_size([520.0, 300.0]).wgpu().build_ui_state(
             move |ui, graph: &mut Graph<Nodes>| {

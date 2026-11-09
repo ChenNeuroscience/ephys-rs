@@ -841,13 +841,15 @@ pub fn default_workers() -> usize {
 pub mod tests {
     use super::super::{Port, PortRole};
     use super::*;
+    use crate::NodeType;
+    use crate::core::engine::NodeTypeEnum;
 
     use crate::Buffer;
     use crate::Nodes;
 
     fn add(graph: &mut Graph<Nodes>, name: &str) -> NodeId {
-        let index = Nodes::TYPES.iter().position(|t| t.name == name).unwrap();
-        graph.add(Nodes::create(index), [0.0, 0.0])
+        let node_type = NodeType::named(name).unwrap();
+        graph.add(Nodes::create(node_type), [0.0, 0.0])
     }
 
     fn link(graph: &mut Graph<Nodes>, from: NodeId, output: usize, to: NodeId, input: usize) {
