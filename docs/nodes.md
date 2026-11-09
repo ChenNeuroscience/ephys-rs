@@ -146,7 +146,10 @@ nothing's copied: the [Video Viewer](../src/standard_components/tracking/video_v
 
 A node can keep state on the GUI's side, as `type UiState` (and `()` for none): the app keeps one for each node while
 the graph has it, whether its window's shown or not, and doesn't save it. Its window gets it with
-`UiContext::ui_state::<T>()`, borrowed from the app rather than the context, so the context can still be used.
+`UiContext::ui_state::<T>()`, borrowed from the app rather than the context, so the context can still be used. A
+direct trigger gets it too (`on_trigger`). It's the place for anything that isn't a setting, such as a job the node has
+started (as [Run Command](../src/standard_components/other/run_command.rs) does): the node itself is cloned for undo's
+history and when it's duplicated, and compared every frame, so it should hold only its settings.
 
 Work that isn't drawing, but has to happen whether the window's shown or not, goes in `gui_background(context)`: the app
 calls it on the GUI's thread every time round, before each frame, and, while the window's hidden (minimised, say),
@@ -178,7 +181,8 @@ says whether it can be sent now. Only taking it differs, as that's on a differen
   [Spike Gain](../src/standard_components/spikes/spike_gain.rs) and
   [Spike Detector](../src/standard_components/spikes/spike_detector.rs) work this way, triggered from the Spike Viewer.
 - **`Delivery::Direct`** (`RunOnFiles`): needs no pass, or even a run. It's delivered on the GUI's thread, whatever's
-  going on, to `Node::on_trigger`, as the `Trigger` (`if let Trigger::RunOnFiles(files) = trigger`). As well as from a
+  going on, to `Node::on_trigger`, as the `Trigger` (`if let Trigger::RunOnFiles(files) = trigger`), with the node's
+`UiState`. As well as from a
   window, a node can send one through a control with a `TriggerHandle`, from the `ControlTriggers` it's given in
   `prepare_to_record` (`handle(control, TriggerKind::RunOnFiles)`), which it can keep and use from any thread. (Only a
   direct trigger has a handle, as a handle can outlive the run: there's none for a pass trigger.)

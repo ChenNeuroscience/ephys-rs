@@ -940,7 +940,12 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
     /// applied as edits, unless settings are locked.
     fn deliver_triggers(&mut self) {
         let locked = self.locked();
-        for (id, triggered) in self.direct_triggers.take() {
+        let triggered = self.direct_triggers.take();
+        if !triggered.is_empty() {
+            // For a node that's just been added.
+            self.ui_states.keep(&self.graph);
+        }
+        for (id, triggered) in triggered {
             // What it can trigger in turn, through its controls.
             let triggers = self.graph.control_triggers(id, &self.direct_triggers);
             let Some(entry) = self.graph.get_mut(id) else { continue };
@@ -957,8 +962,9 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                 }
                 Triggered::Trigger(_) if entry.disabled => {}
                 Triggered::Trigger(trigger) => {
+                    let Some(ui_state) = self.ui_states.get_by_type(entry.node.type_index(), id) else { continue };
                     if let Some(trigger) = trigger.take::<<N::Edges as engine::Edges>::Trigger>() {
-                        entry.node.on_trigger(trigger, &triggers);
+                        entry.node.on_trigger(trigger, &mut **ui_state.borrow_mut(), &triggers);
                     }
                 }
             }
@@ -1782,8 +1788,13 @@ pub(crate) struct UiStates(HashMap<NodeId, (usize, crate::core::engine::UiStateC
 impl UiStates {
     /// Node `id`'s, if it's kept, for a node of its type.
     pub(crate) fn get<N: NodesEnum>(&self, graph: &Graph<N>, id: NodeId) -> Option<&crate::core::engine::UiStateCell> {
-        let (kind, state) = self.0.get(&id)?;
-        (graph.get(id)?.node.type_index() == *kind).then_some(state)
+        self.get_by_type(graph.get(id)?.node.type_index(), id)
+    }
+
+    /// Node `id`'s, if it's kept, for a node of type `kind` (see `NodesEnum::type_index`).
+    fn get_by_type(&self, kind: usize, id: NodeId) -> Option<&crate::core::engine::UiStateCell> {
+        let (of, state) = self.0.get(&id)?;
+        (*of == kind).then_some(state)
     }
 
     /// Keeps one for each of `graph`'s nodes, as it starts for those without one, letting go of the rest.

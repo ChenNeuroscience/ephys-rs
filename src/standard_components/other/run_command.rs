@@ -641,21 +641,9 @@ impl Chain {
     }
 }
 
-/// What's been run. Not a setting: every copy of the node (in undo's history, say) has the same one, and they're equal.
+/// What's been run: shared with the thread following it (see `watch`).
 #[derive(Clone, Default)]
-pub struct Job(Arc<Mutex<JobState>>);
-
-impl PartialEq for Job {
-    fn eq(&self, _other: &Self) -> bool {
-        true
-    }
-}
-
-impl std::fmt::Debug for Job {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Job")
-    }
-}
+struct Job(Arc<Mutex<JobState>>);
 
 impl Job {
     /// Says what's wrong, in the node's window and the log: it may have been nobody's doing, after a recording.
@@ -765,28 +753,15 @@ struct Preview {
 }
 
 /// The last `Preview`, kept while the settings are the same, for a second at most: picking files reads folders, which
-/// can change. Not a setting, like `Job`.
-#[derive(Clone, Default)]
-pub struct PreviewCache(Arc<Mutex<Option<Arc<Preview>>>>);
-
-impl PartialEq for PreviewCache {
-    fn eq(&self, _other: &Self) -> bool {
-        true
-    }
-}
-
-impl std::fmt::Debug for PreviewCache {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("PreviewCache")
-    }
-}
+/// can change.
+#[derive(Default)]
+struct PreviewCache(Option<Arc<Preview>>);
 
 impl PreviewCache {
     /// What `settings` come to, with an example file in place of those sent, if something that sends them is
     /// `connected`.
-    fn of(&self, settings: &CommandSettings, connected: bool) -> Arc<Preview> {
-        let mut kept = self.0.lock().unwrap();
-        if let Some(preview) = kept.as_ref()
+    fn of(&mut self, settings: &CommandSettings, connected: bool) -> Arc<Preview> {
+        if let Some(preview) = self.0.as_ref()
             && preview.settings == *settings
             && preview.connected == connected
             && preview.made.elapsed() < Duration::from_secs(1)
@@ -803,9 +778,17 @@ impl PreviewCache {
         let shown = runs.as_ref().map(|runs| runs.iter().map(Run::shown).collect()).unwrap_or_default();
         let (settings, made) = (settings.clone(), Instant::now());
         let preview = Arc::new(Preview { settings, connected, made, listed, picked, runs, shown });
-        *kept = Some(preview.clone());
+        self.0 = Some(preview.clone());
         preview
     }
+}
+
+/// A Run Command's state on the GUI's side (its `UiState`): what it's running, or last ran, and what its settings come
+/// to. Not settings, so each node has its own: a copy of one (duplicated, say) isn't running what it is.
+#[derive(Default)]
+pub struct CommandState {
+    job: Job,
+    preview: PreviewCache,
 }
 
 /// Runs a program on files.
@@ -813,23 +796,19 @@ impl PreviewCache {
 #[serde(default)]
 pub struct RunCommand {
     pub settings: CommandSettings,
-    #[serde(skip)]
-    job: Job,
-    #[serde(skip)]
-    preview: PreviewCache,
 }
 
 impl RunCommand {
-    /// Runs the program on `files`, or says why it can't; then sends them on through `after`, if that's connected,
-    /// as the settings say (see `Then`).
-    fn run_on(&self, files: Result<Vec<PathBuf>, String>, after: Option<TriggerHandle<Trigger>>) {
+    /// Runs the program on `files` as `job`, or says why it can't; then sends them on through `after`, if that's
+    /// connected, as the settings say (see `Then`).
+    fn run_on(&self, job: &Job, files: Result<Vec<PathBuf>, String>, after: Option<TriggerHandle<Trigger>>) {
         let runs = files.and_then(|files| Ok((self.settings.runs(&files)?, files)));
         match runs {
             Ok((runs, files)) => {
                 let chain = after.map(|handle| Chain { handle, then: self.settings.then, files });
-                self.job.start(&self.settings, &runs, chain)
+                job.start(&self.settings, &runs, chain)
             }
-            Err(problem) => self.job.fail(problem),
+            Err(problem) => job.fail(problem),
         }
     }
 
@@ -843,12 +822,12 @@ impl RunCommand {
                        commands.";
         ui.label(RichText::new(warning).color(context.theme.warning));
         ui.add_space(6.0);
-        let job = self.job.clone();
+        let job = context.ui_state::<CommandState>().job.clone();
         let (locked, running) = (context.locked, job.running());
         // What's connected supplies all the files, while it is.
         let senders = context.controlled_by.first().map_or(&[][..], Vec::as_slice);
         let connected = !senders.is_empty();
-        let preview = self.preview.of(&self.settings, connected);
+        let preview = context.ui_state::<CommandState>().preview.of(&self.settings, connected);
         // Nothing changes while it's running, to what it shows as running.
         // How many files picked here match, of how many.
         let matched = preview.picked.as_ref().ok().map(Vec::len);
@@ -1231,7 +1210,7 @@ fn files_help(senders: &[String]) -> String {
 impl Node<Edges> for RunCommand {
     type State = ();
     type Shared = ();
-    type UiState = ();
+    type UiState = CommandState;
     type GlobalSettings = ();
 
     const INFO: NodeInfo = NodeInfo {
@@ -1272,9 +1251,11 @@ impl Node<Edges> for RunCommand {
     }
 
     /// Runs the program on the files sent (by hand, too), and then, as it says, what's connected after it.
-    fn on_trigger(&mut self, trigger: Trigger, triggers: &ControlTriggers<Trigger>) {
+    fn on_trigger(&mut self, trigger: Trigger, state: &mut CommandState, triggers: &ControlTriggers<Trigger>) {
         if let Trigger::RunOnFiles(RunOnFiles(paths)) = trigger {
-            self.run_on(self.settings.matching(paths), triggers.handle(AFTER_RUNNING, TriggerKind::RunOnFiles));
+            let (files, after) =
+                (self.settings.matching(paths), triggers.handle(AFTER_RUNNING, TriggerKind::RunOnFiles));
+            self.run_on(&state.job, files, after);
         }
     }
 
@@ -1329,10 +1310,11 @@ mod tests {
         let direct = Arc::new(DirectTriggers::default());
         let kinds: &'static [TriggerKind] = &[TriggerKind::RunOnFiles];
         let triggers = ControlTriggers::<Trigger>::new(direct.clone(), vec![vec![(NodeId(9), kinds)]]);
-        let mut node = RunCommand { settings: settings("/bin/sleep", "0.2"), ..Default::default() };
-        node.on_trigger(Trigger::RunOnFiles(RunOnFiles(paths(&["a.dat"]))), &triggers);
+        let mut node = RunCommand { settings: settings("/bin/sleep", "0.2") };
+        let mut state = CommandState::default();
+        node.on_trigger(Trigger::RunOnFiles(RunOnFiles(paths(&["a.dat"]))), &mut state, &triggers);
         assert!(direct.take().is_empty(), "not till it's done");
-        wait_for_job(&node.job);
+        wait_for_job(&state.job);
         let sent = direct.take();
         let [(NodeId(9), Triggered::Trigger(trigger))] = &sent[..] else { panic!("sent once, to what's after it") };
         assert_eq!(trigger.key(), TriggerKind::RunOnFiles.into());
@@ -1654,7 +1636,7 @@ mod tests {
 
     #[test]
     fn what_the_settings_come_to_is_kept_till_they_change() {
-        let cache = PreviewCache::default();
+        let mut cache = PreviewCache::default();
         let mut command = settings("klusta", "{file}");
         command.files = paths(&["/a.set", "/b.set"]);
         let first = cache.of(&command, false);
@@ -1668,23 +1650,13 @@ mod tests {
 
     #[test]
     fn a_problem_is_shown_until_it_runs_again() {
-        let mut node = RunCommand::default();
-        node.run_on(Ok(Vec::new()), None);
-        assert_eq!(node.job.problem().as_deref(), Some("There's no program to run"));
+        let (mut node, job) = (RunCommand::default(), Job::default());
+        node.run_on(&job, Ok(Vec::new()), None);
+        assert_eq!(job.problem().as_deref(), Some("There's no program to run"));
         node.settings = settings("/usr/bin/true", "");
-        node.run_on(Ok(Vec::new()), None);
-        assert_eq!(node.job.problem(), None);
-        wait_for_job(&node.job);
-    }
-
-    #[test]
-    fn it_is_not_a_change_to_the_graph() {
-        let node = RunCommand::default();
-        let copy = node.clone();
-        node.job.fail("something");
-        assert_eq!(node, copy);
-        let saved = serde_json::to_value(&node).unwrap();
-        assert!(saved.get("job").is_none());
+        node.run_on(&job, Ok(Vec::new()), None);
+        assert_eq!(job.problem(), None);
+        wait_for_job(&job);
     }
 
     /// Real passes and a real recording: a writer's files go to what's connected to it, once they're finished, and only
@@ -1736,9 +1708,10 @@ mod tests {
         let (to, Triggered::Trigger(trigger)) = waiting.into_iter().next().unwrap() else { panic!() };
         assert_eq!((to, trigger.key()), (command, crate::TriggerKind::RunOnFiles.into()));
         let Some(Nodes::RunCommand(node)) = graph.get_mut(command).map(|e| &mut e.node) else { panic!() };
-        Node::on_trigger(node, trigger.take::<crate::Trigger>().unwrap(), &ControlTriggers::none());
-        wait_for_job(&node.job);
-        assert_eq!(node.job.problem(), None);
+        let mut state = CommandState::default();
+        Node::on_trigger(node, trigger.take::<crate::Trigger>().unwrap(), &mut state, &ControlTriggers::none());
+        wait_for_job(&state.job);
+        assert_eq!(state.job.problem(), None);
         let said_text = std::fs::read_to_string(&said).unwrap();
         let lines: Vec<&str> = said_text.lines().collect();
         assert_eq!(lines.len(), 2, "one file matches: {lines:?}");
@@ -1762,6 +1735,7 @@ mod tests {
             graph.add(Nodes::create(index), [0.0, 0.0])
         };
         let id = add(&mut graph, "Run Command");
+        let job = Job::default();
         if let Some(Nodes::RunCommand(node)) = graph.get_mut(id).map(|e| &mut e.node) {
             node.settings = settings("klusta", "{file} --overwrite");
             node.settings.pattern = ".set".into();
@@ -1769,7 +1743,7 @@ mod tests {
             node.settings.files =
                 ["a", "b", "c", "d", "e"].map(|name| PathBuf::from(format!("/recordings/trial {name}.set"))).to_vec();
             if ran {
-                let mut state = node.job.0.lock().unwrap();
+                let mut state = job.0.lock().unwrap();
                 let shown = |name: &str| format!("klusta \"/recordings/trial {name}.set\" --overwrite");
                 let took = |seconds| Duration::from_secs_f64(seconds);
                 let outcomes = [
@@ -1783,7 +1757,7 @@ mod tests {
                     (names.iter().zip(outcomes)).map(|(n, outcome)| Progress { shown: shown(n), outcome }).collect();
                 state.settings = Some(node.settings.clone());
             } else if !writer {
-                node.job.fail("Couldn't open a terminal: there isn't one installed");
+                job.fail("Couldn't open a terminal: there isn't one installed");
             }
         }
         if writer {
@@ -1792,9 +1766,13 @@ mod tests {
             graph.connect(from, Port { node: id, role: PortRole::Setting, index: 0 }).unwrap();
         }
         let inputs: [Option<DataStream>; 0] = [];
+        // Kept, as the app keeps it.
+        let state: crate::core::engine::UiStateCell =
+            std::cell::RefCell::new(Box::new(CommandState { job, ..Default::default() }));
         let mut harness = egui_kittest::Harness::builder().with_size([560.0, 580.0]).wgpu().build_ui_state(
             move |ui, graph: &mut Graph<Nodes>| {
-                graph.edit(id, &inputs, &THEMES[0].colours, None, None, None, false, false, None, |node, context| {
+                let state = Some(&state);
+                graph.edit(id, &inputs, &THEMES[0].colours, None, state, None, false, false, None, |node, context| {
                     node.gui_ui(ui, context)
                 });
             },
