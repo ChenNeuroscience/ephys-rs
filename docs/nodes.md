@@ -110,6 +110,9 @@ Help that's more than a tooltip (examples, a cheat sheet) goes behind `widgets::
 underline, its help in a popup while the pointer's over it, or, clicked, until something else is. `widgets::with_help`
 does the same for something else, such as an icon.
 
+The standard components' [`widgets`](../src/standard_components/widgets.rs) has what their windows share, for a build's
+nodes too: a grid of settings (`settings_grid`, with a row each from `setting`), sections, toggles and the like.
+
 The [Spike Viewer](../src/standard_components/spikes/spike_viewer.rs) and [LFP Viewer](../src/standard_components/ephys/lfp_viewer.rs)
 are full examples.
 

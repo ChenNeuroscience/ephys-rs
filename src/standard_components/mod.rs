@@ -18,7 +18,7 @@ pub mod recording;
 pub mod spikes;
 pub mod themes;
 pub mod tracking;
-mod widgets;
+pub mod widgets;
 
 /// The most samples (or frames) of a data stream at `rate` that fall in `duration` seconds.
 fn per_pass(rate: f32, duration: f64) -> usize {

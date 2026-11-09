@@ -45,6 +45,7 @@ use ephys_rs::standard_components::tracking::pipeline::Blob;
 use ephys_rs::standard_components::tracking::{
     Crop, Detection, PositionSample, Positions, PositionsBuffer, Ruler, TimingLed,
 };
+use ephys_rs::standard_components::widgets::{named_settings_grid, setting};
 use ephys_rs::{Buffer, DataStream, Edges, Kind, Setting};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -548,21 +549,17 @@ impl Node<Edges> for VrComputer {
 
     fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
         ephys_rs::core::gui::node_window::standard(self, ui, context, |node, ui, context| {
-            egui::Grid::new("vr computer").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-                ui.label("IP address");
-                ui.text_edit_singleline(&mut node.ip);
-                ui.end_row();
-                ui.label("Port");
-                ui.add(egui::DragValue::new(&mut node.port));
-                ui.end_row();
-                ui.label("Position rate");
-                ui.add(egui::DragValue::new(&mut node.fps).range(1.0..=1000.0).suffix(" Hz"))
-                    .on_hover_text("How many positions to expect a second, as a frame rate: the alarms go by it");
-                ui.end_row();
-                ui.label("Log line limit");
-                ui.add(egui::DragValue::new(&mut node.log_width).range(16..=65536).suffix(" bytes"))
-                    .on_hover_text("Longer log lines are cut short");
-                ui.end_row();
+            named_settings_grid(ui, "vr computer", |ui| {
+                setting(ui, "IP address", |ui| ui.text_edit_singleline(&mut node.ip));
+                setting(ui, "Port", |ui| ui.add(egui::DragValue::new(&mut node.port)));
+                setting(ui, "Position rate", |ui| {
+                    ui.add(egui::DragValue::new(&mut node.fps).range(1.0..=1000.0).suffix(" Hz"))
+                        .on_hover_text("How many positions to expect a second, as a frame rate: the alarms go by it")
+                });
+                setting(ui, "Log line limit", |ui| {
+                    ui.add(egui::DragValue::new(&mut node.log_width).range(16..=65536).suffix(" bytes"))
+                        .on_hover_text("Longer log lines are cut short")
+                });
             });
             ui.separator();
             let pool = context.shared::<Pool<Status>>();
