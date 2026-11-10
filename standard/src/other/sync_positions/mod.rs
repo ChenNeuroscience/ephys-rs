@@ -1,4 +1,4 @@
-//! Sync Positions: puts a recording's positions on the board's clock, after it's recorded, using the timing LED's
+//! Post-Process Positions LTX: puts a recording's positions on the board's clock, after it's recorded, using the timing LED's
 //! pulses, which both the camera (`name.pos.ttl`) and one of the board's digital inputs (`name.ttl`) saw. It's given the
 //! recording's `.set` file (picked here, or sent with `RunOnFiles`, by Write LTX once it's finished, say), and finds the
 //! rest beside it (see `files`). It runs here, on a thread of its own, not in a terminal, and it's nothing to do with
@@ -20,9 +20,9 @@ use eframe::egui::{self, Color32};
 use serde::{Deserialize, Serialize};
 
 use crate::standard::other::run_command::RunOnFiles;
-use crate::{DataStream, Edges, Setting, Trigger};
-use ephys_rs::engine::{Category, EdgeInfo, EdgeType, Node, NodeInfo, Output, SettingPort, UiContext};
-use ephys_rs::triggers::ControlTriggers;
+use crate::{DataStream, Edges, Setting, SettingKind, Trigger, TriggerKind};
+use ephys_rs::engine::{Category, Control, EdgeInfo, EdgeType, Node, NodeInfo, Output, SettingPort, UiContext};
+use ephys_rs::triggers::{ControlTriggers, TriggerHandle};
 
 mod checks;
 pub mod files;
@@ -36,6 +36,9 @@ use offsets::{Clock, Knot};
 use pairs::Pairing;
 use resample::Edits;
 pub use window::SyncState;
+
+/// Its control, sending the recording's files on to what's connected, once it's synced them.
+const AFTER_SYNCING: usize = 0;
 
 /// How it syncs, and the recording to sync by hand. Times are in seconds.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
@@ -65,7 +68,7 @@ impl SyncSettings {
     /// How it syncs, in words, on one line, in ASCII, as old readers expect: for the synced positions' header.
     pub fn info(&self) -> String {
         format!(
-            "Sync Positions put these positions on the board's clock (as name.ttl times them) by the timing LED's \
+            "Post-Process Positions LTX put these positions on the board's clock (as name.ttl times them) by the timing LED's \
              changes (name.pos.ttl) and the board's line {}: changes paired within +/-{} s, if no other was within +/-{} s; \
              the clocks' offset the median of the pairs within +/-{} s of every {} s, changing steadily between; \
              positions put in the nearest slot of their sample_rate from the start of recording, the nearest kept \
@@ -214,6 +217,16 @@ fn file_name(path: &Path) -> String {
     path.file_name().map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned())
 }
 
+/// `sent`, with the positions written and the original kept, if they weren't among them.
+fn files_on(mut sent: Vec<PathBuf>, report: &Report) -> Vec<PathBuf> {
+    for path in [&report.recording.pos, report.plan.original()] {
+        if !sent.iter().any(|p| p == path) {
+            sent.push(path.to_path_buf());
+        }
+    }
+    sent
+}
+
 /// What it's doing, or last did.
 #[derive(Clone, PartialEq, Debug, Default)]
 enum Status {
@@ -234,8 +247,9 @@ enum Status {
 pub struct Job(Arc<Mutex<Status>>);
 
 impl Job {
-    /// Syncs `set`'s recording, unless it's syncing one already.
-    fn start(&self, set: PathBuf, settings: SyncSettings) {
+    /// Syncs `set`'s recording, unless it's syncing one already; then, if it did, sends `sent` on through `after`, with
+    /// the positions it wrote and the original kept, if they weren't among them.
+    fn start(&self, set: PathBuf, sent: Vec<PathBuf>, settings: SyncSettings, after: Option<TriggerHandle<Trigger>>) {
         let mut status = self.0.lock().unwrap();
         if matches!(*status, Status::Running { .. }) {
             return;
@@ -248,10 +262,14 @@ impl Job {
             match &result {
                 Ok(report) => {
                     for warning in &report.synced.warnings {
-                        log::warn!("Sync Positions: {}: {warning}", file_name(&set));
+                        log::warn!("Post-Process Positions LTX: {}: {warning}", file_name(&set));
                     }
                 }
-                Err(problem) => log::error!("Sync Positions: {}: {problem}", file_name(&set)),
+                Err(problem) => log::error!("Post-Process Positions LTX: {}: {problem}", file_name(&set)),
+            }
+            // Before it's done, so whatever waits for that sees what was sent.
+            if let (Ok(report), Some(after)) = (&result, after) {
+                after.trigger(RunOnFiles(files_on(sent, report)));
             }
             *job.0.lock().unwrap() = Status::Done { set, result };
         });
@@ -266,7 +284,7 @@ impl Job {
     fn fail(&self, problem: String) {
         let mut status = self.0.lock().unwrap();
         if !matches!(*status, Status::Running { .. }) {
-            log::error!("Sync Positions: {problem}");
+            log::error!("Post-Process Positions LTX: {problem}");
             *status = Status::Done { set: PathBuf::new(), result: Err(problem) };
         }
     }
@@ -290,7 +308,7 @@ impl Node<Edges> for SyncPositions {
     type GlobalSettings = ();
 
     const INFO: NodeInfo = NodeInfo {
-        name: "Sync Positions",
+        name: "Post-Process Positions LTX",
         category: Category::Other,
         description: "Puts a recording's positions on the board's clock, by the timing LED's pulses: by hand, or on \
                       recordings sent to it (by Write LTX, after recording).",
@@ -305,6 +323,16 @@ impl Node<Edges> for SyncPositions {
 
     fn settings(&self) -> Vec<SettingPort<Edges>> {
         vec![SettingPort { name: "sync", value: self.settings.clone().into(), on_right: false }]
+    }
+
+    /// What's connected after it, sent the recording's files once it's synced them.
+    fn controls(&self) -> Vec<Control<Edges>> {
+        vec![Control { name: "after syncing", kind: SettingKind::Command, read_only: true, on_right: true }]
+    }
+
+    /// The recording's files, once it's synced them.
+    fn sends(&self, _control: usize) -> &'static [TriggerKind] {
+        &[TriggerKind::RunOnFiles]
     }
 
     fn set_setting(&mut self, _index: usize, value: Setting) {
@@ -322,12 +350,14 @@ impl Node<Edges> for SyncPositions {
         &[crate::TriggerKind::RunOnFiles]
     }
 
-    /// Syncs the recording whose `.set` file's among the files sent (by hand, too).
-    fn on_trigger(&mut self, trigger: Trigger, context: &mut UiContext<Edges>, _triggers: &ControlTriggers<Trigger>) {
+    /// Syncs the recording whose `.set` file's among the files sent (by hand, too), then sends them on to what's
+    /// connected after it.
+    fn on_trigger(&mut self, trigger: Trigger, context: &mut UiContext<Edges>, triggers: &ControlTriggers<Trigger>) {
         if let Trigger::RunOnFiles(RunOnFiles(paths)) = trigger {
             let job = &context.ui_state::<SyncState>().job;
-            match paths.into_iter().find(|path| path.extension().is_some_and(|e| e == "set")) {
-                Some(set) => job.start(set, self.settings.clone()),
+            let after = triggers.handle(AFTER_SYNCING, TriggerKind::RunOnFiles);
+            match paths.iter().find(|path| path.extension().is_some_and(|e| e == "set")) {
+                Some(set) => job.start(set.clone(), paths.clone(), self.settings.clone(), after),
                 None => job.fail("There's no .set file among the files sent".into()),
             }
         }

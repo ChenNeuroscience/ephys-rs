@@ -1,7 +1,7 @@
 //! chen-neuro's quick actions, offered in the basic view:
 //!
 //! - The standard LTX graph (v0.5): an Open Ephys acquisition board (generation 1 or 2) giving spikes, EEG and digital
-//!   inputs, and a FLIR camera giving positions, all viewed, and recorded by Write LTX, which has Sync Positions put the
+//!   inputs, and a FLIR camera giving positions, all viewed, and recorded by Write LTX, which has Post-Process Positions LTX put the
 //!   positions on the board's clock once it's done. It reuses what the graph
 //!   already has, adding only what's missing (and connecting only ports that are free), so it's offered until the
 //!   graph has it all. It arranges the panes: the tracker view in a column at the left (with home as a tab behind
@@ -170,7 +170,7 @@ fn real_camera() -> camera::Source {
 /// inputs → TTL Viewer; Camera → Position Detector → Tracker View (setting the camera's and detector's settings).
 /// Write LTX records the spikes (at their gains), the LFP branch's data as EEG (the channels selected, band-passed,
 /// downsampled to 5 kHz, through a Continuous Gain), the positions (with the detector's settings), the digital inputs and the timing LED, if
-/// there is one, then has Sync Positions put the positions on the board's clock. An Alarm Processor (in the basic view, for its settings) watches the spikes, the LFP branch and the
+/// there is one, then has Post-Process Positions LTX put the positions on the board's clock. An Alarm Processor (in the basic view, for its settings) watches the spikes, the LFP branch and the
 /// positions, with the timing LED connected to add an alarm for, for an Alarm Viewer with switches for it. New boards and cameras are real. Recordings go in a directory for each subject, day and trial.
 fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
     let mut change = Change::new(state.graph);
@@ -525,7 +525,7 @@ mod tests {
         };
         assert_eq!(ltx_controls(2).map(|e| e.to.node), Some(selector));
         assert_eq!(ltx_controls(3).map(|e| e.to.node), Some(named("Continuous Gain")));
-        assert_eq!(ltx_controls(4).map(|e| e.to.node), Some(named("Sync Positions")), "after recording");
+        assert_eq!(ltx_controls(4).map(|e| e.to.node), Some(named("Post-Process Positions LTX")), "after recording");
         assert!(graph.iter().any(|(_, e)| matches!(&e.node, Nodes::AcquisitionBoard(b)
             if b.source == real_board())));
         // Then: the VR computer, and using synthetic data, are offered.

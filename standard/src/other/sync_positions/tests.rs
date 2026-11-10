@@ -124,14 +124,19 @@ fn wait_for(job: &Job) -> Result<Report, String> {
     }
 }
 
-/// Sends a Sync Positions `paths`, as Write LTX does once it's finished, or its Run button does; what it ran.
+/// Sends a Post-Process Positions LTX `paths`, as Write LTX does once it's finished, or its Run button does; what it ran.
 fn send(paths: Vec<PathBuf>) -> Job {
+    send_then(paths, &ControlTriggers::none())
+}
+
+/// As `send`, with `triggers` to send on through.
+fn send_then(paths: Vec<PathBuf>, triggers: &ControlTriggers<Trigger>) -> Job {
     let mut graph = Graph::<Nodes>::default();
     let id = graph.add(Nodes::create(NodeType::SyncPositions), [0.0, 0.0]);
     let state: ephys_rs::engine::UiStateCell = std::cell::RefCell::new(Box::new(SyncState::default()));
     let trigger = Trigger::RunOnFiles(RunOnFiles(paths));
     graph.edit(id, &[], &THEMES[0].colours, None, Some(&state), None, false, false, None, |node, context| {
-        node.on_trigger(trigger, context, &ControlTriggers::none())
+        node.on_trigger(trigger, context, triggers)
     });
     state.borrow().downcast_ref::<SyncState>().unwrap().job.clone()
 }
@@ -197,6 +202,34 @@ fn it_says_what_it_cant_sync() {
 }
 
 #[test]
+fn once_synced_the_files_are_sent_on_with_the_positions_and_their_original() {
+    use ephys_rs::engine::NodeId;
+    use ephys_rs::triggers::DirectTriggers;
+    let dir = scratch("chained");
+    let set = recording(&dir, 3);
+    let direct = std::sync::Arc::new(DirectTriggers::default());
+    let kinds: &'static [crate::TriggerKind] = &[crate::TriggerKind::RunOnFiles];
+    let triggers = ControlTriggers::<Trigger>::new(direct.clone(), vec![vec![(NodeId(9), kinds)]]);
+    let egf = dir.join("session.egf");
+    wait_for(&send_then(vec![set.clone(), egf.clone()], &triggers)).unwrap();
+    let sent: Vec<_> = direct
+        .take()
+        .into_iter()
+        .map(|(to, triggered)| match triggered {
+            ephys_rs::triggers::Triggered::Trigger(trigger) => (to, trigger.take::<Trigger>()),
+            ephys_rs::triggers::Triggered::SettingsUpdate { .. } => panic!("not a settings update"),
+        })
+        .collect();
+    let files = vec![set.clone(), egf, dir.join("session.pos"), dir.join("session.pos.original")];
+    assert!(matches!(&sent[..], [(NodeId(9), Some(Trigger::RunOnFiles(RunOnFiles(sent))))] if *sent == files), "once");
+    // Not if it couldn't sync.
+    std::fs::remove_file(dir.join("session.ttl")).unwrap();
+    wait_for(&send_then(vec![set], &triggers)).unwrap_err();
+    assert!(direct.take().is_empty());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn what_cant_be_synced_is_left_as_it_is() {
     let dir = scratch("unsynced");
     let set = recording(&dir, 3);
@@ -221,7 +254,7 @@ fn what_cant_be_synced_is_left_as_it_is() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
-/// A harness showing a Sync Positions' window, with `/recordings/session.set` picked (wherever it is, for the
+/// A harness showing a Post-Process Positions LTX's window, with `/recordings/session.set` picked (wherever it is, for the
 /// snapshots), having synced `ran`'s recording, if given.
 fn window_harness(ran: Option<&Path>) -> egui_kittest::Harness<'static, Graph<Nodes>> {
     let mut graph = Graph::<Nodes>::default();
@@ -266,6 +299,7 @@ fn window() {
     use egui_kittest::kittest::Queryable;
     let mut harness = window_harness(None);
     assert!(harness.query_by_label("session.pos · missing").is_some(), "the files it'll use, if they're there");
+    assert!(harness.query_by_label("How it works").is_some(), "the algorithm, in brief");
     harness.snapshot("sync_positions");
 }
 
@@ -309,6 +343,7 @@ fn what_sends_files_connects_to_it() {
     let command_setting = port(command, PortRole::Setting, 0);
     assert!(graph.check(port(writer, PortRole::Control, 4), command_setting).is_ok(), "and a command, still");
     assert!(graph.check(port(writer, PortRole::Control, 0), command_setting).is_err());
+    assert!(graph.check(port(sync, PortRole::Control, 0), command_setting).is_ok(), "and it sends them on");
     let edge = graph.connect(port(writer, PortRole::Control, 4), setting).unwrap();
     graph.prune_edges();
     assert!(graph.edges().contains(&edge), "kept, as it fits");

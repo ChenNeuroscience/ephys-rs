@@ -75,15 +75,19 @@ The commands to run are listed at the bottom, as they'll run. After a run, each 
 
 The terminal runs apart from ephys-rs, so it carries on if ephys-rs quits.
 
-## Sync Positions
+## Post-Process Positions LTX
 
-> **Other.** ◇ `sync` (connect Write LTX's `after recording` here).
+> **Other.** ◇ `sync` (connect Write LTX's `after recording` here). ◇ `after syncing`.
 
-<img src="../../tests/snapshots/sync_positions_synced.png" alt="Sync Positions, having synced a recording">
+<img src="../../tests/snapshots/sync_positions_synced.png" alt="Post-Process Positions LTX, having synced a recording">
 
 Puts an LTX recording's positions on the board's clock, using the timing LED's pulses, which both the camera and one of
 the board's digital inputs saw. The standard LTX quick action connects it to Write LTX, so it runs on each recording
-once it's written. It runs inside ephys-rs, not in a terminal.
+once it's written. It runs inside ephys-rs, not in a terminal. **How it works**, beside its description, explains the algorithm in
+brief.
+
+Once it's synced a recording, it sends the files it was sent, with the synced positions and the original, on to what's
+connected to `after syncing` (a Run Command, say), as Run Command does once it's run. If it can't sync, nothing's sent.
 
 **Recording**: a `.set` file, picked by hand, or sent by Write LTX. The rest is found beside it: the positions
 (`name.pos`), the board's TTLs (`name.ttl`) and the timing LED's TTLs (`name.pos.ttl`). The window lists the three
@@ -117,4 +121,4 @@ Before the synced positions are written to `name.pos`, the positions as recorded
 (`synced_from`), what synced it (`synced_by`), and how, with the settings used (`post_processing_info`). Synced again,
 it starts from that original, not from the synced positions, and says so:
 
-<img src="../../tests/snapshots/sync_positions_synced_again.png" alt="Sync Positions, syncing again from the original">
+<img src="../../tests/snapshots/sync_positions_synced_again.png" alt="Post-Process Positions LTX, syncing again from the original">

@@ -214,7 +214,7 @@ Passes see `Pass::recording`. The graph can't change while recording, so everyth
 A writer has an "after recording" control. Connected to a setting that takes the `run_command::RunOnFiles` trigger (a direct one),
 it sends the paths of the files once they're finished (not when recording stops, which is sooner), and only if
 something was recorded. The [Run Command](../standard/src/other/run_command/mod.rs) node takes it, as does
-[Sync Positions](../standard/src/other/sync_positions/mod.rs), and neither end knows what's at the other: anything can
+[Post-Process Positions LTX](../standard/src/other/sync_positions/mod.rs), and neither end knows what's at the other: anything can
 send files to run on. A control says what it sends (`Node::sends`), and connects to any setting that takes it, whatever
 the setting's kind, as well as to its own kind: what's sent is all that passes between them.
 

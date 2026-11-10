@@ -288,7 +288,7 @@ fn make_tour() {
     tour.shot("Every pass and frame, timed");
 
     // Each recording's positions put on the board's clock, once it's written: the quick action connected it.
-    let sync = tour.id("Sync Positions");
+    let sync = tour.id("Post-Process Positions LTX");
     tour.only(sync);
     tour.wait(1.0);
     tour.shot("Positions synced to the board after recording");
