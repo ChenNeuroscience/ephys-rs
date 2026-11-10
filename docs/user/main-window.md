@@ -82,7 +82,8 @@ When auto stop is about to act, it warns you, and once it has, it says so:
 
 When something's wrong (a node isn't connected, a device can't be found, settings don't agree), the node shows a ⚠ on
 the graph, and the status bar counts the errors and warnings. Hover over a node's ⚠ to see what it is, or open the
-node's window, which lists its problems at the top.
+node's window, which lists its problems at the top. Clicking the count brings the developer tools to the front, with
+just the console open.
 
 ## When it crashes
 
@@ -96,7 +97,8 @@ report to whoever looks after your build: it says what was running, which is wha
 ![The developer tools](../../tests/snapshots/dev_tools.png)
 
 Ctrl/⌘ Alt I (or the console button) opens the developer tools: what each thread is doing, how long each step takes,
-and the console, which logs what ephys-rs is doing. You won't need them day to day. When a device misbehaves, the
+and the console, which logs what ephys-rs is doing. Only the console's open at first: click a section's header to
+open or close it. You won't need them day to day. When a device misbehaves, the
 console is the first place to look, and copying from it is the best way to report a problem.
 
 ## Keyboard shortcuts

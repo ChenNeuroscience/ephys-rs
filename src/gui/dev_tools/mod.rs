@@ -24,9 +24,9 @@ pub struct DevTools {
 }
 
 impl DevTools {
-    /// Opens the console's section.
-    pub fn open_console(&mut self) {
-        self.open[2] = true;
+    /// Opens the console's section, and closes the others, so it has the space.
+    pub fn focus_console(&mut self) {
+        self.open = [false, false, true];
     }
 }
 
@@ -36,7 +36,8 @@ impl Default for DevTools {
             console: console::ConsoleView::default(),
             performance: Default::default(),
             console_share: 0.5,
-            open: [true; 3],
+            // The console's what's most often wanted: the threads and performance are a click away.
+            open: [false, false, true],
         }
     }
 }

@@ -1569,11 +1569,16 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         }
         let (stats_clicked, problems_clicked) = egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui)).inner;
         self.frame_times.add("Status bar", ms_since(started));
-        if (stats_clicked || problems_clicked) && !self.layout.is_shown(Pane::DevTools) {
-            self.layout.toggle_dev_tools();
+        // Shown, and brought to the front of its group if it's behind another tab.
+        if stats_clicked || problems_clicked {
+            if self.layout.is_shown(Pane::DevTools) {
+                self.layout.show(Pane::DevTools);
+            } else {
+                self.layout.toggle_dev_tools();
+            }
         }
         if problems_clicked {
-            self.dev_tools.open_console();
+            self.dev_tools.focus_console();
         }
         let mut events = Vec::new();
         // Panes don't paint their own backgrounds, so this shows behind them.
@@ -2479,6 +2484,17 @@ mod tests {
         assert!(harness.state().layout.is_shown(Pane::DevTools));
         harness.get_by_label("Console");
         assert_eq!(harness.state().problems, (1, 12), "the session's total, which carries on");
+
+        // Behind another tab in its group, it's brought to the front.
+        let layout = &mut harness.state_mut().layout;
+        let group = layout.group_of(Pane::DevTools).unwrap();
+        layout.add_tab(group, Pane::Annotation);
+        layout.show(Pane::Annotation);
+        assert_eq!(layout.tab_group(Pane::DevTools), Some((group, false)));
+        harness.run_steps(2);
+        harness.get_by_label("⚠ 12 warnings").click();
+        harness.run_steps(3);
+        assert_eq!(harness.state().layout.tab_group(Pane::DevTools), Some((group, true)));
     }
 
     #[test]
@@ -2687,6 +2703,15 @@ mod tests {
         harness.state_mut().dev_tools.hide_console_lines();
         harness.run_steps(3);
         assert!(harness.state().layout.is_shown(Pane::DevTools));
+        // Only the console's open at first: the others open too.
+        assert!(harness.query_by_label("GUI frames").is_none(), "the performance is collapsed");
+        for section in ["Threads", "Performance"] {
+            harness.get_by_role_and_label(egui::accesskit::Role::DisclosureTriangle, section).click();
+            harness.run_steps(2);
+        }
+        // Not left over the charts, which show what's under it.
+        harness.event(egui::Event::PointerGone);
+        harness.run_steps(2);
         harness.snapshot("dev_tools");
         // Each section collapses.
         assert!(harness.query_by_label("Clear").is_some());
