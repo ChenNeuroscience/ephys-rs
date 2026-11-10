@@ -14,7 +14,7 @@ use crate::standard::ephys::{
     band_pass, board, channel_selector, continuous_gain, downsample, lfp_viewer, reference, spectrum, ttl_viewer,
 };
 use crate::standard::logs::log_viewer;
-use crate::standard::other::{run_command, sync_positions};
+use crate::standard::other::{run_command, sync_positions, ttl_recording_control};
 use crate::standard::recording::{ltx, raw};
 use crate::standard::spikes::{spike_detector, spike_gain, spike_viewer};
 use crate::standard::themes::{DARK, LIGHT};
@@ -54,6 +54,7 @@ nodes_enum! {
         WriteRaw(raw::WriteRaw),
         RunCommand(run_command::RunCommand),
         SyncPositions(sync_positions::SyncPositions),
+        TtlRecordingControl(ttl_recording_control::TtlRecordingControl),
     }
     pub enum NodeType;
 }

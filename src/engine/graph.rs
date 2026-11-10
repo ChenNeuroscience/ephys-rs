@@ -706,23 +706,28 @@ impl<N: NodesEnum> Graph<N> {
 pub type ControlValues<N> = HashMap<NodeId, Vec<Option<Setting<N>>>>;
 
 /// A recording, once the nodes have prepared for it (see `Node::prepare_to_record`): its base directory (see
-/// `crate::base_directory`), when it started, and what each node prepared, until its first recording pass takes
-/// it.
+/// `crate::base_directory`), when it was asked for and when it took effect, and what each node prepared, until its
+/// first recording pass takes it.
 #[derive(Default)]
 pub struct Recording {
+    /// Where it's written, if there's a base directory.
     base_directory: Option<crate::base_directory::Place>,
-    start: chrono::DateTime<chrono::Local>,
+    /// When Record was pressed (or a node asked), by the calendar: names and dates the files.
+    start_requested_date: chrono::DateTime<chrono::Local>,
+    /// What each node prepared, until its first recording pass takes it.
     prepared: Mutex<HashMap<NodeId, Box<dyn Any + Send>>>,
+    /// When the passes started recording, once the nodes were ready, by the monotonic clock: for durations.
+    start_effective: std::sync::OnceLock<std::time::Instant>,
 }
 
 impl Recording {
-    /// Has every node that runs in `snapshot` prepare to record, in `base_directory` (if there is one), starting at
-    /// `start`: the one time everything that names or dates the recording goes by. Can take a while (opening files,
+    /// Has every node that runs in `snapshot` prepare to record, in `base_directory` (if there is one), as asked for
+    /// at `start_requested_date`: the one time everything that names or dates the recording goes by. Can take a while (opening files,
     /// say), so isn't for the GUI's thread.
     pub fn prepare<N: NodesEnum>(
         snapshot: &Snapshot<N>,
         base_directory: Option<crate::base_directory::Place>,
-        start: chrono::DateTime<chrono::Local>,
+        start_requested_date: chrono::DateTime<chrono::Local>,
         triggers: &Arc<crate::triggers::DirectTriggers>,
     ) -> Self {
         let resolved = snapshot.graph.resolve();
@@ -732,11 +737,18 @@ impl Recording {
             let controls = snapshot.controls.get(&step.id).map_or(&[][..], Vec::as_slice);
             let base = base_directory.as_ref();
             let reach = snapshot.graph.control_triggers(step.id, triggers);
-            if let Some(ready) = entry.node.prepare_to_record(&state.input_streams, controls, base, &start, &reach) {
+            if let Some(ready) =
+                entry.node.prepare_to_record(&state.input_streams, controls, base, &start_requested_date, &reach)
+            {
                 prepared.insert(step.id, ready);
             }
         }
-        Recording { base_directory, start, prepared: Mutex::new(prepared) }
+        Recording {
+            base_directory,
+            start_requested_date,
+            prepared: Mutex::new(prepared),
+            start_effective: Default::default(),
+        }
     }
 
     /// Its base directory, if there is one.
@@ -744,9 +756,15 @@ impl Recording {
         self.base_directory.as_ref()
     }
 
-    /// When it started (see `prepare`).
-    pub fn start(&self) -> &chrono::DateTime<chrono::Local> {
-        &self.start
+    /// When it was asked for, by the calendar (see `prepare`).
+    pub fn start_requested_date(&self) -> &chrono::DateTime<chrono::Local> {
+        &self.start_requested_date
+    }
+
+    /// When it took effect: when a snapshot first took it on, which is when the passes start recording it (or now, if
+    /// none has yet).
+    pub fn start_effective(&self) -> std::time::Instant {
+        *self.start_effective.get_or_init(std::time::Instant::now)
     }
 
     /// What node `id` prepared, if it did and it hasn't been taken.
@@ -793,6 +811,9 @@ impl<N: NodesEnum> Snapshot<N> {
     /// This snapshot as version `version`, recording or not. Recording doesn't change how the graph runs, so the
     /// plan's the same, and a run carries on with it.
     pub fn with_recording(&self, version: u64, recording: Option<Arc<Recording>>) -> Self {
+        if let Some(recording) = &recording {
+            recording.start_effective();
+        }
         Snapshot { version, recording, ..self.clone() }
     }
 }

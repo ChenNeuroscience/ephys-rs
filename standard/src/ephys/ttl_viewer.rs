@@ -127,11 +127,11 @@ impl Node<Edges> for TtlViewer {
         let Some(Some(Buffer::Events(events))) = pass.inputs.first() else { return };
         let Some(stream) = lines.stream else { return };
         let rate = stream.sample_rate.max(1.0) as f64;
-        if pass.recording && !lines.recording {
+        if pass.recording() && !lines.recording {
             lines.ups_recording.fill(0);
         }
-        lines.recording = pass.recording;
-        lines.recorded |= pass.recording;
+        lines.recording = pass.recording();
+        lines.recorded |= pass.recording();
         for event in &events.events {
             let line = event.line as usize;
             let bit = 1 << event.line;
@@ -139,7 +139,7 @@ impl Node<Edges> for TtlViewer {
                 if let Some(up) = lines.ups.get_mut(line) {
                     *up += 1;
                 }
-                if let (true, Some(up)) = (pass.recording, lines.ups_recording.get_mut(line)) {
+                if let (true, Some(up)) = (pass.recording(), lines.ups_recording.get_mut(line)) {
                     *up += 1;
                 }
             }
@@ -285,7 +285,7 @@ mod tests {
             let input = events(list, 100);
             let inputs = [Some(&input)];
             let mut pass = Pass::new(0, 0.1, &inputs, &mut []);
-            pass.recording = recording;
+            pass.start_recording = recording.then(std::time::Instant::now);
             pass.shared = &shared;
             viewer.process(&mut pass, &mut lines);
         };

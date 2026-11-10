@@ -38,7 +38,7 @@ fn recording(dir: &Path, positions: u32) -> PathBuf {
         data: lines.into(),
     };
     ttl("ttl_1 0.5 1\r\nttl_2 0.6 1\r\nttl_1 1.5 0\r\n").write(&dir.join("session.ttl")).unwrap();
-    ttl("ttl_1 0.4 1\r\nttl_1 1.4 0\r\n").write(&dir.join("session.pos.ttl")).unwrap();
+    ttl("ttl_1 0.4 1\r\nttl_2 0.45 1\r\nttl_1 1.4 0\r\n").write(&dir.join("session.pos.ttl")).unwrap();
     set
 }
 
@@ -153,12 +153,14 @@ fn the_positions_as_recorded_are_kept_and_the_synced_ones_put_in_their_place() {
     let written = LtxFile::read(&dir.join("session.pos")).unwrap();
     assert_eq!(written.header(SYNCED_FROM), Some("session.pos.original"));
     let info = written.header(POST_PROCESSING_INFO).unwrap();
+    assert!(info.contains("changes (name.pos.ttl's line 1)"), "{info}");
     assert!(info.contains("board's line 1: changes paired within +/-1 s, if no other was within +/-2 s"), "{info}");
     assert!(info.contains("within +/-60 s of every 30 s"), "{info}");
     assert_eq!(written.header("num_pos_samples"), Some("4"));
     assert_eq!(written.data.len(), 4 * POS_RECORD);
     let synced = &report.synced;
     assert_eq!(synced.pairing.board.changes(), 2, "only the board's line 1");
+    assert_eq!(synced.pairing.led.changes(), 2, "only the positions' line 1");
     assert_eq!(synced.pairing.pairs.len(), 2);
     // 0, 0.1 and 0.2 s by the camera are 0.1, 0.2 and 0.3 s by the board, after a slot with none.
     assert_eq!((synced.recorded, synced.edits.positions, synced.edits.added), (3, 4, 1));
@@ -217,7 +219,7 @@ fn once_synced_the_files_are_sent_on_with_the_positions_and_their_original() {
         .into_iter()
         .map(|(to, triggered)| match triggered {
             ephys_rs::triggers::Triggered::Trigger(trigger) => (to, trigger.take::<Trigger>()),
-            ephys_rs::triggers::Triggered::SettingsUpdate { .. } => panic!("not a settings update"),
+            _ => panic!("a trigger"),
         })
         .collect();
     let files = vec![set.clone(), egf, dir.join("session.pos"), dir.join("session.pos.original")];

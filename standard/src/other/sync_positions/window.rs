@@ -100,6 +100,12 @@ impl SyncPositions {
                     ui.add(egui::DragValue::new(&mut settings.board_line).range(1..=64))
                         .on_hover_text("The board's digital input the timing LED's pulses go to")
                 });
+                setting(ui, "Positions' TTL line", |ui| {
+                    ui.add(egui::DragValue::new(&mut settings.pos_line).range(1..=32)).on_hover_text(
+                        "The line of the positions' TTLs (name.pos.ttl) that's the timing LED: a camera only has 1, \
+                         a VR computer can have more",
+                    )
+                });
                 let seconds =
                     |ui: &mut egui::Ui, value: &mut f64, range: std::ops::RangeInclusive<f64>, hover: &str| {
                         let speed = range.end() / 500.0;

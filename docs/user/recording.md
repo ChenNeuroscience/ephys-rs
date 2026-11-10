@@ -95,6 +95,9 @@ files, and says if any are missing.
 
 **Board's TTL line**: the board's digital input that the timing LED's pulses go to.
 
+**Positions' TTL line**: the line of `name.pos.ttl` that's the timing LED. A camera's only has line 1. A VR computer's
+has one for each of its TTL channels, numbered as it numbers them.
+
 The board's clock is taken as true, and the positions are put on it in three steps:
 
 1. **Pairing.** Each change of the timing LED, as the camera saw it, is paired with the same change (up with up, down
@@ -122,3 +125,16 @@ Before the synced positions are written to `name.pos`, the positions as recorded
 it starts from that original, not from the synced positions, and says so:
 
 <img src="../../tests/snapshots/sync_positions_synced_again.png" alt="Post-Process Positions LTX, syncing again from the original">
+
+## TTL Recording Control
+
+> **Other.** In: `events`.
+
+Starts recording when a line of its events goes up, as if **Record** were pressed, and, if **Stop on down** is ticked,
+stops it when the line goes down. Connect a VR computer's `pos ttl`, say, or the board's `events`.
+
+**Line**: the line it goes by, numbered from 1, as the LTX files number them (`ttl_1`, `ttl_2`...).
+
+It only starts recording while acquiring, and does nothing if recording's already as the line says: a recording started
+by hand is stopped by the line going down, too, if it stops on down. Its window says whether the line's up, and how many
+times it's started and stopped recording.

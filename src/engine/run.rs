@@ -82,6 +82,7 @@ impl<N: NodesEnum> Plan<N> {
     fn run(&self, snapshot: &Snapshot<N>, pass: PassId, workspace: &mut Workspace<N>, run: &RunSlots) {
         let Workspace { buffers: workspace, memory } = workspace;
         let sequence = pass.sequence;
+        let start_recording = snapshot.recording.as_ref().map(|r| r.start_effective());
         for (step, times) in self.steps.iter().zip(&run.times) {
             let Some(node) = snapshot.graph.get(step.id).map(|e| &e.node) else { continue };
             let pass = PassId { node: Some(step.id), node_type: Some(node.info().name), ..pass };
@@ -107,7 +108,8 @@ impl<N: NodesEnum> Plan<N> {
                     taken: &mut taken,
                     outputs: &mut outputs,
                     controls,
-                    recording: snapshot.recording.is_some(),
+                    start_acquiring: run.started,
+                    start_recording,
                     prepared: snapshot.recording.as_deref(),
                     shared: run.shared.any(step.id).unwrap_or(&()),
                     triggers: &run.triggers,
@@ -174,6 +176,7 @@ struct RunSlots {
     triggers: Arc<PassTriggers>,
     direct: Arc<DirectTriggers>,
     times: Vec<StepTimes>,
+    started: Instant,
 }
 
 impl RunSlots {
@@ -190,6 +193,7 @@ impl RunSlots {
             triggers: run.triggers.clone(),
             direct: run.direct.clone(),
             times,
+            started: run.started.0,
         }
     }
 }
@@ -318,6 +322,17 @@ struct RunCommon {
     epochs: AtomicU64,
     /// The newest version a pass has run against.
     newest_used: AtomicU64,
+    /// When it started running, by the monotonic clock (see `Pass::start_acquiring`).
+    started: Started,
+}
+
+/// When a run started: when it's made.
+struct Started(Instant);
+
+impl Default for Started {
+    fn default() -> Self {
+        Started(Instant::now())
+    }
 }
 
 /// What a worker tells the GUI: a pass it's run, or that it's the first to run against a version.

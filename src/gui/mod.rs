@@ -726,15 +726,15 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         let (sender, receiver) = std::sync::mpsc::channel();
         let repaint = ctx.clone();
         let triggers = self.direct_triggers.clone();
-        // When it starts, as far as names and dates go: now, not once the nodes are ready, which can be a while.
-        let start = chrono::Local::now();
-        let base = self.base_directories.place_at(&start);
+        // When it's asked for, which names and dates it: now, not once the nodes are ready, which can be a while.
+        let start_requested_date = chrono::Local::now();
+        let base = self.base_directories.place_at(&start_requested_date);
         match &base {
             Some(base) => log::info!("Preparing to record, in {}", base),
             None => log::info!("Preparing to record"),
         }
         let spawned = std::thread::Builder::new().name("preparing to record".into()).spawn(move || {
-            let _ = sender.send(engine::Recording::prepare(&snapshot, base, start, &triggers));
+            let _ = sender.send(engine::Recording::prepare(&snapshot, base, start_requested_date, &triggers));
             repaint.request_repaint();
         });
         match spawned {
@@ -939,8 +939,8 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
     }
 
     /// Delivers the direct triggers that have come (see `crate::triggers`), running or not. Settings updates are
-    /// applied as edits, unless settings are locked.
-    fn deliver_triggers(&mut self) {
+    /// applied as edits, unless settings are locked. Recording starts or stops as a node asks, while running.
+    fn deliver_triggers(&mut self, ctx: &egui::Context) {
         let locked = self.locked();
         let triggered = self.direct_triggers.take();
         if !triggered.is_empty() {
@@ -952,6 +952,19 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             let triggers = self.graph.control_triggers(id, &self.direct_triggers);
             let Some(entry) = self.graph.get_mut(id) else { continue };
             match triggered {
+                Triggered::Recording(_) if entry.disabled => {}
+                Triggered::Recording(on) => {
+                    let label = entry.label.clone();
+                    if on == self.locked() || self.runner.is_none() {
+                        continue;
+                    }
+                    let what = if on { "Recording" } else { "Stopping recording" };
+                    log::info!("{what}, as {label} asked");
+                    match on {
+                        true => self.prepare_to_record(ctx),
+                        false => self.stop_recording(),
+                    }
+                }
                 Triggered::SettingsUpdate { setting, value } => {
                     let Ok(value) = value.downcast::<<N::Edges as engine::Edges>::Setting>() else { continue };
                     let name = entry.node.settings().get(setting).map_or("a setting", |s| s.name);
@@ -1216,7 +1229,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         if let Some(recording) = self.preparing.as_ref().and_then(|r| r.try_recv().ok()) {
             self.preparing = None;
             if let Some(place) = recording.base_directory() {
-                self.save_with_recording(place, recording.start());
+                self.save_with_recording(place, recording.start_requested_date());
             }
             self.set_recording(Some(Arc::new(recording)));
         }
@@ -1627,7 +1640,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         // Keep (and echo) what's been logged, so the log's queue doesn't fill.
         crate::console::drain();
         self.direct_triggers.wake(ctx);
-        self.deliver_triggers();
+        self.deliver_triggers(ctx);
         self.background(ctx);
         self.stop_unattended();
         self.upkeep(ctx);
@@ -3307,12 +3320,14 @@ mod tests {
         harness.state_mut().perform(&ctx, Action::Play);
     }
 
-    /// Real TCP, real passes and a real recording: everything a VR computer sends ends up in the LTX files, and settings
-    /// sent while recording wait for it to stop.
+    /// Real TCP, real passes and a real recording, started and stopped by a TTL channel of the VR computer's: everything
+    /// it sends ends up in the LTX files, settings sent while recording wait for it to stop, and it's sent its state.
     #[test]
     fn a_vr_computer_is_recorded_and_its_settings_wait_for_recording_to_stop() {
         use crate::components::vr_computer::VrComputer;
+        use crate::standard::other::ttl_recording_control::TtlRecordingControl;
         use crate::standard::recording::{Location, ltx::WriteLtx};
+        use std::io::BufRead;
         use std::io::Write;
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -3331,6 +3346,9 @@ mod tests {
         link(&mut graph, port_of(ltx, PortRole::Control, 0), port_of(vr, PortRole::Setting, 0));
         let viewer = graph.add(Nodes::LogViewer(Default::default()), [300.0, 300.0]);
         link(&mut graph, port_of(vr, PortRole::Output, 2), port_of(viewer, PortRole::Input, 0));
+        let control = TtlRecordingControl { line: 2, stop_on_down: true };
+        let control = graph.add(Nodes::TtlRecordingControl(control), [300.0, 600.0]);
+        link(&mut graph, port_of(vr, PortRole::Output, 1), port_of(control, PortRole::Input, 0));
 
         let mut harness = harness();
         harness.state_mut().graph = graph;
@@ -3352,16 +3370,17 @@ mod tests {
         harness.run_steps(1);
         let (mut stream, _) = listener.accept().unwrap();
         stream
-            .write_all(b"{\"type\": \"settings\", \"settings\": {\"task\": \"first\", \"maze\": {\"arms\": 8}, \"window_min_x\": 0, \"window_max_x\": 1000, \"window_min_y\": 0, \"window_max_y\": 800, \"pixels_per_metre\": 400, \"timing_led\": {\"enabled\": true}}}\n")
+            .write_all(b"{\"type\": \"settings\", \"settings\": {\"task\": \"first\", \"maze\": {\"arms\": 8}, \"window_min_x\": 0, \"window_max_x\": 1000, \"window_min_y\": 0, \"window_max_y\": 800, \"pixels_per_metre\": 400, \"ttl_channels\": 2}}\n")
             .unwrap();
         until(&mut harness, "the settings", &|app| task(app).as_deref() == Some("first"));
 
-        harness.state_mut().perform(&ctx, Action::Record);
+        // Channel 2 going up starts recording.
+        stream.write_all(b"{\"type\": \"ttl\", \"time\": 999, \"idx\": 2, \"value\": 1}\n").unwrap();
         until(&mut harness, "recording", &|app| app.history.current.snapshot.recording.is_some());
         stream.write_all(b"{\"type\": \"pos\", \"time\": 1000, \"x\": 100, \"y\": 200}\n").unwrap();
-        stream.write_all(b"{\"type\": \"ttl\", \"time\": 1000.25, \"value\": 1}\n").unwrap();
+        stream.write_all(b"{\"type\": \"ttl\", \"time\": 1000.25, \"idx\": 1, \"value\": 1}\n").unwrap();
         stream.write_all(b"{\"type\": \"log\", \"time\": 1000.5, \"line\": \"trial 1\"}\n").unwrap();
-        stream.write_all(b"{\"type\": \"settings\", \"settings\": {\"task\": \"second\", \"window_min_x\": 0, \"window_max_x\": 1, \"window_min_y\": 0, \"window_max_y\": 1, \"pixels_per_metre\": 1, \"timing_led\": {\"enabled\": true}}}\n").unwrap();
+        stream.write_all(b"{\"type\": \"settings\", \"settings\": {\"task\": \"second\", \"window_min_x\": 0, \"window_max_x\": 1, \"window_min_y\": 0, \"window_max_y\": 1, \"pixels_per_metre\": 1, \"ttl_channels\": 2}}\n").unwrap();
         for _ in 0..30 {
             harness.run_steps(1);
             std::thread::sleep(std::time::Duration::from_millis(10));
@@ -3372,7 +3391,22 @@ mod tests {
         let app = harness.state();
         let kept = app.ui_states.get(&app.graph, viewer).unwrap().borrow().downcast_ref().map(KeptLines::lines);
         assert_eq!(kept, Some(vec!["trial 1".to_string()]), "the Log Viewer has it too");
-        harness.state_mut().perform(&ctx, Action::Record);
+        // It's been told how long it's been acquiring and recording.
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();
+        let mut states = std::io::BufReader::new(stream.try_clone().unwrap());
+        let recording_for = loop {
+            let mut line = String::new();
+            states.read_line(&mut line).unwrap();
+            let state: serde_json::Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(state["type"], "state");
+            if let Some(recording) = state["recording_for"].as_f64() {
+                assert!(state["acquiring_for"].as_f64().unwrap() > recording, "{state}");
+                break recording;
+            }
+        };
+        assert!((0.0..10.0).contains(&recording_for), "{recording_for}");
+        // And channel 2 going down stops it.
+        stream.write_all(b"{\"type\": \"ttl\", \"time\": 1000.75, \"idx\": 2, \"value\": 0}\n").unwrap();
         until(&mut harness, "the settings held back", &|app| task(app).as_deref() == Some("second"));
         harness.state_mut().perform(&ctx, Action::Play);
         harness.run_steps(1);
@@ -3403,6 +3437,7 @@ mod tests {
         assert_eq!(coordinate(8), 1023, "no second LED");
         let ttl = String::from_utf8_lossy(&file(".pos.ttl")).into_owned();
         assert!(ttl.contains("timing_led_radius 0\r\n") && ttl.contains("ttl_1 0.250000 1\r\n"), "{ttl}");
+        assert!(ttl.contains("ttl_2 0.750000 0\r\n") && !ttl.contains("ttl_2 -"), "only while recording: {ttl}");
         assert_eq!(file(".txt"), b"0.500000 trial 1\r\n", "by the VR computer's clock, from the first position");
         std::fs::remove_dir_all(&directory).unwrap();
     }

@@ -239,18 +239,18 @@ impl Node<Edges> for WriteLtx {
         inputs: &[Option<DataStream>],
         controls: &[Option<Setting>],
         base_directory: Option<&ephys_rs::base_directory::Place>,
-        start: &DateTime<Local>,
+        start_requested_date: &DateTime<Local>,
         triggers: &ephys_rs::triggers::ControlTriggers<crate::Trigger>,
     ) -> Option<Box<dyn std::any::Any + Send>> {
-        let base = self.base(base_directory, start);
+        let base = self.base(base_directory, start_requested_date);
         let (streams, recorded) = (Streams::of(inputs), Recorded::of(controls));
-        let files = LtxFiles::open(&base, *start, streams, recorded);
+        let files = LtxFiles::open(&base, *start_requested_date, streams, recorded);
         Some(Box::new(Chunk::writing(&base, streams, files, after_recording(triggers, AFTER_RECORDING))))
     }
 
     /// While recording, hands the pass's data to the writer's thread, swapping the buffers it's in for a chunk's.
     fn process(&self, pass: &mut Pass<Edges>, recorder: &mut Recorder) {
-        match (pass.recording, &recorder.writing) {
+        match (pass.recording(), &recorder.writing) {
             (true, None) => {
                 let writing = pass.take_prepared::<Writing<Chunk>>();
                 recorder.writing = Some(writing.unwrap_or_else(|| Writing::failed("it wasn't prepared to record")));

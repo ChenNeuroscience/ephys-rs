@@ -215,7 +215,7 @@ impl Node<Edges> for AlarmViewer {
     fn process(&self, pass: &mut Pass<Edges>, sending: &mut Sending) {
         let Some(Some(Buffer::AlarmStates(input))) = pass.inputs.first().copied() else { return };
         let pending = &mut sending.pending;
-        pending.push(Update::Pass { seconds: pass.duration, recording: pass.recording });
+        pending.push(Update::Pass { seconds: pass.duration, recording: pass.recording() });
         pending.extend(input.states.iter().map(|state| Update::State(*state)));
         // If the GUI's held up a long while, the oldest passes go.
         if pending.len() > 2 * PENDING_PASSES * (1 + input.states.len()) {
@@ -708,7 +708,8 @@ mod tests {
         let gui = RefCell::new(Box::new(AlarmsUi { overrides, ..Default::default() }) as Box<dyn Any>);
         for _ in 0..passes {
             let mut pass = Pass::new(0, 0.02, &inputs, &mut []);
-            (pass.shared, pass.recording) = (by_node.get::<SentStates>(viewer).unwrap(), recording);
+            (pass.shared, pass.start_recording) =
+                (by_node.get::<SentStates>(viewer).unwrap(), recording.then(std::time::Instant::now));
             AlarmViewer::default().process(&mut pass, &mut sending);
             background(&mut graph, viewer, &by_node, &gui, recording);
         }

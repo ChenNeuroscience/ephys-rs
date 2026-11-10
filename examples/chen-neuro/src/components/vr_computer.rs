@@ -4,9 +4,9 @@
 //!
 //! ```json
 //! {"type": "settings", "settings": {"window_min_x": 0, "window_max_x": 800, "window_min_y": 0, "window_max_y": 600,
-//!                                    "pixels_per_metre": 400, "timing_led": {"enabled": true},
+//!                                    "pixels_per_metre": 400, "ttl_channels": 2,
 //!                                    "maze": {"arms": 8}, "task": "linear"}}
-//! {"type": "ttl", "time": 1520.25, "value": 1}
+//! {"type": "ttl", "time": 1520.25, "idx": 1, "value": 1}
 //! {"type": "log", "time": 1520.25, "line": "trial 3 started"}
 //! {"type": "pos", "time": 1520.26, "x": 412.5, "y": 87.0}
 //! ```
@@ -14,12 +14,16 @@
 //! `settings` is a complete snapshot of the custom settings Write LTX records with the positions, nested keys joined
 //! with dots (`maze.arms`), replacing the last. Positions are as a camera's would be, in pixels of a made-up frame, so
 //! that what's recorded suits whatever reads a camera's. So settings have to say the window they range over, the pixels
-//! in a metre, and whether there'll be TTLs (see `WINDOW_KEYS`, `CALIBRATION_KEY` and `TIMING_LED_KEY`), which go to Write
-//! LTX as a crop, a ruler and a timing LED, named as a camera's settings have them: otherwise they're refused, and an error logged. The VR computer should send them on being connected to, and whenever they
-//! change. They can't change
-//! while recording, as they're in headers already: ones that differ log an error, and wait until it stops, so the
-//! node ends up with the latest it was sent. `ttl` is an up (1) or a down (0). `log` is a line of text, cut short to fit
-//! the log stream. `pos` is a position within the window, as the first LED, with `AREA` for its size, and no second LED.
+//! in a metre, and how many TTL channels there are (see `WINDOW_KEYS`, `CALIBRATION_KEY` and `TTL_CHANNELS_KEY`), which
+//! go to Write LTX as a crop, a ruler and a timing LED (if there are any channels), named as a camera's settings have
+//! them: otherwise they're refused, and an error logged. The VR computer should send them on being connected to, and
+//! whenever they change. They can't change while recording, as they're in headers already: ones that differ log an
+//! error, and wait until it stops, so the node ends up with the latest it was sent. `ttl` is channel `idx` (from 1, as
+//! the LTX files number them) going up (1) or down (0). `log` is a line of text, cut short to fit the log stream. `pos`
+//! is a position within the window, as the first LED, with `AREA` for its size, and no second LED.
+//!
+//! It sends the VR computer a line too, its `state`, every `STATE_EVERY` and as recording starts and stops: how long
+//! it's been acquiring, and recording, if it is, for the VR computer to show.
 //!
 //! `time` is in seconds by the VR computer's own clock, which has to be consistent for as long as it's connected: a line
 //! without one isn't understood. It's kept as it is, for what's downstream: Write LTX counts from the first position
@@ -27,8 +31,9 @@
 //! nothing's lost by reconnecting.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::io::{BufRead, BufReader, ErrorKind};
+use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::net::{TcpStream, ToSocketAddrs};
+use std::num::NonZeroU8;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::thread::JoinHandle;
@@ -56,8 +61,10 @@ const AREA: u32 = 1;
 const WINDOW_KEYS: [&str; 4] = ["window_min_x", "window_max_x", "window_min_y", "window_max_y"];
 /// The setting saying how many of the positions' pixels there are in a metre.
 const CALIBRATION_KEY: &str = "pixels_per_metre";
-/// The setting saying whether there'll be TTLs, as it's a timing LED that says so for a camera.
-const TIMING_LED_KEY: &str = "timing_led.enabled";
+/// The setting saying how many TTL channels there are, each `idx` from 1.
+const TTL_CHANNELS_KEY: &str = "ttl_channels";
+/// The most TTL channels there can be, as what shows them keeps a bit for each.
+const MOST_TTL_CHANNELS: u32 = 32;
 /// The frame the positions are declared in until there's a window.
 const FRAME_SIZE: u32 = 1000;
 /// The rate the TTLs are declared at, which only matters to what goes by their samples: they carry their times.
@@ -71,8 +78,12 @@ const TRIGGER_AGAIN: Duration = Duration::from_secs(1);
 /// How long to try each connection for, and to wait between them.
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(250);
 const RETRY_AFTER: Duration = Duration::from_millis(500);
-/// How often the thread looks up from reading, to see if it should stop.
+/// How often the thread looks up from reading, to see if it should stop, or send its state.
 const READ_TIMEOUT: Duration = Duration::from_millis(50);
+/// How often it sends its state, as well as when recording starts or stops.
+const STATE_EVERY: Duration = Duration::from_secs(1);
+/// How long a state can take to send: any longer, and the VR computer isn't reading them, so they stop.
+const WRITE_TIMEOUT: Duration = Duration::from_millis(200);
 
 /// Custom settings, by name.
 type Custom = BTreeMap<String, String>;
@@ -103,7 +114,7 @@ impl Default for VrComputer {
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Message {
     Settings { settings: Map<String, Value> },
-    Ttl { time: f64, value: u8 },
+    Ttl { time: f64, idx: NonZeroU8, value: u8 },
     Log { time: f64, line: String },
     Pos { time: f64, x: f32, y: f32 },
 }
@@ -139,14 +150,14 @@ fn calibration(custom: &Custom) -> Option<f32> {
     custom.get(CALIBRATION_KEY)?.parse().ok().filter(|ppm: &f32| *ppm > 0.0 && ppm.is_finite())
 }
 
-/// Whether there'll be TTLs, if custom settings say.
-fn timing_led(custom: &Custom) -> Option<bool> {
-    custom.get(TIMING_LED_KEY)?.parse().ok()
+/// How many TTL channels there are, if custom settings say.
+fn ttl_channels(custom: &Custom) -> Option<u32> {
+    custom.get(TTL_CHANNELS_KEY)?.parse().ok().filter(|n| *n <= MOST_TTL_CHANNELS)
 }
 
 /// Whether custom settings say all they have to.
 fn complete(custom: &Custom) -> bool {
-    window(custom).is_some() && calibration(custom).is_some() && timing_led(custom).is_some()
+    window(custom).is_some() && calibration(custom).is_some() && ttl_channels(custom).is_some()
 }
 
 /// What's arrived since the passes last took any.
@@ -174,11 +185,12 @@ impl Inbox {
                 }
                 self.settings = Some(settings);
             }
-            Message::Ttl { time, value } => {
+            Message::Ttl { time, idx, value } => {
                 if self.ttls.len() == QUEUE {
                     return false;
                 }
-                self.ttls.push_back(Event { sample: 0, line: 0, high: value != 0, time: Some(time) });
+                let line = idx.get() - 1;
+                self.ttls.push_back(Event { sample: 0, line, high: value != 0, time: Some(time) });
             }
             Message::Log { time, line } => {
                 if self.logs.len() == QUEUE {
@@ -261,6 +273,28 @@ struct Shared {
     stop: AtomicBool,
     inbox: Mutex<Inbox>,
     status: Mutex<Status>,
+    /// How long it's been acquiring, and recording, as the last pass said (see `Pass::acquiring_for`), for its state.
+    clock: Mutex<Clock>,
+}
+
+/// How long it's been acquiring, and recording, in seconds, as the last pass said.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Clock {
+    /// None before the first pass.
+    acquiring: Option<f64>,
+    /// None while it isn't recording.
+    recording: Option<f64>,
+}
+
+impl Clock {
+    /// The state message saying so, if there's been a pass.
+    fn message(&self) -> Option<String> {
+        let ms = |seconds: f64| (seconds * 1000.0).round() / 1000.0;
+        let acquiring = self.acquiring?;
+        let recording = self.recording.map(ms);
+        let state = serde_json::json!({"type": "state", "acquiring_for": ms(acquiring), "recording_for": recording});
+        Some(format!("{state}\n"))
+    }
 }
 
 impl Shared {
@@ -280,7 +314,7 @@ impl Shared {
                 let keys = WINDOW_KEYS.join(", ");
                 log::error!(
                     "VR Computer: settings refused: they have to have numbers for {keys} (with min below max), a \
-                     positive {CALIBRATION_KEY}, and true or false for {TIMING_LED_KEY}"
+                     positive {CALIBRATION_KEY}, and a whole number up to {MOST_TTL_CHANNELS} for {TTL_CHANNELS_KEY}"
                 );
             }
             Ok(message) => {
@@ -298,11 +332,29 @@ impl Shared {
         }
     }
 
-    /// Reads messages until told to stop, or the connection ends.
+    /// Sends the state, if it's due: every `STATE_EVERY`, and as soon as recording starts or stops. Once one's
+    /// taken too long to send, it stops for the connection, as the VR computer isn't reading them.
+    fn send_state(&self, mut stream: &TcpStream, sent: &mut Sent) {
+        if sent.stalled {
+            return;
+        }
+        let clock = *self.clock.lock().unwrap();
+        let recording = clock.recording.is_some();
+        let due = sent.at.is_none_or(|at| at.elapsed() >= STATE_EVERY) || sent.recording != recording;
+        let Some(message) = clock.message().filter(|_| due) else { return };
+        if let Err(e) = stream.write_all(message.as_bytes()) {
+            log::warn!("VR Computer: stopped sending it its state, as it isn't reading them ({e})");
+            sent.stalled = true;
+        }
+        (sent.at, sent.recording) = (Some(Instant::now()), recording);
+    }
+
+    /// Reads messages until told to stop, or the connection ends, sending the state as it goes.
     fn read(&self, stream: TcpStream) -> std::io::Result<()> {
         let mut reader = BufReader::new(stream);
-        let (mut line, mut complained) = (Vec::new(), false);
+        let (mut line, mut complained, mut sent) = (Vec::new(), false, Sent::default());
         while !self.stopping() {
+            self.send_state(reader.get_ref(), &mut sent);
             match reader.read_until(b'\n', &mut line) {
                 Ok(0) => return Err(ErrorKind::UnexpectedEof.into()),
                 Ok(_) if line.ends_with(b"\n") => {
@@ -323,6 +375,14 @@ impl Shared {
     }
 }
 
+/// The state sent on a connection: when last, whether it said it was recording, and whether sending stalled.
+#[derive(Default)]
+struct Sent {
+    at: Option<Instant>,
+    recording: bool,
+    stalled: bool,
+}
+
 /// Connects, with latency kept down as far as it can be (though it can't be relied on).
 fn connect(address: &Address) -> std::io::Result<TcpStream> {
     let found = address.to_socket_addrs()?.next();
@@ -330,6 +390,7 @@ fn connect(address: &Address) -> std::io::Result<TcpStream> {
     let stream = TcpStream::connect_timeout(&found, CONNECT_TIMEOUT)?;
     stream.set_nodelay(true)?;
     stream.set_read_timeout(Some(READ_TIMEOUT))?;
+    stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
     Ok(stream)
 }
 
@@ -396,8 +457,12 @@ impl Connection {
         if let Some(open) = open {
             return Connection { address, running: open };
         }
-        let shared =
-            Arc::new(Shared { stop: AtomicBool::new(false), inbox: Mutex::default(), status: Mutex::default() });
+        let shared = Arc::new(Shared {
+            stop: AtomicBool::new(false),
+            inbox: Mutex::default(),
+            status: Mutex::default(),
+            clock: Mutex::default(),
+        });
         let (thread_shared, thread_address) = (shared.clone(), address.clone());
         let thread = std::thread::Builder::new()
             .name("VR computer".into())
@@ -417,7 +482,7 @@ impl Connection {
 #[derive(Default)]
 pub struct Receiving {
     connection: Option<Connection>,
-    /// Whether it's been said that TTLs are coming that settings said wouldn't.
+    /// Whether it's been said that TTLs are coming on channels settings don't have.
     told: bool,
 }
 
@@ -444,7 +509,7 @@ impl Node<Edges> for VrComputer {
         let [_, _, width, height] = window(&self.custom).and_then(|crop| crop.bounds()).unwrap_or([0.0; 4]);
         let frame = |size: f32| if size > 0.0 { size.ceil() as u32 } else { FRAME_SIZE };
         let positions = Positions { fps: self.fps, width: frame(width), height: frame(height), source: SOURCE };
-        let ttl = Events { lines: 1, sample_rate: TTL_RATE as f32 };
+        let ttl = Events { lines: ttl_channels(&self.custom).unwrap_or(0), sample_rate: TTL_RATE as f32 };
         vec![
             Output { name: "positions", kind: Kind::Positions, stream: Some(DataStream::Positions(positions)) },
             Output { name: "pos ttl", kind: Kind::Events, stream: Some(DataStream::Events(ttl)) },
@@ -469,11 +534,12 @@ impl Node<Edges> for VrComputer {
         let ruler = |ppm| Ruler { a: [0.0, 0.0], b: [ppm, 0.0], length_cm: 100.0 };
         let rulers = calibration(&self.custom).map(ruler).into_iter().collect();
         // What's gone as those: as custom settings, they'd clash with the headers Write LTX makes of them.
-        let required = |key: &str| WINDOW_KEYS.contains(&key) || key == CALIBRATION_KEY || key == TIMING_LED_KEY;
+        let required = |key: &str| WINDOW_KEYS.contains(&key) || key == CALIBRATION_KEY || key == TTL_CHANNELS_KEY;
         let others = self.custom.iter().filter(|(key, _)| !required(key));
         let custom = others.map(|(key, value)| (key.clone(), value.clone())).collect();
-        // There's no spot in any video to say where it is: Write LTX records it as it is.
-        let enabled = timing_led(&self.custom) == Some(true);
+        // As a timing LED, if there are TTLs, though there's no spot in any video to say where it is: Write LTX records
+        // it as it is.
+        let enabled = ttl_channels(&self.custom).is_some_and(|n| n > 0);
         let timing_led = TimingLed { enabled, radius: 0.0, ..Default::default() };
         let detection = Detection { crop, rulers, timing_led, custom, ..Default::default() };
         vec![SettingPort { name: "settings", value: Setting::Detection(detection), on_right: true }]
@@ -514,6 +580,12 @@ impl Node<Edges> for VrComputer {
         }
         let Some(connection) = &receiving.connection else { return };
         let shared = &connection.running.shared;
+        let recording = pass.recording();
+        // Its state, for the VR computer.
+        *shared.clock.lock().unwrap() = Clock {
+            acquiring: Some(pass.acquiring_for().as_secs_f64()),
+            recording: pass.recording_for().map(|d| d.as_secs_f64()),
+        };
         let [Buffer::Positions(positions), Buffer::Events(ttls), Buffer::LogLines(logs)] = &mut *pass.outputs else {
             return;
         };
@@ -524,14 +596,14 @@ impl Node<Edges> for VrComputer {
         // If the thread's filing a message just then, what's there is left for the next pass.
         let settings = shared.inbox.try_lock().ok().and_then(|mut inbox| {
             inbox.take(positions, ttls, logs);
-            inbox.settings_to_update(&self.custom, pass.recording)
+            inbox.settings_to_update(&self.custom, recording)
         });
-        if !ttls.events.is_empty()
-            && timing_led(&self.custom) == Some(false)
-            && !std::mem::replace(&mut receiving.told, true)
-        {
+        let channels = ttl_channels(&self.custom).unwrap_or(0);
+        let beyond = keep_channels(&mut ttls.events, channels);
+        if let Some(idx) = beyond.filter(|_| !std::mem::replace(&mut receiving.told, true)) {
             log::error!(
-                "VR Computer: TTLs are coming, but its settings say {TIMING_LED_KEY} is false, so they won't be recorded"
+                "VR Computer: TTLs are coming on channel {idx}, but its settings say {TTL_CHANNELS_KEY} is {channels}, \
+                 so those beyond it won't be recorded"
             );
         }
         let pixels_per_metre = calibration(&self.custom).unwrap_or(f32::NAN);
@@ -582,6 +654,17 @@ impl Node<Edges> for VrComputer {
     }
 }
 
+/// Keeps the TTLs on the first `channels`: returns the `idx` of the first that wasn't, if any.
+fn keep_channels(events: &mut Vec<Event>, channels: u32) -> Option<u32> {
+    let mut beyond = None;
+    events.retain(|event| {
+        let kept = u32::from(event.line) < channels;
+        beyond = beyond.or((!kept).then_some(u32::from(event.line) + 1));
+        kept
+    });
+    beyond
+}
+
 fn status_ui(ui: &mut egui::Ui, status: &Status, warning: egui::Color32) {
     match &status.problem {
         Some(problem) => drop(ui.label(RichText::new(problem).color(warning))),
@@ -626,10 +709,16 @@ mod tests {
     #[test]
     fn what_the_protocol_document_says_about_edge_cases() {
         let ok = |line: &str| serde_json::from_str::<Message>(line).is_ok();
-        assert!(ok(r#"{"type": "ttl", "time": 1, "value": 1, "extra": "ignored"}"#), "other fields are ignored");
-        assert!(ok(r#"{"time": 1, "value": 0, "type": "ttl"}"#), "in any order");
-        assert!(!ok(r#"{"type": "ttl", "time": 1, "value": true}"#), "a number");
-        assert!(!ok(r#"{"type": "ttl", "time": 1, "value": 1.0}"#), "a whole number");
+        assert!(
+            ok(r#"{"type": "ttl", "time": 1, "idx": 1, "value": 1, "extra": "ignored"}"#),
+            "other fields are ignored"
+        );
+        assert!(ok(r#"{"time": 1, "value": 0, "idx": 2, "type": "ttl"}"#), "in any order");
+        assert!(!ok(r#"{"type": "ttl", "time": 1, "idx": 1, "value": true}"#), "a number");
+        assert!(!ok(r#"{"type": "ttl", "time": 1, "idx": 1, "value": 1.0}"#), "a whole number");
+        assert!(!ok(r#"{"type": "ttl", "time": 1, "value": 1}"#), "an idx");
+        assert!(!ok(r#"{"type": "ttl", "time": 1, "idx": 0, "value": 1}"#), "from 1");
+        assert!(!ok(r#"{"type": "ttl", "time": 1, "idx": 256, "value": 1}"#), "up to 255");
         assert!(!ok(r#"{"type": "pos", "time": "1", "x": 1, "y": 2}"#), "a number, not text");
         assert!(!ok(r#"{"type": "pos", "time": 1, "x": null, "y": 2}"#), "no nulls for a missing position");
         let Message::Settings { settings } = parse(r#"{"type": "settings", "settings": {"a": null, "b": {"c": [1]}}}"#)
@@ -644,13 +733,15 @@ mod tests {
 
     #[test]
     fn the_messages_are_understood() {
-        assert_eq!(parse(r#"{"type": "ttl", "time": 1, "value": 1}"#), Message::Ttl { time: 1.0, value: 1 });
+        let ttl = parse(r#"{"type": "ttl", "time": 1, "idx": 3, "value": 1}"#);
+        assert_eq!(ttl, Message::Ttl { time: 1.0, idx: NonZeroU8::new(3).unwrap(), value: 1 });
         let pos = parse(r#"{"type": "pos", "time": 2.5, "x": 1.5, "y": 2}"#);
         assert_eq!(pos, Message::Pos { time: 2.5, x: 1.5, y: 2.0 });
         let log = parse(r#"{"type": "log", "time": 3, "line": "hi"}"#);
         assert_eq!(log, Message::Log { time: 3.0, line: "hi".into() });
         assert!(serde_json::from_str::<Message>(r#"{"type": "other"}"#).is_err());
-        assert!(serde_json::from_str::<Message>(r#"{"type": "ttl", "value": 1}"#).is_err(), "they have to have a time");
+        let untimed = r#"{"type": "ttl", "idx": 1, "value": 1}"#;
+        assert!(serde_json::from_str::<Message>(untimed).is_err(), "they have to have a time");
     }
 
     #[test]
@@ -686,13 +777,22 @@ mod tests {
         custom.insert(CALIBRATION_KEY.into(), "0".into());
         assert!(!complete(&custom), "no use");
         custom.insert(CALIBRATION_KEY.into(), "250".into());
-        assert!(!complete(&custom), "not saying if there'll be TTLs");
-        custom.insert(TIMING_LED_KEY.into(), "1".into());
-        assert!(!complete(&custom), "true or false");
-        custom.insert(TIMING_LED_KEY.into(), "true".into());
+        assert!(!complete(&custom), "not saying how many TTL channels");
+        for refused in ["true", "-1", "1.5", "33"] {
+            custom.insert(TTL_CHANNELS_KEY.into(), refused.into());
+            assert!(!complete(&custom), "{refused}: a whole number, up to 32");
+        }
+        custom.insert(TTL_CHANNELS_KEY.into(), "0".into());
+        assert!(complete(&custom), "none");
+        let node = VrComputer { custom: custom.clone(), ..VrComputer::default() };
+        let [SettingPort { value: Setting::Detection(detection), .. }] = &node.settings()[..] else { panic!() };
+        assert!(!detection.timing_led.enabled, "no TTLs");
+        custom.insert(TTL_CHANNELS_KEY.into(), "3".into());
         assert!(complete(&custom));
         let node = VrComputer { custom, ..node };
         assert!(node.warnings(&[]).is_empty());
+        let Some(DataStream::Events(ttl)) = node.outputs(&[])[1].stream else { panic!() };
+        assert_eq!(ttl.lines, 3, "a line a channel");
         let [SettingPort { value: Setting::Detection(detection), .. }] = &node.settings()[..] else { panic!() };
         assert_eq!(detection.crop, crop, "for Write LTX");
         assert_eq!(detection.pixels_per_metre(), Some(250.0));
@@ -755,9 +855,36 @@ mod tests {
     #[test]
     fn too_many_messages_are_counted_not_kept() {
         let mut inbox = Inbox::default();
-        assert!((0..QUEUE).all(|_| inbox.receive(Message::Ttl { time: 0.0, value: 1 })));
-        assert!(!inbox.receive(Message::Ttl { time: 0.0, value: 0 }));
+        let idx = NonZeroU8::MIN;
+        assert!((0..QUEUE).all(|_| inbox.receive(Message::Ttl { time: 0.0, idx, value: 1 })));
+        assert!(!inbox.receive(Message::Ttl { time: 0.0, idx, value: 0 }));
         assert_eq!(inbox.ttls.len(), QUEUE);
+    }
+
+    #[test]
+    fn ttls_are_on_their_channel_from_1_and_those_beyond_the_settings_are_left_out() {
+        let mut inbox = Inbox::default();
+        for (idx, value) in [(2, 1), (1, 1), (3, 0), (2, 0)] {
+            inbox.receive(Message::Ttl { time: 0.0, idx: NonZeroU8::new(idx).unwrap(), value });
+        }
+        let mut events: Vec<Event> = inbox.ttls.drain(..).collect();
+        let lines = |events: &[Event]| events.iter().map(|e| (e.line, e.high)).collect::<Vec<_>>();
+        assert_eq!(lines(&events), [(1, true), (0, true), (2, false), (1, false)], "line 0 is idx 1");
+        assert_eq!(keep_channels(&mut events, 2), Some(3), "said once");
+        assert_eq!(lines(&events), [(1, true), (0, true), (1, false)]);
+        assert_eq!(keep_channels(&mut events, 2), None);
+    }
+
+    #[test]
+    fn its_state_says_how_long_its_been_acquiring_and_recording() {
+        let state = |clock: Clock| clock.message().map(|m| serde_json::from_str::<Value>(&m).unwrap());
+        assert_eq!(state(Clock::default()), None, "not before the first pass");
+        let acquiring = Clock { acquiring: Some(12.3400000001), recording: None };
+        let expected = serde_json::json!({"type": "state", "acquiring_for": 12.34, "recording_for": null});
+        assert_eq!(state(acquiring), Some(expected));
+        let recording = Clock { recording: Some(2.34), ..acquiring };
+        assert_eq!(state(recording).unwrap()["recording_for"], 2.34);
+        assert!(acquiring.message().unwrap().ends_with("}\n"), "a line");
     }
 
     #[test]
@@ -774,10 +901,24 @@ mod tests {
             }
         };
         let (mut stream, _) = listener.accept().unwrap();
+        // Its state, once there's been a pass, and as soon as recording starts.
+        *shared.clock.lock().unwrap() = Clock { acquiring: Some(1.5), recording: None };
+        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let mut states = BufReader::new(stream.try_clone().unwrap());
+        let mut state = || {
+            let mut line = String::new();
+            states.read_line(&mut line).unwrap();
+            serde_json::from_str::<Value>(&line).unwrap()
+        };
+        assert_eq!(state()["acquiring_for"], 1.5);
+        *shared.clock.lock().unwrap() = Clock { acquiring: Some(1.6), recording: Some(0.1) };
+        let started = Instant::now();
+        assert_eq!(state()["recording_for"], 0.1);
+        assert!(started.elapsed() < STATE_EVERY / 2, "not waiting a second");
         stream.write_all(b"{\"type\": \"settings\", \"settings\": {\"task\": \"no window\"}}\n").unwrap();
         stream
             .write_all(
-                b"{\"type\": \"ttl\", \"time\": 7, \"value\": 1}\nnot json\n{\"type\": \"pos\", \"time\": 8, \"x\"",
+                b"{\"type\": \"ttl\", \"time\": 7, \"idx\": 1, \"value\": 1}\nnot json\n{\"type\": \"pos\", \"time\": 8, \"x\"",
             )
             .unwrap();
         stream.flush().unwrap();
@@ -791,7 +932,8 @@ mod tests {
         assert_eq!(shared.status.lock().unwrap().messages, 2);
         let ttl = shared.inbox.lock().unwrap().ttls[0];
         assert!(ttl.high && ttl.time == Some(7.0));
-        drop(stream);
+        // Its clone too, or the connection stays open.
+        drop((stream, states));
         let (mut stream, _) = listener.accept().unwrap();
         stream.write_all(b"{\"type\": \"log\", \"time\": 9, \"line\": \"back\"}\n").unwrap();
         wait(&|| shared.inbox.lock().unwrap().logs.len() == 1);

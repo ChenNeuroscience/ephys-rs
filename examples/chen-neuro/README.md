@@ -26,13 +26,15 @@ The stand-in script lives with the others, in [`synthetic_streams/`](../../synth
    python3 synthetic_streams/fake_vr_computer.py
    ```
 
-   It sends the fake camera's mouse as positions, with a TTL and a log line every few seconds. Use `--port` and `--fps` to change where it listens and how often it sends positions.
+   It sends the fake camera's mouse as positions, with a TTL (on channel 1) and a log line every few seconds. Use `--port` and `--fps` to change where it listens and how often it sends positions.
 
 2. In the app's basic view, run the **Standard LTX graph** quick action, then **Use VR computer**. This adds the VR Computer and a Log Viewer, which connects to the script's default port, and takes the camera out of use.
 
 3. Press Play. The Tracker View shows the mouse, and the Log Viewer its trials.
 
-To see settings change, press Enter in the script's terminal. **Use camera** swaps back.
+To see settings change, press Enter in the script's terminal. To put TTL channel 2 up or down, type `r` and Enter: add a
+TTL Recording Control on its `pos ttl`, set to line 2, to start and stop recording by it. The script shows the state
+ephys-rs sends back. **Use camera** swaps back.
 
 What a real VR computer has to send is in the [VR computer protocol](VR_COMPUTER_PROTOCOL.md).
 
@@ -49,7 +51,7 @@ to date with any changes here. This is how it's handled.
 The VR computer is expected to send its settings on being connected to, and whenever they change: nothing asks for them.
 The VR computer sends positions as a camera would, in pixels of a made-up frame, so that a recording suits whatever reads a
 camera's, and nothing here scales them. So settings have to have the four `window_*` values, the window positions range
-over (each min below its max), `pixels_per_metre`, and `timing_led.enabled`, each named as a camera's are: otherwise they're refused, with an error logged, and the node warns
+over (each min below its max), `pixels_per_metre`, and `ttl_channels` (0 to 32), the first two named as a camera's are: otherwise they're refused, with an error logged, and the node warns
 until it's had them. To keep full resolution, the window needs to span about 1022 pixels; any more is scaled down, as
 a camera's frame is.
 Nested keys are joined with dots (`maze.arms`), and they reach Write LTX through `Detection::custom`, on the node's
@@ -58,14 +60,22 @@ they are: one could have a space in it, or be the same as another header, which 
 exceptions are the required values above, which aren't repeated, as they reach Write LTX as settings of its own.
 
 The window goes to Write LTX as `Detection::crop`, a rectangle, and the calibration as a ruler a metre long, so they're
-handled as a camera's are, in the `.pos` file's `window_*`, `position_coordinate_*` and `pixels_per_metre` headers. `timing_led.enabled`
-goes as `Detection::timing_led`, with a radius of 0 as it has no spot in any video. Write LTX has no code
+handled as a camera's are, in the `.pos` file's `window_*`, `position_coordinate_*` and `pixels_per_metre` headers. Any
+`ttl_channels` goes as `Detection::timing_led` enabled, with a radius of 0 as it has no spot in any video. Write LTX has no code
 for any of this: it makes `.pos.ttl` as for a camera's timing LED, so the file's `ttl_source` is `timing_led`, and its
 `timing_led_*` headers are the defaults, with the radius 0 saying there's no real spot.
 
 Headers are written as recording starts, so settings can't change while recording. Ones that differ log an error and wait:
 only the latest is kept, in the connection's inbox, so it survives a new epoch, and the update's triggered once recording stops,
 until the node has it. So a connection's last settings aren't lost, though the recording has the ones it started with.
+
+A `ttl`'s `idx` counts from 1, as the LTX files' `ttl_<n>` do, so it's the `pos ttl` stream's line `idx - 1`. Its
+`Events::lines` is `ttl_channels`, and passes drop events on lines beyond it, logging an error once an epoch, so what's
+downstream never sees a line the stream doesn't have.
+
+It sends the VR computer its `state` too, on the connection's thread, which writes between reads: once a second, and as
+soon as recording starts or stops, by `Pass::acquiring_for` and `Pass::recording_for` as the last pass saw them. A write
+that times out stops them for the connection, as the VR computer isn't reading, rather than dropping it.
 
 `time` is required on all but `settings`, in seconds by the VR computer's own clock, which has to be consistent for as long
 as it's connected. It's carried as it came all the way downstream, and when messages arrived plays no part: `PositionSample::time`,

@@ -20,7 +20,7 @@ pub enum Category {
     Processing,
     Visualisation,
     Recording,
-    /// Nodes that aren't about data as it's acquired.
+    /// Nodes that aren't about data as it's acquired, or only go by it to control the app.
     Other,
 }
 
@@ -290,7 +290,7 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
         _inputs: &[Option<E::DataStream>],
         _controls: &[Option<E::Setting>],
         _base_directory: Option<&crate::base_directory::Place>,
-        _start: &chrono::DateTime<chrono::Local>,
+        _start_requested_date: &chrono::DateTime<chrono::Local>,
         _triggers: &crate::triggers::ControlTriggers<E::Trigger>,
     ) -> Option<Box<dyn Any + Send>> {
         None

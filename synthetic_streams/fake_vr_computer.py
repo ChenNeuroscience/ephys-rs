@@ -1,6 +1,6 @@
 """
 Fake VR computer for ephys-rs: the fake camera's mouse exploring its 1 x 1 m arena, reported as x, y in made-up pixels,
-with a TTL and a log line every few seconds. Standard library only.
+with a TTL (on channel 1) and a log line every few seconds. Standard library only.
 
     python3 synthetic_streams/fake_vr_computer.py [--port 27032] [--fps 50]
 
@@ -8,7 +8,9 @@ Then use the "Use VR computer" quick action, or add a VR Computer node, and pres
 client; when it disconnects we wait for the next one.
 
 Each message is a JSON object on a line of its own (must match examples/chen-neuro/src/components/vr_computer.rs).
-Settings are sent on being connected to, and again whenever they change: press Enter here to change them.
+Settings are sent on being connected to, and again whenever they change: press Enter here to change them. Type r and
+Enter to put TTL channel 2 up, or down again: a TTL Recording Control on line 2 starts and stops recording by it. The
+state ephys-rs sends back is shown as it comes.
 """
 import argparse
 import json
@@ -76,19 +78,34 @@ def settings(changes):
         "window_min_y": 0,
         "window_max_y": size,
         "pixels_per_metre": PIXELS_PER_METRE,
-        "timing_led": {"enabled": True},
+        "ttl_channels": 2,
     }
     return {"type": "settings", "settings": {**required, "task": "open field", "arena": {"changes": changes}}}
 
 
-def count_enters(enters):
-    for _ in sys.stdin:
-        enters.append(1)
+def read_input(enters, toggles):
+    for line in sys.stdin:
+        (toggles if line.strip() == "r" else enters).append(1)
 
 
-def serve(connection, fps, enters):
-    changes = len(enters)
+def show_state(connection):
+    """Shows the state ephys-rs sends, on one line, until the connection ends."""
+    try:
+        for line in connection.makefile("r", encoding="utf-8"):
+            state = json.loads(line)
+            if state.get("type") != "state":
+                continue
+            recording = state["recording_for"]
+            recording = "not recording" if recording is None else f"recording for {recording:.1f} s"
+            print(f"\rAcquiring for {state['acquiring_for']:.1f} s, {recording}   ", end="", flush=True)
+    except (OSError, ValueError):
+        pass
+
+
+def serve(connection, fps, enters, toggles):
+    changes, toggled = len(enters), len(toggles)
     send(connection, settings(changes))
+    threading.Thread(target=show_state, args=(connection,), daemon=True).start()
     mouse = Mouse(fps)
     start = time.monotonic()
     frame, trial = 0, 0
@@ -100,12 +117,15 @@ def serve(connection, fps, enters):
         if now >= next_trial:
             trial += 1
             send(connection, {"type": "log", "time": now, "line": f"trial {trial} started"})
-            send(connection, {"type": "ttl", "time": now, "value": 1})
+            send(connection, {"type": "ttl", "time": now, "idx": 1, "value": 1})
             ttl_off = now + TTL_HIGH
             next_trial = ttl_off + random.uniform(*TTL_GAP)
         elif ttl_off is not None and now >= ttl_off:
-            send(connection, {"type": "ttl", "time": now, "value": 0})
+            send(connection, {"type": "ttl", "time": now, "idx": 1, "value": 0})
             ttl_off = None
+        if toggled != len(toggles):
+            toggled = len(toggles)
+            send(connection, {"type": "ttl", "time": now, "idx": 2, "value": toggled % 2})
         if changes != len(enters):
             changes = len(enters)
             send(connection, settings(changes))
@@ -120,15 +140,15 @@ def main():
     args = parser.parse_args()
     server = socket.create_server(("127.0.0.1", args.port))
     print(f"Fake VR computer on port {args.port}")
-    enters = []
-    threading.Thread(target=count_enters, args=(enters,), daemon=True).start()
+    enters, toggles = [], []
+    threading.Thread(target=read_input, args=(enters, toggles), daemon=True).start()
     while True:
         connection, _ = server.accept()
         print("Connected")
         try:
             # In here too: a client that's already gone (the app closing as it connects) fails this.
             connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            serve(connection, args.fps, enters)
+            serve(connection, args.fps, enters, toggles)
         except OSError:
             print("Disconnected")
         connection.close()

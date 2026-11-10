@@ -189,18 +189,18 @@ impl Node<Edges> for WriteRaw {
         inputs: &[Option<DataStream>],
         _controls: &[Option<crate::Setting>],
         base_directory: Option<&ephys_rs::base_directory::Place>,
-        start: &chrono::DateTime<Local>,
+        start_requested_date: &chrono::DateTime<Local>,
         triggers: &ephys_rs::triggers::ControlTriggers<crate::Trigger>,
     ) -> Option<Box<dyn std::any::Any + Send>> {
         let Recorder { continuous, events, .. } = self.initial_state(inputs);
-        let folder = self.folder(base_directory, start);
+        let folder = self.folder(base_directory, start_requested_date);
         let files = RawFiles::open(&folder, continuous, events);
         Some(Box::new(Chunk::writing(&folder, continuous, events, files, after_recording(triggers, AFTER_RECORDING))))
     }
 
     /// While recording, hands the pass's data to the writer's thread, swapping the buffers it's in for a chunk's.
     fn process(&self, pass: &mut Pass<Edges>, recorder: &mut Recorder) {
-        match (pass.recording, &recorder.writing) {
+        match (pass.recording(), &recorder.writing) {
             (true, None) => {
                 let writing = pass.take_prepared::<Writing<Chunk>>();
                 recorder.writing = Some(writing.unwrap_or_else(|| Writing::failed("it wasn't prepared to record")));

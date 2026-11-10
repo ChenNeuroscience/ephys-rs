@@ -11,7 +11,8 @@
 //! `ControlTriggers`, which it can keep for later and use from any thread.
 //!
 //! Every setting also takes a direct update of its value, without saying so (`Pass::trigger_settings_update`), which
-//! the app applies as an edit, unless settings are locked.
+//! the app applies as an edit, unless settings are locked. And a pass can have the app start or stop recording
+//! (`Pass::trigger_recording`), as the toolbar's Record does.
 //!
 //! On their way, triggers are carried as `AnyTrigger`s, so the run's and the app's queues needn't know the program's
 //! enum; what's sent and what's taken is always the enum.
@@ -86,6 +87,8 @@ pub enum Triggered {
     SettingsUpdate { setting: usize, value: Box<dyn Any + Send> },
     /// One of the node's direct triggers (see `Node::triggers`).
     Trigger(AnyTrigger),
+    /// Recording to start (true) or stop, as the node asked: if it isn't already.
+    Recording(bool),
 }
 
 /// The direct triggers waiting to be delivered: the app's, so they outlive any run.
@@ -120,6 +123,11 @@ impl DirectTriggers {
         self.send(node, Triggered::SettingsUpdate { setting, value });
     }
 
+    /// Has the app start (`on`) or stop recording, for node `node`.
+    pub fn trigger_recording(&self, node: NodeId, on: bool) {
+        self.send(node, Triggered::Recording(on));
+    }
+
     /// What's waiting, to deliver.
     pub fn take(&self) -> Vec<(NodeId, Triggered)> {
         std::mem::take(&mut *self.waiting.lock().unwrap())
@@ -130,7 +138,7 @@ impl DirectTriggers {
     pub fn take_settings_updates(&self) -> Vec<(NodeId, usize, Box<dyn Any + Send>)> {
         let updates = self.take().into_iter().filter_map(|(node, triggered)| match triggered {
             Triggered::SettingsUpdate { setting, value } => Some((node, setting, value)),
-            Triggered::Trigger(_) => None,
+            _ => None,
         });
         updates.collect()
     }

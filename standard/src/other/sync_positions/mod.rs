@@ -48,6 +48,9 @@ pub struct SyncSettings {
     pub set_file: PathBuf,
     /// Which of the board's digital inputs (from 1) the timing LED's pulses go to.
     pub board_line: u32,
+    /// Which line of the positions' TTLs (from 1) is the timing LED: a camera's only has the one, a VR computer's can
+    /// have more.
+    pub pos_line: u32,
     /// How far apart by their clocks the same change can be, on the board and by the camera.
     pub within: f64,
     /// How far from a change any other on the other side makes pairing it ambiguous.
@@ -60,7 +63,15 @@ pub struct SyncSettings {
 
 impl Default for SyncSettings {
     fn default() -> Self {
-        SyncSettings { set_file: PathBuf::new(), board_line: 1, within: 1.0, alone: 2.0, step: 30.0, around: 60.0 }
+        SyncSettings {
+            set_file: PathBuf::new(),
+            board_line: 1,
+            pos_line: 1,
+            within: 1.0,
+            alone: 2.0,
+            step: 30.0,
+            around: 60.0,
+        }
     }
 }
 
@@ -69,11 +80,11 @@ impl SyncSettings {
     pub fn info(&self) -> String {
         format!(
             "Post-Process Positions LTX put these positions on the board's clock (as name.ttl times them) by the timing LED's \
-             changes (name.pos.ttl) and the board's line {}: changes paired within +/-{} s, if no other was within +/-{} s; \
+             changes (name.pos.ttl's line {}) and the board's line {}: changes paired within +/-{} s, if no other was within +/-{} s; \
              the clocks' offset the median of the pairs within +/-{} s of every {} s, changing steadily between; \
              positions put in the nearest slot of their sample_rate from the start of recording, the nearest kept \
              where two were, and empty slots filled with positions not found",
-            self.board_line, self.within, self.alone, self.around, self.step
+            self.pos_line, self.board_line, self.within, self.alone, self.around, self.step
         )
     }
 }
@@ -164,10 +175,12 @@ fn sync(pos: &LtxFile, board: &[Change], led: &[Change], settings: &SyncSettings
     if board.is_empty() {
         return Err(format!("The board's line {line} never changed: is the timing LED on another?"));
     }
+    let pos_line = settings.pos_line;
+    let led: Vec<Change> = led.iter().filter(|c| c.line == pos_line).copied().collect();
     if led.is_empty() {
-        return Err("The camera never saw the timing LED change".into());
+        return Err(format!("The timing LED (the positions' TTL line {pos_line}) never changed"));
     }
-    let pairing = pairs::pair(&board, led, settings.within, settings.alone);
+    let pairing = pairs::pair(&board, &led, settings.within, settings.alone);
     if pairing.pairs.is_empty() {
         let (b, l) = (pairing.board, pairing.led);
         return Err(format!(

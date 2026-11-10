@@ -1434,7 +1434,7 @@ mod chain_tests {
             .into_iter()
             .map(|(node, triggered)| match triggered {
                 Triggered::Trigger(trigger) => (node, trigger.take::<Trigger>()),
-                Triggered::SettingsUpdate { .. } => panic!("not a settings update"),
+                _ => panic!("a trigger"),
             })
             .collect();
         match &sent[..] {

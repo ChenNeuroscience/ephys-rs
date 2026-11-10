@@ -2,6 +2,7 @@
 //! it's recording, what it shares with the GUI, and its triggers.
 
 use std::any::Any;
+use std::time::{Duration, Instant};
 
 use super::{Buffer, Edges, NodeId, Recording, TriggerKind};
 use crate::pass_triggers::PassTriggers;
@@ -26,8 +27,10 @@ pub struct Pass<'a, E: Edges> {
     /// For each of the node's controls, the value of the setting it's connected to, if it is (for a writer to
     /// record, say).
     pub controls: &'a [Option<E::Setting>],
-    /// Whether the graph is recording.
-    pub recording: bool,
+    /// When Play was pressed, by the monotonic clock.
+    pub start_acquiring: Instant,
+    /// When recording took effect (`Recording::start_effective`), by the same clock: none while not recording.
+    pub start_recording: Option<Instant>,
     /// The recording, with what nodes prepared for it.
     pub(super) prepared: Option<&'a Recording>,
     /// What the node shares with the GUI (its `Node::Shared`): see `shared`.
@@ -49,7 +52,8 @@ impl<'a, E: Edges> Pass<'a, E> {
     ) -> Self {
         let taken: &'a mut [Option<Buffer<E>>] = Box::leak(Box::new([]));
         let (triggers, direct) = (Box::leak(Box::default()), Box::leak(Box::default()));
-        let (node, controls, recording, prepared, shared) = (NodeId(0), &[], false, None, &());
+        let (node, controls, start_recording, prepared, shared) = (NodeId(0), &[], None, None, &());
+        let start_acquiring = Instant::now();
         Pass {
             sequence,
             duration,
@@ -58,12 +62,28 @@ impl<'a, E: Edges> Pass<'a, E> {
             taken,
             outputs,
             controls,
-            recording,
+            start_acquiring,
+            start_recording,
             prepared,
             shared,
             triggers,
             direct,
         }
+    }
+
+    /// Whether the graph is recording.
+    pub fn recording(&self) -> bool {
+        self.start_recording.is_some()
+    }
+
+    /// How long it's been acquiring, now: since Play.
+    pub fn acquiring_for(&self) -> Duration {
+        self.start_acquiring.elapsed()
+    }
+
+    /// How long it's been recording, now, while it is.
+    pub fn recording_for(&self) -> Option<Duration> {
+        Some(self.start_recording?.elapsed())
     }
 
     /// What the node shares with the GUI: its `Node::Shared`, which is `T`.
@@ -97,6 +117,12 @@ impl<'a, E: Edges> Pass<'a, E> {
     /// (unless it's recording): passes can't change the graph themselves. See `crate::triggers`.
     pub fn trigger_settings_update(&self, setting: usize, value: E::Setting) {
         self.direct.trigger_settings_update(self.node, setting, Box::new(value));
+    }
+
+    /// Has the app start (`on`) recording, as the toolbar's Record does, or stop it, if it isn't already: whatever's
+    /// asked last, by any node, is what happens. See `crate::triggers`.
+    pub fn trigger_recording(&self, on: bool) {
+        self.direct.trigger_recording(self.node, on);
     }
 
     /// An input's data, taken (see `take_input`) or not.

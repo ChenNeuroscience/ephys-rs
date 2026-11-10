@@ -183,11 +183,11 @@ impl Node<Edges> for TrackerView {
     fn process(&self, pass: &mut Pass<Edges>, tracking: &mut Tracking) {
         let Tracking { history, pending, recording, latest } = tracking;
         let TrackerShared { shown, path } = pass.shared::<TrackerShared>();
-        if pass.recording && !*recording {
+        if pass.recording() && !*recording {
             pending.clear();
             pending.push(PathUpdate::Restart);
         }
-        *recording = pass.recording;
+        *recording = pass.recording();
         if let Some(Buffer::Positions(positions)) = pass.inputs[1] {
             for sample in &positions.samples {
                 let area = |led: Option<Blob>| led.map_or(0, |b| b.area);
@@ -195,7 +195,7 @@ impl Node<Edges> for TrackerView {
                 led_chart::record(history, sample.time, [area(sample.leds[0]), area(sample.leds[1])], timing_on);
                 *latest = sample.leds;
             }
-            if pass.recording {
+            if pass.recording() {
                 pending.extend(positions.samples.iter().map(|sample| PathUpdate::Point(middle(&sample.leds))));
             }
         }
@@ -887,7 +887,7 @@ mod tests {
             let positions = Buffer::Positions(PositionsBuffer { samples: vec![sample] });
             let inputs = [None, Some(&positions), None];
             let mut pass = Pass::new(0, 0.02, &inputs, &mut []);
-            (pass.shared, pass.node, pass.recording) = (shared, view, recording);
+            (pass.shared, pass.node, pass.start_recording) = (shared, view, recording.then(std::time::Instant::now));
             TrackerView::default().process(&mut pass, &mut tracking);
         };
         // What the GUI's side has, once it's taken what's been sent.
@@ -1181,7 +1181,7 @@ mod tests {
             ("window_min_y", "0"),
             ("window_max_y", "400"),
             ("pixels_per_metre", "400"),
-            ("timing_led.enabled", "false"),
+            ("ttl_channels", "0"),
         ];
         let custom = window.iter().chain(&[("task", "linear")]).map(|(k, v)| (k.to_string(), v.to_string())).collect();
         if let Some(Nodes::VrComputer(node)) = graph.get_mut(vr).map(|e| &mut e.node) {

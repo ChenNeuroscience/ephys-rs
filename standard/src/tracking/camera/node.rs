@@ -137,11 +137,11 @@ impl Node<Edges> for Camera {
         pass.shared::<Pool<CaptureStats>>().send_newest(pass.sequence, fill);
         // Frames of the wrong size are skipped. An update to the right size is triggered, but while recording settings are locked.
         if let Some(size @ [w, h]) = capture.wrong_size() {
-            if !pass.recording && capturing.triggered_size != Some(size) {
+            if !pass.recording() && capturing.triggered_size != Some(size) {
                 log::info!("Camera: setting its Frame size to the {w}×{h} it's sending");
                 pass.trigger_settings_update(0, Setting::Camera(CameraSettings { frame_size: size, ..self.settings }));
                 capturing.triggered_size = Some(size);
-            } else if pass.recording && capturing.complained != Some(size) {
+            } else if pass.recording() && capturing.complained != Some(size) {
                 let [set_w, set_h] = self.settings.frame_size;
                 log::error!(
                     "Camera: frames are {w}×{h}, not the {set_w}×{set_h} set, so this recording has no video. It can't be \

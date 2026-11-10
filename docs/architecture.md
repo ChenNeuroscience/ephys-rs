@@ -134,6 +134,11 @@ The passes never wait on the GUI, nor it on them.
   how it's going, and when it's done. A direct one goes to the app, as above. Which is up to the trigger's type.
 - Passes can't change the graph, but can **trigger an update** of a setting (`Pass::trigger_settings_update`), which the
   GUI applies as an edit, unless settings are locked.
+- They can have the app start or stop recording (`Pass::trigger_recording`), as the toolbar's Record does: TTL Recording
+  Control does, by a TTL line. A pass knows when acquisition and recording started, by the monotonic clock
+  (`Pass::start_acquiring`, `Pass::start_recording`), the latter when the recording took effect
+  (`Recording::start_effective`), as opposed to when it was asked for, which names and dates it
+  (`Recording::start_requested_date`).
 
 Settings themselves go the other way through snapshots: a pass sees the snapshot's settings, so a change reaches the
 next pass.
