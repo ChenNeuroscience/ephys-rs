@@ -242,9 +242,10 @@ fn outcome(ui: &mut egui::Ui, report: &Report, theme: &Colours) {
         ui.add(egui::Label::new(RichText::new(format!("⚠ {warning}")).color(theme.warning)).wrap());
     }
     ui.add_space(6.0);
-    ui.columns(2, |columns| {
-        stats(&mut columns[0], synced);
-        pairing(&mut columns[1], synced);
+    ui.horizontal_top(|ui| {
+        stats(ui, synced);
+        ui.add_space(24.0);
+        pairing(ui, synced);
     });
     ui.add_space(6.0);
     ui.strong("The board's clock ahead of the camera's");
@@ -279,7 +280,7 @@ fn stats(ui: &mut egui::Ui, synced: &Synced) {
         if let Some(ppm) = synced.drift_ppm {
             row(ui, "Drift", format!("{ppm:+.1} ppm"));
         }
-        row(ui, "Scatter", format!("{:.2} ms, the pairs' median from the offset", synced.scatter * 1e3));
+        row(ui, "Scatter", format!("{:.2} ms from the offset (median)", synced.scatter * 1e3));
     });
 }
 
@@ -315,6 +316,7 @@ fn chart(ui: &mut egui::Ui, synced: &Synced, theme: &Colours) {
         }
     }
     Plot::new(ui.scope_id().with("offsets"))
+        .width(ui.available_width())
         .height(200.0)
         .legend(Legend::default().position(Corner::LeftTop))
         .x_axis_formatter(|mark, _| format!("{} s", mark.value))
