@@ -113,7 +113,8 @@ crystal would, there's a stretch with no pairs, or more than 1% of positions wer
 (the board's line never changed, say, or nothing paired), it says why and leaves the files as they are.
 
 Before the synced positions are written to `name.pos`, the positions as recorded are copied to `name.pos.original`
-(or `name (2).pos.original`, and so on, if that name's taken). Synced again, it starts from that original, not from
-the synced positions, and says so:
+(or `name (2).pos.original`, and so on, if that name's taken). The synced file's headers say which original it's from
+(`synced_from`), what synced it (`synced_by`), and how, with the settings used (`post_processing_info`). Synced again,
+it starts from that original, not from the synced positions, and says so:
 
 <img src="../../tests/snapshots/sync_positions_synced_again.png" alt="Sync Positions, syncing again from the original">

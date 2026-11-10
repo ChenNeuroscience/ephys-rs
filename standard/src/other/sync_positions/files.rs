@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 pub const SYNCED_FROM: &str = "synced_from";
 /// The header a synced positions file has, saying what synced it.
 pub const SYNCED_BY: &str = "synced_by";
+/// The header a synced positions file has, saying how it was synced, in words.
+pub const POST_PROCESSING_INFO: &str = "post_processing_info";
 
 /// A position record's size: a 4-byte timestamp, then 8 two-byte values.
 pub const POS_RECORD: usize = 20;

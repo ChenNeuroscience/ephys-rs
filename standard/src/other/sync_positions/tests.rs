@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use super::files::{POS_RECORD, SYNCED_FROM};
+use super::files::{POS_RECORD, POST_PROCESSING_INFO, SYNCED_FROM};
 use super::*;
 use crate::standard::themes::THEMES;
 use crate::{NodeType, Nodes};
@@ -147,6 +147,9 @@ fn the_positions_as_recorded_are_kept_and_the_synced_ones_put_in_their_place() {
     assert_eq!(std::fs::read(dir.join("session.pos.original")).unwrap(), recorded, "kept as it was");
     let written = LtxFile::read(&dir.join("session.pos")).unwrap();
     assert_eq!(written.header(SYNCED_FROM), Some("session.pos.original"));
+    let info = written.header(POST_PROCESSING_INFO).unwrap();
+    assert!(info.contains("board's line 1: changes paired within +/-1 s, if no other was within +/-2 s"), "{info}");
+    assert!(info.contains("within +/-60 s of every 30 s"), "{info}");
     assert_eq!(written.header("num_pos_samples"), Some("4"));
     assert_eq!(written.data.len(), 4 * POS_RECORD);
     let synced = &report.synced;

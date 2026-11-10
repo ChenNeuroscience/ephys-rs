@@ -61,6 +61,20 @@ impl Default for SyncSettings {
     }
 }
 
+impl SyncSettings {
+    /// How it syncs, in words, on one line, in ASCII, as old readers expect: for the synced positions' header.
+    pub fn info(&self) -> String {
+        format!(
+            "Sync Positions put these positions on the board's clock (as name.ttl times them) by the timing LED's \
+             changes (name.pos.ttl) and the board's line {}: changes paired within +/-{} s, if no other was within +/-{} s; \
+             the clocks' offset the median of the pairs within +/-{} s of every {} s, changing steadily between; \
+             positions put in the nearest slot of their sample_rate from the start of recording, the nearest kept \
+             where two were, and empty slots filled with positions not found",
+            self.board_line, self.within, self.alone, self.around, self.step
+        )
+    }
+}
+
 impl EdgeType for SyncSettings {
     const INFO: EdgeInfo = EdgeInfo {
         name: "sync",
@@ -109,6 +123,7 @@ fn run(set: &Path, settings: &SyncSettings) -> Result<Report, String> {
     }
     out.set_header(files::SYNCED_FROM, file_name(plan.original()));
     out.set_header(files::SYNCED_BY, ephys_rs::full_version());
+    out.set_header(files::POST_PROCESSING_INFO, settings.info());
     out.write(&recording.pos).map_err(failed(&recording.pos))?;
     Ok(Report { recording, plan, synced })
 }
