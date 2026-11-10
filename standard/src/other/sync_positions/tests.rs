@@ -107,7 +107,7 @@ fn a_long_recording_is_put_on_the_board_s_clock() {
     let written = LtxFile::read(&dir.join("session.pos")).unwrap();
     let records = written.data.len() / POS_RECORD;
     assert_eq!(records, synced.edits.positions);
-    for (i, record) in written.data.chunks_exact(POS_RECORD).enumerate().step_by(997) {
+    for (i, record) in written.data.as_chunks::<POS_RECORD>().0.iter().enumerate().step_by(997) {
         assert_eq!(files::timestamp(record), (i as f64 / 50.0 * 96000.0).round() as u32, "on the 50 Hz grid");
     }
     std::fs::remove_dir_all(dir).unwrap();

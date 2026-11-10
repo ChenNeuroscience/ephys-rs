@@ -175,8 +175,8 @@ fn sync(pos: &LtxFile, board: &[Change], led: &[Change], settings: &SyncSettings
             l.unmatched
         ));
     }
-    let records = pos.data.chunks_exact(POS_RECORD);
-    let last = records.clone().map(files::timestamp).max().unwrap_or(0) as f64 / timebase;
+    let (records, _) = pos.data.as_chunks::<POS_RECORD>();
+    let last = records.iter().map(|r| files::timestamp(r)).max().unwrap_or(0) as f64 / timebase;
     let mut offsets: Vec<f64> = pairing.pairs.iter().map(pairs::Pair::offset).collect();
     let typical = offsets::median(&mut offsets).unwrap_or(0.0);
     let knots = offsets::knots(&pairing.pairs, settings.step, settings.around, last + typical);

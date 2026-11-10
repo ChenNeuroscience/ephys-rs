@@ -25,8 +25,8 @@ pub struct Edits {
 pub fn resample(data: &[u8], timebase: f64, clock: &Clock, rate: f64, missing: u16) -> (Vec<u8>, Edits) {
     let mut edits = Edits::default();
     // For each slot, the position in it and how far from the slot's time it was.
-    let mut slots: Vec<Option<(&[u8], f64)>> = Vec::new();
-    for record in data.chunks_exact(POS_RECORD) {
+    let mut slots: Vec<Option<(&[u8; POS_RECORD], f64)>> = Vec::new();
+    for record in data.as_chunks::<POS_RECORD>().0 {
         let board = clock.to_board(timestamp(record) as f64 / timebase);
         let slot = (board * rate).round();
         if slot < 0.0 {
@@ -52,7 +52,7 @@ pub fn resample(data: &[u8], timebase: f64, clock: &Clock, rate: f64, missing: u
         let start = out.len();
         match found {
             Some((record, _)) => {
-                out.extend_from_slice(record);
+                out.extend_from_slice(*record);
                 gap = 0;
             }
             None => {
@@ -103,7 +103,7 @@ mod tests {
 
     /// Each slot's timestamp and first value.
     fn read(data: &[u8]) -> Vec<(u32, u16)> {
-        data.chunks_exact(POS_RECORD).map(|r| (timestamp(r), u16::from_be_bytes([r[4], r[5]]))).collect()
+        data.as_chunks::<POS_RECORD>().0.iter().map(|r| (timestamp(r), u16::from_be_bytes([r[4], r[5]]))).collect()
     }
 
     #[test]
