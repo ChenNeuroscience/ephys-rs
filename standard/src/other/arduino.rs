@@ -51,7 +51,7 @@ const RETRY_AFTER: Duration = Duration::from_secs(2);
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Arduino {
-    /// Its serial port's name (`/dev/cu.usbmodem1101`, `COM4`): empty for the first Arduino found.
+    /// Its serial port's name (`/dev/cu.usbmodem1101`, `COM4`): empty until it's chosen, as it's never guessed.
     pub port: String,
     pub baud: u32,
     pub pins: Vec<OutputPin>,
@@ -240,13 +240,13 @@ impl Shared {
     }
 }
 
-/// The port called `setting`, or with none, the first Arduino's.
+/// The port called `setting`. With none chosen it doesn't guess, even with just one Arduino plugged in: it could be one
+/// with another job (triggering a camera, say), which opening its port would reset.
 fn find(setting: &str) -> Result<String, String> {
-    if !setting.is_empty() {
-        return Ok(setting.into());
+    if setting.is_empty() {
+        return Err("no port chosen: choose the Arduino's port".into());
     }
-    let arduino = serial_ports().into_iter().find(|p| p.arduino);
-    arduino.map(|p| p.name).ok_or_else(|| "no Arduino found: is it plugged in?".into())
+    Ok(setting.into())
 }
 
 /// The thread: opens the port, talks to the sketch until told to stop or the port's lost, and tries again.
@@ -447,16 +447,12 @@ impl Node<Edges> for Arduino {
     }
 }
 
-/// A choice of the serial ports there are, or the first Arduino found.
+/// A choice of the serial ports there are.
 fn port_ui(ui: &mut egui::Ui, port: &mut String) -> egui::Response {
-    let first = "First Arduino found";
-    let selected = if port.is_empty() { first } else { port.as_str() };
+    let selected = if port.is_empty() { "Choose…" } else { port.as_str() };
     egui::ComboBox::from_id_salt("port")
         .selected_text(selected)
         .show_ui(ui, |ui| {
-            if ui.selectable_label(port.is_empty(), first).clicked() {
-                port.clear();
-            }
             for found in serial_ports() {
                 let label = if found.arduino { format!("{} · Arduino", found.label) } else { found.label };
                 if ui.selectable_label(*port == found.name, label).clicked() {
@@ -492,6 +488,12 @@ fn status_ui(ui: &mut egui::Ui, status: &Status, baud: u32, warning: egui::Color
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn with_no_port_chosen_it_opens_none() {
+        assert_eq!(find(""), Err("no port chosen: choose the Arduino's port".into()));
+        assert_eq!(find("COM4"), Ok("COM4".into()));
+    }
 
     fn pins(outputs: &[u8], high: &[u8]) -> Pins {
         Pins { outputs: outputs.iter().copied().collect(), high: high.iter().copied().collect() }

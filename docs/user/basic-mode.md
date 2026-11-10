@@ -10,7 +10,8 @@ With nothing set up, the home pane offers your recent files, and the *quick acti
 is a ready-made change to the setup. Chen-neuro's "Standard LTX graph" adds a whole tetrode rig in one click: an
 acquisition board and a camera, with spikes, EEG, digital inputs and positions viewed and recorded, and each
 recording's positions put on the board's clock once it's written; and an Arduino, setting its pin 8 high while
-acquiring. Your lab's build will have its own.
+acquiring, once its port is chosen in its settings (it never guesses which Arduino). Your lab's build will have its
+own.
 
 ![Recent files in the basic view](../../tests/snapshots/basic_recent_files.png)
 

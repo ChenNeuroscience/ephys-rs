@@ -148,8 +148,9 @@ Arduino does with them: a sketch might pulse a timing LED while a pin's high, sa
 Arduino nodes do, so the Arduino has to be running a Firmata sketch: StandardFirmata (in the Arduino IDE's examples), or
 one of its own built on the Firmata library.
 
-**Port**: the Arduino's serial port (`COM4`, `/dev/cu.usbmodem1101`...), or the first Arduino found. The list labels
-the ports that are Arduinos.
+**Port**: the Arduino's serial port (`COM4`, `/dev/cu.usbmodem1101`...), which you choose: it never guesses,
+even with one Arduino plugged in, as it could be one with another job (triggering a camera, say), and opening an
+Arduino's port resets it. The list labels the ports that are Arduinos.
 
 **Baud rate**: the sketch's. StandardFirmata's is 57600.
 

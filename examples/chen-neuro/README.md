@@ -2,7 +2,7 @@
 
 The Chen lab's build of ephys-rs, and what this repository releases. It's the standard components, plus:
 
-- **Quick actions** for the lab's rig, in the basic view: the standard LTX graph (an acquisition board and a FLIR camera, viewed and recorded by Write LTX, and an Arduino whose pin 8 is high while acquiring, which has the rig's sketch pulse pin 6 for syncing), swapping between the camera and a VR computer, and swapping between real devices and synthetic data.
+- **Quick actions** for the lab's rig, in the basic view: the standard LTX graph (an acquisition board and a FLIR camera, viewed and recorded by Write LTX, and an Arduino whose pin 8 is high while acquiring, which has the rig's sketch pulse pin 6 for syncing, once its port is chosen), swapping between the camera and a VR computer, and swapping between real devices and synthetic data.
 - **VR Computer**, a source used instead of the camera for virtual reality tasks: positions, TTLs, log lines and settings, over TCP.
 - **Subject, date and trial**, a base directory that files recordings by subject and day, and numbers the trials.
 - **China**, a red and gold theme, for fun.
