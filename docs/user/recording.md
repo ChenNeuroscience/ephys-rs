@@ -138,3 +138,26 @@ stops it when the line goes down. Connect a VR computer's `pos ttl`, say, or the
 It only starts recording while acquiring, and does nothing if recording's already as the line says: a recording started
 by hand is stopped by the line going down, too, if it stops on down. Its window says whether the line's up, and how many
 times it's started and stopped recording.
+
+## Arduino
+
+> **Other.** No ports.
+
+Sets an Arduino's digital pins high while acquiring, while recording, or by hand, and low otherwise, for whatever the
+Arduino does with them: a sketch might pulse a timing LED while a pin's high, say. It speaks Firmata, as Bonsai's
+Arduino nodes do, so the Arduino has to be running a Firmata sketch: StandardFirmata (in the Arduino IDE's examples), or
+one of its own built on the Firmata library.
+
+**Port**: the Arduino's serial port (`COM4`, `/dev/cu.usbmodem1101`...), or the first Arduino found. The list labels
+the ports that are Arduinos.
+
+**Baud rate**: the sketch's. StandardFirmata's is 57600.
+
+**Pins**: each pin it sets, and when it's high: **while acquiring** (from Play to Stop), **while recording**, or **set
+by hand** (with a **high** box to tick). **Add a pin** to set another.
+
+It opens the port on Play, and keeps it open until Stop, as opening it restarts most Arduinos. Then it waits for the
+sketch to say which version of Firmata it speaks, as what's sent while it's starting is lost. If it doesn't say within
+a few seconds, the window warns that it may not be running Firmata, and the pins are set anyway. On Stop, every pin it
+set goes low. A sketch that's busy (in a `delay`, say) acts on each change once it's done, but none are lost. If the
+Arduino's unplugged, or isn't found, it says so, and keeps trying.

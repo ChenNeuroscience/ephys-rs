@@ -204,12 +204,21 @@ the node's outputs from a [`Pool`](../standard/src/pool.rs), which `process` swa
 [board's capture](../standard/src/ephys/board/capture.rs). A writer's passes swap their data into chunks
 from a pool, for its thread to write; see [`recording`](../standard/src/recording/mod.rs).
 
+Each epoch makes its state afresh, but before the last epoch's is dropped. So a thread holding something that opening
+again would disturb can carry on from one epoch to the next: the state holds an `Arc` of it, found by what it's open to
+in a list of `Weak`s, and it's closed once the last epoch using it is done. The VR Computer keeps its connection like
+this, and the [Arduino](../standard/src/other/arduino.rs) its serial port, as opening it resets the Arduino.
+
 ## Recording
 
 `prepare_to_record` is called on a thread of its own before recording starts (a writer opening its files), given when
 the recording starts, to name or date what it writes by: the same for every node, and for the settings saved with
 it, as preparing can take a while. What it returns comes back to the first pass that records (`Pass::take_prepared`).
-Passes see `Pass::recording`. The graph can't change while recording, so everything that records has prepared.
+Passes see whether it's recording (`Pass::recording()`), and when acquiring and recording started, by the monotonic
+clock (`start_acquiring`, `start_recording`: `acquiring_for` and `recording_for` say how long). The graph can't change
+while recording, so everything that records has prepared. A pass can start or stop recording itself
+(`Pass::trigger_recording`), as the toolbar's Record does: see
+[TTL Recording Control](../standard/src/other/ttl_recording_control.rs).
 
 A writer has an "after recording" control. Connected to a setting that takes the `run_command::RunOnFiles` trigger (a direct one),
 it sends the paths of the files once they're finished (not when recording stops, which is sooner), and only if

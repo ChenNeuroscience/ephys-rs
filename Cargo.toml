@@ -12,7 +12,7 @@ default-members = [".", "standard", "examples/chen-neuro"]
 # The framework's and the standard components', which are released together: ephys-rs's version (see
 # docs/development.md), counted up by the pre-commit hook.
 [workspace.package]
-version = "0.221.0"
+version = "0.222.0"
 
 # Versions shared by the framework, the standard components and builds.
 [workspace.dependencies]
@@ -42,6 +42,8 @@ cpal = "0.18.2"
 regex = "1.13.1"
 arc-swap = "1"
 muda = "0.21"
+# Without libudev, which Linux would need for it: the ports are found without it.
+serialport = { version = "4.10", default-features = false }
 ephys-rs = { path = "." }
 ephys-rs-standard = { path = "standard" }
 
@@ -78,6 +80,7 @@ base64.workspace = true
 realfft.workspace = true
 cpal.workspace = true
 regex.workspace = true
+serialport.workspace = true
 egui_kittest = { version = "0.37", features = ["wgpu", "snapshot"] }
 # For making the README's tour (see scripts/make_tour.sh).
 image = { version = "0.25", default-features = false, features = ["gif"] }

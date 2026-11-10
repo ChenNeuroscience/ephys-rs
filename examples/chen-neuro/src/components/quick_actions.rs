@@ -2,7 +2,8 @@
 //!
 //! - The standard LTX graph (v0.5): an Open Ephys acquisition board (generation 1 or 2) giving spikes, EEG and digital
 //!   inputs, and a FLIR camera giving positions, all viewed, and recorded by Write LTX, which has Post-Process Positions LTX put the
-//!   positions on the board's clock once it's done. It reuses what the graph
+//!   positions on the board's clock once it's done; and an Arduino, for pin 8 to be high while acquiring (which has the
+//!   rig's sketch pulse pin 6, for syncing). It reuses what the graph
 //!   already has, adding only what's missing (and connecting only ports that are free), so it's offered until the
 //!   graph has it all. It arranges the panes: the tracker view in a column at the left (with home as a tab behind
 //!   it); the spike viewer filling the rest above (with any panes open before as tabs behind it), and the LFP viewer
@@ -10,7 +11,8 @@
 //! - Swapping the positions' source between the camera (with its position detector) and the VR Computer. What's unused
 //!   is disabled, and whatever took the positions, their TTLs and the settings (the tracker view among them, which shows
 //!   positions without video) takes them from the other, as an input has the one edge. The VR Computer's added the first
-//!   time, and from then on kept, disabled, with no edges; likewise a Log Viewer, showing its log lines.
+//!   time, and from then on kept, disabled, with no edges; likewise a Log Viewer, showing its log lines. The Arduino's
+//!   for the camera, so it's disabled with it, and enabled again with it.
 //! - Using synthetic data (the fake board and camera in `synthetic_streams`), while any board or camera is real; and
 //!   real devices, while any is synthetic.
 
@@ -26,6 +28,7 @@ use ephys_rs::layout::{Pane, WindowState};
 use ephys_rs::quick_action::{Arrangement, QuickAction, QuickChange, QuickState, Tab};
 
 use super::vr_computer::VrComputer;
+use crate::standard::other::arduino::Arduino;
 
 pub const QUICK_ACTIONS: &[QuickAction<Nodes>] = &[
     QuickAction {
@@ -170,7 +173,9 @@ fn real_camera() -> camera::Source {
 /// inputs → TTL Viewer; Camera → Position Detector → Tracker View (setting the camera's and detector's settings).
 /// Write LTX records the spikes (at their gains), the LFP branch's data as EEG (the channels selected, band-passed,
 /// downsampled to 5 kHz, through a Continuous Gain), the positions (with the detector's settings), the digital inputs and the timing LED, if
-/// there is one, then has Post-Process Positions LTX put the positions on the board's clock. An Alarm Processor (in the basic view, for its settings) watches the spikes, the LFP branch and the
+/// there is one, then has Post-Process Positions LTX put the positions on the board's clock. An Arduino (the first
+/// found) sets pin 8 high while acquiring; disabled, if the VR computer's in use, as it's for the camera.
+/// An Alarm Processor (in the basic view, for its settings) watches the spikes, the LFP branch and the
 /// positions, with the timing LED connected to add an alarm for, for an Alarm Viewer with switches for it. New boards and cameras are real. Recordings go in a directory for each subject, day and trial.
 fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
     let mut change = Change::new(state.graph);
@@ -261,6 +266,14 @@ fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
     let sync = change.upsert(NodeType::SyncPositions, Some(ltx));
     change.link((ltx, Control, 4), (sync, Setting, 0));
 
+    // The Arduino: the rig's sketch pulses pin 6, for syncing, while pin 8's high.
+    if change.find(|n| matches!(n, Nodes::Arduino(_))).is_none() {
+        let added = change.add(Nodes::Arduino(Arduino::default()), None);
+        if let Some(entry) = change.graph.get_mut(added) {
+            entry.disabled = live_vr(state.graph).is_some();
+        }
+    }
+
     // Alarms: on the spikes, the LFP branch and the positions, with the timing LED there to add one for.
     let alarm_processor = match change.find(|n| matches!(n, Nodes::AlarmProcessor(_))) {
         Some(alarm_processor) => alarm_processor,
@@ -334,13 +347,19 @@ fn set_disabled(graph: &mut Graph<Nodes>, ids: &[NodeId], disabled: bool) {
     }
 }
 
+/// The Arduinos, which are for the camera.
+fn arduinos(graph: &Graph<Nodes>) -> Vec<NodeId> {
+    graph.iter().filter(|(_, e)| matches!(e.node, Nodes::Arduino(_))).map(|(id, _)| id).collect()
+}
+
 /// The VR Computer that's in use, if there is one.
 fn live_vr(graph: &Graph<Nodes>) -> Option<NodeId> {
     let live = |e: &ephys_rs::engine::NodeEntry<Nodes>| matches!(e.node, Nodes::VrComputer(_)) && !e.disabled;
     graph.iter().find(|(_, e)| live(e)).map(|(id, _)| id)
 }
 
-/// The VR Computer instead of the camera, adding it if need be, unless it's in use (or there's no camera to swap).
+/// The VR Computer instead of the camera (and the Arduino, which is for it), adding it if need be, unless it's in use
+/// (or there's no camera to swap).
 fn use_vr(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
     let mut change = Change::new(state.graph);
     let detector = change.find(|n| matches!(n, Nodes::PositionDetector(_)))?;
@@ -355,7 +374,7 @@ fn use_vr(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
         }
         added
     });
-    let tracking = position_nodes(&change.graph);
+    let tracking = [position_nodes(&change.graph), arduinos(&change.graph)].concat();
     move_positions(&mut change.graph, detector, vr);
     set_disabled(&mut change.graph, &tracking, true);
     set_disabled(&mut change.graph, &[vr], false);
@@ -378,7 +397,8 @@ fn use_vr(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
     Some(result)
 }
 
-/// The camera instead of the VR Computer, which is kept, disabled, with no edges; if it isn't in use already.
+/// The camera (and the Arduino, which is for it) instead of the VR Computer, which is kept, disabled, with no edges; if
+/// it isn't in use already.
 fn use_camera(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
     let mut change = Change::new(state.graph);
     let detector = change.find(|n| matches!(n, Nodes::PositionDetector(_)))?;
@@ -402,6 +422,7 @@ fn use_camera(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
         set_disabled(&mut change.graph, &log_viewers, true);
     }
     set_disabled(&mut change.graph, &tracking, false);
+    set_disabled(&mut change.graph, &arduinos(state.graph), false);
     change.changed = true;
     let mut result = change.finish(state, &[])?;
     for log_viewer in log_viewers {
@@ -528,6 +549,9 @@ mod tests {
         assert_eq!(ltx_controls(4).map(|e| e.to.node), Some(named("Post-Process Positions LTX")), "after recording");
         assert!(graph.iter().any(|(_, e)| matches!(&e.node, Nodes::AcquisitionBoard(b)
             if b.source == real_board())));
+        let arduino = graph.get(named("Arduino")).unwrap();
+        assert!(!arduino.disabled);
+        assert!(matches!(&arduino.node, Nodes::Arduino(a) if *a == Arduino::default()), "pin 8 high while acquiring");
         // Then: the VR computer, and using synthetic data, are offered.
         assert_eq!(offered(&graph), vec!["Use VR computer", "Use synthetic data"]);
     }
@@ -551,6 +575,8 @@ mod tests {
         let vr = run("Use VR computer", &camera).unwrap().graph;
         assert_eq!(offered(&vr), vec!["Use camera", "Use synthetic data"], "and not the standard graph again");
         assert!(position_nodes(&vr).iter().all(|id| vr.get(*id).unwrap().disabled));
+        let arduino = named(&vr, "Arduino");
+        assert!(vr.get(arduino).unwrap().disabled, "it's for the camera");
         let (ltx, alarms, computer) =
             (named(&vr, "Write LTX"), named(&vr, "Alarm Processor"), named(&vr, "VR Computer"));
         assert!(!vr.get(computer).unwrap().disabled && vr.get(computer).unwrap().shown_in_basic());
@@ -579,6 +605,7 @@ mod tests {
         assert!(computer_entry.disabled);
         assert!(!back.edges().iter().any(|e| e.from.node == computer || e.to.node == computer), "no edges left");
         assert!(position_nodes(&back).iter().all(|id| !back.get(*id).unwrap().disabled));
+        assert!(!back.get(arduino).unwrap().disabled, "and with it, the Arduino");
         for (node, input) in [(ltx, 2), (ltx, 4), (alarms, 2), (alarms, 3)] {
             assert_eq!(feeding(&back, node, Input, input).as_deref(), Some("Position Detector"), "input {input}");
         }
@@ -595,6 +622,13 @@ mod tests {
         assert_eq!(again.iter().filter(|(_, e)| matches!(e.node, Nodes::LogViewer(_))).count(), 1);
         assert!(!again.get(log_viewer).unwrap().disabled);
         assert_eq!(again.edges().len(), vr.edges().len());
+
+        // Added to a graph using the VR computer, it's disabled.
+        let mut without = vr.clone();
+        without.remove(arduino);
+        let added = run("Standard LTX graph v0.5", &without).unwrap();
+        assert_eq!(added.summary, "added Arduino");
+        assert!(added.graph.get(named(&added.graph, "Arduino")).unwrap().disabled);
     }
 
     #[test]

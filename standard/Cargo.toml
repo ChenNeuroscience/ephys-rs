@@ -30,3 +30,4 @@ base64.workspace = true
 realfft.workspace = true
 cpal.workspace = true
 regex.workspace = true
+serialport.workspace = true

@@ -497,7 +497,7 @@
         }
       }
     ],
-    "next_id": 22,
+    "next_id": 23,
     "nodes": {
       "1": {
         "label": "Acquisition Board",
@@ -921,6 +921,27 @@
         "pos": [
           1960.0,
           448.0
+        ]
+      },
+      "22": {
+        "label": "Arduino",
+        "node": {
+          "settings": {
+            "baud": 57600,
+            "pins": [
+              {
+                "on": false,
+                "pin": 8,
+                "when": "Acquiring"
+              }
+            ],
+            "port": ""
+          },
+          "type": "Arduino"
+        },
+        "pos": [
+          1960.0,
+          200.0
         ]
       }
     }
