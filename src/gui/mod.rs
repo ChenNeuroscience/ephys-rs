@@ -1654,17 +1654,24 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         self.keep_running(ctx);
     }
 
-    /// The nodes' work on the GUI's thread (see `Node::gui_background`), each with its state on the GUI's side; woken again
-    /// when the first of them asks to be.
+    /// The nodes' work on the GUI's thread (see `Node::gui_background`), each with its state on the GUI's side, and its
+    /// triggers, as its window has (to trigger one once another's done, say); woken again when the first of them asks to
+    /// be.
     fn background(&mut self, ctx: &egui::Context) {
         self.ui_states.keep(&self.graph);
         let resolved = self.graph.resolve();
         let shared = shared(&self.runner, &self.last_run);
         let (colours, base, running, locked) =
             (self.colours(), self.base_directories.place(), self.runner.is_some(), self.locked());
+        let advanced = self.layout.mode == Mode::Advanced;
+        let live = self.runner.as_ref().map(Runner::pass_triggers);
         let mut wake: Option<Instant> = None;
+        let mut events = Vec::new();
         for id in self.graph.ids().collect::<Vec<_>>() {
             let (Some(state), Some(ui_state)) = (resolved.get(&id), self.ui_states.get(&self.graph, id)) else {
+                continue;
+            };
+            let Some(mut tools) = node_tools::NodeTools::new(&self.graph, id, advanced, live, &mut events) else {
                 continue;
             };
             let inputs = &state.input_streams;
@@ -1677,12 +1684,15 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                 base.as_ref(),
                 running,
                 locked,
-                None,
+                Some(&mut tools),
                 |node, context| node.gui_background(context),
             );
             if let Some(next) = next.flatten() {
                 wake = Some(wake.map_or(next, |wake| wake.min(next)));
             }
+        }
+        for event in events {
+            self.handle(ctx, event);
         }
         if let Some(at) = wake {
             ctx.request_repaint_after(at.saturating_duration_since(Instant::now()));
@@ -3317,6 +3327,45 @@ mod tests {
         harness.run_steps(2);
         let settings = harness.state().graph.get(gain).unwrap().node.settings();
         assert_eq!(settings[0].value, crate::Setting::Gains(gains), "applied");
+        harness.state_mut().perform(&ctx, Action::Play);
+    }
+
+    #[test]
+    fn a_viewer_detects_the_thresholds_then_the_gains() {
+        let mut harness = harness();
+        let (viewer, gain, detector) = (
+            node_named(harness.state(), "Spike Viewer"),
+            node_named(harness.state(), "Spike Gain"),
+            node_named(harness.state(), "Spike Detector"),
+        );
+        harness.state_mut().layout.open(viewer, Some(Pane::Home));
+        harness.run_steps(2);
+        let ctx = harness.ctx.clone();
+        harness.state_mut().perform(&ctx, Action::Play);
+        harness.run_steps(2);
+        let progress = |h: &Harness<TestApp>, node| {
+            h.state().runner.as_ref().unwrap().pass_triggers().trigger_progress(node, crate::TriggerKind::AutoDetect)
+        };
+        // Not the Run menu's: the viewer's, drawn after it.
+        harness.get_all_by_label("Run").last().expect("the viewer's Run").click();
+        harness.run_steps(2);
+        assert!(progress(&harness, detector).is_some(), "the thresholds first");
+        assert_eq!(progress(&harness, gain), None, "the gains wait for them");
+        assert!(harness.query_by_label("thresholds, then gains").is_some(), "it says so");
+        // The thresholds done (or stopped from the detector's own window), the gains go.
+        let runner = harness.state().runner.as_ref().unwrap();
+        runner.pass_triggers().cancel(detector, crate::TriggerKind::AutoDetect);
+        harness.run_steps(2);
+        assert!(progress(&harness, gain).is_some(), "then the gains");
+        harness.get_by_label("Stop").click();
+        harness.run_steps(2);
+        assert_eq!((progress(&harness, detector), progress(&harness, gain)), (None, None));
+        // Stopped before the gains, they never go.
+        harness.get_all_by_label("Run").last().unwrap().click();
+        harness.run_steps(2);
+        harness.get_by_label("Stop").click();
+        harness.run_steps(4);
+        assert_eq!((progress(&harness, detector), progress(&harness, gain)), (None, None), "stopped, both");
         harness.state_mut().perform(&ctx, Action::Play);
     }
 

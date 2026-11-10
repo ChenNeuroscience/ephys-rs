@@ -120,13 +120,19 @@ fn settings_rows<E: Edges>(state: &NodeState<E>, settings: bool) -> usize {
     if settings { state.count(PortRole::Setting) + state.count(PortRole::Control) } else { 0 }
 }
 
-/// A node's size on the graph (unzoomed): its header and a row per port, with a divider between the data and
-/// settings ports, if it has both.
+/// Whether a node has no ports at all (an Arduino's, say): it has a row saying so, rather than none.
+fn has_no_ports<E: Edges>(state: &NodeState<E>) -> bool {
+    [PortRole::Output, PortRole::Input, PortRole::Setting, PortRole::Control].into_iter().all(|r| state.count(r) == 0)
+}
+
+/// A node's size on the graph (unzoomed): its header and a row per port (or one saying it has none), with a divider
+/// between the data and settings ports, if it has both.
 fn size_with<E: Edges>(state: &NodeState<E>, settings: bool) -> egui::Vec2 {
     let data_rows = state.count(PortRole::Output) + state.count(PortRole::Input);
     let settings_rows = settings_rows(state, settings);
     let divider = if settings_rows > 0 && data_rows > 0 { DIVIDER } else { 0.0 };
-    egui::vec2(NODE_WIDTH, HEADER + 2.0 * PAD + ROW * (data_rows + settings_rows) as f32 + divider)
+    let rows = (data_rows + settings_rows).max(usize::from(has_no_ports(state)));
+    egui::vec2(NODE_WIDTH, HEADER + 2.0 * PAD + ROW * rows as f32 + divider)
 }
 
 impl Layout {
@@ -1375,6 +1381,10 @@ fn paint_node<N: NodesEnum>(
         painter.text(b.center() + egui::vec2(0.0, 1.5 * z), Align2::CENTER_CENTER, "!", font(10.0), Color32::BLACK);
     }
 
+    if has_no_ports(state) {
+        let at = egui::pos2(rect.center().x, layout.header.bottom() + (PAD + ROW / 2.0) * z);
+        painter.text(at, Align2::CENTER_CENTER, "no ports", font(11.0), fade(colours.text_disabled));
+    }
     for port in state.ports(id) {
         let Some(pos) = layout.port(port) else { continue };
         let name = state.name(port.role, port.index).unwrap_or("?");
@@ -1465,6 +1475,15 @@ mod tests {
         let port = Port { node: NodeId(0), role, index };
         assert_eq!(layout.port(port).unwrap().x == layout.rect.right(), layout.on_right(port));
         layout.on_right(port)
+    }
+
+    #[test]
+    fn a_node_without_ports_has_a_row_saying_so() {
+        use crate::engine::NodeTypeEnum;
+        use crate::{NodeType, Nodes};
+        let size = |name| node_size(&NodeState::unconnected(&Nodes::create(NodeType::named(name).unwrap()))).y;
+        assert_eq!(size("Arduino"), HEADER + 2.0 * PAD + ROW, "one row");
+        assert_eq!(size("TTL Recording Control"), HEADER + 2.0 * PAD + ROW, "as tall as one with a port");
     }
 
     #[test]

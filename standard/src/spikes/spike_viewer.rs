@@ -3,7 +3,8 @@
 //! drag a threshold's line, use a channel's gain buttons (shown over it), or type either (G or T over the channel:
 //! up and down step it, Enter or clicking elsewhere applies it, Esc cancels).
 //! Or have them detected from the data, by triggering the detector's and the gain's auto-detect (see
-//! `Node::triggers`): how they do it, they say, in their own settings (a click away, in advanced mode).
+//! `Node::triggers`): how they do it, they say, in their own settings (a click away, in advanced mode). Both are
+//! detected one after the other, the thresholds first, as the gains can go by them (see `AutoDetecting`).
 //!
 //! A plot shows a channel's range (see `Gains`): just what a recording's values hold, so a spike that reaches a
 //! plot's edge is clipped in the recording. Spikes go up the plot, whichever way they go (a negative-going
@@ -21,6 +22,7 @@ use crate::standard::spikes::{
 use crate::standard::widgets::{open_settings_button, require_input};
 use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
 use ephys_rs::engine::{Category, Control, EdgeType, Input, Node, NodeInfo, Output, Pass, UiContext};
+use std::time::{Duration, Instant};
 
 /// A channel's plot's width, for its height.
 const ASPECT: f32 = 0.75;
@@ -62,12 +64,13 @@ impl Detect {
         }
     }
 
-    /// The controls whose settings' auto-detect it triggers, with what each detects and what does it.
+    /// The controls whose settings' auto-detect it triggers, with what each detects and what does it: in order, each
+    /// once the one before is done.
     fn controls(self) -> &'static [(usize, &'static str, &'static str)] {
         const GAIN: (usize, &str, &str) = (GAINS_CONTROL, "gains", "Spike Gain");
         const THRESHOLD: (usize, &str, &str) = (THRESHOLDS, "thresholds", "Spike Detector");
         match self {
-            Detect::Both => &[GAIN, THRESHOLD],
+            Detect::Both => &[THRESHOLD, GAIN],
             Detect::Gains => &[GAIN],
             Detect::Thresholds => &[THRESHOLD],
         }
@@ -77,6 +80,32 @@ impl Detect {
 /// Its controls: the thresholds (a Spike Detector's) and the gains (a Spike Gain's) it sets.
 const THRESHOLDS: usize = 0;
 const GAINS_CONTROL: usize = 1;
+
+/// Detecting gains and thresholds one after the other: the gains wait for the thresholds, as the spikes they're
+/// chosen from (and their thresholds, which they can go by) depend on them.
+#[derive(Default)]
+pub struct AutoDetecting {
+    /// The controls whose auto-detect comes once the one running is done, in order.
+    next: Vec<usize>,
+}
+
+impl AutoDetecting {
+    /// Triggers the next, once what's running is done; or gives up, if it can't be (as acquiring's stopped, say).
+    fn carry_on(&mut self, context: &mut UiContext<Edges>) {
+        let running = [THRESHOLDS, GAINS_CONTROL]
+            .into_iter()
+            .any(|c| context.trigger_progress(Some(c), crate::TriggerKind::AutoDetect).is_some());
+        if running || self.next.is_empty() {
+            return;
+        }
+        let control = self.next.remove(0);
+        if context.locked || !context.can_trigger(Some(control), crate::TriggerKind::AutoDetect) {
+            self.next.clear();
+            return;
+        }
+        context.trigger(Some(control), AutoDetect);
+    }
+}
 
 /// Each group's most recent spikes, round a ring, and each channel's latest threshold, gain and noise.
 #[derive(Default)]
@@ -166,7 +195,7 @@ impl Node<Edges> for SpikeViewer {
     type State = Recent;
     /// What it shows, for its window.
     type Shared = Pool<RecentDisplay>;
-    type UiState = ();
+    type UiState = AutoDetecting;
     type GlobalSettings = ();
 
     const INFO: NodeInfo = NodeInfo {
@@ -262,6 +291,13 @@ impl Node<Edges> for SpikeViewer {
         });
     }
 
+    /// Detecting the gains once the thresholds are done, whether its window's shown or not.
+    fn gui_background(&mut self, context: &mut UiContext<Edges>) -> Option<Instant> {
+        let mut detecting = context.ui_state::<AutoDetecting>();
+        detecting.carry_on(context);
+        (!detecting.next.is_empty()).then(|| Instant::now() + Duration::from_millis(100))
+    }
+
     fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
         let locked = context.locked;
         let Some(DataStream::Spikes(stream)) = context.inputs[0] else {
@@ -333,7 +369,9 @@ impl SpikeViewer {
                 .into_iter()
                 .filter_map(|c| context.trigger_progress(Some(c), crate::TriggerKind::AutoDetect).map(|p| (c, p)))
                 .collect();
-            ui.add_enabled_ui(!context.locked && running.is_empty(), |ui| {
+            // And what's to come after.
+            let next = context.ui_state::<AutoDetecting>().next.clone();
+            ui.add_enabled_ui(!context.locked && running.is_empty() && next.is_empty(), |ui| {
                 egui::ComboBox::from_id_salt("detect")
                     .selected_text(self.detect.name())
                     .width(150.0)
@@ -346,14 +384,18 @@ impl SpikeViewer {
                     .labelled_by(label.id)
                     .on_hover_text("What to detect from the data");
             });
-            if !running.is_empty() {
+            if !running.is_empty() || !next.is_empty() {
                 let stop = ui.add(egui::Button::new("Stop").small());
-                if stop.on_hover_text("Stop detecting, leaving things as they were").clicked() {
+                if stop.on_hover_text("Stop detecting, leaving what's not done as it was").clicked() {
+                    context.ui_state::<AutoDetecting>().next.clear();
                     for &(control, _) in &running {
                         context.cancel_trigger(Some(control), crate::TriggerKind::AutoDetect);
                     }
                 }
-                let least = running.iter().map(|r| r.1).fold(1.0, f32::min);
+                let what = |control| if control == THRESHOLDS { "thresholds" } else { "gains" };
+                let doing = running.iter().map(|r| what(r.0)).chain(next.iter().map(|&c| what(c)));
+                ui.weak(doing.collect::<Vec<_>>().join(", then "));
+                let least = running.iter().map(|r| r.1).fold(if running.is_empty() { 0.0 } else { 1.0 }, f32::min);
                 ui.add(egui::ProgressBar::new(least).desired_width(60.0).show_percentage());
             } else {
                 let controls = self.detect.controls();
@@ -374,13 +416,13 @@ impl SpikeViewer {
                 };
                 let tip = format!(
                     "Sample each channel, then set its {}",
-                    controls.iter().map(|c| c.1).collect::<Vec<_>>().join(" and ")
+                    controls.iter().map(|c| c.1).collect::<Vec<_>>().join(", then sample again and set its ")
                 );
                 let run = ui.add_enabled(can, egui::Button::new("Run").small());
                 if run.on_hover_text(tip).on_disabled_hover_text(why).clicked() {
-                    for &(control, _, _) in controls {
-                        context.trigger(Some(control), AutoDetect);
-                    }
+                    let (first, rest) = (controls[0].0, controls[1..].iter().map(|c| c.0).collect());
+                    context.trigger(Some(first), AutoDetect);
+                    context.ui_state::<AutoDetecting>().next = rest;
                 }
             }
             if context.advanced() {

@@ -35,8 +35,17 @@ Multiplies each channel's spike waveforms by a gain, into the units whatever rec
 values from −128 to 127. A spike bigger than that is clipped in the recording. Gains can be one for all channels, one
 for each group (tetrode), or one each. Beside each gain is the range in µV it **fits**.
 
-**Auto detect** samples each channel's spikes **for** a while, then sets the gains so the biggest spike, times a
-margin (**Biggest spike ×**), just fits.
+**Auto detect** samples each channel's spikes **for** a while, then sets each gain so that a range just fits, as
+its **Algorithm** says:
+
+- **Threshold × factor**: the channel's threshold, times the **Threshold factor**.
+- **Peak percentile × factor**: a percentile of its spikes' peaks (95 %, say, or 100 % for the biggest), times its
+  **factor**.
+- The **larger**, **mean** or **geometric mean** of the two, each times its factor. The geometric mean is the default.
+
+The range is never less than 1.5 × the threshold, so the threshold's always in view, and a channel with no spikes goes
+by its threshold. If the thresholds change while it's sampling (moved by hand, say), it starts sampling again, so the
+gains follow the new thresholds and the spikes they find.
 
 Connect Write LTX's ◇ `gains` to it, and the gains are recorded in the `.set` file.
 
@@ -55,7 +64,8 @@ Connected to a detector's thresholds and a gain's gains, it sets them:
 - Drag a threshold's line to move it.
 - Over a channel, press **T** to type its threshold, or **G** its gain. Up and down step it, Enter applies it, Esc
   cancels.
-- **Auto detect** (gains, thresholds, or both) and **Run** triggers the detector's and gain's own auto detect. The cogs
-  beside **Gains** and **Thresholds** open their nodes' settings, which say how.
+- **Auto detect** (gains, thresholds, or both) and **Run** triggers the detector's and gain's own auto detect. Both
+  are done one after the other, the thresholds first, as the gains can go by them: it says which it's on, and what's
+  next. The cogs beside **Gains** and **Thresholds** open their nodes' settings, which say how.
 
 **Plot height** sets the size of each box.

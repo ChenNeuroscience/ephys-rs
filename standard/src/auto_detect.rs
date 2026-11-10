@@ -59,6 +59,10 @@ impl Distribution {
         self.sum += value as f64;
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
     fn mean(&self) -> f32 {
         if self.count == 0 { 0.0 } else { (self.sum / self.count as f64) as f32 }
     }
@@ -87,7 +91,7 @@ impl Distribution {
     }
 
     /// What `percent` of the values are at or below.
-    fn signed_percentile(&self, percent: f32) -> f32 {
+    pub fn signed_percentile(&self, percent: f32) -> f32 {
         self.percentile(percent, self.bins())
     }
 
