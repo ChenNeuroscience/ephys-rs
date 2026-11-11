@@ -46,6 +46,12 @@ pub struct NodeInfo {
     pub description: &'static str,
 }
 
+/// A key a node's window answers to (`Node::SHORTCUTS`): the keys, as they're written ("G", "↑ ↓"), and what they do.
+pub struct Shortcut {
+    pub keys: &'static str,
+    pub does: &'static str,
+}
+
 /// A data input: its name, and the kind of data stream it takes.
 pub struct Input<E: Edges> {
     pub name: &'static str,
@@ -138,6 +144,9 @@ impl BufferUsage {
 /// graph works these out in order from the sources down (see `Graph::resolve`).
 pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeOwned + Send + Sync + 'static {
     const INFO: NodeInfo;
+
+    /// The keys its window answers to, and what each does, for the keyboard shortcuts' help: none, unless it says.
+    const SHORTCUTS: &'static [Shortcut] = &[];
 
     /// What the node carries from one pass to the next (a filter's history, say), or `()` for nothing.
     /// Passes run on several threads at once, so a node with state is run for one pass at a time, in order;

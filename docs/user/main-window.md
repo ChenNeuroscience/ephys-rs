@@ -103,7 +103,10 @@ console is the first place to look, and copying from it is the best way to repor
 
 ## Keyboard shortcuts
 
-Ctrl on Windows and Linux is ⌘ on macOS.
+![The keyboard shortcuts' help](../../tests/snapshots/keyboard_shortcuts.png)
+
+Help › Keyboard Shortcuts (Ctrl/⌘ /) lists them all: the app's, the graph's, and the keys node windows answer to
+(those of the nodes in the graph, or of every type). Ctrl on Windows and Linux is ⌘ on macOS.
 
 | Shortcut | Does |
 | --- | --- |
@@ -125,5 +128,6 @@ Ctrl on Windows and Linux is ⌘ on macOS.
 | Ctrl/⌘ Alt V | Paste settings |
 | Ctrl/⌘ , | Settings |
 | Ctrl/⌘ Alt I | Developer tools |
+| Ctrl/⌘ / | Keyboard shortcuts |
 
 Space, Delete, Ctrl/⌘ D and F do nothing while you're typing in a text box.

@@ -19,6 +19,9 @@ pub trait NodeTypeEnum: Copy + Eq + std::hash::Hash + std::fmt::Debug + Send + S
 
     fn info(self) -> &'static NodeInfo;
 
+    /// The keys its window answers to (its `Node::SHORTCUTS`).
+    fn shortcuts(self) -> &'static [super::Shortcut];
+
     /// The type called `name` (its `NodeInfo::name`), if there is one.
     fn named(name: &str) -> Option<Self> {
         Self::ALL.iter().copied().find(|t| t.info().name == name)
@@ -171,6 +174,10 @@ macro_rules! nodes_enum {
 
             fn info(self) -> &'static $crate::engine::NodeInfo {
                 match self { $($type_name::$variant => &<$ty as $crate::engine::Node<$edges>>::INFO),+ }
+            }
+
+            fn shortcuts(self) -> &'static [$crate::engine::Shortcut] {
+                match self { $($type_name::$variant => <$ty as $crate::engine::Node<$edges>>::SHORTCUTS),+ }
             }
         }
 

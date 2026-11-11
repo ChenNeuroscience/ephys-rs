@@ -91,7 +91,8 @@ fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
 
 A view of its own (a viewer's, say) draws whatever it likes instead, and says how big its window opens
 (`WINDOW_SIZE`). `SHOW_IN_BASIC_DEFAULT` says whether it's listed in the basic view, till that's set for it: by
-convention, nodes with a view are. It gets a [`UiContext`](../src/engine/ui_context.rs):
+convention, nodes with a view are. Keys its window answers to (G over a Spike Viewer's channel, say) go in
+`SHORTCUTS`, which the keyboard shortcuts' help lists. It gets a [`UiContext`](../src/engine/ui_context.rs):
 
 - `inputs`: the streams on its inputs; `controls`: the values of the settings its controls see, to edit.
 - `shared::<T>()`: what its passes share with it (its `Shared`, which is `T`), or what they did in the last run once

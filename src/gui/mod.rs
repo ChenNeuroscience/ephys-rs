@@ -21,6 +21,7 @@ mod node_tools;
 pub mod node_window;
 mod paste_settings;
 mod preferences;
+mod shortcuts;
 mod style;
 mod toolbar;
 
@@ -295,6 +296,8 @@ pub struct App<N: NodesEnum, A: AnnotationsEnum> {
     problems: (u64, u64),
     /// The About window, while it's open (see `Components::ABOUT`, and `SOURCE`).
     about: Option<about::About>,
+    /// The keyboard shortcuts' help, while it's open.
+    shortcuts: Option<shortcuts::ShortcutsHelp>,
     about_text: &'static str,
     source: &'static str,
     /// Where recordings go: the one in use, in a section of the toolbar.
@@ -363,6 +366,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             quick_actions: &[],
             problems: (0, 0),
             about: None,
+            shortcuts: None,
             about_text: "",
             source: "",
             base_directories: BaseDirectories::new(&[], None),
@@ -1159,6 +1163,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                 self.menu = Some(CreateMenu::new(screen, at, None));
             }
             Action::ToggleDevTools => self.layout.toggle_dev_tools(),
+            Action::Shortcuts => self.shortcuts = Some(shortcuts::ShortcutsHelp::default()),
             Action::About => self.about = Some(about::About::default()),
             Action::Settings => self.settings = Some(Default::default()),
             Action::Source => ctx.open_url(egui::OpenUrl::new_tab(self.source)),
@@ -1631,6 +1636,13 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         self.paste_window(&ctx);
         self.crash_window(&ctx);
         self.about_window(&ctx);
+        let colours = self.colours();
+        if let Some(help) = &mut self.shortcuts {
+            let in_graph = self.graph.iter().map(|(_, entry)| entry.node.node_type()).collect();
+            if !help.show(&ctx, colours, &in_graph) {
+                self.shortcuts = None;
+            }
+        }
         self.settings_window(&ctx);
         self.unattended_ui(&ctx);
         self.upkeep(&ctx);
@@ -2611,6 +2623,35 @@ mod tests {
         harness.get_by_label("About").click();
         harness.run_steps(3);
         assert!(harness.state().about.is_some());
+    }
+
+    #[test]
+    fn the_keyboard_shortcuts_help_lists_the_apps_the_graphs_and_node_windows() {
+        let mut harness = harness();
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::Slash);
+        // Until it's settled where it goes.
+        harness.run_steps(8);
+        assert!(harness.state().shortcuts.is_some());
+        harness.get_by_label("Developer Tools");
+        harness.get_by_label("Undo");
+        harness.get_by_label("Over the graph");
+        // Those of the nodes in the graph, at first, which has a Spike Viewer.
+        harness.get_by_label("Spike Viewer's window");
+        let graph = &mut harness.state_mut().graph;
+        let viewers: Vec<NodeId> =
+            graph.iter().filter(|(_, e)| e.node.node_type() == NodeType::SpikeViewer).map(|(id, _)| id).collect();
+        viewers.into_iter().for_each(|id| graph.remove(id));
+        harness.run_steps(2);
+        assert!(harness.query_by_label("Spike Viewer's window").is_none());
+        harness.get_by_label("No node in this graph has keys of its own.");
+        harness.get_by_label("All types").click();
+        harness.run_steps(2);
+        harness.get_by_label("Spike Viewer's window");
+        harness.get_by_label_contains("Invert its spikes");
+        harness.snapshot("keyboard_shortcuts");
+        harness.get_by_label("OK").click();
+        harness.run_steps(3);
+        assert!(harness.state().shortcuts.is_none());
     }
 
     #[test]

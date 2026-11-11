@@ -21,7 +21,7 @@ use crate::standard::spikes::{
 };
 use crate::standard::widgets::{open_settings_button, require_input};
 use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
-use ephys_rs::engine::{Category, Control, EdgeType, Input, Node, NodeInfo, Output, Pass, UiContext};
+use ephys_rs::engine::{Category, Control, EdgeType, Input, Node, NodeInfo, Output, Pass, Shortcut, UiContext};
 use ephys_rs::gui::widgets::Icon;
 use std::time::{Duration, Instant};
 
@@ -205,6 +205,13 @@ impl Node<Edges> for SpikeViewer {
         description: "Each group's (tetrode's, say) recent spike waveforms overlaid, a plot per channel, with the \
                       thresholds: set them, and the gains, here.",
     };
+    const SHORTCUTS: &'static [Shortcut] = &[
+        Shortcut { keys: "G", does: "Type the gain (its range) of the channel under the pointer" },
+        Shortcut { keys: "T", does: "Type its threshold" },
+        Shortcut { keys: "↑ ↓", does: "While typing, step it up or down" },
+        Shortcut { keys: "Enter, Esc", does: "Apply what's typed, or cancel it" },
+        Shortcut { keys: "I", does: "Invert its spikes (a negative gain), or turn them back" },
+    ];
     const WINDOW_SIZE: [f32; 2] = [820.0, 520.0];
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 

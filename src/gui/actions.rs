@@ -52,6 +52,8 @@ pub enum Action {
     Record,
     /// Opens the Settings window: the app's preferences.
     Settings,
+    /// Lists the keyboard shortcuts: the app's, the graph's, and those of node types' windows.
+    Shortcuts,
     /// Says what the program is: its version, and what its build says about itself.
     About,
     /// Opens where the program's source is, in the browser.
@@ -137,11 +139,11 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
             Submenu("Theme", &[Themes]),
         ],
     ),
-    ("Help", &[Item(Action::About), Item(Action::Source)]),
+    ("Help", &[Item(Action::Shortcuts), Separator, Item(Action::About), Item(Action::Source)]),
 ];
 
 /// Checked in this order, so that e.g. shift-ctrl-Z (redo) is seen before ctrl-Z (undo).
-const SHORTCUT_ORDER: [Action; 19] = [
+const SHORTCUT_ORDER: [Action; 20] = [
     Action::Redo,
     Action::Undo,
     Action::SaveAs,
@@ -161,6 +163,7 @@ const SHORTCUT_ORDER: [Action; 19] = [
     Action::Home,
     Action::Advanced,
     Action::Settings,
+    Action::Shortcuts,
 ];
 
 impl Action {
@@ -201,6 +204,7 @@ impl Action {
             Action::Play => "Play",
             Action::Record => "Record",
             Action::Settings => "Settings…",
+            Action::Shortcuts => "Keyboard Shortcuts",
             Action::About => "About…",
             Action::Source => "Source Code",
         }
@@ -230,12 +234,23 @@ impl Action {
             Action::Settings => command(Key::Comma),
             // As in browsers.
             Action::ToggleDevTools => Some(KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::ALT, Key::I)),
+            // As in many editors.
+            Action::Shortcuts => command(Key::Slash),
+            _ => None,
+        }
+    }
+
+    /// Another shortcut that does the same, if there is one.
+    pub fn alternative(self) -> Option<KeyboardShortcut> {
+        match self {
+            Action::Redo => Some(KeyboardShortcut::new(Modifiers::COMMAND, Key::Y)),
+            Action::Delete => Some(KeyboardShortcut::new(Modifiers::NONE, Key::Backspace)),
             _ => None,
         }
     }
 
     /// Shortcuts that would get in the way of typing, so only apply when no text field has focus.
-    fn only_when_not_typing(self) -> bool {
+    pub fn only_when_not_typing(self) -> bool {
         matches!(self, Action::Duplicate | Action::Delete | Action::SelectAll | Action::FrameAll | Action::Play)
     }
 
@@ -252,13 +267,41 @@ impl Action {
             }
         }
         // Alternatives to the main shortcuts.
-        let alternative = |modifiers, key| ctx.input_mut(|i| i.consume_key(modifiers, key));
-        if alternative(Modifiers::COMMAND, Key::Y) {
-            pressed.push(Action::Redo);
-        }
-        if !typing && alternative(Modifiers::NONE, Key::Backspace) {
-            pressed.push(Action::Delete);
+        for action in [Action::Redo, Action::Delete] {
+            if typing && action.only_when_not_typing() {
+                continue;
+            }
+            let Some(shortcut) = action.alternative() else { continue };
+            if ctx.input_mut(|i| i.consume_shortcut(&shortcut)) {
+                pressed.push(action);
+            }
         }
         pressed
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The keyboard shortcuts' help lists the actions in the menus, so every shortcut has to be in one.
+    #[test]
+    fn every_action_with_a_shortcut_is_in_a_menu() {
+        fn each(entries: &[MenuEntry], found: &mut Vec<Action>) {
+            for entry in entries {
+                match entry {
+                    MenuEntry::Action(action) => found.push(*action),
+                    MenuEntry::Submenu(_, entries) => each(entries, found),
+                    _ => {}
+                }
+            }
+        }
+        let mut in_menus = Vec::new();
+        for (_, entries) in MENUS {
+            each(entries, &mut in_menus);
+        }
+        for action in SHORTCUT_ORDER {
+            assert!(in_menus.contains(&action), "{action:?} isn't in a menu");
+        }
     }
 }
