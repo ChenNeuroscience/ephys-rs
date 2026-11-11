@@ -62,7 +62,7 @@ pub fn show<N: NodesEnum>(ui: &mut egui::Ui, view: &mut ConsoleView, graph: &Gra
     ui.add_space(2.0);
 
     let font = FontId::monospace(11.5);
-    let row_height = ui.fonts_mut(|f| f.row_height(&font)) + 1.0;
+    let row_height = ui.fonts_mut(|f| f.row_height(&font));
     let filter = view.filter.to_lowercase();
     egui::Frame::new().fill(colours.surface_sunken).inner_margin(4).corner_radius(3).show(ui, |ui| {
         console::with_lines(|lines, _| {
@@ -77,12 +77,14 @@ pub fn show<N: NodesEnum>(ui: &mut egui::Ui, view: &mut ConsoleView, graph: &Gra
                     shown.push(line);
                 }
             }
+            // Set before show_rows, which places the rows by its spacing: the rows' own would put them nearer
+            // together than it thinks, leaving the bottom of the view empty.
+            ui.spacing_mut().item_spacing.y = 1.0;
             egui::ScrollArea::both().auto_shrink(false).stick_to_bottom(true).show_rows(
                 ui,
                 row_height,
                 shown.len(),
                 |ui, rows| {
-                    ui.spacing_mut().item_spacing.y = 1.0;
                     for line in &shown[rows] {
                         let job = layout(line, graph, colours, &font);
                         ui.add(egui::Label::new(job).wrap_mode(egui::TextWrapMode::Extend));
@@ -128,4 +130,34 @@ fn layout<N: NodesEnum>(line: &Line, graph: &Graph<N>, colours: &Colours, font: 
     };
     ansi::append(&mut job, &line.text, font, text, colours.dark);
     job
+}
+
+#[cfg(test)]
+mod tests {
+    use egui_kittest::kittest::Queryable as _;
+
+    use super::*;
+    use crate::Nodes;
+    use crate::standard::themes::THEMES;
+
+    /// With more lines than fit, the view's filled to its bottom: the rows are where the scroll area thinks they are,
+    /// rather than nearer together, which left the bottom empty, and lines vanishing whole as it scrolled.
+    #[test]
+    fn more_lines_than_fit_fill_the_view() {
+        crate::console::init(true);
+        for i in 0..200 {
+            log::info!("console fills the view {i:03}");
+        }
+        // Other tests log at the same time, so only these are shown.
+        let mut view = ConsoleView { filter: "console fills the view".into(), ..Default::default() };
+        let graph = Graph::<Nodes>::default();
+        let height = 300.0;
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size([700.0, height])
+            .build_ui(move |ui| show(ui, &mut view, &graph, &THEMES[0].colours));
+        harness.run_steps(3);
+        let last = harness.get_by_label_contains("console fills the view 199").rect();
+        // Below it, just the frame's margin and the window's.
+        assert!(last.max.y > height - 20.0, "the last line ends at {}, of {height}", last.max.y);
+    }
 }
