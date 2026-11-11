@@ -1,15 +1,16 @@
-//! The Continuous Gain: multiplies each channel of continuous data (µV) by its gain, a dumb multiplier, into whatever units
-//! what takes it wants (as floats): int8 values for Write LTX's EEG, say, or int16, or 0 to 1. Gains can be one for
-//! all channels, or one each (see `Gains`). They can be chosen from the data when it's triggered ("auto detect", from
-//! its window): its passes sample each channel for a while, then have its mean, plus a multiple of a percentile's distance
-//! from it, reach the output range, which is the only thing that range is for. Sign doesn't count.
+//! The Continuous Gain: multiplies each channel of continuous data (µV) by its gain, as an amplifier does (×2 doubles
+//! it), into amplified µV: what's recorded (Write LTX's EEG's int8 values cover ±250 µV of them). Gains can be one
+//! for all channels, or one each (see `Gains`). They can be chosen from the data when it's triggered ("auto detect",
+//! from its window): its passes sample each channel for a while, then have its mean, plus a multiple of a percentile's
+//! distance from it, fill what's recorded (`Gains::fill_uv`). Sign doesn't count.
 
 use eframe::egui;
 use ephys_rs::engine::{BufferUsage, TreeShake};
 use serde::{Deserialize, Serialize};
 
 use crate::standard::auto_detect::{Distribution, PercentMultiple, SAMPLING, auto_detect_ui, detecting};
-use crate::standard::spikes::{Channels, DEFAULT_RANGE_UV, GainScope, Gains, RANGES_UV};
+use crate::standard::spikes::{Channels, DEFAULT_RANGE_UV, GainScope, Gains, RANGES_UV, fill_field, gain_field};
+
 use crate::standard::widgets::{input_summary, named_settings_grid, require_input, setting};
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
 use ephys_rs::engine::{Category, Input, Node, NodeInfo, Output, Pass, SettingPort, UiContext};
@@ -20,7 +21,7 @@ pub struct ContinuousGain {
     pub gains: Gains,
     /// Seconds to sample the data for, to choose the gains from.
     pub sampling: f32,
-    /// What's to reach the output range, when choosing them: this, of each channel's samples.
+    /// What's to fill what's recorded, when choosing them: this, of each channel's samples.
     pub level: PercentMultiple,
 }
 
@@ -74,8 +75,8 @@ impl Node<Edges> for ContinuousGain {
     const INFO: NodeInfo = NodeInfo {
         name: "Continuous Gain",
         category: Category::Processing,
-        description: "Multiplies continuous data by each channel's gain (or one for all), into the units what takes \
-                      it wants (int8 values for Write LTX's EEG, say): set by hand, or chosen from the data.",
+        description: "Amplifies continuous data by each channel's gain (or one for all; ×2 doubles it), to fill what's \
+                      recorded (Write LTX's EEG, say): set by hand, or chosen from the data.",
     };
 
     /// Only while it's given something, and something needs what it makes.
@@ -191,10 +192,9 @@ impl Node<Edges> for ContinuousGain {
             });
             if channels.count > 0 {
                 egui::ScrollArea::vertical().max_height(260.0).id_salt("gains").show(ui, |ui| {
-                    egui::Grid::new("gains").num_columns(3).striped(true).show(ui, |ui| {
+                    egui::Grid::new("gains").num_columns(2).striped(true).show(ui, |ui| {
                         ui.strong("Channel");
                         ui.strong("Gain");
-                        ui.strong("Fits").on_hover_text("The µV that reach the output range, at this gain");
                         ui.end_row();
                         for unit in node.gains.units(channels) {
                             let name = if unit.len() > 1 {
@@ -204,16 +204,9 @@ impl Node<Edges> for ContinuousGain {
                             };
                             ui.label(name);
                             let mut gain = node.gains.get(unit.start);
-                            let speed = gain * 0.01;
-                            let field = egui::DragValue::new(&mut gain)
-                                .range(1e-6..=1e6)
-                                .speed(speed)
-                                .max_decimals(3)
-                                .prefix("×");
-                            if ui.add(field).changed() {
+                            if gain_field(ui, &mut gain, false).changed() {
                                 node.gains.set(unit.start, gain, channels);
                             }
-                            ui.label(format!("±{:.0} µV", node.gains.range_uv(unit.start)));
                             ui.end_row();
                         }
                     });
@@ -225,17 +218,12 @@ impl Node<Edges> for ContinuousGain {
             ui.strong("Auto detect");
             ui.add_enabled_ui(!detecting(context), |ui| {
                 named_settings_grid(ui, "auto detect", |ui| {
-                    setting(ui, "Fit to", |ui| {
-                        let field =
-                            egui::DragValue::new(&mut node.gains.output_range).range(1e-6..=1e9).speed(1.0).prefix("±");
-                        ui.add(field)
-                            .on_hover_text("The output range to fill: ±128 for int8, ±32768 for int16, ±1 for floats")
-                    });
+                    setting(ui, "Fill to", |ui| fill_field(ui, &mut node.gains));
                     setting(ui, "Level", |ui| {
                         node.level.ui(
                             ui,
                             "The percentile of the samples, ignoring sign",
-                            "Its distance from the mean, times this, fills the output range",
+                            "Its distance from the mean, times this, fills what's recorded",
                         )
                     });
                     setting(ui, "Sampling for", |ui| {
@@ -271,10 +259,10 @@ mod tests {
         );
         let passes = (4.0 / PASS_DURATION).round() as u64;
         for sequence in 0..passes {
-            // 100 µV either side of zero on the first channel, 400 on the second.
+            // 100 µV either side of zero on the first channel, 300 on the second.
             let mut input = stream.buffer(PASS_DURATION);
             input.len = 20;
-            for (c, size) in [(0, 100.0), (1, 400.0)] {
+            for (c, size) in [(0, 100.0), (1, 300.0)] {
                 for (t, x) in input.channel_mut(c).iter_mut().enumerate() {
                     *x = if t % 2 == 0 { -size } else { size };
                 }
@@ -292,6 +280,10 @@ mod tests {
         let updates = direct.take_settings_updates();
         let Some(Setting::Gains(gains)) = updates[0].2.downcast_ref::<Setting>() else { panic!() };
         // One for all, to begin with: the widest of theirs, so neither clips.
-        assert!((gains.range_uv(0) - 1200.0).abs() < 20.0 && (gains.range_uv(1) - 1200.0).abs() < 20.0);
+        assert!((gains.range_uv(0) - 900.0).abs() < 20.0 && (gains.range_uv(1) - 900.0).abs() < 20.0);
+        // Wider than a quarter of a gain fits, it's the widest it can be.
+        let mut gains = gains.clone();
+        gains.set_ranges(&[1200.0, 1200.0], Channels { count: 2, group_size: 1 });
+        assert_eq!(gains.range_uv(0), 1000.0);
     }
 }

@@ -4,8 +4,10 @@
 use ephys_rs::config_patching::PatchSet;
 
 mod example;
+mod gains_amplify;
 
-pub const PATCHES: PatchSet = PatchSet { name: "std", version: env!("CARGO_PKG_VERSION"), patches: &[example::patch] };
+pub const PATCHES: PatchSet =
+    PatchSet { name: "std", version: env!("CARGO_PKG_VERSION"), patches: &[example::patch, gains_amplify::patch] };
 
 #[cfg(test)]
 mod tests {

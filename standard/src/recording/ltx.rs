@@ -12,11 +12,12 @@
 //!
 //! Each file but `name.txt` is `key value` header lines, then the data between `data_start` and `data_end`; counts and the
 //! duration are filled in at the end. Timestamps count 96 kHz ticks from the start of recording, and multi-byte
-//! values are big-endian. Spikes' samples are -128 to 127: their waveforms should come as int8 values (as floats),
-//! multiplied into them by a Spike Gain, whose gains (connected, read-only, to `gains`) are recorded in the `.set`
-//! file, with the full scale, as Axona's are (`gain_ch_0`..., `ADC_fullscale_mv`). The EEG (its `eeg` input) should
-//! come at 5 kHz (from a Downsample), as int8 values too, multiplied into them by a Continuous Gain, whose gains (connected, read-only,
-//! to `eeg gains`) are recorded likewise, as `EEG_gain_1`... in the `.set` file, and `gain` in each `.egf` file. Which
+//! values are big-endian. Spikes' samples are -128 to 127, covering the full scale: their waveforms should come
+//! amplified by a Spike Gain (see `Gains`), whose gains (connected, read-only, to `gains`) are recorded in the `.set`
+//! file, in Axona's terms: its full scale, and the gains that fit the same over it (`ADC_fullscale_mv`, `gain_ch_0`...).
+//! The EEG (its `eeg` input) should come at 5 kHz (from a Downsample), amplified too, by a Continuous Gain, whose gains
+//! (connected, read-only, to `eeg gains`) are recorded likewise, as `EEG_gain_1`... in the `.set` file, and `gain` in
+//! each `.egf` file. Which
 //! channel each EEG channel is (from the Channel Selector choosing them, connected to `eeg selection`) is recorded as
 //! `EEG_ch_1`... in the `.set` file, and `chan_name` in each `.egf` file.
 //!
@@ -43,7 +44,7 @@ use crate::standard::ephys::reference::parse_channels;
 use crate::standard::ephys::{ChannelSelection, Continuous, Events};
 use crate::standard::logs::LogLines;
 use crate::standard::pool::Pool;
-use crate::standard::spikes::{Gains, Spikes};
+use crate::standard::spikes::{Gains, RECORDED_FULL_SCALE_UV, Spikes, trimmed};
 use crate::standard::tracking::{Crop, Detection, Positions};
 use crate::standard::widgets::{require_input, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
@@ -71,11 +72,30 @@ pub struct WriteLtx {
     /// Where it writes (each recording's files in it).
     pub location: Location,
     pub prefix: String,
+    /// What the files' −128 to 127 cover, of the spikes' and the EEG's µV, as they come (amplified by their gains).
+    pub scales: Scales,
 }
 
 impl Default for WriteLtx {
     fn default() -> Self {
-        WriteLtx { location: Location::Base, prefix: "session".into() }
+        WriteLtx { location: Location::Base, prefix: "session".into(), scales: Scales::default() }
+    }
+}
+
+/// What the files' 8-bit samples, −128 to 127, cover: the spikes' and the EEG's µV, either side of zero, as they come
+/// (amplified by their gains). Beyond, they're clipped. The `.set` file gives each channel's gain from what came in to
+/// what's stored, in Axona's terms, so files say what they hold whatever these are.
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Scales {
+    pub spikes_uv: f32,
+    pub eeg_uv: f32,
+}
+
+impl Default for Scales {
+    /// ±250 µV each, as ephys-rs has always recorded, and as gains' auto detect fills, to begin with.
+    fn default() -> Self {
+        Scales { spikes_uv: RECORDED_FULL_SCALE_UV, eeg_uv: RECORDED_FULL_SCALE_UV }
     }
 }
 
@@ -243,7 +263,7 @@ impl Node<Edges> for WriteLtx {
         triggers: &ephys_rs::triggers::ControlTriggers<crate::Trigger>,
     ) -> Option<Box<dyn std::any::Any + Send>> {
         let base = self.base(base_directory, start_requested_date);
-        let (streams, recorded) = (Streams::of(inputs), Recorded::of(controls));
+        let (streams, recorded) = (Streams::of(inputs), Recorded::of(controls, self.scales));
         let files = LtxFiles::open(&base, *start_requested_date, streams, recorded);
         Some(Box::new(Chunk::writing(&base, streams, files, after_recording(triggers, AFTER_RECORDING))))
     }
@@ -283,6 +303,12 @@ impl Node<Edges> for WriteLtx {
             settings_grid(ui, |ui| {
                 location_ui(ui, &mut node.location, context.base_directory);
                 setting(ui, "File prefix", |ui| ui.text_edit_singleline(&mut node.prefix));
+                let scales = &mut node.scales;
+                for (name, uv, what) in
+                    [("Spikes' scale", &mut scales.spikes_uv, "spikes'"), ("EEG's scale", &mut scales.eeg_uv, "EEG's")]
+                {
+                    setting(ui, name, |ui| scale_ui(ui, uv, what));
+                }
             });
             location_summary(ui, &node.location, context.base_directory, &node.prefix, "files");
             ui.add_space(4.0);
@@ -311,6 +337,28 @@ impl Node<Edges> for WriteLtx {
             status_ui(ui, pool.and_then(Pool::newest).as_deref(), context.running, context.theme);
         });
     }
+}
+
+/// A scale: µV either side of zero, and what it's for.
+fn scale_ui(ui: &mut egui::Ui, uv: &mut f32, what: &str) -> egui::Response {
+    ui.horizontal(|ui| {
+        let speed = *uv * 0.01;
+        let field = egui::DragValue::new(uv)
+            .range(1.0..=1_000_000.0)
+            .speed(speed)
+            .custom_formatter(|v, _| trimmed(v))
+            .prefix("±")
+            .suffix(" µV");
+        ui.add(field);
+        ephys_rs::gui::widgets::info_icon(
+            ui,
+            &format!(
+                "Maps the {what} µV in this range (after their gains) to the 8 bits each sample has in the files, \
+                 −128 to 127: beyond it, they're clipped."
+            ),
+        );
+    })
+    .response
 }
 
 impl WriteLtx {
@@ -360,11 +408,13 @@ struct Recorded {
     /// Which channels the EEG's are, and their gains.
     eeg_selection: Option<ChannelSelection>,
     eeg_gains: Gains,
+    /// What the samples cover (Write LTX's own setting).
+    scales: Scales,
 }
 
 impl Recorded {
-    fn of(controls: &[Option<Setting>]) -> Self {
-        let mut recorded = Recorded::default();
+    fn of(controls: &[Option<Setting>], scales: Scales) -> Self {
+        let mut recorded = Recorded { scales, ..Default::default() };
         if let Some(Some(Setting::Detection(detection))) = controls.first() {
             recorded.detection = Some(detection.clone());
         }
@@ -395,18 +445,19 @@ impl Recorded {
     }
 }
 
-/// A gain in the Axona format's terms: what gives the range a byte's samples (±128) cover.
-fn axona_gain(gain: f32) -> f32 {
-    (FULL_SCALE_UV * gain / 128.0 * 10.0).round() / 10.0
+/// The Axona format's full scale, in µV, as its `.set` files give it (`ADC_fullscale_mv`): a channel's samples cover
+/// ±`AXONA_FULL_SCALE_UV / gain` of what came in.
+const AXONA_FULL_SCALE_UV: f32 = 1_500_000.0;
+
+/// A gain, recorded over `full_scale_uv` (see `Scales`), as the Axona format has it, to a tenth: the gain that fits the
+/// same over its full scale (×1 over ±250 µV is 6000). Its size: an inverted channel's data is already upside down.
+fn axona_gain(gain: f32, full_scale_uv: f32) -> f32 {
+    (gain.abs() * AXONA_FULL_SCALE_UV / full_scale_uv * 10.0).round() / 10.0
 }
 
-/// The Axona format's full scale for a gain of 1, in µV: its `.set` files give each channel's gain `g` for spikes
-/// recorded over ±`FULL_SCALE_UV / g` (as 8-bit samples), and the full scale as `ADC_fullscale_mv`.
-pub const FULL_SCALE_UV: f32 = 1_500_000.0;
-
-/// A value as a signed byte, saturating.
-fn to_i8(value: f32) -> u8 {
-    (value.round() as i32).clamp(-128, 127) as i8 as u8
+/// Amplified µV as a signed byte, ±128 being ±`full_scale_uv`, saturating.
+fn to_i8(uv: f32, full_scale_uv: f32) -> u8 {
+    ((uv * 128.0 / full_scale_uv).round() as i32).clamp(-128, 127) as i8 as u8
 }
 
 /// Seconds as ticks of the timebase.
@@ -532,6 +583,8 @@ struct LtxFiles {
     log_path: PathBuf,
     /// For each record of `bytes`.
     record: Vec<u8>,
+    /// What the samples cover.
+    scales: Scales,
 }
 
 impl LtxFiles {
@@ -554,11 +607,14 @@ impl LtxFiles {
         }
 
         let mut tetrodes = Vec::new();
+        // The full scale the samples cover: the spikes' gains', which the EEG's are taken relative to (the format has one).
+        let Scales { spikes_uv: full_scale_uv, eeg_uv: eeg_full_scale_uv } = recorded.scales;
+        if streams.spikes.is_some() || streams.continuous.is_some_and(|c| c.sample_rate == EGF_RATE) {
+            set.header("ADC_fullscale_mv", AXONA_FULL_SCALE_UV / 1000.0)?;
+        }
         if let Some(spikes) = streams.spikes {
-            set.header("ADC_fullscale_mv", FULL_SCALE_UV / 1000.0)?;
             for channel in 0..spikes.channels as usize {
-                // Its size: an inverted channel's spikes are already upside down in the data.
-                set.header(&format!("gain_ch_{channel}"), axona_gain(recorded.gains.get(channel).abs()))?;
+                set.header(&format!("gain_ch_{channel}"), axona_gain(recorded.gains.get(channel), full_scale_uv))?;
             }
             for group in 0..spikes.groups() {
                 let mut f = file(&format!(".{}", group + 1))?;
@@ -576,21 +632,20 @@ impl LtxFiles {
 
         let mut egf = Vec::new();
         if let Some(continuous) = streams.continuous.filter(|c| c.sample_rate == EGF_RATE) {
-            if streams.spikes.is_none() {
-                set.header("ADC_fullscale_mv", FULL_SCALE_UV / 1000.0)?;
-            }
             let numbers = recorded.eeg_channels(continuous.channels);
             for channel in 0..continuous.channels {
-                let (number, gain) = (numbers[channel as usize], recorded.eeg_gains.get(channel as usize));
+                let number = numbers[channel as usize];
+                let gain = axona_gain(recorded.eeg_gains.get(channel as usize), eeg_full_scale_uv);
                 set.header(&format!("EEG_ch_{}", channel + 1), number)?;
-                set.header(&format!("EEG_gain_{}", channel + 1), axona_gain(gain))?;
+                set.header(&format!("EEG_gain_{}", channel + 1), gain)?;
                 let mut f = file(&if channel == 0 { ".egf".into() } else { format!(".egf{}", channel + 1) })?;
                 f.header("num_chans", 1)?;
                 f.header("sample_rate", format!("{EGF_RATE} hz"))?;
                 f.header("stream_name", "eeg")?;
                 f.header("chan_name", format!("CH{number}"))?;
-                f.header("gain", axona_gain(gain))?;
-                f.header("range_uv", format!("{:.1}", recorded.eeg_gains.range_uv(channel as usize)))?;
+                f.header("gain", gain)?;
+                let range = eeg_full_scale_uv / recorded.eeg_gains.get(channel as usize).abs().max(f32::MIN_POSITIVE);
+                f.header("range_uv", format!("{range:.1}"))?;
                 f.count_header("num_EEG_samples")?;
                 egf.push(Egf { file: f, samples: 0 });
             }
@@ -644,6 +699,7 @@ impl LtxFiles {
             log,
             log_path,
             record: Vec::new(),
+            scales: recorded.scales,
         })
     }
 }
@@ -727,9 +783,10 @@ impl Files<Chunk> for LtxFiles {
                 for channel in 0..SPIKE_CHANNELS {
                     self.record.extend_from_slice(&ticks(seconds));
                     let values = waveform.get(channel * samples..(channel + 1) * samples).unwrap_or(&[]);
-                    // Already int8 values (from a Spike Gain), as floats: just made integers.
+                    // Amplified µV (by a Spike Gain), over what they cover.
                     let start = self.record.len();
-                    self.record.extend(values.iter().take(SPIKE_SAMPLES).map(|&v| to_i8(v)));
+                    let scale = self.scales.spikes_uv;
+                    self.record.extend(values.iter().take(SPIKE_SAMPLES).map(|&v| to_i8(v, scale)));
                     self.record.resize(start + SPIKE_SAMPLES, 0);
                 }
                 tetrode.file.data(&self.record)?;
@@ -746,8 +803,8 @@ impl Files<Chunk> for LtxFiles {
                     continue;
                 }
                 self.record.clear();
-                // Already int8 values (from an Continuous Gain), as floats: just made integers.
-                self.record.extend(values.iter().map(|&v| to_i8(v)));
+                // Amplified µV (by a Continuous Gain), over the full scale.
+                self.record.extend(values.iter().map(|&v| to_i8(v, self.scales.eeg_uv)));
                 egf.file.data(&self.record)?;
                 egf.samples += self.record.len() as u64;
                 bytes += self.record.len() as u64;
@@ -1005,6 +1062,42 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// Its window: where it writes, and its scales, each saying what it's for.
+    #[test]
+    fn settings_window() {
+        use crate::standard::themes::THEMES;
+        use crate::{NodeType, Nodes};
+        use egui_kittest::kittest::Queryable as _;
+        use ephys_rs::engine::{Graph, NodesEnum};
+        let mut graph = Graph::<Nodes>::default();
+        let id = graph.add(Nodes::create(NodeType::WriteLtx), [0.0, 0.0]);
+        let inputs: Vec<Option<DataStream>> = vec![None; WriteLtx::default().inputs().len()];
+        let mut harness = egui_kittest::Harness::builder().with_size([460.0, 300.0]).wgpu().build_ui_state(
+            |ui, graph: &mut Graph<Nodes>| {
+                graph.edit(id, &inputs, &THEMES[0].colours, None, None, None, false, false, None, |node, context| {
+                    node.gui_ui(ui, context)
+                });
+            },
+            graph,
+        );
+        THEMES[0].apply(&harness.ctx);
+        harness.run_steps(3);
+        assert!(harness.query_by_label_contains("8 bits each sample").is_none());
+        harness.get_all_by_label("What's this?").next().unwrap().hover();
+        harness.run_steps(4);
+        harness.get_by_label_contains("8 bits each sample");
+    }
+
+    /// Its scales map what comes in to the files' 8 bits, and the gains it gives in the `.set` file follow: twice the
+    /// scale stores half as much, and is half the gain, from what came in to what's stored.
+    #[test]
+    fn its_scales_map_microvolts_to_the_files_bytes() {
+        assert_eq!(to_i8(125.0, 250.0) as i8, 64);
+        assert_eq!(to_i8(125.0, 500.0) as i8, 32);
+        assert_eq!((to_i8(600.0, 500.0) as i8, to_i8(-600.0, 500.0) as i8), (127, -128), "beyond, clipped");
+        assert_eq!((axona_gain(1.0, 250.0), axona_gain(1.0, 500.0), axona_gain(-2.0, 500.0)), (6000.0, 3000.0, 6000.0));
+    }
+
     #[test]
     fn writes_spikes_eeg_and_positions() {
         let dir = std::env::temp_dir().join(format!("ephys-rs-ltx-{}", std::process::id()));
@@ -1028,7 +1121,7 @@ mod tests {
         let mut eeg_gains = Gains { scope: crate::standard::spikes::GainScope::All, ..Default::default() };
         eeg_gains.set_range(0, 200.0, crate::standard::spikes::Channels { count: 2, group_size: 1 });
         let eeg_selection = Some(ChannelSelection { apply: true, channels: "5, 7".into() });
-        let recorded = Recorded { detection: None, gains, eeg_selection, eeg_gains };
+        let recorded = Recorded { detection: None, gains, eeg_selection, eeg_gains, scales: Scales::default() };
         let mut files = Box::new(LtxFiles::open(&base, Local::now(), streams, recorded).unwrap());
 
         // A spike 300 samples into the second pass of 600: at 900 samples, 30 ms, 2880 ticks.
@@ -1038,13 +1131,15 @@ mod tests {
         files.write(&chunk).unwrap();
         let Buffer::Spikes(buffer) = chunk.give(0) else { unreachable!() };
         buffer.spikes.push(Spike { sample: 300, group: 0, channel: 0 });
-        // As int8 values (from a Spike Gain), from -80.
-        buffer.waveforms = (0..160).map(|i| i as f32 - 80.0).collect();
-        // Two samples on each channel (at 5 kHz), as int8 values.
+        // Amplified µV (by a Spike Gain): what are, over the scale, int8 values from -80.
+        let full_scale = Scales::default().spikes_uv;
+        let step = full_scale / 128.0;
+        buffer.waveforms = (0..160).map(|i| (i as f32 - 80.0) * step).collect();
+        // Two samples on each channel (at 5 kHz), amplified likewise; one beyond the full scale, clipped.
         let Buffer::Continuous(continuous) = chunk.give(1) else { unreachable!() };
         continuous.len = 2;
-        continuous.channel_mut(0).copy_from_slice(&[0.0, 30.0]);
-        continuous.channel_mut(1).copy_from_slice(&[60.0, 90.0]);
+        continuous.channel_mut(0).copy_from_slice(&[0.0, 30.0 * step]);
+        continuous.channel_mut(1).copy_from_slice(&[60.0 * step, 2.0 * full_scale]);
         let blob = Blob { x: 100.0, y: 50.0, area: 30 };
         let Buffer::Positions(positions) = chunk.give(2) else { unreachable!() };
         positions.samples.push(PositionSample {
@@ -1070,7 +1165,7 @@ mod tests {
         assert_eq!(record[3 * 54 + 4] as i8, 40);
         let egf = read(&base, ".egf2");
         assert_eq!(header(&egf, "num_EEG_samples"), "2");
-        assert_eq!(data(&egf).iter().map(|b| *b as i8).collect::<Vec<_>>(), vec![60, 90]);
+        assert_eq!(data(&egf).iter().map(|b| *b as i8).collect::<Vec<_>>(), vec![60, 127]);
         assert_eq!((header(&egf, "chan_name"), header(&egf, "range_uv")), ("CH7".into(), "200.0".into()));
         let pos = read(&base, ".pos");
         let sample = data(&pos);

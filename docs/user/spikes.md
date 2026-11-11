@@ -27,18 +27,21 @@ channels around the peak that follows. A group can't spike again until its last 
 
 ## Spike Gain
 
-> **Processing.** In: `spikes` (µV). Out: `spikes` (scaled). ◇ `gains`.
+> **Processing.** In: `spikes` (µV). Out: `spikes` (amplified µV). ◇ `gains`.
 
 <img src="../../tests/snapshots/spike_gain_settings.png" alt="A gain for each tetrode, and auto detect">
 
-Multiplies each channel's spike waveforms by a gain, into the units whatever records them needs: Write LTX wants
-values from −128 to 127. A spike bigger than that is clipped in the recording. Gains can be one for all channels, one
-for each group (tetrode), or one each. Beside each gain is the range in µV it **fits**. A negative gain turns the
-spikes upside down as they're recorded, fitting the same range as the positive one: setting the range, or auto detect,
-keeps it negative. Write LTX's `.set` file gives its size.
+Amplifies each channel's spike waveforms by a gain, as an amplifier does: ×1 leaves them as they are, ×2 doubles
+them. That's all a gain does: what's recorded of them is up to whatever records them (Write LTX's [scales](recording.md#write-ltx)
+map ±250 µV to its −128 to 127, to begin with, clipping beyond). Gains go from ×¼ to ×4, and can be one for all
+channels, one for each group (tetrode), or one each. A negative gain turns the spikes upside down as they're
+recorded: stepping it, or auto detect, keeps it negative.
 
-**Auto detect** samples each channel's spikes **for** a while, then sets each gain so that a range just fits, as
-its **Algorithm** says:
+Projects saved before gains amplified (when Write LTX's gains took µV to −128 to 127) are converted when they're
+opened, to record just the same.
+
+**Auto detect** samples each channel's spikes **for** a while, then sets each gain so that a range of them just
+**fills** what's recorded (±250 µV, Write LTX's spikes' scale, to begin with), as its **Algorithm** says:
 
 - **Threshold × factor**: the channel's threshold, times the **Threshold factor**.
 - **Peak percentile × factor**: a percentile of its spikes' peaks (95 %, say, or 100 % for the biggest), times its
@@ -57,9 +60,11 @@ Connect Write LTX's ◇ `gains` to it, and the gains are recorded in the `.set` 
 
 ![Spike Viewers, as a quick action opens them](../../tests/snapshots/standard_ltx_layout.png)
 
-Each group's recent spikes, overlaid: a box per tetrode, with a plot per channel and its threshold. Spikes always go up
-the plot, whichever way they go (a negative-going spike is shown upside down), so the threshold is always above the
-middle. A plot shows just the range its gain fits, so a spike reaching the edge is clipped in the recording.
+Each group's recent spikes, overlaid: a box per tetrode, with a plot per channel and its threshold. The spikes are
+shown as they're recorded, amplified by their gain, so raising a gain makes them bigger. The plots show the **Scale**,
+±250 µV to begin with: what Write LTX records, so a spike reaching the edge is clipped. Set it to see more, or
+less. Each row of tetrodes has the scale on its y axis, at its left. Spikes always go up the plot, whichever way they go (a negative-going spike is shown upside down,
+so the axis has its negative end at the top), so the threshold, amplified with them, is above the middle.
 
 Connected to a detector's thresholds and a gain's gains, it sets them:
 
@@ -67,10 +72,10 @@ Connected to a detector's thresholds and a gain's gains, it sets them:
 - Over a channel, its **+** and **−** buttons raise and lower its gain, and the button beside **−** (a spike and its
   reflection), or pressing **I**, turns its spikes upside down, or back: a negative gain. It's highlighted while they are, and the plot
   shows them as they're recorded.
-- Over a channel, press **T** to type its threshold, or **G** its gain. Up and down step it, Enter applies it, Esc
-  cancels.
+- Over a channel, press **T** to type its threshold (µV of what comes in), or **G** its gain (×). Up and down step it,
+  Enter applies it, Esc cancels.
 - **Auto detect** (gains, thresholds, or both) and **Run** triggers the detector's and gain's own auto detect. Both
   are done one after the other, the thresholds first, as the gains can go by them: it says which it's on, and what's
   next. The cogs beside **Gains** and **Thresholds** open their nodes' settings, which say how.
 
-**Plot height** sets the size of each box.
+**Plot height** sets the size of each box, and **Scale** what they show.

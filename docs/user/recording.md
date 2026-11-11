@@ -18,12 +18,17 @@ for tetrode analysis code and [Waveform](https://chenneuroscience.github.io/wave
 | File | What's in it | Comes from |
 | --- | --- | --- |
 | `name.set` | Headers: the settings, gains and channels | the settings connected |
-| `name.1`, `name.2`... | Each tetrode's spikes, 50 samples a channel | `spikes`, from a Spike Gain (−128 to 127) |
-| `name.egf`, `name.egf2`... | Each EEG channel, at 5 kHz | `eeg`, from a Downsample then a Continuous Gain (−128 to 127) |
+| `name.1`, `name.2`... | Each tetrode's spikes, 50 samples a channel | `spikes`, from a Spike Gain (−128 to 127: its spikes' scale) |
+| `name.egf`, `name.egf2`... | Each EEG channel, at 5 kHz | `eeg`, from a Downsample then a Continuous Gain (its EEG's scale) |
 | `name.pos` | Both LEDs' positions and sizes | `positions`, from a Position Detector |
 | `name.ttl` | Digital input changes | `events` |
 | `name.pos.ttl` | The timing LED's changes | `pos ttl`, from a Position Detector |
 | `name.txt` | Log lines | `log` |
+
+Its **Spikes' scale** and **EEG's scale** map the µV that come in (amplified by their gains) to the files' 8 bits,
+−128 to 127: ±250 µV each, to begin with, beyond which they're clipped. There's rarely a reason to change them: set
+the gains instead. The `.set` file gives each channel's gain from what came in to what's stored, in Axona's terms
+(`gain_ch_0`..., over `ADC_fullscale_mv`: ×1 over ±250 µV is 6000).
 
 Connect its read-only settings so the files say what they hold: the spikes' and EEG's gains, which channels the EEG
 is, and the tracking's crop and calibration. Without them, the headers leave them out. Its window says which aren't

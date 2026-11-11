@@ -6,7 +6,7 @@ pub mod spike_detector;
 pub mod spike_gain;
 pub mod spike_viewer;
 
-use eframe::egui::Color32;
+use eframe::egui::{self, Color32};
 use serde::{Deserialize, Serialize};
 
 use super::per_pass;
@@ -111,11 +111,9 @@ pub struct SpikesBuffer {
     pub samples: usize,
     /// Each channel's threshold and noise (a standard deviation), in µV, as the pass ended.
     pub thresholds: Vec<f32>,
-    /// The gain each channel's waveforms have been multiplied by (1 until a Spike Gain has: they're then in the
-    /// units of what takes them, not µV), and the range of those units they're meant to fit, ±`output_range` (so
-    /// ±`output_range / gain` µV, which the Spike Viewer shows).
+    /// The gain each channel's waveforms have been multiplied by: 1 until a Spike Gain has (they're then amplified µV,
+    /// see `Gains`).
     pub gains: Vec<f32>,
-    pub output_range: f32,
     pub noise: Vec<f32>,
     /// How many samples of continuous data the pass covers (for timing spikes across passes).
     pub pass_samples: usize,
@@ -164,7 +162,6 @@ impl DataStreamType for Spikes {
             samples: waveform,
             thresholds: vec![0.0; self.channels as usize],
             gains: vec![1.0; self.channels as usize],
-            output_range: DEFAULT_RANGE_UV,
             noise: vec![0.0; self.channels as usize],
             pass_samples: 0,
         }
@@ -177,16 +174,18 @@ impl DataStreamType for Spikes {
     fn copy(from: &SpikesBuffer, to: &mut SpikesBuffer) {
         to.spikes.clone_from(&from.spikes);
         to.waveforms.clone_from(&from.waveforms);
-        (to.group_size, to.samples, to.output_range, to.pass_samples) =
-            (from.group_size, from.samples, from.output_range, from.pass_samples);
+        (to.group_size, to.samples, to.pass_samples) = (from.group_size, from.samples, from.pass_samples);
         to.thresholds.clone_from(&from.thresholds);
         to.gains.clone_from(&from.gains);
         to.noise.clone_from(&from.noise);
     }
 }
 
-/// The range gains are chosen to fit until it's set: Write LTX's int8 values.
-pub const DEFAULT_MAGNITUDE: f32 = 128.0;
+/// What Write LTX's −128 to 127 cover, of amplified µV, until it's set: ±250 µV, as ephys-rs has always recorded. What
+/// auto detect fills, to begin with, so a channel's chosen range is what's recorded.
+pub const RECORDED_FULL_SCALE_UV: f32 = DEFAULT_RANGE_UV;
+/// The sizes a gain can be, either way: a quarter to four times.
+pub const GAIN_SIZES: std::ops::RangeInclusive<f32> = 0.25..=4.0;
 /// A channel's range until it's set: µV either side of zero.
 pub const DEFAULT_RANGE_UV: f32 = 250.0;
 /// A channel's threshold until it's set, in µV.
@@ -194,16 +193,22 @@ pub const DEFAULT_THRESHOLD_UV: f32 = 50.0;
 /// The ranges gains can give, in µV either side of zero.
 pub const RANGES_UV: std::ops::RangeInclusive<f32> = 10.0..=30_000.0;
 
-/// The next range down (`smaller`) or up from `range_uv`, in steps of 1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8 (×10ⁿ).
-pub fn range_step(range_uv: f32, smaller: bool) -> f32 {
+/// The next round number down (`smaller`) or up from `value`, in steps of 1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8 (×10ⁿ,
+/// from 0.01 to 10⁷).
+pub fn nice_step(value: f32, smaller: bool) -> f32 {
     const STEPS: [f32; 10] = [1.0, 1.2, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0];
-    let steps = (0..=5).flat_map(|n| STEPS.map(|s| s * 10f32.powi(n)));
+    let steps = (-2..=7).flat_map(|n| STEPS.map(|s| s * 10f32.powi(n)));
     let next = if smaller {
-        steps.filter(|&s| s < range_uv / 1.001).reduce(f32::max)
+        steps.filter(|&s| s < value / 1.001).reduce(f32::max)
     } else {
-        steps.filter(|&s| s > range_uv * 1.001).reduce(f32::min)
+        steps.filter(|&s| s > value * 1.001).reduce(f32::min)
     };
-    next.unwrap_or(range_uv).clamp(*RANGES_UV.start(), *RANGES_UV.end())
+    next.unwrap_or(value)
+}
+
+/// The next range down (`smaller`) or up from `range_uv`, a round number (see `nice_step`) within `RANGES_UV`.
+pub fn range_step(range_uv: f32, smaller: bool) -> f32 {
+    nice_step(range_uv, smaller).clamp(*RANGES_UV.start(), *RANGES_UV.end())
 }
 
 /// The next threshold up or down from `uv`: on to the next round number, in steps of a hundredth to a tenth of it
@@ -294,15 +299,16 @@ impl GainScope {
     }
 }
 
-/// Each channel's gain for spikes: what the Spike Gain multiplies its waveforms' values (µV) by, a dumb multiplier,
-/// into whatever units what takes them wants (still floats): int8 values for Write LTX, int16 or 0–1 for others.
-/// Chosen from the data, a channel's bigger spikes reach ±`output_range` (the units' range, which is up to whoever
-/// chooses it), so its range, which the Spike Viewer's plots show, is ±`output_range / gain` µV. They're shared out
-/// as `scope` says: setting one channel's sets its group's, or all.
+/// Each channel's gain: what a Spike Gain or Continuous Gain multiplies its µV by, as an amplifier does (×2 doubles
+/// them), into amplified µV: all a gain does. Choosing gains from the data, a channel's bigger values are made to fill
+/// ±`fill_uv` (what's recorded: Write LTX's full scale, to begin with), so its range, what it fits, is
+/// ±`fill_uv / gain` µV of what comes in. Negative turns them upside down. They're shared out as `scope` says: setting
+/// one channel's sets its group's, or all.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Gains {
-    pub output_range: f32,
+    /// What auto detect fills, and what a gain's range is of (see `range_uv`): nothing else reads it.
+    pub fill_uv: f32,
     pub scope: GainScope,
     /// Each channel's gain (channels past the end have the default range's).
     pub gains: Vec<f32>,
@@ -310,7 +316,7 @@ pub struct Gains {
 
 impl Default for Gains {
     fn default() -> Self {
-        Gains { output_range: DEFAULT_MAGNITUDE, scope: GainScope::default(), gains: Vec::new() }
+        Gains { fill_uv: RECORDED_FULL_SCALE_UV, scope: GainScope::default(), gains: Vec::new() }
     }
 }
 
@@ -322,16 +328,14 @@ pub struct Channels {
 }
 
 impl Gains {
+    /// A channel's gain: ×1 until it's set.
     pub fn get(&self, channel: usize) -> f32 {
-        per_channel(&self.gains, channel, self.output_range / DEFAULT_RANGE_UV)
+        per_channel(&self.gains, channel, 1.0)
     }
 
-    /// A channel's range: µV either side of zero that its gain fits within the output range (whichever its sign).
+    /// A channel's range: µV either side of zero that its gain makes ±`fill_uv` (whichever its sign).
     pub fn range_uv(&self, channel: usize) -> f32 {
-        match self.gains.get(channel) {
-            Some(gain) => self.output_range / gain.abs().max(f32::MIN_POSITIVE),
-            None => DEFAULT_RANGE_UV,
-        }
+        self.fill_uv / self.get(channel).abs().max(f32::MIN_POSITIVE)
     }
 
     /// Whether a channel's gain is negative: its waveforms turned upside down.
@@ -357,17 +361,16 @@ impl Gains {
     /// Sets a channel's range (so its gain, keeping its sign), and those of the channels sharing its gain.
     pub fn set_range(&mut self, channel: usize, range_uv: f32, channels: Channels) {
         let sign = if self.inverted(channel) { -1.0 } else { 1.0 };
-        let gain = self.output_range / range_uv.clamp(*RANGES_UV.start(), *RANGES_UV.end());
-        self.set(channel, sign * gain, channels);
+        self.set(channel, sign * self.fill_uv / range_uv.max(f32::MIN_POSITIVE), channels);
     }
 
-    /// Sets a channel's gain, and those of the channels sharing it. Negative turns their waveforms upside down; it's
-    /// never zero.
+    /// Sets a channel's gain, and those of the channels sharing it, its size within `GAIN_SIZES`. Negative turns their
+    /// waveforms upside down.
     pub fn set(&mut self, channel: usize, gain: f32, channels: Channels) {
-        let gain = if gain < 0.0 { gain.min(-f32::MIN_POSITIVE) } else { gain.max(f32::MIN_POSITIVE) };
+        let gain = gain.signum() * gain.abs().clamp(*GAIN_SIZES.start(), *GAIN_SIZES.end());
         let unit = self.units(channels).into_iter().find(|u| u.contains(&channel)).unwrap_or(channel..channel + 1);
         for channel in unit {
-            set_per_channel(&mut self.gains, channel, gain, self.output_range / DEFAULT_RANGE_UV);
+            set_per_channel(&mut self.gains, channel, gain, 1.0);
         }
     }
 
@@ -387,6 +390,41 @@ impl Gains {
         self.scope = scope;
         self.set_ranges(&ranges, channels);
     }
+}
+
+/// A value to two decimals, without those it doesn't need: 4, 8.33, 0.5.
+pub fn trimmed(value: f64) -> String {
+    let text = format!("{value:.2}");
+    text.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
+/// A field for a gain: what the µV are multiplied by, its size within `GAIN_SIZES`, either way if `negative` (upside
+/// down).
+pub fn gain_field(ui: &mut egui::Ui, gain: &mut f32, negative: bool) -> egui::Response {
+    let (smallest, biggest) = (*GAIN_SIZES.start(), *GAIN_SIZES.end());
+    let low = if negative { -biggest } else { smallest };
+    let speed = gain.abs() * 0.01;
+    let field =
+        egui::DragValue::new(gain).range(low..=biggest).speed(speed).custom_formatter(|v, _| trimmed(v)).prefix("×");
+    let tip = "What the µV are multiplied by, as an amplifier does (×2 doubles them): ×¼ to ×4";
+    let tip =
+        if negative { format!("{tip}. Negative turns them upside down, fitting the same range") } else { tip.into() };
+    ui.add(field).on_hover_text(tip)
+}
+
+/// A field for what auto detect fills.
+pub fn fill_field(ui: &mut egui::Ui, gains: &mut Gains) -> egui::Response {
+    let speed = gains.fill_uv * 0.01;
+    let field = egui::DragValue::new(&mut gains.fill_uv)
+        .range(1.0..=1_000_000.0)
+        .speed(speed)
+        .custom_formatter(|v, _| trimmed(v))
+        .prefix("±")
+        .suffix(" µV");
+    ui.add(field).on_hover_text(
+        "What each channel's chosen range is made to fill, of the amplified µV: what's recorded, so Write LTX's full \
+         scale (±250 µV, to begin with). A gain fits this ÷ the gain of what comes in.",
+    )
 }
 
 impl EdgeType for Gains {
@@ -442,7 +480,7 @@ mod tests {
         let mut gains = Gains::default();
         assert_eq!(gains.range_uv(0), DEFAULT_RANGE_UV);
         gains.set_range(2, 500.0, tetrodes);
-        assert_eq!(gains.get(2), 128.0 / 500.0, "a gain in the output's units a µV");
+        assert_eq!(gains.get(2), RECORDED_FULL_SCALE_UV / 500.0, "how much it amplifies");
         let near = |a: f32, b: f32| (a - b).abs() < 1e-3;
         assert!(near(gains.range_uv(1), DEFAULT_RANGE_UV) && near(gains.range_uv(2), 500.0), "each channel its own");
         // A tetrode each: the widest of each's.
@@ -464,7 +502,7 @@ mod tests {
         gains.invert(1, tetrodes);
         assert!((0..4).all(|c| gains.inverted(c)), "the whole tetrode, which shares its gain");
         assert!(!gains.inverted(4));
-        assert_eq!(gains.get(0), -128.0 / 500.0);
+        assert_eq!(gains.get(0), -RECORDED_FULL_SCALE_UV / 500.0);
         let near = |a: f32, b: f32| (a - b).abs() < 1e-3;
         assert!(near(gains.range_uv(0), 500.0), "the range is the gain's size");
         // Setting the range, by hand or from the data, keeps it upside down.
@@ -472,9 +510,11 @@ mod tests {
         gains.set_ranges(&[300.0; 8], tetrodes);
         assert!(gains.inverted(0) && near(gains.range_uv(0), 300.0));
         gains.set(0, -1e-30, tetrodes);
-        assert!(gains.get(0) < 0.0, "never zero");
-        gains.set(0, -0.5, tetrodes);
+        assert_eq!(gains.get(0), -0.25, "never zero: a quarter, at least");
+        gains.set(0, 10.0, tetrodes);
+        assert_eq!(gains.get(0), 4.0, "and four times, at most");
+        gains.set(0, -2.5, tetrodes);
         gains.invert(0, tetrodes);
-        assert_eq!(gains.get(3), 0.5, "and back");
+        assert_eq!(gains.get(3), 2.5, "and back");
     }
 }

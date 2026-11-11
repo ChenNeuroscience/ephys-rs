@@ -6,18 +6,21 @@
 //! `Node::triggers`): how they do it, they say, in their own settings (a click away, in advanced mode). Both are
 //! detected one after the other, the thresholds first, as the gains can go by them (see `AutoDetecting`).
 //!
-//! A plot shows a channel's range (see `Gains`): just what a recording's values hold, so a spike that reaches a
-//! plot's edge is clipped in the recording. Spikes go up the plot, whichever way they go (a negative-going
-//! spike is shown upside down), so the threshold is always above the middle (and below too, if they go both ways).
+//! A plot shows the spikes as they're recorded: amplified by their gain (see `Gains`), so raising it makes them bigger,
+//! over the viewer's scale (Write LTX's, to begin with, ±250 µV: what's recorded, so a spike reaching the edge is
+//! clipped). Spikes go up the plot, whichever way they go (a negative-going spike is shown upside down), so the
+//! threshold, amplified with them, is above the middle (and below too, if they go both ways), unless the gain's
+//! negative.
 
 use eframe::egui::{self, Align2, FontId, Key, Pos2, Rect, Sense, Shape, Stroke};
 use serde::{Deserialize, Serialize};
 
 use crate::standard::auto_detect::AutoDetect;
-use crate::standard::plots;
+use crate::standard::plots::{self, axis_ui};
 use crate::standard::pool::Pool;
 use crate::standard::spikes::{
-    Channels, DEFAULT_RANGE_UV, DEFAULT_THRESHOLD_UV, Gains, Polarity, Spikes, Thresholds, range_step, threshold_step,
+    Channels, DEFAULT_THRESHOLD_UV, Gains, Polarity, RECORDED_FULL_SCALE_UV, Spikes, Thresholds, nice_step,
+    threshold_step, trimmed,
 };
 use crate::standard::widgets::{open_settings_button, require_input};
 use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
@@ -39,11 +42,14 @@ pub struct SpikeViewer {
     pub plot_height: f32,
     /// What to detect from the data, when asked.
     pub detect: Detect,
+    /// The amplified µV either side of zero the plots show (the spikes as they're recorded): the gains' full scale, to
+    /// begin with.
+    pub scale_uv: f32,
 }
 
 impl Default for SpikeViewer {
     fn default() -> Self {
-        SpikeViewer { plot_height: 120.0, detect: Detect::Both }
+        SpikeViewer { plot_height: 120.0, detect: Detect::Both, scale_uv: RECORDED_FULL_SCALE_UV }
     }
 }
 
@@ -121,8 +127,8 @@ pub struct Recent {
     /// Spikes found, for each group.
     total: Vec<u64>,
     thresholds: Vec<f32>,
-    /// Each channel's range (µV either side of zero), from its gain.
-    ranges: Vec<f32>,
+    /// Each channel's gain (see `SpikesBuffer::gains`).
+    gains: Vec<f32>,
 }
 
 impl ephys_rs::engine::PassState for Recent {
@@ -142,8 +148,8 @@ pub struct RecentDisplay {
     count: Vec<usize>,
     total: Vec<u64>,
     thresholds: Vec<f32>,
-    /// Each channel's range (µV either side of zero), from its gain.
-    ranges: Vec<f32>,
+    /// Each channel's gain.
+    gains: Vec<f32>,
 }
 
 /// Which setting's being typed.
@@ -164,22 +170,29 @@ struct Typing {
 }
 
 impl Typing {
-    /// What's typed, as a value: the box's own decorations are allowed, if they're typed or pasted.
+    /// What's typed, as a value: the box's own decorations are allowed, if they're typed or pasted. A gain's size:
+    /// its sign stays as it is (see `Gains::invert`).
     fn value(&self) -> Option<f32> {
-        let text = self.text.trim().trim_start_matches('±').trim_end_matches("µV").trim();
+        let text = self.text.trim().trim_start_matches(['±', '×', '-', '−']).trim_end_matches("µV").trim();
         text.parse().ok().filter(|v: &f32| v.is_finite() && *v > 0.0)
     }
 
-    /// Steps what's typed (or, if it isn't a value, `range` or `threshold`, as they are) up or down.
-    fn step(&mut self, up: bool, range: f32, threshold: f32) {
+    /// Steps what's typed (or, if it isn't a value, `gain` or `threshold`, as they are) up or down; a threshold stays
+    /// within `range`, what the plot shows of what comes in.
+    fn step(&mut self, up: bool, gain: f32, range: f32, threshold: f32) {
         self.text = match self.what {
-            Typed::Gain => format!("{:.0}", range_step(self.value().unwrap_or(range), !up)),
+            Typed::Gain => gain_text(nice_step(self.value().unwrap_or(gain.abs()), !up)),
             Typed::Threshold => {
                 let next = threshold_step(self.value().unwrap_or(threshold), up);
                 format!("{:.1}", next.clamp(MIN_THRESHOLD_UV, range))
             }
         };
     }
+}
+
+/// A gain's size, as it's typed and shown.
+fn gain_text(gain: f32) -> String {
+    trimmed(gain as f64)
 }
 
 /// A group's title, saying which channels it is, counting from 1. A channel on its own is its own title.
@@ -206,7 +219,7 @@ impl Node<Edges> for SpikeViewer {
                       thresholds: set them, and the gains, here.",
     };
     const SHORTCUTS: &'static [Shortcut] = &[
-        Shortcut { keys: "G", does: "Type the gain (its range) of the channel under the pointer" },
+        Shortcut { keys: "G", does: "Type the gain of the channel under the pointer" },
         Shortcut { keys: "T", does: "Type its threshold" },
         Shortcut { keys: "↑ ↓", does: "While typing, step it up or down" },
         Shortcut { keys: "Enter, Esc", does: "Apply what's typed, or cancel it" },
@@ -247,7 +260,7 @@ impl Node<Edges> for SpikeViewer {
             count: vec![0; groups],
             total: vec![0; groups],
             thresholds: vec![DEFAULT_THRESHOLD_UV; stream.channels as usize],
-            ranges: vec![DEFAULT_RANGE_UV; stream.channels as usize],
+            gains: vec![1.0; stream.channels as usize],
         }
     }
 
@@ -259,27 +272,19 @@ impl Node<Edges> for SpikeViewer {
         for (i, spike) in input.spikes.iter().enumerate() {
             let group = spike.group as usize;
             let slot = (group * keep + recent.head[group]) * size;
-            // In µV, whatever gains they've been multiplied by (see `SpikesBuffer::gains`), but upside down if the
-            // gain's negative, as they're recorded.
-            let stored = &mut recent.waveforms[slot..slot + size];
-            stored.copy_from_slice(input.waveform(i));
-            for (c, values) in stored.chunks_mut(input.samples.max(1)).enumerate() {
-                let gain = input.gains.get(group * input.group_size + c).copied().unwrap_or(1.0);
-                values.iter_mut().for_each(|v| *v /= gain.abs().max(f32::MIN_POSITIVE));
-            }
+            // As they're recorded: amplified by their gains (see `SpikesBuffer::gains`).
+            recent.waveforms[slot..slot + size].copy_from_slice(input.waveform(i));
             recent.head[group] = (recent.head[group] + 1) % keep;
             recent.count[group] = (recent.count[group] + 1).min(keep);
             recent.total[group] += 1;
         }
         let channels = recent.thresholds.len();
         recent.thresholds.copy_from_slice(&input.thresholds[..channels]);
-        for (range, gain) in recent.ranges.iter_mut().zip(&input.gains) {
-            *range = input.output_range / gain.abs().max(f32::MIN_POSITIVE);
-        }
+        recent.gains.clone_from(&input.gains);
 
         let groups = stream.groups() as usize;
         let (first, shown) = self.groups(groups);
-        let Recent { waveforms, head, count, total, thresholds, ranges, .. } = recent;
+        let Recent { waveforms, head, count, total, thresholds, gains, .. } = recent;
         pass.shared::<Pool<RecentDisplay>>().send_newest(pass.sequence, |display| {
             (display.stream, display.first, display.shown, display.keep) = (Some(stream), first, shown, keep);
             display.waveforms.clear();
@@ -296,7 +301,7 @@ impl Node<Edges> for SpikeViewer {
                 display.total.push(total[group]);
             }
             display.thresholds.clone_from(thresholds);
-            display.ranges.clone_from(ranges);
+            display.gains.clone_from(gains);
         });
     }
 
@@ -369,6 +374,18 @@ impl SpikeViewer {
                 let label = ui.label("Plot height");
                 ui.add(egui::DragValue::new(&mut self.plot_height).range(40.0..=600.0).speed(1.0).suffix(" px"))
                     .labelled_by(label.id);
+                let label = ui.label("Scale");
+                let speed = self.scale_uv * 0.01;
+                let field = egui::DragValue::new(&mut self.scale_uv)
+                    .range(1.0..=1_000_000.0)
+                    .speed(speed)
+                    .custom_formatter(|v, _| trimmed(v))
+                    .prefix("±")
+                    .suffix(" µV");
+                let tip = "The amplified µV either side of zero the plots show: the spikes as they're recorded, so a \
+                           bigger gain makes them bigger. As it begins, what Write LTX records (±250 µV): a spike at \
+                           the edge is clipped";
+                ui.add(field).labelled_by(label.id).on_hover_text(tip);
             });
             ui.separator();
             // Auto detect: what, then run (each by its node, as it says: see their settings).
@@ -440,10 +457,6 @@ impl SpikeViewer {
                 open_settings_button(ui, context, GAINS_CONTROL, "Spike Gain");
                 ui.label("Thresholds");
                 open_settings_button(ui, context, THRESHOLDS, "Spike Detector");
-                ui.separator();
-                ui.weak(
-                    "Over a channel: G to type its gain, T its threshold, I to invert it. Drag a threshold to move it.",
-                );
             }
             context.node_toolbar(ui);
         });
@@ -463,6 +476,11 @@ impl SpikeViewer {
         let plot = egui::vec2(height * ASPECT, height);
         // Each group on a card of its own: a title, then its plots, with room around them.
         let (header, pad, gap) = (22.0, 6.0, 16.0);
+        // The y axis, once a row of groups, at the left of the first: the scale, as they're drawn (upside down, for
+        // negative-going spikes).
+        let axis = 44.0;
+        let flip = if stream.polarity == Polarity::Negative { -1.0 } else { 1.0 };
+        let scale = self.scale_uv.max(1.0);
         let tile = egui::vec2(plot.x * k as f32 + 2.0 * pad, header + plot.y + pad);
         let kind = match k {
             1 => "Channel",
@@ -475,18 +493,20 @@ impl SpikeViewer {
         let mut typing: Option<Typing> = ui.data(|d| d.get_temp(typing_id));
 
         egui::ScrollArea::both().auto_shrink(false).show(ui, |ui| {
-            let width = ui.available_width() - gap;
+            let width = ui.available_width() - gap - axis;
             let columns = (((width + gap) / (tile.x + gap)).floor() as usize).max(1);
             let rows = shown.div_ceil(columns);
-            let size =
-                egui::vec2(gap + columns.min(shown.max(1)) as f32 * (tile.x + gap), gap + rows as f32 * (tile.y + gap));
+            let size = egui::vec2(
+                axis + gap + columns.min(shown.max(1)) as f32 * (tile.x + gap),
+                gap + rows as f32 * (tile.y + gap),
+            );
             let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
             let painter = ui.painter_at(ui.clip_rect());
             let mut offset = 0;
             for i in 0..shown {
                 let group = first + i;
                 let min = rect.min
-                    + egui::vec2(gap, gap)
+                    + egui::vec2(axis + gap, gap)
                     + egui::vec2((i % columns) as f32, (i / columns) as f32) * (tile + egui::vec2(gap, gap));
                 let count = display.map_or(0, |d| d.count[i]);
                 let total = display.map(|d| d.total[i]);
@@ -512,6 +532,11 @@ impl SpikeViewer {
                     let waveforms: Vec<&[f32]> = waveforms.into_iter().flatten().collect();
                     let keep = display.map_or(1, |d| d.keep.max(1));
                     self.plot_ui(ui, &painter, rect, channel, &waveforms, keep, &mut plots, &mut typing);
+                }
+                // At the card's edge, so the labels are outside it.
+                if i % columns == 0 {
+                    let plots_x = egui::Rangef::new(min.x, min.x + pad + k as f32 * plot.x);
+                    axis_ui(&painter, plots_x, min.y + header, plot.y, flip * scale, theme);
                 }
                 offset += count * k * samples;
             }
@@ -543,19 +568,24 @@ impl SpikeViewer {
         let layout = Channels { count: plots.stream.channels as usize, group_size: plots.stream.group_size as usize };
         let shown = |values: &[f32], default: f32| values.get(channel).copied().unwrap_or(default);
         let display_thresholds = plots.display.map_or(&[][..], |d| &d.thresholds[..]);
-        let display_ranges = plots.display.map_or(&[][..], |d| &d.ranges[..]);
         let threshold = match &plots.thresholds {
             Some(t) => t.get(channel),
             None => shown(display_thresholds, DEFAULT_THRESHOLD_UV),
         };
-        let range = match &plots.gains {
-            Some(g) => g.range_uv(channel),
-            None => shown(display_ranges, DEFAULT_RANGE_UV),
+        // The gain the spikes come amplified by: the gains' (which take effect a pass later), or what came with them.
+        let gain = match (&plots.gains, plots.display) {
+            (Some(g), _) => g.get(channel),
+            (None, Some(d)) => shown(&d.gains, 1.0),
+            (None, None) => 1.0,
         };
+        let size = gain.abs().max(f32::MIN_POSITIVE);
+        let scale = self.scale_uv.max(1.0);
+        // What the plot shows of what comes in: a threshold stays within it.
+        let range = scale / size;
         // Spikes go up: negative-going ones are shown upside down.
         let flip = if polarity == Polarity::Negative { -1.0 } else { 1.0 };
         let half = rect.height() * 0.5;
-        let y = |uv: f32| rect.center().y - (flip * uv / range).clamp(-1.0, 1.0) * half;
+        let y = |uv: f32| rect.center().y - (flip * uv / scale).clamp(-1.0, 1.0) * half;
         let x = |s: usize, samples: usize| rect.left() + (s as f32 + 0.5) / samples.max(1) as f32 * rect.width();
 
         painter.rect_stroke(rect, 0.0, Stroke::new(1.0, theme.divider), egui::StrokeKind::Inside);
@@ -570,10 +600,11 @@ impl SpikeViewer {
 
         let interactive = !plots.locked;
         let hovered = ui.rect_contains_pointer(rect);
-        // The threshold: above the middle, and below too if spikes go both ways. Dragged, if it can be set.
-        let mut lines = vec![y(flip * threshold)];
+        // The threshold, amplified as the spikes are: above the middle, and below too if spikes go both ways. Dragged,
+        // if it can be set.
+        let mut lines = vec![y(flip * threshold * size)];
         if polarity == Polarity::Both {
-            lines.push(y(-threshold));
+            lines.push(y(-threshold * size));
         }
         for (i, line) in lines.into_iter().enumerate() {
             let mut active = false;
@@ -581,7 +612,7 @@ impl SpikeViewer {
                 let grab = Rect::from_x_y_ranges(rect.x_range(), line - 4.0..=line + 4.0);
                 let response = ui.interact(grab, ui.scope_id().with(("threshold", channel, i)), Sense::drag());
                 if let Some(pointer) = response.interact_pointer_pos().filter(|_| response.dragged()) {
-                    let uv = ((rect.center().y - pointer.y) / half).abs() * range;
+                    let uv = ((rect.center().y - pointer.y) / half).abs() * scale / size;
                     thresholds.set(channel, uv.clamp(MIN_THRESHOLD_UV, range));
                 }
                 active = response.hovered() || response.dragged();
@@ -594,12 +625,6 @@ impl SpikeViewer {
             painter.hline(rect.x_range(), line, stroke);
         }
 
-        let typing_here = typing.as_ref().is_some_and(|t| t.channel == channel);
-        if hovered || typing_here {
-            let values = format!("±{range:.0}\n{threshold:.0} µV");
-            let corner = rect.left_top() + egui::vec2(3.0, 2.0);
-            painter.text(corner, Align2::LEFT_TOP, values, FontId::monospace(9.0), theme.text_secondary);
-        }
         if hovered
             && interactive
             && let Some(gains) = plots.gains.as_deref_mut()
@@ -609,9 +634,9 @@ impl SpikeViewer {
             let up = Rect::from_min_size(rect.right_top() + egui::vec2(-button.x - 2.0, 2.0), button);
             let down = Rect::from_min_size(rect.right_bottom() - button - egui::vec2(2.0, 2.0), button);
             for (place, up, text) in [(up, true, "+"), (down, false, "−")] {
-                let tip = if up { "Raise the gain: spikes look bigger" } else { "Lower the gain: spikes look smaller" };
+                let tip = if up { "Raise the gain: spikes get bigger" } else { "Lower the gain: spikes get smaller" };
                 if ui.put(place, egui::Button::new(text).small()).on_hover_text(tip).clicked() {
-                    gains.set_range(channel, range_step(range, up), layout);
+                    gains.set(channel, gain.signum() * nice_step(size, !up), layout);
                 }
             }
             let invert = down.translate(egui::vec2(-button.x - 2.0, 0.0));
@@ -644,7 +669,7 @@ impl SpikeViewer {
             };
             if let Some(what) = what {
                 let text = match what {
-                    Typed::Gain => format!("{range:.0}"),
+                    Typed::Gain => gain_text(size),
                     Typed::Threshold => format!("{threshold:.1}"),
                 };
                 *typing = Some(Typing { channel, what, text, focused: false });
@@ -652,7 +677,7 @@ impl SpikeViewer {
         }
         if let Some(t) = typing.as_mut().filter(|t| t.channel == channel) {
             let (label, unit) = match t.what {
-                Typed::Gain => ("Range", "±µV"),
+                Typed::Gain => ("Gain", "×"),
                 Typed::Threshold => ("Threshold", "µV"),
             };
             let size = egui::vec2((rect.width() - 8.0).clamp(30.0, 80.0), 20.0);
@@ -669,7 +694,7 @@ impl SpikeViewer {
             if ui.memory(|m| m.has_focus(id)) {
                 for (key, up) in [(Key::ArrowUp, true), (Key::ArrowDown, false)] {
                     while ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, key)) {
-                        t.step(up, range, threshold);
+                        t.step(up, gain, range, threshold);
                     }
                 }
             }
@@ -689,7 +714,7 @@ impl SpikeViewer {
                 match (cancelled, t.value(), t.what) {
                     (false, Some(v), Typed::Gain) => {
                         if let Some(gains) = plots.gains.as_deref_mut() {
-                            gains.set_range(channel, v, layout)
+                            gains.set(channel, gain.signum() * v, layout)
                         }
                     }
                     (false, Some(v), Typed::Threshold) => {
@@ -749,7 +774,7 @@ mod tests {
 
     /// Over the first channel's plot.
     fn type_threshold(harness: &mut Harness<'_, (Thresholds, Gains)>, key: Key) {
-        pointer_at(harness, 70.0, 80.0);
+        pointer_at(harness, 114.0, 80.0);
         harness.key_press(key);
         harness.run_steps(2);
         assert!(typing(harness), "the box is up");
@@ -775,7 +800,7 @@ mod tests {
     #[test]
     fn a_channels_invert_button_turns_its_spikes_upside_down_or_back() {
         let mut harness = harness();
-        pointer_at(&mut harness, 70.0, 80.0);
+        pointer_at(&mut harness, 114.0, 80.0);
         let range = harness.state().1.range_uv(0);
         harness.get_by_label("Invert").click();
         harness.run_steps(2);
@@ -784,9 +809,9 @@ mod tests {
         assert!((gains.range_uv(0) - range).abs() < 1e-3, "its range the same");
         assert!(!gains.inverted(4), "not the next tetrode");
         // Over the plot, but not its buttons.
-        pointer_at(&mut harness, 60.0, 110.0);
+        pointer_at(&mut harness, 104.0, 110.0);
         harness.snapshot("spike_viewer_inverted");
-        pointer_at(&mut harness, 70.0, 80.0);
+        pointer_at(&mut harness, 114.0, 80.0);
         harness.get_by_label("−").click();
         harness.run_steps(2);
         assert!(harness.state().1.inverted(0), "a smaller gain, still upside down");
@@ -805,7 +830,7 @@ mod tests {
         type_threshold(&mut harness, Key::T);
         // The pointer leaving the plot takes its gain buttons with it.
         pointer_at(&mut harness, 690.0, 390.0);
-        pointer_at(&mut harness, 70.0, 80.0);
+        pointer_at(&mut harness, 114.0, 80.0);
         pointer_at(&mut harness, 690.0, 390.0);
         harness.key_press(Key::ArrowUp);
         harness.key_press(Key::ArrowUp);
@@ -832,6 +857,8 @@ mod tests {
         harness.key_press(Key::Enter);
         harness.run_steps(2);
         assert!(!typing(&harness));
-        assert!((harness.state().1.range_uv(0) - 200.0).abs() < 1e-3, "a step down the ranges, applied by Enter");
+        let gains = &harness.state().1;
+        assert_eq!(gains.get(0), 0.8, "a step down from the default ×1, applied by Enter");
+        assert!((gains.range_uv(0) - 312.5).abs() < 1e-3, "so the spikes are smaller");
     }
 }

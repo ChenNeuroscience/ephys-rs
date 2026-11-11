@@ -1,9 +1,9 @@
-//! The Spike Gain: multiplies each channel's spike waveforms (µV) by its gain, a dumb multiplier, into whatever units
-//! what takes them wants (as floats): int8 values for Write LTX, say, or int16, or 0 to 1. Gains can be one for all
+//! The Spike Gain: multiplies each channel's spike waveforms (µV) by its gain, as an amplifier does (×2 doubles them),
+//! into amplified µV: what's recorded (Write LTX's int8 values cover ±250 µV of them). Gains can be one for all
 //! channels, one for each group (a tetrode's, say), or one each (see `Gains`). They can be chosen from the data when
 //! it's triggered ("auto detect", from its window or a Spike Viewer's): its passes sample each channel's spikes for a
-//! while, then choose what's to reach the output range (which is the only thing that range is for) by the channel's
-//! threshold, its spikes' peaks, or both (see `Fit`).
+//! while, then choose what's to fill what's recorded (`Gains::fill_uv`) by the channel's threshold, its spikes'
+//! peaks, or both (see `Fit`).
 //!
 //! The thresholds come with the spikes, as the detector has them. If they change while it's sampling (moved by hand, or
 //! detected just before, and only now applied), it starts again, as the spikes it had were found by the old ones. A
@@ -14,7 +14,9 @@ use ephys_rs::engine::{BufferUsage, TreeShake};
 use serde::{Deserialize, Serialize};
 
 use crate::standard::auto_detect::{Distribution, SAMPLING, auto_detect_ui, detecting};
-use crate::standard::spikes::{Channels, DEFAULT_RANGE_UV, GainScope, Gains, Polarity, RANGES_UV, SpikesBuffer};
+use crate::standard::spikes::{
+    Channels, DEFAULT_RANGE_UV, GainScope, Gains, Polarity, RANGES_UV, SpikesBuffer, fill_field, gain_field,
+};
 use crate::standard::widgets::{input_summary, named_settings_grid, require_input, setting};
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
 use ephys_rs::engine::{Category, Input, Node, NodeInfo, Output, Pass, SettingPort, UiContext};
@@ -25,7 +27,7 @@ pub struct SpikeGain {
     pub gains: Gains,
     /// Seconds to sample the data for, to choose the gains from.
     pub sampling: f32,
-    /// What's to reach the output range, when choosing them.
+    /// What's to fill what's recorded (`Gains::fill_uv`), when choosing them.
     pub fit: Fit,
 }
 
@@ -35,7 +37,7 @@ impl Default for SpikeGain {
     }
 }
 
-/// What's to reach the output range, for each channel, when choosing the gains: its threshold times a factor, its
+/// What's to fill what's recorded, for each channel, when choosing the gains: its threshold times a factor, its
 /// spikes' peaks (a percentile of them) times a factor, or the two together. Never less than 1.5 × the threshold, so it's in
 /// view; and a channel with no spikes goes by its threshold.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -140,8 +142,8 @@ impl Node<Edges> for SpikeGain {
     const INFO: NodeInfo = NodeInfo {
         name: "Spike Gain",
         category: Category::Processing,
-        description: "Multiplies spikes' waveforms by each channel's gain, into the units what takes them wants (int8 \
-                      values for Write LTX, say): set by hand, or chosen from the data.",
+        description: "Amplifies spikes' waveforms by each channel's gain (×2 doubles them), to fill what's recorded: \
+                      set by hand, or chosen from the data.",
     };
 
     /// Only while it's given something, and something needs what it makes.
@@ -223,12 +225,11 @@ impl Node<Edges> for SpikeGain {
             }
         }
 
-        // The gains, applied: a dumb multiplier, into whatever units what takes the spikes wants.
+        // The gains, applied: amplified µV.
         let Some(Buffer::Spikes(spikes)) = pass.outputs.first_mut() else { return };
         for (channel, gain) in spikes.gains.iter_mut().enumerate() {
             *gain = self.gains.get(channel);
         }
-        spikes.output_range = self.gains.output_range;
         let (k, samples, size) = (spikes.group_size, spikes.samples, spikes.group_size * spikes.samples);
         for (i, spike) in spikes.spikes.iter().enumerate() {
             let waveform = &mut spikes.waveforms[i * size..(i + 1) * size];
@@ -275,10 +276,9 @@ impl Node<Edges> for SpikeGain {
                     GainScope::Channel => "Channel",
                 };
                 egui::ScrollArea::vertical().max_height(260.0).id_salt("gains").show(ui, |ui| {
-                    egui::Grid::new("gains").num_columns(3).striped(true).show(ui, |ui| {
+                    egui::Grid::new("gains").num_columns(2).striped(true).show(ui, |ui| {
                         ui.strong(kind);
                         ui.strong("Gain");
-                        ui.strong("Fits").on_hover_text("The µV that reach the output range, at this gain");
                         ui.end_row();
                         for (index, unit) in units.iter().enumerate() {
                             let name = match node.gains.scope {
@@ -288,17 +288,9 @@ impl Node<Edges> for SpikeGain {
                             };
                             ui.label(name);
                             let mut gain = node.gains.get(unit.start);
-                            let speed = gain.abs() * 0.01;
-                            let field = egui::DragValue::new(&mut gain)
-                                .range(-1e6..=1e6)
-                                .speed(speed)
-                                .max_decimals(3)
-                                .prefix("×");
-                            let tip = "Negative turns the spikes upside down: the range stays the same";
-                            if ui.add(field).on_hover_text(tip).changed() {
+                            if gain_field(ui, &mut gain, true).changed() {
                                 node.gains.set(unit.start, gain, channels);
                             }
-                            ui.label(format!("±{:.0} µV", node.gains.range_uv(unit.start)));
                             ui.end_row();
                         }
                     });
@@ -311,15 +303,7 @@ impl Node<Edges> for SpikeGain {
             let detecting = detecting(context);
             ui.add_enabled_ui(!detecting, |ui| {
                 named_settings_grid(ui, "auto detect", |ui| {
-                    setting(ui, "Fit to", |ui| {
-                        let mut output_range = node.gains.output_range;
-                        let field = egui::DragValue::new(&mut output_range).range(1e-6..=1e9).speed(1.0).prefix("±");
-                        let response = ui
-                            .add(field)
-                            .on_hover_text("The output range to fill: ±128 for int8, ±32768 for int16, ±1 for floats");
-                        node.gains.output_range = output_range;
-                        response
-                    });
+                    setting(ui, "Fill to", |ui| fill_field(ui, &mut node.gains));
                     let fit = &mut node.fit;
                     setting(ui, "Algorithm", |ui| {
                         egui::ComboBox::from_id_salt("algorithm")
@@ -331,7 +315,7 @@ impl Node<Edges> for SpikeGain {
                             })
                             .response
                             .on_hover_text(
-                                "What fills the output range: each channel's threshold times a factor, a percentile \
+                                "What fills what's recorded: each channel's threshold times a factor, a percentile \
                                  of its spikes' peaks times a factor, or both together. Never less than 1.5 × the \
                                  threshold; a channel without spikes goes by its threshold",
                             )
@@ -486,7 +470,7 @@ mod tests {
         assert!(close(gains.range_uv(1), 600.0), "and the second's: {}", gains.range_uv(1));
         assert!(close(gains.range_uv(2), 120.0), "no spikes on it: room for its threshold");
         assert!(close(gains.range_uv(3), 75.0), "and for the default threshold");
-        assert_eq!(gains.output_range, 128.0, "for 8-bit samples, to begin with");
+        assert_eq!(gains.fill_uv, 250.0, "Write LTX's full scale, to begin with");
         // A percentile of them leaves out the second channel's few big ones: 3 in 4 are 50 µV.
         let mut sampling = Sampling::new(4.0, &[50.0; 4]);
         let Buffer::Spikes(spikes) = &mut outputs[0] else { unreachable!() };

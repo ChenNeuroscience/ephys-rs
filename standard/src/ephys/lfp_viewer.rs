@@ -7,8 +7,8 @@
 //! sample in each of the view's columns (so spikes show however far it's zoomed out).
 //!
 //! It sets what's upstream of it and beside it, through its controls (as the Spike Viewer does the spikes'):
-//! - an Continuous Gain's gains (what the continuous data's recorded at): each row shows the range they fit, and their
-//!   auto-detect can be run from here;
+//! - an Continuous Gain's gains (what the continuous data's amplified by, as it's recorded): one for all can be set
+//!   here, and their auto-detect run;
 //! - a Channel Selector's selection, upstream: click the numbers of the channels to keep, while all are shown, then apply
 //!   it, from above the first channel;
 //! - a Reference's references (the spikes' re-referencing, from the same channels): a column of Rs for each, left of the
@@ -29,8 +29,9 @@ use crate::standard::ephys::reference::{
 use crate::standard::ephys::spectrum::{Spectra, SpectraBuffer};
 use crate::standard::ephys::{ChannelSelection, Continuous, ContinuousBuffer};
 use crate::standard::plots;
+use crate::standard::plots::axis_ui;
 use crate::standard::pool::Pool;
-use crate::standard::spikes::{Channels, GainScope, Gains};
+use crate::standard::spikes::{Channels, GainScope, Gains, gain_field};
 use crate::standard::widgets::{TIME_AXIS_HEIGHT, inline_block, open_settings_button, require_input, time_axis_ui};
 use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
 use ephys_rs::engine::{Category, Control, EdgeType, Input, Node, NodeInfo, Output, Pass, UiContext};
@@ -159,12 +160,11 @@ pub struct TracesDisplay {
     spectra: Option<SpectraBuffer>,
 }
 
-/// What the rows are drawn from: the traces, and the controls' gains and reference, if they're connected.
+/// What the rows are drawn from: the traces, and the controls' reference, if it's connected.
 struct Rows<'a> {
     display: &'a TracesDisplay,
     stream: Continuous,
     spectra: Option<(&'a SpectraBuffer, Spectra)>,
-    gains: Option<&'a Gains>,
     reference: Option<&'a Reference>,
     /// Whether the app's in advanced mode, where the Reference's settings can be got to.
     advanced: bool,
@@ -319,7 +319,6 @@ impl Node<Edges> for LfpViewer {
             display: &display,
             stream,
             spectra,
-            gains: gains.as_ref(),
             reference: reference.as_ref(),
             advanced,
             selection_settings: advanced.then_some(&mut settings),
@@ -409,8 +408,7 @@ impl LfpViewer {
         });
     }
 
-    /// A row for each channel shown, at the row height: its trace, the range its gain fits (if the gains are
-    /// connected), and its spectrum; with its number to click to select it if there's a selection to make, and left of
+    /// A row for each channel shown, at the row height: its trace, and its spectrum; with its number to click to select it if there's a selection to make, and left of
     /// that an R for each reference if there are any. Above the first channel, scrolling with them, are what heads those
     /// columns, and the selection, if there's one. Returns any change to the references.
     fn rows_ui(
@@ -421,7 +419,7 @@ impl LfpViewer {
         mut selection: Option<&mut ChannelSelection>,
         locked: bool,
     ) -> Option<ReferenceEdit> {
-        let Rows { display, stream, spectra, gains, reference, advanced, mut selection_settings } = rows_of;
+        let Rows { display, stream, spectra, reference, advanced, mut selection_settings } = rows_of;
         let references = display.references;
         let area = ui.available_rect_before_wrap();
         ui.painter().rect_filled(area, 2.0, theme.surface_sunken);
@@ -631,22 +629,6 @@ impl LfpViewer {
                     let unselected = selected.as_ref().is_some_and(|t| !t.contains(&number));
                     let colour = if unselected { theme.text_primary.gamma_multiply(0.3) } else { theme.text_primary };
                     trace(i, colour);
-                    // The range its gain fits (what's recorded), if it's within the row: beyond it, it's clipped.
-                    if let Some(gains) = gains {
-                        let range = gains.range_uv(i);
-                        if range < self.scale_uv {
-                            let stroke = Stroke::new(1.0, theme.warning.gamma_multiply(0.5));
-                            for level in [range, -range] {
-                                let dashes = Shape::dashed_line(
-                                    &[egui::pos2(plot.min, y(level)), egui::pos2(plot.max, y(level))],
-                                    stroke,
-                                    4.0,
-                                    4.0,
-                                );
-                                painter.extend(dashes);
-                            }
-                        }
-                    }
 
                     if let Some((buffer, stream)) = spectra {
                         let place = Rect::from_min_max(egui::pos2(row.right() - spectrum, top), row.max).shrink(2.0);
@@ -665,51 +647,6 @@ impl LfpViewer {
             set_selected(selection, &selected, stream.channels);
         }
         reference_toggled
-    }
-}
-
-/// The ticks of a row's y axis, top to bottom, for a row `height` high showing ±`scale_uv`: where each is (from 1, at
-/// the top, to -1), and its label. As many as there's room for.
-fn axis_ticks(height: f32, scale_uv: f32) -> Vec<(f32, String)> {
-    let value = |at: f32| {
-        let uv = (at * scale_uv * 10.0).round() / 10.0;
-        if uv < 0.0 { format!("−{}", -uv) } else { uv.to_string() }
-    };
-    let top = format!("{} µV", value(1.0));
-    match height {
-        ..20.0 => vec![(0.0, format!("±{}", value(1.0)))],
-        ..30.0 => vec![(1.0, top), (-1.0, value(-1.0))],
-        ..100.0 => vec![(1.0, top), (0.0, value(0.0)), (-1.0, value(-1.0))],
-        _ => {
-            let middle = [0.5, 0.0, -0.5].map(|at| (at, value(at)));
-            std::iter::once((1.0, top)).chain(middle).chain([(-1.0, value(-1.0))]).collect()
-        }
-    }
-}
-
-/// A row's y axis, at the left of `plot`, and a faint line along it at zero. The row's `height` high, from `top`.
-fn axis_ui(
-    painter: &egui::Painter,
-    plot: egui::Rangef,
-    top: f32,
-    height: f32,
-    scale_uv: f32,
-    theme: &ephys_rs::theme::Colours,
-) {
-    let stroke = Stroke::new(1.0, theme.divider);
-    let centre = top + height * 0.5;
-    painter.hline(plot, centre, Stroke::new(1.0, theme.divider.gamma_multiply(0.4)));
-    painter.vline(plot.min, top + 1.0..=top + height - 1.0, stroke);
-    for (at, text) in axis_ticks(height, scale_uv) {
-        // The ends' labels stay within the row.
-        let (y, anchor) = match at {
-            1.0 => (top + 1.0, Align2::RIGHT_TOP),
-            -1.0 => (top + height - 1.0, Align2::RIGHT_BOTTOM),
-            _ => (centre - at * height * 0.5, Align2::RIGHT_CENTER),
-        };
-        painter.hline(plot.min - 3.0..=plot.min, y, stroke);
-        let position = egui::pos2(plot.min - 5.0, y);
-        painter.text(position, anchor, text, FontId::monospace(9.0), theme.text_secondary);
     }
 }
 
@@ -830,23 +767,21 @@ fn reference_ui(ui: &mut egui::Ui, reference: &mut Reference, channels: u32, row
     }
 }
 
-/// The gains (a Continuous Gain's: what the continuous data's recorded at), compactly: the range one for all
-/// fits, or that they're each channel's (as each row shows); and detecting them from the data.
+/// The gains (a Continuous Gain's: what the continuous data's amplified by, as it's recorded), compactly: one for all,
+/// or that they're each channel's; and detecting them from the data.
 fn gains_ui(ui: &mut egui::Ui, context: &mut UiContext<Edges>, gains: &mut Gains, channels: u32) {
     let label = ui.strong("Gain");
     let label = label.on_hover_text(
-        "The gains the continuous data's recorded at. Each row shows the range its gain fits (dashed, if it's within \
-         the row): beyond it, it's clipped",
+        "The gains the continuous data's amplified by, as it's recorded (×2 doubles it). The traces here are as it \
+         comes in, in µV, before them",
     );
     let layout = Channels { count: channels as usize, group_size: 1 };
     let detecting = context.trigger_progress(Some(GAINS), crate::TriggerKind::AutoDetect).is_some();
     if gains.scope == GainScope::All {
-        let mut range = gains.range_uv(0);
-        let speed = range * 0.01;
-        let field = egui::DragValue::new(&mut range).range(1.0..=100_000.0).speed(speed).prefix("fits ±").suffix(" µV");
-        let field = ui.add_enabled(!detecting, field).labelled_by(label.id);
-        if field.on_hover_text("The range one gain for all channels fits").changed() {
-            gains.set_range(0, range, layout);
+        let mut gain = gains.get(0);
+        let field = ui.add_enabled_ui(!detecting, |ui| gain_field(ui, &mut gain, false)).inner;
+        if field.labelled_by(label.id).changed() {
+            gains.set(0, gain, layout);
         }
     } else {
         ui.label("each channel's");
@@ -1125,7 +1060,9 @@ mod tests {
 
     #[test]
     fn the_y_axis_has_as_many_ticks_as_there_is_room_for() {
-        let labels = |height, scale| axis_ticks(height, scale).into_iter().map(|t| t.1).collect::<Vec<_>>();
+        let labels = |height, scale| {
+            crate::standard::plots::axis_ticks(height, scale).into_iter().map(|t| t.1).collect::<Vec<_>>()
+        };
         assert_eq!(labels(12.0, 200.0), ["±200"]);
         assert_eq!(labels(24.0, 200.0), ["200 µV", "−200"]);
         assert_eq!(labels(40.0, 200.0), ["200 µV", "0", "−200"]);
@@ -1157,7 +1094,6 @@ mod tests {
                 display: &display,
                 stream,
                 spectra: None,
-                gains: None,
                 reference: None,
                 advanced: true,
                 selection_settings: None,
@@ -1186,7 +1122,6 @@ mod tests {
                 display: &display,
                 stream,
                 spectra: None,
-                gains: None,
                 reference: Some(&reference),
                 advanced: true,
                 selection_settings: None,
@@ -1213,7 +1148,6 @@ mod tests {
                 display: &display,
                 stream,
                 spectra: None,
-                gains: None,
                 reference: Some(&reference),
                 advanced: true,
                 selection_settings: None,
@@ -1247,7 +1181,6 @@ mod tests {
                     display: &display,
                     stream,
                     spectra: None,
-                    gains: None,
                     reference: None,
                     advanced: true,
                     selection_settings: None,
@@ -1286,7 +1219,6 @@ mod tests {
                     display: &display,
                     stream,
                     spectra: None,
-                    gains: None,
                     reference: Some(&reference),
                     advanced: true,
                     selection_settings: Some(&mut settings),
@@ -1391,7 +1323,6 @@ mod tests {
                     display: &display,
                     stream,
                     spectra: None,
-                    gains: None,
                     reference: reference_shown,
                     advanced: false,
                     selection_settings: None,
@@ -1465,7 +1396,6 @@ mod tests {
                 display: &display,
                 stream,
                 spectra: None,
-                gains: None,
                 reference: Some(&reference),
                 advanced: true,
                 selection_settings: None,

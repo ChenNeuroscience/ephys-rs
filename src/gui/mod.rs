@@ -27,7 +27,7 @@ mod toolbar;
 
 /// Pieces of the GUI for components to draw with, so they look of a piece with it.
 pub mod widgets {
-    pub use super::help::{help_link, with_help};
+    pub use super::help::{help_link, info_icon, with_help};
     pub use super::icons::Icon;
     pub use super::icons::eye;
     pub use super::toolbar::{small_icon_button, small_toggle_button, toolbar_button};
@@ -3451,7 +3451,7 @@ mod tests {
         let mut graph = Graph::default();
         let vr = graph.add(Nodes::VrComputer(VrComputer { port, ..Default::default() }), [0.0, 0.0]);
         let path = directory.display().to_string();
-        let writer = WriteLtx { location: Location::Directory { path }, prefix: "vr".into() };
+        let writer = WriteLtx { location: Location::Directory { path }, prefix: "vr".into(), ..Default::default() };
         let ltx = graph.add(Nodes::WriteLtx(writer), [300.0, 0.0]);
         let link = |graph: &mut Graph<Nodes>, from, to| graph.connect(from, to).unwrap();
         let port_of = |node, role, index| engine::Port { node, role, index };

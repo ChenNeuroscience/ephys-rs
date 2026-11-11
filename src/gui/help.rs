@@ -29,6 +29,20 @@ pub fn help_link(ui: &mut egui::Ui, text: &str, help: impl Fn(&mut egui::Ui)) ->
     with_help(response, help)
 }
 
+/// Help as an ⓘ icon, saying `text` when hovered over, or clicked: beside a setting, say, to say what it's for.
+pub fn info_icon(ui: &mut egui::Ui, text: &str) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::Vec2::splat(12.0), egui::Sense::click());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Link, ui.is_enabled(), "What's this?"));
+    let visuals = ui.visuals();
+    let colour = if response.hovered() { visuals.text_color() } else { visuals.weak_text_color() };
+    ui.painter().circle_stroke(rect.center(), 5.5, Stroke::new(1.0, colour));
+    ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, "i", egui::FontId::proportional(9.0), colour);
+    with_help(response, |ui| {
+        ui.set_max_width(320.0);
+        ui.label(text);
+    })
+}
+
 fn popup_id(response: &egui::Response) -> egui::Id {
     response.id.with("help")
 }

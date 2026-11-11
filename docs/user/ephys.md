@@ -95,15 +95,15 @@ it aliases.
 
 ## Continuous Gain
 
-> **Processing.** In: `continuous` (µV). Out: `scaled`. ◇ `gains`.
+> **Processing.** In: `continuous` (µV). Out: `scaled` (amplified µV). ◇ `gains`.
 
-Multiplies each channel by a gain, into the units whatever records it needs: Write LTX's EEG wants values from −128
-to 127, say. Gains can be **one for** all channels, or one each.
+Amplifies each channel by a gain, as an amplifier does: ×1 leaves it as it is, ×2 doubles it. That's all a gain does:
+what's recorded is up to whatever records it (Write LTX's EEG [scale](recording.md#write-ltx) maps ±250 µV to its −128
+to 127, to begin with). Gains go from ×¼ to ×4, and can be **one for** all channels, or one each.
 
 **Auto detect** chooses gains from the data: it samples each channel **for** a while, then sets each gain so that the
-mean plus a multiple of a percentile's distance from it (the **Level**) just **fits** the output range. Run it from
-here, or from an [LFP Viewer](#lfp-viewer) connected to ◇ `gains`, which also shows the range each channel's gain
-fits.
+mean plus a multiple of a percentile's distance from it (the **Level**) just **fills** what's recorded (±250 µV, to
+begin with). Run it from here, or from an [LFP Viewer](#lfp-viewer) connected to ◇ `gains`.
 
 ## Spectrum
 
@@ -123,7 +123,8 @@ Scrolling traces of continuous data, a row per channel, with the time along the 
 lowest sample in each pixel's worth of time, so spikes show however far it's zoomed out.
 
 **Toolbar**: **Span** (seconds shown), **Scale** (±µV, the rows' y axes), **Row height**. With a gain connected, the
-range the gains fit, and their auto detect. With a reference connected, the references.
+gain (one for all, ×) and their auto detect: the traces are what comes in, in µV, before it. With a reference
+connected, the references.
 
 Connected to other nodes' settings, it sets them while you look at the traces:
 
