@@ -292,7 +292,7 @@ impl Node<Edges> for WriteLtx {
             settings_grid(ui, |ui| {
                 let scales = &mut node.scales;
                 for (name, uv, what) in
-                    [("Spikes' scale", &mut scales.spikes_uv, "spikes'"), ("EEG's scale", &mut scales.eeg_uv, "EEG's")]
+                    [("Spikes' scale", &mut scales.spikes_uv, "Spike"), ("EEG's scale", &mut scales.eeg_uv, "EEG")]
                 {
                     setting(ui, name, |ui| scale_ui(ui, uv, what));
                 }
@@ -340,8 +340,8 @@ fn scale_ui(ui: &mut egui::Ui, uv: &mut f32, what: &str) -> egui::Response {
         ephys_rs::gui::widgets::info_icon(
             ui,
             &format!(
-                "Maps the {what} µV in this range (after their gains) to the 8 bits each sample has in the files, \
-                 −128 to 127: beyond it, they're clipped."
+                "{what} data is stored as 8-bit signed integers (−128 to 127). The voltage range set here is how \
+                 the voltages coming in are mapped into it (they're clamped to fit)."
             ),
         );
     })
@@ -1053,10 +1053,10 @@ mod tests {
         );
         THEMES[0].apply(&harness.ctx);
         harness.run_steps(3);
-        assert!(harness.query_by_label_contains("8 bits each sample").is_none());
+        assert!(harness.query_by_label_contains("8-bit signed integers").is_none());
         harness.get_all_by_label("What's this?").next().unwrap().hover();
         harness.run_steps(4);
-        harness.get_by_label_contains("8 bits each sample");
+        harness.get_by_label_contains("8-bit signed integers");
     }
 
     /// Its scales map what comes in to the files' 8 bits, and the gains it gives in the `.set` file follow: twice the
