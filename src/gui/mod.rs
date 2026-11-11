@@ -3441,7 +3441,7 @@ mod tests {
     fn a_vr_computer_is_recorded_and_its_settings_wait_for_recording_to_stop() {
         use crate::components::vr_computer::VrComputer;
         use crate::standard::other::ttl_recording_control::TtlRecordingControl;
-        use crate::standard::recording::{Location, ltx::WriteLtx};
+        use crate::standard::recording::ltx::WriteLtx;
         use std::io::BufRead;
         use std::io::Write;
 
@@ -3450,9 +3450,7 @@ mod tests {
         let directory = std::env::temp_dir().join(format!("ephys-rs-vr-{}", std::process::id()));
         let mut graph = Graph::default();
         let vr = graph.add(Nodes::VrComputer(VrComputer { port, ..Default::default() }), [0.0, 0.0]);
-        let path = directory.display().to_string();
-        let writer = WriteLtx { location: Location::Directory { path }, prefix: "vr".into(), ..Default::default() };
-        let ltx = graph.add(Nodes::WriteLtx(writer), [300.0, 0.0]);
+        let ltx = graph.add(Nodes::WriteLtx(WriteLtx::default()), [300.0, 0.0]);
         let link = |graph: &mut Graph<Nodes>, from, to| graph.connect(from, to).unwrap();
         let port_of = |node, role, index| engine::Port { node, role, index };
         for (output, input) in [(0, 2), (1, 4), (2, 5)] {
@@ -3467,6 +3465,13 @@ mod tests {
 
         let mut harness = harness();
         harness.state_mut().graph = graph;
+        // Recording in a base directory of the test's own, where the writer writes.
+        let saved = serde_json::json!({
+            "chosen": "A directory",
+            "types": { "A directory": { "directory": directory.display().to_string() } },
+        });
+        let types = harness.state().base_directories.types();
+        harness.state_mut().base_directories = BaseDirectories::new(types, Some(&saved));
         harness.run_steps(2);
         let until = |harness: &mut Harness<TestApp>, what: &str, done: &dyn Fn(&TestApp) -> bool| {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);

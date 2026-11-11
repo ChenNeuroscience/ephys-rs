@@ -1,8 +1,9 @@
 # Recording
 
 Writers record what's connected to them while ephys-rs is recording (the toolbar's **Record**). They write in the
-[base directory](main-window.md#where-recordings-go) chosen in the toolbar, with its file prefix. Or each can write in
-a **Subdirectory** of it, or a **Directory** of its own (its **Writes in** setting).
+[base directory](main-window.md#where-recordings-go) chosen in the toolbar, each recording named as it says (with its
+prefix, or else when the recording started), as the settings saved beside it are. Their windows say where the next
+recording will go.
 
 Each component starts with what kind of node it is and its ports: data ports `like this`, settings ports marked ◇.
 
@@ -39,8 +40,8 @@ connected, and it warns if what's connected doesn't suit LTX (spikes not in tetr
 > **Writer.** In: `continuous`, `events`. ◇ `after recording`.
 
 Records continuous data and digital inputs as they come, in the Open Ephys binary format, which the Open Ephys analysis
-tools (and anything reading NumPy files) can load. Each recording is a folder (its window shows what it'll be called,
-from its **Folder prefix** and the base directory), laid out as the Open Ephys GUI's are: `structure.oebin`, then `continuous/` (16-bit samples, with each
+tools (and anything reading NumPy files) can load. Each recording is a folder in the base directory (its window shows
+what it'll be called), laid out as the Open Ephys GUI's are: `structure.oebin`, then `continuous/` (16-bit samples, with each
 sample's number and time) and `events/` (each TTL change).
 
 ## Run Command

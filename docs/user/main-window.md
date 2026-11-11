@@ -38,8 +38,8 @@ stays the same from start to finish.
 ![The base directory, with its type menu open](../../tests/snapshots/toolbar_base_directory.png)
 
 The section after the folder icon says where the next recording will go: a *base directory*, and perhaps a prefix
-for the file names. Click the folder to choose the directory, and type the prefix after it. Every writer writes there
-(or in a subdirectory of it, if it's set to), so you choose it once for all of them.
+for the file names. Click the folder to choose the directory, and type the prefix after it. Every writer writes there,
+so you choose it once for all of them.
 
 In advanced mode, the cog beside it chooses how recordings are named. ephys-rs comes with **A directory**, a
 directory and an optional file prefix. Your lab's build may add others. Chen-neuro adds **Subject, date and trial**,

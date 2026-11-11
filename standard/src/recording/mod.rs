@@ -7,8 +7,8 @@
 //! `BufferUsage::takes`), swapping them into a chunk rather than copying, so whatever they make of the data to write
 //! (LTX's bytes, say) is made on their thread, not in the passes.
 //!
-//! Where a writer writes is its `Location`: the base directory (see `ephys_rs::base_directory`), a subdirectory of
-//! it, or a directory of its own.
+//! A writer writes in the base directory (see `ephys_rs::base_directory`), each recording named as it says
+//! (`recording_path`).
 //!
 //! Before recording starts, a writer opens its files and starts its thread (`Node::prepare_to_record`), so passes
 //! only record once it's ready. The graph can't change while recording, so one that hasn't prepared has a problem
@@ -32,7 +32,6 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use eframe::egui::{self, RichText};
-use serde::{Deserialize, Serialize};
 
 use crate::standard::pool::{Pool, SLACK_PASSES};
 use ephys_rs::engine::PoolStatus;
@@ -214,91 +213,22 @@ pub fn expand(directory: &str) -> PathBuf {
 /// Where recordings go when there's no base directory (none's been chosen) and a writer's meant to write in it.
 pub const NO_BASE: &str = "~/recordings";
 
-/// Where a writer writes.
-#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum Location {
-    /// In the base directory (see `ephys_rs::base_directory`).
-    #[default]
-    Base,
-    /// In a subdirectory of it (or a path within it: "ltx/tetrodes", say).
-    Subdirectory { name: String },
-    /// In a directory of its own, whatever the base directory (a leading `~` meaning the home directory).
-    Directory { path: String },
-}
-
-impl Location {
-    /// The directory it means, given where the base directory says recordings go, if it says (otherwise `NO_BASE`).
-    pub fn directory(&self, base: Option<&Place>) -> PathBuf {
-        let base = || base.map_or_else(|| expand(NO_BASE), |p| p.directory.clone());
-        match self {
-            Location::Base => base(),
-            Location::Subdirectory { name } => base().join(name.trim().trim_start_matches(['/', '\\'])),
-            Location::Directory { path } => expand(path),
-        }
-    }
-}
-
-/// Choosing where a writer writes: in the base directory, a subdirectory of it, or a directory of its own; and where
-/// that is, for the next recording (or this one).
-pub fn location_ui(ui: &mut egui::Ui, location: &mut Location, base: Option<&Place>) {
-    let names = ["The base directory", "A subdirectory of it", "A directory of its own"];
-    let current = match location {
-        Location::Base => 0,
-        Location::Subdirectory { .. } => 1,
-        Location::Directory { .. } => 2,
-    };
-    let mut chosen = current;
-    crate::standard::widgets::setting(ui, "Writes in", |ui| {
-        egui::ComboBox::from_id_salt("location")
-            .selected_text(names[current])
-            .show_ui(ui, |ui| {
-                for (index, name) in names.into_iter().enumerate() {
-                    ui.selectable_value(&mut chosen, index, name);
-                }
-            })
-            .response
-            .on_hover_text("The base directory is chosen in the main toolbar, for all the writers")
-    });
-    if chosen != current {
-        *location = match chosen {
-            0 => Location::Base,
-            1 => Location::Subdirectory { name: "subdirectory".into() },
-            _ => Location::Directory { path: location.directory(base).display().to_string() },
-        };
-    }
-    match location {
-        Location::Base => {}
-        Location::Subdirectory { name } => {
-            crate::standard::widgets::setting(ui, "Subdirectory", |ui| ui.text_edit_singleline(name));
-        }
-        Location::Directory { path } => {
-            crate::standard::widgets::setting(ui, "Directory", |ui| {
-                ui.horizontal(|ui| {
-                    let field = ui.add(egui::TextEdit::singleline(path).desired_width(180.0));
-                    if ui.small_button("Choose…").on_hover_text("Choose the directory").clicked()
-                        && let Some(chosen) = rfd::FileDialog::new().set_directory(expand(path)).pick_folder()
-                    {
-                        *path = chosen.display().to_string();
-                    }
-                    field
-                })
-                .inner
-            });
-        }
-    }
+/// Where a writer writes a recording: in the base directory, as it says (otherwise in `NO_BASE`), named as it says (see
+/// `recording_name`).
+pub fn recording_path(base: Option<&Place>, start: &chrono::DateTime<chrono::Local>) -> PathBuf {
+    let directory = base.map_or_else(|| expand(NO_BASE), |p| p.directory.clone());
+    directory.join(recording_name(base, start))
 }
 
 /// Where a writer writes, in a line, and what it names the recording (`what`: "files", say): for the next
 /// recording, or this one.
-pub fn location_summary(ui: &mut egui::Ui, location: &Location, base: Option<&Place>, prefix: &str, what: &str) {
-    let directory = location.directory(base);
-    let name = recording_name(base, prefix, &chrono::Local::now());
-    let text = format!("In {}, {what} named {name}", directory.display());
-    let tip = match (location, base) {
-        (Location::Directory { .. }, _) => "Its own directory",
-        (_, Some(_)) => "As the base directory is now (in the main toolbar)",
-        (_, None) => "There's no base directory (choose one in the main toolbar): so here",
+pub fn location_summary(ui: &mut egui::Ui, base: Option<&Place>, what: &str) {
+    let path = recording_path(base, &chrono::Local::now());
+    let (directory, name) = (path.parent().unwrap_or(&path), path.file_name().unwrap_or_default());
+    let text = format!("In {}, {what} named {}", directory.display(), name.to_string_lossy());
+    let tip = match base {
+        Some(_) => "In the base directory, as it is now (in the main toolbar)",
+        None => "There's no base directory (choose one in the main toolbar): so here",
     };
     ui.add(egui::Label::new(RichText::new(text).small()).wrap()).on_hover_text(tip);
 }
@@ -308,10 +238,10 @@ pub fn session_name(prefix: &str, start: &chrono::DateTime<chrono::Local>) -> St
     format!("{prefix}_{}", start.format("%Y-%m-%d_%H%M%S"))
 }
 
-/// A recording's name: the base directory's prefix, if it has one (a subject's trial, say), otherwise the writer's
-/// own (see `session_name`).
-pub fn recording_name(place: Option<&Place>, prefix: &str, start: &chrono::DateTime<chrono::Local>) -> String {
-    place.and_then(|p| p.prefix.clone()).unwrap_or_else(|| session_name(prefix, start))
+/// A recording's name: the base directory's prefix, if it has one (a subject's trial, say), otherwise when it started,
+/// as the settings saved beside it are named.
+pub fn recording_name(place: Option<&Place>, start: &chrono::DateTime<chrono::Local>) -> String {
+    place.and_then(|p| p.prefix.clone()).unwrap_or_else(|| start.format("%Y-%m-%d_%H%M%S").to_string())
 }
 
 /// What a writer's thread is up to, for its window and the dev tools.
@@ -345,7 +275,6 @@ mod tests {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
-    use super::Location;
     use crate::standard::ephys::board::{Source, serve_test_board};
     use crate::{NodeType, Nodes};
     use ephys_rs::engine::{Graph, NodeId, NodeTypeEnum, NodesEnum, Port, PortRole, Recording, Runner, Snapshot};
@@ -389,6 +318,21 @@ mod tests {
         drop(writing);
         ephys_rs::background::wait();
         receiver.try_recv().ok()
+    }
+
+    /// In the base directory, named as it says, or else after when the recording started (as the settings saved beside
+    /// it are), whenever it's asked.
+    #[test]
+    fn a_recording_is_in_the_base_directory_named_as_it_says() {
+        use chrono::TimeZone;
+        use ephys_rs::base_directory::Place;
+        use std::path::PathBuf;
+        let start = chrono::Local.with_ymd_and_hms(2026, 1, 1, 14, 30, 5).unwrap();
+        let named = Place { directory: "/r".into(), prefix: Some("r2405 trial a".into()) };
+        assert_eq!(super::recording_path(Some(&named), &start), PathBuf::from("/r/r2405 trial a"));
+        let unnamed = Place::directory("/r");
+        assert_eq!(super::recording_path(Some(&unnamed), &start), PathBuf::from("/r/2026-01-01_143005"));
+        assert_eq!(super::recording_path(None, &start), super::expand(super::NO_BASE).join("2026-01-01_143005"));
     }
 
     #[test]
@@ -455,15 +399,6 @@ mod tests {
         link(&mut graph, downsample, 0, ltx, 1);
         link(&mut graph, board, 0, raw, 0);
         link(&mut graph, board, 1, raw, 1);
-        // LTX in the base directory, raw in a subdirectory of it.
-        match graph.get_mut(ltx).map(|e| &mut e.node) {
-            Some(Nodes::WriteLtx(w)) => w.location = Location::Base,
-            _ => unreachable!(),
-        }
-        match graph.get_mut(raw).map(|e| &mut e.node) {
-            Some(Nodes::WriteRaw(w)) => w.location = Location::Subdirectory { name: "raw".into() },
-            _ => unreachable!(),
-        }
 
         let snapshot = Snapshot::new(0, graph, None);
         let runner = Runner::start(&snapshot, 2);
@@ -493,8 +428,8 @@ mod tests {
         assert!(samples > 1000, "a second or so at 5 kHz, got {samples}");
         assert!(text.contains("data_end"), "finished");
         assert!(named(".1").is_some(), "the first tetrode's spikes");
-        let raws: Vec<_> = std::fs::read_dir(dir.join("raw")).unwrap().map(|e| e.unwrap().path()).collect();
-        let folder = raws.iter().find(|p| p.ends_with("trial a")).expect("the raw recording's folder, named likewise");
+        // Both in the base directory: raw's a folder beside LTX's files.
+        let folder = files.iter().find(|p| p.ends_with("trial a")).expect("the raw recording's folder, named likewise");
         let dat =
             folder.join("Record Node 101/experiment1/recording1/continuous/ephys-rs-100.continuous/continuous.dat");
         let bytes = std::fs::metadata(dat).unwrap().len();

@@ -25,14 +25,11 @@ use eframe::egui;
 use serde::{Deserialize, Serialize};
 
 use super::npy::Npy;
-use super::{
-    Files, Location, OnFinished, Status, Writing, after_recording, location_summary, location_ui, recording_name,
-    status_ui,
-};
+use super::{Files, OnFinished, Status, Writing, after_recording, location_summary, recording_path, status_ui};
 use crate::standard::ephys::board::EPHYS_MICROVOLTS_PER_BIT;
 use crate::standard::ephys::{Continuous, ContinuousBuffer, Event, Events, EventsBuffer};
 use crate::standard::pool::Pool;
-use crate::standard::widgets::{require_input, setting, settings_grid};
+use crate::standard::widgets::require_input;
 use crate::{Buffer, DataStream, Edges, Kind};
 use ephys_rs::engine::{
     Category, Control, DataStreamType, EdgeTypesEnum, Flow, Input, Node, NodeInfo, NodeThread, Output, PASS_DURATION,
@@ -45,19 +42,10 @@ const AFTER_RECORDING: usize = 0;
 const CONTINUOUS_FOLDER: &str = "ephys-rs-100.continuous";
 const EVENTS_FOLDER: &str = "ephys-rs-100.events";
 
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+/// It writes each recording as a folder in the base directory, named as it says (see `recording_path`).
+#[derive(Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
-pub struct WriteRaw {
-    /// Where it writes (each recording a folder in it).
-    pub location: Location,
-    pub prefix: String,
-}
-
-impl Default for WriteRaw {
-    fn default() -> Self {
-        WriteRaw { location: Location::Base, prefix: "session".into() }
-    }
-}
+pub struct WriteRaw {}
 
 /// While running: the inputs' streams as the run started, the writer's thread while recording, and its status.
 #[derive(Default)]
@@ -193,7 +181,7 @@ impl Node<Edges> for WriteRaw {
         triggers: &ephys_rs::triggers::ControlTriggers<crate::Trigger>,
     ) -> Option<Box<dyn std::any::Any + Send>> {
         let Recorder { continuous, events, .. } = self.initial_state(inputs);
-        let folder = self.folder(base_directory, start_requested_date);
+        let folder = recording_path(base_directory, start_requested_date);
         let files = RawFiles::open(&folder, continuous, events);
         Some(Box::new(Chunk::writing(&folder, continuous, events, files, after_recording(triggers, AFTER_RECORDING))))
     }
@@ -232,11 +220,7 @@ impl Node<Edges> for WriteRaw {
 
     fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
         ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, context| {
-            settings_grid(ui, |ui| {
-                location_ui(ui, &mut node.location, context.base_directory);
-                setting(ui, "Folder prefix", |ui| ui.text_edit_singleline(&mut node.prefix));
-            });
-            location_summary(ui, &node.location, context.base_directory, &node.prefix, "a folder");
+            location_summary(ui, context.base_directory, "a folder");
             ui.add_space(4.0);
             let recording: Vec<String> = node
                 .inputs()
@@ -253,17 +237,6 @@ impl Node<Edges> for WriteRaw {
             let pool = context.shared::<Pool<Status>>();
             status_ui(ui, pool.and_then(Pool::newest).as_deref(), context.running, context.theme);
         });
-    }
-}
-
-impl WriteRaw {
-    /// A recording's folder, given the base directory and when it starts.
-    fn folder(
-        &self,
-        base_directory: Option<&ephys_rs::base_directory::Place>,
-        start: &chrono::DateTime<Local>,
-    ) -> std::path::PathBuf {
-        self.location.directory(base_directory).join(recording_name(base_directory, &self.prefix, start))
     }
 }
 
@@ -463,19 +436,6 @@ impl Files<Chunk> for RawFiles {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_folder_is_named_after_when_the_recording_started() {
-        use chrono::TimeZone;
-        let start = Local.with_ymd_and_hms(2026, 1, 1, 14, 30, 5).unwrap();
-        let base = ephys_rs::base_directory::Place::directory("/r");
-        let folder = WriteRaw::default().folder(Some(&base), &start);
-        assert_eq!(
-            folder,
-            std::path::PathBuf::from("/r/session_2026-01-01_143005"),
-            "the time it's given, not when it's asked"
-        );
-    }
 
     #[test]
     fn writes_samples_interleaved_and_events() {

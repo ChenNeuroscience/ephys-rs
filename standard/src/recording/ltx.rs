@@ -36,10 +36,7 @@ use chrono::{DateTime, Local};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 
-use super::{
-    Files, Location, OnFinished, Status, Writing, after_recording, location_summary, location_ui, recording_name,
-    status_ui,
-};
+use super::{Files, OnFinished, Status, Writing, after_recording, location_summary, recording_path, status_ui};
 use crate::standard::ephys::reference::parse_channels;
 use crate::standard::ephys::{ChannelSelection, Continuous, Events};
 use crate::standard::logs::LogLines;
@@ -66,20 +63,12 @@ const SPIKE_CHANNELS: usize = 4;
 /// What a position that wasn't found is stored as.
 const MISSING: u16 = 1023;
 
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+/// It writes each recording's files in the base directory, named as it says (see `recording_path`).
+#[derive(Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WriteLtx {
-    /// Where it writes (each recording's files in it).
-    pub location: Location,
-    pub prefix: String,
     /// What the files' −128 to 127 cover, of the spikes' and the EEG's µV, as they come (amplified by their gains).
     pub scales: Scales,
-}
-
-impl Default for WriteLtx {
-    fn default() -> Self {
-        WriteLtx { location: Location::Base, prefix: "session".into(), scales: Scales::default() }
-    }
 }
 
 /// What the files' 8-bit samples, −128 to 127, cover: the spikes' and the EEG's µV, either side of zero, as they come
@@ -262,7 +251,7 @@ impl Node<Edges> for WriteLtx {
         start_requested_date: &DateTime<Local>,
         triggers: &ephys_rs::triggers::ControlTriggers<crate::Trigger>,
     ) -> Option<Box<dyn std::any::Any + Send>> {
-        let base = self.base(base_directory, start_requested_date);
+        let base = recording_path(base_directory, start_requested_date);
         let (streams, recorded) = (Streams::of(inputs), Recorded::of(controls, self.scales));
         let files = LtxFiles::open(&base, *start_requested_date, streams, recorded);
         Some(Box::new(Chunk::writing(&base, streams, files, after_recording(triggers, AFTER_RECORDING))))
@@ -301,8 +290,6 @@ impl Node<Edges> for WriteLtx {
     fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
         ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, context| {
             settings_grid(ui, |ui| {
-                location_ui(ui, &mut node.location, context.base_directory);
-                setting(ui, "File prefix", |ui| ui.text_edit_singleline(&mut node.prefix));
                 let scales = &mut node.scales;
                 for (name, uv, what) in
                     [("Spikes' scale", &mut scales.spikes_uv, "spikes'"), ("EEG's scale", &mut scales.eeg_uv, "EEG's")]
@@ -310,7 +297,7 @@ impl Node<Edges> for WriteLtx {
                     setting(ui, name, |ui| scale_ui(ui, uv, what));
                 }
             });
-            location_summary(ui, &node.location, context.base_directory, &node.prefix, "files");
+            location_summary(ui, context.base_directory, "files");
             ui.add_space(4.0);
             let recording: Vec<String> = node
                 .inputs()
@@ -359,13 +346,6 @@ fn scale_ui(ui: &mut egui::Ui, uv: &mut f32, what: &str) -> egui::Response {
         );
     })
     .response
-}
-
-impl WriteLtx {
-    /// A recording's files' path (without their extensions), given the base directory and when it starts.
-    fn base(&self, base_directory: Option<&ephys_rs::base_directory::Place>, start: &DateTime<Local>) -> PathBuf {
-        self.location.directory(base_directory).join(recording_name(base_directory, &self.prefix, start))
-    }
 }
 
 impl Streams {
@@ -906,15 +886,6 @@ mod tests {
     use crate::standard::ephys::Event;
     use crate::standard::spikes::Spike;
     use crate::standard::tracking::PositionSample;
-
-    #[test]
-    fn files_are_named_after_when_the_recording_started() {
-        use chrono::TimeZone;
-        let start = Local.with_ymd_and_hms(2026, 1, 1, 14, 30, 5).unwrap();
-        let base = ephys_rs::base_directory::Place::directory("/r");
-        let path = WriteLtx::default().base(Some(&base), &start);
-        assert_eq!(path, PathBuf::from("/r/session_2026-01-01_143005"), "the time it's given, not when it's asked");
-    }
 
     impl Chunk {
         /// Input `index`'s buffer, as given data by a pass.

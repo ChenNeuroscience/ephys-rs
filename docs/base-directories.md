@@ -58,9 +58,9 @@ chen-neuro adds another, in [`trials.rs`](../examples/chen-neuro/src/components/
 
 When recording's asked for, the GUI asks the base directory in use where the recording goes. Every node then gets it as it
 prepares to record (`Node::prepare_to_record`), and from its passes while recording (`Pass::base_directory`). Its
-window gets it too (`UiContext::base_directory`), to show where it'll write. The standard writers have a
-[`Location`](../standard/src/recording/mod.rs): the base directory, a subdirectory of it, or a directory
-of their own. They use the base directory's prefix, if it has one, otherwise their own and the time. A prefix is only
+window gets it too (`UiContext::base_directory`), to show where it'll write. The standard writers write in the base
+directory ([`recording_path`](../standard/src/recording/mod.rs)), named with its prefix, if it has one, otherwise the
+time it started, as the settings saved with it are. A prefix is only
 text: what it's the start of is up to the writer, so Write LTX's files and Write Raw's folder share it, and the
 toolbar calls it a file prefix as that's the usual case.
 

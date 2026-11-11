@@ -771,7 +771,6 @@ mod tests {
     use crate::NodeType;
     use crate::Nodes;
     use crate::standard::ephys::board::{Source, serve_test_board};
-    use crate::standard::recording::Location;
     use crate::standard::themes::THEMES;
     use ephys_rs::engine::NodeTypeEnum;
     use ephys_rs::engine::{Graph, NodeId, NodesEnum, Port, PortRole, Recording, Runner, Snapshot};
@@ -1186,9 +1185,6 @@ mod tests {
         if let Some(Nodes::AcquisitionBoard(b)) = graph.get_mut(board).map(|e| &mut e.node) {
             b.source = Source::Fake { address: serve_test_board() };
         }
-        if let Some(Nodes::WriteRaw(w)) = graph.get_mut(writer).map(|e| &mut e.node) {
-            w.location = Location::Directory { path: dir.display().to_string() };
-        }
         if let Some(Nodes::RunCommand(c)) = graph.get_mut(command).map(|e| &mut e.node) {
             let arguments = format!("-c 'echo \"$0\" >> \"$1\"; wc -c < \"$0\" >> \"$1\"' {{file}} {}", said.display());
             c.settings = settings("/bin/sh", &arguments);
@@ -1202,7 +1198,9 @@ mod tests {
         let direct = Arc::new(DirectTriggers::default());
         let snapshot = Snapshot::new(0, graph.clone(), None);
         let runner = Runner::start_with(&snapshot, 2, direct.clone());
-        let recording = Recording::prepare(&snapshot, None, chrono::Local::now(), &direct);
+        // In a base directory of the test's own (writers write in it).
+        let place = ephys_rs::base_directory::Place::directory(&dir);
+        let recording = Recording::prepare(&snapshot, Some(place), chrono::Local::now(), &direct);
         let recording = snapshot.with_recording(1, Some(Arc::new(recording)));
         runner.update(&recording);
         let deadline = Instant::now() + Duration::from_secs(10);
