@@ -12,7 +12,7 @@ default-members = [".", "standard", "examples/chen-neuro"]
 # The framework's and the standard components', which are released together: ephys-rs's version (see
 # docs/development.md), counted up by the pre-commit hook.
 [workspace.package]
-version = "0.228.0"
+version = "0.229.0"
 
 # Versions shared by the framework, the standard components and builds.
 [workspace.dependencies]

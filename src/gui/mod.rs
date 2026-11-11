@@ -291,7 +291,7 @@ pub struct App<N: NodesEnum, A: AnnotationsEnum> {
     dev_tools: dev_tools::DevTools,
     /// Offered in the basic view.
     quick_actions: &'static [crate::quick_action::QuickAction<N>],
-    /// How many errors and warnings there have been so far.
+    /// How many errors and warnings there have been since the console was cleared.
     problems: (u64, u64),
     /// The About window, while it's open (see `Components::ABOUT`, and `SOURCE`).
     about: Option<about::About>,
@@ -2483,7 +2483,7 @@ mod tests {
         harness.run_steps(3);
         assert!(harness.state().layout.is_shown(Pane::DevTools));
         harness.get_by_label("Console");
-        assert_eq!(harness.state().problems, (1, 12), "the session's total, which carries on");
+        assert_eq!(harness.state().problems, (1, 12), "the total since the console was cleared, which carries on");
 
         // Behind another tab in its group, it's brought to the front.
         let layout = &mut harness.state_mut().layout;

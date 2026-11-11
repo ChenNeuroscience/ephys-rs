@@ -83,7 +83,7 @@ When auto stop is about to act, it warns you, and once it has, it says so:
 When something's wrong (a node isn't connected, a device can't be found, settings don't agree), the node shows a ⚠ on
 the graph, and the status bar counts the errors and warnings. Hover over a node's ⚠ to see what it is, or open the
 node's window, which lists its problems at the top. Clicking the count brings the developer tools to the front, with
-just the console open.
+just the console open. The console's **Clear** clears the count too.
 
 ## When it crashes
 

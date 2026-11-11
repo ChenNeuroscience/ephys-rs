@@ -96,9 +96,18 @@ struct Kept {
     lines: VecDeque<Line>,
     /// Lines ever kept, so a viewer can tell when there are new ones.
     count: u64,
-    /// Errors and warnings ever logged, however long ago, including those no longer kept.
+    /// Errors and warnings logged since the console was last cleared (or the program started), including those no
+    /// longer kept.
     errors: u64,
     warnings: u64,
+}
+
+impl Kept {
+    /// Forgets the lines, and the errors and warnings counted: `count` carries on, so a viewer sees the change.
+    fn clear(&mut self) {
+        self.lines.clear();
+        (self.errors, self.warnings) = (0, 0);
+    }
 }
 
 /// The logger: logging threads queue their messages, and the console's frame takes them off the queue into what's
@@ -217,7 +226,7 @@ pub fn with_lines<R>(f: impl FnOnce(&VecDeque<Line>, u64) -> R) -> R {
     }
 }
 
-/// How many errors and warnings have been logged since the program started.
+/// How many errors and warnings have been logged since the console was last cleared, or the program started.
 pub fn totals() -> (u64, u64) {
     let Some(logger) = LOGGER.get() else { return (0, 0) };
     logger.drain();
@@ -244,17 +253,25 @@ pub fn dropped() -> u64 {
     LOGGER.get().map_or(0, |l| l.dropped.load(Ordering::Relaxed))
 }
 
-/// Forgets the lines kept.
+/// Forgets the lines kept, and the errors and warnings counted, for the status bar to count afresh.
 pub fn clear() {
     if let Some(logger) = LOGGER.get() {
         logger.drain();
-        logger.kept.lock().unwrap().lines.clear();
+        logger.kept.lock().unwrap().clear();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// On a `Kept` of its own: clearing the log itself would clear other tests' lines.
+    #[test]
+    fn clearing_forgets_the_errors_and_warnings_too() {
+        let mut kept = Kept { count: 5, errors: 2, warnings: 3, ..Default::default() };
+        kept.clear();
+        assert_eq!((kept.errors, kept.warnings, kept.count), (0, 0, 5));
+    }
 
     #[test]
     fn errors_and_warnings_are_counted() {
