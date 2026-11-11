@@ -326,12 +326,22 @@ impl Gains {
         per_channel(&self.gains, channel, self.output_range / DEFAULT_RANGE_UV)
     }
 
-    /// A channel's range: µV either side of zero that its gain fits within the output range.
+    /// A channel's range: µV either side of zero that its gain fits within the output range (whichever its sign).
     pub fn range_uv(&self, channel: usize) -> f32 {
         match self.gains.get(channel) {
-            Some(gain) => self.output_range / gain.max(f32::MIN_POSITIVE),
+            Some(gain) => self.output_range / gain.abs().max(f32::MIN_POSITIVE),
             None => DEFAULT_RANGE_UV,
         }
+    }
+
+    /// Whether a channel's gain is negative: its waveforms turned upside down.
+    pub fn inverted(&self, channel: usize) -> bool {
+        self.get(channel) < 0.0
+    }
+
+    /// Turns a channel's waveforms upside down, or back, and those of the channels sharing its gain: its range stays.
+    pub fn invert(&mut self, channel: usize, channels: Channels) {
+        self.set(channel, -self.get(channel), channels);
     }
 
     /// The channels sharing a gain, unit by unit, as the scope has it.
@@ -344,15 +354,17 @@ impl Gains {
         (0..channels.count).step_by(size).map(|start| start..(start + size).min(channels.count)).collect()
     }
 
-    /// Sets a channel's range (so its gain), and those of the channels sharing its gain.
+    /// Sets a channel's range (so its gain, keeping its sign), and those of the channels sharing its gain.
     pub fn set_range(&mut self, channel: usize, range_uv: f32, channels: Channels) {
+        let sign = if self.inverted(channel) { -1.0 } else { 1.0 };
         let gain = self.output_range / range_uv.clamp(*RANGES_UV.start(), *RANGES_UV.end());
-        self.set(channel, gain, channels);
+        self.set(channel, sign * gain, channels);
     }
 
-    /// Sets a channel's gain, and those of the channels sharing it.
+    /// Sets a channel's gain, and those of the channels sharing it. Negative turns their waveforms upside down; it's
+    /// never zero.
     pub fn set(&mut self, channel: usize, gain: f32, channels: Channels) {
-        let gain = gain.max(f32::MIN_POSITIVE);
+        let gain = if gain < 0.0 { gain.min(-f32::MIN_POSITIVE) } else { gain.max(f32::MIN_POSITIVE) };
         let unit = self.units(channels).into_iter().find(|u| u.contains(&channel)).unwrap_or(channel..channel + 1);
         for channel in unit {
             set_per_channel(&mut self.gains, channel, gain, self.output_range / DEFAULT_RANGE_UV);
@@ -442,5 +454,27 @@ mod tests {
         // All together.
         gains.set_scope(GainScope::All, tetrodes);
         assert!((0..8).all(|c| near(gains.range_uv(c), 500.0)));
+    }
+
+    #[test]
+    fn a_negative_gain_turns_spikes_upside_down_and_keeps_its_range() {
+        let tetrodes = Channels { count: 8, group_size: 4 };
+        let mut gains = Gains { scope: GainScope::Group, ..Default::default() };
+        gains.set_range(0, 500.0, tetrodes);
+        gains.invert(1, tetrodes);
+        assert!((0..4).all(|c| gains.inverted(c)), "the whole tetrode, which shares its gain");
+        assert!(!gains.inverted(4));
+        assert_eq!(gains.get(0), -128.0 / 500.0);
+        let near = |a: f32, b: f32| (a - b).abs() < 1e-3;
+        assert!(near(gains.range_uv(0), 500.0), "the range is the gain's size");
+        // Setting the range, by hand or from the data, keeps it upside down.
+        gains.set_range(2, 100.0, tetrodes);
+        gains.set_ranges(&[300.0; 8], tetrodes);
+        assert!(gains.inverted(0) && near(gains.range_uv(0), 300.0));
+        gains.set(0, -1e-30, tetrodes);
+        assert!(gains.get(0) < 0.0, "never zero");
+        gains.set(0, -0.5, tetrodes);
+        gains.invert(0, tetrodes);
+        assert_eq!(gains.get(3), 0.5, "and back");
     }
 }

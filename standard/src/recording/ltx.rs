@@ -557,7 +557,8 @@ impl LtxFiles {
         if let Some(spikes) = streams.spikes {
             set.header("ADC_fullscale_mv", FULL_SCALE_UV / 1000.0)?;
             for channel in 0..spikes.channels as usize {
-                set.header(&format!("gain_ch_{channel}"), axona_gain(recorded.gains.get(channel)))?;
+                // Its size: an inverted channel's spikes are already upside down in the data.
+                set.header(&format!("gain_ch_{channel}"), axona_gain(recorded.gains.get(channel).abs()))?;
             }
             for group in 0..spikes.groups() {
                 let mut f = file(&format!(".{}", group + 1))?;

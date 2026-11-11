@@ -22,6 +22,7 @@ use crate::standard::spikes::{
 use crate::standard::widgets::{open_settings_button, require_input};
 use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
 use ephys_rs::engine::{Category, Control, EdgeType, Input, Node, NodeInfo, Output, Pass, UiContext};
+use ephys_rs::gui::widgets::Icon;
 use std::time::{Duration, Instant};
 
 /// A channel's plot's width, for its height.
@@ -251,12 +252,13 @@ impl Node<Edges> for SpikeViewer {
         for (i, spike) in input.spikes.iter().enumerate() {
             let group = spike.group as usize;
             let slot = (group * keep + recent.head[group]) * size;
-            // In µV, whatever gains they've been multiplied by (see `SpikesBuffer::gains`).
+            // In µV, whatever gains they've been multiplied by (see `SpikesBuffer::gains`), but upside down if the
+            // gain's negative, as they're recorded.
             let stored = &mut recent.waveforms[slot..slot + size];
             stored.copy_from_slice(input.waveform(i));
             for (c, values) in stored.chunks_mut(input.samples.max(1)).enumerate() {
                 let gain = input.gains.get(group * input.group_size + c).copied().unwrap_or(1.0);
-                values.iter_mut().for_each(|v| *v /= gain.max(f32::MIN_POSITIVE));
+                values.iter_mut().for_each(|v| *v /= gain.abs().max(f32::MIN_POSITIVE));
             }
             recent.head[group] = (recent.head[group] + 1) % keep;
             recent.count[group] = (recent.count[group] + 1).min(keep);
@@ -265,7 +267,7 @@ impl Node<Edges> for SpikeViewer {
         let channels = recent.thresholds.len();
         recent.thresholds.copy_from_slice(&input.thresholds[..channels]);
         for (range, gain) in recent.ranges.iter_mut().zip(&input.gains) {
-            *range = input.output_range / gain.max(f32::MIN_POSITIVE);
+            *range = input.output_range / gain.abs().max(f32::MIN_POSITIVE);
         }
 
         let groups = stream.groups() as usize;
@@ -432,7 +434,9 @@ impl SpikeViewer {
                 ui.label("Thresholds");
                 open_settings_button(ui, context, THRESHOLDS, "Spike Detector");
                 ui.separator();
-                ui.weak("Over a channel: G to type its gain, T its threshold. Drag a threshold to move it.");
+                ui.weak(
+                    "Over a channel: G to type its gain, T its threshold, I to invert it. Drag a threshold to move it.",
+                );
             }
             context.node_toolbar(ui);
         });
@@ -593,7 +597,7 @@ impl SpikeViewer {
             && interactive
             && let Some(gains) = plots.gains.as_deref_mut()
         {
-            // Gain buttons: up at the top right, down at the bottom right.
+            // Gain buttons: up at the top right, down at the bottom right, and beside it, invert.
             let button = egui::vec2(18.0, 18.0);
             let up = Rect::from_min_size(rect.right_top() + egui::vec2(-button.x - 2.0, 2.0), button);
             let down = Rect::from_min_size(rect.right_bottom() - button - egui::vec2(2.0, 2.0), button);
@@ -603,11 +607,27 @@ impl SpikeViewer {
                     gains.set_range(channel, range_step(range, up), layout);
                 }
             }
+            let invert = down.translate(egui::vec2(-button.x - 2.0, 0.0));
+            let inverted = gains.inverted(channel);
+            let response = ui.put(invert, egui::Button::new("").small().selected(inverted));
+            let ink = ui.style().interact_selectable(&response, inverted).fg_stroke.color;
+            Icon::Invert.paint(ui.painter(), response.rect.shrink(2.0), ink, true);
+            response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, inverted, "Invert"));
+            let tip = "Turn the spikes upside down, as they're recorded (a negative gain), or back; with the channels \
+                       sharing its gain (I)";
+            if response.on_hover_text(tip).clicked() {
+                gains.invert(channel, layout);
+            }
         }
 
-        // G or T over a channel types its gain or threshold.
+        // G or T over a channel types its gain or threshold; I turns its spikes upside down, or back.
         if hovered && interactive && typing.is_none() && ui.ctx().memory(|m| m.focused().is_none()) {
             let key = |key: Key| ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, key));
+            if let Some(gains) = plots.gains.as_deref_mut()
+                && key(Key::I)
+            {
+                gains.invert(channel, layout);
+            }
             let what = if plots.gains.is_some() && key(Key::G) {
                 Some(Typed::Gain)
             } else if plots.thresholds.is_some() && key(Key::T) {
@@ -699,7 +719,7 @@ mod tests {
         Spikes { channels: 8, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32, polarity: Polarity::Negative };
 
     fn harness<'a>() -> Harness<'a, (Thresholds, Gains)> {
-        Harness::builder().with_size([700.0, 400.0]).build_ui_state(
+        Harness::builder().with_size([700.0, 400.0]).wgpu().build_ui_state(
             |ui, (thresholds, gains): &mut (Thresholds, Gains)| {
                 let plots = Plots {
                     stream: STREAM,
@@ -743,6 +763,33 @@ mod tests {
         harness.event(click(true));
         harness.event(click(false));
         harness.run_steps(2);
+    }
+
+    #[test]
+    fn a_channels_invert_button_turns_its_spikes_upside_down_or_back() {
+        let mut harness = harness();
+        pointer_at(&mut harness, 70.0, 80.0);
+        let range = harness.state().1.range_uv(0);
+        harness.get_by_label("Invert").click();
+        harness.run_steps(2);
+        let gains = &harness.state().1;
+        assert!(gains.inverted(0), "a negative gain");
+        assert!((gains.range_uv(0) - range).abs() < 1e-3, "its range the same");
+        assert!(!gains.inverted(4), "not the next tetrode");
+        // Over the plot, but not its buttons.
+        pointer_at(&mut harness, 60.0, 110.0);
+        harness.snapshot("spike_viewer_inverted");
+        pointer_at(&mut harness, 70.0, 80.0);
+        harness.get_by_label("−").click();
+        harness.run_steps(2);
+        assert!(harness.state().1.inverted(0), "a smaller gain, still upside down");
+        harness.get_by_label("Invert").click();
+        harness.run_steps(2);
+        assert!(!harness.state().1.inverted(0), "back");
+        // Or I, over the channel.
+        harness.key_press(Key::I);
+        harness.run_steps(2);
+        assert!(harness.state().1.inverted(0), "inverted by its key");
     }
 
     #[test]

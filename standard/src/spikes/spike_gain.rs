@@ -288,13 +288,14 @@ impl Node<Edges> for SpikeGain {
                             };
                             ui.label(name);
                             let mut gain = node.gains.get(unit.start);
-                            let speed = gain * 0.01;
+                            let speed = gain.abs() * 0.01;
                             let field = egui::DragValue::new(&mut gain)
-                                .range(1e-6..=1e6)
+                                .range(-1e6..=1e6)
                                 .speed(speed)
                                 .max_decimals(3)
                                 .prefix("×");
-                            if ui.add(field).changed() {
+                            let tip = "Negative turns the spikes upside down: the range stays the same";
+                            if ui.add(field).on_hover_text(tip).changed() {
                                 node.gains.set(unit.start, gain, channels);
                             }
                             ui.label(format!("±{:.0} µV", node.gains.range_uv(unit.start)));

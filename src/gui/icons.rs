@@ -54,6 +54,8 @@ pub enum Icon {
     Graph,
     /// A pane's settings: a gear.
     Settings,
+    /// Turn a signal upside down: a spike, and under the line, its reflection.
+    Invert,
 }
 
 const PAPER: Color32 = Color32::from_gray(246);
@@ -279,6 +281,15 @@ impl Icon {
             }
             Icon::Stop => {
                 painter.rect(r(3.0, 3.0, 13.0, 13.0), 1.5 * s, fade(RED), line, StrokeKind::Middle);
+            }
+            Icon::Invert => {
+                let middle = Stroke::new(s, ink.gamma_multiply(0.5));
+                painter.line_segment([p(1.5, 8.0), p(14.5, 8.0)], middle);
+                let spike = Stroke::new(1.6 * s, ink);
+                painter
+                    .add(Shape::line(vec![p(2.0, 8.0), p(5.0, 8.0), p(8.0, 1.5), p(11.0, 8.0), p(14.0, 8.0)], spike));
+                let reflection = Stroke::new(1.2 * s, ink.gamma_multiply(0.45));
+                painter.add(Shape::line(vec![p(5.0, 8.0), p(8.0, 14.5), p(11.0, 8.0)], reflection));
             }
             Icon::ActualSize => {
                 painter.circle(p(6.5, 6.5), 4.5 * s, fade(PAPER), line);

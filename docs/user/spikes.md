@@ -33,7 +33,9 @@ channels around the peak that follows. A group can't spike again until its last 
 
 Multiplies each channel's spike waveforms by a gain, into the units whatever records them needs: Write LTX wants
 values from −128 to 127. A spike bigger than that is clipped in the recording. Gains can be one for all channels, one
-for each group (tetrode), or one each. Beside each gain is the range in µV it **fits**.
+for each group (tetrode), or one each. Beside each gain is the range in µV it **fits**. A negative gain turns the
+spikes upside down as they're recorded, fitting the same range as the positive one: setting the range, or auto detect,
+keeps it negative. Write LTX's `.set` file gives its size.
 
 **Auto detect** samples each channel's spikes **for** a while, then sets each gain so that a range just fits, as
 its **Algorithm** says:
@@ -62,6 +64,9 @@ middle. A plot shows just the range its gain fits, so a spike reaching the edge 
 Connected to a detector's thresholds and a gain's gains, it sets them:
 
 - Drag a threshold's line to move it.
+- Over a channel, its **+** and **−** buttons raise and lower its gain, and the button beside **−** (a spike and its
+  reflection), or pressing **I**, turns its spikes upside down, or back: a negative gain. It's highlighted while they are, and the plot
+  shows them as they're recorded.
 - Over a channel, press **T** to type its threshold, or **G** its gain. Up and down step it, Enter applies it, Esc
   cancels.
 - **Auto detect** (gains, thresholds, or both) and **Run** triggers the detector's and gain's own auto detect. Both
