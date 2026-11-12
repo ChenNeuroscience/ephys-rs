@@ -164,8 +164,8 @@ impl Node<Edges> for SpikeDetector {
         if first && n > 0 {
             detector.noise.resize(channels, 0.0);
         }
-        for channel in 0..channels {
-            output.thresholds[channel] = self.thresholds.get(channel);
+        for (channel, threshold) in output.thresholds.iter_mut().enumerate().take(channels) {
+            *threshold = self.thresholds.get(channel);
         }
         if detector.noise.len() < channels {
             output.noise.fill(0.0);
