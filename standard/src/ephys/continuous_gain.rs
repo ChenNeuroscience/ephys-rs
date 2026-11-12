@@ -14,6 +14,7 @@ use crate::standard::spikes::{Channels, DEFAULT_RANGE_UV, GainScope, Gains, RANG
 use crate::standard::widgets::{input_summary, named_settings_grid, require_input, setting};
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
 use ephys_rs::engine::{Category, Input, Node, NodeInfo, Output, Pass, SettingPort, UiContext};
+use ephys_rs::gui::widgets::info_icon;
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -218,13 +219,22 @@ impl Node<Edges> for ContinuousGain {
             ui.strong("Auto detect");
             ui.add_enabled_ui(!detecting(context), |ui| {
                 named_settings_grid(ui, "auto detect", |ui| {
-                    setting(ui, "Fill to", |ui| fill_field(ui, &mut node.gains));
+                    setting(ui, "Fit range", |ui| fill_field(ui, &mut node.gains));
                     setting(ui, "Level", |ui| {
-                        node.level.ui(
-                            ui,
-                            "The percentile of the samples, ignoring sign",
-                            "Its distance from the mean, times this, fills what's recorded",
-                        )
+                        ui.horizontal(|ui| {
+                            node.level.ui(
+                                ui,
+                                "The percentile of the samples, ignoring sign",
+                                "Its distance from the mean, times this, fills what's recorded",
+                            );
+                            info_icon(
+                                ui,
+                                "For each channel, computes the given percentile of its voltage (ignoring sign) over \
+                                 the sampling time, takes the mean plus the factor times that percentile's distance \
+                                 from the mean, and maps that value to the upper limit of the fit range.",
+                            );
+                        })
+                        .response
                     });
                     setting(ui, "Sampling for", |ui| {
                         ui.add(egui::DragValue::new(&mut node.sampling).range(SAMPLING).speed(0.2).suffix(" s"))

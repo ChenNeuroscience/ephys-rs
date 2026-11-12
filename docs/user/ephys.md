@@ -102,8 +102,8 @@ what's recorded is up to whatever records it (Write LTX's EEG [scale](recording.
 to 127, to begin with). Gains go from ×¼ to ×4, and can be **one for** all channels, or one each.
 
 **Auto detect** chooses gains from the data: it samples each channel **for** a while, then sets each gain so that the
-mean plus a multiple of a percentile's distance from it (the **Level**) just **fills** what's recorded (±250 µV, to
-begin with). Run it from here, or from an [LFP Viewer](#lfp-viewer) connected to ◇ `gains`.
+mean plus a multiple of a percentile's distance from it (the **Level**) maps to the upper limit of the **Fit range**
+(what's recorded: ±250 µV, Write LTX's EEG scale, to begin with). Run it from here, or from an [LFP Viewer](#lfp-viewer) connected to ◇ `gains`.
 
 ## Spectrum
 

@@ -20,6 +20,7 @@ use crate::standard::spikes::{
 use crate::standard::widgets::{input_summary, named_settings_grid, require_input, setting};
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
 use ephys_rs::engine::{Category, Input, Node, NodeInfo, Output, Pass, SettingPort, UiContext};
+use ephys_rs::gui::widgets::info_icon;
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -52,7 +53,7 @@ pub struct Fit {
 
 impl Default for Fit {
     fn default() -> Self {
-        Fit { algorithm: Algorithm::GeometricMean, threshold_factor: 4.0, peak_percent: 95.0, peak_factor: 1.2 }
+        Fit { algorithm: Algorithm::GeometricMean, threshold_factor: 3.0, peak_percent: 95.0, peak_factor: 0.8 }
     }
 }
 
@@ -79,6 +80,42 @@ impl Algorithm {
             Algorithm::Larger => "Larger of threshold & peaks × factors",
             Algorithm::Mean => "Mean of threshold & peaks × factors",
             Algorithm::GeometricMean => "Geometric mean of threshold & peaks × factors",
+        }
+    }
+
+    /// How the threshold's and the peaks' ranges are combined, if they are.
+    fn combined(self) -> Option<&'static str> {
+        match self {
+            Algorithm::Threshold | Algorithm::Peaks => None,
+            Algorithm::Larger => Some("the larger of the two"),
+            Algorithm::Mean => Some("their mean"),
+            Algorithm::GeometricMean => Some("their geometric mean"),
+        }
+    }
+
+    /// What the threshold factor does, as its info says.
+    fn threshold_info(self) -> String {
+        let start = "For each channel, multiplies the spike threshold by the given factor";
+        match self.combined() {
+            None => format!("{start} and maps that value to the upper limit of the fit range."),
+            Some(how) => format!(
+                "{start}. That value and the one from the peak percentile are combined by taking {how}, which is \
+                 mapped to the upper limit of the fit range."
+            ),
+        }
+    }
+
+    /// What the peak percentile and its factor do, as their info says.
+    fn peaks_info(self) -> String {
+        let start = "For each channel, computes the given percentile of its spikes' peaks over the sampling time";
+        match self.combined() {
+            None => format!(
+                "{start}, multiplies it by the given factor, and maps that value to the upper limit of the fit range."
+            ),
+            Some(how) => format!(
+                "{start} and multiplies it by the given factor. That value and the one from the threshold factor are \
+                 combined by taking {how}, which is mapped to the upper limit of the fit range."
+            ),
         }
     }
 
@@ -303,7 +340,7 @@ impl Node<Edges> for SpikeGain {
             let detecting = detecting(context);
             ui.add_enabled_ui(!detecting, |ui| {
                 named_settings_grid(ui, "auto detect", |ui| {
-                    setting(ui, "Fill to", |ui| fill_field(ui, &mut node.gains));
+                    setting(ui, "Fit range", |ui| fill_field(ui, &mut node.gains));
                     let fit = &mut node.fit;
                     setting(ui, "Algorithm", |ui| {
                         egui::ComboBox::from_id_salt("algorithm")
@@ -322,13 +359,17 @@ impl Node<Edges> for SpikeGain {
                     });
                     if fit.algorithm.uses_threshold() {
                         setting(ui, "Threshold factor", |ui| {
-                            ui.add(
-                                egui::DragValue::new(&mut fit.threshold_factor)
-                                    .range(1.5..=20.0)
-                                    .speed(0.01)
-                                    .prefix("×"),
-                            )
-                            .on_hover_text("The threshold times this")
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::DragValue::new(&mut fit.threshold_factor)
+                                        .range(1.5..=20.0)
+                                        .speed(0.01)
+                                        .prefix("×"),
+                                )
+                                .on_hover_text("The threshold times this");
+                                info_icon(ui, &fit.algorithm.threshold_info());
+                            })
+                            .response
                         });
                     }
                     if fit.algorithm.uses_peaks() {
@@ -349,6 +390,7 @@ impl Node<Edges> for SpikeGain {
                                         .prefix("×"),
                                 )
                                 .on_hover_text("The percentile times this");
+                                info_icon(ui, &fit.algorithm.peaks_info());
                             })
                             .response
                         });
@@ -527,8 +569,10 @@ mod tests {
         run(done, &mut outputs);
         let updates = direct.take_settings_updates();
         let Some(Setting::Gains(gains)) = updates[0].2.downcast_ref::<Setting>() else { panic!() };
-        // No spikes: each by its new threshold, times 4.
-        assert_eq!((0..4).map(|c| gains.range_uv(c).round()).collect::<Vec<_>>(), [120.0, 160.0, 240.0, 280.0]);
+        // No spikes: each by its new threshold, times the factor.
+        let factor = Fit::default().threshold_factor;
+        let expected: Vec<f32> = [30.0, 40.0, 60.0, 70.0].iter().map(|t| (t * factor).round()).collect();
+        assert_eq!((0..4).map(|c| gains.range_uv(c).round()).collect::<Vec<_>>(), expected);
     }
 
     #[test]
@@ -572,6 +616,25 @@ mod tests {
     }
 
     /// Its window, a gain for each tetrode. See tests/snapshots/.
+    /// The factors' info says how they're used, as the algorithm has it: on their own, or combined.
+    #[test]
+    fn the_factors_info_follows_the_algorithm() {
+        assert!(
+            Algorithm::Threshold
+                .threshold_info()
+                .ends_with("by the given factor and maps that value to the upper limit of the fit range.")
+        );
+        assert!(Algorithm::Peaks.peaks_info().contains("multiplies it by the given factor, and maps that value"));
+        for (algorithm, how) in [
+            (Algorithm::Larger, "the larger of the two"),
+            (Algorithm::Mean, "their mean"),
+            (Algorithm::GeometricMean, "their geometric mean"),
+        ] {
+            let both = [algorithm.threshold_info(), algorithm.peaks_info()];
+            assert!(both.iter().all(|info| info.contains(&format!("combined by taking {how}, which is mapped"))));
+        }
+    }
+
     #[test]
     fn settings_window() {
         use crate::Nodes;

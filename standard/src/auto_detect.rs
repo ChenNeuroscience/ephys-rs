@@ -103,7 +103,8 @@ impl Distribution {
     }
 }
 
-/// A level chosen from the data: its mean, plus a multiple of a percentile's distance from it.
+/// A level chosen from the data, from a percentile of it and a multiple: a spike detector's threshold (`above`), or a
+/// continuous gain's range (`either_way`).
 #[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
 pub struct PercentMultiple {
     pub percent: f32,
@@ -111,13 +112,13 @@ pub struct PercentMultiple {
 }
 
 impl PercentMultiple {
-    /// The level, given data that goes one way.
+    /// The level, given data that goes one way: its percentile times the multiple, from zero (as thresholds are).
     pub fn above(self, data: &Distribution) -> f32 {
-        let mean = data.mean();
-        mean + (data.signed_percentile(self.percent) - mean) * self.multiple
+        data.signed_percentile(self.percent) * self.multiple
     }
 
-    /// The level, given data that can go either way: its percentile ignores sign, and so does its mean.
+    /// The level, given data that can go either way: its mean, plus a multiple of a percentile's distance from it, both
+    /// ignoring sign.
     pub fn either_way(self, data: &Distribution) -> f32 {
         let mean = data.mean().abs();
         mean + (data.unsigned_percentile(self.percent) - mean) * self.multiple
@@ -128,8 +129,9 @@ impl PercentMultiple {
         ui.horizontal(|ui| {
             ui.add(egui::DragValue::new(&mut self.percent).range(50.0..=100.0).speed(0.1).suffix(" %"))
                 .on_hover_text(percent_tip);
-            ui.label("×");
-            ui.add(egui::DragValue::new(&mut self.multiple).range(0.1..=20.0).speed(0.05)).on_hover_text(multiple_tip);
+            ui.label("factor");
+            let factor = egui::DragValue::new(&mut self.multiple).range(0.1..=20.0).speed(0.05).prefix("×");
+            ui.add(factor).on_hover_text(multiple_tip);
         })
         .response
     }
@@ -179,14 +181,14 @@ mod tests {
         assert!((value - expected).abs() <= within, "{value}, not {expected}");
     }
 
+    /// A threshold is from zero, as the data's mean doesn't count: 98% are at or below 980, so it's twice that.
     #[test]
-    fn a_level_is_the_mean_plus_a_multiple_of_a_percentiles_distance_from_it() {
+    fn a_level_above_is_a_multiple_of_a_percentile_from_zero() {
         let level = PercentMultiple { percent: 98.0, multiple: 2.0 };
-        // A mean of 500.5: 98% are at or below 980, which is 479.5 above it.
         let data = of(1..=1000);
         near(data.mean(), 500.5, 0.001);
         near(data.signed_percentile(98.0), 980.0, 15.0);
-        near(level.above(&data), 500.5 + 2.0 * 479.5, 30.0);
+        near(level.above(&data), 2.0 * 980.0, 30.0);
     }
 
     #[test]

@@ -18,6 +18,7 @@ use crate::standard::widgets::{combo, input_summary, named_settings_grid, requir
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
 use ephys_rs::engine::EdgeType;
 use ephys_rs::engine::{Category, Input, Node, NodeInfo, Output, PASS_DURATION, Pass, SettingPort, UiContext};
+use ephys_rs::gui::widgets::info_icon;
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -42,7 +43,7 @@ impl Default for SpikeDetector {
             pre: 8,
             post: 32,
             thresholds: Thresholds::default(),
-            level: PercentMultiple { percent: 98.0, multiple: 2.5 },
+            level: PercentMultiple { percent: 98.0, multiple: 2.1 },
             sampling: 20.0,
         }
     }
@@ -308,11 +309,16 @@ impl Node<Edges> for SpikeDetector {
             ui.add_enabled_ui(!detecting(context), |ui| {
                 named_settings_grid(ui, "auto detect", |ui| {
                     setting(ui, "Level", |ui| {
-                        node.level.ui(
-                            ui,
-                            "The percentile of the samples to use",
-                            "Its distance from the mean, times this, sets the threshold",
-                        )
+                        ui.horizontal(|ui| {
+                            node.level.ui(ui, "The percentile of the samples to use", "The percentile times this");
+                            info_icon(
+                                ui,
+                                "For each channel, computes the given percentile of its voltage over the sampling \
+                                 time. Then sets its spike threshold to that percentile multiplied by the given \
+                                 factor.",
+                            );
+                        })
+                        .response
                     });
                     setting(ui, "Sampling for", |ui| {
                         ui.add(egui::DragValue::new(&mut node.sampling).range(SAMPLING).speed(0.2).suffix(" s"))
@@ -498,7 +504,7 @@ mod tests {
         let Some(Setting::Thresholds(thresholds)) = updates[0].2.downcast_ref::<Setting>() else { panic!() };
         for channel in 0..4 {
             let threshold = thresholds.get(channel);
-            assert!((threshold - 40.0).abs() < 1.0, "a mean of 20, and 30 is 10 above it, doubled: {threshold}");
+            assert!((threshold - 60.0).abs() < 1.0, "the 98th percentile, 30, doubled, from zero: {threshold}");
         }
     }
 }

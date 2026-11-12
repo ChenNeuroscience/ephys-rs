@@ -21,9 +21,9 @@ channels around the peak that follows. A group can't spike again until its last 
 - **Group**: single channels, stereotrodes (2), tetrodes (4) or octrodes (8).
 - **Before peak**, **After peak**: how many samples of waveform to keep around the peak.
 - **Thresholds**: each channel's, in µV past zero, the way the spikes go. Most easily set from a Spike Viewer.
-- **Auto detect**: chooses thresholds from the data. It samples each channel **for** a while, then sets each threshold
-  to the mean plus a multiple (the **×**) of a percentile's (the **Level**'s) distance from it. Run it here, or from a
-  Spike Viewer. **Each channel** shows what it chose for each.
+- **Auto detect**: chooses thresholds from the data. For each channel, it computes the **Level**'s percentile of its
+  voltage over the sampling time (**for**), then sets its threshold to that percentile multiplied by the **factor**.
+  Run it here, or from a Spike Viewer. **Each channel** shows what it chose for each.
 
 ## Spike Gain
 
@@ -40,8 +40,9 @@ recorded: stepping it, or auto detect, keeps it negative.
 Projects saved before gains amplified (when Write LTX's gains took µV to −128 to 127) are converted when they're
 opened, to record just the same.
 
-**Auto detect** samples each channel's spikes **for** a while, then sets each gain so that a range of them just
-**fills** what's recorded (±250 µV, Write LTX's spikes' scale, to begin with), as its **Algorithm** says:
+**Auto detect** samples each channel's spikes **for** a while, then sets each gain so that a value from them maps to
+the upper limit of the **Fit range** (what's recorded: ±250 µV, Write LTX's spikes' scale, to begin with), as its
+**Algorithm** says:
 
 - **Threshold × factor**: the channel's threshold, times the **Threshold factor**.
 - **Peak percentile × factor**: a percentile of its spikes' peaks (95 %, say, or 100 % for the biggest), times its
