@@ -1073,8 +1073,7 @@ mod tests {
     fn writes_spikes_eeg_and_positions() {
         let dir = std::env::temp_dir().join(format!("ephys-rs-ltx-{}", std::process::id()));
         let base = dir.join("test");
-        let spikes =
-            Spikes { channels: 4, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32, polarity: Default::default() };
+        let spikes = Spikes { channels: 4, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32 };
         let streams = Streams {
             spikes: Some(spikes),
             continuous: Some(Continuous { channels: 2, sample_rate: EGF_RATE }),

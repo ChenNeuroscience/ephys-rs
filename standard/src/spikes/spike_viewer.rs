@@ -8,9 +8,9 @@
 //!
 //! A plot shows the spikes as they're recorded: amplified by their gain (see `Gains`), so raising it makes them bigger,
 //! over the viewer's scale (Write LTX's, to begin with, ±250 µV: what's recorded, so a spike reaching the edge is
-//! clipped). Spikes go up the plot, whichever way they go (a negative-going spike is shown upside down), so the
-//! threshold, amplified with them, is above the middle (and below too, if they go both ways), unless the gain's
-//! negative.
+//! clipped), negative at the top: most spikes go down (a Spike Gain's auto detect turns those that don't), and people
+//! expect them to point up. The threshold, amplified with them, is the line above the middle, and fainter below it,
+//! as spikes are found either way.
 
 use eframe::egui::{self, Align2, FontId, Key, Pos2, Rect, Sense, Shape, Stroke};
 use serde::{Deserialize, Serialize};
@@ -19,8 +19,8 @@ use crate::standard::auto_detect::AutoDetect;
 use crate::standard::plots::{self, axis_ui};
 use crate::standard::pool::Pool;
 use crate::standard::spikes::{
-    Channels, DEFAULT_THRESHOLD_UV, Gains, Polarity, RECORDED_FULL_SCALE_UV, Spikes, Thresholds, nice_step,
-    threshold_step, trimmed,
+    Channels, DEFAULT_THRESHOLD_UV, Gains, RECORDED_FULL_SCALE_UV, Spikes, Thresholds, nice_step, threshold_step,
+    trimmed,
 };
 use crate::standard::widgets::{open_settings_button, require_input};
 use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
@@ -476,10 +476,8 @@ impl SpikeViewer {
         let plot = egui::vec2(height * ASPECT, height);
         // Each group on a card of its own: a title, then its plots, with room around them.
         let (header, pad, gap) = (22.0, 6.0, 16.0);
-        // The y axis, once a row of groups, at the left of the first: the scale, as they're drawn (upside down, for
-        // negative-going spikes).
+        // The y axis, once a row of groups, at the left of the first: the scale, negative at the top.
         let axis = 44.0;
-        let flip = if stream.polarity == Polarity::Negative { -1.0 } else { 1.0 };
         let scale = self.scale_uv.max(1.0);
         let tile = egui::vec2(plot.x * k as f32 + 2.0 * pad, header + plot.y + pad);
         let kind = match k {
@@ -536,7 +534,7 @@ impl SpikeViewer {
                 // At the card's edge, so the labels are outside it.
                 if i % columns == 0 {
                     let plots_x = egui::Rangef::new(min.x, min.x + pad + k as f32 * plot.x);
-                    axis_ui(&painter, plots_x, min.y + header, plot.y, flip * scale, theme);
+                    axis_ui(&painter, plots_x, min.y + header, plot.y, -scale, theme);
                 }
                 offset += count * k * samples;
             }
@@ -564,7 +562,6 @@ impl SpikeViewer {
         typing: &mut Option<Typing>,
     ) {
         let theme = plots.theme;
-        let polarity = plots.stream.polarity;
         let layout = Channels { count: plots.stream.channels as usize, group_size: plots.stream.group_size as usize };
         let shown = |values: &[f32], default: f32| values.get(channel).copied().unwrap_or(default);
         let display_thresholds = plots.display.map_or(&[][..], |d| &d.thresholds[..]);
@@ -582,10 +579,9 @@ impl SpikeViewer {
         let scale = self.scale_uv.max(1.0);
         // What the plot shows of what comes in: a threshold stays within it.
         let range = scale / size;
-        // Spikes go up: negative-going ones are shown upside down.
-        let flip = if polarity == Polarity::Negative { -1.0 } else { 1.0 };
+        // Negative at the top: most spikes go down, and people expect them to point up.
         let half = rect.height() * 0.5;
-        let y = |uv: f32| rect.center().y - (flip * uv / scale).clamp(-1.0, 1.0) * half;
+        let y = |uv: f32| rect.center().y + (uv / scale).clamp(-1.0, 1.0) * half;
         let x = |s: usize, samples: usize| rect.left() + (s as f32 + 0.5) / samples.max(1) as f32 * rect.width();
 
         painter.rect_stroke(rect, 0.0, Stroke::new(1.0, theme.divider), egui::StrokeKind::Inside);
@@ -600,13 +596,11 @@ impl SpikeViewer {
 
         let interactive = !plots.locked;
         let hovered = ui.rect_contains_pointer(rect);
-        // The threshold, amplified as the spikes are: above the middle, and below too if spikes go both ways. Dragged,
-        // if it can be set.
-        let mut lines = vec![y(flip * threshold * size)];
-        if polarity == Polarity::Both {
-            lines.push(y(-threshold * size));
-        }
-        for (i, line) in lines.into_iter().enumerate() {
+        // The threshold, amplified as the spikes are, either way from zero: above the middle, which can be dragged,
+        // and fainter below it.
+        let colour = crate::standard::spikes::Thresholds::INFO.colour;
+        painter.hline(rect.x_range(), y(threshold * size), Stroke::new(1.0, colour.gamma_multiply(0.25)));
+        for (i, line) in [y(-threshold * size)].into_iter().enumerate() {
             let mut active = false;
             if let (true, Some(thresholds)) = (interactive, plots.thresholds.as_deref_mut()) {
                 let grab = Rect::from_x_y_ranges(rect.x_range(), line - 4.0..=line + 4.0);
@@ -620,7 +614,6 @@ impl SpikeViewer {
                     .on_hover_cursor(egui::CursorIcon::ResizeVertical)
                     .on_hover_text(format!("Channel {}'s threshold: {threshold:.1} µV. Drag to move it", channel + 1));
             }
-            let colour = crate::standard::spikes::Thresholds::INFO.colour;
             let stroke = if active { Stroke::new(2.0, colour) } else { Stroke::new(1.0, colour.gamma_multiply(0.8)) };
             painter.hline(rect.x_range(), line, stroke);
         }
@@ -747,8 +740,7 @@ mod tests {
         assert_eq!(group_title("Channel", 4, 4..5), "Channel 5", "it says it already");
     }
 
-    const STREAM: Spikes =
-        Spikes { channels: 8, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32, polarity: Polarity::Negative };
+    const STREAM: Spikes = Spikes { channels: 8, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32 };
 
     fn harness<'a>() -> Harness<'a, (Thresholds, Gains)> {
         Harness::builder().with_size([700.0, 400.0]).wgpu().build_ui_state(

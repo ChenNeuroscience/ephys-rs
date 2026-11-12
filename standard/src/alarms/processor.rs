@@ -347,13 +347,12 @@ mod tests {
     use super::*;
     use crate::standard::alarms::Selection;
     use crate::standard::ephys::{Continuous, Event, Events, EventsBuffer};
-    use crate::standard::spikes::{Polarity, Spike, Spikes};
+    use crate::standard::spikes::{Spike, Spikes};
     use crate::standard::tracking::pipeline::Blob;
     use crate::standard::tracking::{PositionSample, Positions, PositionsBuffer};
     use ephys_rs::engine::{DataStreamType, PASS_DURATION};
 
-    const SPIKES: Spikes =
-        Spikes { channels: 8, sample_rate: 1000.0, group_size: 4, pre: 2, post: 2, polarity: Polarity::Negative };
+    const SPIKES: Spikes = Spikes { channels: 8, sample_rate: 1000.0, group_size: 4, pre: 2, post: 2 };
 
     /// A processor of `alarms`, watching only what `inputs` has.
     struct Run {

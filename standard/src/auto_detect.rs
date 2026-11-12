@@ -103,8 +103,8 @@ impl Distribution {
     }
 }
 
-/// A level chosen from the data, from a percentile of it and a multiple: a spike detector's threshold (`above`), or a
-/// continuous gain's range (`either_way`).
+/// A level chosen from the data, from a percentile of it and a multiple: a spike detector's threshold (`either_side`),
+/// or a continuous gain's range (`either_way`).
 #[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
 pub struct PercentMultiple {
     pub percent: f32,
@@ -112,9 +112,12 @@ pub struct PercentMultiple {
 }
 
 impl PercentMultiple {
-    /// The level, given data that goes one way: its percentile times the multiple, from zero (as thresholds are).
-    pub fn above(self, data: &Distribution) -> f32 {
-        data.signed_percentile(self.percent) * self.multiple
+    /// The level, given data either side of zero: its percentile on each side (above zero, and as far below it), the
+    /// further from zero of the two, times the multiple (as thresholds are, from zero either way).
+    pub fn either_side(self, data: &Distribution) -> f32 {
+        let above = data.signed_percentile(self.percent);
+        let below = -data.signed_percentile(100.0 - self.percent);
+        above.max(below) * self.multiple
     }
 
     /// The level, given data that can go either way: its mean, plus a multiple of a percentile's distance from it, both
@@ -181,14 +184,18 @@ mod tests {
         assert!((value - expected).abs() <= within, "{value}, not {expected}");
     }
 
-    /// A threshold is from zero, as the data's mean doesn't count: 98% are at or below 980, so it's twice that.
+    /// A threshold is from zero, either side of it, whichever's further out: the mean doesn't count.
     #[test]
-    fn a_level_above_is_a_multiple_of_a_percentile_from_zero() {
+    fn a_level_either_side_is_the_further_percentile_from_zero_times_the_multiple() {
         let level = PercentMultiple { percent: 98.0, multiple: 2.0 };
+        // All above zero: 98% are at or below 980, so it's twice that.
         let data = of(1..=1000);
         near(data.mean(), 500.5, 0.001);
-        near(data.signed_percentile(98.0), 980.0, 15.0);
-        near(level.above(&data), 2.0 * 980.0, 30.0);
+        near(level.either_side(&data), 2.0 * 980.0, 30.0);
+        // Below zero, further out than above: 2% are at or below -1960, which is further from zero than 98% are at
+        // or below (980).
+        let data = of((-2000..=-1).chain(1..=1000));
+        near(level.either_side(&data), 2.0 * 1940.0, 60.0);
     }
 
     #[test]
@@ -217,7 +224,7 @@ mod tests {
     #[test]
     fn with_nothing_to_go_on_a_level_is_zero() {
         let level = PercentMultiple { percent: 98.0, multiple: 2.0 };
-        assert_eq!(level.above(&Distribution::default()), 0.0);
+        assert_eq!(level.either_side(&Distribution::default()), 0.0);
         assert_eq!(level.either_way(&Distribution::default()), 0.0);
     }
 

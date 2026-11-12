@@ -12,15 +12,16 @@ Each component starts with what kind of node it is and its ports: data ports `li
 
 ![A Spike Detector's settings, floating over a Spike Viewer](../../tests/snapshots/graph_windows.png)
 
-Finds spikes: a crossing of a channel's threshold, on any channel of a group, then the waveform on all the group's
-channels around the peak that follows. A group can't spike again until its last spike's waveform has ended.
+Finds spikes: a crossing of a channel's threshold, either way (below its negative, or above it), on any channel of a
+group, then the waveform on all the group's channels around the peak that follows (its furthest from zero). A group
+can't spike again until its last spike's waveform has ended. Which way spikes go doesn't matter to it: a Spike
+Gain's auto detect can turn channels whose spikes go up to go down, as most do.
 
 **Settings**
 
-- **Polarity**: whether spikes go negative, positive, or both ways.
 - **Group**: single channels, stereotrodes (2), tetrodes (4) or octrodes (8).
 - **Before peak**, **After peak**: how many samples of waveform to keep around the peak.
-- **Thresholds**: each channel's, in µV past zero, the way the spikes go. Most easily set from a Spike Viewer.
+- **Thresholds**: each channel's, in µV past zero, either way. Most easily set from a Spike Viewer.
 - **Auto detect**: chooses thresholds from the data. For each channel, it computes the **Level**'s percentile of its
   voltage over the sampling time (**for**), then sets its threshold to that percentile multiplied by the **factor**.
   Run it here, or from a Spike Viewer. **Each channel** shows what it chose for each.
@@ -35,7 +36,7 @@ Amplifies each channel's spike waveforms by a gain, as an amplifier does: ×1 le
 them. That's all a gain does: what's recorded of them is up to whatever records them (Write LTX's [scales](recording.md#write-ltx)
 map ±250 µV to its −128 to 127, to begin with, clipping beyond). Gains go from ×¼ to ×4, and can be one for all
 channels, one for each group (tetrode), or one each. A negative gain turns the spikes upside down as they're
-recorded: stepping it, or auto detect, keeps it negative.
+recorded: stepping it keeps it negative.
 
 Projects saved before gains amplified (when Write LTX's gains took µV to −128 to 127) are converted when they're
 opened, to record just the same.
@@ -48,6 +49,11 @@ the upper limit of the **Fit range** (what's recorded: ±250 µV, Write LTX's sp
 - **Peak percentile × factor**: a percentile of its spikes' peaks (95 %, say, or 100 % for the biggest), times its
   **factor**.
 - The **larger**, **mean** or **geometric mean** of the two, each times its factor. The geometric mean is the default.
+
+With **Auto invert** (on, to begin with), it also turns each channel's spikes to go down, as most extracellular spikes
+do (a Spike Viewer shows them pointing up): it adds up each channel's spikes' extrema (each spike's furthest point
+from zero), and where the total's positive, it uses a negative gain. Channels sharing a gain go by all theirs together, and
+a channel with no spikes stays as it was.
 
 The range is never less than 1.5 × the threshold, so the threshold's always in view, and a channel with no spikes goes
 by its threshold. If the thresholds change while it's sampling (moved by hand, say), it starts sampling again, so the
@@ -64,8 +70,9 @@ Connect Write LTX's ◇ `gains` to it, and the gains are recorded in the `.set` 
 Each group's recent spikes, overlaid: a box per tetrode, with a plot per channel and its threshold. The spikes are
 shown as they're recorded, amplified by their gain, so raising a gain makes them bigger. The plots show the **Scale**,
 ±250 µV to begin with: what Write LTX records, so a spike reaching the edge is clipped. Set it to see more, or
-less. Each row of tetrodes has the scale on its y axis, at its left. Spikes always go up the plot, whichever way they go (a negative-going spike is shown upside down,
-so the axis has its negative end at the top), so the threshold, amplified with them, is above the middle.
+less. Each row of tetrodes has the scale on its y axis, at its left. Spikes are shown negative at the top, so the downward spikes most
+channels record point up, as people expect. Each channel's threshold, amplified with the spikes, is the line above the middle, to drag, and fainter below
+it, as spikes are found either way.
 
 Connected to a detector's thresholds and a gain's gains, it sets them:
 

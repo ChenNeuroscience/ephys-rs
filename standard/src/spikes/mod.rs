@@ -25,34 +25,6 @@ pub struct Spikes {
     /// Waveform samples before and after each spike's peak.
     pub pre: u32,
     pub post: u32,
-    /// Which way the spikes go.
-    pub polarity: Polarity,
-}
-
-/// Which way spikes go past their channel's threshold. (Extracellular spikes mostly go negative: near a firing cell
-/// the current flows in, leaving the outside more negative.)
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
-pub enum Polarity {
-    #[default]
-    Negative,
-    Positive,
-    Both,
-}
-
-impl Polarity {
-    /// A value as it's plotted: spikes go up, so negative-going ones are shown upside down.
-    pub fn plotted(self, x: f32) -> f32 {
-        if self == Polarity::Negative { -x } else { x }
-    }
-
-    /// How far a value is past zero, the way spikes go.
-    pub fn extremity(self, x: f32) -> f32 {
-        match self {
-            Polarity::Negative => -x,
-            Polarity::Positive => x,
-            Polarity::Both => x.abs(),
-        }
-    }
 }
 
 impl Spikes {
@@ -244,7 +216,8 @@ fn spread(values: &[f32], default: f32, show: impl Fn(f32) -> String) -> String 
     }
 }
 
-/// Each channel's spike detection threshold: µV past zero, the way the spikes go (see `Polarity`).
+/// Each channel's spike detection threshold: µV past zero, either way (a spike's a crossing below its negative, or
+/// above it).
 #[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Thresholds(pub Vec<f32>);
@@ -449,14 +422,7 @@ mod tests {
 
     #[test]
     fn summary() {
-        let spikes = Spikes {
-            channels: 64,
-            sample_rate: 30000.0,
-            group_size: 4,
-            pre: 8,
-            post: 32,
-            polarity: Polarity::Negative,
-        };
+        let spikes = Spikes { channels: 64, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32 };
         assert_eq!(spikes.summary(), "16 tetrodes · 30 kHz");
         assert_eq!(spikes.group_channels(15), 60..64);
     }

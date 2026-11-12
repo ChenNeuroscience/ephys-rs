@@ -1,8 +1,8 @@
 //! The Spike Detector: finds spikes in groups of channels (tetrodes, say) of continuous data: a crossing of a
-//! channel's threshold (µV past zero, the way the spikes go), on any of a group's channels, then the waveform on all
-//! of them around the peak that follows. Each channel's threshold is a setting, set by hand, from a Spike Viewer,
-//! or chosen from the data when it's triggered ("auto detect"): the mean of the channel's samples over a while, the way a
-//! Spike Viewer plots them (spikes going up), plus a multiple of a percentile's distance from it.
+//! channel's threshold (µV past zero, either way: below its negative, or above it), on any of a group's channels,
+//! then the waveform on all of them around the peak that follows (its furthest from zero). Each channel's threshold
+//! is a setting, set by hand, from a Spike Viewer, or chosen from the data when it's triggered ("auto detect"): a
+//! percentile of the channel's samples over a while, on whichever side of zero it's further out, times a factor.
 //!
 //! A group can't spike again until its last spike's waveform has ended, so spikes don't overlap, and a pass's
 //! spikes always fit the buffer (see `Spikes`). A spike is only found once its whole waveform has come, so
@@ -13,7 +13,7 @@ use ephys_rs::engine::TreeShake;
 use serde::{Deserialize, Serialize};
 
 use crate::standard::auto_detect::{Distribution, PercentMultiple, SAMPLING, auto_detect_ui, detecting};
-use crate::standard::spikes::{Polarity, Spike, Spikes, Thresholds};
+use crate::standard::spikes::{Spike, Spikes, Thresholds};
 use crate::standard::widgets::{combo, input_summary, named_settings_grid, require_input, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
 use ephys_rs::engine::EdgeType;
@@ -23,14 +23,14 @@ use ephys_rs::gui::widgets::info_icon;
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SpikeDetector {
-    pub polarity: Polarity,
     /// Channels in each group: 4 for tetrodes, 1 for single electrodes.
     pub group_size: u32,
     /// Waveform samples kept before and after each spike's peak.
     pub pre: u32,
     pub post: u32,
     pub thresholds: Thresholds,
-    /// Thresholds chosen from the data are this, of each channel's samples as plotted, sampled for so many seconds.
+    /// Thresholds chosen from the data are this, of each channel's samples either side of zero, sampled for so many
+    /// seconds.
     pub level: PercentMultiple,
     pub sampling: f32,
 }
@@ -38,7 +38,6 @@ pub struct SpikeDetector {
 impl Default for SpikeDetector {
     fn default() -> Self {
         SpikeDetector {
-            polarity: Polarity::Negative,
             group_size: 4,
             pre: 8,
             post: 32,
@@ -57,7 +56,6 @@ impl SpikeDetector {
             group_size: self.group_size.max(1),
             pre: self.pre.max(1),
             post: self.post.max(1),
-            polarity: self.polarity,
         }
     }
 }
@@ -190,7 +188,8 @@ impl Node<Edges> for SpikeDetector {
         // lookahead have all come.
         let (pre, post, lookahead) = (spikes.pre as usize, spikes.post as usize, detector.lookahead);
         let end = (pre + n) as i64;
-        let extremity = |x: f32| self.polarity.extremity(x);
+        // Either way: how far past zero.
+        let extremity = |x: f32| x.abs();
         let beyond = |x: f32, threshold: f32| extremity(x) > threshold;
         for group in 0..spikes.groups() {
             let group_channels = spikes.group_channels(group);
@@ -280,14 +279,6 @@ impl Node<Edges> for SpikeDetector {
             };
             let ms = |samples: u32| format!(" samples ({:.2} ms)", samples as f32 * 1000.0 / rate);
             settings_grid(ui, |ui| {
-                setting(ui, "Polarity", |ui| {
-                    combo(
-                        ui,
-                        "polarity",
-                        &mut node.polarity,
-                        &[(Polarity::Negative, "Negative"), (Polarity::Positive, "Positive"), (Polarity::Both, "Both")],
-                    )
-                });
                 setting(ui, "Group", |ui| {
                     combo(
                         ui,
@@ -349,7 +340,7 @@ impl SpikeDetector {
         if let Some((elapsed, seconds, data)) = &mut detector.sampling {
             if let Some(Some(Buffer::Continuous(input))) = pass.inputs.first() {
                 for (channel, data) in data.iter_mut().enumerate().take(input.channels) {
-                    input.channel(channel).iter().for_each(|x| data.add(self.polarity.plotted(*x)));
+                    input.channel(channel).iter().for_each(|x| data.add(*x));
                 }
             }
             *elapsed += pass.duration;
@@ -357,7 +348,7 @@ impl SpikeDetector {
             if *elapsed >= *seconds {
                 let mut thresholds = self.thresholds.clone();
                 for (channel, data) in data.iter().enumerate() {
-                    let level = self.level.above(data);
+                    let level = self.level.either_side(data);
                     if level > 0.0 {
                         thresholds.set(channel, level.max(0.5));
                     }

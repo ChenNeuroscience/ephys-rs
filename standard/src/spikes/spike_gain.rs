@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::standard::auto_detect::{Distribution, SAMPLING, auto_detect_ui, detecting};
 use crate::standard::spikes::{
-    Channels, DEFAULT_RANGE_UV, GainScope, Gains, Polarity, RANGES_UV, SpikesBuffer, fill_field, gain_field,
+    Channels, DEFAULT_RANGE_UV, GainScope, Gains, RANGES_UV, SpikesBuffer, fill_field, gain_field,
 };
 use crate::standard::widgets::{input_summary, named_settings_grid, require_input, setting};
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
@@ -46,14 +46,23 @@ impl Default for SpikeGain {
 pub struct Fit {
     pub algorithm: Algorithm,
     pub threshold_factor: f32,
-    /// Which percentile of the spikes' peaks (each spike's on the channel, the way spikes go): 100 for the biggest.
+    /// Which percentile of the spikes' peaks (each spike's furthest from zero on the channel): 100 for the biggest.
     pub peak_percent: f32,
     pub peak_factor: f32,
+    /// Whether to turn each channel's spikes to go down, as most do (a Spike Viewer shows them pointing up): a
+    /// negative gain where they go up.
+    pub auto_invert: bool,
 }
 
 impl Default for Fit {
     fn default() -> Self {
-        Fit { algorithm: Algorithm::GeometricMean, threshold_factor: 3.0, peak_percent: 95.0, peak_factor: 0.8 }
+        Fit {
+            algorithm: Algorithm::GeometricMean,
+            threshold_factor: 3.0,
+            peak_percent: 95.0,
+            peak_factor: 0.8,
+            auto_invert: true,
+        }
     }
 }
 
@@ -151,8 +160,6 @@ impl Fit {
 #[derive(Default)]
 pub struct Gaining {
     sampling: Option<Sampling>,
-    /// Which way the spikes go.
-    polarity: Polarity,
 }
 
 impl ephys_rs::engine::PassState for Gaining {
@@ -166,8 +173,10 @@ struct Sampling {
     seconds: f64,
     /// The thresholds the spikes were found by.
     thresholds: Vec<f32>,
-    /// Each channel's spikes' peaks: each spike's biggest excursion on it, the way spikes go.
+    /// Each channel's spikes' peaks: each spike's biggest excursion on it, from zero either way.
     peaks: Vec<Distribution>,
+    /// Which way each channel's spikes go: their extrema (each's furthest from zero, signed), added up.
+    extrema: Vec<f64>,
 }
 
 impl Node<Edges> for SpikeGain {
@@ -221,12 +230,8 @@ impl Node<Edges> for SpikeGain {
 
     /// Multiplies each channel's waveforms by its gain (saying so on the spikes); and, when triggered, samples the
     /// spikes (in µV, before that) for a while, then triggers an update to gains from them.
-    fn initial_state(&self, inputs: &[Option<DataStream>]) -> Gaining {
-        let polarity = match inputs.first() {
-            Some(Some(DataStream::Spikes(spikes))) => spikes.polarity,
-            _ => Polarity::default(),
-        };
-        Gaining { sampling: None, polarity }
+    fn initial_state(&self, _inputs: &[Option<DataStream>]) -> Gaining {
+        Gaining::default()
     }
 
     fn process(&self, pass: &mut Pass<Edges>, gaining: &mut Gaining) {
@@ -251,11 +256,14 @@ impl Node<Edges> for SpikeGain {
             gaining.sampling = Some(start());
         }
         if let Some(sampling) = &mut gaining.sampling {
-            sampling.add(spikes, gaining.polarity, pass.duration);
+            sampling.add(spikes, pass.duration);
             pass.trigger_progress(crate::TriggerKind::AutoDetect, (sampling.elapsed / sampling.seconds) as f32);
             if sampling.elapsed >= sampling.seconds {
                 let mut gains = self.gains.clone();
                 gains.set_ranges(&sampling.choose(self.fit), layout);
+                if self.fit.auto_invert {
+                    sampling.turn_down(&mut gains, layout);
+                }
                 pass.trigger_settings_update(0, Setting::Gains(gains));
                 pass.trigger_done(crate::TriggerKind::AutoDetect);
                 gaining.sampling = None;
@@ -395,6 +403,20 @@ impl Node<Edges> for SpikeGain {
                             .response
                         });
                     }
+                    setting(ui, "Auto invert", |ui| {
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut node.fit.auto_invert, "")
+                                .on_hover_text("Turn each channel's spikes to go down, as most do");
+                            info_icon(
+                                ui,
+                                "For each channel, adds up its spikes' extrema (each spike's furthest point from \
+                                 zero) over the sampling time. If the total is positive, it uses a negative gain for \
+                                 that channel, so its spikes have negative voltage (rendered in the up direction in \
+                                 the Spike Viewer).",
+                            );
+                        })
+                        .response
+                    });
                     setting(ui, "Sampling for", |ui| {
                         ui.add(egui::DragValue::new(&mut node.sampling).range(SAMPLING).speed(0.2).suffix(" s"))
                             .on_hover_text("How long to sample for")
@@ -411,20 +433,39 @@ impl Node<Edges> for SpikeGain {
 impl Sampling {
     fn new(seconds: f64, thresholds: &[f32]) -> Self {
         let peaks = vec![Distribution::default(); thresholds.len()];
-        Sampling { elapsed: 0.0, seconds, thresholds: thresholds.to_vec(), peaks }
+        Sampling { elapsed: 0.0, seconds, thresholds: thresholds.to_vec(), peaks, extrema: vec![0.0; thresholds.len()] }
     }
 
-    fn add(&mut self, spikes: &SpikesBuffer, polarity: Polarity, duration: f64) {
+    fn add(&mut self, spikes: &SpikesBuffer, duration: f64) {
         let (k, samples) = (spikes.group_size, spikes.samples);
         for (i, spike) in spikes.spikes.iter().enumerate() {
             let waveform = spikes.waveform(i);
             for c in 0..k {
-                let Some(peaks) = self.peaks.get_mut(spike.group as usize * k + c) else { continue };
+                let channel = spike.group as usize * k + c;
+                let (Some(peaks), Some(extrema)) = (self.peaks.get_mut(channel), self.extrema.get_mut(channel)) else {
+                    continue;
+                };
                 let waveform = &waveform[c * samples..(c + 1) * samples];
-                peaks.add(waveform.iter().fold(0.0, |peak: f32, x| peak.max(polarity.extremity(*x))));
+                // Its biggest excursion, either way.
+                let peak =
+                    waveform.iter().copied().fold(0.0_f32, |peak, x| if x.abs() > peak.abs() { x } else { peak });
+                peaks.add(peak.abs());
+                *extrema += peak as f64;
             }
         }
         self.elapsed += duration;
+    }
+
+    /// Turns each channel's spikes to go down, as most extracellular spikes do: a negative gain where their extrema
+    /// add up to above zero, a positive one where below; those sharing a gain by all theirs together. Those without
+    /// spikes stay as they are.
+    fn turn_down(&self, gains: &mut Gains, layout: Channels) {
+        for unit in gains.units(layout) {
+            let total: f64 = unit.clone().filter_map(|c| self.extrema.get(c)).sum();
+            if total != 0.0 && gains.inverted(unit.start) != (total > 0.0) {
+                gains.invert(unit.start, layout);
+            }
+        }
     }
 
     /// Each channel's range (µV), by `fit`.
@@ -452,7 +493,13 @@ mod tests {
 
     #[test]
     fn a_channels_range_goes_by_its_threshold_its_peaks_or_both() {
-        let fit = |algorithm| Fit { algorithm, threshold_factor: 4.0, peak_percent: 95.0, peak_factor: 2.0 };
+        let fit = |algorithm| Fit {
+            algorithm,
+            threshold_factor: 4.0,
+            peak_percent: 95.0,
+            peak_factor: 2.0,
+            auto_invert: true,
+        };
         // A threshold of 50 µV, so 200 by it; peaks of 200, so 400 by them.
         let ranges: Vec<f32> =
             Algorithm::ALL.into_iter().map(|algorithm| fit(algorithm).range(50.0, Some(200.0))).collect();
@@ -469,14 +516,8 @@ mod tests {
     fn chooses_gains_from_the_spikes_when_triggered() {
         let fit = Fit { algorithm: Algorithm::Peaks, peak_percent: 100.0, peak_factor: 2.0, ..Default::default() };
         let gain = SpikeGain { sampling: 4.0, fit, ..Default::default() };
-        let stream = crate::standard::spikes::Spikes {
-            channels: 4,
-            sample_rate: 30000.0,
-            group_size: 4,
-            pre: 8,
-            post: 32,
-            polarity: Default::default(),
-        };
+        let stream =
+            crate::standard::spikes::Spikes { channels: 4, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32 };
         let mut state = gain.initial_state(&[Some(DataStream::Spikes(stream))]);
         let mut buffer = stream.buffer(PASS_DURATION);
         buffer.noise = vec![10.0, 10.0, 20.0, 0.0];
@@ -492,11 +533,11 @@ mod tests {
         for sequence in 0..passes {
             let Buffer::Spikes(spikes) = &mut outputs[0] else { unreachable!() };
             spikes.clear();
-            // Negative-going: peaking at 100 µV on the first channel, 300 on the second (now and then). What goes the
-            // other way isn't how spikes go.
+            // Going down to 100 µV on the first channel (and back up past zero, not as far), and up to 300 on the
+            // second (now and then).
             if let Some(waveform) = spikes.push(Spike { sample: 0, group: 0, channel: 0 }) {
-                (waveform[8], waveform[9]) = (-100.0, 900.0);
-                waveform[40 + 8] = if sequence % 4 == 0 { -300.0 } else { -50.0 };
+                (waveform[8], waveform[9]) = (-100.0, 50.0);
+                waveform[40 + 8] = if sequence % 4 == 0 { 300.0 } else { 50.0 };
             }
             let mut pass = Pass::new(sequence, PASS_DURATION, &[], &mut outputs);
             (pass.triggers, pass.direct) = (&triggers, &direct);
@@ -513,6 +554,9 @@ mod tests {
         assert!(close(gains.range_uv(2), 120.0), "no spikes on it: room for its threshold");
         assert!(close(gains.range_uv(3), 75.0), "and for the default threshold");
         assert_eq!(gains.fill_uv, 250.0, "Write LTX's full scale, to begin with");
+        // The second channel's spikes go up, so it's turned upside down, to go down as the first's do.
+        assert!(!gains.inverted(0) && gains.inverted(1), "{:?}", gains.gains);
+        assert!(!gains.inverted(2), "no spikes: as it was");
         // A percentile of them leaves out the second channel's few big ones: 3 in 4 are 50 µV.
         let mut sampling = Sampling::new(4.0, &[50.0; 4]);
         let Buffer::Spikes(spikes) = &mut outputs[0] else { unreachable!() };
@@ -521,7 +565,7 @@ mod tests {
             if let Some(waveform) = spikes.push(Spike { sample: 0, group: 0, channel: 0 }) {
                 waveform[40 + 8] = if sequence % 4 == 0 { -300.0 } else { -50.0 };
             }
-            sampling.add(spikes, Polarity::default(), PASS_DURATION);
+            sampling.add(spikes, PASS_DURATION);
         }
         let range = sampling.choose(Fit { peak_percent: 50.0, ..fit })[1];
         assert!(close(range, 100.0), "half of them are at or below 50 µV: {range}");
@@ -530,14 +574,8 @@ mod tests {
     #[test]
     fn it_samples_again_if_the_thresholds_change_while_it_is() {
         let gain = SpikeGain { sampling: 4.0, ..Default::default() };
-        let stream = crate::standard::spikes::Spikes {
-            channels: 4,
-            sample_rate: 30000.0,
-            group_size: 4,
-            pre: 8,
-            post: 32,
-            polarity: Default::default(),
-        };
+        let stream =
+            crate::standard::spikes::Spikes { channels: 4, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32 };
         let mut state = gain.initial_state(&[Some(DataStream::Spikes(stream))]);
         let mut buffer = stream.buffer(PASS_DURATION);
         buffer.thresholds = vec![DEFAULT_THRESHOLD_UV; 4];
@@ -578,14 +616,8 @@ mod tests {
     #[test]
     fn stopping_auto_detect_abandons_it() {
         let gain = SpikeGain::default();
-        let stream = crate::standard::spikes::Spikes {
-            channels: 4,
-            sample_rate: 30000.0,
-            group_size: 4,
-            pre: 8,
-            post: 32,
-            polarity: Default::default(),
-        };
+        let stream =
+            crate::standard::spikes::Spikes { channels: 4, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32 };
         let mut state = gain.initial_state(&[Some(DataStream::Spikes(stream))]);
         let mut outputs = [Buffer::Spikes(stream.buffer(PASS_DURATION))];
         let (triggers, direct) =
@@ -616,6 +648,29 @@ mod tests {
     }
 
     /// Its window, a gain for each tetrode. See tests/snapshots/.
+    /// Spikes whose extrema add up above zero are turned down, by a negative gain; those below, the right way up;
+    /// those sharing a gain, by all theirs together; those without spikes, as they were.
+    #[test]
+    fn auto_invert_turns_spikes_to_go_down() {
+        let mut sampling = Sampling::new(1.0, &[50.0; 8]);
+        sampling.extrema = vec![-300.0, 200.0, 0.0, 0.0, -100.0, 150.0, 0.0, -10.0];
+        let (tetrodes, each) = (Channels { count: 8, group_size: 4 }, Channels { count: 8, group_size: 1 });
+        let mut gains = Gains::default();
+        gains.invert(1, each);
+        gains.invert(3, each);
+        sampling.turn_down(&mut gains, each);
+        let inverted: Vec<bool> = (0..8).map(|c| gains.inverted(c)).collect();
+        assert_eq!(
+            inverted,
+            [false, true, false, true, false, true, false, false],
+            "the third and fourth, as they were"
+        );
+        // A tetrode each: the first's add up to -100, the second's to 40.
+        let mut gains = Gains { scope: GainScope::Group, ..Default::default() };
+        sampling.turn_down(&mut gains, tetrodes);
+        assert!((0..4).all(|c| !gains.inverted(c)) && (4..8).all(|c| gains.inverted(c)));
+    }
+
     /// The factors' info says how they're used, as the algorithm has it: on their own, or combined.
     #[test]
     fn the_factors_info_follows_the_algorithm() {
@@ -644,8 +699,7 @@ mod tests {
         let mut graph = Graph::<Nodes>::default();
         let node_type = NodeType::SpikeGain;
         let id = graph.add(Nodes::create(node_type), [0.0, 0.0]);
-        let spikes =
-            Spikes { channels: 8, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32, polarity: Default::default() };
+        let spikes = Spikes { channels: 8, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32 };
         if let Some(Nodes::SpikeGain(gain)) = graph.get_mut(id).map(|e| &mut e.node) {
             let channels = Channels { count: 8, group_size: 4 };
             gain.gains.set_scope(GainScope::Group, channels);
