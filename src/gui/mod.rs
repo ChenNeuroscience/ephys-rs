@@ -3492,10 +3492,10 @@ mod tests {
         stream
             .write_all(b"{\"type\": \"settings\", \"settings\": {\"task\": \"first\", \"maze\": {\"arms\": 8}, \"window_min_x\": 0, \"window_max_x\": 1000, \"window_min_y\": 0, \"window_max_y\": 800, \"pixels_per_metre\": 400, \"ttl_channels\": 2}}\n")
             .unwrap();
-        until(&mut harness, "the settings", &|app| task(app).as_deref() == Some("first"));
-
-        // Channel 2 going up starts recording.
+        // Channel 2 going up starts recording: sent straight after the settings that say there's a channel 2, before
+        // the passes have them (it waits for them, rather than be dropped).
         stream.write_all(b"{\"type\": \"ttl\", \"time\": 999, \"idx\": 2, \"value\": 1}\n").unwrap();
+        until(&mut harness, "the settings", &|app| task(app).as_deref() == Some("first"));
         until(&mut harness, "recording", &|app| app.history.current.snapshot.recording.is_some());
         stream.write_all(b"{\"type\": \"pos\", \"time\": 1000, \"x\": 100, \"y\": 200}\n").unwrap();
         stream.write_all(b"{\"type\": \"ttl\", \"time\": 1000.25, \"idx\": 1, \"value\": 1}\n").unwrap();

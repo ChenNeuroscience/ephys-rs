@@ -75,6 +75,8 @@ const QUEUE: usize = 4096;
 const MAX_MESSAGE: usize = 1 << 20;
 /// How long to give the GUI to apply settings, before triggering an update to them again (it won't as recording starts).
 const TRIGGER_AGAIN: Duration = Duration::from_secs(1);
+/// The longest what's arrived waits for new settings to be applied, for passes that have them (see `Inbox::waiting`).
+const WAIT_FOR_SETTINGS: Duration = Duration::from_secs(3);
 /// How long to try each connection for, and to wait between them.
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(250);
 const RETRY_AFTER: Duration = Duration::from_millis(500);
@@ -227,6 +229,14 @@ impl Inbox {
             let Some((time, line)) = self.logs.pop_front() else { break };
             logs.push(time, &line);
         }
+    }
+
+    /// Whether what's arrived should wait for the passes of the new settings, not be taken by these (with `current`):
+    /// while they're on their way (it's not `recording`, when they'd wait for it to stop), for a while at most. What
+    /// came after them is by them (a TTL on a channel only they have, say), and the passes judge it by theirs.
+    fn waiting(&self, current: &Custom, recording: bool) -> bool {
+        let on_their_way = self.settings.as_ref().is_some_and(|settings| settings != current) && !recording;
+        on_their_way && self.triggered.is_none_or(|at| at.elapsed() < WAIT_FOR_SETTINGS)
     }
 
     /// The settings to update a node to that has `current`, if they're new: kept until it has them. While `recording`
@@ -593,9 +603,12 @@ impl Node<Edges> for VrComputer {
         ttls.events.clear();
         ttls.pass_samples = (pass.duration * TTL_RATE).round() as usize;
         logs.clear();
-        // If the thread's filing a message just then, what's there is left for the next pass.
+        // If the thread's filing a message just then, what's there is left for the next pass; and while new settings
+        // are on their way, for the passes that have them.
         let settings = shared.inbox.try_lock().ok().and_then(|mut inbox| {
-            inbox.take(positions, ttls, logs);
+            if !inbox.waiting(&self.custom, recording) {
+                inbox.take(positions, ttls, logs);
+            }
             inbox.settings_to_update(&self.custom, recording)
         });
         let channels = ttl_channels(&self.custom).unwrap_or(0);
@@ -818,6 +831,23 @@ mod tests {
         positions.samples.clear();
         inbox.take(&mut positions, &mut ttls, &mut logs);
         assert_eq!((positions.samples.len(), positions.samples[0].frame), (1, room as u64), "in order, numbered");
+    }
+
+    /// What comes after new settings is by them (a TTL on a channel only they have, say): it waits for the passes that
+    /// have them, rather than be judged by these, unless it's recording (when they wait) or they're a while coming.
+    #[test]
+    fn what_comes_after_new_settings_waits_for_them() {
+        let mut inbox = Inbox::default();
+        let task = |name: &str| Custom::from([("task".to_string(), name.to_string())]);
+        assert!(!inbox.waiting(&task("first"), false), "nothing new");
+        inbox.receive(parse(r#"{"type": "settings", "settings": {"task": "second"}}"#));
+        assert!(inbox.waiting(&task("first"), false), "on their way");
+        assert!(!inbox.waiting(&task("first"), true), "recording, when they wait for it to stop");
+        assert!(!inbox.waiting(&task("second"), false), "they're here");
+        assert_eq!(inbox.settings_to_update(&task("first"), false), Some(task("second")));
+        assert!(inbox.waiting(&task("first"), false), "triggered, till they're applied");
+        inbox.triggered = Some(Instant::now() - WAIT_FOR_SETTINGS);
+        assert!(!inbox.waiting(&task("first"), false), "for a while, at most");
     }
 
     #[test]
