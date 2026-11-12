@@ -55,7 +55,8 @@ An output can feed any number of inputs; an input takes one edge.
 
 ### Settings edges
 
-Below the data ports, separated by a line, are the *settings ports*, the diamonds. They let one node adjust or read
+Below the data ports, in a greyer area set off by a line with a small gear in it, are the *settings ports*, the
+diamonds. They let one node adjust or read
 another's settings. A Spike Viewer connected to a Spike Detector's `thresholds`, for example, lets you drag the
 thresholds in the viewer. And Write LTX connected to a Spike Gain's `gains` records the gains in its files.
 

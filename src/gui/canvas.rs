@@ -106,6 +106,8 @@ struct Layout {
     ports: HashMap<(PortRole, usize), (Pos2, bool)>,
     /// Between the data and settings ports, if it has both.
     divider: Option<f32>,
+    /// Where the settings ports start (shaded from there down), if they're showing.
+    settings_top: Option<f32>,
     /// Where a warning's shown, in the header's right corner.
     badge: Rect,
 }
@@ -173,6 +175,10 @@ impl Layout {
             zoom,
             ports,
             divider: (divider > 0.0).then(|| header.bottom() + (PAD + ROW * data_rows as f32 + divider / 2.0) * zoom),
+            settings_top: (settings_rows > 0).then(|| match data_rows {
+                0 => header.bottom(),
+                _ => header.bottom() + (PAD + ROW * data_rows as f32 + divider / 2.0) * zoom,
+            }),
             badge,
         }
     }
@@ -748,15 +754,34 @@ impl Canvas {
 
         let mut y = title.bottom();
         for (heading, dimension, kinds) in sections {
-            painter.text(
-                egui::pos2(title.left(), y + ROW / 2.0),
-                Align2::LEFT_CENTER,
-                heading,
-                FontId::proportional(10.5),
-                colours.text_disabled,
-            );
-            if dimension == Dimension::Settings {
-                let at = egui::pos2(title.right() - 8.0, y + ROW / 2.0);
+            // Each section's title in the middle of a divider: the settings', with a small gear, greyer from their
+            // divider down, as nodes have them.
+            let settings = dimension == Dimension::Settings;
+            let fill = colours.surface.lerp_to_gamma(colours.divider, 0.5);
+            let mid = y + ROW / 2.0;
+            // While the settings are hidden, just their title, with no area or divider.
+            let lined = !settings || shown;
+            if settings && shown {
+                let area = Rect::from_min_max(egui::pos2(rect.left(), mid), rect.max).shrink2(egui::vec2(1.0, 0.0));
+                painter.rect_filled(area, CornerRadius { nw: 0, ne: 0, sw: 5, se: 5 }, fill);
+            }
+            let galley = painter.layout_no_wrap(heading.to_string(), FontId::proportional(10.5), colours.text_disabled);
+            let gear = if settings { 14.0 } else { 0.0 };
+            let width = gear + galley.size().x;
+            let left = rect.center().x - width / 2.0;
+            let line_end = title.right();
+            let stroke = Stroke::new(1.0, colours.divider);
+            if lined {
+                painter.hline(title.left()..=left - 6.0, mid, stroke);
+                painter.hline(left + width + 6.0..=line_end, mid, stroke);
+            }
+            if settings {
+                small_gear(painter, egui::pos2(left + 5.0, mid), 1.0, colours.text_disabled, None);
+            }
+            painter.galley(egui::pos2(left + gear, mid - galley.size().y / 2.0), galley, colours.text_disabled);
+            // The eye that shows and hides them, in the legend's bottom right corner, shown or hidden.
+            if settings {
+                let at = egui::pos2(title.right() - 8.0, rect.bottom() - PAD - ROW / 2.0);
                 self.settings_eye(ui, painter, Rect::from_center_size(at, egui::Vec2::splat(16.0)), selection);
             }
             y += ROW;
@@ -1325,6 +1350,20 @@ struct PortPaint<'a> {
     colours: &'a Colours,
 }
 
+/// A small, simple gear (six teeth round a ring), on a disc of `back`, if it's given, so a line it's on stops either
+/// side of it.
+fn small_gear(painter: &Painter, centre: Pos2, zoom: f32, ink: Color32, back: Option<Color32>) {
+    if let Some(back) = back {
+        painter.circle_filled(centre, 7.0 * zoom, back);
+    }
+    for i in 0..6 {
+        let a = std::f32::consts::PI / 3.0 * i as f32;
+        let d = egui::vec2(a.cos(), a.sin());
+        painter.line_segment([centre + d * 2.5 * zoom, centre + d * 4.8 * zoom], Stroke::new(1.8 * zoom, ink));
+    }
+    painter.circle_stroke(centre, 2.9 * zoom, Stroke::new(1.4 * zoom, ink));
+}
+
 #[allow(clippy::too_many_arguments)]
 fn paint_node<N: NodesEnum>(
     painter: &Painter,
@@ -1351,8 +1390,15 @@ fn paint_node<N: NodesEnum>(
     painter.rect_filled(layout.header, CornerRadius { nw: r, ne: r, sw: 0, se: 0 }, header_fill);
     let border = if selected { Stroke::new(2.0, colours.accent) } else { Stroke::new(1.0, fade(colours.border)) };
     painter.rect_stroke(rect, radius, border, StrokeKind::Outside);
+    // The settings, shaded a step greyer, set off from the data ports by a divider with a gear in its middle.
+    let settings_fill = fade(colours.surface_raised.lerp_to_gamma(colours.divider, 0.5));
+    if let Some(top) = layout.settings_top {
+        let settings = Rect::from_min_max(egui::pos2(rect.left(), top), rect.max);
+        painter.rect_filled(settings, CornerRadius { nw: 0, ne: 0, sw: r, se: r }, settings_fill);
+    }
     if let Some(y) = layout.divider {
         painter.hline(rect.x_range().shrink(8.0 * z), y, Stroke::new(1.0, fade(colours.divider)));
+        small_gear(painter, egui::pos2(rect.center().x, y), z, fade(colours.text_disabled), Some(settings_fill));
     }
 
     let font = |size: f32| FontId::proportional(size * z);
