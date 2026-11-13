@@ -20,6 +20,7 @@ pub mod base_directories;
 pub mod config_patches;
 pub mod ephys;
 pub mod logs;
+pub mod medians;
 pub mod other;
 mod plots;
 pub mod pool;

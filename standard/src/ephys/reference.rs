@@ -12,6 +12,7 @@ use ephys_rs::engine::{BufferUsage, TreeShake};
 use serde::{Deserialize, Serialize};
 
 use crate::standard::ephys::{Continuous, ContinuousBuffer};
+use crate::standard::medians::Medians;
 use crate::standard::widgets::{all_checkbox, input_summary, require_input, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
 use ephys_rs::engine::{Category, EdgeInfo, EdgeType, Input, Node, NodeInfo, Output, Pass, SettingPort, UiContext};
@@ -324,11 +325,10 @@ pub struct Referencing {
     count: usize,
     /// For each channel: the reference subtracted from it, if any (an index into `references`).
     reference_of: Vec<Option<usize>>,
-    /// Each reference: the channels it's made from, and whether it's their median.
-    references: Vec<(Vec<usize>, bool)>,
+    /// Each reference: the channels it's made from, and if it's their median, what finds it.
+    references: Vec<(Vec<usize>, Option<Medians>)>,
     /// Each reference's value at each sample.
     values: Vec<f32>,
-    scratch: Vec<f32>,
 }
 
 impl ephys_rs::engine::PassState for Referencing {
@@ -353,7 +353,8 @@ impl Referencing {
                     reference_of[channel as usize].get_or_insert(index);
                 }
             }
-            references.push((sources, reference.method == Method::Median));
+            let medians = (reference.method == Method::Median).then(|| Medians::new(sources.len()));
+            references.push((sources, medians));
         }
         (self.reference_of, self.references, self.count) = (reference_of, references, count);
         self.settings = Some(settings.clone());
@@ -404,12 +405,13 @@ impl Node<Edges> for Reference {
         let (n, channels) = (output.len, output.channels);
         // Each reference's value at each sample, from the samples as they came: nothing's subtracted until they're all made.
         state.values.resize(state.references.len() * n, 0.0);
-        for (r, (sources, median)) in state.references.iter().enumerate() {
+        for (r, (sources, medians)) in state.references.iter_mut().enumerate() {
             let values = &mut state.values[r * n..(r + 1) * n];
             if sources.is_empty() {
                 values.fill(0.0);
-            } else if *median {
-                medians(values, sources, output, &mut state.scratch);
+            } else if let Some(medians) = medians {
+                let data: &ContinuousBuffer = output;
+                medians.find(values, |i| data.channel(sources[i]));
             } else {
                 means(values, sources, output);
             }
@@ -579,16 +581,6 @@ fn add(sums: &mut [f32], samples: &[f32]) {
 
 fn subtract(samples: &mut [f32], reference: &[f32]) {
     samples.iter_mut().zip(reference).for_each(|(sample, reference)| *sample -= *reference);
-}
-
-/// Each sample's median over the channels `sources`.
-fn medians(values: &mut [f32], sources: &[usize], data: &ContinuousBuffer, scratch: &mut Vec<f32>) {
-    for (t, value) in values.iter_mut().enumerate() {
-        scratch.clear();
-        scratch.extend(sources.iter().map(|&source| data.channel(source)[t]));
-        let middle = scratch.len() / 2;
-        *value = *scratch.select_nth_unstable_by(middle, |a, b| a.total_cmp(b)).1;
-    }
 }
 
 /// Mean or median.
