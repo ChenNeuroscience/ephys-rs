@@ -89,7 +89,7 @@ fn network(inputs: usize) -> (Vec<(u8, u8)>, usize) {
     let mut network = Vec::new();
     for (a, b) in batcher(at.len()) {
         match (at[a], at[b]) {
-            (_, None) => {}                    // in order already
+            (_, None) => {}                   // in order already
             (None, Some(_)) => at.swap(a, b), // the input comes down, the +∞ goes up
             (Some(x), Some(y)) => network.push((x, y)),
         }

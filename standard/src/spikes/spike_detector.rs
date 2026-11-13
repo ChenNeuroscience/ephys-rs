@@ -60,13 +60,19 @@ impl SpikeDetector {
     }
 }
 
+/// Positions a group's channels are looked at together for crossings: compares on a row's samples as they lie, with
+/// no branches, rather than a position at a time. Rows have this much room past a pass's samples, so the last positions
+/// are looked at the same way (what's past them isn't counted).
+const SCAN: usize = 16;
+
 /// Each channel's recent samples, and when each group can next spike.
 #[derive(Default)]
 pub struct Detector {
     spikes: Option<Spikes>,
     /// Samples a peak is looked for in, after a threshold crossing.
     lookahead: usize,
-    /// For each channel, the end of the samples so far (`tail` long), then this pass's: `stride` apiece.
+    /// For each channel, the end of the samples so far (`tail` long), then this pass's, then room for a scan past them
+    /// (`SCAN`): `stride` apiece.
     samples: Vec<f32>,
     tail: usize,
     stride: usize,
@@ -91,9 +97,9 @@ impl Detector {
         Detector {
             spikes: Some(spikes),
             lookahead,
-            samples: vec![0.0; channels * (tail + pass)],
+            samples: vec![0.0; channels * (tail + pass + SCAN)],
             tail,
-            stride: tail + pass,
+            stride: tail + pass + SCAN,
             next: vec![0; spikes.groups() as usize],
             ..Default::default()
         }
@@ -101,10 +107,10 @@ impl Detector {
 
     /// Makes room for passes of `n` samples (should one be longer than expected).
     fn fit(&mut self, n: usize, channels: usize) {
-        if self.tail + n <= self.stride {
+        if self.tail + n + SCAN <= self.stride {
             return;
         }
-        let stride = self.tail + n;
+        let stride = self.tail + n + SCAN;
         let mut samples = vec![0.0; channels * stride];
         for channel in 0..channels {
             let tail = &self.samples[channel * self.stride..channel * self.stride + self.tail];
@@ -162,24 +168,40 @@ impl Node<Edges> for SpikeDetector {
         // Spikes peaking at positions from `pre` (the first not looked at last pass) on, whose waveform and
         // lookahead have all come.
         let (pre, post, lookahead) = (spikes.pre as usize, spikes.post as usize, detector.lookahead);
-        let end = (pre + n) as i64;
+        let end = pre + n;
         // Either way: how far past zero.
         let extremity = |x: f32| x.abs();
         let beyond = |x: f32, threshold: f32| extremity(x) > threshold;
         for group in 0..spikes.groups() {
             let group_channels = spikes.group_channels(group);
-            let mut position = detector.next[group as usize].max(pre as i64);
+            let mut position = detector.next[group as usize].max(pre as i64) as usize;
             while position < end {
-                let p = position as usize;
-                let crossed = group_channels.clone().find(|&channel| {
-                    let row = &detector.samples[channel as usize * stride..];
+                // The next `SCAN` positions' crossings, on any of the group's channels: a bit each.
+                let mut crossings = [false; SCAN];
+                for channel in group_channels.clone() {
+                    let start = channel as usize * stride + position - 1;
+                    let row: &[f32; SCAN + 1] = detector.samples[start..start + SCAN + 1].try_into().unwrap();
                     let threshold = output.thresholds[channel as usize];
-                    beyond(row[p], threshold) && !beyond(row[p - 1], threshold)
-                });
-                let Some(channel) = crossed else {
-                    position += 1;
+                    for (i, crossed) in crossings.iter_mut().enumerate() {
+                        *crossed |= beyond(row[i + 1], threshold) & !beyond(row[i], threshold);
+                    }
+                }
+                let bits = crossings.iter().rev().fold(0u32, |bits, &crossed| bits << 1 | crossed as u32);
+                let bits = bits & ((1 << SCAN.min(end - position)) - 1);
+                if bits == 0 {
+                    position = (position + SCAN).min(end); // what's past the end comes with the next pass
                     continue;
-                };
+                }
+                // The first, and the first of the group's channels crossing there.
+                let p = position + bits.trailing_zeros() as usize;
+                let channel = group_channels
+                    .clone()
+                    .find(|&channel| {
+                        let row = &detector.samples[channel as usize * stride..];
+                        let threshold = output.thresholds[channel as usize];
+                        beyond(row[p], threshold) && !beyond(row[p - 1], threshold)
+                    })
+                    .expect("one crossed there");
                 let row = &detector.samples[channel as usize * stride..];
                 let peak =
                     (p..=p + lookahead).max_by(|&a, &b| extremity(row[a]).total_cmp(&extremity(row[b]))).unwrap();
@@ -192,9 +214,9 @@ impl Node<Edges> for SpikeDetector {
                     }
                 }
                 // Spikes don't overlap: the next can't start before this one's waveform ends.
-                position = (peak + pre + post) as i64;
+                position = peak + pre + post;
             }
-            detector.next[group as usize] = position - n as i64;
+            detector.next[group as usize] = position as i64 - n as i64;
         }
 
         // Keep the end of the samples, for the next pass.
@@ -416,6 +438,41 @@ mod tests {
         let samples = 40;
         let peak_channel = &waveform[2 * samples..3 * samples];
         assert!(peak_channel[8] < -150.0, "{:?}", &peak_channel[..12]);
+    }
+
+    #[test]
+    fn finds_the_same_spikes_however_the_samples_come_in_passes() {
+        let detector = SpikeDetector::default();
+        let mut signal = noise(8, 1500, 3);
+        // Spikes all through it, either side of zero, on each channel in turn.
+        for (i, at) in (20..1450).step_by(47).enumerate() {
+            signal[i % 8][at] += if i % 3 == 0 { 120.0 } else { -150.0 };
+        }
+        // Each spike's sample from the start, channel and waveforms, in order (a pass's come group by group).
+        let found = |lengths: &[usize]| {
+            let starts: Vec<usize> =
+                lengths.iter().scan(0, |start, len| Some(std::mem::replace(start, *start + len))).collect();
+            let passes: Vec<Vec<Vec<f32>>> = starts
+                .iter()
+                .zip(lengths)
+                .map(|(&start, len)| signal.iter().map(|row| row[start..start + len].to_vec()).collect())
+                .collect();
+            let mut found: Vec<_> = detect(&detector, 8, &passes)
+                .into_iter()
+                .map(|(pass, spike, waveform)| (starts[pass] as i32 + spike.sample, spike.channel, waveform))
+                .collect();
+            found.sort_by_key(|(sample, ..)| *sample);
+            found
+        };
+        let whole = found(&[750, 750]);
+        assert_eq!(whole.len(), 31, "each of them: they're further apart than a waveform");
+        assert_eq!(found(&[1, 0, 37, 15, 16, 17, 600, 64, 250, 500]), whole);
+        // Passes of each length up to past a scan's, so spikes come everywhere about where passes join.
+        for length in 1..=48 {
+            let mut lengths = vec![length; 1500 / length];
+            lengths.push(1500 % length);
+            assert_eq!(found(&lengths), whole, "passes of {length}");
+        }
     }
 
     #[test]
