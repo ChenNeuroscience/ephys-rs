@@ -25,7 +25,9 @@ use eframe::egui;
 use serde::{Deserialize, Serialize};
 
 use super::npy::Npy;
-use super::{Files, OnFinished, Status, Writing, after_recording, location_summary, recording_path, status_ui};
+use super::{
+    Files, OnFinished, Status, Writing, after_recording, location_summary, recording_path, show_status, status_ui,
+};
 use crate::standard::ephys::board::EPHYS_MICROVOLTS_PER_BIT;
 use crate::standard::ephys::{Continuous, ContinuousBuffer, Event, Events, EventsBuffer};
 use crate::standard::pool::Pool;
@@ -211,11 +213,7 @@ impl Node<Edges> for WriteRaw {
             }
             writing.send(chunk);
         }
-        let writing = &recorder.writing;
-        pass.shared::<Pool<Status>>().send_newest(pass.sequence, |status| match writing {
-            Some(writing) => writing.status_into(status),
-            None => *status = Status::default(),
-        });
+        show_status(recorder.writing.as_ref(), pass.shared::<Pool<Status>>(), pass.sequence);
     }
 
     fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {

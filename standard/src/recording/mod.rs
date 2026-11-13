@@ -167,12 +167,13 @@ impl<C: Send + Sync + 'static> Writing<C> {
     /// is lost, and counted).
     pub fn chunk(&self) -> Option<C> {
         let chunk = self.pool.as_ref()?.empty();
-        if chunk.is_none() {
-            let mut status = self.status.lock().unwrap();
-            if status.problem.is_none() {
-                log::error!("Recording can't keep up: data is being lost");
-                status.problem = Some("the disk isn't keeping up: data is being lost".into());
-            }
+        // Said once (and not waited for, if the thread's updating the status just then: the next pass will).
+        if chunk.is_none()
+            && let Ok(mut status) = self.status.try_lock()
+            && status.problem.is_none()
+        {
+            log::error!("Recording can't keep up: data is being lost");
+            status.problem = Some("the disk isn't keeping up: data is being lost".into());
         }
         chunk
     }
@@ -183,11 +184,20 @@ impl<C: Send + Sync + 'static> Writing<C> {
             pool.send(chunk);
         }
     }
+}
 
-    /// Copies the status into `status`.
-    pub fn status_into(&self, status: &mut Status) {
-        status.clone_from(&self.status.lock().unwrap());
-        status.pool = self.pool.as_ref().map(Pool::status).unwrap_or_default();
+/// Shows how `writing` is going (or that it isn't) in a writer's window, as of pass `sequence`: not this pass if its
+/// thread's updating the status just then, as a pass doesn't wait for it (the next pass shows it).
+pub fn show_status<C>(writing: Option<&Writing<C>>, shown: &Pool<Status>, sequence: u64) {
+    match writing {
+        Some(writing) => {
+            let Ok(status) = writing.status.try_lock() else { return };
+            shown.send_newest(sequence, |shown| {
+                shown.clone_from(&status);
+                shown.pool = writing.pool.as_ref().map(Pool::status).unwrap_or_default();
+            });
+        }
+        None => shown.send_newest(sequence, |shown| *shown = Status::default()),
     }
 }
 

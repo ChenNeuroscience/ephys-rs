@@ -626,8 +626,10 @@ impl Node<Edges> for VrComputer {
         if let Some(custom) = settings {
             pass.trigger_settings_update(0, Setting::Detection(Detection { custom, ..Default::default() }));
         }
-        let status = &shared.status;
-        pass.shared::<Pool<Status>>().send_newest(pass.sequence, |shown| shown.clone_from(&status.lock().unwrap()));
+        // Not if the thread's updating the status just then: the next pass shows it.
+        if let Ok(status) = shared.status.try_lock() {
+            pass.shared::<Pool<Status>>().send_newest(pass.sequence, |shown| shown.clone_from(&status));
+        }
     }
 
     fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {

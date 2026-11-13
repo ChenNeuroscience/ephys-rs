@@ -207,10 +207,13 @@ impl Node<Edges> for AcquisitionBoard {
                 }
             }
         }
-        pass.shared::<Pool<BoardDisplay>>().send_newest(pass.sequence, |display| {
-            capture.status_into(&mut display.status);
-            display.pool = capture.pool().status();
-        });
+        // Not if the capture thread's updating the status just then: the next pass shows it.
+        if let Some(status) = capture.try_status() {
+            pass.shared::<Pool<BoardDisplay>>().send_newest(pass.sequence, |display| {
+                display.status.clone_from(&status);
+                display.pool = capture.pool().status();
+            });
+        }
     }
 
     fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {

@@ -28,6 +28,8 @@ pub struct Capturing {
     /// The wrong frame size last acted on (triggering an update to the right one, or saying it can't be, while recording).
     triggered_size: Option<[u32; 2]>,
     complained: Option<[u32; 2]>,
+    /// The stats as last copied from the capture thread (a pass doesn't wait for it, if it's updating them just then).
+    stats: CaptureStats,
 }
 
 impl ephys_rs::engine::PassState for Capturing {
@@ -125,18 +127,20 @@ impl Node<Edges> for Camera {
                 None => out.frames = 0,
             }
         }
-        // The stats, on their output and in the node's window.
-        let fill = |stats: &mut CaptureStats| {
-            capture.status_into(&mut stats.status);
-            // Of the video, not the stats.
-            stats.pool = PoolStatus { ports: 1, ..capture.pool().status() };
-        };
-        if let Some(Buffer::CameraStats(stats)) = pass.outputs.get_mut(1) {
-            fill(stats);
+        // The stats, on their output and in the node's window: as last copied, if the capture thread's updating them
+        // just then.
+        if let Some(status) = capture.try_status() {
+            capturing.stats.status.copy_from(&status);
         }
-        pass.shared::<Pool<CaptureStats>>().send_newest(pass.sequence, fill);
+        // Of the video, not the stats.
+        capturing.stats.pool = PoolStatus { ports: 1, ..capture.pool().status() };
+        let stats = &capturing.stats;
+        if let Some(Buffer::CameraStats(out)) = pass.outputs.get_mut(1) {
+            out.copy_from(stats);
+        }
+        pass.shared::<Pool<CaptureStats>>().send_newest(pass.sequence, |shown| shown.copy_from(stats));
         // Frames of the wrong size are skipped. An update to the right size is triggered, but while recording settings are locked.
-        if let Some(size @ [w, h]) = capture.wrong_size() {
+        if let Some(size @ [w, h]) = capturing.stats.status.last_wrong_size {
             if !pass.recording() && capturing.triggered_size != Some(size) {
                 log::info!("Camera: setting its Frame size to the {w}×{h} it's sending");
                 pass.trigger_settings_update(0, Setting::Camera(CameraSettings { frame_size: size, ..self.settings }));

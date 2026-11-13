@@ -36,7 +36,9 @@ use chrono::{DateTime, Local};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 
-use super::{Files, OnFinished, Status, Writing, after_recording, location_summary, recording_path, status_ui};
+use super::{
+    Files, OnFinished, Status, Writing, after_recording, location_summary, recording_path, show_status, status_ui,
+};
 use crate::standard::ephys::reference::parse_channels;
 use crate::standard::ephys::{ChannelSelection, Continuous, Events};
 use crate::standard::logs::LogLines;
@@ -280,11 +282,7 @@ impl Node<Edges> for WriteLtx {
             }
             writing.send(chunk);
         }
-        let writing = &recorder.writing;
-        pass.shared::<Pool<Status>>().send_newest(pass.sequence, |status| match writing {
-            Some(writing) => writing.status_into(status),
-            None => *status = Status::default(),
-        });
+        show_status(recorder.writing.as_ref(), pass.shared::<Pool<Status>>(), pass.sequence);
     }
 
     fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {

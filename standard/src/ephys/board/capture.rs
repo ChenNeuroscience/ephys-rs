@@ -11,7 +11,7 @@
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -158,7 +158,13 @@ impl Capture {
         &self.running.pool
     }
 
-    /// Copies the status into `status`, reusing its memory.
+    /// The status, unless the capture thread's updating it just then: a pass doesn't wait for it.
+    pub fn try_status(&self) -> Option<MutexGuard<'_, Status>> {
+        self.running.shared.status.try_lock().ok()
+    }
+
+    /// Copies the status into `status`, waiting for it if need be (for tests).
+    #[cfg(test)]
     pub fn status_into(&self, status: &mut Status) {
         status.clone_from(&self.running.shared.status.lock().unwrap());
     }

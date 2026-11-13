@@ -10,7 +10,7 @@
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -161,12 +161,19 @@ impl Capture {
         &self.pool
     }
 
-    /// The size frames are coming at, if it isn't the size the passes expect.
+    /// The status, unless the capture thread's updating it just then: a pass doesn't wait for it.
+    pub fn try_status(&self) -> Option<MutexGuard<'_, Status>> {
+        self.running.shared.status.try_lock().ok()
+    }
+
+    /// The size frames are coming at, if it isn't the size the passes expect, waiting for it if need be (for tests).
+    #[cfg(test)]
     pub fn wrong_size(&self) -> Option<[u32; 2]> {
         self.running.shared.status.lock().unwrap().last_wrong_size
     }
 
-    /// Copies the status into `status`, reusing its memory.
+    /// Copies the status into `status`, waiting for it if need be (for tests).
+    #[cfg(test)]
     pub fn status_into(&self, status: &mut Status) {
         status.copy_from(&self.running.shared.status.lock().unwrap());
     }

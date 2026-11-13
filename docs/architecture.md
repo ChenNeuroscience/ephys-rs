@@ -108,7 +108,9 @@ straight into a pass's buffers, and each pass swaps whatever's arrived for its o
 fill). A writer's pass swaps the buffers it takes into a chunk from its pool, and its thread gives the chunk back
 once written. Pools hold about a second, so a slow pass or a stalling disk is absorbed. Passes never wait on a pool:
 its queues are lock-free (crossbeam's), and a pass finding a source's thread filling a buffer just then leaves it for
-the next pass. The dev tools show a pool in the thread at the other end from the passes: its buffers' streams, how many
+the next pass. Nor on the thread's status (counts, state, what went wrong), which a pass copies for the node's window
+(`try_lock`): if the thread's updating it just then, that pass sends none, or the camera's its last copy, and the next
+pass shows it. Status is how things stand, not a run of events, so nothing's lost. The dev tools show a pool in the thread at the other end from the passes: its buffers' streams, how many
 there are, and where each is (hover for their size), with a dashed arrow for empty buffers going back the other way to the
 data; each buffer swapped rather than copied (an input taken, or an output its thread filled) shows a swap icon. A writer's pool is only there while recording. The pass queue's
 shown the same way, in the dispatcher.
