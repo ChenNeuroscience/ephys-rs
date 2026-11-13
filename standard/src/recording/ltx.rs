@@ -435,9 +435,16 @@ fn axona_gain(gain: f32, full_scale_uv: f32) -> f32 {
     (gain.abs() * AXONA_FULL_SCALE_UV / full_scale_uv * 10.0).round() / 10.0
 }
 
-/// Amplified µV as a signed byte, ±128 being ±`full_scale_uv`, saturating.
+/// Amplified µV as a signed byte, ±128 being ±`full_scale_uv`, rounded (half away from zero), saturating.
+///
+/// Rounded without `f32::round`, which is a call into the C library on x86 without SSE4.1 (as Windows builds are), a
+/// value at a time: the whole part, then a step either way if what's left is a half or more. Clamped first, so both
+/// are exact: it's the same as `round` for every `f32` (checked for all of them), and vectorises everywhere.
 fn to_i8(uv: f32, full_scale_uv: f32) -> u8 {
-    ((uv * 128.0 / full_scale_uv).round() as i32).clamp(-128, 127) as i8 as u8
+    let x = (uv * 128.0 / full_scale_uv).clamp(-129.0, 128.0);
+    let whole = x as i32;
+    let rest = x - whole as f32;
+    (whole + (rest >= 0.5) as i32 - (rest <= -0.5) as i32).clamp(-128, 127) as i8 as u8
 }
 
 /// Seconds as ticks of the timebase.
@@ -1059,6 +1066,17 @@ mod tests {
         harness.get_by_label_contains("8-bit signed integers");
     }
 
+    /// Bytes are rounded as `f32::round` rounds (half away from zero), about every half and either side of it.
+    #[test]
+    fn bytes_round_halves_away_from_zero() {
+        for half in (-260..=260).map(|h| h as f32 / 2.0) {
+            for uv in [half.next_down(), half, half.next_up()] {
+                let rounded = (uv.round() as i32).clamp(-128, 127) as i8;
+                assert_eq!(to_i8(uv, 128.0) as i8, rounded, "{uv:e}");
+            }
+        }
+    }
+
     /// Its scales map what comes in to the files' 8 bits, and the gains it gives in the `.set` file follow: twice the
     /// scale stores half as much, and is half the gain, from what came in to what's stored.
     #[test]
@@ -1066,6 +1084,7 @@ mod tests {
         assert_eq!(to_i8(125.0, 250.0) as i8, 64);
         assert_eq!(to_i8(125.0, 500.0) as i8, 32);
         assert_eq!((to_i8(600.0, 500.0) as i8, to_i8(-600.0, 500.0) as i8), (127, -128), "beyond, clipped");
+        assert_eq!((to_i8(f32::NAN, 250.0), to_i8(f32::INFINITY, 250.0) as i8), (0, 127));
         assert_eq!((axona_gain(1.0, 250.0), axona_gain(1.0, 500.0), axona_gain(-2.0, 500.0)), (6000.0, 3000.0, 6000.0));
     }
 
