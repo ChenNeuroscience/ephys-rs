@@ -60,7 +60,7 @@ impl SpikeDetector {
     }
 }
 
-/// Each channel's recent samples and noise, and when each group can next spike.
+/// Each channel's recent samples, and when each group can next spike.
 #[derive(Default)]
 pub struct Detector {
     spikes: Option<Spikes>,
@@ -70,21 +70,16 @@ pub struct Detector {
     samples: Vec<f32>,
     tail: usize,
     stride: usize,
-    /// Each channel's noise (a standard deviation, µV), from the samples' median absolute value.
-    noise: Vec<f32>,
-    /// Room to find the median in.
-    scratch: Vec<f32>,
     /// For each group, the first position (in `samples`) its next spike's peak can be at.
     next: Vec<i64>,
-    /// While choosing thresholds from the data: seconds sampled, of how many; and each channel's noise summed over
-    /// the passes so far, and how many.
+    /// While choosing thresholds from the data: seconds sampled, of how many; and each channel's samples so far.
     sampling: Option<(f64, f64, Vec<Distribution>)>,
 }
 
 impl ephys_rs::engine::PassState for Detector {
-    const WHY: &'static str = "Each channel's last samples (so a spike across two passes is found whole), its \
-                               noise level (smoothed over passes), when each group can next spike (so a group's \
-                               spikes don't overlap), and while choosing thresholds, the noise sampled so far.";
+    const WHY: &'static str = "Each channel's last samples (so a spike across two passes is found whole), when each \
+                               group can next spike (so a group's spikes don't overlap), and while choosing \
+                               thresholds, the samples so far.";
 }
 
 impl Detector {
@@ -99,8 +94,6 @@ impl Detector {
             samples: vec![0.0; channels * (tail + pass)],
             tail,
             stride: tail + pass,
-            noise: Vec::new(),
-            scratch: Vec::with_capacity(pass),
             next: vec![0; spikes.groups() as usize],
             ..Default::default()
         }
@@ -157,31 +150,13 @@ impl Node<Edges> for SpikeDetector {
         detector.fit(n, channels);
         let (tail, stride) = (detector.tail, detector.stride);
 
-        // This pass's samples after the tail, and each channel's noise (from the first pass with samples on).
-        let first = detector.noise.is_empty();
-        if first && n > 0 {
-            detector.noise.resize(channels, 0.0);
-        }
+        // This pass's samples after the tail.
         for (channel, threshold) in output.thresholds.iter_mut().enumerate().take(channels) {
             *threshold = self.thresholds.get(channel);
-        }
-        if detector.noise.len() < channels {
-            output.noise.fill(0.0);
-            return;
         }
         for channel in 0..channels {
             let row = &mut detector.samples[channel * stride..(channel + 1) * stride];
             row[tail..tail + n].copy_from_slice(input.channel(channel));
-            if n > 0 {
-                detector.scratch.clear();
-                detector.scratch.extend(input.channel(channel).iter().map(|x| x.abs()));
-                let middle = n / 2;
-                let median = *detector.scratch.select_nth_unstable_by(middle, |a, b| a.total_cmp(b)).1;
-                let sd = median / 0.6745;
-                let noise = &mut detector.noise[channel];
-                *noise = if first { sd } else { *noise + 0.05 * (sd - *noise) };
-            }
-            output.noise[channel] = detector.noise[channel];
         }
 
         // Spikes peaking at positions from `pre` (the first not looked at last pass) on, whose waveform and
@@ -227,7 +202,7 @@ impl Node<Edges> for SpikeDetector {
             let row = &mut detector.samples[channel * stride..(channel + 1) * stride];
             row.copy_within(n..n + tail, 0);
         }
-        self.choose_thresholds(pass, detector);
+        self.choose_thresholds(pass, detector, channels);
     }
 
     fn inputs(&self) -> Vec<Input<Edges>> {
@@ -328,8 +303,7 @@ impl Node<Edges> for SpikeDetector {
 
 impl SpikeDetector {
     /// When triggered, samples each channel for a while, then triggers an update to thresholds from it.
-    fn choose_thresholds(&self, pass: &Pass<Edges>, detector: &mut Detector) {
-        let channels = detector.noise.len();
+    fn choose_thresholds(&self, pass: &Pass<Edges>, detector: &mut Detector, channels: usize) {
         if pass.triggered(crate::TriggerKind::AutoDetect).is_some() {
             let seconds = self.sampling.clamp(*SAMPLING.start(), *SAMPLING.end()) as f64;
             detector.sampling = Some((0.0, seconds, vec![Distribution::default(); channels]));

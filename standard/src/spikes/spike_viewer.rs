@@ -114,7 +114,7 @@ impl AutoDetecting {
     }
 }
 
-/// Each group's most recent spikes, round a ring, and each channel's latest threshold, gain and noise.
+/// Each group's most recent spikes, round a ring, and each channel's latest threshold and gain.
 #[derive(Default)]
 pub struct Recent {
     stream: Option<Spikes>,

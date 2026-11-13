@@ -481,7 +481,6 @@ fn copy(input: &SpikesBuffer, output: &mut SpikesBuffer) {
     output.waveforms.clone_from(&input.waveforms);
     (output.group_size, output.samples, output.pass_samples) = (input.group_size, input.samples, input.pass_samples);
     output.thresholds.clone_from(&input.thresholds);
-    output.noise.clone_from(&input.noise);
 }
 
 #[cfg(test)]
@@ -520,7 +519,6 @@ mod tests {
             crate::standard::spikes::Spikes { channels: 4, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32 };
         let mut state = gain.initial_state(&[Some(DataStream::Spikes(stream))]);
         let mut buffer = stream.buffer(PASS_DURATION);
-        buffer.noise = vec![10.0, 10.0, 20.0, 0.0];
         buffer.thresholds = vec![DEFAULT_THRESHOLD_UV, DEFAULT_THRESHOLD_UV, 80.0, DEFAULT_THRESHOLD_UV];
         let passes = (4.0 / PASS_DURATION).round() as u64;
         let mut outputs = [Buffer::Spikes(buffer)];

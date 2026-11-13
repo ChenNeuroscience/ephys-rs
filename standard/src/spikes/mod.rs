@@ -81,12 +81,11 @@ pub struct SpikesBuffer {
     pub waveforms: Vec<f32>,
     pub group_size: usize,
     pub samples: usize,
-    /// Each channel's threshold and noise (a standard deviation), in µV, as the pass ended.
+    /// Each channel's threshold, in µV, as the pass ended.
     pub thresholds: Vec<f32>,
     /// The gain each channel's waveforms have been multiplied by: 1 until a Spike Gain has (they're then amplified µV,
     /// see `Gains`).
     pub gains: Vec<f32>,
-    pub noise: Vec<f32>,
     /// How many samples of continuous data the pass covers (for timing spikes across passes).
     pub pass_samples: usize,
 }
@@ -134,7 +133,6 @@ impl DataStreamType for Spikes {
             samples: waveform,
             thresholds: vec![0.0; self.channels as usize],
             gains: vec![1.0; self.channels as usize],
-            noise: vec![0.0; self.channels as usize],
             pass_samples: 0,
         }
     }
@@ -149,7 +147,6 @@ impl DataStreamType for Spikes {
         (to.group_size, to.samples, to.pass_samples) = (from.group_size, from.samples, from.pass_samples);
         to.thresholds.clone_from(&from.thresholds);
         to.gains.clone_from(&from.gains);
-        to.noise.clone_from(&from.noise);
     }
 }
 
