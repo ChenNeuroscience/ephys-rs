@@ -7,7 +7,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use super::{
-    BufferUsage, Control, Edges, Input, NodeInfo, NodeThread, Output, Pass, PoolStatus, SettingPort, Shared,
+    BufferUsage, Control, Edges, Input, NodeInfo, NodeThread, Output, PassContext, PoolStatus, SettingPort, Shared,
     ThreadContext, TreeShake, UiContext,
 };
 
@@ -75,7 +75,7 @@ pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + S
     fn initial_state(&self, inputs: &[Option<<Self::Edges as Edges>::DataStream>]) -> Box<dyn Any + Send>;
     fn shared(&self, inputs: &[Option<<Self::Edges as Edges>::DataStream>]) -> Box<dyn Shared>;
     /// `state` is the node's state, if it has any (as made by `initial_state`).
-    fn process(&self, pass: &mut Pass<Self::Edges>, state: Option<&mut (dyn Any + Send)>);
+    fn process(&self, pass: &mut PassContext<Self::Edges>, state: Option<&mut (dyn Any + Send)>);
     fn prepare_to_record(
         &self,
         inputs: &[Option<<Self::Edges as Edges>::DataStream>],
@@ -137,7 +137,7 @@ pub fn is_state<S: 'static>() -> bool {
 ///     type Edges = Edges;
 ///     type Type = NodeType;
 ///
-///     fn process(&self, pass: &mut Pass<Edges>, state: Option<&mut (dyn Any + Send)>) {
+///     fn process(&self, pass: &mut PassContext<Edges>, state: Option<&mut (dyn Any + Send)>) {
 ///         match self {
 ///             Nodes::Gain(n) => Node::process(n, pass, /* its state, as its own type */),
 ///             Nodes::Writer(n) => Node::process(n, pass, /* … */),
@@ -328,7 +328,7 @@ macro_rules! nodes_enum {
 
             fn process(
                 &self,
-                pass: &mut $crate::engine::Pass<$edges>,
+                pass: &mut $crate::engine::PassContext<$edges>,
                 state: Option<&mut (dyn std::any::Any + Send)>,
             ) {
                 match self {

@@ -9,7 +9,7 @@ use eframe::egui;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use super::{Edges, Kind, NodeThread, Pass, PoolStatus, Shared, ThreadContext, UiContext};
+use super::{Edges, Kind, NodeThread, PassContext, PoolStatus, Shared, ThreadContext, UiContext};
 use crate::global_settings::GlobalSettingsSet;
 
 /// What a node's for, to people: its colour on the graph, and where it's offered. Nothing about how it runs depends
@@ -125,9 +125,9 @@ pub struct BufferUsage {
     pub in_place: Vec<Option<usize>>,
     /// For each input, whether the node takes its buffer, to do as it likes with the data (swap it for another just
     /// as big, say, to hand to its thread or window), rather than only reading it. Nodes don't copy their inputs:
-    /// the plan does, when it needs to. The pass always gives the node a buffer to take (see `Pass::take_input`):
-    /// the input's own if no node edits that data in place and every other node reading it can run first, otherwise
-    /// a copy the plan makes as soon as the data's made.
+    /// the plan does, when it needs to. The pass always gives the node a buffer to take (see
+    /// `PassContext::take_input`): the input's own if no node edits that data in place and every other node reading it
+    /// can run first, otherwise a copy the plan makes as soon as the data's made.
     pub takes: Vec<bool>,
 }
 
@@ -220,7 +220,7 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
         None
     }
 
-    /// What its passes share with the GUI, made for each epoch it runs in, for its inputs' data streams then
+    /// What its passes share with the GUI, made for each era it runs in, for its inputs' data streams then
     /// (`inputs`). By default, `Default`'s.
     fn shared(&self, _inputs: &[Option<E::DataStream>]) -> Self::Shared {
         Self::Shared::default()
@@ -242,7 +242,7 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     /// node that only makes data for others runs only while something needs it, as the processing nodes do. One whose
     /// running matters beyond the graph says when: a writer only while it's given something to record. A node needn't
     /// need an input (a viewer with part of its view hidden, say): then the plan doesn't count it as in use for what
-    /// feeds it. Changing settings changes the plan (a new epoch), so they're for what's switched on and off, not what
+    /// feeds it. Changing settings changes the plan (a new era), so they're for what's switched on and off, not what
     /// changes pass to pass.
     fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool]) -> TreeShake {
         TreeShake::needing_all(true, inputs.len())
@@ -258,8 +258,8 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     /// The triggers of one of the node's settings (by index): what can be sent through it, as well as its value being
     /// set: "auto detect", say. A control connected to it can send one (`UiContext::trigger`, or a `TriggerHandle`), as
     /// can the node's own window. How it's delivered is up to the trigger (see `crate::triggers`): a pass
-    /// trigger's taken by a pass (`Pass::triggered`), which may update the node's settings when it's done
-    /// (`Pass::trigger_settings_update`); a direct trigger goes to `on_trigger`.
+    /// trigger's taken by a pass (`PassContext::triggered`), which may update the node's settings when it's done
+    /// (`PassContext::trigger_settings_update`); a direct trigger goes to `on_trigger`.
     fn triggers(&self, _setting: usize) -> &'static [super::TriggerKind<E>] {
         &[]
     }
@@ -285,14 +285,14 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     /// Does the node's work for one pass: reads its inputs and fills its outputs, which are already sized for
     /// the data streams they carry. When an output is being made in place (see `evaluate_buffer_usage`), its input is `None`
     /// in the pass, and the output's buffer already holds the input's data to transform.
-    fn process(&self, _pass: &mut Pass<E>, _state: &mut Self::State) {}
+    fn process(&self, _pass: &mut PassContext<E>, _state: &mut Self::State) {}
 
     /// Gets ready to record (a writer opening its files, say), given the data streams on its inputs, what its
     /// controls see, the base directory recordings go in, if there is one (see `crate::base_directory`), when the
     /// recording starts (to name or date it by: the same for every node, and the settings saved with it), and what its
     /// controls can trigger directly (see `crate::triggers`).
     /// Called on a thread of its own when recording's asked for; passes only start recording once every node's
-    /// ready, so this can take its time. What it returns is the node's (with `Pass::take_prepared`) on the first
+    /// ready, so this can take its time. What it returns is the node's (with `PassContext::take_prepared`) on the first
     /// pass that records.
     fn prepare_to_record(
         &self,

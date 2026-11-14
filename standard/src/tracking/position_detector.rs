@@ -12,7 +12,7 @@ use crate::standard::tracking::{CAMERA_TRACKER, PositionSample, Positions};
 use crate::standard::tracking::{Crop, Detection, Ruler, TimingLed};
 use crate::standard::widgets::{named_settings_grid, require_input, setting};
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
-use ephys_rs::engine::{Category, Input, Node, NodeInfo, Output, Pass, SettingPort, UiContext};
+use ephys_rs::engine::{Category, Input, Node, NodeInfo, Output, PassContext, SettingPort, UiContext};
 use ephys_rs::gui::widgets::{Icon, small_icon_button};
 
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -92,7 +92,7 @@ impl Node<Edges> for PositionDetector {
         }
     }
 
-    fn process(&self, pass: &mut Pass<Edges>, finding: &mut Finding) {
+    fn process(&self, pass: &mut PassContext<Edges>, finding: &mut Finding) {
         let Some(Some(Buffer::Video(video))) = pass.inputs.first() else { return };
         let [Buffer::Positions(output), Buffer::Events(ttl)] = &mut *pass.outputs else { return };
         output.samples.clear();

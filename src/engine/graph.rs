@@ -4,12 +4,13 @@ use std::any::Any;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fmt;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
 use super::{
     Control, Dimension, EdgeInfo, EdgeTypesEnum, Edges, Input, Node, NodesEnum, Output, Plan, SettingPort, TriggerKind,
-    UiContext, same_processing,
+    UiContext,
 };
 use crate::theme::Colours;
 
@@ -706,8 +707,8 @@ impl<N: NodesEnum> Graph<N> {
 pub type ControlValues<N> = HashMap<NodeId, Vec<Option<Setting<N>>>>;
 
 /// A recording, once the nodes have prepared for it (see `Node::prepare_to_record`): its base directory (see
-/// `crate::base_directory`), when it was asked for and when it took effect, and what each node prepared, until its
-/// first recording pass takes it.
+/// `crate::base_directory`), when it was asked for, and what each node prepared, until its first recording pass takes
+/// it. When it took effect is the app's to say, as it takes it on (see `Recorded`).
 #[derive(Default)]
 pub struct Recording {
     /// Where it's written, if there's a base directory.
@@ -716,8 +717,6 @@ pub struct Recording {
     start_requested_date: chrono::DateTime<chrono::Local>,
     /// What each node prepared, until its first recording pass takes it.
     prepared: Mutex<HashMap<NodeId, Box<dyn Any + Send>>>,
-    /// When the passes started recording, once the nodes were ready, by the monotonic clock: for durations.
-    start_effective: std::sync::OnceLock<std::time::Instant>,
 }
 
 impl Recording {
@@ -743,12 +742,7 @@ impl Recording {
                 prepared.insert(step.id, ready);
             }
         }
-        Recording {
-            base_directory,
-            start_requested_date,
-            prepared: Mutex::new(prepared),
-            start_effective: Default::default(),
-        }
+        Recording { base_directory, start_requested_date, prepared: Mutex::new(prepared) }
     }
 
     /// Its base directory, if there is one.
@@ -761,60 +755,59 @@ impl Recording {
         &self.start_requested_date
     }
 
-    /// When it took effect: when a snapshot first took it on, which is when the passes start recording it (or now, if
-    /// none has yet).
-    pub fn start_effective(&self) -> std::time::Instant {
-        *self.start_effective.get_or_init(std::time::Instant::now)
-    }
-
     /// What node `id` prepared, if it did and it hasn't been taken.
     pub fn take(&self, id: NodeId) -> Option<Box<dyn Any + Send>> {
         self.prepared.lock().unwrap().remove(&id)
     }
 }
 
-/// A frozen version of the graph, with all its configuration (whether it's recording, too), and the plan for
-/// running it. Undo steps back through snapshots, and each processing pass runs against one. Cheap to clone and to
-/// share between threads.
+/// A recording the app's taken on, and when, by the monotonic clock: when the passes record from, for durations.
+#[derive(Clone)]
+pub struct Recorded {
+    pub recording: Arc<Recording>,
+    pub started: Instant,
+}
+
+impl Recorded {
+    /// `recording`, taken on now.
+    pub fn now(recording: Arc<Recording>) -> Self {
+        Recorded { recording, started: Instant::now() }
+    }
+}
+
+/// What the passes need to know, baked from what the app has (see `bake`): the graph, with all its settings, what its
+/// nodes' controls see, the plan for running it, and the run's times and recording. Each processing pass runs against
+/// one, and gives node code what it can see of it (`SnapshotLite`, see `PassContext::snapshot`). A new one's baked
+/// whenever any of that changes. Frozen, so cheap to clone and to share between threads.
 pub struct Snapshot<N: NodesEnum> {
-    /// Increases with every snapshot taken.
+    /// Increases with every snapshot baked.
     pub version: u64,
     pub graph: Arc<Graph<N>>,
     pub plan: Arc<Plan<N>>,
-    /// What each node's controls see (for the passes; see `Pass::controls`).
+    /// What each node's controls see (for the passes; see `PassContext::controls`).
     pub controls: Arc<ControlValues<N>>,
+    /// When the run started (Play pressed), by the monotonic clock, while running.
+    pub started: Option<Instant>,
     /// The recording, while recording.
-    pub recording: Option<Arc<Recording>>,
+    pub recording: Option<Recorded>,
 }
 
 impl<N: NodesEnum> Snapshot<N> {
-    /// A snapshot of `graph`, planning how to run it, unless it processes the same as `previous` (when only
-    /// positions or labels have changed, say), whose plan it shares. It records if `previous` does.
-    pub fn new(version: u64, graph: Graph<N>, previous: Option<&Snapshot<N>>) -> Self {
-        let (plan, controls) = match previous {
-            Some(previous) if same_processing(&previous.graph, &graph) => {
-                (previous.plan.clone(), previous.controls.clone())
-            }
-            _ => {
-                let controls = graph
-                    .iter()
-                    .filter(|(_, entry)| !entry.node.controls().is_empty())
-                    .map(|(id, _)| (id, graph.control_values(id)))
-                    .collect();
-                (Arc::new(Plan::new(&graph)), Arc::new(controls))
-            }
-        };
-        let recording = previous.and_then(|p| p.recording.clone());
-        Snapshot { version, graph: Arc::new(graph), plan, controls, recording }
+    /// Bakes what the passes need of `graph`, and of a run that `started` (while running), with `recording` (while
+    /// recording): planning how to run it from scratch.
+    pub fn bake(version: u64, graph: Arc<Graph<N>>, started: Option<Instant>, recording: Option<Recorded>) -> Self {
+        let controls = graph
+            .iter()
+            .filter(|(_, entry)| !entry.node.controls().is_empty())
+            .map(|(id, _)| (id, graph.control_values(id)))
+            .collect();
+        let plan = Arc::new(Plan::new(&graph));
+        Snapshot { version, graph, plan, controls: Arc::new(controls), started, recording }
     }
 
-    /// This snapshot as version `version`, recording or not. Recording doesn't change how the graph runs, so the
-    /// plan's the same, and a run carries on with it.
-    pub fn with_recording(&self, version: u64, recording: Option<Arc<Recording>>) -> Self {
-        if let Some(recording) = &recording {
-            recording.start_effective();
-        }
-        Snapshot { version, recording, ..self.clone() }
+    /// `graph`, as a run started just now would have it, not recording (for trying graphs out: the app bakes its own).
+    pub fn new(version: u64, graph: Graph<N>) -> Self {
+        Self::bake(version, Arc::new(graph), Some(Instant::now()), None)
     }
 }
 
@@ -825,6 +818,7 @@ impl<N: NodesEnum> Clone for Snapshot<N> {
             graph: self.graph.clone(),
             plan: self.plan.clone(),
             controls: self.controls.clone(),
+            started: self.started,
             recording: self.recording.clone(),
         }
     }

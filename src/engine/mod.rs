@@ -14,6 +14,7 @@ mod pass;
 mod plan;
 mod run;
 mod shared;
+mod snapshot_lite;
 mod ui_context;
 
 pub use edge::*;
@@ -25,4 +26,5 @@ pub use pass::*;
 pub use plan::*;
 pub use run::*;
 pub use shared::*;
+pub use snapshot_lite::*;
 pub use ui_context::*;

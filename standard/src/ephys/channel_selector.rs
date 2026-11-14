@@ -10,7 +10,7 @@ use crate::standard::ephys::reference::{channels_ui, parse_channels};
 use crate::standard::ephys::{ChannelSelection, Continuous};
 use crate::standard::widgets::{inline_block, input_summary, power, require_input};
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
-use ephys_rs::engine::{Category, Input, Node, NodeInfo, Output, Pass, PassState, SettingPort, UiContext};
+use ephys_rs::engine::{Category, Input, Node, NodeInfo, Output, PassContext, PassState, SettingPort, UiContext};
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -96,7 +96,7 @@ impl Node<Edges> for ChannelSelector {
         Passed::default()
     }
 
-    fn process(&self, pass: &mut Pass<Edges>, passed: &mut Passed) {
+    fn process(&self, pass: &mut PassContext<Edges>, passed: &mut Passed) {
         let Some(Some(Buffer::Continuous(input))) = pass.inputs.first() else { return };
         let Some(Buffer::Continuous(output)) = pass.outputs.get_mut(0) else { return };
         // Worked out again only when the settings change.
@@ -169,7 +169,7 @@ mod tests {
             let input = Buffer::Continuous(input);
             let mut outputs = [Buffer::Continuous(out.buffer(PASS_DURATION))];
             let inputs = [Some(&input)];
-            let mut pass = Pass::new(0, PASS_DURATION, &inputs, &mut outputs);
+            let mut pass = PassContext::new(0, PASS_DURATION, &inputs, &mut outputs);
             selector.process(&mut pass, &mut Passed::default());
             let Buffer::Continuous(output) = &outputs[0] else { unreachable!() };
             (0..output.channels).map(|c| output.channel(c)[2]).collect::<Vec<_>>()
@@ -242,12 +242,15 @@ mod tests {
         assert!(matches!(stream, Some(DataStream::Continuous(c)) if c.channels == 0));
 
         let dir = std::env::temp_dir().join(format!("ephys-rs-nothing-selected-{}", std::process::id()));
-        let snapshot = Snapshot::new(0, graph.clone(), None);
+        let snapshot = Snapshot::new(0, graph.clone());
         let runner = Runner::start(&snapshot, 2);
         let place = Place { directory: dir.clone(), prefix: Some("trial a".into()) };
-        let recording = snapshot.with_recording(
+        let prepared = Recording::prepare(&snapshot, Some(place), chrono::Local::now(), &Default::default());
+        let recording = ephys_rs::engine::Snapshot::bake(
             1,
-            Some(Arc::new(Recording::prepare(&snapshot, Some(place), chrono::Local::now(), &Default::default()))),
+            snapshot.graph.clone(),
+            snapshot.started,
+            Some(ephys_rs::engine::Recorded::now(Arc::new(prepared))),
         );
         assert!(runner.update(&recording), "recording carries on the same run");
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -269,7 +272,7 @@ mod tests {
             harness.run_steps(2);
         }
 
-        runner.update(&recording.with_recording(2, None));
+        runner.update(&ephys_rs::engine::Snapshot::bake(2, recording.graph.clone(), recording.started, None));
         drop(runner);
         ephys_rs::background::wait();
         let mut files = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path());

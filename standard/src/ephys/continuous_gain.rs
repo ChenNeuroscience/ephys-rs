@@ -13,7 +13,7 @@ use crate::standard::spikes::{Channels, DEFAULT_RANGE_UV, GainScope, Gains, RANG
 
 use crate::standard::widgets::{input_summary, named_settings_grid, require_input, setting};
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
-use ephys_rs::engine::{Category, Input, Node, NodeInfo, Output, Pass, SettingPort, UiContext};
+use ephys_rs::engine::{Category, Input, Node, NodeInfo, Output, PassContext, SettingPort, UiContext};
 use ephys_rs::gui::widgets::info_icon;
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -118,7 +118,7 @@ impl Node<Edges> for ContinuousGain {
 
     /// When triggered, samples each channel (in µV) for a while, then triggers an update to gains from it; and multiplies each
     /// channel by its gain.
-    fn process(&self, pass: &mut Pass<Edges>, gaining: &mut Gaining) {
+    fn process(&self, pass: &mut PassContext<Edges>, gaining: &mut Gaining) {
         let input = match pass.inputs[0] {
             Some(Buffer::Continuous(input)) => Some(input),
             _ => None,
@@ -280,7 +280,7 @@ mod tests {
             let input = Buffer::Continuous(input);
             let inputs = [Some(&input)];
             let mut outputs = [Buffer::Continuous(stream.buffer(PASS_DURATION))];
-            let mut pass = Pass::new(sequence, PASS_DURATION, &inputs, &mut outputs);
+            let mut pass = PassContext::new(sequence, PASS_DURATION, &inputs, &mut outputs);
             (pass.triggers, pass.direct) = (&triggers, &direct);
             gain.process(&mut pass, &mut state);
             let Buffer::Continuous(out) = &outputs[0] else { unreachable!() };

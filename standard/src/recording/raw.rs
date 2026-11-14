@@ -35,7 +35,7 @@ use crate::standard::widgets::require_input;
 use crate::{Buffer, DataStream, Edges, Kind};
 use ephys_rs::engine::{
     Category, Control, DataStreamType, EdgeTypesEnum, Flow, Input, Node, NodeInfo, NodeThread, Output, PASS_DURATION,
-    Pass, PoolStatus, ThreadContext, UiContext,
+    PassContext, PoolStatus, ThreadContext, UiContext,
 };
 
 /// Its control for what runs after a recording.
@@ -189,7 +189,7 @@ impl Node<Edges> for WriteRaw {
     }
 
     /// While recording, hands the pass's data to the writer's thread, swapping the buffers it's in for a chunk's.
-    fn process(&self, pass: &mut Pass<Edges>, recorder: &mut Recorder) {
+    fn process(&self, pass: &mut PassContext<Edges>, recorder: &mut Recorder) {
         match (pass.recording(), &recorder.writing) {
             (true, None) => {
                 let writing = pass.take_prepared::<Writing<Chunk>>();

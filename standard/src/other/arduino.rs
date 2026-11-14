@@ -3,8 +3,8 @@
 //! its own built on the Firmata library. It's for whatever the Arduino does with them: a sketch might start pulsing
 //! a timing LED when a pin's set high, say.
 //!
-//! The serial port's opened on a thread of its own (see `talk`), when it starts running, and kept open from epoch to
-//! epoch, as opening it resets most Arduinos. It waits for the sketch to say its Firmata version before setting any
+//! The serial port's opened on a thread of its own (see `talk`), when it starts running, and kept open from era to
+//! era, as opening it resets most Arduinos. It waits for the sketch to say its Firmata version before setting any
 //! pins, as what's sent while it's starting is lost; then sets each pin as the passes want, and, when it stops, sets
 //! them low again.
 
@@ -22,7 +22,9 @@ use serialport::SerialPortType;
 use crate::standard::pool::Pool;
 use crate::standard::widgets::{combo, named_settings_grid, setting};
 use crate::{DataStream, Edges};
-use ephys_rs::engine::{Category, Flow, Node, NodeInfo, NodeThread, Output, Pass, PassState, ThreadContext, UiContext};
+use ephys_rs::engine::{
+    Category, Flow, Node, NodeInfo, NodeThread, Output, PassContext, PassState, ThreadContext, UiContext,
+};
 use ephys_rs::gui::widgets::{Icon, small_icon_button};
 
 /// StandardFirmata's.
@@ -291,7 +293,7 @@ impl Drop for Running {
 /// The ports open, by port and baud rate. Weak, so one closes once nothing's using it.
 static RUNNING: Mutex<Vec<(Key, Weak<Running>)>> = Mutex::new(Vec::new());
 
-/// An epoch's use of a port.
+/// An era's use of a port.
 struct Connection {
     key: Key,
     running: Arc<Running>,
@@ -373,7 +375,7 @@ impl Node<Edges> for Arduino {
         Connected { connection: Some(Connection::start((self.port.clone(), self.baud))) }
     }
 
-    fn process(&self, pass: &mut Pass<Edges>, connected: &mut Connected) {
+    fn process(&self, pass: &mut PassContext<Edges>, connected: &mut Connected) {
         let key = (self.port.clone(), self.baud);
         if connected.connection.as_ref().is_none_or(|c| c.key != key) {
             connected.connection = Some(Connection::start(key));
@@ -595,12 +597,12 @@ mod tests {
     }
 
     #[test]
-    fn its_port_is_kept_open_from_epoch_to_epoch_and_closed_when_its_done_with() {
+    fn its_port_is_kept_open_from_era_to_era_and_closed_when_its_done_with() {
         let key = ("/dev/no such port".to_string(), DEFAULT_BAUD);
         let connection = Connection::start(key.clone());
         let shared = connection.running.shared.clone();
         let again = Connection::start(key.clone());
-        assert!(Arc::ptr_eq(&again.running, &connection.running), "another epoch's carries on with it");
+        assert!(Arc::ptr_eq(&again.running, &connection.running), "another era's carries on with it");
         let other = Connection::start((key.0.clone(), 9600));
         assert!(!Arc::ptr_eq(&other.running, &connection.running), "at another baud rate it's opened again");
         let start = Instant::now();

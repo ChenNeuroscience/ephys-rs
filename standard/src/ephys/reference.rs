@@ -15,7 +15,9 @@ use crate::standard::ephys::{Continuous, ContinuousBuffer};
 use crate::standard::medians::Medians;
 use crate::standard::widgets::{all_checkbox, input_summary, require_input, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
-use ephys_rs::engine::{Category, EdgeInfo, EdgeType, Input, Node, NodeInfo, Output, Pass, SettingPort, UiContext};
+use ephys_rs::engine::{
+    Category, EdgeInfo, EdgeType, Input, Node, NodeInfo, Output, PassContext, SettingPort, UiContext,
+};
 use ephys_rs::gui::widgets::{Icon, small_toggle_button};
 
 /// How a reference is made from its channels.
@@ -394,7 +396,7 @@ impl Node<Edges> for Reference {
         }
     }
 
-    fn process(&self, pass: &mut Pass<Edges>, state: &mut Referencing) {
+    fn process(&self, pass: &mut PassContext<Edges>, state: &mut Referencing) {
         let input = match pass.inputs[0] {
             Some(Buffer::Continuous(input)) => Some(input),
             _ => None,
@@ -655,7 +657,7 @@ mod tests {
         let input = Buffer::Continuous(input);
         let inputs = [Some(&input)];
         let mut outputs = [Buffer::Continuous(stream.buffer(PASS_DURATION))];
-        let mut pass = Pass::new(0, PASS_DURATION, &inputs, &mut outputs);
+        let mut pass = PassContext::new(0, PASS_DURATION, &inputs, &mut outputs);
         reference.process(&mut pass, &mut Referencing::default());
         let Buffer::Continuous(output) = &outputs[0] else { unreachable!() };
         (0..channels.len()).map(|c| output.channel(c).to_vec()).collect()
@@ -737,7 +739,7 @@ mod tests {
         let references = Continuous { channels: 3, ..stream };
         let mut outputs =
             [Buffer::Continuous(stream.buffer(PASS_DURATION)), Buffer::Continuous(references.buffer(PASS_DURATION))];
-        reference.process(&mut Pass::new(0, PASS_DURATION, &inputs, &mut outputs), &mut Referencing::default());
+        reference.process(&mut PassContext::new(0, PASS_DURATION, &inputs, &mut outputs), &mut Referencing::default());
         let Buffer::Continuous(references) = &outputs[1] else { unreachable!() };
         assert_eq!(references.channel(0), &[1.0, 2.0][..], "even if nothing uses it");
         assert_eq!(references.channel(1), &[0.0, 0.0][..], "of nothing");

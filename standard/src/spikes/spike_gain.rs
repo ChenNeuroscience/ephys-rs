@@ -19,7 +19,7 @@ use crate::standard::spikes::{
 };
 use crate::standard::widgets::{input_summary, named_settings_grid, require_input, setting};
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
-use ephys_rs::engine::{Category, Input, Node, NodeInfo, Output, Pass, SettingPort, UiContext};
+use ephys_rs::engine::{Category, Input, Node, NodeInfo, Output, PassContext, SettingPort, UiContext};
 use ephys_rs::gui::widgets::info_icon;
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -234,7 +234,7 @@ impl Node<Edges> for SpikeGain {
         Gaining::default()
     }
 
-    fn process(&self, pass: &mut Pass<Edges>, gaining: &mut Gaining) {
+    fn process(&self, pass: &mut PassContext<Edges>, gaining: &mut Gaining) {
         if let Some(Some(Buffer::Spikes(input))) = pass.inputs.first()
             && let Some(Buffer::Spikes(output)) = pass.outputs.get_mut(0)
         {
@@ -537,7 +537,7 @@ mod tests {
                 (waveform[8], waveform[9]) = (-100.0, 50.0);
                 waveform[40 + 8] = if sequence % 4 == 0 { 300.0 } else { 50.0 };
             }
-            let mut pass = Pass::new(sequence, PASS_DURATION, &[], &mut outputs);
+            let mut pass = PassContext::new(sequence, PASS_DURATION, &[], &mut outputs);
             (pass.triggers, pass.direct) = (&triggers, &direct);
             gain.process(&mut pass, &mut state);
             assert_eq!(state.sampling.is_some(), sequence + 1 < passes, "samples for 4 s, at pass {sequence}");
@@ -586,7 +586,7 @@ mod tests {
         );
         let passes = (4.0 / PASS_DURATION).round() as u64;
         let mut run = |sequence, outputs: &mut [Buffer]| {
-            let mut pass = Pass::new(sequence, PASS_DURATION, &[], outputs);
+            let mut pass = PassContext::new(sequence, PASS_DURATION, &[], outputs);
             (pass.triggers, pass.direct) = (&triggers, &direct);
             gain.process(&mut pass, &mut state);
         };
@@ -625,7 +625,7 @@ mod tests {
             ephys_rs::triggers::AnyTrigger::new(crate::Trigger::AutoDetect(crate::standard::auto_detect::AutoDetect)),
         );
         let mut run = |sequence| {
-            let mut pass = Pass::new(sequence, PASS_DURATION, &[], &mut outputs);
+            let mut pass = PassContext::new(sequence, PASS_DURATION, &[], &mut outputs);
             (pass.triggers, pass.direct) = (&triggers, &direct);
             gain.process(&mut pass, &mut state);
         };

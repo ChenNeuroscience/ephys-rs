@@ -49,8 +49,8 @@ pub struct Line {
 /// A pass, and the node it was running when it logged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PassId {
-    /// The epoch the pass is of (see `engine::Runner`).
-    pub epoch: u64,
+    /// The era the pass is of (see `engine::Runner`).
+    pub era: u64,
     pub sequence: u64,
     pub node: Option<NodeId>,
     /// The node's type, e.g. "Spike Detector".
@@ -304,7 +304,7 @@ mod tests {
     #[test]
     fn says_which_thread_and_pass() {
         init(false);
-        let pass = PassId { epoch: 2, sequence: 40, node: Some(NodeId(7)), node_type: Some("Spike Detector") };
+        let pass = PassId { era: 2, sequence: 40, node: Some(NodeId(7)), node_type: Some("Spike Detector") };
         std::thread::Builder::new()
             .name("pass worker 9".into())
             .spawn(move || in_pass(pass, || log::info!("from a pass")))

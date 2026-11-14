@@ -1,6 +1,6 @@
 //! TTL Recording Control: starts recording when a line of its events goes up, as the toolbar's Record does, and, if
-//! it's to, stops it when the line goes down (see `Pass::trigger_recording`). Lines are numbered from 1, as the LTX
-//! files number them.
+//! it's to, stops it when the line goes down (see `PassContext::trigger_recording`). Lines are numbered from 1, as the
+//! LTX files number them.
 
 use eframe::egui::{self, RichText};
 use serde::{Deserialize, Serialize};
@@ -9,7 +9,7 @@ use crate::standard::ephys::Event;
 use crate::standard::pool::Pool;
 use crate::standard::widgets::{named_settings_grid, require_input, setting};
 use crate::{Buffer, DataStream, Edges, Kind};
-use ephys_rs::engine::{Category, Input, Node, NodeInfo, Output, Pass, PassState, UiContext};
+use ephys_rs::engine::{Category, Input, Node, NodeInfo, Output, PassContext, PassState, UiContext};
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -92,7 +92,7 @@ impl Node<Edges> for TtlRecordingControl {
         Seen::default()
     }
 
-    fn process(&self, pass: &mut Pass<Edges>, seen: &mut Seen) {
+    fn process(&self, pass: &mut PassContext<Edges>, seen: &mut Seen) {
         let Some(Some(Buffer::Events(events))) = pass.inputs.first() else { return };
         if let Some(on) = self.wanted(&events.events, seen).filter(|on| *on != pass.recording()) {
             pass.trigger_recording(on);
@@ -155,10 +155,10 @@ mod tests {
     fn asks(node: &TtlRecordingControl, events: Vec<Event>, recording: bool, seen: &mut Seen) -> Vec<bool> {
         let buffer = Buffer::Events(EventsBuffer { events, pass_samples: 0 });
         let inputs = [Some(&buffer)];
-        let mut pass = Pass::new(0, 0.02, &inputs, &mut []);
+        let mut pass = PassContext::new(0, 0.02, &inputs, &mut []);
         let shared = Pool::<Seen>::default();
         pass.shared = &shared;
-        pass.start_recording = recording.then(std::time::Instant::now);
+        pass.set_recording(recording);
         node.process(&mut pass, seen);
         let asked = pass.direct.take().into_iter().map(|(_, triggered)| match triggered {
             Triggered::Recording(on) => on,

@@ -45,23 +45,23 @@ The parts of the API are there for three different reasons, and it helps to know
 ## Running
 
 `process(pass, state)` is called once a pass, on a worker thread, with the pass's buffers (see
-[`Pass`](../src/engine/pass.rs)): `inputs` to read, `outputs` to fill (already sized: nothing should be allocated
+[`PassContext`](../src/engine/pass.rs)): `inputs` to read, `outputs` to fill (already sized: nothing should be allocated
 per pass), the settings its `controls` see, whether it's recording, what it shares with the GUI, and its triggers. `self` is the snapshot's
 settings: the latest, as of the pass.
 
 - **State.** `type State` is what it keeps between passes, made by `initial_state(inputs)`, and `()` for none. It
   implements `PassState`, saying why it's needed (`WHY`, shown in the dev tools at the sync point it makes). State
   that's only working memory (nothing carried over: `CARRIED_OVER = false`) is each worker's own, and makes no sync
-  point. State is fresh each epoch.
+  point. State is fresh each era.
 - **Buffer usage.** `evaluate_buffer_usage(inputs, outputs)`, asked once per plan, says how the node uses its buffers
   (a `BufferUsage`):
   - **In place.** `in_place[output]` names an input whose buffer the output can be made in, when nothing else needs
     that data after it. Then the input's `None` in the pass, and the output already holds its data.
   - **Taking.** `takes[input]`: the node takes the input's buffer, to do as it likes with (swap it for one of its own,
     say, to hand to its thread or window). Nodes don't copy their inputs; the plan decides when a copy's needed.
-    `Pass::take_input` always gives the node a buffer: the input's own, if no one edits that data in place and every
-    other reader can run first, otherwise a copy the plan makes as soon as the data's made (a copy point, in the dev
-    tools). A node that only reads an input doesn't take it.
+    `PassContext::take_input` always gives the node a buffer: the input's own, if no one edits that data in place and
+    every other reader can run first, otherwise a copy the plan makes as soon as the data's made (a copy point, in the
+    dev tools). A node that only reads an input doesn't take it.
 - **The tree shake: whether it runs, and what it needs.** It's up to the node: `evaluate_tree_shake(inputs, outputs)`,
   given which of its inputs have something running into them, and which of its outputs have something running that
   needs them, says whether it runs, and which inputs it needs (a `TreeShake`). An input it doesn't need isn't passed,
@@ -120,11 +120,11 @@ are full examples.
 ## Sharing with its window
 
 A node says what its passes share with the GUI (its window, and the dev tools: `ThreadContext::shared`) as
-`type Shared` (see [`shared.rs`](../src/engine/shared.rs)), and `()` for nothing. One's made for each epoch it
+`type Shared` (see [`shared.rs`](../src/engine/shared.rs)), and `()` for nothing. One's made for each era it
 runs in, by `shared(inputs)` (by default, `Default`'s), so it's sized for the data streams of the time. The passes reach
-it with `Pass::shared`, and the window with `UiContext::shared`, both as the type. Once a run's stopped, the app keeps
-its last epoch's, so what's shown stays. It reports its pools of buffers (`Shared::pools`), for the dev tools to show
-on the GUI.
+it with `PassContext::shared`, and the window with `UiContext::shared`, both as the type. Once a run's stopped, the app
+keeps its last era's, so what's shown stays. It reports its pools of buffers (`Shared::pools`), for the dev tools to
+show on the GUI.
 
 The usual thing to share is a [`Pool`](../standard/src/pool.rs) of buffers: the same cross-thread pool
 sources and writers use with their threads, which can be `Shared` by itself, or one of several in a struct of the
@@ -177,12 +177,12 @@ along settings edges, after all. A node lists the kinds each setting takes, of e
 says whether it can be sent now. Only taking it differs, as that's on a different thread.
 
 - **`Delivery::Pass`** (`AutoDetect`): for what needs the data going by, so it needs a run. The node's next pass takes
-  it (`Pass::triggered(TriggerKind::AutoDetect)`, which gives back the `Trigger`), reports progress
-  (`Pass::trigger_progress`, shown with `UiContext::trigger_progress`), and finishes (`Pass::trigger_done`). Meanwhile
-  it can be stopped (`UiContext::cancel_trigger`): the passes then see `Pass::trigger_cancelled`, and abandon it. Since
-  passes can't change the graph, it triggers an update of what it finds (`Pass::trigger_settings_update(setting,
-  value)`), and the GUI applies it as an edit. The [Continuous Gain](../standard/src/ephys/continuous_gain.rs),
-  [Spike Gain](../standard/src/spikes/spike_gain.rs) and
+  it (`PassContext::triggered(TriggerKind::AutoDetect)`, which gives back the `Trigger`), reports progress
+  (`PassContext::trigger_progress`, shown with `UiContext::trigger_progress`), and finishes
+  (`PassContext::trigger_done`). Meanwhile it can be stopped (`UiContext::cancel_trigger`): the passes then see
+  `PassContext::trigger_cancelled`, and abandon it. Since passes can't change the graph, it triggers an update of what
+  it finds (`PassContext::trigger_settings_update(setting, value)`), and the GUI applies it as an edit. The [Continuous
+  Gain](../standard/src/ephys/continuous_gain.rs), [Spike Gain](../standard/src/spikes/spike_gain.rs) and
   [Spike Detector](../standard/src/spikes/spike_detector.rs) work this way, triggered from the Spike Viewer.
 - **`Delivery::Direct`** (`RunOnFiles`): needs no pass, or even a run. It's delivered on the GUI's thread, whatever's
   going on, to `Node::on_trigger`, as the `Trigger` (`if let Trigger::RunOnFiles(files) = trigger`), with the same
@@ -205,20 +205,21 @@ the node's outputs from a [`Pool`](../standard/src/pool.rs), which `process` swa
 [board's capture](../standard/src/ephys/board/capture.rs). A writer's passes swap their data into chunks
 from a pool, for its thread to write; see [`recording`](../standard/src/recording/mod.rs).
 
-Each epoch makes its state afresh, but before the last epoch's is dropped. So a thread holding something that opening
-again would disturb can carry on from one epoch to the next: the state holds an `Arc` of it, found by what it's open to
-in a list of `Weak`s, and it's closed once the last epoch using it is done. The VR Computer keeps its connection like
+Each era makes its state afresh, but before the last era's is dropped. So a thread holding something that opening
+again would disturb can carry on from one era to the next: the state holds an `Arc` of it, found by what it's open to
+in a list of `Weak`s, and it's closed once the last era using it is done. The VR Computer keeps its connection like
 this, and the [Arduino](../standard/src/other/arduino.rs) its serial port, as opening it resets the Arduino.
 
 ## Recording
 
 `prepare_to_record` is called on a thread of its own before recording starts (a writer opening its files), given when
 the recording starts, to name or date what it writes by: the same for every node, and for the settings saved with
-it, as preparing can take a while. What it returns comes back to the first pass that records (`Pass::take_prepared`).
-Passes see whether it's recording (`Pass::recording()`), and when acquiring and recording started, by the monotonic
-clock (`start_acquiring`, `start_recording`: `acquiring_for` and `recording_for` say how long). The graph can't change
-while recording, so everything that records has prepared. A pass can start or stop recording itself
-(`Pass::trigger_recording`), as the toolbar's Record does: see
+it, as preparing can take a while. What it returns comes back to the first pass that records
+(`PassContext::take_prepared`). Passes see whether it's recording (`PassContext::recording()`), and when acquiring and
+recording started, by the monotonic clock, from their snapshot (`PassContext::snapshot`, a `SnapshotLite`). A node's
+thread can find how long, as of whenever it asks, from a pass's snapshot: shared, to keep (the newest it's been given,
+say, as the VR Computer's thread does). The graph can't change while recording, so everything that records has prepared.
+A pass can start or stop recording itself (`PassContext::trigger_recording`), as the toolbar's Record does: see
 [TTL Recording Control](../standard/src/other/ttl_recording_control.rs).
 
 A writer has an "after recording" control. Connected to a setting that takes the `run_command::RunOnFiles` trigger (a direct one),
@@ -262,6 +263,6 @@ Command runs on, so it says so and doesn't offer files of its own.
 ## Testing
 
 A node's `process` can be run on its own: make buffers from a stream (`stream.buffer(PASS_DURATION)`), and a pass
-with `Pass::new`. Most node files have tests doing just that; for triggers, trigger one on the pass's `triggers` (see the
-Spike Gain's tests), and give it what it shares with `pass.shared`. Views are tested headless with `egui_kittest`, against images in `tests/snapshots` (see
-[Development](development.md)).
+with `PassContext::new`. Most node files have tests doing just that; for triggers, trigger one on the pass's `triggers`
+(see the Spike Gain's tests), and give it what it shares with `pass.shared`. Views are tested headless with
+`egui_kittest`, against images in `tests/snapshots` (see [Development](development.md)).

@@ -12,7 +12,7 @@ use crate::standard::ephys::ContinuousBuffer;
 use crate::standard::widgets::format_rate;
 use crate::standard::widgets::{input_summary, require_input, setting, settings_grid};
 use crate::{DataStream, Edges, Kind};
-use ephys_rs::engine::{Category, Input, Node, NodeInfo, Output, Pass, UiContext};
+use ephys_rs::engine::{Category, Input, Node, NodeInfo, Output, PassContext, UiContext};
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -59,7 +59,7 @@ impl Node<Edges> for BandPassFilter {
         BufferUsage { in_place: vec![Some(0); outputs], ..BufferUsage::none(inputs, outputs) }
     }
 
-    fn process(&self, pass: &mut Pass<Edges>, filters: &mut Filters) {
+    fn process(&self, pass: &mut PassContext<Edges>, filters: &mut Filters) {
         let input = match pass.inputs[0] {
             Some(Buffer::Continuous(input)) => Some(input),
             _ => None,

@@ -15,7 +15,7 @@
 //! the newest (`newest`), giving back the one it was reading and any older, and holds on to it for as long as it
 //! likes. A window that needs everything, not only the newest (each line of a log, say), takes every buffer, in order
 //! (`send_pending`, `receive_all`). A pool shared with the GUI is (or is part of) the node's `Node::Shared`, which
-//! the passes find with `Pass::shared`, and the window with `UiContext::shared`.
+//! the passes find with `PassContext::shared`, and the window with `UiContext::shared`.
 //!
 //! Passes never wait on it. The empty and full buffers are on lock-free queues (crossbeam's bounded channels), so
 //! taking and giving back is a few atomic operations; only a writer's thread blocks, waiting for a buffer to write.

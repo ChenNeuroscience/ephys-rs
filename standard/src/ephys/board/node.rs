@@ -12,7 +12,7 @@ use crate::standard::pool::Pool;
 use crate::standard::widgets::{named_settings_grid, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind};
 use ephys_rs::engine::{
-    Category, Flow, Node, NodeInfo, NodeThread, Output, Pass, PoolStatus, ThreadContext, UiContext,
+    Category, Flow, Node, NodeInfo, NodeThread, Output, PassContext, PoolStatus, ThreadContext, UiContext,
 };
 use ephys_rs::gui::widgets::{Icon, small_icon_button};
 
@@ -177,7 +177,7 @@ impl Node<Edges> for AcquisitionBoard {
 
     /// Takes the samples that have arrived since the last pass, swapping the buffers they're in for the pass's
     /// own (which go back to the capture thread's pool to fill), so nothing's copied.
-    fn process(&self, pass: &mut Pass<Edges>, acquiring: &mut Acquiring) {
+    fn process(&self, pass: &mut PassContext<Edges>, acquiring: &mut Acquiring) {
         let Some(capture) = &acquiring.capture else { return };
         // The headstages', auxiliary and analogue inputs' outputs, if they're on.
         let outputs = [Some(0), self.aux_output(), self.adc_output()];

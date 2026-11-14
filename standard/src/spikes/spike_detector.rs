@@ -17,7 +17,7 @@ use crate::standard::spikes::{Spike, Spikes, Thresholds};
 use crate::standard::widgets::{combo, input_summary, named_settings_grid, require_input, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
 use ephys_rs::engine::EdgeType;
-use ephys_rs::engine::{Category, Input, Node, NodeInfo, Output, PASS_DURATION, Pass, SettingPort, UiContext};
+use ephys_rs::engine::{Category, Input, Node, NodeInfo, Output, PASS_DURATION, PassContext, SettingPort, UiContext};
 use ephys_rs::gui::widgets::info_icon;
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -145,7 +145,7 @@ impl Node<Edges> for SpikeDetector {
         }
     }
 
-    fn process(&self, pass: &mut Pass<Edges>, detector: &mut Detector) {
+    fn process(&self, pass: &mut PassContext<Edges>, detector: &mut Detector) {
         let Some(Some(Buffer::Continuous(input))) = pass.inputs.first() else { return };
         let Some(Buffer::Spikes(output)) = pass.outputs.get_mut(0) else { return };
         output.clear();
@@ -325,7 +325,7 @@ impl Node<Edges> for SpikeDetector {
 
 impl SpikeDetector {
     /// When triggered, samples each channel for a while, then triggers an update to thresholds from it.
-    fn choose_thresholds(&self, pass: &Pass<Edges>, detector: &mut Detector, channels: usize) {
+    fn choose_thresholds(&self, pass: &PassContext<Edges>, detector: &mut Detector, channels: usize) {
         if pass.triggered(crate::TriggerKind::AutoDetect).is_some() {
             let seconds = self.sampling.clamp(*SAMPLING.start(), *SAMPLING.end()) as f64;
             detector.sampling = Some((0.0, seconds, vec![Distribution::default(); channels]));
@@ -385,7 +385,7 @@ impl SpikeDetector {
 mod tests {
     use super::*;
     use crate::standard::ephys::Continuous;
-    use ephys_rs::engine::{DataStreamType, Pass};
+    use ephys_rs::engine::{DataStreamType, PassContext};
 
     /// Runs passes of `samples` through a detector, returning the spikes found (with their pass).
     fn detect(detector: &SpikeDetector, channels: u32, passes: &[Vec<Vec<f32>>]) -> Vec<(usize, Spike, Vec<f32>)> {
@@ -402,7 +402,7 @@ mod tests {
             let input = Buffer::Continuous(input);
             let mut outputs = [Buffer::Spikes(spikes.buffer(PASS_DURATION))];
             let inputs = [Some(&input)];
-            let mut pass = Pass::new(index as u64, PASS_DURATION, &inputs, &mut outputs);
+            let mut pass = PassContext::new(index as u64, PASS_DURATION, &inputs, &mut outputs);
             detector.process(&mut pass, &mut state);
             let Buffer::Spikes(output) = &outputs[0] else { unreachable!() };
             for (i, spike) in output.spikes.iter().enumerate() {
@@ -518,7 +518,7 @@ mod tests {
             let input = Buffer::Continuous(input);
             let mut outputs = [Buffer::Spikes(spikes.buffer(PASS_DURATION))];
             let inputs = [Some(&input)];
-            let mut pass = Pass::new(sequence, PASS_DURATION, &inputs, &mut outputs);
+            let mut pass = PassContext::new(sequence, PASS_DURATION, &inputs, &mut outputs);
             (pass.triggers, pass.direct) = (&triggers, &direct);
             detector.process(&mut pass, &mut state);
         }

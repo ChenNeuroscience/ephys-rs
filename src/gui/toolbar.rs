@@ -134,7 +134,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             Action::Advanced => Some(self.layout.mode == Mode::Advanced),
             Action::Theme(index) => Some(self.theme == index),
             Action::Play => Some(self.runner.is_some()),
-            Action::Record => Some(self.history.current.snapshot.recording.is_some() || self.preparing.is_some()),
+            Action::Record => Some(self.recording.is_some() || self.preparing.is_some()),
             _ => None,
         }
     }
@@ -245,7 +245,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             }
             self.play_clock(ui);
             ui.add_space(6.0);
-            let recording = self.history.current.snapshot.recording.is_some();
+            let recording = self.recording.is_some();
             let text = if recording {
                 "Stop recording"
             } else if self.preparing.is_some() {
@@ -292,7 +292,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             return false;
         }
         let colours = self.colours();
-        let recording = self.history.current.snapshot.recording.is_some() || self.preparing.is_some();
+        let recording = self.recording.is_some() || self.preparing.is_some();
         if let Some(current) = self.base_directories.current() {
             current.toolbar_ui(ui, &BaseDirectoryContext { theme: colours, recording });
         }

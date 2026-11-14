@@ -21,11 +21,11 @@
 //!
 //! When the graph changes while running, the new snapshot is swapped in between passes if its plan has the
 //! same shape (the same nodes and buffers, as after a change of settings): nodes see their new settings on
-//! the next pass and adjust (keeping their state). Otherwise it starts a new epoch, with its own node state
+//! the next pass and adjust (keeping their state). Otherwise it starts a new era, with its own node state
 //! and pass queue. Workers make buffers for the new plan as they come free (once they've nothing of the old
 //! one queued), and the dispatcher only sends passes for it once a worker is ready, to the workers that are;
 //! until then, passes carry on with the old one. So a worker is never handed a pass it isn't ready to run.
-//! Snapshots and epochs are swapped in atomically (`ArcSwap`), so a pass takes the latest as it starts, waiting on
+//! Snapshots and eras are swapped in atomically (`ArcSwap`), so a pass takes the latest as it starts, waiting on
 //! nothing.
 //!
 //!
@@ -50,7 +50,7 @@ use crate::triggers::DirectTriggers;
 
 use super::pass::*;
 use super::plan::*;
-use super::{Buffer, DataStreamsEnum, Edges, Graph, NodeId, NodesEnum, SharedByNode, Snapshot};
+use super::{Buffer, DataStreamsEnum, Edges, Graph, NodeId, NodesEnum, SharedByNode, Snapshot, SnapshotLite};
 
 type DataStream<N> = <<N as NodesEnum>::Edges as Edges>::DataStream;
 
@@ -79,10 +79,11 @@ impl<N: NodesEnum> Plan<N> {
     }
 
     /// Runs a pass through every step of `snapshot`'s graph, on `workspace`.
-    fn run(&self, snapshot: &Snapshot<N>, pass: PassId, workspace: &mut Workspace<N>, run: &RunSlots) {
+    fn run(&self, snapshot: &Arc<Snapshot<N>>, pass: PassId, workspace: &mut Workspace<N>, run: &RunSlots) {
+        // As nodes can see it, to keep (see `PassContext::snapshot`).
+        let baked: Arc<dyn SnapshotLite> = snapshot.clone();
         let Workspace { buffers: workspace, memory } = workspace;
         let sequence = pass.sequence;
-        let start_recording = snapshot.recording.as_ref().map(|r| r.start_effective());
         for (step, times) in self.steps.iter().zip(&run.times) {
             let Some(node) = snapshot.graph.get(step.id).map(|e| &e.node) else { continue };
             let pass = PassId { node: Some(step.id), node_type: Some(node.info().name), ..pass };
@@ -100,7 +101,7 @@ impl<N: NodesEnum> Plan<N> {
             let (work, wait) = {
                 let inputs: Vec<Option<&Buffer<N::Edges>>> =
                     step.inputs.iter().map(|b| b.and_then(|b| workspace[b].as_ref())).collect();
-                let mut pass_data = Pass {
+                let mut pass_data = PassContext {
                     sequence,
                     duration: PASS_DURATION,
                     node: step.id,
@@ -108,9 +109,7 @@ impl<N: NodesEnum> Plan<N> {
                     taken: &mut taken,
                     outputs: &mut outputs,
                     controls,
-                    start_acquiring: run.started,
-                    start_recording,
-                    prepared: snapshot.recording.as_deref(),
+                    snapshot: &baked,
                     shared: run.shared.any(step.id).unwrap_or(&()),
                     triggers: &run.triggers,
                     direct: &run.direct,
@@ -176,7 +175,6 @@ struct RunSlots {
     triggers: Arc<PassTriggers>,
     direct: Arc<DirectTriggers>,
     times: Vec<StepTimes>,
-    started: Instant,
 }
 
 impl RunSlots {
@@ -193,7 +191,6 @@ impl RunSlots {
             triggers: run.triggers.clone(),
             direct: run.direct.clone(),
             times,
-            started: run.started.0,
         }
     }
 }
@@ -300,7 +297,7 @@ struct Record {
     lag: Duration,
 }
 
-/// What the runner, its workers and its dispatcher share, through every epoch: counts and recent passes for the
+/// What the runner, its workers and its dispatcher share, through every era: counts and recent passes for the
 /// stats, the triggers, and what each worker's doing.
 #[derive(Default)]
 struct RunCommon {
@@ -318,21 +315,8 @@ struct RunCommon {
     workers: Vec<WorkerSlot>,
     /// The next pass the dispatcher will send.
     next_pass: AtomicU64,
-    /// Epochs started, which numbers them (from 1).
-    epochs: AtomicU64,
     /// The newest version a pass has run against.
     newest_used: AtomicU64,
-    /// When it started running, by the monotonic clock (see `Pass::start_acquiring`).
-    started: Started,
-}
-
-/// When a run started: when it's made.
-struct Started(Instant);
-
-impl Default for Started {
-    fn default() -> Self {
-        Started(Instant::now())
-    }
 }
 
 /// What a worker tells the GUI: a pass it's run, or that it's the first to run against a version.
@@ -373,11 +357,14 @@ pub struct FirstUse {
 /// What a pass in `WorkerSlot::pass` is when the worker isn't running one.
 const IDLE: u64 = u64::MAX;
 
+/// What a worker's era (`WorkerSlot::era`) is before it has buffers for one.
+const NO_ERA: u64 = u64::MAX;
+
 /// What a worker is up to, for the dev tools.
 #[derive(Default)]
 struct WorkerSlot {
-    /// The number of the epoch it has buffers for (0 until it has some).
-    epoch: AtomicU64,
+    /// The era it has buffers for, by its first snapshot's version (`NO_ERA` until it has some).
+    era: AtomicU64,
     /// The pass it's running, or `IDLE`.
     pass: AtomicU64,
     /// The memory of its buffers.
@@ -388,8 +375,8 @@ struct WorkerSlot {
 /// What a worker is up to.
 #[derive(Clone, Debug)]
 pub struct WorkerInfo {
-    /// The number of the epoch it has buffers for, once it has some.
-    pub epoch: Option<u64>,
+    /// The era it has buffers for, by its first snapshot's version, once it has some.
+    pub era: Option<u64>,
     /// The pass it's running, if any.
     pub pass: Option<u64>,
     /// The memory of its buffers, in bytes.
@@ -398,10 +385,10 @@ pub struct WorkerInfo {
     pub passes: u64,
 }
 
-/// A run of one plan (see `Epoch`).
-pub struct EpochInfo<N: NodesEnum> {
-    /// Epochs are numbered from 1, in the order they start.
-    pub number: u64,
+/// A snapshot era (see `SnapshotEra`).
+pub struct SnapshotEraInfo<N: NodesEnum> {
+    /// The version of its first snapshot, which names it.
+    pub first: u64,
     /// The version of the latest snapshot its passes run against.
     pub version: u64,
     pub plan: Arc<Plan<N>>,
@@ -415,10 +402,10 @@ pub struct EpochInfo<N: NodesEnum> {
 
 /// Everything about a run, as of now, for the dev tools.
 pub struct RunInfo<N: NodesEnum> {
-    /// The epoch passes are being sent for, once a worker's ready for one.
-    pub running: Option<EpochInfo<N>>,
-    /// A newer epoch workers are getting ready for, if there is one.
-    pub preparing: Option<EpochInfo<N>>,
+    /// The era passes are being sent for, once a worker's ready for one.
+    pub running: Option<SnapshotEraInfo<N>>,
+    /// A newer era workers are getting ready for, if there is one.
+    pub preparing: Option<SnapshotEraInfo<N>>,
     pub workers: Vec<WorkerInfo>,
     /// The next pass the dispatcher will send.
     pub next_pass: u64,
@@ -434,33 +421,36 @@ struct Job {
     due: Instant,
 }
 
-/// A run of one plan: the snapshot its passes run against (swapped for newer snapshots of the same shape), the
-/// plan, what the workers share running it, and the queue its passes are dispatched on. A change to the graph
-/// that changes the plan starts a new epoch, which the dispatcher moves on to once a worker is ready for it.
-struct Epoch<N: NodesEnum> {
-    number: u64,
+/// A snapshot era: consecutive snapshots of a run that run the same way (planned the same), and what they share as
+/// they run: the node state carried from pass to pass, what nodes share with the GUI, and the queue passes are
+/// dispatched on. Named after its first snapshot. Each pass runs against the latest snapshot of the era, with the plan
+/// of its first (the same shape), which the workers' buffers are made for. A snapshot that runs differently starts a
+/// new era, which the dispatcher moves on to once a worker is ready for it: an era's made before its first pass and
+/// winds down after its last.
+struct SnapshotEra<N: NodesEnum> {
+    /// The version of its first snapshot, which names it.
+    first: u64,
     /// Swapped for a newer one as settings change: each pass runs against the latest when it starts.
     snapshot: ArcSwap<Snapshot<N>>,
     plan: Arc<Plan<N>>,
     slots: RunSlots,
-    /// How many workers have a workspace for this epoch, ready to run its passes.
+    /// How many workers have a workspace for this era, ready to run its passes.
     ready: AtomicUsize,
-    /// Taken by the dispatcher when it starts sending this epoch's passes; dropping it lets the workers on this
-    /// epoch know there will be no more.
+    /// Taken by the dispatcher when it starts sending this era's passes; dropping it lets the workers on this
+    /// era know there will be no more.
     sender: Mutex<Option<Sender<Job>>>,
     receiver: Receiver<Job>,
     shared: Arc<RunCommon>,
 }
 
-impl<N: NodesEnum> Epoch<N> {
+impl<N: NodesEnum> SnapshotEra<N> {
     fn new(snapshot: &Snapshot<N>, workers: usize, shared: Arc<RunCommon>) -> Self {
         let plan = snapshot.plan.clone();
         let slots = RunSlots::new(&plan, &snapshot.graph, &shared);
         // A few passes may queue, beyond which they're dropped.
         let (sender, receiver) = crossbeam_channel::bounded(queue_capacity(workers));
-        let number = shared.epochs.fetch_add(1, Ordering::Relaxed) + 1;
-        Epoch {
-            number,
+        SnapshotEra {
+            first: snapshot.version,
             snapshot: ArcSwap::from_pointee(snapshot.clone()),
             plan,
             slots,
@@ -471,7 +461,7 @@ impl<N: NodesEnum> Epoch<N> {
         }
     }
 
-    /// Readies the node states for this epoch's first pass, `first`.
+    /// Readies the node states for this era's first pass, `first`.
     fn begin(&self, first: u64) {
         for slot in &self.slots.states {
             slot.turn.store(first, Ordering::Release);
@@ -479,7 +469,7 @@ impl<N: NodesEnum> Epoch<N> {
     }
 }
 
-impl<N: NodesEnum> Drop for Epoch<N> {
+impl<N: NodesEnum> Drop for SnapshotEra<N> {
     /// Passes still queued when no worker is left to run them were never run. The nodes' state is let go of in
     /// the background (see `let_go_of`).
     fn drop(&mut self) {
@@ -500,15 +490,15 @@ fn let_go_of(states: Vec<StateSlot>) {
     }
 }
 
-/// The epochs a run has: the newest (which workers prepare for), and the one being dispatched.
-struct Epochs<N: NodesEnum> {
-    wanted: ArcSwap<Epoch<N>>,
-    running: ArcSwapOption<Epoch<N>>,
+/// The eras a run has: the newest (which workers prepare for), and the one being dispatched.
+struct SnapshotEras<N: NodesEnum> {
+    wanted: ArcSwap<SnapshotEra<N>>,
+    running: ArcSwapOption<SnapshotEra<N>>,
 }
 
 /// The graph running: a dispatcher and a pool of workers, until dropped.
 pub struct Runner<N: NodesEnum> {
-    epochs: Arc<Epochs<N>>,
+    eras: Arc<SnapshotEras<N>>,
     shared: Arc<RunCommon>,
     threads: Vec<JoinHandle<()>>,
     workers: usize,
@@ -526,35 +516,36 @@ impl<N: NodesEnum> Runner<N> {
     /// The same, with its direct triggers going to `direct`.
     pub fn start_with(snapshot: &Snapshot<N>, workers: usize, direct: Arc<DirectTriggers>) -> Self {
         let workers = workers.max(1);
+        assert!(snapshot.started.is_some(), "a run's snapshots say when it started");
         let shared = Arc::new(RunCommon {
-            workers: (0..workers).map(|_| WorkerSlot::default()).collect(),
+            workers: (0..workers).map(|_| WorkerSlot { era: AtomicU64::new(NO_ERA), ..Default::default() }).collect(),
             direct,
             ..Default::default()
         });
-        let epoch = Arc::new(Epoch::new(snapshot, workers, shared.clone()));
+        let era = Arc::new(SnapshotEra::new(snapshot, workers, shared.clone()));
         log::info!("Running on {workers} workers, {} ms passes", PASS_DURATION * 1000.0);
-        log::debug!("Epoch {} for version {}: {}", epoch.number, snapshot.version, describe(&epoch.plan));
-        let epochs = Arc::new(Epochs { wanted: ArcSwap::new(epoch), running: ArcSwapOption::empty() });
+        log::debug!("Era from snapshot v{}: {}", era.first, describe(&era.plan));
+        let eras = Arc::new(SnapshotEras { wanted: ArcSwap::new(era), running: ArcSwapOption::empty() });
 
         let mut threads = Vec::new();
         for index in 0..workers {
-            let (epochs, shared) = (epochs.clone(), shared.clone());
-            let worker = move || work(&epochs, &shared, index);
+            let (eras, shared) = (eras.clone(), shared.clone());
+            let worker = move || work(&eras, &shared, index);
             threads
                 .push(std::thread::Builder::new().name(format!("pass worker {index}")).spawn(worker).expect("worker"));
         }
-        let (dispatcher_epochs, dispatcher_shared) = (epochs.clone(), shared.clone());
-        let dispatcher = move || dispatch(&dispatcher_epochs, &dispatcher_shared);
+        let (dispatcher_eras, dispatcher_shared) = (eras.clone(), shared.clone());
+        let dispatcher = move || dispatch(&dispatcher_eras, &dispatcher_shared);
         threads.push(std::thread::Builder::new().name("pass dispatcher".into()).spawn(dispatcher).expect("dispatcher"));
 
         let (version, received) = (AtomicU64::new(snapshot.version), RefCell::default());
-        Runner { epochs, shared, threads, workers, version, received }
+        Runner { eras, shared, threads, workers, version, received }
     }
 
     /// The graph of the latest snapshot given to the run.
     #[cfg(test)]
     pub fn graph(&self) -> Arc<Graph<N>> {
-        self.epochs.wanted.load().snapshot.load().graph.clone()
+        self.eras.wanted.load().snapshot.load().graph.clone()
     }
 
     /// Where the passes send direct triggers.
@@ -567,11 +558,11 @@ impl<N: NodesEnum> Runner<N> {
         &self.shared.triggers
     }
 
-    /// What the nodes running share with the GUI: the epoch being run's, or, until one is, the one being got ready
+    /// What the nodes running share with the GUI: the era being run's, or, until one is, the one being got ready
     /// for.
     pub fn shared(&self) -> Arc<SharedByNode> {
-        let epoch = self.epochs.running.load_full().unwrap_or_else(|| self.epochs.wanted.load_full());
-        epoch.slots.shared.clone()
+        let era = self.eras.running.load_full().unwrap_or_else(|| self.eras.wanted.load_full());
+        era.slots.shared.clone()
     }
 
     /// The acquisition clock: seconds of passes sent so far.
@@ -581,27 +572,23 @@ impl<N: NodesEnum> Runner<N> {
 
     /// Moves the run on to a newer snapshot. If it runs the same way (as after a change of settings), passes
     /// carry on with it from the next one, keeping the nodes' state, and this returns true. Otherwise it starts
-    /// a new epoch: the workers make buffers for its plan as they come free, and its passes start (with fresh
+    /// a new era: the workers make buffers for its plan as they come free, and its passes start (with fresh
     /// state) once one is ready; until then, passes carry on with the old one.
     pub fn update(&self, snapshot: &Snapshot<N>) -> bool {
         if self.version.swap(snapshot.version, Ordering::Relaxed) == snapshot.version {
             return true;
         }
+        let baked = Arc::new(snapshot.clone());
         // Only the GUI updates it, so nothing changes it in between.
-        let wanted = self.epochs.wanted.load();
+        let wanted = self.eras.wanted.load();
         if Arc::ptr_eq(&wanted.plan, &snapshot.plan) || wanted.plan.same_shape(&snapshot.plan) {
-            wanted.snapshot.store(Arc::new(snapshot.clone()));
-            log::trace!("Version {} carries on epoch {}", snapshot.version, wanted.number);
+            wanted.snapshot.store(baked);
+            log::trace!("Snapshot v{} carries on the era from v{}", snapshot.version, wanted.first);
             true
         } else {
-            let epoch = Arc::new(Epoch::new(snapshot, self.workers, self.shared.clone()));
-            log::info!(
-                "Version {} changes the plan: epoch {}, {}",
-                snapshot.version,
-                epoch.number,
-                describe(&epoch.plan)
-            );
-            self.epochs.wanted.store(epoch);
+            let era = Arc::new(SnapshotEra::new(snapshot, self.workers, self.shared.clone()));
+            log::info!("Snapshot v{} runs differently: a new era, {}", snapshot.version, describe(&era.plan));
+            self.eras.wanted.store(era);
             false
         }
     }
@@ -631,30 +618,30 @@ impl<N: NodesEnum> Runner<N> {
     /// The plan passes are being dispatched for, once they are.
     #[cfg(test)]
     fn running_plan(&self) -> Option<Arc<Plan<N>>> {
-        self.epochs.running.load().as_ref().map(|e| e.plan.clone())
+        self.eras.running.load().as_ref().map(|e| e.plan.clone())
     }
 
-    /// Everything about the run as of now: its epochs, workers and dispatcher, and the stats.
+    /// Everything about the run as of now: its eras, workers and dispatcher, and the stats.
     pub fn inspect(&self) -> RunInfo<N> {
-        let info = |epoch: &Epoch<N>| EpochInfo {
-            number: epoch.number,
-            version: epoch.snapshot.load().version,
-            plan: epoch.plan.clone(),
-            ready: epoch.ready.load(Ordering::Relaxed),
-            queued: epoch.receiver.len(),
-            step_times: epoch.slots.times.iter().map(StepTimes::get).collect(),
+        let info = |era: &SnapshotEra<N>| SnapshotEraInfo {
+            first: era.first,
+            version: era.snapshot.load().version,
+            plan: era.plan.clone(),
+            ready: era.ready.load(Ordering::Relaxed),
+            queued: era.receiver.len(),
+            step_times: era.slots.times.iter().map(StepTimes::get).collect(),
         };
-        let running = self.epochs.running.load().as_deref().map(info);
-        let wanted = self.epochs.wanted.load_full();
-        let preparing = (running.as_ref().map(|r| r.number) != Some(wanted.number)).then(|| info(&wanted));
+        let running = self.eras.running.load().as_deref().map(info);
+        let wanted = self.eras.wanted.load_full();
+        let preparing = (running.as_ref().map(|r| r.first) != Some(wanted.first)).then(|| info(&wanted));
         let workers = self
             .shared
             .workers
             .iter()
             .map(|w| {
-                let (epoch, pass) = (w.epoch.load(Ordering::Relaxed), w.pass.load(Ordering::Relaxed));
+                let (era, pass) = (w.era.load(Ordering::Relaxed), w.pass.load(Ordering::Relaxed));
                 WorkerInfo {
-                    epoch: (epoch > 0).then_some(epoch),
+                    era: (era != NO_ERA).then_some(era),
                     pass: (pass != IDLE).then_some(pass),
                     memory: w.memory.load(Ordering::Relaxed),
                     passes: w.passes.load(Ordering::Relaxed),
@@ -720,20 +707,20 @@ impl<N: NodesEnum> Drop for Runner<N> {
 /// How long passes' times are kept (see `Runner::pass_times`).
 const PASS_TIMES: Duration = Duration::from_secs(10);
 
-/// How long an idle worker waits for a pass before checking for a newer epoch to get ready for.
+/// How long an idle worker waits for a pass before checking for a newer era to get ready for.
 const IDLE_CHECK: Duration = Duration::from_millis(2);
 
-/// A worker: runs passes of its epoch, and once there's a newer one and nothing of its own queued, makes
+/// A worker: runs passes of its era, and once there's a newer one and nothing of its own queued, makes
 /// buffers for that and moves on to it. Ends when the run stops, once every pass dispatched to it is done.
-fn work<N: NodesEnum>(epochs: &Epochs<N>, shared: &RunCommon, index: usize) {
+fn work<N: NodesEnum>(eras: &SnapshotEras<N>, shared: &RunCommon, index: usize) {
     let slot = &shared.workers[index];
     slot.pass.store(IDLE, Ordering::Relaxed);
-    let mut mine: Option<(Arc<Epoch<N>>, Workspace<N>)> = None;
+    let mut mine: Option<(Arc<SnapshotEra<N>>, Workspace<N>)> = None;
     loop {
-        let wanted = epochs.wanted.load();
+        let wanted = eras.wanted.load();
         let behind = match &mine {
             None => true,
-            Some((epoch, _)) => !Arc::ptr_eq(epoch, &wanted) && epoch.receiver.is_empty(),
+            Some((era, _)) => !Arc::ptr_eq(era, &wanted) && era.receiver.is_empty(),
         };
         if behind {
             // Free the old buffers before making the new.
@@ -744,28 +731,28 @@ fn work<N: NodesEnum>(epochs: &Epochs<N>, shared: &RunCommon, index: usize) {
             let bytes = workspace.bytes();
             shared.memory.fetch_add(bytes, Ordering::Relaxed);
             slot.memory.store(bytes, Ordering::Relaxed);
-            slot.epoch.store(wanted.number, Ordering::Relaxed);
+            slot.era.store(wanted.first, Ordering::Relaxed);
             wanted.ready.fetch_add(1, Ordering::Release);
             log::debug!(
-                "Worker {index} ready for epoch {}, with {:.2} MB of buffers",
-                wanted.number,
+                "Worker {index} ready for the era from v{}, with {:.2} MB of buffers",
+                wanted.first,
                 bytes as f64 / 1e6
             );
             mine = Some((arc_swap::Guard::into_inner(wanted), workspace));
         }
-        let Some((epoch, workspace)) = &mut mine else { unreachable!() };
-        match epoch.receiver.recv_timeout(IDLE_CHECK) {
+        let Some((era, workspace)) = &mut mine else { unreachable!() };
+        match era.receiver.recv_timeout(IDLE_CHECK) {
             Ok(job) => {
                 shared.busy.fetch_add(1, Ordering::Relaxed);
                 slot.pass.store(job.sequence, Ordering::Relaxed);
                 let start = Instant::now();
-                let snapshot = epoch.snapshot.load_full();
+                let snapshot = era.snapshot.load_full();
                 if shared.newest_used.fetch_max(snapshot.version, Ordering::Relaxed) < snapshot.version {
                     let first = FirstUse { version: snapshot.version, sequence: job.sequence, at: start };
                     let _ = shared.reports.0.try_send(Report::FirstUse(first));
                 }
-                let pass = PassId { epoch: epoch.number, sequence: job.sequence, node: None, node_type: None };
-                epoch.plan.run(&snapshot, pass, workspace, &epoch.slots);
+                let pass = PassId { era: era.first, sequence: job.sequence, node: None, node_type: None };
+                era.plan.run(&snapshot, pass, workspace, &era.slots);
                 let finished = Instant::now();
                 slot.pass.store(IDLE, Ordering::Relaxed);
                 slot.passes.fetch_add(1, Ordering::Relaxed);
@@ -777,7 +764,7 @@ fn work<N: NodesEnum>(epochs: &Epochs<N>, shared: &RunCommon, index: usize) {
             }
             Err(_) if shared.stop.load(Ordering::Relaxed) => break,
             Err(RecvTimeoutError::Timeout) => {}
-            // The dispatcher has moved on from this epoch: get ready for the next.
+            // The dispatcher has moved on from this era: get ready for the next.
             Err(RecvTimeoutError::Disconnected) => std::thread::sleep(IDLE_CHECK),
         }
     }
@@ -786,18 +773,18 @@ fn work<N: NodesEnum>(epochs: &Epochs<N>, shared: &RunCommon, index: usize) {
     }
 }
 
-/// The dispatcher: releases each pass when its time is up, on the queue of the newest epoch a worker is ready
+/// The dispatcher: releases each pass when its time is up, on the queue of the newest era a worker is ready
 /// for. The clock starts once the first worker is ready, so making buffers doesn't count against the run.
-fn dispatch<N: NodesEnum>(epochs: &Epochs<N>, shared: &RunCommon) {
+fn dispatch<N: NodesEnum>(eras: &SnapshotEras<N>, shared: &RunCommon) {
     let duration = Duration::from_secs_f64(PASS_DURATION);
-    let mut current: Option<(Arc<Epoch<N>>, Sender<Job>)> = None;
+    let mut current: Option<(Arc<SnapshotEra<N>>, Sender<Job>)> = None;
     let (mut sequence, mut due) = (0, Instant::now());
     // Passes dropped in a row, so a run of them is reported once.
     let mut dropping = 0u64;
     while !shared.stop.load(Ordering::Relaxed) {
-        let wanted = epochs.wanted.load_full();
-        let dispatching = current.as_ref().is_some_and(|(epoch, _)| Arc::ptr_eq(epoch, &wanted));
-        // Move on to the wanted epoch once a worker's ready for it.
+        let wanted = eras.wanted.load_full();
+        let dispatching = current.as_ref().is_some_and(|(era, _)| Arc::ptr_eq(era, &wanted));
+        // Move on to the wanted era once a worker's ready for it.
         let sender = if !dispatching && wanted.ready.load(Ordering::Acquire) > 0 {
             wanted.sender.lock().unwrap().take()
         } else {
@@ -808,9 +795,9 @@ fn dispatch<N: NodesEnum>(epochs: &Epochs<N>, shared: &RunCommon) {
                 due = Instant::now() + duration;
             }
             wanted.begin(sequence);
-            log::debug!("Epoch {} running from pass {sequence}", wanted.number);
-            epochs.running.store(Some(wanted.clone()));
-            current = Some((wanted, sender)); // dropping the old epoch's sender ends its passes
+            log::debug!("The era from snapshot v{} running from pass {sequence}", wanted.first);
+            eras.running.store(Some(wanted.clone()));
+            current = Some((wanted, sender)); // dropping the old era's sender ends its passes
         }
         let Some((_, sender)) = &current else {
             std::thread::sleep(IDLE_CHECK);
@@ -907,7 +894,7 @@ pub mod tests {
         link(&mut graph, board, 0, filter, 0);
         link(&mut graph, filter, 0, viewer, 0);
         link(&mut graph, board, 0, writer, 0);
-        let snapshot = Snapshot::new(0, graph, None);
+        let snapshot = Arc::new(Snapshot::new(0, graph));
         let plan = &snapshot.plan;
         let slots = RunSlots::new(plan, &snapshot.graph, &RunCommon::default());
         let mut workspace = plan.workspace(&snapshot.graph);
@@ -915,7 +902,7 @@ pub mod tests {
         let copied = plan.steps.iter().find(|s| s.id == writer).unwrap().inputs[0].unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         for sequence in 0.. {
-            plan.run(&snapshot, PassId { epoch: 1, sequence, node: None, node_type: None }, &mut workspace, &slots);
+            plan.run(&snapshot, PassId { era: 1, sequence, node: None, node_type: None }, &mut workspace, &slots);
             let (Some(Buffer::Continuous(filtered)), Some(Buffer::Continuous(copied))) =
                 (&workspace.buffers[filtered], &workspace.buffers[copied])
             else {
@@ -991,7 +978,7 @@ pub mod tests {
         link(&mut graph, board, 0, filter, 0);
         link(&mut graph, filter, 0, detector, 0);
         link(&mut graph, detector, 0, viewer, 0);
-        let snapshot = Snapshot::new(0, graph, None);
+        let snapshot = Arc::new(Snapshot::new(0, graph));
         let plan = &snapshot.plan;
         let slots = RunSlots::new(plan, &snapshot.graph, &RunCommon::default());
         let mut workspace = plan.workspace(&snapshot.graph);
@@ -1001,7 +988,7 @@ pub mod tests {
         let detector_output = plan.steps.iter().find(|s| s.id == detector).unwrap().outputs[0];
         let deadline = Instant::now() + Duration::from_secs(5);
         for sequence in 0.. {
-            plan.run(&snapshot, PassId { epoch: 1, sequence, node: None, node_type: None }, &mut workspace, &slots);
+            plan.run(&snapshot, PassId { era: 1, sequence, node: None, node_type: None }, &mut workspace, &slots);
             let Some(Buffer::Spikes(output)) = &workspace.buffers[detector_output] else { panic!("spikes buffer") };
             spikes += output.spikes.len();
             let Some(Buffer::Continuous(filtered)) = &workspace.buffers[filter_output] else { panic!("continuous") };
@@ -1022,7 +1009,7 @@ pub mod tests {
     fn runs_the_example_graph() {
         // One worker, as on a two-core machine, and several.
         for workers in [1, 2] {
-            let snapshot = Snapshot::new(0, crate::example_graph(), None);
+            let snapshot = Snapshot::new(0, crate::example_graph());
             let runner = Runner::start(&snapshot, workers);
             let stats = wait_for_passes(&runner, 5);
             drop(runner);
@@ -1043,22 +1030,22 @@ pub mod tests {
         }
     }
 
-    /// What nodes share with the GUI is made for each epoch (sized for its data streams), and kept through changes
+    /// What nodes share with the GUI is made for each era (sized for its data streams), and kept through changes
     /// of settings.
     #[test]
-    fn settings_changes_carry_on_and_others_start_a_new_epoch() {
+    fn settings_changes_carry_on_and_others_start_a_new_era() {
         let mut graph = Graph::default();
         let board = add(&mut graph, "Acquisition Board");
         let filter = add(&mut graph, "Band-pass Filter");
         let viewer = add(&mut graph, "LFP Viewer");
         link(&mut graph, board, 0, filter, 0);
         link(&mut graph, filter, 0, viewer, 0);
-        let mut snapshot = Snapshot::new(0, graph.clone(), None);
+        let mut snapshot = Snapshot::new(0, graph.clone());
         let runner = Runner::start(&snapshot, 2);
         let shared = runner.shared();
         assert!(!shared.pools(viewer).is_empty(), "the viewer's display");
         let mut next = |graph: &Graph<Nodes>| {
-            snapshot = Snapshot::new(snapshot.version + 1, graph.clone(), Some(&snapshot));
+            snapshot = Snapshot::new(snapshot.version + 1, graph.clone());
             snapshot.clone()
         };
 
@@ -1074,7 +1061,7 @@ pub mod tests {
         assert!(runner.update(&next(&graph)));
         link(&mut graph, board, 0, gain, 0);
         assert!(runner.update(&next(&graph)), "nothing needs its output");
-        assert!(Arc::ptr_eq(&runner.shared(), &shared), "the same epoch's");
+        assert!(Arc::ptr_eq(&runner.shared(), &shared), "the same era's");
         let second = add(&mut graph, "LFP Viewer");
         link(&mut graph, gain, 0, second, 0);
         let latest = next(&graph);
@@ -1087,7 +1074,7 @@ pub mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         let now = runner.shared();
-        assert!(!Arc::ptr_eq(&now, &shared), "the new epoch's");
+        assert!(!Arc::ptr_eq(&now, &shared), "the new era's");
         assert!(!now.pools(second).is_empty() && shared.pools(second).is_empty(), "with the new viewer's");
         let completed = runner.stats().completed;
         let stats = wait_for_passes(&runner, completed + 1);

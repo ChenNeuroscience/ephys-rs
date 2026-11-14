@@ -24,7 +24,7 @@ use crate::standard::spikes::{
 };
 use crate::standard::widgets::{open_settings_button, require_input};
 use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
-use ephys_rs::engine::{Category, Control, EdgeType, Input, Node, NodeInfo, Output, Pass, Shortcut, UiContext};
+use ephys_rs::engine::{Category, Control, EdgeType, Input, Node, NodeInfo, Output, PassContext, Shortcut, UiContext};
 use ephys_rs::gui::widgets::Icon;
 use std::time::{Duration, Instant};
 
@@ -264,7 +264,7 @@ impl Node<Edges> for SpikeViewer {
         }
     }
 
-    fn process(&self, pass: &mut Pass<Edges>, recent: &mut Recent) {
+    fn process(&self, pass: &mut PassContext<Edges>, recent: &mut Recent) {
         let Some(Some(Buffer::Spikes(input))) = pass.inputs.first() else { return };
         let Some(stream) = recent.stream else { return };
         let size = input.group_size * input.samples;

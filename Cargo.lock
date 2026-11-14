@@ -448,8 +448,9 @@ dependencies = [
 
 [[package]]
 name = "chen-neuro"
-version = "0.1093.0"
+version = "0.1100.0"
 dependencies = [
+ "arc-swap",
  "chrono",
  "eframe",
  "ephys-rs",
@@ -1087,7 +1088,7 @@ checksum = "cfc1cc505827f4c23eedc297975a0fd038268d41293f389dd8ff3b574aefab19"
 
 [[package]]
 name = "ephys-rs"
-version = "0.244.0"
+version = "0.250.0"
 dependencies = [
  "arboard",
  "arc-swap",
@@ -1121,8 +1122,9 @@ dependencies = [
 
 [[package]]
 name = "ephys-rs-standard"
-version = "0.244.0"
+version = "0.250.0"
 dependencies = [
+ "arc-swap",
  "base64",
  "chrono",
  "cpal",

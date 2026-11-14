@@ -9,7 +9,7 @@ use crate::Buffer;
 use crate::standard::ephys::Continuous;
 use crate::standard::widgets::{format_rate, input_summary, require_input, setting, settings_grid};
 use crate::{DataStream, Edges, Kind};
-use ephys_rs::engine::{Category, Input, Node, NodeInfo, Output, Pass, TreeShake, UiContext};
+use ephys_rs::engine::{Category, Input, Node, NodeInfo, Output, PassContext, TreeShake, UiContext};
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -59,7 +59,7 @@ impl Node<Edges> for Downsample {
         Downsampling { step, so_far: 0 }
     }
 
-    fn process(&self, pass: &mut Pass<Edges>, downsampling: &mut Downsampling) {
+    fn process(&self, pass: &mut PassContext<Edges>, downsampling: &mut Downsampling) {
         let input = match pass.inputs[0] {
             Some(Buffer::Continuous(input)) => Some(input),
             _ => None,
@@ -169,7 +169,7 @@ mod tests {
             let data = Buffer::Continuous(data);
             let inputs = [Some(&data)];
             let mut outputs = [Buffer::Continuous(output.buffer(0.02))];
-            node.process(&mut Pass::new(0, 0.02, &inputs, &mut outputs), &mut downsampling);
+            node.process(&mut PassContext::new(0, 0.02, &inputs, &mut outputs), &mut downsampling);
             let [Buffer::Continuous(out)] = &outputs else { unreachable!() };
             for (channel, kept) in kept.iter_mut().enumerate() {
                 kept.extend_from_slice(out.channel(channel));

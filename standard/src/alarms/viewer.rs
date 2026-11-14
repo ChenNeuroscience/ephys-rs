@@ -31,7 +31,8 @@ use crate::standard::widgets::{mark_mixed, open_settings_button, require_input};
 use crate::standard::widgets::{power, small_toggle};
 use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
 use ephys_rs::engine::{
-    Category, Control, Flow, Input, Node, NodeInfo, NodeThread, Output, Pass, PassState, PoolStatus, Shared, UiContext,
+    Category, Control, Flow, Input, Node, NodeInfo, NodeThread, Output, PassContext, PassState, PoolStatus, Shared,
+    UiContext,
 };
 use ephys_rs::gui::widgets::Icon;
 use ephys_rs::theme::Colours;
@@ -212,7 +213,7 @@ impl Node<Edges> for AlarmViewer {
     }
 
     /// Sends the pass's alarm states to the GUI's side.
-    fn process(&self, pass: &mut Pass<Edges>, sending: &mut Sending) {
+    fn process(&self, pass: &mut PassContext<Edges>, sending: &mut Sending) {
         let Some(Some(Buffer::AlarmStates(input))) = pass.inputs.first().copied() else { return };
         let pending = &mut sending.pending;
         pending.push(Update::Pass { seconds: pass.duration, recording: pass.recording() });
@@ -707,9 +708,9 @@ mod tests {
         let mut sending = Sending::default();
         let gui = RefCell::new(Box::new(AlarmsUi { overrides, ..Default::default() }) as Box<dyn Any>);
         for _ in 0..passes {
-            let mut pass = Pass::new(0, 0.02, &inputs, &mut []);
-            (pass.shared, pass.start_recording) =
-                (by_node.get::<SentStates>(viewer).unwrap(), recording.then(std::time::Instant::now));
+            let mut pass = PassContext::new(0, 0.02, &inputs, &mut []);
+            pass.shared = by_node.get::<SentStates>(viewer).unwrap();
+            pass.set_recording(recording);
             AlarmViewer::default().process(&mut pass, &mut sending);
             background(&mut graph, viewer, &by_node, &gui, recording);
         }
@@ -1160,7 +1161,7 @@ mod tests {
         graph.connect(port(board, PortRole::Output, 1), port(processor, PortRole::Input, 3)).unwrap();
         graph.connect(port(processor, PortRole::Output, 0), port(viewer, PortRole::Input, 0)).unwrap();
 
-        let snapshot = Snapshot::new(0, graph.clone(), None);
+        let snapshot = Snapshot::new(0, graph.clone());
         let runner = Runner::start(&snapshot, 2);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let shared = runner.shared();

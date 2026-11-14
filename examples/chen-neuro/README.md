@@ -66,16 +66,16 @@ for any of this: it makes `.pos.ttl` as for a camera's timing LED, so the file's
 `timing_led_*` headers are the defaults, with the radius 0 saying there's no real spot.
 
 Headers are written as recording starts, so settings can't change while recording. Ones that differ log an error and wait:
-only the latest is kept, in the connection's inbox, so it survives a new epoch, and the update's triggered once recording stops,
+only the latest is kept, in the connection's inbox, so it survives a new era, and the update's triggered once recording stops,
 until the node has it. So a connection's last settings aren't lost, though the recording has the ones it started with.
 
 A `ttl`'s `idx` counts from 1, as the LTX files' `ttl_<n>` do, so it's the `pos ttl` stream's line `idx - 1`. Its
-`Events::lines` is `ttl_channels`, and passes drop events on lines beyond it, logging an error once an epoch, so what's
+`Events::lines` is `ttl_channels`, and passes drop events on lines beyond it, logging an error once an era, so what's
 downstream never sees a line the stream doesn't have.
 
 It sends the VR computer its `state` too, on the connection's thread, which writes between reads: once a second, and as
-soon as recording starts or stops, by `Pass::acquiring_for` and `Pass::recording_for` as the last pass saw them. A write
-that times out stops them for the connection, as the VR computer isn't reading, rather than dropping it.
+soon as recording starts or stops, saying how long it's been acquiring and recording as of when it's sent, from the
+newest snapshot its passes have handed over (`PassContext::snapshot`). A write that times out stops them for the connection, as the VR computer isn't reading, rather than dropping it.
 
 `time` is required on all but `settings`, in seconds by the VR computer's own clock, which has to be consistent for as long
 as it's connected. It's carried as it came all the way downstream, and when messages arrived plays no part: `PositionSample::time`,

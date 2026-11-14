@@ -34,7 +34,7 @@ use crate::standard::pool::Pool;
 use crate::standard::spikes::{Channels, GainScope, Gains, gain_field};
 use crate::standard::widgets::{TIME_AXIS_HEIGHT, inline_block, open_settings_button, require_input, time_axis_ui};
 use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
-use ephys_rs::engine::{Category, Control, EdgeType, Input, Node, NodeInfo, Output, Pass, UiContext};
+use ephys_rs::engine::{Category, Control, EdgeType, Input, Node, NodeInfo, Output, PassContext, UiContext};
 use ephys_rs::gui::widgets::{Icon, small_toggle_button};
 
 /// Columns across the view.
@@ -221,7 +221,7 @@ impl Node<Edges> for LfpViewer {
         Traces { rate, ..Default::default() }
     }
 
-    fn process(&self, pass: &mut Pass<Edges>, traces: &mut Traces) {
+    fn process(&self, pass: &mut PassContext<Edges>, traces: &mut Traces) {
         let Some(Some(Buffer::Continuous(input))) = pass.inputs.first() else { return };
         let rate = traces.rate;
         // Every channel: the view scrolls through them.

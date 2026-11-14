@@ -23,7 +23,7 @@ use crate::standard::tracking::{Crop, Detection, Positions};
 use crate::standard::widgets::{named_settings_grid, section};
 use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
 use ephys_rs::engine::{
-    Category, Control, EdgeType, Input, Node, NodeInfo, Output, Pass, PoolStatus, Shared, UiContext,
+    Category, Control, EdgeType, Input, Node, NodeInfo, Output, PassContext, PoolStatus, Shared, UiContext,
 };
 use ephys_rs::theme::Colours;
 
@@ -180,7 +180,7 @@ impl Node<Edges> for TrackerView {
 
     /// Records the LEDs' sizes, and keeps the pass's last frame, the LEDs found in it and the camera's stats. A
     /// pass without a frame is only shown if the camera isn't running, to say why.
-    fn process(&self, pass: &mut Pass<Edges>, tracking: &mut Tracking) {
+    fn process(&self, pass: &mut PassContext<Edges>, tracking: &mut Tracking) {
         let Tracking { history, pending, recording, latest } = tracking;
         let TrackerShared { shown, path } = pass.shared::<TrackerShared>();
         if pass.recording() && !*recording {
@@ -886,8 +886,9 @@ mod tests {
             let sample = PositionSample { frame: 0, time: 0.0, leds, timing_led: None, pixels_per_metre: f32::NAN };
             let positions = Buffer::Positions(PositionsBuffer { samples: vec![sample] });
             let inputs = [None, Some(&positions), None];
-            let mut pass = Pass::new(0, 0.02, &inputs, &mut []);
-            (pass.shared, pass.node, pass.start_recording) = (shared, view, recording.then(std::time::Instant::now));
+            let mut pass = PassContext::new(0, 0.02, &inputs, &mut []);
+            (pass.shared, pass.node) = (shared, view);
+            pass.set_recording(recording);
             TrackerView::default().process(&mut pass, &mut tracking);
         };
         // What the GUI's side has, once it's taken what's been sent.
@@ -951,7 +952,7 @@ mod tests {
         graph.connect(port(camera, PortRole::Output, 0), port(detector, PortRole::Input, 0)).unwrap();
         graph.connect(port(camera, PortRole::Output, 0), port(view, PortRole::Input, 0)).unwrap();
         graph.connect(port(detector, PortRole::Output, 0), port(view, PortRole::Input, 1)).unwrap();
-        let first = Snapshot::new(0, graph.clone(), None);
+        let first = Snapshot::new(0, graph.clone());
         let runner = Runner::start(&first, 2);
 
         // The test scene has a big LED at 255 and a small one at 240, both over the default threshold.
@@ -961,7 +962,7 @@ mod tests {
         if let Some(Nodes::PositionDetector(d)) = graph.get_mut(detector).map(|e| &mut e.node) {
             d.detection.threshold = 245;
         }
-        assert!(runner.update(&Snapshot::new(1, graph, Some(&first))));
+        assert!(runner.update(&Snapshot::new(1, graph)));
         assert!(wait_for(|| leds_shown(&runner, view) == Some(1)), "one LED found: {:?}", leds_shown(&runner, view));
     }
 
@@ -985,7 +986,7 @@ mod tests {
             d.detection.timing_led =
                 crate::standard::tracking::TimingLed { enabled: true, center, radius: 12.0, ..Default::default() };
         }
-        let runner = Runner::start(&Snapshot::new(0, graph, None), 2);
+        let runner = Runner::start(&Snapshot::new(0, graph), 2);
         let shown = || {
             let shared = runner.shared();
             let display = shared.get::<TrackerShared>(view)?.shown.newest();
@@ -1010,7 +1011,7 @@ mod tests {
         graph.connect(port(camera, PortRole::Output, 0), port(detector, PortRole::Input, 0)).unwrap();
         graph.connect(port(camera, PortRole::Output, 0), port(view, PortRole::Input, 0)).unwrap();
         graph.connect(port(detector, PortRole::Output, 0), port(view, PortRole::Input, 1)).unwrap();
-        let first = Snapshot::new(0, graph.clone(), None);
+        let first = Snapshot::new(0, graph.clone());
         let runner = Runner::start(&first, 2);
 
         let mut update = None;
@@ -1021,7 +1022,7 @@ mod tests {
         let (_, setting, value) = update.unwrap();
         let value = value.downcast::<crate::Setting>().unwrap();
         graph.get_mut(camera).unwrap().node.set_setting(setting, *value);
-        assert!(!runner.update(&Snapshot::new(1, graph, Some(&first))), "a new epoch");
+        assert!(!runner.update(&Snapshot::new(1, graph)), "a new era");
         assert!(wait_for(|| leds_shown(&runner, view) == Some(2)), "both LEDs: {:?}", leds_shown(&runner, view));
     }
 
@@ -1033,8 +1034,10 @@ mod tests {
         if let Some(Nodes::Camera(c)) = graph.get_mut(camera).map(|e| &mut e.node) {
             c.source = super::super::camera::Source::Fake { address };
         }
-        let idle = Snapshot::new(0, graph, None);
-        let recording = idle.with_recording(1, Some(std::sync::Arc::new(ephys_rs::engine::Recording::default())));
+        let idle = Snapshot::new(0, graph);
+        let recorded =
+            Some(ephys_rs::engine::Recorded::now(std::sync::Arc::new(ephys_rs::engine::Recording::default())));
+        let recording = ephys_rs::engine::Snapshot::bake(1, idle.graph.clone(), idle.started, recorded);
         let runner = Runner::start(&recording, 2);
         let updated = || {
             let updates = runner.direct_triggers().take_settings_updates();
@@ -1043,7 +1046,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(1000));
         assert!(updated().is_none(), "settings are locked while recording");
 
-        assert!(runner.update(&recording.with_recording(2, None)));
+        assert!(runner.update(&ephys_rs::engine::Snapshot::bake(2, recording.graph.clone(), recording.started, None)));
         let mut value = None;
         assert!(wait_for(|| {
             value = updated();

@@ -411,9 +411,6 @@ mod tests {
     use super::*;
     use crate::NodeType;
     use crate::engine::NodeTypeEnum;
-    use std::sync::Arc;
-
-    use super::super::Snapshot;
 
     use crate::Nodes;
 
@@ -588,18 +585,5 @@ mod tests {
         assert!(!runs(&graph, viewer), "the spectra are all it's given, and it doesn't need them");
         assert!(!runs(&graph, spectrum), "so nothing needs them");
         assert!(runs(&graph, board), "which needn't stop a source");
-    }
-
-    #[test]
-    fn snapshots_share_a_plan_until_processing_changes() {
-        let mut graph = Graph::default();
-        let board = add(&mut graph, "Acquisition Board");
-        let first = Snapshot::new(0, graph.clone(), None);
-        graph.get_mut(board).unwrap().pos = [100.0, 50.0];
-        let moved = Snapshot::new(1, graph.clone(), Some(&first));
-        assert!(Arc::ptr_eq(&first.plan, &moved.plan), "moving a node doesn't change how it runs");
-        add(&mut graph, "Continuous Gain");
-        let added = Snapshot::new(2, graph, Some(&moved));
-        assert!(!Arc::ptr_eq(&moved.plan, &added.plan));
     }
 }

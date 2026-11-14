@@ -23,11 +23,12 @@
 //! is a position within the window, as the first LED, with `AREA` for its size, and no second LED.
 //!
 //! It sends the VR computer a line too, its `state`, every `STATE_EVERY` and as recording starts and stops: how long
-//! it's been acquiring, and recording, if it is, for the VR computer to show.
+//! it's been acquiring, and recording, if it is, for the VR computer to show, as of when it's sent. The thread finds
+//! those itself, from the newest snapshot its passes have handed over, without waiting on them.
 //!
 //! `time` is in seconds by the VR computer's own clock, which has to be consistent for as long as it's connected: a line
 //! without one isn't understood. It's kept as it is, for what's downstream: Write LTX counts from the first position
-//! recorded. Messages arrive on a thread of their own, which carries on from epoch to epoch, like a camera's capture, so
+//! recorded. Messages arrive on a thread of their own, which carries on from era to era, like a camera's capture, so
 //! nothing's lost by reconnecting.
 
 use std::collections::{BTreeMap, VecDeque};
@@ -39,6 +40,8 @@ use std::sync::{Arc, Mutex, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use arc_swap::ArcSwapOption;
+
 use crate::standard::ephys::{Event, Events, EventsBuffer};
 use crate::standard::logs::{LogLines, LogLinesBuffer};
 use crate::standard::pool::Pool;
@@ -48,7 +51,8 @@ use crate::standard::widgets::{named_settings_grid, setting};
 use crate::standard::{Buffer, DataStream, Edges, Kind, Setting};
 use eframe::egui::{self, RichText};
 use ephys_rs::engine::{
-    Category, Flow, Node, NodeInfo, NodeThread, Output, Pass, SettingPort, ThreadContext, UiContext,
+    Category, Flow, Node, NodeInfo, NodeThread, Output, PassContext, SettingPort, SnapshotLite, ThreadContext,
+    UiContext,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -283,11 +287,11 @@ struct Shared {
     stop: AtomicBool,
     inbox: Mutex<Inbox>,
     status: Mutex<Status>,
-    /// How long it's been acquiring, and recording, as the last pass said (see `Pass::acquiring_for`), for its state.
-    clock: Mutex<Clock>,
+    /// The newest snapshot its passes have handed over (see `keep_newest`), for its state: none before the first pass.
+    snapshot: ArcSwapOption<Arc<dyn SnapshotLite>>,
 }
 
-/// How long it's been acquiring, and recording, in seconds, as the last pass said.
+/// How long it's been acquiring, and recording, in seconds.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Clock {
     /// None before the first pass.
@@ -297,6 +301,15 @@ struct Clock {
 }
 
 impl Clock {
+    /// How long, now, for `run`, if there's been a pass.
+    fn of(snapshot: Option<&dyn SnapshotLite>) -> Clock {
+        let seconds = |duration: Duration| duration.as_secs_f64();
+        Clock {
+            acquiring: snapshot.and_then(|s| s.acquiring_for()).map(seconds),
+            recording: snapshot.and_then(|s| s.recording_for()).map(seconds),
+        }
+    }
+
     /// The state message saying so, if there's been a pass.
     fn message(&self) -> Option<String> {
         let ms = |seconds: f64| (seconds * 1000.0).round() / 1000.0;
@@ -308,6 +321,17 @@ impl Clock {
 }
 
 impl Shared {
+    /// Keeps a pass's `snapshot` for the thread, if it's newer than the one it has: passes on different workers can
+    /// come in any order. Only a new one's stored, as it's baked.
+    fn keep_newest(&self, snapshot: &Arc<dyn SnapshotLite>) {
+        let newer = |kept: &Option<Arc<Arc<dyn SnapshotLite>>>| {
+            kept.as_ref().is_none_or(|kept| kept.version() < snapshot.version())
+        };
+        if newer(&self.snapshot.load()) {
+            self.snapshot.rcu(|kept| if newer(kept) { Some(Arc::new(snapshot.clone())) } else { kept.clone() });
+        }
+    }
+
     fn stopping(&self) -> bool {
         self.stop.load(Ordering::Relaxed)
     }
@@ -348,7 +372,8 @@ impl Shared {
         if sent.stalled {
             return;
         }
-        let clock = *self.clock.lock().unwrap();
+        let kept = self.snapshot.load();
+        let clock = Clock::of(kept.as_deref().map(|snapshot| snapshot.as_ref()));
         let recording = clock.recording.is_some();
         let due = sent.at.is_none_or(|at| at.elapsed() >= STATE_EVERY) || sent.recording != recording;
         let Some(message) = clock.message().filter(|_| due) else { return };
@@ -452,7 +477,7 @@ impl Drop for Running {
 /// The connections open, by address. Weak, so one closes once nothing's using it.
 static RUNNING: Mutex<Vec<(Address, Weak<Running>)>> = Mutex::new(Vec::new());
 
-/// An epoch's use of a connection.
+/// An era's use of a connection.
 struct Connection {
     address: Address,
     running: Arc<Running>,
@@ -471,7 +496,7 @@ impl Connection {
             stop: AtomicBool::new(false),
             inbox: Mutex::default(),
             status: Mutex::default(),
-            clock: Mutex::default(),
+            snapshot: ArcSwapOption::empty(),
         });
         let (thread_shared, thread_address) = (shared.clone(), address.clone());
         let thread = std::thread::Builder::new()
@@ -583,19 +608,15 @@ impl Node<Edges> for VrComputer {
         Receiving { connection: Some(Connection::start((self.ip.clone(), self.port))), ..Default::default() }
     }
 
-    fn process(&self, pass: &mut Pass<Edges>, receiving: &mut Receiving) {
-        // Changing the address doesn't start a new epoch.
+    fn process(&self, pass: &mut PassContext<Edges>, receiving: &mut Receiving) {
+        // Changing the address doesn't start a new era.
         if !receiving.connection.as_ref().is_some_and(|c| c.is_to(&self.ip, self.port)) {
             receiving.connection = Some(Connection::start((self.ip.clone(), self.port)));
         }
         let Some(connection) = &receiving.connection else { return };
         let shared = &connection.running.shared;
         let recording = pass.recording();
-        // Its state, for the VR computer.
-        *shared.clock.lock().unwrap() = Clock {
-            acquiring: Some(pass.acquiring_for().as_secs_f64()),
-            recording: pass.recording_for().map(|d| d.as_secs_f64()),
-        };
+        shared.keep_newest(pass.snapshot());
         let [Buffer::Positions(positions), Buffer::Events(ttls), Buffer::LogLines(logs)] = &mut *pass.outputs else {
             return;
         };
@@ -702,7 +723,7 @@ fn status_ui(ui: &mut egui::Ui, status: &Status, warning: egui::Color32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ephys_rs::engine::{DataStreamType, PASS_DURATION};
+    use ephys_rs::engine::{DataStreamType, Graph, PASS_DURATION, Recorded, Recording, Snapshot};
     use std::io::Write;
     use std::net::TcpListener;
 
@@ -933,8 +954,12 @@ mod tests {
             }
         };
         let (mut stream, _) = listener.accept().unwrap();
-        // Its state, once there's been a pass, and as soon as recording starts.
-        *shared.clock.lock().unwrap() = Clock { acquiring: Some(1.5), recording: None };
+        // Its state, once there's been a pass, and as soon as recording starts: how long, as of when it's sent.
+        let graph = Arc::new(Graph::default());
+        let started = Some(Instant::now() - Duration::from_secs_f64(1.5));
+        let lite = |snapshot: Snapshot<crate::components::Nodes>| Arc::new(snapshot) as Arc<dyn SnapshotLite>;
+        shared.keep_newest(&lite(Snapshot::bake(1, graph.clone(), started, None)));
+        let seconds = |value: &Value| value.as_f64().unwrap();
         stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
         let mut states = BufReader::new(stream.try_clone().unwrap());
         let mut state = || {
@@ -942,10 +967,13 @@ mod tests {
             states.read_line(&mut line).unwrap();
             serde_json::from_str::<Value>(&line).unwrap()
         };
-        assert_eq!(state()["acquiring_for"], 1.5);
-        *shared.clock.lock().unwrap() = Clock { acquiring: Some(1.6), recording: Some(0.1) };
+        assert!((1.5..2.5).contains(&seconds(&state()["acquiring_for"])));
+        let recording = Some(Recorded::now(Arc::new(Recording::default())));
+        shared.keep_newest(&lite(Snapshot::bake(2, graph.clone(), started, recording)));
+        shared.keep_newest(&lite(Snapshot::bake(1, graph, started, None)));
+        assert_eq!(shared.snapshot.load().as_ref().unwrap().version(), 2, "a pass on an older one doesn't undo it");
         let started = Instant::now();
-        assert_eq!(state()["recording_for"], 0.1);
+        assert!((0.0..0.5).contains(&seconds(&state()["recording_for"])));
         assert!(started.elapsed() < STATE_EVERY / 2, "not waiting a second");
         stream.write_all(b"{\"type\": \"settings\", \"settings\": {\"task\": \"no window\"}}\n").unwrap();
         stream
@@ -969,7 +997,7 @@ mod tests {
         let (mut stream, _) = listener.accept().unwrap();
         stream.write_all(b"{\"type\": \"log\", \"time\": 9, \"line\": \"back\"}\n").unwrap();
         wait(&|| shared.inbox.lock().unwrap().logs.len() == 1);
-        // A connection carries on for another epoch's use of it.
+        // A connection carries on for another era's use of it.
         let another = Connection::start(("127.0.0.1".into(), port));
         assert!(Arc::ptr_eq(&another.running, &connection.running));
     }

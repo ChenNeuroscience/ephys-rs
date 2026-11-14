@@ -1,8 +1,8 @@
 //! What a node's passes share with the GUI: its window, its work on the GUI's thread, and the dev tools. Each node type
 //! says what (`Node::Shared`): pools of buffers, usually (see `crate::standard::pool`), which the passes
-//! fill and the GUI takes from. One's made for each node that runs, with each epoch (`Node::shared`), sized for its
-//! inputs' data streams then, so it's always the right shape. Once a run's stopped, the app keeps its last epoch's, so
-//! what's shown stays, until the next run or a change to the graph that would start a new epoch.
+//! fill and the GUI takes from. One's made for each node that runs, with each era (`Node::shared`), sized for its
+//! inputs' data streams then, so it's always the right shape. Once a run's stopped, the app keeps its last era's, so
+//! what's shown stays, until the next run or a change to the graph that would start a new era.
 
 use std::any::Any;
 use std::collections::HashMap;
@@ -19,7 +19,7 @@ pub trait Shared: Any + Send + Sync {
 
 impl Shared for () {}
 
-/// What each node that runs in an epoch shares, by node.
+/// What each node that runs in an era shares, by node.
 #[derive(Default)]
 pub struct SharedByNode(pub(super) HashMap<NodeId, Box<dyn Shared>>);
 

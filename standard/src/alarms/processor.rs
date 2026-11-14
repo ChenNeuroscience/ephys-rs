@@ -14,7 +14,7 @@ use super::settings::alarms_ui;
 use super::{Alarm, AlarmKind, AlarmState, AlarmStates, Alarms, Phase, Source};
 use crate::standard::widgets::require_input;
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
-use ephys_rs::engine::{Category, Input, Node, NodeInfo, Output, Pass, PassState, SettingPort, UiContext};
+use ephys_rs::engine::{Category, Input, Node, NodeInfo, Output, PassContext, PassState, SettingPort, UiContext};
 
 /// How many bins a period's cut into. At the shortest period, that's a bin a pass.
 const BINS: usize = 50;
@@ -312,7 +312,7 @@ impl Node<Edges> for AlarmProcessor {
         watching
     }
 
-    fn process(&self, pass: &mut Pass<Edges>, watching: &mut Watching) {
+    fn process(&self, pass: &mut PassContext<Edges>, watching: &mut Watching) {
         watching.keep_up(&self.alarms.list);
         let Some(Buffer::AlarmStates(output)) = pass.outputs.first_mut() else { return };
         output.states.clear();
@@ -373,7 +373,7 @@ mod tests {
             for sequence in 0..(seconds / PASS_DURATION).round() as u64 {
                 let mut inputs = [None; 4];
                 inputs[index] = Some(input);
-                let mut pass = Pass::new(sequence, PASS_DURATION, &inputs, &mut outputs);
+                let mut pass = PassContext::new(sequence, PASS_DURATION, &inputs, &mut outputs);
                 self.processor.process(&mut pass, &mut self.watching);
             }
             let Buffer::AlarmStates(output) = &outputs[0] else { unreachable!() };

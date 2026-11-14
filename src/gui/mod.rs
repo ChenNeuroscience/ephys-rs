@@ -279,6 +279,14 @@ pub struct App<N: NodesEnum, A: AnnotationsEnum> {
     /// Shown in the status bar until the given time (egui seconds).
     status: Option<Status>,
     history: History<N, A>,
+    /// What the passes need, baked from the current history item and the run (see `bake`): the latest.
+    snapshot: Snapshot<N>,
+    /// Snapshots baked so far, which numbers them.
+    versions: u64,
+    /// When the run started (Play pressed), by the monotonic clock, while running.
+    started: Option<std::time::Instant>,
+    /// The recording taken on, while recording.
+    recording: Option<engine::Recorded>,
     /// The graph running, while it is.
     runner: Option<Runner<N>>,
     /// What the last run shared, once it's stopped: see `LastRun`.
@@ -323,6 +331,9 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
     pub fn new(themes: &'static [Theme]) -> Self {
         let annotations = Annotations::default();
         let graph = Graph::default();
+        let history = History::new(&graph, &annotations);
+        // Of the history item's own graph, so it isn't baked again (see `bake_edits`).
+        let snapshot = Snapshot::bake(0, history.current.graph.clone(), None, None);
         App {
             path: None,
             saved: None,
@@ -343,7 +354,11 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             add_anchor: None,
             #[cfg(target_os = "macos")]
             mac_menu: None,
-            history: History::new(&graph, &annotations),
+            history,
+            snapshot,
+            versions: 0,
+            started: None,
+            recording: None,
             graph,
             annotations,
             layout: Layout::default(),
@@ -391,9 +406,23 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         &themes[self.theme].colours
     }
 
-    /// The latest version of the graph, with all its configuration.
+    /// What the passes need, as last baked.
     pub fn snapshot(&self) -> Snapshot<N> {
-        self.history.current.snapshot.clone()
+        self.snapshot.clone()
+    }
+
+    /// Bakes what the passes need (see `Snapshot`) from the current history item and the run, as the latest.
+    fn bake(&mut self) {
+        self.versions += 1;
+        let graph = self.history.current.graph.clone();
+        self.snapshot = Snapshot::bake(self.versions, graph, self.started, self.recording.clone());
+    }
+
+    /// Bakes again if the graph's changed: edited, undone or redone (taken into the history), or another opened.
+    fn bake_edits(&mut self) {
+        if !Arc::ptr_eq(&self.history.current.graph, &self.snapshot.graph) {
+            self.bake();
+        }
     }
 
     /// Reports a problem in the status bar.
@@ -408,7 +437,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
 
     /// Whether there's anything to lose: an empty graph has nothing, whatever's in the file (which stays as it is).
     fn unsaved(&self) -> bool {
-        let (graph, annotations) = (&self.history.current.snapshot.graph, &self.history.current.annotations);
+        let (graph, annotations) = (&self.history.current.graph, &self.history.current.annotations);
         if graph.iter().next().is_none() && annotations.iter().next().is_none() {
             return false;
         }
@@ -474,7 +503,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
     /// What there is now is what's in the file.
     fn mark_saved(&mut self) {
         let current = &self.history.current;
-        self.saved = Some((current.snapshot.graph.clone(), current.annotations.clone()));
+        self.saved = Some((current.graph.clone(), current.annotations.clone()));
         self.saved_base_directory = Some(self.base_directories.save());
     }
 
@@ -527,7 +556,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
     }
 
     fn save_to(&mut self, ctx: &egui::Context, path: PathBuf) -> bool {
-        // Make sure the latest edits are in the version being marked as saved.
+        // Make sure the latest edits are in the history item being marked as saved.
         self.history.commit(&self.graph, &self.annotations);
         let base_directory = self.base_directories.save();
         let file = self.save_file(&base_directory);
@@ -605,13 +634,13 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
 
     /// Whether settings are locked: while recording, or preparing to.
     fn locked(&self) -> bool {
-        self.history.current.snapshot.recording.is_some() || self.preparing.is_some()
+        self.recording.is_some() || self.preparing.is_some()
     }
 
     /// While recording, undoes any change to how the graph processes (a setting, an edge, a node added or
     /// removed), keeping where nodes are and what they're called.
     fn lock(&mut self, ctx: &egui::Context) {
-        let recorded = &self.history.current.snapshot.graph;
+        let recorded = &self.history.current.graph;
         if !self.locked() || engine::same_processing(&self.graph, recorded) {
             return;
         }
@@ -625,30 +654,32 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         self.set_status(ctx, "Settings are locked while recording");
     }
 
-    /// Starts running whatever's latest, including edits not yet taken as a version.
+    /// Starts running whatever's latest, including edits not yet taken into the history.
     fn play(&mut self) {
         self.history.commit(&self.graph, &self.annotations);
         self.last_run = None;
+        self.started = Some(std::time::Instant::now());
+        self.bake();
         let triggers = self.direct_triggers.clone();
-        self.runner = Some(Runner::start_with(&self.history.current.snapshot, self.workers, triggers));
+        self.runner = Some(Runner::start_with(&self.snapshot, self.workers, triggers));
         self.frame_times.run_started = Some(self.frame_times.now());
         self.frame_times.run_restarted();
-        self.ran = Some(self.history.current.snapshot.clone());
+        self.ran = Some(self.snapshot.clone());
     }
 
     /// Stops running, and recording, keeping what the run shared (see `LastRun`).
     fn stop_running(&mut self) {
         self.set_recording(None);
         self.preparing = None;
-        self.last_run = self
-            .runner
-            .take()
-            .map(|runner| LastRun { shared: runner.shared(), plan: self.history.current.snapshot.plan.clone() });
+        self.last_run =
+            self.runner.take().map(|runner| LastRun { shared: runner.shared(), plan: self.snapshot.plan.clone() });
+        self.started = None;
+        self.bake();
     }
 
     /// Stops recording, or preparing to.
     fn stop_recording(&mut self) {
-        if self.history.current.snapshot.recording.is_some() {
+        if self.recording.is_some() {
             self.set_recording(None);
         } else if self.preparing.take().is_some() {
             log::info!("Cancelled recording");
@@ -726,7 +757,8 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
     /// ready, recording starts (in `keep_running`).
     fn prepare_to_record(&mut self, ctx: &egui::Context) {
         self.history.commit(&self.graph, &self.annotations);
-        let snapshot = self.history.current.snapshot.clone();
+        self.bake_edits();
+        let snapshot = self.snapshot.clone();
         let (sender, receiver) = std::sync::mpsc::channel();
         let repaint = ctx.clone();
         let triggers = self.direct_triggers.clone();
@@ -747,14 +779,20 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         }
     }
 
-    /// Starts or stops recording: a new snapshot, which the run carries on with (see `Snapshot::with_recording`).
-    /// Recording isn't an edit, so it's not undone, and doesn't count as an unsaved change.
+    /// Starts or stops recording, taking it on now: a new snapshot, which the run carries on with. Recording isn't an
+    /// edit, so it's not undone, and doesn't count as an unsaved change.
     fn set_recording(&mut self, recording: Option<Arc<engine::Recording>>) {
-        let on = recording.is_some();
-        let place = recording.as_ref().and_then(|r| r.base_directory().cloned());
-        if !self.history.set_recording(recording) {
+        let same = match (&self.recording, &recording) {
+            (Some(a), Some(b)) => Arc::ptr_eq(&a.recording, b),
+            (a, b) => a.is_none() && b.is_none(),
+        };
+        if same {
             return;
         }
+        let on = recording.is_some();
+        let place = recording.as_ref().and_then(|r| r.base_directory().cloned());
+        self.recording = recording.map(engine::Recorded::now);
+        self.bake();
         let clock = self.runner.as_ref().map_or(0.0, |r| r.clock());
         if let Some(base) = self.base_directories.current() {
             match &place {
@@ -772,14 +810,14 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
     }
 
     fn undo(&mut self) {
-        if let Some(version) = self.history.undo() {
-            self.restore(version);
+        if let Some(item) = self.history.undo() {
+            self.restore(item);
         }
     }
 
     fn redo(&mut self) {
-        if let Some(version) = self.history.redo() {
-            self.restore(version);
+        if let Some(item) = self.history.redo() {
+            self.restore(item);
         }
     }
 
@@ -1083,7 +1121,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             }
             self.canvas.frame_all();
         }
-        let recording = self.history.current.snapshot.recording.is_some() || self.preparing.is_some();
+        let recording = self.recording.is_some() || self.preparing.is_some();
         let types = self.base_directories.types();
         if let (Some(name), false) = (change.base_directory, recording)
             && let Some(index) = types.iter().position(|t| t.name == name)
@@ -1175,7 +1213,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                 }
             }
             Action::Record => {
-                if self.history.current.snapshot.recording.is_some() || self.preparing.is_some() {
+                if self.recording.is_some() || self.preparing.is_some() {
                     self.stop_recording();
                 } else {
                     if self.runner.is_none() {
@@ -1229,7 +1267,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         }
     }
 
-    /// Keeps the runner on the latest version of the graph (see `Runner::update`).
+    /// Keeps the runner on the latest snapshot (see `Runner::update`).
     fn keep_running(&mut self, ctx: &egui::Context) {
         if let Some(recording) = self.preparing.as_ref().and_then(|r| r.try_recv().ok()) {
             self.preparing = None;
@@ -1238,25 +1276,25 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             }
             self.set_recording(Some(Arc::new(recording)));
         }
-        let plan = &self.history.current.snapshot.plan;
+        let plan = &self.snapshot.plan;
         self.last_run.take_if(|last| !last.plan.same_shape(plan));
         let Some(runner) = &self.runner else { return };
-        let snapshot = &self.history.current.snapshot;
-        let same_epoch = runner.update(snapshot);
+        let snapshot = &self.snapshot;
+        let same_era = runner.update(snapshot);
         // Marking what changed, for the dev tools' chart.
         if let Some(before) = self.ran.take_if(|ran| ran.version != snapshot.version) {
             if let Some((label, detail)) = describe_change(&before, snapshot) {
                 use frame_times::MarkKind;
                 let kind = if before.recording.is_some() != snapshot.recording.is_some() {
                     MarkKind::Recording
-                } else if same_epoch {
+                } else if same_era {
                     MarkKind::Version
                 } else {
-                    MarkKind::Epoch
+                    MarkKind::Era
                 };
                 let label = match kind {
                     MarkKind::Recording => label,
-                    MarkKind::Epoch => format!("v{} new epoch", snapshot.version),
+                    MarkKind::Era => format!("v{} new era", snapshot.version),
                     MarkKind::Version => format!("v{}", snapshot.version),
                 };
                 self.frame_times.mark(snapshot.version, kind, label, detail);
@@ -1606,7 +1644,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                 shared: shared.as_deref(),
                 ui_states: &self.ui_states,
                 base_directory: base.as_ref(),
-                snapshot: &self.history.current.snapshot,
+                snapshot: &self.snapshot,
                 mode: self.layout.mode,
                 graph_tools,
                 quick_actions: self.quick_actions,
@@ -1663,11 +1701,12 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         self.upkeep(ctx);
     }
 
-    /// Takes what's changed (in the GUI, by nodes or from triggers) as a version, unless it's locked, and keeps the run
-    /// up to date with it.
+    /// Takes what's changed (in the GUI, by nodes or from triggers) into the history, unless it's locked, and keeps the
+    /// run up to date with it.
     fn upkeep(&mut self, ctx: &egui::Context) {
         self.lock(ctx);
         self.history.record(&self.graph, &self.annotations, ctx);
+        self.bake_edits();
         self.keep_running(ctx);
     }
 
@@ -1869,7 +1908,7 @@ impl<N: NodesEnum> UiStates<N> {
 }
 
 /// What the last run shared, kept once it's stopped, for the windows to go on showing as it was, until the next run, or
-/// until the graph changes in a way that would have started a new epoch, and what's kept might no longer fit it.
+/// until the graph changes in a way that would have started a new era, and what's kept might no longer fit it.
 struct LastRun<N: NodesEnum> {
     shared: Arc<engine::SharedByNode>,
     plan: Arc<engine::Plan<N>>,
@@ -1883,29 +1922,27 @@ fn shared<N: NodesEnum>(
     runner.as_ref().map(Runner::shared).or_else(|| last_run.as_ref().map(|last| last.shared.clone()))
 }
 
-/// A version of the document: a snapshot of the graph with all its configuration, and the annotations.
-struct Version<N: NodesEnum, A> {
-    snapshot: Snapshot<N>,
+/// An item of the undo history: the document, the graph (with its settings) and the annotations, as an edit left it.
+/// What the passes need is baked from the current one, and the run (see `App::bake`).
+struct HistoryItem<N: NodesEnum, A> {
+    graph: Arc<Graph<N>>,
     annotations: Arc<Annotations<A>>,
 }
 
-/// Undo and redo step between versions. A new version is taken whenever anything has changed (including
-/// node settings) and the user isn't mid-gesture (dragging, or typing in a field), so a whole drag or edit
-/// undoes in one step.
+/// Undo and redo step between items. A new one is taken whenever anything has changed (including node settings) and
+/// the user isn't mid-gesture (dragging, or typing in a field), so a whole drag or edit undoes in one step.
 struct History<N: NodesEnum, A> {
-    current: Version<N, A>,
-    undo: std::collections::VecDeque<Version<N, A>>,
-    redo: Vec<Version<N, A>>,
-    versions: u64,
+    current: HistoryItem<N, A>,
+    undo: std::collections::VecDeque<HistoryItem<N, A>>,
+    redo: Vec<HistoryItem<N, A>>,
 }
 
 const HISTORY_LIMIT: usize = 200;
 
 impl<N: NodesEnum, A: AnnotationsEnum> History<N, A> {
     fn new(graph: &Graph<N>, annotations: &Annotations<A>) -> Self {
-        let current =
-            Version { snapshot: Snapshot::new(0, graph.clone(), None), annotations: Arc::new(annotations.clone()) };
-        History { current, undo: Default::default(), redo: Vec::new(), versions: 0 }
+        let current = HistoryItem { graph: Arc::new(graph.clone()), annotations: Arc::new(annotations.clone()) };
+        History { current, undo: Default::default(), redo: Vec::new() }
     }
 
     fn record(&mut self, graph: &Graph<N>, annotations: &Annotations<A>, ctx: &egui::Context) {
@@ -1914,17 +1951,18 @@ impl<N: NodesEnum, A: AnnotationsEnum> History<N, A> {
         }
     }
 
-    /// Takes a new version if anything has changed, even mid-gesture.
+    /// Takes a new item if anything has changed, even mid-gesture.
     fn commit(&mut self, graph: &Graph<N>, annotations: &Annotations<A>) {
-        if *graph == *self.current.snapshot.graph && *annotations == *self.current.annotations {
+        let (same_graph, same_annotations) = (*graph == *self.current.graph, *annotations == *self.current.annotations);
+        if same_graph && same_annotations {
             return;
         }
-        self.versions += 1;
-        let version = Version {
-            snapshot: Snapshot::new(self.versions, graph.clone(), Some(&self.current.snapshot)),
-            annotations: Arc::new(annotations.clone()),
-        };
-        self.undo.push_back(std::mem::replace(&mut self.current, version));
+        // What hasn't changed is shared, so only a changed graph is baked again (see `App::bake_edits`).
+        let graph = if same_graph { self.current.graph.clone() } else { Arc::new(graph.clone()) };
+        let annotations =
+            if same_annotations { self.current.annotations.clone() } else { Arc::new(annotations.clone()) };
+        let item = HistoryItem { graph, annotations };
+        self.undo.push_back(std::mem::replace(&mut self.current, item));
         if self.undo.len() > HISTORY_LIMIT {
             self.undo.pop_front();
         }
@@ -1940,36 +1978,18 @@ impl<N: NodesEnum, A: AnnotationsEnum> History<N, A> {
     }
 
     fn restored(&self) -> (Graph<N>, Annotations<A>) {
-        ((*self.current.snapshot.graph).clone(), (*self.current.annotations).clone())
+        ((*self.current.graph).clone(), (*self.current.annotations).clone())
     }
 
     fn undo(&mut self) -> Option<(Graph<N>, Annotations<A>)> {
         let previous = self.undo.pop_back()?;
-        let recording = self.current.snapshot.recording.clone();
         self.redo.push(std::mem::replace(&mut self.current, previous));
-        self.set_recording(recording); // undoing an edit doesn't start or stop recording
         Some(self.restored())
-    }
-
-    /// Makes the current version recording or not, as a new version (not one to undo to). Returns whether it changed.
-    fn set_recording(&mut self, recording: Option<Arc<engine::Recording>>) -> bool {
-        let same = match (&self.current.snapshot.recording, &recording) {
-            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
-            (a, b) => a.is_none() && b.is_none(),
-        };
-        if same {
-            return false;
-        }
-        self.versions += 1;
-        self.current.snapshot = self.current.snapshot.with_recording(self.versions, recording);
-        true
     }
 
     fn redo(&mut self) -> Option<(Graph<N>, Annotations<A>)> {
         let next = self.redo.pop()?;
-        let recording = self.current.snapshot.recording.clone();
         self.undo.push_back(std::mem::replace(&mut self.current, next));
-        self.set_recording(recording);
         Some(self.restored())
     }
 }
@@ -2374,7 +2394,7 @@ mod tests {
         assert!(harness.state().runner.is_some());
         let stats = engine::tests::wait_for_passes(harness.state().runner.as_ref().unwrap(), 1);
         assert!(stats.completed > 0, "{stats:?}");
-        // Editing a setting carries the run on with the new version of the graph.
+        // Editing a setting carries the run on with the new snapshot.
         let first = harness.state().runner.as_ref().unwrap().graph().clone();
         let gain_free = node_named(harness.state(), "Spike Detector");
         if let Some(entry) = harness.state_mut().graph.get_mut(gain_free) {
@@ -3137,11 +3157,11 @@ mod tests {
         let ctx = harness.ctx.clone();
         harness.state_mut().perform(&ctx, Action::Record);
         let deadline = Instant::now() + std::time::Duration::from_secs(10);
-        while harness.state().history.current.snapshot.recording.is_none() {
+        while harness.state().recording.is_none() {
             assert!(Instant::now() < deadline, "timed out waiting to record");
             harness.run_steps(1);
         }
-        let recording = |app: &TestApp| app.history.current.snapshot.recording.is_some();
+        let recording = |app: &TestApp| app.recording.is_some();
         let idle_for = |harness: &mut Harness<TestApp>, minutes: f64| {
             harness.state_mut().last_input = Instant::now();
             harness.state_mut().idle_extra = std::time::Duration::from_secs_f64(minutes * 60.0);
@@ -3496,7 +3516,7 @@ mod tests {
         // the passes have them (it waits for them, rather than be dropped).
         stream.write_all(b"{\"type\": \"ttl\", \"time\": 999, \"idx\": 2, \"value\": 1}\n").unwrap();
         until(&mut harness, "the settings", &|app| task(app).as_deref() == Some("first"));
-        until(&mut harness, "recording", &|app| app.history.current.snapshot.recording.is_some());
+        until(&mut harness, "recording", &|app| app.recording.is_some());
         stream.write_all(b"{\"type\": \"pos\", \"time\": 1000, \"x\": 100, \"y\": 200}\n").unwrap();
         stream.write_all(b"{\"type\": \"ttl\", \"time\": 1000.25, \"idx\": 1, \"value\": 1}\n").unwrap();
         stream.write_all(b"{\"type\": \"log\", \"time\": 1000.5, \"line\": \"trial 1\"}\n").unwrap();

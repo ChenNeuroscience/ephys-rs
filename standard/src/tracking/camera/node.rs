@@ -11,7 +11,7 @@ use crate::standard::tracking::Video;
 use crate::standard::widgets::{setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
 use ephys_rs::engine::{
-    Category, Flow, Node, NodeInfo, NodeThread, Output, Pass, PoolStatus, SettingPort, ThreadContext, UiContext,
+    Category, Flow, Node, NodeInfo, NodeThread, Output, PassContext, PoolStatus, SettingPort, ThreadContext, UiContext,
 };
 
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -115,7 +115,7 @@ impl Node<Edges> for Camera {
 
     /// Takes the frames that have arrived since the last pass, swapping the buffer they're in for the pass's own
     /// (which goes back to the capture thread's pool to fill), so nothing's copied.
-    fn process(&self, pass: &mut Pass<Edges>, capturing: &mut Capturing) {
+    fn process(&self, pass: &mut PassContext<Edges>, capturing: &mut Capturing) {
         let Some(capture) = &capturing.capture else { return };
         capture.apply(&self.settings); // exposure and gain can change while running
         if let Some(Buffer::Video(out)) = pass.outputs.get_mut(0) {

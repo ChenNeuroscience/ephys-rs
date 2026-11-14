@@ -373,8 +373,9 @@ mod tests {
             let input = (0..8)
                 .find(|&i| graph.connect(port(board, PortRole::Output, 0), port(writer, PortRole::Input, i)).is_ok());
             assert!(input.is_some(), "{name} records continuous data");
-            let snapshot = Snapshot::new(0, graph, None);
-            let recording = snapshot.with_recording(1, Some(Arc::new(Recording::default())));
+            let snapshot = Snapshot::new(0, graph);
+            let recorded = Some(ephys_rs::engine::Recorded::now(Arc::new(Recording::default())));
+            let recording = ephys_rs::engine::Snapshot::bake(1, snapshot.graph.clone(), snapshot.started, recorded);
             let runner = Runner::start(&recording, 2);
             let problem = || {
                 let shared = runner.shared();
@@ -410,21 +411,24 @@ mod tests {
         link(&mut graph, board, 0, raw, 0);
         link(&mut graph, board, 1, raw, 1);
 
-        let snapshot = Snapshot::new(0, graph, None);
+        let snapshot = Snapshot::new(0, graph);
         let runner = Runner::start(&snapshot, 2);
         // The base directory has a prefix (a subject's trial, say).
         let place = ephys_rs::base_directory::Place { directory: dir.clone(), prefix: Some("trial a".into()) };
         // The writers open their files before recording starts.
-        let recording = snapshot.with_recording(
+        let prepared = Recording::prepare(&snapshot, Some(place), chrono::Local::now(), &Default::default());
+        let recording = ephys_rs::engine::Snapshot::bake(
             1,
-            Some(Arc::new(Recording::prepare(&snapshot, Some(place), chrono::Local::now(), &Default::default()))),
+            snapshot.graph.clone(),
+            snapshot.started,
+            Some(ephys_rs::engine::Recorded::now(Arc::new(prepared))),
         );
         assert!(runner.update(&recording), "recording carries on the same run");
         let deadline = Instant::now() + Duration::from_secs(10);
         while runner.clock() < 1.0 && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
         }
-        runner.update(&recording.with_recording(2, None));
+        runner.update(&ephys_rs::engine::Snapshot::bake(2, recording.graph.clone(), recording.started, None));
         drop(runner);
         ephys_rs::background::wait();
 

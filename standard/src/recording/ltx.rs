@@ -48,8 +48,8 @@ use crate::standard::tracking::{Crop, Detection, Positions};
 use crate::standard::widgets::{require_input, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
 use ephys_rs::engine::{
-    Category, Control, EdgeTypesEnum, Flow, Input, Node, NodeInfo, NodeThread, Output, PASS_DURATION, Pass, PoolStatus,
-    ThreadContext, UiContext,
+    Category, Control, EdgeTypesEnum, Flow, Input, Node, NodeInfo, NodeThread, Output, PASS_DURATION, PassContext,
+    PoolStatus, ThreadContext, UiContext,
 };
 
 /// Ticks a second, for timestamps.
@@ -260,7 +260,7 @@ impl Node<Edges> for WriteLtx {
     }
 
     /// While recording, hands the pass's data to the writer's thread, swapping the buffers it's in for a chunk's.
-    fn process(&self, pass: &mut Pass<Edges>, recorder: &mut Recorder) {
+    fn process(&self, pass: &mut PassContext<Edges>, recorder: &mut Recorder) {
         match (pass.recording(), &recorder.writing) {
             (true, None) => {
                 let writing = pass.take_prepared::<Writing<Chunk>>();

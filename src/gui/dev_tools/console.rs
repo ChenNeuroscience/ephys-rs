@@ -108,7 +108,7 @@ fn layout<N: NodesEnum>(line: &Line, graph: &Graph<N>, colours: &Colours, font: 
     let thread = line.thread.name().unwrap_or("?");
     let pass = line.pass.map(|p| {
         let node = p.node.and_then(|id| graph.get(id)).map(|e| format!(" {}", e.label)).unwrap_or_default();
-        format!("e{}·p{}{node}", p.epoch, p.sequence)
+        format!("e{}·p{}{node}", p.era, p.sequence)
     });
     let prefix = format!("{:9.3} {:5} {thread:<16} ", line.time, line.level);
     if line.continues {

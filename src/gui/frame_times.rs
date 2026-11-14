@@ -41,8 +41,8 @@ struct Waiting {
 pub enum MarkKind {
     /// Recording started or stopped.
     Recording,
-    /// A new version that runs differently: a new epoch, with fresh state.
-    Epoch,
+    /// A new snapshot that runs differently: a new era, with fresh state.
+    Era,
     /// A new version the run carried on with (new settings, say).
     Version,
 }

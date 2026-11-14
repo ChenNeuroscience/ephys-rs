@@ -55,14 +55,17 @@ position) and the edges between their ports. Edges are of two dimensions: **data
 outputs to inputs, and must form a DAG; **settings** edges let one node edit (or just read) a setting of another, so
 can point anywhere. A node's outputs are worked out from what's on its inputs (`Graph::resolve`).
 
-Every edit gives a new [`Snapshot`](../src/engine/graph.rs): a frozen, shared version of the graph, with whether
-it's recording, and the **plan** for running it. Undo steps back through snapshots; passes run against them.
-Snapshots that process the same way (only positions or labels changed) share a plan.
+The app owns what the passes need to know: the graph (the current item of the undo history), when the run started
+(Play) and the recording it's taken on (Record), with when. A [`Snapshot`](../src/engine/graph.rs) is all that baked
+(`Snapshot::bake`), with the **plan** for running it: frozen, shared, and baked again whenever any of it changes (an
+edit, undone or redone, a run starting or stopping, recording starting or stopping), each a new **version**. Passes
+run against them. Undo and redo step between the items of the history (the graph and annotations, as each edit left
+them), not snapshots: undoing an edit changes the graph, which is baked like any edit.
 
-## Plans, passes and epochs
+## Plans, passes and eras
 
 [`run.rs`](../src/engine/run.rs) runs the graph, as [`plan.rs`](../src/engine/plan.rs) plans it, giving
-each node a [`Pass`](../src/engine/pass.rs); their module docs are the detail. In short:
+each node a [`PassContext`](../src/engine/pass.rs); their module docs are the detail. In short:
 
 - Time is cut into **passes** of 20 ms. A dispatcher thread releases each when its time's up, to a small pool of
   **worker** threads (half the cores, at most four), each running whole passes.
@@ -81,9 +84,11 @@ each node a [`Pass`](../src/engine/pass.rs); their module docs are the detail. I
 - Passes run at the same time on different workers. A node with **state** carried from pass to pass (a filter's
   history, say) is a sync point: each pass waits its turn for the state, handing it on. Working memory that carries
   nothing over is each worker's own, so there's no waiting.
-- When a new snapshot runs the same way (a change of settings), passes carry on with it. Otherwise it starts a new
-  **epoch**, with fresh node state: workers make buffers for it as they come free, and passes move over once one's
-  ready, so none are lost.
+- Consecutive snapshots that run the same way (planned the same: a change of settings, say) make a **snapshot era**,
+  named after its first (`SnapshotEra`): they share its node state, carried from pass to pass, and passes carry on
+  with each new one. A snapshot that runs differently starts a new era, with fresh node state: workers make buffers
+  for it as they come free, and passes move over once one's ready, so none are lost. The dev tools say which snapshot
+  is running, and when its era started (`snapshot v17 (era started @ v12)`), with what an era is beside it.
 
 The dev tools show all of this live: the plan each pass runs through, each step's time, sync points, copy points,
 buffers made in place or taken, and the threads.
@@ -96,7 +101,7 @@ Besides the GUI, the dispatcher and the workers, nodes can run threads of their 
 dev tools with why they're needed:
 
 - **Sources** (the board, the camera, chen-neuro's VR computer) capture on a thread, so samples are taken as they come, whatever the passes are
-  doing. Opening one takes a while, so its connection lasts the run rather than an epoch: a new epoch's state joins the
+  doing. Opening one takes a while, so its connection lasts the run rather than an era: a new era's state joins the
   capture that's running, found in a table of weak references in its module, and the last to let go closes it. A board
   is only opened again for a new configuration, once the old one's closed.
 - **Writers** write on a thread, so a stalling disk doesn't hold up the passes, which would otherwise wait for it (the
@@ -120,27 +125,30 @@ shown the same way, in the dispatcher.
 The passes never wait on the GUI, nor it on them.
 
 - Each node says what its passes share with the GUI (`Node::Shared`; see [`shared.rs`](../src/engine/shared.rs)),
-  made for each epoch, for its data streams then (`Pass::shared`, `UiContext::shared`). The engine and GUI don't treat
-  any of it specially. The usual thing is a [pool](../standard/src/pool.rs)
+  made for each era, for its data streams then (`PassContext::shared`, `UiContext::shared`). The engine and GUI don't
+  treat any of it specially. The usual thing is a [pool](../standard/src/pool.rs)
   of buffers, as between nodes' threads and the passes: passes fill buffers (or swap their own in) and queue them;
   the window reads the newest, giving the rest back. A window that needs everything sent, not only the newest (a log's
   lines, the tracker's path), takes every buffer, in order, and keeps what it likes on its own side; until it does,
   what's new waits in the node's state. The dev tools show each such pool on the GUI's thread.
 - **Direct triggers** ([`triggers.rs`](../src/triggers.rs)) don't wait for a pass: the app delivers them on the GUI's
   thread, running or not, so they belong to it rather than a run. A setting's update from a pass is one.
-- Once a run's stopped, the app keeps what its last epoch shared, so everything goes on showing what it last had,
-  until the next run, or until the graph changes in a way that would start a new epoch (`Plan::same_shape`). Pass triggers need a run.
+- Once a run's stopped, the app keeps what its last era shared, so everything goes on showing what it last had,
+  until the next run, or until the graph changes in a way that would start a new era (`Plan::same_shape`). Pass triggers need a run.
 - The GUI can **trigger** a node (`Node::triggers`), from another node's window through a settings edge, or from the
   node's own. A pass trigger (`AutoDetect`, say) goes to the run's
-  [`PassTriggers`](../src/pass_triggers.rs): a pass takes it (`Pass::triggered`), says
+  [`PassTriggers`](../src/pass_triggers.rs): a pass takes it (`PassContext::triggered`), says
   how it's going, and when it's done. A direct one goes to the app, as above. Which is up to the trigger's type.
-- Passes can't change the graph, but can **trigger an update** of a setting (`Pass::trigger_settings_update`), which the
-  GUI applies as an edit, unless settings are locked.
-- They can have the app start or stop recording (`Pass::trigger_recording`), as the toolbar's Record does: TTL Recording
-  Control does, by a TTL line. A pass knows when acquisition and recording started, by the monotonic clock
-  (`Pass::start_acquiring`, `Pass::start_recording`), the latter when the recording took effect
-  (`Recording::start_effective`), as opposed to when it was asked for, which names and dates it
-  (`Recording::start_requested_date`).
+- Passes can't change the graph, but can **trigger an update** of a setting (`PassContext::trigger_settings_update`),
+  which the GUI applies as an edit, unless settings are locked.
+- They can have the app start or stop recording (`PassContext::trigger_recording`), as the toolbar's Record does: TTL
+  Recording Control does, by a TTL line. A pass's snapshot, as much of it as nodes can see (`PassContext::snapshot`, a
+  `SnapshotLite`), says when acquisition and recording started, by the monotonic clock (`started`, and
+  `Recorded::started`, when the app took the recording on), the latter as opposed to when it was asked for, which names
+  and dates it (`Recording::start_requested_date`); and whether it's recording (`PassContext::recording`), with what
+  nodes prepared (`PassContext::take_prepared`). A node's own thread, which carries on between passes, can keep a pass's
+  snapshot, without locks: the very one, shared (how long it's been acquiring and recording, as of whenever it asks).
+  The VR Computer's keeps the newest its passes hand over.
 
 Settings themselves go the other way through snapshots: a pass sees the snapshot's settings, so a change reaches the
 next pass.
@@ -183,8 +191,8 @@ File › Settings… ([`preferences`](../src/gui/preferences.rs)) has the rest o
 ## Recording
 
 Pressing Record asks every node to prepare (`Node::prepare_to_record`: writers open their files, on a thread), in
-the [base directory](base-directories.md) chosen in the toolbar, then the snapshots record, and nodes see
-`Pass::recording`. The graph's saved with the recording, as `<name>.ephys-rs.json`. While recording, settings are
+the [base directory](base-directories.md) chosen in the toolbar, then the app takes the recording on (baking it into the snapshots), and nodes see
+`PassContext::recording`. The graph's saved with the recording, as `<name>.ephys-rs.json`. While recording, settings are
 locked: changes are undone.
 Stopping lets writers finish their files in the background ([`background.rs`](../src/background.rs)), which they can
 ask to hear about (`OnFinished`). Recording stopping isn't the files being finished.

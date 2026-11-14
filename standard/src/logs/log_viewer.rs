@@ -13,7 +13,9 @@ use crate::standard::plots;
 use crate::standard::pool::Pool;
 use crate::standard::widgets::require_input;
 use crate::{Buffer, DataStream, Edges, Kind};
-use ephys_rs::engine::{Category, Input, Node, NodeInfo, Output, Pass, PassState, PoolStatus, Shared, UiContext};
+use ephys_rs::engine::{
+    Category, Input, Node, NodeInfo, Output, PassContext, PassState, PoolStatus, Shared, UiContext,
+};
 
 /// The most lines kept: the oldest go.
 const KEPT: usize = 10_000;
@@ -86,7 +88,7 @@ impl Node<Edges> for LogViewer {
         require_input(inputs, "log lines")
     }
 
-    fn process(&self, pass: &mut Pass<Edges>, viewing: &mut Viewing) {
+    fn process(&self, pass: &mut PassContext<Edges>, viewing: &mut Viewing) {
         let pending = &mut viewing.pending;
         if let Some(Some(Buffer::LogLines(log))) = pass.inputs.first() {
             pending.extend(
@@ -162,7 +164,7 @@ mod tests {
         }
         let input = Buffer::LogLines(log);
         let inputs = [Some(&input)];
-        let mut pass = Pass::new(0, 0.02, &inputs, &mut []);
+        let mut pass = PassContext::new(0, 0.02, &inputs, &mut []);
         pass.shared = sent;
         LogViewer::default().process(&mut pass, viewing);
     }

@@ -1196,12 +1196,17 @@ mod tests {
         graph.connect(port(writer, PortRole::Control, 0), port(command, PortRole::Setting, 0)).unwrap();
 
         let direct = Arc::new(DirectTriggers::default());
-        let snapshot = Snapshot::new(0, graph.clone(), None);
+        let snapshot = Snapshot::new(0, graph.clone());
         let runner = Runner::start_with(&snapshot, 2, direct.clone());
         // In a base directory of the test's own (writers write in it).
         let place = ephys_rs::base_directory::Place::directory(&dir);
         let recording = Recording::prepare(&snapshot, Some(place), chrono::Local::now(), &direct);
-        let recording = snapshot.with_recording(1, Some(Arc::new(recording)));
+        let recording = ephys_rs::engine::Snapshot::bake(
+            1,
+            snapshot.graph.clone(),
+            snapshot.started,
+            Some(ephys_rs::engine::Recorded::now(Arc::new(recording))),
+        );
         runner.update(&recording);
         let deadline = Instant::now() + Duration::from_secs(10);
         while runner.clock() < 0.5 && Instant::now() < deadline {

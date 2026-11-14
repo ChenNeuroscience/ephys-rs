@@ -11,7 +11,7 @@ use crate::standard::plots;
 use crate::standard::pool::Pool;
 use crate::standard::widgets::{TIME_AXIS_HEIGHT, require_input, time_axis_ui};
 use crate::{Buffer, DataStream, Edges, Kind};
-use ephys_rs::engine::{Category, EdgeType, Input, Node, NodeInfo, Output, Pass, PassState, UiContext};
+use ephys_rs::engine::{Category, EdgeType, Input, Node, NodeInfo, Output, PassContext, PassState, UiContext};
 
 /// The most changes kept, however many come.
 const KEPT: usize = 20_000;
@@ -123,7 +123,7 @@ impl Node<Edges> for TtlViewer {
         }
     }
 
-    fn process(&self, pass: &mut Pass<Edges>, lines: &mut Lines) {
+    fn process(&self, pass: &mut PassContext<Edges>, lines: &mut Lines) {
         let Some(Some(Buffer::Events(events))) = pass.inputs.first() else { return };
         let Some(stream) = lines.stream else { return };
         let rate = stream.sample_rate.max(1.0) as f64;
@@ -284,8 +284,8 @@ mod tests {
         let mut run = |list: &[(u32, u8, bool)], recording: bool| {
             let input = events(list, 100);
             let inputs = [Some(&input)];
-            let mut pass = Pass::new(0, 0.1, &inputs, &mut []);
-            pass.start_recording = recording.then(std::time::Instant::now);
+            let mut pass = PassContext::new(0, 0.1, &inputs, &mut []);
+            pass.set_recording(recording);
             pass.shared = &shared;
             viewer.process(&mut pass, &mut lines);
         };

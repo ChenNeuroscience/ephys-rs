@@ -10,7 +10,7 @@ use crate::standard::tracking::overlay::Overlays;
 use crate::standard::widgets::require_input;
 use crate::{Buffer, DataStream, Edges, Kind};
 use ephys_rs::engine::{
-    Category, DataStreamType, EdgeType, Input, Node, NodeInfo, Output, PASS_DURATION, Pass, UiContext,
+    Category, DataStreamType, EdgeType, Input, Node, NodeInfo, Output, PASS_DURATION, PassContext, UiContext,
 };
 
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -55,7 +55,7 @@ impl Node<Edges> for VideoViewer {
     }
 
     /// Swaps the pass's frames (if it has any) into the pool its window reads from: nothing's copied.
-    fn process(&self, pass: &mut Pass<Edges>, _: &mut ()) {
+    fn process(&self, pass: &mut PassContext<Edges>, _: &mut ()) {
         let Some(Buffer::Video(video)) = pass.input(0) else { return };
         if video.frames == 0 {
             return;

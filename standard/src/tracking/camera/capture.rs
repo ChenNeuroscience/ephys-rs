@@ -4,7 +4,7 @@
 //! frames that have come since the last, and nothing more's copied. The thread's status (what it's doing, the frame
 //! rate, drops) is shared for display. If the camera can't be opened, or fails, it keeps trying.
 //!
-//! Opening a camera takes a couple of seconds, so a new epoch doesn't: its `Capture` carries on with the camera that's
+//! Opening a camera takes a couple of seconds, so a new era doesn't: its `Capture` carries on with the camera that's
 //! capturing (new state's made before the old's let go of), changing only the pool if the frame size has changed. It's
 //! closed once nothing's using it, when the run stops. Two Camera nodes with the same source share it too.
 
@@ -117,7 +117,7 @@ fn new_pool(video: Video) -> Pool<VideoBuffer> {
     Pool::new((0..size).map(|_| video.buffer(PASS_DURATION)), bytes)
 }
 
-/// An epoch's use of a camera capturing.
+/// An era's use of a camera capturing.
 pub struct Capture {
     running: Arc<Running>,
     pool: Pool<VideoBuffer>,
@@ -380,7 +380,7 @@ mod tests {
     }
 
     #[test]
-    fn epochs_carry_on_with_the_camera_and_the_last_closes_it() {
+    fn eras_carry_on_with_the_camera_and_the_last_closes_it() {
         // The test scene takes one connection, so frames coming later show it wasn't opened again.
         let source = Source::Fake { address: camera::serve_test_scene(320, 240) };
         let settings = CameraSettings::default();
@@ -393,14 +393,14 @@ mod tests {
         }
         assert_eq!(first.wrong_size(), Some([320, 240]));
 
-        // The next epoch, with the right size.
+        // The next era, with the right size.
         let second = Capture::start(source.clone(), settings, right);
         assert!(Arc::ptr_eq(&first.running, &second.running), "the same camera");
         drop(first);
         assert!(take_like_passes(&second, 5, 5).len() >= 5, "its frames, in the new size");
         assert_eq!(second.wrong_size(), None);
 
-        // Epochs of the same size share the pool, so neither loses frames when they change over.
+        // Eras of the same size share the pool, so neither loses frames when they change over.
         let third = Capture::start(source.clone(), settings, right);
         assert!(Arc::ptr_eq(&second.running, &third.running));
         drop(second);

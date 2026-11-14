@@ -212,7 +212,7 @@ pub fn show(
 
 /// The changes to the run in view, as lines down a plot (labelled, if `labelled`, at its `top`), at how long before `now`
 /// they were: red for recording
-/// starting or stopping, amber for a new epoch, grey for other versions; dashed when it was asked for, solid at the
+/// starting or stopping, amber for a new era, grey for other versions; dashed when it was asked for, solid at the
 /// first pass to use it. Returns what changed at the one under the pointer, if any.
 fn show_marks(
     plot: &mut PlotUi,
@@ -224,7 +224,7 @@ fn show_marks(
 ) -> Option<String> {
     let colour = |kind: MarkKind| match kind {
         MarkKind::Recording => colours.error,
-        MarkKind::Epoch => colours.warning,
+        MarkKind::Era => colours.warning,
         MarkKind::Version => colours.text_secondary,
     };
     for mark in marks {

@@ -18,7 +18,9 @@ use serde::{Deserialize, Serialize};
 use crate::standard::ephys::{Continuous, ContinuousBuffer};
 use crate::standard::widgets::{input_summary, require_input, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind};
-use ephys_rs::engine::{Category, DataStreamType, EdgeInfo, EdgeType, Input, Node, NodeInfo, Output, Pass, UiContext};
+use ephys_rs::engine::{
+    Category, DataStreamType, EdgeInfo, EdgeType, Input, Node, NodeInfo, Output, PassContext, UiContext,
+};
 
 /// About how many samples a second the spectra are worked out from.
 const SPECTRUM_RATE: f32 = 1000.0;
@@ -152,7 +154,7 @@ impl Node<Edges> for Spectrum {
         analysis
     }
 
-    fn process(&self, pass: &mut Pass<Edges>, analysis: &mut Analysis) {
+    fn process(&self, pass: &mut PassContext<Edges>, analysis: &mut Analysis) {
         let Some(Some(Buffer::Continuous(input))) = pass.inputs.first() else { return };
         let rate = analysis.rate;
         analysis.reshape(input.channels, rate, self.band);
@@ -343,7 +345,7 @@ mod tests {
             }
             let buffer = Buffer::Continuous(input);
             let inputs = [Some(&buffer)];
-            let mut pass = Pass::new(sequence, PASS_DURATION, &inputs, &mut []);
+            let mut pass = PassContext::new(sequence, PASS_DURATION, &inputs, &mut []);
             spectrum.process(&mut pass, &mut analysis);
             let Buffer::Continuous(b) = buffer else { unreachable!() };
             input = b;

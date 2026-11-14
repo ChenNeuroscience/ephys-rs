@@ -1,6 +1,6 @@
 //! Pass triggers, sent by the GUI to a running node's passes (see `crate::triggers`): "auto detect", say. A pass of
-//! the node takes it (`Pass::triggered`), says how it's getting on (`Pass::trigger_progress`) and when it's done; the
-//! GUI shows how far along it is, and can stop it. Each run has its own.
+//! the node takes it (`PassContext::triggered`), says how it's getting on (`PassContext::trigger_progress`) and when
+//! it's done; the GUI shows how far along it is, and can stop it. Each run has its own.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -88,7 +88,7 @@ impl PassTriggers {
         }
     }
 
-    /// For `Pass`: whether node `node`'s trigger of kind `kind` has been stopped, forgetting it if so.
+    /// For `PassContext`: whether node `node`'s trigger of kind `kind` has been stopped, forgetting it if so.
     pub(crate) fn take_cancel(&self, node: NodeId, kind: TriggerKey) -> bool {
         if self.pending.load(Ordering::Acquire) == 0 {
             return false;
@@ -101,7 +101,8 @@ impl PassTriggers {
         cancelled
     }
 
-    /// For `Pass`: node `node`'s trigger of kind `kind`, of the program's `T`, if it's been triggered, taking it.
+    /// For `PassContext`: node `node`'s trigger of kind `kind`, of the program's `T`, if it's been triggered, taking
+    /// it.
     pub(crate) fn take_trigger<T: TriggersEnum>(&self, node: NodeId, kind: T::Kind) -> Option<T> {
         if self.pending.load(Ordering::Acquire) == 0 {
             return None;
@@ -115,7 +116,7 @@ impl PassTriggers {
         trigger.take::<T>()
     }
 
-    /// For `Pass`: how far along a trigger taken is, or (`None`) that it's done.
+    /// For `PassContext`: how far along a trigger taken is, or (`None`) that it's done.
     pub(crate) fn set_trigger_progress(&self, node: NodeId, kind: TriggerKey, progress: Option<f32>) {
         let mut triggers = self.triggers();
         match progress {
