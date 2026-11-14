@@ -1,6 +1,6 @@
-//! Plot areas for the viewers, and (for tests) made-up signals.
+//! Plot areas for the viewers, lines through dense data, and (for tests) made-up signals.
 
-use eframe::egui::{self, Align2, FontId, Rect, Sense, Stroke};
+use eframe::egui::{self, Align2, FontId, Rangef, Rect, Sense, Shape, Stroke};
 
 use ephys_rs::theme::Colours;
 
@@ -19,6 +19,58 @@ pub fn noise(a: u64, b: i64) -> f32 {
 pub fn spike_shape(t: f32) -> f32 {
     let g = |centre: f32, width: f32| (-((t - centre) / width).powi(2)).exp();
     -g(0.3, 0.05) + 0.35 * g(0.48, 0.1)
+}
+
+/// A line through dense data, as `Shape::line` draws one through points, but for data with many values to a pixel (a
+/// long trace in a narrow plot): for each x across, in order, the range of what's there (screen y, either way round).
+/// Drawn a physical pixel at a time (`pixels_per_point`): each the whole range of what falls in it, joined to the next
+/// by sloping edges, as wide as `stroke`, its edges fading over a pixel either side of where they'd be, as egui draws a
+/// line's, so it looks the same. Built straight into a mesh, with no line to tessellate, which is what makes
+/// `Shape::line` slow for so many points: four vertices and six triangles a pixel, however much data.
+pub fn dense_line(ranges: impl IntoIterator<Item = (f32, Rangef)>, stroke: Stroke, pixels_per_point: f32) -> Shape {
+    let pixel = 1.0 / pixels_per_point;
+    let mut mesh = egui::Mesh::default();
+    // Solid to half the width less half a pixel, faded out by half the width and half a pixel more.
+    let (solid, faded) = ((stroke.width - pixel).max(0.0) * 0.5, (stroke.width + pixel) * 0.5);
+    // A pixel's edge: faded out, the top, the bottom, faded out; joined to the one before.
+    let edge = |at: f32, (top, bottom): (f32, f32), mesh: &mut egui::Mesh| {
+        let before = mesh.vertices.len() as u32;
+        let (colour, fade) = (stroke.color, egui::Color32::TRANSPARENT);
+        for (y, colour) in
+            [(top - faded, fade), (top - solid, colour), (bottom + solid, colour), (bottom + faded, fade)]
+        {
+            mesh.colored_vertex(egui::pos2(at, y), colour);
+        }
+        if let Some(last) = before.checked_sub(4) {
+            for k in last..last + 3 {
+                mesh.add_triangle(k, k + 1, k + 4);
+                mesh.add_triangle(k + 1, k + 5, k + 4);
+            }
+        }
+    };
+    // The pixel being gathered: its middle, and the top and bottom of what's in it (screen y: the top's the smaller).
+    let mut gathering: Option<(f32, (f32, f32))> = None;
+    for (x, range) in ranges {
+        let at = ((x / pixel).floor() + 0.5) * pixel;
+        let (top, bottom) = (range.min.min(range.max), range.min.max(range.max));
+        match &mut gathering {
+            Some((middle, (t, b))) if *middle == at => (*t, *b) = (t.min(top), b.max(bottom)),
+            _ => {
+                if let Some((middle, range)) = gathering.take() {
+                    edge(middle, range, &mut mesh);
+                }
+                gathering = Some((at, (top, bottom)));
+            }
+        }
+    }
+    if let Some((middle, range)) = gathering {
+        edge(middle, range, &mut mesh);
+        if mesh.vertices.len() == 4 {
+            // Only one: a pixel wide.
+            edge(middle + pixel, range, &mut mesh);
+        }
+    }
+    Shape::mesh(mesh)
 }
 
 /// Fills the space left in `ui` with a plot area, returning its rect.
@@ -86,5 +138,42 @@ pub fn axis_ui(
         painter.hline(plot.min - 3.0..=plot.min, y, stroke);
         let position = egui::pos2(plot.min - 5.0, y);
         painter.text(position, anchor, text, FontId::monospace(9.0), theme.text_secondary);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A dense line is the whole range of what's at each pixel, joined pixel to pixel, as wide as its stroke, its
+    /// edges fading over a pixel.
+    #[test]
+    fn dense_lines_are_each_pixels_range_joined_up_with_smooth_edges() {
+        // Four values a pixel, drawn upwards (screen y is down).
+        let lows = [0.0, -1.0, 0.0, 0.0, 10.0, 10.0, 10.0, 10.0];
+        let highs = [1.0, 1.0, 2.0, 1.0, 10.0, 11.0, 10.0, 10.0];
+        let ranges = (0..8).map(|i| (i as f32 * 0.25, Rangef::new(-highs[i], -lows[i])));
+        let Shape::Mesh(mesh) = dense_line(ranges, Stroke::new(1.0, egui::Color32::WHITE), 1.0) else {
+            panic!("a mesh")
+        };
+        let edges: Vec<(f32, Vec<f32>, Vec<u8>)> = mesh
+            .vertices
+            .chunks(4)
+            .map(|edge| {
+                (edge[0].pos.x, edge.iter().map(|v| v.pos.y).collect(), edge.iter().map(|v| v.color.a()).collect())
+            })
+            .collect();
+        assert_eq!(
+            edges,
+            [
+                (0.5, vec![-3.0, -2.0, 1.0, 2.0], vec![0, 255, 255, 0]),
+                (1.5, vec![-12.0, -11.0, -10.0, -9.0], vec![0, 255, 255, 0]),
+            ],
+            "-1 to 2, then 10 to 11: a line a pixel wide is solid to its range, fading over a pixel beyond"
+        );
+        assert_eq!(mesh.indices.len(), 3 * 6, "joined by three quads: the fades and the line");
+        let one = dense_line([(0.0, Rangef::point(-5.0))], Stroke::new(1.0, egui::Color32::WHITE), 1.0);
+        let Shape::Mesh(one) = one else { panic!("a mesh") };
+        assert_eq!(one.vertices.len(), 8, "a single value's drawn a pixel wide");
     }
 }

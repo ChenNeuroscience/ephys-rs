@@ -519,18 +519,13 @@ impl LfpViewer {
                     let y = |uv: f32| centre - (uv / self.scale_uv).clamp(-1.0, 1.0) * height * 0.5;
                     let plot = egui::Rangef::new(rect.left() + label, row.right() - spectrum);
                     axis_ui(&painter, plot, top, height, self.scale_uv, theme);
-                    // Row `i`'s trace: down and up each column, so its whole range is drawn.
+                    // Row `i`'s trace: each column's whole range (a line through dense data: see `dense_line`).
                     let trace = |i: usize, colour: egui::Color32| {
                         let lows = &display.lows[i * COLUMNS..(i + 1) * COLUMNS];
                         let highs = &display.highs[i * COLUMNS..(i + 1) * COLUMNS];
-                        let points: Vec<Pos2> = (start..COLUMNS)
-                            .flat_map(|c| {
-                                let x = rect.left() + label + (c as f32 + 0.5) * column;
-                                let (a, b) = if c % 2 == 0 { (lows[c], highs[c]) } else { (highs[c], lows[c]) };
-                                [egui::pos2(x, y(a)), egui::pos2(x, y(b))]
-                            })
-                            .collect();
-                        painter.add(Shape::line(points, Stroke::new(1.0, colour)));
+                        let x = |c: usize| rect.left() + label + (c as f32 + 0.5) * column;
+                        let ranges = (start..COLUMNS).map(|c| (x(c), egui::Rangef::new(y(highs[c]), y(lows[c]))));
+                        painter.add(plots::dense_line(ranges, Stroke::new(1.0, colour), painter.pixels_per_point()));
                     };
                     let text_y = top + (height * 0.5).min(9.0);
                     if shown_row < references {
