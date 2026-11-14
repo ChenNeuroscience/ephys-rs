@@ -12,6 +12,8 @@ use std::collections::BTreeSet;
 use std::io::{ErrorKind, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
+
+use arc_swap::ArcSwap;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -116,6 +118,10 @@ impl Pins {
     /// The Firmata commands that get from what's set to `wanted`: each new pin made an output, then each port (of 8
     /// pins) whose pins change set to its pins' values. A pin no longer wanted goes low.
     fn commands_to(&mut self, wanted: &Pins) -> Vec<u8> {
+        // Almost always: nothing's changed, and nothing's allocated finding that out.
+        if wanted.outputs.is_subset(&self.outputs) && wanted.high == self.high {
+            return Vec::new();
+        }
         let mut commands = Vec::new();
         for &pin in wanted.outputs.difference(&self.outputs) {
             commands.extend([SET_PIN_MODE, pin, OUTPUT]);
@@ -180,8 +186,9 @@ type Key = (String, u32);
 
 struct Shared {
     stop: AtomicBool,
-    /// What the passes want.
-    wanted: Mutex<Pins>,
+    /// What the passes want: swapped for a new one when that changes (see `Connected::asked`), and read by the thread
+    /// without either waiting on the other.
+    wanted: ArcSwap<Pins>,
     status: Mutex<Status>,
 }
 
@@ -223,8 +230,7 @@ impl Shared {
             // Only what's needed for a version that's split between reads.
             heard.drain(..heard.len().saturating_sub(2));
             if ready {
-                let wanted = self.wanted.lock().unwrap().clone();
-                let commands = pins.commands_to(&wanted);
+                let commands = pins.commands_to(&self.wanted.load());
                 if !commands.is_empty() {
                     port.write_all(&commands).map_err(lost)?;
                     self.status.lock().unwrap().high = pins.high.iter().copied().collect();
@@ -309,7 +315,7 @@ impl Connection {
             return Connection { key, running: open };
         }
         let shared =
-            Arc::new(Shared { stop: AtomicBool::new(false), wanted: Mutex::default(), status: Mutex::default() });
+            Arc::new(Shared { stop: AtomicBool::new(false), wanted: ArcSwap::default(), status: Mutex::default() });
         let (thread_shared, thread_key) = (shared.clone(), key.clone());
         let thread = std::thread::Builder::new()
             .name("Arduino".into())
@@ -321,10 +327,13 @@ impl Connection {
     }
 }
 
-/// While running: the port.
+/// While running: the port, and what the pins wanted were last worked out from.
 #[derive(Default)]
 pub struct Connected {
     connection: Option<Connection>,
+    /// Whether it was recording, and the pins' settings, when the pins wanted were last worked out (and handed to the
+    /// thread): they're only worked out again when one of those changes, not every pass.
+    asked: Option<(bool, Vec<OutputPin>)>,
 }
 
 impl PassState for Connected {
@@ -372,7 +381,7 @@ impl Node<Edges> for Arduino {
     }
 
     fn initial_state(&self, _inputs: &[Option<DataStream>]) -> Connected {
-        Connected { connection: Some(Connection::start((self.port.clone(), self.baud))) }
+        Connected { connection: Some(Connection::start((self.port.clone(), self.baud))), asked: None }
     }
 
     fn process(&self, pass: &mut PassContext<Edges>, connected: &mut Connected) {
@@ -382,12 +391,11 @@ impl Node<Edges> for Arduino {
         }
         let Some(connection) = &connected.connection else { return };
         let shared = &connection.running.shared;
-        let wanted = self.wanted(pass.recording());
-        let mut pins = shared.wanted.lock().unwrap();
-        if *pins != wanted {
-            *pins = wanted;
+        let recording = pass.recording();
+        if connected.asked.as_ref().is_none_or(|(was, pins)| *was != recording || *pins != self.pins) {
+            shared.wanted.store(Arc::new(self.wanted(recording)));
+            connected.asked = Some((recording, self.pins.clone()));
         }
-        drop(pins);
         // Not if the thread's updating the status just then: the next pass shows it.
         if let Ok(status) = shared.status.try_lock() {
             pass.shared::<Pool<Status>>().send_newest(pass.sequence, |shown| shown.clone_from(&status));
@@ -493,6 +501,30 @@ fn status_ui(ui: &mut egui::Ui, status: &Status, baud: u32, warning: egui::Color
 mod tests {
     use super::*;
 
+    /// The pins wanted are worked out, and handed to the thread, only when they could change (recording starting or
+    /// stopping, or the pins' settings changing), not every pass.
+    #[test]
+    fn the_pins_wanted_are_worked_out_again_only_when_they_could_change() {
+        let mut node = Arduino::default();
+        let mut connected = node.initial_state(&[]);
+        let shown = Pool::<Status>::default();
+        let handed = |node: &Arduino, connected: &mut Connected, recording: bool| {
+            let mut pass = PassContext::new(0, 0.02, &[], &mut []);
+            pass.shared = &shown;
+            pass.set_recording(recording);
+            node.process(&mut pass, connected);
+            connected.connection.as_ref().unwrap().running.shared.wanted.load_full()
+        };
+        let first = handed(&node, &mut connected, false);
+        assert!(Arc::ptr_eq(&first, &handed(&node, &mut connected, false)), "not again for another pass");
+        let recording = handed(&node, &mut connected, true);
+        assert!(!Arc::ptr_eq(&first, &recording), "again once recording");
+        node.pins.push(OutputPin { pin: 9, when: When::Recording, on: false });
+        let changed = handed(&node, &mut connected, true);
+        assert!(!Arc::ptr_eq(&recording, &changed), "again for new settings");
+        assert_eq!(*changed, node.wanted(true));
+    }
+
     #[test]
     fn with_no_port_chosen_it_opens_none() {
         assert_eq!(find(""), Err("no port chosen: choose the Arduino's port".into()));
@@ -559,8 +591,8 @@ mod tests {
         arduino.set_timeout(Duration::from_secs(10)).unwrap();
         port.set_timeout(READ_TIMEOUT).unwrap();
         let shared =
-            Arc::new(Shared { stop: AtomicBool::new(false), wanted: Mutex::default(), status: Mutex::default() });
-        *shared.wanted.lock().unwrap() = Arduino::default().wanted(false);
+            Arc::new(Shared { stop: AtomicBool::new(false), wanted: ArcSwap::default(), status: Mutex::default() });
+        shared.wanted.store(Arc::new(Arduino::default().wanted(false)));
         let thread_shared = shared.clone();
         // A clone, so it's kept open: what's unread is lost when a pseudo-terminal closes, if not a real port.
         let clone = port.try_clone_native().unwrap();
@@ -584,7 +616,7 @@ mod tests {
         arduino.read_exact(&mut sent).unwrap();
         assert_eq!(sent, [0xf4, 8, 1, 0x91, 0x01, 0x00], "pin 8 high");
         until(&|s| s.firmata == Some((2, 5)) && s.high == [8]);
-        *shared.wanted.lock().unwrap() = pins(&[8, 9], &[8, 9]);
+        shared.wanted.store(Arc::new(pins(&[8, 9], &[8, 9])));
         let mut sent = [0; 6];
         arduino.read_exact(&mut sent).unwrap();
         assert_eq!(sent, [0xf4, 9, 1, 0x91, 0x03, 0x00], "and pin 9");

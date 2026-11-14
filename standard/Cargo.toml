@@ -13,6 +13,7 @@ doctest = false
 
 [dependencies]
 ephys-rs.workspace = true
+arc-swap.workspace = true
 crossbeam-channel.workspace = true
 log.workspace = true
 eframe.workspace = true
