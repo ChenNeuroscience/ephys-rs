@@ -22,18 +22,19 @@ pub fn spike_shape(t: f32) -> f32 {
 }
 
 /// A line through dense data, as `Shape::line` draws one through points, but for data with many values to a pixel (a
-/// long trace in a narrow plot): for each x across, in order, the range of what's there (screen y, either way round).
-/// Drawn a physical pixel at a time (`pixels_per_point`): each the whole range of what falls in it, joined to the next
-/// by sloping edges, as wide as `stroke`, its edges fading over a pixel either side of where they'd be, as egui draws a
-/// line's, so it looks the same. Built straight into a mesh, with no line to tessellate, which is what makes
-/// `Shape::line` slow for so many points: four vertices and six triangles a pixel, however much data.
+/// long trace in a narrow plot): for each x across, in order, the range of what's there (screen y, either way round),
+/// or NaN where there's nothing (a gap: the line stops, and starts again after). Drawn a physical pixel at a time
+/// (`pixels_per_point`): each the whole range of what falls in it, joined to the next by sloping edges, as wide as
+/// `stroke`, its edges fading over a pixel either side of where they'd be, as egui draws a line's, so it looks the
+/// same. Built straight into a mesh, with no line to tessellate, which is what makes `Shape::line` slow for so many
+/// points: four vertices and six triangles a pixel, however much data.
 pub fn dense_line(ranges: impl IntoIterator<Item = (f32, Rangef)>, stroke: Stroke, pixels_per_point: f32) -> Shape {
     let pixel = 1.0 / pixels_per_point;
     let mut mesh = egui::Mesh::default();
     // Solid to half the width less half a pixel, faded out by half the width and half a pixel more.
     let (solid, faded) = ((stroke.width - pixel).max(0.0) * 0.5, (stroke.width + pixel) * 0.5);
-    // A pixel's edge: faded out, the top, the bottom, faded out; joined to the one before.
-    let edge = |at: f32, (top, bottom): (f32, f32), mesh: &mut egui::Mesh| {
+    // A pixel's edge: faded out, the top, the bottom, faded out; joined to the one before, if it's to be.
+    let edge = |at: f32, (top, bottom): (f32, f32), join: bool, mesh: &mut egui::Mesh| {
         let before = mesh.vertices.len() as u32;
         let (colour, fade) = (stroke.color, egui::Color32::TRANSPARENT);
         for (y, colour) in
@@ -41,35 +42,51 @@ pub fn dense_line(ranges: impl IntoIterator<Item = (f32, Rangef)>, stroke: Strok
         {
             mesh.colored_vertex(egui::pos2(at, y), colour);
         }
-        if let Some(last) = before.checked_sub(4) {
+        if join && let Some(last) = before.checked_sub(4) {
             for k in last..last + 3 {
                 mesh.add_triangle(k, k + 1, k + 4);
                 mesh.add_triangle(k + 1, k + 5, k + 4);
             }
         }
     };
+    // The stretch being drawn (between gaps): how many edges it has, and the last.
+    let mut stretch: Option<(usize, f32, (f32, f32))> = None;
+    let put = |at: f32, range: (f32, f32), stretch: &mut Option<(usize, f32, (f32, f32))>, mesh: &mut egui::Mesh| {
+        edge(at, range, stretch.is_some(), mesh);
+        *stretch = Some((stretch.map_or(0, |(edges, ..)| edges) + 1, at, range));
+    };
+    // A stretch of one is drawn a pixel wide.
+    let end = |stretch: &mut Option<(usize, f32, (f32, f32))>, mesh: &mut egui::Mesh| {
+        if let Some((1, at, range)) = stretch.take() {
+            edge(at + pixel, range, true, mesh);
+        }
+    };
     // The pixel being gathered: its middle, and the top and bottom of what's in it (screen y: the top's the smaller).
     let mut gathering: Option<(f32, (f32, f32))> = None;
     for (x, range) in ranges {
+        if range.min.is_nan() || range.max.is_nan() {
+            if let Some((middle, range)) = gathering.take() {
+                put(middle, range, &mut stretch, &mut mesh);
+            }
+            end(&mut stretch, &mut mesh);
+            continue;
+        }
         let at = ((x / pixel).floor() + 0.5) * pixel;
         let (top, bottom) = (range.min.min(range.max), range.min.max(range.max));
         match &mut gathering {
             Some((middle, (t, b))) if *middle == at => (*t, *b) = (t.min(top), b.max(bottom)),
             _ => {
                 if let Some((middle, range)) = gathering.take() {
-                    edge(middle, range, &mut mesh);
+                    put(middle, range, &mut stretch, &mut mesh);
                 }
                 gathering = Some((at, (top, bottom)));
             }
         }
     }
     if let Some((middle, range)) = gathering {
-        edge(middle, range, &mut mesh);
-        if mesh.vertices.len() == 4 {
-            // Only one: a pixel wide.
-            edge(middle + pixel, range, &mut mesh);
-        }
+        put(middle, range, &mut stretch, &mut mesh);
     }
+    end(&mut stretch, &mut mesh);
     Shape::mesh(mesh)
 }
 
@@ -175,5 +192,28 @@ mod tests {
         let one = dense_line([(0.0, Rangef::point(-5.0))], Stroke::new(1.0, egui::Color32::WHITE), 1.0);
         let Shape::Mesh(one) = one else { panic!("a mesh") };
         assert_eq!(one.vertices.len(), 8, "a single value's drawn a pixel wide");
+    }
+
+    /// Where there's nothing (NaN), the line stops, and starts again after, not joined across.
+    #[test]
+    fn dense_lines_stop_at_gaps() {
+        let value = |v: f32| Rangef::point(v);
+        let ranges = [
+            (0.0, value(1.0)),
+            (1.0, value(2.0)),
+            (2.0, Rangef::point(f32::NAN)),
+            (3.0, value(3.0)),
+            (4.0, value(4.0)),
+        ];
+        let Shape::Mesh(mesh) = dense_line(ranges, Stroke::new(1.0, egui::Color32::WHITE), 1.0) else {
+            panic!("a mesh")
+        };
+        assert_eq!(mesh.vertices.len(), 4 * 4, "two edges either side of the gap");
+        assert_eq!(mesh.indices.len(), 2 * 3 * 6, "each pair joined, but not across the gap");
+        let ranges = [(0.0, value(1.0)), (1.0, Rangef::point(f32::NAN)), (2.0, value(3.0)), (3.0, value(4.0))];
+        let Shape::Mesh(mesh) = dense_line(ranges, Stroke::new(1.0, egui::Color32::WHITE), 1.0) else {
+            panic!("a mesh")
+        };
+        assert_eq!(mesh.vertices.len(), 4 * 4, "the lone value before the gap drawn a pixel wide");
     }
 }

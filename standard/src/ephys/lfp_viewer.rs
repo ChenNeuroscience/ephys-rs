@@ -83,6 +83,10 @@ pub struct Traces {
     filled: usize,
     /// Columns filled since starting (up to `COLUMNS`).
     columns: usize,
+    /// Columns filled since starting, all told: so column `n` (from 0) is at `n % COLUMNS` round the ring.
+    completed: u64,
+    /// The first column filled since the last update (see `update`).
+    unsent: u64,
 }
 
 impl ephys_rs::engine::PassState for Traces {
@@ -121,8 +125,27 @@ impl Traces {
             if self.filled == per_column {
                 (self.head, self.filled) = ((self.head + 1) % COLUMNS, 0);
                 self.columns = (self.columns + 1).min(COLUMNS);
+                self.completed += 1;
             }
         }
+    }
+
+    /// The columns filled since the last update, into `update`: only ever what's new, whether the last was delivered or
+    /// not (if it wasn't, the window shows a gap). The column being filled waits until it's full.
+    fn update(&mut self, update: &mut TracesUpdate, column_seconds: f64) {
+        let (first, shown, references, _) = self.shape;
+        let from = self.unsent;
+        (update.first, update.shown, update.references) = (first, shown, references);
+        (update.column_seconds, update.from) = (column_seconds, from);
+        update.count = (self.completed - from) as usize;
+        update.lows.clear();
+        update.highs.clear();
+        for row in 0..shown + references {
+            let at = |n: u64| row * COLUMNS + (n % COLUMNS as u64) as usize;
+            update.lows.extend((from..self.completed).map(|n| self.lows[at(n)]));
+            update.highs.extend((from..self.completed).map(|n| self.highs[at(n)]));
+        }
+        self.unsent = self.completed;
     }
 
     fn reshape(&mut self, shape: (usize, usize, usize, usize)) {
@@ -144,20 +167,95 @@ fn extremes(values: impl Iterator<Item = f32>) -> (f32, f32) {
     values.fold((f32::INFINITY, f32::NEG_INFINITY), |(low, high), x| (low.min(x), high.max(x)))
 }
 
-/// The traces as of the last pass, oldest column first, and the spectra.
+/// What a pass sends the window: the columns filled since the last (see `Traces::update`), and the latest spectra.
+/// Every one delivered is taken, in order (see `TracesDisplay::apply`), so the window keeps the traces itself: a pass
+/// sends only what's new. One that can't be delivered (the GUI held up) isn't sent again: the window shows a gap.
+#[derive(Default)]
+pub struct TracesUpdate {
+    first: usize,
+    shown: usize,
+    references: usize,
+    column_seconds: f64,
+    /// The number of the first column here (counting from the start), and how many there are.
+    from: u64,
+    count: usize,
+    /// For each row (the channels shown, then the references), `count` columns' lowest and highest.
+    lows: Vec<f32>,
+    highs: Vec<f32>,
+    spectra: Option<SpectraBuffer>,
+}
+
+/// The traces as the window has them (from the passes' updates), round a ring as the passes keep them, and the
+/// spectra.
 #[derive(Default)]
 pub struct TracesDisplay {
     first: usize,
     shown: usize,
     /// How many references there are, in rows after the channels'.
     references: usize,
+    /// How many columns there are (up to `COLUMNS`), the newest last.
     columns: usize,
+    /// Where in each row's ring the columns start: column `c` (0 oldest) of what's shown is at `(oldest + c) % COLUMNS`.
+    oldest: usize,
     /// The seconds in a column.
     column_seconds: f64,
     lows: Vec<f32>,
     highs: Vec<f32>,
     /// Each channel's spectrum, if it's being worked out.
     spectra: Option<SpectraBuffer>,
+    /// The number of the next column it expects, and whether it's been sent anything.
+    next: u64,
+    received: bool,
+}
+
+impl TracesDisplay {
+    /// Takes a pass's update: its columns into the ring, after a gap (missing values: NaN) for any columns it missed
+    /// (updates that couldn't be delivered); starting afresh for a new shape.
+    fn apply(&mut self, update: &TracesUpdate) {
+        let rows = update.shown + update.references;
+        let shape = (update.first, update.shown, update.references);
+        if !self.received || (self.first, self.shown, self.references) != shape || update.from < self.next {
+            (self.first, self.shown, self.references) = shape;
+            self.lows.clear();
+            self.lows.resize(rows * COLUMNS, f32::NAN);
+            self.highs.clear();
+            self.highs.resize(rows * COLUMNS, f32::NAN);
+            (self.columns, self.next) = (0, update.from);
+        }
+        // Those missed, as a gap (no more than the ring holds).
+        let missed = (update.from - self.next).min(COLUMNS as u64);
+        for n in update.from - missed..update.from {
+            for row in 0..rows {
+                let at = row * COLUMNS + (n % COLUMNS as u64) as usize;
+                (self.lows[at], self.highs[at]) = (f32::NAN, f32::NAN);
+            }
+        }
+        self.columns = (self.columns + missed as usize).min(COLUMNS);
+        let count = update.count;
+        for row in 0..rows {
+            for k in 0..count {
+                let at = row * COLUMNS + ((update.from + k as u64) % COLUMNS as u64) as usize;
+                (self.lows[at], self.highs[at]) = (update.lows[row * count + k], update.highs[row * count + k]);
+            }
+        }
+        self.next = update.from + count as u64;
+        self.columns = (self.columns + count).min(COLUMNS);
+        // The newest's just before the next, so the oldest's at the next's place, round the ring.
+        self.oldest = (self.next % COLUMNS as u64) as usize;
+        self.column_seconds = update.column_seconds;
+        match (&update.spectra, &mut self.spectra) {
+            (Some(sent), Some(kept)) => {
+                kept.power.clone_from(&sent.power);
+                kept.done.clone_from(&sent.done);
+                kept.bins = sent.bins;
+            }
+            (sent, kept) => {
+                *kept =
+                    sent.as_ref().map(|s| SpectraBuffer { power: s.power.clone(), done: s.done.clone(), bins: s.bins })
+            }
+        }
+        self.received = true;
+    }
 }
 
 /// What the rows are drawn from: the traces, and the controls' reference, if it's connected.
@@ -174,9 +272,10 @@ struct Rows<'a> {
 
 impl Node<Edges> for LfpViewer {
     type State = Traces;
-    /// What it shows, for its window.
-    type Shared = Pool<TracesDisplay>;
-    type UiState = ();
+    /// What the passes send its window: each pass's new columns (every one taken, in order).
+    type Shared = Pool<TracesUpdate>;
+    /// The traces as the window has them, from what the passes send.
+    type UiState = TracesDisplay;
     type GlobalSettings = ();
 
     const INFO: NodeInfo = NodeInfo {
@@ -239,38 +338,34 @@ impl Node<Edges> for LfpViewer {
             Some(Some(Buffer::Spectra(spectra))) if self.spectrum => Some(spectra),
             _ => None,
         };
-        let Traces { lows, highs, head, columns, .. } = traces;
-        pass.shared::<Pool<TracesDisplay>>().send_newest(pass.sequence, |display| {
-            (display.first, display.shown, display.references, display.columns) = (first, shown, count, *columns);
-            display.column_seconds = column_seconds;
-            display.lows.clear();
-            display.highs.clear();
-            for i in 0..shown + count {
-                // Oldest first: from the column after the one being filled, round to it.
-                let row = i * COLUMNS..(i + 1) * COLUMNS;
-                let (older, newer) = lows[row.clone()].split_at(*head);
-                display.lows.extend_from_slice(newer);
-                display.lows.extend_from_slice(older);
-                let (older, newer) = highs[row].split_at(*head);
-                display.highs.extend_from_slice(newer);
-                display.highs.extend_from_slice(older);
-            }
-            match (spectra, &mut display.spectra) {
-                (Some(spectra), Some(shown)) => {
-                    shown.power.clone_from(&spectra.power);
-                    shown.done.clone_from(&spectra.done);
-                    shown.bins = spectra.bins;
+        // What the window hasn't had: if there's no buffer to send it in (the GUI's held up), it waits for the next.
+        let pool = pass.shared::<Pool<TracesUpdate>>();
+        if let Some(mut update) = pool.empty() {
+            traces.update(&mut update, column_seconds);
+            match (spectra, &mut update.spectra) {
+                (Some(spectra), Some(sent)) => {
+                    sent.power.clone_from(&spectra.power);
+                    sent.done.clone_from(&spectra.done);
+                    sent.bins = spectra.bins;
                 }
-                (Some(spectra), shown) => {
-                    *shown = Some(SpectraBuffer {
-                        power: spectra.power.clone(),
-                        done: spectra.done.clone(),
-                        bins: spectra.bins,
-                    })
+                (spectra, sent) => {
+                    *sent =
+                        spectra.map(|s| SpectraBuffer { power: s.power.clone(), done: s.done.clone(), bins: s.bins })
                 }
-                (None, shown) => *shown = None,
             }
-        });
+            pool.send(update);
+        }
+    }
+
+    /// Takes what the passes have sent, every update in order, whether the window's shown or not.
+    fn gui_background(&mut self, context: &mut UiContext<Edges>) -> Option<std::time::Instant> {
+        let pool = context.shared::<Pool<TracesUpdate>>()?;
+        let mut kept = context.ui_state::<TracesDisplay>();
+        while let Some(update) = pool.try_full() {
+            kept.apply(&update);
+            pool.give_back(update);
+        }
+        None
     }
 
     fn controls(&self) -> Vec<Control<Edges>> {
@@ -298,8 +393,8 @@ impl Node<Edges> for LfpViewer {
             Some(Setting::Gains(g)) => Some(g.clone()),
             _ => None,
         };
-        let pool = context.shared::<Pool<TracesDisplay>>();
-        let display = pool.and_then(Pool::newest);
+        let kept = context.ui_state::<TracesDisplay>();
+        let display = kept.received.then_some(&*kept);
         let reference_rows = display.is_some() && context.inputs[2].is_some();
         let applied = selection.as_ref().is_some_and(|s| s.apply);
         self.toolbar(ui, context, stream, applied, reference.as_mut(), gains.as_mut(), reference_rows);
@@ -316,7 +411,7 @@ impl Node<Edges> for LfpViewer {
         let theme = context.theme;
         let mut settings = |ui: &mut egui::Ui| open_settings_button(ui, context, SELECTION, "Channel Selector");
         let rows = Rows {
-            display: &display,
+            display,
             stream,
             spectra,
             reference: reference.as_ref(),
@@ -524,7 +619,10 @@ impl LfpViewer {
                         let lows = &display.lows[i * COLUMNS..(i + 1) * COLUMNS];
                         let highs = &display.highs[i * COLUMNS..(i + 1) * COLUMNS];
                         let x = |c: usize| rect.left() + label + (c as f32 + 0.5) * column;
-                        let ranges = (start..COLUMNS).map(|c| (x(c), egui::Rangef::new(y(highs[c]), y(lows[c]))));
+                        // Column `c` of what's shown, round the ring.
+                        let at = |c: usize| (display.oldest + c) % COLUMNS;
+                        let range = |c: usize| egui::Rangef::new(y(highs[at(c)]), y(lows[at(c)]));
+                        let ranges = (start..COLUMNS).map(|c| (x(c), range(c)));
                         painter.add(plots::dense_line(ranges, Stroke::new(1.0, colour), painter.pixels_per_point()));
                     };
                     let text_y = top + (height * 0.5).min(9.0);
@@ -1052,6 +1150,40 @@ fn column_toggles(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The window keeps the traces from the passes' updates, each only the columns new since the last; one that isn't
+    /// delivered leaves a gap, not sent again; and a new shape starts afresh.
+    #[test]
+    fn the_window_keeps_the_traces_from_updates_with_gaps_for_those_missed() {
+        let stream = Continuous { channels: 2, sample_rate: 1000.0 };
+        let mut traces = Traces::default();
+        // A sample a column, so each is a column.
+        traces.reshape((0, 1, 0, 1));
+        let (mut display, mut update) = (TracesDisplay::default(), TracesUpdate::default());
+        let mut pass = |traces: &mut Traces, values: &[f32], delivered: bool, display: &mut TracesDisplay| {
+            let mut input = ephys_rs::engine::DataStreamType::buffer(&stream, ephys_rs::engine::PASS_DURATION);
+            input.len = values.len();
+            input.channel_mut(0).copy_from_slice(values);
+            traces.add(&input, 0, None);
+            traces.update(&mut update, 0.001);
+            if delivered {
+                display.apply(&update);
+            }
+            update.count
+        };
+        let shown = |display: &TracesDisplay, row: usize| -> Vec<Option<f32>> {
+            let at = |c: usize| row * COLUMNS + (display.oldest + c) % COLUMNS;
+            (COLUMNS - display.columns..COLUMNS).map(|c| Some(display.lows[at(c)]).filter(|v| !v.is_nan())).collect()
+        };
+        assert_eq!(pass(&mut traces, &[1.0, 2.0, 3.0], true, &mut display), 3);
+        assert_eq!(pass(&mut traces, &[4.0, 5.0], false, &mut display), 2, "only what's new");
+        assert_eq!(pass(&mut traces, &[6.0, 7.0], true, &mut display), 2, "the missed aren't sent again");
+        let expected = [Some(1.0), Some(2.0), Some(3.0), None, None, Some(6.0), Some(7.0)];
+        assert_eq!(shown(&display, 0), expected, "a gap where an update wasn't delivered");
+        traces.reshape((0, 2, 0, 1));
+        pass(&mut traces, &[8.0, 9.0], true, &mut display);
+        assert_eq!((display.shown, shown(&display, 0)), (2, vec![Some(8.0), Some(9.0)]), "a new shape, afresh");
+    }
 
     #[test]
     fn the_y_axis_has_as_many_ticks_as_there_is_room_for() {
