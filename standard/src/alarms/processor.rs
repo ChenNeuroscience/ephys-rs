@@ -14,7 +14,10 @@ use super::settings::alarms_ui;
 use super::{Alarm, AlarmKind, AlarmState, AlarmStates, Alarms, Phase, Source};
 use crate::standard::widgets::require_input;
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
-use ephys_rs::engine::{Category, Input, Node, NodeInfo, Output, PassContext, PassState, SettingPort, UiContext};
+use ephys_rs::engine::{
+    Category, Input, Node, NodeInfo, Output, PassContext, PassState, Prepare, PrepareContext, Prepared, SettingPort,
+    UiContext,
+};
 
 /// How many bins a period's cut into. At the shortest period, that's a bin a pass.
 const BINS: usize = 50;
@@ -245,6 +248,7 @@ impl AlarmProcessor {
 
 impl Node<Edges> for AlarmProcessor {
     type State = Watching;
+    type WorkerState = ();
     type Shared = ();
     type UiState = ();
     type GlobalSettings = ();
@@ -292,7 +296,11 @@ impl Node<Edges> for AlarmProcessor {
         }
     }
 
-    fn initial_state(&self, inputs: &[Option<DataStream>]) -> Watching {
+    fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Watching, (), Self> {
+        let inputs = context.inputs;
+        if context.same_streams() {
+            return Prepared::nothing().into();
+        }
         let stream = streams(inputs);
         let lfp_rate = inputs.iter().find_map(|input| match input {
             Some(DataStream::Continuous(continuous)) => Some(continuous.sample_rate as f64),
@@ -309,10 +317,10 @@ impl Node<Edges> for AlarmProcessor {
             fps: fps.unwrap_or(1.0).max(1.0),
         };
         watching.keep_up(&self.alarms.list);
-        watching
+        Prepared::shared(watching).into()
     }
 
-    fn process(&self, pass: &mut PassContext<Edges>, watching: &mut Watching) {
+    fn process(&self, pass: &mut PassContext<Edges>, watching: &mut Watching, _: &mut ()) {
         watching.keep_up(&self.alarms.list);
         let Some(Buffer::AlarmStates(output)) = pass.outputs.first_mut() else { return };
         output.states.clear();
@@ -363,7 +371,7 @@ mod tests {
     impl Run {
         fn new(alarms: Alarms, inputs: [Option<DataStream>; 4]) -> Self {
             let processor = AlarmProcessor { alarms };
-            let watching = processor.initial_state(&inputs);
+            let watching = ephys_rs::engine::fresh_state(&processor, &inputs);
             Run { processor, watching }
         }
 
@@ -374,7 +382,7 @@ mod tests {
                 let mut inputs = [None; 4];
                 inputs[index] = Some(input);
                 let mut pass = PassContext::new(sequence, PASS_DURATION, &inputs, &mut outputs);
-                self.processor.process(&mut pass, &mut self.watching);
+                self.processor.process(&mut pass, &mut self.watching, &mut ());
             }
             let Buffer::AlarmStates(output) = &outputs[0] else { unreachable!() };
             output.states.clone()

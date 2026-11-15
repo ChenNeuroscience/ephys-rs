@@ -11,7 +11,10 @@ use crate::standard::plots;
 use crate::standard::pool::Pool;
 use crate::standard::widgets::{TIME_AXIS_HEIGHT, require_input, time_axis_ui};
 use crate::{Buffer, DataStream, Edges, Kind};
-use ephys_rs::engine::{Category, EdgeType, Input, Node, NodeInfo, Output, PassContext, PassState, UiContext};
+use ephys_rs::engine::{
+    Category, EdgeType, Input, Node, NodeInfo, Output, PassContext, PassState, Prepare, PrepareContext, Prepared,
+    UiContext,
+};
 
 /// The most changes kept, however many come.
 const KEPT: usize = 20_000;
@@ -85,6 +88,7 @@ pub struct LinesDisplay {
 
 impl Node<Edges> for TtlViewer {
     type State = Lines;
+    type WorkerState = ();
     /// What it shows, for its window.
     type Shared = Pool<LinesDisplay>;
     type UiState = ();
@@ -111,19 +115,24 @@ impl Node<Edges> for TtlViewer {
         require_input(inputs, "events")
     }
 
-    fn initial_state(&self, inputs: &[Option<DataStream>]) -> Lines {
-        let Some(DataStream::Events(stream)) = inputs[0] else { return Lines::default() };
+    fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Lines, (), Self> {
+        let inputs = context.inputs;
+        if context.same_streams() {
+            return Prepared::nothing().into();
+        }
+        let Some(DataStream::Events(stream)) = inputs[0] else { return Prepared::shared(Lines::default()).into() };
         let lines = stream.lines as usize;
-        Lines {
+        Prepared::shared(Lines {
             stream: Some(stream),
             changes: VecDeque::with_capacity(KEPT),
             ups: vec![0; lines],
             ups_recording: vec![0; lines],
             ..Default::default()
-        }
+        })
+        .into()
     }
 
-    fn process(&self, pass: &mut PassContext<Edges>, lines: &mut Lines) {
+    fn process(&self, pass: &mut PassContext<Edges>, lines: &mut Lines, _: &mut ()) {
         let Some(Some(Buffer::Events(events))) = pass.inputs.first() else { return };
         let Some(stream) = lines.stream else { return };
         let rate = stream.sample_rate.max(1.0) as f64;
@@ -280,14 +289,14 @@ mod tests {
         let viewer = TtlViewer::default();
         let stream = Events { lines: 2, sample_rate: 1000.0 };
         let shared = Pool::<LinesDisplay>::default();
-        let mut lines = viewer.initial_state(&[Some(DataStream::Events(stream))]);
+        let mut lines = ephys_rs::engine::fresh_state(&viewer, &[Some(DataStream::Events(stream))]);
         let mut run = |list: &[(u32, u8, bool)], recording: bool| {
             let input = events(list, 100);
             let inputs = [Some(&input)];
             let mut pass = PassContext::new(0, 0.1, &inputs, &mut []);
             pass.set_recording(recording);
             pass.shared = &shared;
-            viewer.process(&mut pass, &mut lines);
+            viewer.process(&mut pass, &mut lines, &mut ());
         };
         run(&[(10, 0, true), (20, 0, false), (30, 0, true)], false);
         run(&[(5, 0, false), (50, 0, true), (60, 1, true)], true);

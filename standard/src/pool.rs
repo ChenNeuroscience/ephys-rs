@@ -137,6 +137,17 @@ impl<T> Pool<T> {
         filling.as_mut().map(f)
     }
 
+    /// Until a pass has taken from it (while the snapshot's being got ready, its nodes deciding about their hardware,
+    /// say), lets go of the full buffers waiting, so passes start with what comes as they do, and nothing's lost for
+    /// want of a buffer meanwhile. For a source's thread, before it fills.
+    pub fn drop_unwanted(&self) {
+        if self.shared.swaps.load(Ordering::Relaxed) == 0 {
+            while let Ok((_, buffer)) = self.shared.full.1.try_recv() {
+                let _ = self.shared.empty.0.try_send(buffer);
+            }
+        }
+    }
+
     /// The buffer being filled is full: it waits for a pass, and the next starts.
     pub fn filled(&self) {
         if let Some(buffer) = self.shared.filling.lock().unwrap().take() {

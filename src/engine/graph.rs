@@ -1,9 +1,8 @@
 //! The graph of node instances and the edges between their ports.
 
-use std::any::Any;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fmt;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
@@ -706,19 +705,14 @@ impl<N: NodesEnum> Graph<N> {
 /// For each node with controls, the value of the setting each is connected to, if it is.
 pub type ControlValues<N> = HashMap<NodeId, Vec<Option<Setting<N>>>>;
 
-/// A recording, from when it's asked for: its base directory (see `crate::base_directory`), when it was asked for and
-/// when it took effect, and what each node prepared for it (see `Node::prepare_to_record`), until its first recording
-/// pass takes it. A snapshot recording it doesn't run until its nodes have prepared (`is_ready`), the one before
-/// carrying on meanwhile.
+/// A recording, from when it's asked for: its base directory (see `crate::base_directory`), and when it was asked for
+/// and when it took effect. Its nodes prepare for it as they do for any snapshot (see `Node::prepare_for_snapshot`): a snapshot
+/// recording it doesn't run until they have, the one before carrying on meanwhile.
 pub struct Recording {
     /// Where it's written, if there's a base directory.
     base_directory: Option<crate::base_directory::Place>,
     /// When Record was pressed (or a node asked), by the calendar: names and dates the files.
     start_requested_date: chrono::DateTime<chrono::Local>,
-    /// What each node prepared, until its first recording pass takes it.
-    prepared: Mutex<HashMap<NodeId, Box<dyn Any + Send>>>,
-    /// Whether its nodes have prepared (see `prepare`).
-    ready: std::sync::atomic::AtomicBool,
     /// When it took effect: when the first pass recording it started (see `take_effect`).
     effective: std::sync::OnceLock<Effective>,
 }
@@ -732,50 +726,20 @@ pub struct Effective {
 }
 
 impl Default for Recording {
-    /// One with nothing to prepare, so ready: for trying nodes out.
+    /// Asked for now, with no base directory: for trying nodes out.
     fn default() -> Self {
-        let recording = Recording::new(None, chrono::Local::now());
-        recording.ready.store(true, std::sync::atomic::Ordering::Release);
-        recording
+        Recording::new(None, chrono::Local::now())
     }
 }
 
 impl Recording {
     /// Asked for at `start_requested_date`, in `base_directory` (if there is one): the one time everything that names
-    /// or dates the recording goes by. Not ready until its nodes have prepared (see `prepare`).
+    /// or dates the recording goes by.
     pub fn new(
         base_directory: Option<crate::base_directory::Place>,
         start_requested_date: chrono::DateTime<chrono::Local>,
     ) -> Self {
-        Recording {
-            base_directory,
-            start_requested_date,
-            prepared: Default::default(),
-            ready: Default::default(),
-            effective: Default::default(),
-        }
-    }
-
-    /// Has every node that runs in `snapshot` (one recording this, so planned for it) prepare to record, and then
-    /// it's ready. Can take a while (opening files, say), so isn't for the GUI's thread.
-    pub fn prepare<N: NodesEnum>(&self, snapshot: &Snapshot<N>, triggers: &Arc<crate::triggers::DirectTriggers>) {
-        let resolved = snapshot.graph.resolve();
-        for step in snapshot.plan.steps() {
-            let (Some(entry), Some(state)) = (snapshot.graph.get(step.id), resolved.get(&step.id)) else { continue };
-            let controls = snapshot.controls.get(&step.id).map_or(&[][..], Vec::as_slice);
-            let base = self.base_directory.as_ref();
-            let reach = snapshot.graph.control_triggers(step.id, triggers);
-            let date = &self.start_requested_date;
-            if let Some(ready) = entry.node.prepare_to_record(&state.input_streams, controls, base, date, &reach) {
-                self.prepared.lock().unwrap().insert(step.id, ready);
-            }
-        }
-        self.ready.store(true, std::sync::atomic::Ordering::Release);
-    }
-
-    /// Whether its nodes have prepared, so a snapshot recording it can run.
-    pub fn is_ready(&self) -> bool {
-        self.ready.load(std::sync::atomic::Ordering::Acquire)
+        Recording { base_directory, start_requested_date, effective: Default::default() }
     }
 
     /// Its base directory, if there is one.
@@ -800,11 +764,6 @@ impl Recording {
             let ago = chrono::Duration::from_std(Instant::now().saturating_duration_since(at)).unwrap_or_default();
             Effective { at, date: chrono::Local::now() - ago }
         });
-    }
-
-    /// What node `id` prepared, if it did and it hasn't been taken.
-    pub fn take(&self, id: NodeId) -> Option<Box<dyn Any + Send>> {
-        self.prepared.lock().unwrap().remove(&id)
     }
 }
 

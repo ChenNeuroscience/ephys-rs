@@ -32,8 +32,8 @@ pub struct Step {
     /// The node's state, if it carries any over: an index into the run's state slots. Each pass waits here for
     /// the pass before to hand the state over.
     pub state: Option<usize>,
-    /// The node's working memory, if its state is only that: an index into each worker's own.
-    pub memory: Option<usize>,
+    /// Whether each worker has state of its own for the node (see `Node::WorkerState`).
+    pub worker: bool,
 }
 
 /// A copy of a buffer the plan makes, for a node taking it that can't be the last to read it.
@@ -63,10 +63,8 @@ pub struct Plan<N: NodesEnum> {
     pub(super) steps: Vec<Step>,
     /// The data stream each buffer in the pool holds.
     pub(super) buffers: Vec<DataStream<N>>,
-    /// For each node with state, the data streams on its inputs (for its initial state).
+    /// For each node with state, the data streams on its inputs (for preparing its state: see `Node::prepare_for_snapshot`).
     pub(super) state_inputs: Vec<(NodeId, Vec<Option<DataStream<N>>>)>,
-    /// For each node with working memory, the same.
-    pub(super) memory_inputs: Vec<(NodeId, Vec<Option<DataStream<N>>>)>,
     /// For each step, the same (for what it shares with the GUI).
     pub(super) step_inputs: Vec<Vec<Option<DataStream<N>>>>,
     /// The same, for each step's outputs: with its inputs, what says whether a node's state can carry on from one
@@ -251,8 +249,7 @@ impl<N: NodesEnum> Plan<N> {
             }
         }
 
-        let (mut steps, mut buffers, mut state_inputs, mut memory_inputs) =
-            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let (mut steps, mut buffers, mut state_inputs) = (Vec::new(), Vec::new(), Vec::new());
         let (mut step_inputs, mut step_outputs) = (Vec::new(), Vec::new());
         // The buffer each output (of the nodes so far) is in.
         let mut buffer_of: HashMap<(NodeId, usize), usize> = HashMap::new();
@@ -281,15 +278,11 @@ impl<N: NodesEnum> Plan<N> {
                 made_in_place.push(from.map(|(input, _)| input));
                 buffer_of.insert((id, index), buffer);
             }
-            let carried = entry.node.has_state() && entry.node.state_carried_over();
-            let node_state = carried.then(|| {
+            let node_state = entry.node.has_state().then(|| {
                 state_inputs.push((id, state.input_streams.clone()));
                 state_inputs.len() - 1
             });
-            let memory = (entry.node.has_state() && !carried).then(|| {
-                memory_inputs.push((id, state.input_streams.clone()));
-                memory_inputs.len() - 1
-            });
+            let worker = entry.node.has_worker_state();
             // The inputs it takes but can't be the last to read: copied for it, once they're made.
             let mut takes = Vec::with_capacity(inputs.len());
             for (input, buffer) in inputs.iter_mut().enumerate() {
@@ -319,9 +312,9 @@ impl<N: NodesEnum> Plan<N> {
             let copies = Vec::new();
             step_inputs.push(state.input_streams.clone());
             step_outputs.push(state.outputs.iter().map(|output| output.stream).collect());
-            steps.push(Step { id, inputs, outputs, in_place: made_in_place, takes, state: node_state, memory, copies });
+            steps.push(Step { id, inputs, outputs, in_place: made_in_place, takes, state: node_state, worker, copies });
         }
-        Plan { steps, buffers, state_inputs, memory_inputs, step_inputs, step_outputs, bytes: OnceLock::new() }
+        Plan { steps, buffers, state_inputs, step_inputs, step_outputs, bytes: OnceLock::new() }
     }
 
     /// The nodes that run, in the order they run in each pass.

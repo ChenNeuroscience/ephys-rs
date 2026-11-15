@@ -12,7 +12,8 @@ use crate::standard::pool::Pool;
 use crate::standard::widgets::{named_settings_grid, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind};
 use ephys_rs::engine::{
-    Category, Flow, Node, NodeInfo, NodeThread, Output, PassContext, PoolStatus, ThreadContext, UiContext,
+    Category, Flow, Node, NodeInfo, NodeThread, Output, PassContext, PoolStatus, Prepare, PrepareContext, Prepared,
+    ThreadContext, UiContext, UserDecision,
 };
 use ephys_rs::gui::widgets::{Icon, small_icon_button};
 
@@ -66,7 +67,43 @@ pub struct BoardDisplay {
     pool: PoolStatus,
 }
 
+/// How long to wait for a board to start, as the node prepares: opening one loads its FPGA, which takes a few seconds.
+const START_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 impl AcquisitionBoard {
+    /// What isn't as set about the board it's acquiring from, as it's started: that it started; its headstages are on
+    /// the ports set (taking on others would label channels as ones they aren't); and its bandwidth's what's set (the
+    /// chips can only do certain values). Each with the whole fix.
+    fn decisions(&self, status: &Status) -> Vec<UserDecision<Self>> {
+        match &status.state {
+            State::Running => {}
+            State::Problem(problem) => return vec![UserDecision { what: problem.clone(), fix: None }],
+            State::Starting => {
+                let what = format!("the board hadn't started after {} s", START_TIMEOUT.as_secs());
+                return vec![UserDecision { what, fix: None }];
+            }
+        }
+        let (mut fixed, mut whats) = (self.clone(), Vec::new());
+        if let Some(info) = &status.info
+            && !Headstage::readable(&self.headstages, &info.headstages)
+        {
+            let (found, set) = (Headstage::describe(&info.headstages), Headstage::describe(&self.headstages));
+            whats.push(format!("the board's headstages are {found}, not the {set} set"));
+            fixed.headstages = info.headstages.clone();
+        }
+        if let Some(got) = status.bandwidth
+            && got != self.bandwidth
+        {
+            let dsp = got.dsp_hz.map_or(String::new(), |hz| format!(", DSP high-pass {hz:.2} Hz"));
+            whats.push(format!(
+                "the chips' bandwidth is {:.2} to {:.0} Hz{dsp}, as near as they get to what's set",
+                got.lower_hz, got.upper_hz
+            ));
+            fixed.bandwidth = got;
+        }
+        whats.into_iter().map(|what| UserDecision { what, fix: Some(fixed.clone()) }).collect()
+    }
+
     fn config(&self) -> Config {
         Config { sample_rate: self.sample_rate, bandwidth: self.bandwidth, headstages: self.headstages.clone() }
     }
@@ -90,6 +127,7 @@ impl Node<Edges> for AcquisitionBoard {
     };
 
     type State = Acquiring;
+    type WorkerState = ();
     /// What it shows, for its window.
     type Shared = Pool<BoardDisplay>;
     type UiState = ();
@@ -163,7 +201,13 @@ impl Node<Edges> for AcquisitionBoard {
         context.shared::<Pool<BoardDisplay>>().and_then(|l| l.newest().map(|d| d.pool))
     }
 
-    fn initial_state(&self, _inputs: &[Option<DataStream>]) -> Acquiring {
+    /// Starts acquiring, carrying on with the board if it's acquiring as set already (see `Capture::start`): its
+    /// capture thread opens the board, which is waited for, once every node's been asked, to say what isn't as set
+    /// (see `decisions`).
+    fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Acquiring, (), Self> {
+        if context.unchanged(self) {
+            return Prepared::nothing().into();
+        }
         let rate = self.sample_rate as f32;
         let continuous = |channels| Continuous { channels, sample_rate: rate };
         let shape = Shape {
@@ -172,12 +216,17 @@ impl Node<Edges> for AcquisitionBoard {
             adc: continuous(ADC_CHANNELS),
             events: Events { lines: self.source.ttl_lines(), sample_rate: rate },
         };
-        Acquiring { capture: Some(Capture::start(self.source.clone(), self.config(), shape)) }
+        let capture = Capture::start(self.source.clone(), self.config(), shape);
+        let board = self.clone();
+        Prepare::Wait(Box::new(move || {
+            let decisions = board.decisions(&capture.started(START_TIMEOUT));
+            Prepared::shared(Acquiring { capture: Some(capture) }).with_decisions(decisions)
+        }))
     }
 
     /// Takes the samples that have arrived since the last pass, swapping the buffers they're in for the pass's
     /// own (which go back to the capture thread's pool to fill), so nothing's copied.
-    fn process(&self, pass: &mut PassContext<Edges>, acquiring: &mut Acquiring) {
+    fn process(&self, pass: &mut PassContext<Edges>, acquiring: &mut Acquiring, _: &mut ()) {
         let Some(capture) = &acquiring.capture else { return };
         // The headstages', auxiliary and analogue inputs' outputs, if they're on.
         let outputs = [Some(0), self.aux_output(), self.adc_output()];
@@ -442,12 +491,73 @@ mod tests {
     use crate::standard::themes::THEMES;
     use ephys_rs::engine::{Graph, NodesEnum};
 
+    /// Waits a while for what about their hardware the nodes of the run's latest snapshot say someone should decide.
+    fn decisions(runner: &ephys_rs::engine::Runner<Nodes>) -> Option<Vec<ephys_rs::engine::UserDecision<Nodes>>> {
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < until {
+            if let Some((_, decisions)) = runner.user_decisions() {
+                return Some(decisions.into_iter().map(|(_, decision)| decision).collect());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        None
+    }
+
+    /// A board whose headstages aren't on the ports set is for someone to decide about (its channels would be taken for
+    /// the ones set), with the board's as the fix; it runs meanwhile.
+    #[test]
+    fn headstages_not_as_set_are_to_be_decided_about() {
+        let mut graph = Graph::<Nodes>::default();
+        let board = graph.add(Nodes::create(NodeType::AcquisitionBoard), [0.0, 0.0]);
+        if let Some(Nodes::AcquisitionBoard(b)) = graph.get_mut(board).map(|e| &mut e.node) {
+            b.source = Source::Fake { address: super::super::serve_test_board() };
+            b.headstages =
+                vec![Headstage { port: "D1".into(), channels: 32 }, Headstage { port: "D2".into(), channels: 32 }];
+        }
+        let runner = ephys_rs::engine::Runner::start(&ephys_rs::engine::Snapshot::new(0, graph), 1);
+        let found = decisions(&runner).expect("to decide");
+        assert_eq!(found.len(), 1);
+        let difference = &found[0];
+        assert_eq!(difference.what, "the board's headstages are A1 32, B1 32, not the D1 32, D2 32 set");
+        let Some(Nodes::AcquisitionBoard(fixed)) = &difference.fix else { panic!("a fix") };
+        assert_eq!(Headstage::describe(&fixed.headstages), "A1 32, B1 32");
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while runner.stats().completed == 0 && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(runner.stats().completed > 0, "it runs meanwhile");
+    }
+
+    /// A board that can't be opened is to be decided about too, with no fix; without it (disabled), the rest runs.
+    #[test]
+    fn a_board_that_cant_be_opened_can_be_done_without() {
+        let mut graph = Graph::<Nodes>::default();
+        let board = graph.add(Nodes::create(NodeType::AcquisitionBoard), [0.0, 0.0]);
+        let runner = ephys_rs::engine::Runner::start(&ephys_rs::engine::Snapshot::new(0, graph.clone()), 1);
+        let found = decisions(&runner).expect("to decide");
+        let whats: Vec<_> = found.iter().map(|d| &d.what).collect();
+        assert!(found.iter().all(|d| d.fix.is_none()), "{whats:?}");
+        assert!(whats.iter().all(|what| what.starts_with("couldn't open the board")), "{whats:?}");
+        graph.get_mut(board).unwrap().disabled = true;
+        runner.update(&ephys_rs::engine::Snapshot::new(1, graph));
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while runner.stats().completed == 0 && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(runner.stats().completed > 0, "running");
+        assert!(runner.user_decisions().is_none());
+    }
+
     /// The settings, running, with a board whose headstages differ from those set. See tests/snapshots/.
     #[test]
     fn settings_window() {
         let mut graph = Graph::<Nodes>::default();
         let node_type = NodeType::AcquisitionBoard;
         let board = graph.add(Nodes::create(node_type), [0.0, 0.0]);
+        // As it's shown by default, outside tests.
+        if let Some(Nodes::AcquisitionBoard(b)) = graph.get_mut(board).map(|e| &mut e.node) {
+            b.source = Source::Fake { address: super::super::FAKE_ADDRESS.into() };
+        }
         let info = BoardInfo {
             description: "Fake acquisition board (synthetic_streams/fake_acquisition_board.py)".into(),
             headstages: vec![Headstage { port: "A1".into(), channels: 64 }],

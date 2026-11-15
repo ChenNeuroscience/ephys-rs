@@ -9,7 +9,9 @@ use crate::standard::ephys::Event;
 use crate::standard::pool::Pool;
 use crate::standard::widgets::{named_settings_grid, require_input, setting};
 use crate::{Buffer, DataStream, Edges, Kind};
-use ephys_rs::engine::{Category, Input, Node, NodeInfo, Output, PassContext, PassState, UiContext};
+use ephys_rs::engine::{
+    Category, Input, Node, NodeInfo, Output, PassContext, PassState, Prepare, PrepareContext, Prepared, UiContext,
+};
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -64,6 +66,7 @@ impl Node<Edges> for TtlRecordingControl {
     };
 
     type State = Seen;
+    type WorkerState = ();
     /// What it's seen, for its window.
     type Shared = Pool<Seen>;
     type UiState = ();
@@ -88,11 +91,14 @@ impl Node<Edges> for TtlRecordingControl {
         warnings
     }
 
-    fn initial_state(&self, _inputs: &[Option<DataStream>]) -> Seen {
-        Seen::default()
+    fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Seen, (), Self> {
+        if context.same_streams() {
+            return Prepared::nothing().into();
+        }
+        Prepared::shared(Seen::default()).into()
     }
 
-    fn process(&self, pass: &mut PassContext<Edges>, seen: &mut Seen) {
+    fn process(&self, pass: &mut PassContext<Edges>, seen: &mut Seen, _: &mut ()) {
         let Some(Some(Buffer::Events(events))) = pass.inputs.first() else { return };
         if let Some(on) = self.wanted(&events.events, seen).filter(|on| *on != pass.recording()) {
             pass.trigger_recording(on);
@@ -159,7 +165,7 @@ mod tests {
         let shared = Pool::<Seen>::default();
         pass.shared = &shared;
         pass.set_recording(recording);
-        node.process(&mut pass, seen);
+        node.process(&mut pass, seen, &mut ());
         let asked = pass.direct.take().into_iter().map(|(_, triggered)| match triggered {
             Triggered::Recording(on) => on,
             _ => panic!("recording"),

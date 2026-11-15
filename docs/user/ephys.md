@@ -38,11 +38,15 @@ the plugin's liboni as a library of its own, which it is up to version 1.1.
 **Settings**
 
 - **Sample rate**.
-- **Headstages**: the channels on each port. **Detect** asks the board which headstages are plugged in. If what
-  arrives doesn't match (as above), it says so, and **Use the board's headstages** fixes it.
+- **Headstages**: the channels on each port. **Detect** asks the board which headstages are plugged in. The board
+  only ever acquires the headstages set: if they aren't plugged in, Play asks what to do (see
+  [Playing and recording](main-window.md#playing-and-recording)), and while running it acquires none of them, saying
+  so, until **Use the board's headstages** fixes it.
 - **Auxiliary inputs**: each headstage's three auxiliary inputs (accelerometers, say), as an output of their own.
 - **Analogue inputs**: the board's 8 analogue inputs, likewise.
-- **Bandwidth**: the headstages' own analogue filters (low and high cut), and their DSP high-pass.
+- **Bandwidth**: the headstages' own analogue filters (low and high cut), and their DSP high-pass. The chips can only
+  set them to certain values, which depend on the sample rate: as the board starts, if the settings aren't values
+  it can do, Play asks whether to use the nearest it can.
 
 Below the settings is what the board's doing: samples per second, how many have come, and how many were dropped or
 didn't arrive in time.

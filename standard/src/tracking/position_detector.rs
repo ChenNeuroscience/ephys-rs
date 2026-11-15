@@ -12,7 +12,9 @@ use crate::standard::tracking::{CAMERA_TRACKER, PositionSample, Positions};
 use crate::standard::tracking::{Crop, Detection, Ruler, TimingLed};
 use crate::standard::widgets::{named_settings_grid, require_input, setting};
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
-use ephys_rs::engine::{Category, Input, Node, NodeInfo, Output, PassContext, SettingPort, UiContext};
+use ephys_rs::engine::{
+    Category, Input, Node, NodeInfo, Output, PassContext, Prepare, PrepareContext, Prepared, SettingPort, UiContext,
+};
 use ephys_rs::gui::widgets::{Icon, small_icon_button};
 
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -51,6 +53,7 @@ impl Node<Edges> for PositionDetector {
     }
 
     type State = Finding;
+    type WorkerState = ();
     type Shared = ();
     type UiState = ();
     type GlobalSettings = ();
@@ -92,7 +95,14 @@ impl Node<Edges> for PositionDetector {
         }
     }
 
-    fn process(&self, pass: &mut PassContext<Edges>, finding: &mut Finding) {
+    fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Finding, (), Self> {
+        if context.same_streams() {
+            return Prepared::nothing().into();
+        }
+        Prepared::shared(Finding::default()).into()
+    }
+
+    fn process(&self, pass: &mut PassContext<Edges>, finding: &mut Finding, _: &mut ()) {
         let Some(Some(Buffer::Video(video))) = pass.inputs.first() else { return };
         let [Buffer::Positions(output), Buffer::Events(ttl)] = &mut *pass.outputs else { return };
         output.samples.clear();

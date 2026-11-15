@@ -7,8 +7,8 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use super::{
-    BufferUsage, Control, Edges, Input, NodeInfo, NodeThread, Output, PassContext, PoolStatus, SettingPort, Shared,
-    ThreadContext, TreeShake, UiContext,
+    BufferUsage, Control, Edges, Input, NodeInfo, NodeThread, Output, PassContext, PoolStatus, Prepare, PrepareContext,
+    SettingPort, Shared, ThreadContext, TreeShake, UiContext,
 };
 
 /// The node types a program is built with, as a fieldless enum, one variant each (`NodesEnum::Type`): what the add-node
@@ -70,20 +70,23 @@ pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + S
     fn has_state(&self) -> bool;
     /// Why it does (see `PassState::WHY`).
     fn state_reason(&self) -> &'static str;
-    /// Whether it carries its state over, or it's only working memory (see `PassState::CARRIED_OVER`).
-    fn state_carried_over(&self) -> bool;
-    fn initial_state(&self, inputs: &[Option<<Self::Edges as Edges>::DataStream>]) -> Box<dyn Any + Send>;
-    fn shared(&self, inputs: &[Option<<Self::Edges as Edges>::DataStream>]) -> Box<dyn Shared>;
-    /// `state` is the node's state, if it has any (as made by `initial_state`).
-    fn process(&self, pass: &mut PassContext<Self::Edges>, state: Option<&mut (dyn Any + Send)>);
-    fn prepare_to_record(
+    /// Whether each worker has state of its own for the node (see `Node::WorkerState`).
+    fn has_worker_state(&self) -> bool;
+    fn prepare_for_snapshot(
         &self,
-        inputs: &[Option<<Self::Edges as Edges>::DataStream>],
-        controls: &[Option<<Self::Edges as Edges>::Setting>],
-        base_directory: Option<&crate::base_directory::Place>,
-        start_requested_date: &chrono::DateTime<chrono::Local>,
-        triggers: &crate::triggers::ControlTriggers<<Self::Edges as Edges>::Trigger>,
-    ) -> Option<Box<dyn Any + Send>>;
+        context: &PrepareContext<Self::Edges, Self>,
+    ) -> Prepare<Box<dyn Any + Send>, Box<dyn Any + Send>, Self>;
+    /// `state` and `proto_state` are its state (see `Node::on_snapshot_change`).
+    fn on_snapshot_change(&self, state: &mut (dyn Any + Send), proto_state: &mut (dyn Any + Send));
+    fn shared(&self, inputs: &[Option<<Self::Edges as Edges>::DataStream>]) -> Box<dyn Shared>;
+    /// Runs a pass with the node's state and the worker's, as `prepare_for_snapshot` made them (`None` for none).
+    /// Returns false, having done nothing, if it hasn't the state it needs (it failed to prepare).
+    fn process(
+        &self,
+        pass: &mut PassContext<Self::Edges>,
+        state: Option<&mut (dyn Any + Send)>,
+        worker_state: Option<&mut (dyn Any + Send)>,
+    ) -> bool;
     fn threads(&self) -> Vec<NodeThread>;
     fn thread_ui(&self, thread: usize, ui: &mut egui::Ui, context: &ThreadContext);
     fn thread_pool(&self, thread: usize, context: &ThreadContext) -> Option<PoolStatus>;
@@ -296,10 +299,10 @@ macro_rules! nodes_enum {
                 }
             }
 
-            fn state_carried_over(&self) -> bool {
+            fn has_worker_state(&self) -> bool {
                 match self {
                     $($name::$variant(_) => {
-                        <<$ty as $crate::engine::Node<$edges>>::State as $crate::engine::PassState>::CARRIED_OVER
+                        $crate::engine::is_state::<<$ty as $crate::engine::Node<$edges>>::WorkerState>()
                     }),+
                 }
             }
@@ -312,11 +315,41 @@ macro_rules! nodes_enum {
                 }
             }
 
-            fn initial_state(
+            fn prepare_for_snapshot(
                 &self,
-                inputs: &[Option<<$edges as $crate::engine::Edges>::DataStream>],
-            ) -> Box<dyn std::any::Any + Send> {
-                match self { $($name::$variant(n) => Box::new($crate::engine::Node::initial_state(n, inputs))),+ }
+                context: &$crate::engine::PrepareContext<$edges, Self>,
+            ) -> $crate::engine::Prepare<Box<dyn std::any::Any + Send>, Box<dyn std::any::Any + Send>, Self> {
+                match self {
+                    $($name::$variant(n) => {
+                        #[allow(unreachable_patterns)]
+                        let context = context.of(|previous| match previous {
+                            $name::$variant(previous) => Some(previous),
+                            _ => None,
+                        });
+                        $crate::engine::Node::prepare_for_snapshot(n, &context).map(
+                            |state| Box::new(state) as Box<dyn std::any::Any + Send>,
+                            |state| Box::new(state) as Box<dyn std::any::Any + Send>,
+                            $name::$variant,
+                        )
+                    }),+
+                }
+            }
+
+            fn on_snapshot_change(
+                &self,
+                state: &mut (dyn std::any::Any + Send),
+                proto_state: &mut (dyn std::any::Any + Send),
+            ) {
+                match self {
+                    $($name::$variant(n) => {
+                        type State = <$ty as $crate::engine::Node<$edges>>::State;
+                        if let (Some(state), Some(proto_state)) =
+                            (state.downcast_mut::<State>(), proto_state.downcast_mut::<State>())
+                        {
+                            $crate::engine::Node::on_snapshot_change(n, state, proto_state);
+                        }
+                    }),+
+                }
             }
 
             fn shared(
@@ -330,28 +363,24 @@ macro_rules! nodes_enum {
                 &self,
                 pass: &mut $crate::engine::PassContext<$edges>,
                 state: Option<&mut (dyn std::any::Any + Send)>,
-            ) {
+                worker_state: Option<&mut (dyn std::any::Any + Send)>,
+            ) -> bool {
                 match self {
                     $($name::$variant(n) => {
-                        let state = state.and_then(|s| s.downcast_mut::<<$ty as $crate::engine::Node<$edges>>::State>());
-                        match state {
-                            Some(state) => $crate::engine::Node::process(n, pass, state),
-                            None => $crate::engine::Node::process(n, pass, &mut Default::default()),
+                        type State = <$ty as $crate::engine::Node<$edges>>::State;
+                        type WorkerState = <$ty as $crate::engine::Node<$edges>>::WorkerState;
+                        // A node without state of a kind has `()` for it.
+                        let (mut no_state, mut no_worker_state) = ((), ());
+                        let state = state.unwrap_or(&mut no_state).downcast_mut::<State>();
+                        let worker_state = worker_state.unwrap_or(&mut no_worker_state).downcast_mut::<WorkerState>();
+                        match (state, worker_state) {
+                            (Some(state), Some(worker_state)) => {
+                                $crate::engine::Node::process(n, pass, state, worker_state);
+                                true
+                            }
+                            _ => false,
                         }
                     }),+
-                }
-            }
-
-            fn prepare_to_record(
-                &self,
-                inputs: &[Option<<$edges as $crate::engine::Edges>::DataStream>],
-                controls: &[Option<<$edges as $crate::engine::Edges>::Setting>],
-                base_directory: Option<&$crate::base_directory::Place>,
-                start_requested_date: &chrono::DateTime<chrono::Local>,
-                triggers: &$crate::triggers::ControlTriggers<<$edges as $crate::engine::Edges>::Trigger>,
-            ) -> Option<Box<dyn std::any::Any + Send>> {
-                match self {
-                    $($name::$variant(n) => $crate::engine::Node::prepare_to_record(n, inputs, controls, base_directory, start_requested_date, triggers)),+
                 }
             }
 

@@ -2,7 +2,7 @@
 //! run as second-order sections by sci-rs (a port of SciPy's `butter` and `sosfilt`).
 
 use eframe::egui;
-use ephys_rs::engine::{BufferUsage, TreeShake};
+use ephys_rs::engine::{BufferUsage, Prepare, PrepareContext, Prepared, TreeShake};
 use sci_rs::signal::filter::design::{DigitalFilter, FilterBandType, FilterOutputType, Sos, butter_dyn};
 use sci_rs::signal::filter::sosfilt_item;
 use serde::{Deserialize, Serialize};
@@ -43,15 +43,22 @@ impl Node<Edges> for BandPassFilter {
     }
 
     type State = Filters;
+    type WorkerState = ();
     type Shared = ();
     type UiState = ();
     type GlobalSettings = ();
 
-    fn initial_state(&self, inputs: &[Option<DataStream>]) -> Filters {
-        let Some(DataStream::Continuous(stream)) = inputs[0] else { return Filters::default() };
+    fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Filters, (), Self> {
+        let inputs = context.inputs;
+        if context.same_streams() {
+            return Prepared::nothing().into();
+        }
+        let Some(DataStream::Continuous(stream)) = inputs[0] else {
+            return Prepared::shared(Filters::default()).into();
+        };
         let mut filters = Filters { channels: vec![Vec::new(); stream.channels as usize], ..Default::default() };
         filters.tune(self, stream.sample_rate);
-        filters
+        Prepared::shared(filters).into()
     }
 
     /// Its output's made in place, from its input.
@@ -59,7 +66,7 @@ impl Node<Edges> for BandPassFilter {
         BufferUsage { in_place: vec![Some(0); outputs], ..BufferUsage::none(inputs, outputs) }
     }
 
-    fn process(&self, pass: &mut PassContext<Edges>, filters: &mut Filters) {
+    fn process(&self, pass: &mut PassContext<Edges>, filters: &mut Filters, _: &mut ()) {
         let input = match pass.inputs[0] {
             Some(Buffer::Continuous(input)) => Some(input),
             _ => None,

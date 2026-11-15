@@ -9,7 +9,9 @@ use crate::Buffer;
 use crate::standard::ephys::Continuous;
 use crate::standard::widgets::{format_rate, input_summary, require_input, setting, settings_grid};
 use crate::{DataStream, Edges, Kind};
-use ephys_rs::engine::{Category, Input, Node, NodeInfo, Output, PassContext, TreeShake, UiContext};
+use ephys_rs::engine::{
+    Category, Input, Node, NodeInfo, Output, PassContext, Prepare, PrepareContext, Prepared, TreeShake, UiContext,
+};
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -42,6 +44,7 @@ impl Node<Edges> for Downsample {
     };
 
     type State = Downsampling;
+    type WorkerState = ();
     type Shared = ();
     type UiState = ();
     type GlobalSettings = ();
@@ -51,15 +54,19 @@ impl Node<Edges> for Downsample {
         TreeShake::needing_all(inputs.contains(&true) && outputs.contains(&true), inputs.len())
     }
 
-    fn initial_state(&self, inputs: &[Option<DataStream>]) -> Downsampling {
+    fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Downsampling, (), Self> {
+        let inputs = context.inputs;
+        if context.same_streams() {
+            return Prepared::nothing().into();
+        }
         let step = match inputs[0] {
             Some(DataStream::Continuous(input)) => self.step(input).unwrap_or(0),
             _ => 0,
         };
-        Downsampling { step, so_far: 0 }
+        Prepared::shared(Downsampling { step, so_far: 0 }).into()
     }
 
-    fn process(&self, pass: &mut PassContext<Edges>, downsampling: &mut Downsampling) {
+    fn process(&self, pass: &mut PassContext<Edges>, downsampling: &mut Downsampling, _: &mut ()) {
         let input = match pass.inputs[0] {
             Some(Buffer::Continuous(input)) => Some(input),
             _ => None,
@@ -150,7 +157,7 @@ mod tests {
     fn it_keeps_every_step_th_sample_across_passes() {
         let node = Downsample { rate_hz: 5000.0 };
         let input = Continuous { channels: 2, sample_rate: 30000.0 };
-        let mut downsampling = node.initial_state(&[Some(DataStream::Continuous(input))]);
+        let mut downsampling = ephys_rs::engine::fresh_state(&node, &[Some(DataStream::Continuous(input))]);
         let Some(DataStream::Continuous(output)) = node.outputs(&[Some(DataStream::Continuous(input))])[0].stream
         else {
             panic!("a 5 kHz stream");
@@ -169,7 +176,7 @@ mod tests {
             let data = Buffer::Continuous(data);
             let inputs = [Some(&data)];
             let mut outputs = [Buffer::Continuous(output.buffer(0.02))];
-            node.process(&mut PassContext::new(0, 0.02, &inputs, &mut outputs), &mut downsampling);
+            node.process(&mut PassContext::new(0, 0.02, &inputs, &mut outputs), &mut downsampling, &mut ());
             let [Buffer::Continuous(out)] = &outputs else { unreachable!() };
             for (channel, kept) in kept.iter_mut().enumerate() {
                 kept.extend_from_slice(out.channel(channel));

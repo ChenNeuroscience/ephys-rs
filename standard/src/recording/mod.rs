@@ -10,9 +10,10 @@
 //! A writer writes in the base directory (see `ephys_rs::base_directory`), each recording named as it says
 //! (`recording_path`).
 //!
-//! Before recording starts, a writer opens its files and starts its thread (`Node::prepare_to_record`), so passes
-//! only record once it's ready. The graph can't change while recording, so one that hasn't prepared has a problem
-//! to report (`Writing::failed`). Stopping lets the thread write what's queued and finish the files in the background
+//! Before recording starts, a writer opens its files and starts its thread, preparing for the recording's snapshot
+//! (`Node::prepare_for_snapshot`), so passes only record once it's ready; it carries on with them through the recording's
+//! snapshots. It only runs while recording, so always prepares for it; if that's ever not so, it has a problem to
+//! report (`Writing::failed`). Stopping lets the thread write what's queued and finish the files in the background
 //! (see `ephys_rs::background`), which a writer can ask to hear about (`OnFinished`). The writers do, to tell what's
 //! connected to their "after recording" control what they recorded (`after_recording`), once it's all finished.
 
@@ -354,42 +355,6 @@ mod tests {
         assert!(told(pretend(false), 0).is_none(), "cancelled before anything was recorded");
     }
 
-    /// Everything that records has prepared, as the graph can't change while recording. If that's ever not so, it says.
-    #[test]
-    fn a_writer_that_has_not_prepared_says_so_rather_than_quietly_not_recording() {
-        use crate::standard::pool::Pool;
-        for name in ["Write LTX", "Write Raw"] {
-            let mut graph = Graph::default();
-            let writer = add(&mut graph, name);
-            // Something to record, for it to run.
-            let board = add(&mut graph, "Acquisition Board");
-            if let Some(crate::Nodes::AcquisitionBoard(b)) = graph.get_mut(board).map(|e| &mut e.node) {
-                b.source = crate::standard::ephys::board::Source::Fake {
-                    address: crate::standard::ephys::board::serve_test_board(),
-                };
-            }
-            let port = |node, role, index| ephys_rs::engine::Port { node, role, index };
-            use ephys_rs::engine::PortRole;
-            let input = (0..8)
-                .find(|&i| graph.connect(port(board, PortRole::Output, 0), port(writer, PortRole::Input, i)).is_ok());
-            assert!(input.is_some(), "{name} records continuous data");
-            let snapshot = Snapshot::new(0, graph);
-            let recorded = Some(Arc::new(Recording::default()));
-            let recording = ephys_rs::engine::Snapshot::bake(1, snapshot.graph.clone(), snapshot.started, recorded);
-            let runner = Runner::start(&recording, 2);
-            let problem = || {
-                let shared = runner.shared();
-                let pool = shared.get::<Pool<super::Status>>(writer)?;
-                pool.newest()?.problem.clone()
-            };
-            let deadline = Instant::now() + Duration::from_secs(5);
-            while problem().is_none() && Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            assert_eq!(problem().as_deref(), Some("it wasn't prepared to record"), "{name}");
-        }
-    }
-
     #[test]
     fn records_while_recording_and_finishes_the_files() {
         use crate::standard::ephys::downsample::Downsample;
@@ -420,7 +385,6 @@ mod tests {
         let recording =
             ephys_rs::engine::Snapshot::bake(1, snapshot.graph.clone(), snapshot.started, Some(asked.clone()));
         assert!(!snapshot.plan.steps().iter().any(|s| s.id == ltx), "no writers while not recording");
-        asked.prepare(&recording, &Default::default());
         assert!(!runner.update(&recording), "recording runs the writers, with buffers of their own");
         let deadline = Instant::now() + Duration::from_secs(10);
         while asked.effective().is_none_or(|e| e.at.elapsed() < Duration::from_secs(1)) && Instant::now() < deadline {

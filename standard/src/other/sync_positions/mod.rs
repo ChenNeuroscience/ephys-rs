@@ -316,6 +316,7 @@ pub struct SyncPositions {
 
 impl Node<Edges> for SyncPositions {
     type State = ();
+    type WorkerState = ();
     type Shared = ();
     type UiState = SyncState;
     type GlobalSettings = ();

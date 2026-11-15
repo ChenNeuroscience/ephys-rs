@@ -62,6 +62,10 @@ pub trait DataStreamType: EdgeType + Copy {
     /// Copies `from` into `to`, a buffer of the same data stream, without allocating (for the plan, copying for a
     /// node taking a buffer it can't be the last to read: see `BufferUsage::takes`).
     fn copy(from: &Self::Buffer, to: &mut Self::Buffer);
+
+    /// Empties it, without allocating: as it would be from a pass with nothing to say (for a node that failed to
+    /// prepare, and so doesn't run).
+    fn empty(buffer: &mut Self::Buffer);
 }
 
 /// The data edge types, with their buffers. Implemented by `edge_types!`.
@@ -72,6 +76,8 @@ pub trait DataStreamsEnum: EdgeTypesEnum + Copy {
     fn bytes(buffer: &Self::Buffer) -> usize;
     /// See `DataStreamType::copy`: nothing, if they're different kinds of buffer.
     fn copy(from: &Self::Buffer, to: &mut Self::Buffer);
+    /// See `DataStreamType::empty`.
+    fn empty(buffer: &mut Self::Buffer);
 }
 
 /// The edge types a program is built with, in both dimensions, and the triggers sent along settings edges.
@@ -189,6 +195,10 @@ macro_rules! edge_types {
 
             fn bytes(buffer: &$buffer) -> usize {
                 match buffer { $($buffer::$sv(b) => <$st as $crate::engine::DataStreamType>::bytes(b)),+ }
+            }
+
+            fn empty(buffer: &mut $buffer) {
+                match buffer { $($buffer::$sv(b) => <$st as $crate::engine::DataStreamType>::empty(b)),+ }
             }
 
             #[allow(unreachable_patterns)]

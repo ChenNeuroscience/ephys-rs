@@ -10,7 +10,9 @@ use crate::standard::ephys::reference::{channels_ui, parse_channels};
 use crate::standard::ephys::{ChannelSelection, Continuous};
 use crate::standard::widgets::{inline_block, input_summary, power, require_input};
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
-use ephys_rs::engine::{Category, Input, Node, NodeInfo, Output, PassContext, PassState, SettingPort, UiContext};
+use ephys_rs::engine::{
+    Category, Input, Node, NodeInfo, Output, PassContext, Prepare, PrepareContext, Prepared, SettingPort, UiContext,
+};
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -44,11 +46,6 @@ pub struct Passed {
     channels: Vec<u32>,
 }
 
-impl PassState for Passed {
-    const WHY: &'static str = "The channels passed on, worked out from the settings.";
-    const CARRIED_OVER: bool = false;
-}
-
 impl Node<Edges> for ChannelSelector {
     const INFO: NodeInfo = NodeInfo {
         name: "Channel Selector",
@@ -62,7 +59,8 @@ impl Node<Edges> for ChannelSelector {
         TreeShake::needing_all(inputs.contains(&true) && outputs.contains(&true), inputs.len())
     }
 
-    type State = Passed;
+    type State = ();
+    type WorkerState = Passed;
     type Shared = ();
     type UiState = ();
     type GlobalSettings = ();
@@ -92,11 +90,15 @@ impl Node<Edges> for ChannelSelector {
         warnings
     }
 
-    fn initial_state(&self, _inputs: &[Option<DataStream>]) -> Passed {
-        Passed::default()
+    /// Each worker's room to work in.
+    fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<(), Passed, Self> {
+        if context.same_streams() {
+            return Prepared::nothing().into();
+        }
+        Prepared::worker((0..context.workers).map(|_| Passed::default()).collect()).into()
     }
 
-    fn process(&self, pass: &mut PassContext<Edges>, passed: &mut Passed) {
+    fn process(&self, pass: &mut PassContext<Edges>, _: &mut (), passed: &mut Passed) {
         let Some(Some(Buffer::Continuous(input))) = pass.inputs.first() else { return };
         let Some(Buffer::Continuous(output)) = pass.outputs.get_mut(0) else { return };
         // Worked out again only when the settings change.
@@ -170,7 +172,7 @@ mod tests {
             let mut outputs = [Buffer::Continuous(out.buffer(PASS_DURATION))];
             let inputs = [Some(&input)];
             let mut pass = PassContext::new(0, PASS_DURATION, &inputs, &mut outputs);
-            selector.process(&mut pass, &mut Passed::default());
+            selector.process(&mut pass, &mut (), &mut Passed::default());
             let Buffer::Continuous(output) = &outputs[0] else { unreachable!() };
             (0..output.channels).map(|c| output.channel(c)[2]).collect::<Vec<_>>()
         };
@@ -248,7 +250,6 @@ mod tests {
         let asked = Arc::new(Recording::new(Some(place), chrono::Local::now()));
         let recording =
             ephys_rs::engine::Snapshot::bake(1, snapshot.graph.clone(), snapshot.started, Some(asked.clone()));
-        asked.prepare(&recording, &Default::default());
         assert!(!runner.update(&recording), "recording runs the writer, with buffers of its own");
         let deadline = Instant::now() + Duration::from_secs(10);
         while asked.effective().is_none_or(|e| e.at.elapsed() < Duration::from_millis(500)) && Instant::now() < deadline

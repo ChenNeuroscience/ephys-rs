@@ -14,7 +14,8 @@ use crate::standard::pool::Pool;
 use crate::standard::widgets::require_input;
 use crate::{Buffer, DataStream, Edges, Kind};
 use ephys_rs::engine::{
-    Category, Input, Node, NodeInfo, Output, PassContext, PassState, PoolStatus, Shared, UiContext,
+    Category, Input, Node, NodeInfo, Output, PassContext, PassState, PoolStatus, Prepare, PrepareContext, Prepared,
+    Shared, UiContext,
 };
 
 /// The most lines kept: the oldest go.
@@ -64,6 +65,7 @@ impl PassState for Viewing {
 
 impl Node<Edges> for LogViewer {
     type State = Viewing;
+    type WorkerState = ();
     type Shared = SentLines;
     type UiState = KeptLines;
     type GlobalSettings = ();
@@ -88,7 +90,14 @@ impl Node<Edges> for LogViewer {
         require_input(inputs, "log lines")
     }
 
-    fn process(&self, pass: &mut PassContext<Edges>, viewing: &mut Viewing) {
+    fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Viewing, (), Self> {
+        if context.same_streams() {
+            return Prepared::nothing().into();
+        }
+        Prepared::shared(Viewing::default()).into()
+    }
+
+    fn process(&self, pass: &mut PassContext<Edges>, viewing: &mut Viewing, _: &mut ()) {
         let pending = &mut viewing.pending;
         if let Some(Some(Buffer::LogLines(log))) = pass.inputs.first() {
             pending.extend(
@@ -166,7 +175,7 @@ mod tests {
         let inputs = [Some(&input)];
         let mut pass = PassContext::new(0, 0.02, &inputs, &mut []);
         pass.shared = sent;
-        LogViewer::default().process(&mut pass, viewing);
+        LogViewer::default().process(&mut pass, viewing, &mut ());
     }
 
     /// A viewer on the GUI's side: its graph, what its passes share, and its state.

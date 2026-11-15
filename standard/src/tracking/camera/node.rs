@@ -11,7 +11,8 @@ use crate::standard::tracking::Video;
 use crate::standard::widgets::{setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
 use ephys_rs::engine::{
-    Category, Flow, Node, NodeInfo, NodeThread, Output, PassContext, PoolStatus, SettingPort, ThreadContext, UiContext,
+    Category, Flow, Node, NodeInfo, NodeThread, Output, PassContext, PoolStatus, Prepare, PrepareContext, Prepared,
+    SettingPort, ThreadContext, UiContext, UserDecision,
 };
 
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -25,9 +26,6 @@ pub struct Camera {
 #[derive(Default)]
 pub struct Capturing {
     capture: Option<Capture>,
-    /// The wrong frame size last acted on (triggering an update to the right one, or saying it can't be, while recording).
-    triggered_size: Option<[u32; 2]>,
-    complained: Option<[u32; 2]>,
     /// The stats as last copied from the capture thread (a pass doesn't wait for it, if it's updating them just then).
     stats: CaptureStats,
 }
@@ -35,6 +33,33 @@ pub struct Capturing {
 impl ephys_rs::engine::PassState for Capturing {
     const WHY: &'static str = "The camera's capture thread and its pool of buffers: each pass takes the frames \
                                that have come since the last, in order.";
+}
+
+/// How long to wait for a camera to open, as the node prepares, and then for its first frame (an externally triggered
+/// one may send none until it's triggered: then its frame size isn't checked).
+const OPENING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+const FIRST_FRAME_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+impl Camera {
+    /// What isn't as set about the camera it's capturing from, as it's started: that it opened, and its frames are the
+    /// size set.
+    fn decisions(&self, status: &super::capture::Status) -> Vec<UserDecision<Self>> {
+        match &status.state {
+            State::Running => {}
+            State::Problem(problem) => return vec![UserDecision { what: problem.clone(), fix: None }],
+            State::Starting => {
+                let what = format!("the camera hadn't opened after {} s", OPENING_TIMEOUT.as_secs());
+                return vec![UserDecision { what, fix: None }];
+            }
+        }
+        if status.frames == 0 {
+            log::info!("Camera: no frames yet (is it triggered externally?), so their size isn't checked");
+        }
+        let Some(size @ [w, h]) = status.last_wrong_size else { return Vec::new() };
+        let [set_w, set_h] = self.settings.frame_size;
+        let fixed = Camera { settings: CameraSettings { frame_size: size, ..self.settings }, ..self.clone() };
+        vec![UserDecision { what: format!("frames are {w}×{h}, not the {set_w}×{set_h} set"), fix: Some(fixed) }]
+    }
 }
 
 impl Node<Edges> for Camera {
@@ -46,6 +71,7 @@ impl Node<Edges> for Camera {
     };
 
     type State = Capturing;
+    type WorkerState = ();
     /// What it shows, for its window.
     type Shared = Pool<CaptureStats>;
     type UiState = ();
@@ -107,15 +133,26 @@ impl Node<Edges> for Camera {
         context.shared::<Pool<CaptureStats>>().and_then(|l| l.newest().map(|s| s.pool))
     }
 
-    fn initial_state(&self, _inputs: &[Option<DataStream>]) -> Capturing {
+    /// Starts capturing, carrying on with the camera if it's capturing already (see `Capture::start`): its capture
+    /// thread opens the camera, whose first frame is waited for, once every node's been asked, to say what isn't as set
+    /// (see `decisions`).
+    fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Capturing, (), Self> {
+        if context.unchanged(self) {
+            return Prepared::nothing().into();
+        }
         let [width, height] = self.settings.frame_size;
         let video = Video { width, height, fps: self.settings.frame_rate as f32 };
-        Capturing { capture: Some(Capture::start(self.source.clone(), self.settings, video)), ..Default::default() }
+        let capture = Capture::start(self.source.clone(), self.settings, video);
+        let camera = self.clone();
+        Prepare::Wait(Box::new(move || {
+            let decisions = camera.decisions(&capture.first_frame(OPENING_TIMEOUT, FIRST_FRAME_TIMEOUT));
+            Prepared::shared(Capturing { capture: Some(capture), ..Default::default() }).with_decisions(decisions)
+        }))
     }
 
     /// Takes the frames that have arrived since the last pass, swapping the buffer they're in for the pass's own
     /// (which goes back to the capture thread's pool to fill), so nothing's copied.
-    fn process(&self, pass: &mut PassContext<Edges>, capturing: &mut Capturing) {
+    fn process(&self, pass: &mut PassContext<Edges>, capturing: &mut Capturing, _: &mut ()) {
         let Some(capture) = &capturing.capture else { return };
         capture.apply(&self.settings); // exposure and gain can change while running
         if let Some(Buffer::Video(out)) = pass.outputs.get_mut(0) {
@@ -139,21 +176,6 @@ impl Node<Edges> for Camera {
             out.copy_from(stats);
         }
         pass.shared::<Pool<CaptureStats>>().send_newest(pass.sequence, |shown| shown.copy_from(stats));
-        // Frames of the wrong size are skipped. An update to the right size is triggered, but while recording settings are locked.
-        if let Some(size @ [w, h]) = capturing.stats.status.last_wrong_size {
-            if !pass.recording() && capturing.triggered_size != Some(size) {
-                log::info!("Camera: setting its Frame size to the {w}×{h} it's sending");
-                pass.trigger_settings_update(0, Setting::Camera(CameraSettings { frame_size: size, ..self.settings }));
-                capturing.triggered_size = Some(size);
-            } else if pass.recording() && capturing.complained != Some(size) {
-                let [set_w, set_h] = self.settings.frame_size;
-                log::error!(
-                    "Camera: frames are {w}×{h}, not the {set_w}×{set_h} set, so this recording has no video. It can't be \
-                     changed while recording: stop, and it'll change to match"
-                );
-                capturing.complained = Some(size);
-            }
-        }
     }
 
     fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
@@ -204,14 +226,14 @@ impl Node<Edges> for Camera {
                 "{rate}{} frames · {} dropped by the camera · {} not taken in time",
                 status.frames, status.camera_dropped, status.not_taken
             ));
-            if let Some([w, h]) = status.last_wrong_size {
+            if let Some(size @ [w, h]) = status.last_wrong_size {
                 let [set_w, set_h] = node.settings.frame_size;
-                let message = format!(
-                    "{} frames skipped: they're {w}×{h}, not the {set_w}×{set_h} set. It'll change to match, unless \
-                     recording.",
-                    status.wrong_size
-                );
+                let message =
+                    format!("{} frames skipped: they're {w}×{h}, not the {set_w}×{set_h} set.", status.wrong_size);
                 ui.label(RichText::new(message).color(theme.warning));
+                if ui.button("Use the camera's frame size").clicked() {
+                    node.settings.frame_size = size;
+                }
             }
             for warning in &status.warnings {
                 ui.label(RichText::new(warning).small().color(theme.warning));

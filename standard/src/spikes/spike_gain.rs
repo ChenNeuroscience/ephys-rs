@@ -10,7 +10,7 @@
 //! Spike Viewer detects the thresholds first, then the gains.
 
 use eframe::egui;
-use ephys_rs::engine::{BufferUsage, TreeShake};
+use ephys_rs::engine::{BufferUsage, Prepare, PrepareContext, Prepared, TreeShake};
 use serde::{Deserialize, Serialize};
 
 use crate::standard::auto_detect::{Distribution, SAMPLING, auto_detect_ui, detecting};
@@ -181,6 +181,7 @@ struct Sampling {
 
 impl Node<Edges> for SpikeGain {
     type State = Gaining;
+    type WorkerState = ();
     type Shared = ();
     type UiState = ();
     type GlobalSettings = ();
@@ -228,13 +229,16 @@ impl Node<Edges> for SpikeGain {
         &[crate::TriggerKind::AutoDetect]
     }
 
-    /// Multiplies each channel's waveforms by its gain (saying so on the spikes); and, when triggered, samples the
-    /// spikes (in µV, before that) for a while, then triggers an update to gains from them.
-    fn initial_state(&self, _inputs: &[Option<DataStream>]) -> Gaining {
-        Gaining::default()
+    fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Gaining, (), Self> {
+        if context.same_streams() {
+            return Prepared::nothing().into();
+        }
+        Prepared::shared(Gaining::default()).into()
     }
 
-    fn process(&self, pass: &mut PassContext<Edges>, gaining: &mut Gaining) {
+    /// Multiplies each channel's waveforms by its gain (saying so on the spikes); and, when triggered, samples the
+    /// spikes (in µV, before that) for a while, then triggers an update to gains from them.
+    fn process(&self, pass: &mut PassContext<Edges>, gaining: &mut Gaining, _: &mut ()) {
         if let Some(Some(Buffer::Spikes(input))) = pass.inputs.first()
             && let Some(Buffer::Spikes(output)) = pass.outputs.get_mut(0)
         {
@@ -517,7 +521,7 @@ mod tests {
         let gain = SpikeGain { sampling: 4.0, fit, ..Default::default() };
         let stream =
             crate::standard::spikes::Spikes { channels: 4, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32 };
-        let mut state = gain.initial_state(&[Some(DataStream::Spikes(stream))]);
+        let mut state = ephys_rs::engine::fresh_state(&gain, &[Some(DataStream::Spikes(stream))]);
         let mut buffer = stream.buffer(PASS_DURATION);
         buffer.thresholds = vec![DEFAULT_THRESHOLD_UV, DEFAULT_THRESHOLD_UV, 80.0, DEFAULT_THRESHOLD_UV];
         let passes = (4.0 / PASS_DURATION).round() as u64;
@@ -539,7 +543,7 @@ mod tests {
             }
             let mut pass = PassContext::new(sequence, PASS_DURATION, &[], &mut outputs);
             (pass.triggers, pass.direct) = (&triggers, &direct);
-            gain.process(&mut pass, &mut state);
+            gain.process(&mut pass, &mut state, &mut ());
             assert_eq!(state.sampling.is_some(), sequence + 1 < passes, "samples for 4 s, at pass {sequence}");
         }
         assert_eq!(triggers.trigger_progress(NodeId(0), crate::TriggerKind::AutoDetect), None, "done");
@@ -574,7 +578,7 @@ mod tests {
         let gain = SpikeGain { sampling: 4.0, ..Default::default() };
         let stream =
             crate::standard::spikes::Spikes { channels: 4, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32 };
-        let mut state = gain.initial_state(&[Some(DataStream::Spikes(stream))]);
+        let mut state = ephys_rs::engine::fresh_state(&gain, &[Some(DataStream::Spikes(stream))]);
         let mut buffer = stream.buffer(PASS_DURATION);
         buffer.thresholds = vec![DEFAULT_THRESHOLD_UV; 4];
         let mut outputs = [Buffer::Spikes(buffer)];
@@ -588,7 +592,7 @@ mod tests {
         let mut run = |sequence, outputs: &mut [Buffer]| {
             let mut pass = PassContext::new(sequence, PASS_DURATION, &[], outputs);
             (pass.triggers, pass.direct) = (&triggers, &direct);
-            gain.process(&mut pass, &mut state);
+            gain.process(&mut pass, &mut state, &mut ());
         };
         for sequence in 0..passes / 2 {
             run(sequence, &mut outputs);
@@ -616,7 +620,7 @@ mod tests {
         let gain = SpikeGain::default();
         let stream =
             crate::standard::spikes::Spikes { channels: 4, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32 };
-        let mut state = gain.initial_state(&[Some(DataStream::Spikes(stream))]);
+        let mut state = ephys_rs::engine::fresh_state(&gain, &[Some(DataStream::Spikes(stream))]);
         let mut outputs = [Buffer::Spikes(stream.buffer(PASS_DURATION))];
         let (triggers, direct) =
             (ephys_rs::pass_triggers::PassTriggers::default(), ephys_rs::triggers::DirectTriggers::default());
@@ -627,7 +631,7 @@ mod tests {
         let mut run = |sequence| {
             let mut pass = PassContext::new(sequence, PASS_DURATION, &[], &mut outputs);
             (pass.triggers, pass.direct) = (&triggers, &direct);
-            gain.process(&mut pass, &mut state);
+            gain.process(&mut pass, &mut state, &mut ());
         };
         run(0);
         run(1);

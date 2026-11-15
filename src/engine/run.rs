@@ -6,26 +6,28 @@
 //! before it runs any of its passes (so nothing is allocated per pass), with each node reading its inputs
 //! from the outputs of the nodes before it.
 //!
-//! Passes run at the same time on different workers, which is fine for most nodes but not for those that
-//! carry state from one pass to the next (a filter's history, say). (A node whose state is only working memory,
-//! carrying nothing over, has its own on each worker instead, made with the worker's buffers: see
-//! `PassState::CARRIED_OVER`.) Each node's state lives in a slot, on a
-//! cache line of its own, with a turn number: pass n waits (spinning briefly, then yielding) for the turn to
-//! reach n, uses the state, then sets it to n + 1 to hand over to the next pass. As long as each pass stays
-//! behind the one before, there's little waiting. The first pass gets the node's initial state.
+//! Passes run at the same time on different workers, which is fine for most nodes but not for those that carry state
+//! from one pass to the next (a filter's history, say). Each node's state lives in a slot, on a cache line of its own,
+//! with a turn number: pass n waits (spinning briefly, then yielding) for the turn to reach n, uses the state, then sets
+//! it to n + 1 to hand over to the next pass. As long as each pass stays behind the one before, there's little
+//! waiting. State that's each worker's own (scratch space: see `Node::WorkerState`) needs no turns: each worker keeps
+//! its own, by node.
 //!
 //! If every worker is busy and passes queue up, the dispatcher drops passes (counting them) rather than
 //! falling ever further behind.
 //!
 //! Workers report each pass they run to the GUI on a queue of its own, for the stats, never waiting on it.
 //!
-//! When the graph changes while running, each node hands its state, and what it shares with the GUI, on to the
-//! new snapshot if it's the same node with the same input and output data streams: it sees its new settings on
-//! the next pass and adjusts. Otherwise it starts afresh (`Scheduled::new`). The dispatcher attaches the
-//! snapshot to each pass it sends, so snapshots only move forward pass by pass. It switches to a new snapshot
-//! once it's ready: at once if its plan has the same shape as the running one's (the same steps and buffers, as
-//! after a change of settings), otherwise once every worker has made buffers for it, as they come free; until
-//! then, passes carry on with the one before. So a worker is never handed a pass it isn't ready to run. A
+//! Every node with state prepares for each snapshot the run's given, one snapshot at a time, on a thread of the run's
+//! (`Node::prepare_for_snapshot`, see `prepare_snapshots`): making its state ahead of time (proto-states), or making
+//! nothing new, so its state carries on (a node with the same data streams in and out sees its new settings on the
+//! next pass, and adjusts). The new state's made from the proto-state at the new snapshot's first pass, once the pass
+//! before has finished with the old (`Node::on_snapshot_change`), so passes see it in order across snapshots too; each
+//! worker takes its own, replacing what it had, at its first pass of the snapshot. What a node shares with the GUI is handed on likewise, or made afresh. The dispatcher attaches the
+//! snapshot to each pass it sends, so snapshots only move forward pass by pass. It switches to a new snapshot once
+//! it's ready: its nodes have prepared, and its plan has the same shape as the running one's (the same steps and
+//! buffers, as after a change of settings) or every worker has made buffers for it, as they come free; until then,
+//! passes carry on with the one before. So a worker is never handed a pass it isn't ready to run. A
 //! recording takes effect with its snapshot's first pass (`Recording::take_effect`).
 //!
 //!
@@ -36,7 +38,7 @@ use std::cell::RefCell;
 use std::cell::UnsafeCell;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -50,30 +52,34 @@ use crate::triggers::DirectTriggers;
 
 use super::pass_context::*;
 use super::plan::*;
-use super::{Buffer, DataStreamsEnum, Edges, Graph, NodeId, NodesEnum, SharedByNode, Snapshot, SnapshotLite};
+use super::{
+    Buffer, DataStreamsEnum, Edges, NodeId, NodesEnum, Prepare, PrepareContext, Prepared, Previous, SharedByNode,
+    Snapshot, SnapshotLite, UserDecision,
+};
 
 type DataStream<N> = <<N as NodesEnum>::Edges as Edges>::DataStream;
 
 /// What the workers do with a plan: make their buffers for it, and run its passes.
 impl<N: NodesEnum> Plan<N> {
-    /// The buffers a worker runs passes on, and its own working memory for the nodes that have some.
-    fn workspace(&self, graph: &Graph<N>) -> Workspace<N> {
-        let memory = |id: NodeId, inputs: &[Option<DataStream<N>>]| graph.get(id).map(|e| e.node.initial_state(inputs));
-        Workspace {
-            buffers: self.buffers.iter().map(|s| Some(s.buffer(PASS_DURATION))).collect(),
-            memory: self
-                .memory_inputs
-                .iter()
-                .map(|(id, inputs)| memory(*id, inputs).unwrap_or_else(|| Box::new(())))
-                .collect(),
-        }
+    /// The buffers a worker runs passes on.
+    fn workspace(&self) -> Workspace<N> {
+        Workspace { buffers: self.buffers.iter().map(|s| Some(s.buffer(PASS_DURATION))).collect() }
     }
 
-    /// Runs a pass through every step of `snapshot`'s graph, on `workspace`.
-    fn run(&self, snapshot: &Arc<Snapshot<N>>, pass: PassId, workspace: &mut Workspace<N>, run: &RunSlots) {
+    /// Runs a pass through every step of `snapshot`'s graph, on `workspace`, with the worker's own state for the nodes
+    /// with some (`worker_states`). A node without the state it needs (it failed to prepare) doesn't run, and its
+    /// outputs are left empty.
+    fn run(
+        &self,
+        snapshot: &Arc<Snapshot<N>>,
+        pass: PassId,
+        workspace: &mut Workspace<N>,
+        worker_states: &mut WorkerStates,
+        run: &RunSlots,
+    ) {
         // As nodes can see it, to keep (see `PassContext::snapshot`).
         let baked: Arc<dyn SnapshotLite> = snapshot.clone();
-        let Workspace { buffers: workspace, memory } = workspace;
+        let Workspace { buffers: workspace } = workspace;
         let sequence = pass.sequence;
         for (step, times) in self.steps.iter().zip(&run.times) {
             let Some(node) = snapshot.graph.get(step.id).map(|e| &e.node) else { continue };
@@ -89,7 +95,8 @@ impl<N: NodesEnum> Plan<N> {
                 .zip(&step.takes)
                 .map(|(b, &takes)| if takes { b.and_then(|b| workspace[b].take()) } else { None })
                 .collect();
-            let (work, wait) = {
+            let worker_state = step.worker.then(|| worker_states.get_mut(&step.id)).flatten();
+            let (work, wait, ran) = {
                 let inputs: Vec<Option<&Buffer<N::Edges>>> =
                     step.inputs.iter().map(|b| b.and_then(|b| workspace[b].as_ref())).collect();
                 let mut pass_data = PassContext {
@@ -108,16 +115,24 @@ impl<N: NodesEnum> Plan<N> {
                 let start = Instant::now();
                 // When the node's state is handed over, after waiting for it, if it has any.
                 let mut began = start;
-                console::in_pass(pass, || match (step.state, step.memory) {
-                    (Some(slot), _) => run.states[slot].with(sequence, |state| {
-                        began = Instant::now();
-                        node.process(&mut pass_data, Some(state))
-                    }),
-                    (None, Some(m)) => node.process(&mut pass_data, Some(memory[m].as_mut())),
-                    (None, None) => node.process(&mut pass_data, None),
+                let worker_state = worker_state.map(|state| state.as_mut());
+                let ran = console::in_pass(pass, || match step.state {
+                    Some(slot) => {
+                        let change = |state: &mut (dyn Any + Send), proto_state: &mut (dyn Any + Send)| {
+                            node.on_snapshot_change(state, proto_state)
+                        };
+                        run.states[slot].with(sequence, &change, |state| {
+                            began = Instant::now();
+                            node.process(&mut pass_data, Some(state), worker_state)
+                        })
+                    }
+                    None => node.process(&mut pass_data, None, worker_state),
                 });
-                (began.elapsed(), began - start)
+                (began.elapsed(), began - start, ran)
             };
+            if !ran {
+                outputs.iter_mut().for_each(<DataStream<N> as DataStreamsEnum>::empty);
+            }
             for (&b, buffer) in step.outputs.iter().zip(outputs) {
                 workspace[b] = Some(buffer);
             }
@@ -148,8 +163,23 @@ impl<N: NodesEnum> Plan<N> {
 /// passes.
 struct Workspace<N: NodesEnum> {
     buffers: Vec<Option<Buffer<N::Edges>>>,
-    memory: Vec<Box<dyn Any + Send>>,
 }
+
+/// What a node prepared, as the engine keeps it, whatever the node's type.
+type PreparedAny<N> = Prepared<Box<dyn Any + Send>, Box<dyn Any + Send>, N>;
+
+/// What about their hardware nodes say someone should decide, by node (see `Runner::user_decisions`).
+pub type UserDecisions<N> = Vec<(NodeId, UserDecision<N>)>;
+
+/// A worker's own state for each node with some (see `Node::WorkerState`), kept from snapshot to snapshot whatever
+/// their plans.
+type WorkerStates = HashMap<NodeId, Box<dyn Any + Send>>;
+
+/// What each worker's to make its state for a node from, as it first runs a snapshot (see `Node::WorkerState`): the
+/// proto-state the node made for each worker, taken by the first of its snapshots the worker runs. Handed on from
+/// snapshot to snapshot while the node makes no new ones, so a worker that runs none of one snapshot's passes still
+/// takes its own.
+type WorkerProtoStates = Arc<Mutex<Vec<Option<Box<dyn Any + Send>>>>>;
 
 impl<N: NodesEnum> Workspace<N> {
     /// The memory of its data buffers.
@@ -205,38 +235,94 @@ pub struct StepTime {
     pub wait_us: f64,
 }
 
-/// A node's state, handed from each pass to the next in turn (see the module docs), and from one snapshot to the next
-/// while the node's data streams stay the same.
+/// A node's state, handed from each pass to the next in turn (see the module docs). Each snapshot has its own slot for
+/// each node with state, empty until the node's prepared it (`fill`), maybe taking its state from the slot it had in the
+/// snapshot before as the new one takes over (see `Prepared`).
 struct StateSlot {
     /// The pass whose turn it is to use the state.
     turn: CachePadded<AtomicU64>,
-    /// Whether its turns have begun: they're begun at the first pass of the first snapshot it's run in, and carry on
-    /// from there through the snapshots it's handed on to.
+    /// Whether its turns have begun: at the first pass of its snapshot.
     begun: AtomicBool,
+    /// Whether the node's prepared it.
+    filled: AtomicBool,
+    /// While it's still to take the state from the slot before, at its first turn (`from`).
+    pending: AtomicBool,
+    from: Mutex<Option<From>>,
     state: UnsafeCell<Box<dyn Any + Send>>,
 }
 
-// Safety: the state is only touched by the pass whose turn it is, which `with` waits for.
+/// Where a slot takes its state from, as its snapshot takes over: the slot the node had in the snapshot before, and
+/// whether it takes the state as it is (the node kept it) or makes it from the proto-state the node prepared, which
+/// the slot holds till then (see `Node::on_snapshot_change`).
+struct From {
+    slot: Arc<StateSlot>,
+    carry: bool,
+}
+
+/// What a slot's node does to make its state from the proto-state it prepared (`Node::on_snapshot_change`).
+type ChangeFn<'a> = &'a dyn Fn(&mut (dyn Any + Send), &mut (dyn Any + Send));
+
+// Safety: the state is only touched by the pass whose turn it is, which `with` waits for, or before its turns begin by
+// whatever has it alone: the node preparing it (`fill`, before it's ready, so before any pass runs against it), or the
+// pass taking it from a slot that never ran (`take`).
 unsafe impl Sync for StateSlot {}
 
 impl StateSlot {
+    /// Holding `state`, prepared.
+    #[cfg(test)]
     fn new(state: Box<dyn Any + Send>) -> Self {
+        let slot = Self::empty();
+        slot.fill(state, None);
+        slot
+    }
+
+    /// For the node to prepare.
+    fn empty() -> Self {
         StateSlot {
             turn: CachePadded::new(AtomicU64::new(0)),
             begun: AtomicBool::new(false),
-            state: UnsafeCell::new(state),
+            filled: AtomicBool::new(false),
+            pending: AtomicBool::new(false),
+            from: Mutex::new(None),
+            state: UnsafeCell::new(Box::new(())),
         }
     }
 
-    /// Begins its turns at pass `first`, unless they've begun (it's carried on from a snapshot already running).
+    /// The node's prepared it: `state`, maybe to take the state from another slot at its first turn (`from`).
+    fn fill(&self, state: Box<dyn Any + Send>, from: Option<From>) {
+        assert!(!self.filled.load(Ordering::Acquire), "a slot's filled once");
+        // Safety: nothing else touches it until it's filled (see `Sync`).
+        unsafe { *self.state.get() = state };
+        self.pending.store(from.is_some(), Ordering::Relaxed);
+        *self.from.lock().unwrap() = from;
+        self.filled.store(true, Ordering::Release);
+    }
+
+    /// Whether passes can run against it: it's prepared, and so is any slot it's to take its state from (or that
+    /// slot's in use).
+    fn ready(&self) -> bool {
+        if !self.filled.load(Ordering::Acquire) {
+            return false;
+        }
+        let from = self.from.lock().unwrap();
+        from.as_ref().is_none_or(|from| from.slot.begun.load(Ordering::Acquire) || from.slot.ready())
+    }
+
+    /// Begins its turns at pass `first`.
     fn begin(&self, first: u64) {
         if !self.begun.swap(true, Ordering::AcqRel) {
             self.turn.store(first, Ordering::Release);
         }
     }
 
-    /// Waits for pass `sequence`'s turn, runs `f` on the state, then hands it to the next pass.
-    fn with<R>(&self, sequence: u64, f: impl FnOnce(&mut (dyn Any + Send)) -> R) -> R {
+    /// Waits for pass `sequence`'s turn, takes the state from the slot before if it's still to (see `From`), runs `f`
+    /// on the state, then hands it to the next pass.
+    fn with<R>(&self, sequence: u64, change: ChangeFn, f: impl FnOnce(&mut (dyn Any + Send)) -> R) -> R {
+        self.with_box(sequence, change, |state| f(state.as_mut()))
+    }
+
+    /// The same, giving `f` the box the state's in.
+    fn with_box<R>(&self, sequence: u64, change: ChangeFn, f: impl FnOnce(&mut Box<dyn Any + Send>) -> R) -> R {
         let mut spins = 0u32;
         while self.turn.load(Ordering::Acquire) != sequence {
             if spins < 1000 {
@@ -255,8 +341,49 @@ impl StateSlot {
             }
         }
         let _hand_over = HandOver(&self.turn, sequence + 1);
+        self.take_from_before(sequence, change);
         // Safety: it's this pass's turn, and no other pass's until `_hand_over` is dropped.
-        f(unsafe { &mut **self.state.get() })
+        f(unsafe { &mut *self.state.get() })
+    }
+
+    /// Takes the state from the slot before, if it's still to, at pass `sequence` (its first). Only by the pass whose
+    /// turn it is, or the one taking the state from it if it never ran.
+    fn take_from_before(&self, sequence: u64, change: ChangeFn) {
+        if !self.pending.swap(false, Ordering::AcqRel) {
+            return;
+        }
+        let Some(from) = self.from.lock().unwrap().take() else { return };
+        // Safety: as the caller's.
+        let state = unsafe { &mut *self.state.get() };
+        from.slot.lend(sequence, change, |old| {
+            if from.carry {
+                *state = std::mem::replace(old, Box::new(()));
+            } else {
+                // The old state, made the new from the proto-state this slot holds; what's left of that goes back in
+                // the old slot, to be let go of in the background.
+                let mut current = std::mem::replace(old, Box::new(()));
+                change(current.as_mut(), state.as_mut());
+                *old = std::mem::replace(state, current);
+            }
+        });
+    }
+
+    /// Lends its state to `f`, for the slot after it, at that slot's first pass (`sequence`): once the pass before's
+    /// done with it, if it's run; otherwise at once, once it's taken its own from the slot before it.
+    fn lend(&self, sequence: u64, change: ChangeFn, f: impl FnOnce(&mut Box<dyn Any + Send>)) {
+        if self.begun.load(Ordering::Acquire) {
+            self.with_box(sequence, change, f);
+        } else {
+            // Its snapshot never ran, so nothing else touches it.
+            self.take_from_before(sequence, change);
+            // Safety: as above.
+            f(unsafe { &mut *self.state.get() });
+        }
+    }
+
+    /// Whether it holds nothing (its state taken, or none).
+    fn is_empty(&mut self) -> bool {
+        self.state.get_mut().is::<()>()
     }
 }
 
@@ -386,8 +513,10 @@ pub struct ScheduledInfo<N: NodesEnum> {
     pub plan: Arc<Plan<N>>,
     /// Workers with buffers for its plan.
     pub ready: usize,
-    /// While its recording's nodes are still preparing for it (see `Recording::prepare`).
-    pub preparing_to_record: bool,
+    /// The nodes still preparing their state for it (see `Node::prepare_for_snapshot`).
+    pub preparing: Vec<NodeId>,
+    /// What about their hardware its nodes say someone should decide (see `Runner::user_decisions`).
+    pub decisions: usize,
     /// How long each of the plan's steps is taking.
     pub step_times: Vec<StepTime>,
 }
@@ -417,65 +546,292 @@ struct Job<N: NodesEnum> {
     scheduled: Arc<Scheduled<N>>,
 }
 
-/// A snapshot the run's been given, and what its passes share as they run (`RunSlots`). Each node's state, what it
-/// shares with the GUI, and its step's times are handed on from the snapshot before when it's the same node with the
-/// same data streams in and out (when its state, made for those, still fits: as within a snapshot, it adapts to any
-/// change of settings that leaves them the same), and made afresh otherwise. The dispatcher runs it once it's ready: at
-/// once if its plan's laid out as the one running's, or else once every worker has buffers for it (meanwhile, the one
-/// before carries on).
+/// A snapshot the run's been given, and what its passes share as they run (`RunSlots`). Each node with state prepares it
+/// for the snapshot (`Node::prepare_for_snapshot`), on a thread of its own (see `prepare`): carrying on with the state it had in the
+/// snapshot before (when it's the same node with the same data streams in and out, so its state still fits: as within
+/// a snapshot, it adapts to any change of settings that leaves them the same), or a fresh one, maybe handed the old.
+/// What it shares with the GUI, and its step's times, are handed on likewise, or made afresh. The dispatcher runs it
+/// once it's ready: every node has prepared, and its plan's laid out as the one running's, or else every worker has
+/// buffers for it (meanwhile, the one before carries on).
 struct Scheduled<N: NodesEnum> {
     snapshot: Arc<Snapshot<N>>,
     slots: RunSlots,
     /// Workers with buffers for its plan.
     ready: AtomicUsize,
+    /// Whether the snapshot before recorded something else, or nothing (see `PrepareContext::recording_changed`).
+    recording_changed: bool,
+    /// How many workers the run has.
+    workers: usize,
+    /// How many of its nodes haven't prepared yet.
+    unprepared: AtomicUsize,
+    /// What about their hardware its nodes say someone should decide (see `Runner::user_decisions`).
+    decisions: Mutex<Vec<(NodeId, UserDecision<N>)>>,
+    /// For each node with worker state that prepared it, what the workers are to make theirs from.
+    worker_protos: Mutex<HashMap<NodeId, WorkerProtoStates>>,
+    /// What's left of workers' old states as they changed to this snapshot's, to let go of in the background.
+    leftovers: Mutex<Vec<Box<dyn Any + Send>>>,
+}
+
+/// A node to prepare for a snapshot (see `Scheduled::prepare`): one with state, shared or each worker's.
+struct ToPrepare<N: NodesEnum> {
+    id: NodeId,
+    /// Its step in the plan.
+    step: usize,
+    /// Its shared state's slot, if it has shared state.
+    slot: Option<usize>,
+    /// How it was in the snapshot before, if it was in it.
+    before: Option<Before<N>>,
+}
+
+/// How a node was in the snapshot before (see `ToPrepare`).
+struct Before<N: NodesEnum> {
+    snapshot: Arc<Snapshot<N>>,
+    /// Its step in that snapshot's plan.
+    step: usize,
+    same_streams: bool,
+    /// Its shared state's slot there, if it had shared state.
+    slot: Option<Arc<StateSlot>>,
+    /// What the workers were to make their states from, if it had worker state.
+    worker_protos: Option<WorkerProtoStates>,
+    /// What it said someone should decide (kept, if it makes nothing new).
+    decisions: Vec<UserDecision<N>>,
 }
 
 impl<N: NodesEnum> Scheduled<N> {
-    fn new(snapshot: Arc<Snapshot<N>>, before: Option<&Scheduled<N>>, run: &RunCommon) -> Self {
+    /// For `snapshot`, after `before` (if there was one), with what its nodes are to prepare (see `prepare`).
+    fn new(snapshot: Arc<Snapshot<N>>, before: Option<&Scheduled<N>>, run: &RunCommon) -> (Self, Vec<ToPrepare<N>>) {
         let (plan, graph) = (&snapshot.plan, &snapshot.graph);
-        // The step before of the same node with the same data streams, if there is one.
-        let same = |i: usize| {
+        // The step before of the same node, if there is one, and whether it had the same data streams.
+        let step_before = |i: usize| {
             let before = before?;
             let then = &before.snapshot.plan;
             let id = plan.steps[i].id;
             let j = then.steps.iter().position(|step| step.id == id)?;
-            (then.step_inputs[j] == plan.step_inputs[i] && then.step_outputs[j] == plan.step_outputs[i]).then_some(j)
+            let same = then.step_inputs[j] == plan.step_inputs[i] && then.step_outputs[j] == plan.step_outputs[i];
+            Some((before, j, same))
         };
-        let mut states: Vec<Option<Arc<StateSlot>>> = vec![None; plan.state_inputs.len()];
+        let mut to_prepare = Vec::new();
         let (mut shared, mut times) = (HashMap::new(), Vec::with_capacity(plan.steps.len()));
         for (i, step) in plan.steps.iter().enumerate() {
+            let then = step_before(i);
+            if step.state.is_some() || step.worker {
+                let before = then.map(|(before, j, same_streams)| {
+                    let decisions = before.decisions.lock().unwrap();
+                    Before {
+                        snapshot: before.snapshot.clone(),
+                        step: j,
+                        same_streams,
+                        slot: before.snapshot.plan.steps[j].state.map(|state| before.slots.states[state].clone()),
+                        worker_protos: before.worker_protos.lock().unwrap().get(&step.id).cloned(),
+                        decisions: decisions.iter().filter(|(id, _)| *id == step.id).map(|(_, d)| d.clone()).collect(),
+                    }
+                });
+                to_prepare.push(ToPrepare { id: step.id, step: i, slot: step.state, before });
+            }
             let Some(entry) = graph.get(step.id) else {
                 times.push(Arc::default());
                 continue;
             };
-            let then = same(i).and_then(|j| Some((before?, j)));
-            if let Some(slot) = step.state {
-                let carried = then
-                    .and_then(|(before, j)| Some(before.slots.states[before.snapshot.plan.steps[j].state?].clone()));
-                states[slot] =
-                    Some(carried.unwrap_or_else(|| {
-                        Arc::new(StateSlot::new(entry.node.initial_state(&plan.state_inputs[slot].1)))
-                    }));
-            }
-            let carried = then.and_then(|(before, _)| before.slots.shared.0.get(&step.id).cloned());
+            let carried = then
+                .filter(|(_, _, same)| *same)
+                .and_then(|(before, _, _)| before.slots.shared.0.get(&step.id).cloned());
             shared.insert(step.id, carried.unwrap_or_else(|| Arc::from(entry.node.shared(&plan.step_inputs[i]))));
             // A step's times go with its node, whatever its streams.
-            let kept = before.and_then(|before| {
-                let j = before.snapshot.plan.steps.iter().position(|then| then.id == step.id)?;
-                Some(before.slots.times[j].clone())
-            });
-            times.push(kept.unwrap_or_default());
+            times.push(then.map(|(before, j, _)| before.slots.times[j].clone()).unwrap_or_default());
         }
-        let states =
-            states.into_iter().map(|slot| slot.unwrap_or_else(|| Arc::new(StateSlot::new(Box::new(()))))).collect();
         let slots = RunSlots {
-            states,
+            states: (0..plan.state_inputs.len()).map(|_| Arc::new(StateSlot::empty())).collect(),
             shared: Arc::new(SharedByNode(shared)),
             triggers: run.triggers.clone(),
             direct: run.direct.clone(),
             times,
         };
-        Scheduled { snapshot, slots, ready: AtomicUsize::new(0) }
+        let recording_changed = match (before.and_then(|b| b.snapshot.recording.as_ref()), &snapshot.recording) {
+            (Some(was), Some(is)) => !Arc::ptr_eq(was, is),
+            (was, is) => was.is_some() || is.is_some(),
+        };
+        let scheduled = Scheduled {
+            snapshot,
+            slots,
+            ready: AtomicUsize::new(0),
+            recording_changed,
+            workers: run.workers.len(),
+            unprepared: AtomicUsize::new(to_prepare.len()),
+            decisions: Mutex::default(),
+            worker_protos: Mutex::default(),
+            leftovers: Mutex::default(),
+        };
+        (scheduled, to_prepare)
+    }
+
+    /// Has each node in `to_prepare` prepare for it (see `Node::prepare_for_snapshot`), one after another, then waits
+    /// for what any of them started (`Prepare::Wait`), filling in what each made once it's done. Slots no node
+    /// prepares (for a node that's gone) hold nothing. On the thread preparing snapshots (see `prepare_snapshots`), or a
+    /// test's.
+    fn prepare(&self, to_prepare: Vec<ToPrepare<N>>) {
+        let prepared: std::collections::HashSet<usize> = to_prepare.iter().filter_map(|p| p.slot).collect();
+        for (slot, state) in self.slots.states.iter().enumerate() {
+            if !prepared.contains(&slot) {
+                state.fill(Box::new(()), None);
+            }
+        }
+        let snapshot = &self.snapshot;
+        let workers = self.workers;
+        let mut waiting = Vec::new();
+        for node in to_prepare {
+            let Some(entry) = snapshot.graph.get(node.id) else {
+                self.fill(node, None);
+                continue;
+            };
+            let triggers = snapshot.graph.control_triggers(node.id, &self.slots.direct);
+            let previous = node.before.as_ref().and_then(|before| {
+                Some(Previous {
+                    node: &before.snapshot.graph.get(node.id)?.node,
+                    inputs: &before.snapshot.plan.step_inputs[before.step],
+                    same_streams: before.same_streams,
+                })
+            });
+            let context = PrepareContext {
+                node: node.id,
+                inputs: &snapshot.plan.step_inputs[node.step],
+                controls: snapshot.controls.get(&node.id).map_or(&[][..], Vec::as_slice),
+                recording: snapshot.recording.as_deref(),
+                triggers: &triggers,
+                previous,
+                recording_changed: self.recording_changed,
+                workers,
+            };
+            let prepare = || entry.node.prepare_for_snapshot(&context);
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(prepare)) {
+                Ok(Prepare::Now(prepared)) => self.fill(node, Some(prepared)),
+                Ok(Prepare::Wait(wait)) => waiting.push((node, wait)),
+                Err(_) => self.fill(node, None),
+            }
+        }
+        for (node, wait) in waiting {
+            self.fill(node, std::panic::catch_unwind(std::panic::AssertUnwindSafe(wait)).ok());
+        }
+    }
+
+    /// Fills in what a node prepared (`None` if it panicked): its shared state's slot, and what the workers are to make
+    /// theirs from, keeping what it says someone should decide (and what it said before, if it makes nothing new). A
+    /// node that didn't make the state it needs (new to the run, or its data streams changed) failed to prepare: it
+    /// doesn't run, and someone's to decide about it.
+    fn fill(&self, node: ToPrepare<N>, prepared: Option<PreparedAny<N>>) {
+        let ToPrepare { id, slot, before, .. } = node;
+        let entry = self.snapshot.graph.get(id);
+        let worker = entry.is_some_and(|entry| entry.node.has_worker_state());
+        let failed = |why: &str| (Box::new(()) as Box<dyn Any + Send>, None, Some(why.to_owned()));
+        let (mut shared, mut worker_protos, mut problem) = (None, None, None);
+        let mut decisions = Vec::new();
+        match prepared {
+            None => problem = Some("it failed (it panicked)".to_owned()),
+            Some(Prepared { proto_shared_state, proto_worker_state, decisions: said }) => {
+                decisions = said;
+                let same_streams = before.as_ref().is_some_and(|before| before.same_streams);
+                if proto_shared_state.is_none() && proto_worker_state.is_none() && same_streams {
+                    // Nothing new: what it said before still stands.
+                    let mut kept = before.as_ref().map_or_else(Vec::new, |before| before.decisions.clone());
+                    kept.append(&mut decisions);
+                    decisions = kept;
+                }
+                if slot.is_some() {
+                    shared = Some(match (proto_shared_state, before.as_ref().and_then(|b| b.slot.clone())) {
+                        (Some(proto), Some(old)) => (proto, Some(From { slot: old, carry: false }), None),
+                        (Some(proto), None) => (proto, None, None),
+                        (None, Some(old)) if same_streams => {
+                            (Box::new(()) as Box<dyn Any + Send>, Some(From { slot: old, carry: true }), None)
+                        }
+                        (None, _) => failed("it didn't make its state, which it needs (it's new, or its data changed)"),
+                    });
+                }
+                if worker {
+                    let workers = self.workers;
+                    match (proto_worker_state, before.as_ref().and_then(|b| b.worker_protos.clone())) {
+                        (Some(protos), _) if protos.len() == workers => {
+                            worker_protos = Some(Arc::new(Mutex::new(protos.into_iter().map(Some).collect())));
+                        }
+                        (Some(protos), _) => {
+                            let what = format!("it made {} workers' states, not {workers}", protos.len());
+                            problem = Some(what);
+                        }
+                        (None, Some(protos)) if same_streams => worker_protos = Some(protos),
+                        (None, _) => {
+                            problem = Some(
+                                "it didn't make its workers' state, which it needs (it's new, or its data \
+                                            changed)"
+                                    .to_owned(),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        if let Some((_, _, Some(why))) = &shared {
+            problem.get_or_insert_with(|| why.clone());
+        }
+        if let Some(why) = problem {
+            // It doesn't run: no shared state, and no worker state, to run with.
+            let name = entry.map_or("A node", |entry| entry.node.info().name);
+            log::error!("{name} couldn't prepare for snapshot v{}: {why}", self.snapshot.version);
+            decisions.push(UserDecision { what: format!("couldn't prepare: {why}"), fix: None });
+            shared = slot.map(|_| failed(&why));
+            worker_protos = None;
+        }
+        if let Some(entry) = entry {
+            let mut found = self.decisions.lock().unwrap();
+            for decision in decisions {
+                log::warn!("{}: {}", entry.label, decision.what);
+                found.push((id, decision));
+            }
+        }
+        if let Some(protos) = worker_protos {
+            self.worker_protos.lock().unwrap().insert(id, protos);
+        }
+        if let (Some(slot), Some((state, from, _))) = (slot, shared) {
+            self.slots.states[slot].fill(state, from);
+        } else if let Some(slot) = slot {
+            self.slots.states[slot].fill(Box::new(()), None);
+        }
+        self.unprepared.fetch_sub(1, Ordering::Release);
+    }
+
+    /// Changes worker `worker`'s own states (`states`) to this snapshot's, as it first runs one of its passes: each the
+    /// proto-state its node made for the worker, if it made one, and none for nodes that no longer have any here. The
+    /// old states are let go of in the background, with this.
+    fn change_worker_states(&self, worker: usize, states: &mut WorkerStates) {
+        let protos = self.worker_protos.lock().unwrap();
+        let mut leftovers = Vec::new();
+        states.retain(|id, state| {
+            let kept = protos.contains_key(id);
+            if !kept {
+                leftovers.push(std::mem::replace(state, Box::new(())));
+            }
+            kept
+        });
+        for (id, node_protos) in protos.iter() {
+            let Some(proto) = node_protos.lock().unwrap().get_mut(worker).and_then(Option::take) else { continue };
+            if let Some(old) = states.insert(*id, proto) {
+                leftovers.push(old);
+            }
+        }
+        drop(protos);
+        self.leftovers.lock().unwrap().append(&mut leftovers);
+    }
+
+    /// Whether every node's prepared its state for it (see `prepare`).
+    fn prepared(&self) -> bool {
+        self.unprepared.load(Ordering::Acquire) == 0 && self.slots.states.iter().all(|slot| slot.ready())
+    }
+
+    /// The nodes still preparing their state for it.
+    fn preparing(&self) -> Vec<NodeId> {
+        let plan = &self.snapshot.plan;
+        plan.steps
+            .iter()
+            .filter(|step| step.state.is_some_and(|slot| !self.slots.states[slot].ready()))
+            .map(|step| step.id)
+            .collect()
     }
 
     /// Readies it to run from pass `first`, which covers the time from `at`: the turns of the node state made for it
@@ -495,7 +851,26 @@ impl<N: NodesEnum> Drop for Scheduled<N> {
     /// `let_go_of`).
     fn drop(&mut self) {
         let states = std::mem::take(&mut self.slots.states);
-        let_go_of(states.into_iter().filter_map(Arc::into_inner).collect());
+        let_go_of(
+            states
+                .into_iter()
+                .filter_map(Arc::into_inner)
+                .filter_map(|mut slot| (!slot.is_empty()).then_some(slot))
+                .collect(),
+        );
+        // What's left of workers' old states, and the proto-states no worker took.
+        let mut rest = std::mem::take(self.leftovers.get_mut().unwrap());
+        for protos in std::mem::take(self.worker_protos.get_mut().unwrap()).into_values() {
+            if let Some(protos) = Arc::into_inner(protos) {
+                rest.extend(protos.into_inner().unwrap().into_iter().flatten());
+            }
+        }
+        if !rest.is_empty() {
+            let dropping = std::thread::Builder::new().name("dropping worker state".into()).spawn(move || drop(rest));
+            if let Ok(thread) = dropping {
+                crate::background::finish_later(thread);
+            }
+        }
     }
 }
 
@@ -521,10 +896,56 @@ struct Schedule<N: NodesEnum> {
     receiver: Receiver<Job<N>>,
 }
 
+/// The snapshot waiting its turn to be prepared, if there is one (see `prepare_snapshots`).
+struct Waiting<N: NodesEnum> {
+    snapshot: Mutex<Option<Snapshot<N>>>,
+    given: Condvar,
+}
+
+/// Prepares the snapshots the run's given, one at a time: `first`'s nodes, for the first, then each that comes, after
+/// the latest (see `Scheduled::prepare`). One waits its turn while another's prepared, and a newer one given the run
+/// meanwhile replaces it, so a burst of changes (a slider dragged) has the latest prepared next, not each in turn. Ends
+/// once the run stops.
+fn prepare_snapshots<N: NodesEnum>(
+    schedule: &Schedule<N>,
+    shared: &RunCommon,
+    waiting: &Waiting<N>,
+    first: Vec<ToPrepare<N>>,
+) {
+    schedule.latest.load_full().prepare(first);
+    loop {
+        let snapshot = {
+            let mut snapshot = waiting.snapshot.lock().unwrap();
+            loop {
+                if shared.stop.load(Ordering::Relaxed) {
+                    return;
+                }
+                if let Some(snapshot) = snapshot.take() {
+                    break snapshot;
+                }
+                snapshot = waiting.given.wait_timeout(snapshot, Duration::from_millis(50)).unwrap().0;
+            }
+        };
+        let before = schedule.latest.load_full();
+        if before.snapshot.plan.same_shape(&snapshot.plan) {
+            log::trace!("Snapshot v{} carries on with the same buffers", snapshot.version);
+        } else {
+            log::info!("Snapshot v{} needs new buffers: {}", snapshot.version, describe(&snapshot.plan));
+        }
+        let (scheduled, to_prepare) = Scheduled::new(Arc::new(snapshot), Some(&before), shared);
+        drop(before);
+        let scheduled = Arc::new(scheduled);
+        schedule.latest.store(scheduled.clone());
+        scheduled.prepare(to_prepare);
+    }
+}
+
 /// The graph running: a dispatcher and a pool of workers, until dropped.
 pub struct Runner<N: NodesEnum> {
     schedule: Arc<Schedule<N>>,
     shared: Arc<RunCommon>,
+    /// The snapshot waiting its turn to be prepared (see `prepare_snapshots`).
+    waiting: Arc<Waiting<N>>,
     threads: Vec<JoinHandle<()>>,
     workers: usize,
     /// The version of the latest snapshot given to the run.
@@ -549,13 +970,14 @@ impl<N: NodesEnum> Runner<N> {
             direct,
             ..Default::default()
         });
-        let first = Scheduled::new(Arc::new(snapshot.clone()), None, &shared);
+        let (first, to_prepare) = Scheduled::new(Arc::new(snapshot.clone()), None, &shared);
+        let first = Arc::new(first);
         log::info!("Running on {workers} workers, {} ms passes", PASS_DURATION * 1000.0);
         log::debug!("Snapshot v{}: {}", snapshot.version, describe(&snapshot.plan));
         // A few passes may queue, beyond which they're dropped.
         let (sender, receiver) = crossbeam_channel::bounded(queue_capacity(workers));
         let schedule = Arc::new(Schedule {
-            latest: ArcSwap::new(Arc::new(first)),
+            latest: ArcSwap::new(first),
             running: ArcSwapOption::empty(),
             sender: Mutex::new(Some(sender)),
             receiver,
@@ -571,14 +993,20 @@ impl<N: NodesEnum> Runner<N> {
         let (dispatcher_schedule, dispatcher_shared) = (schedule.clone(), shared.clone());
         let dispatcher = move || dispatch(&dispatcher_schedule, &dispatcher_shared);
         threads.push(std::thread::Builder::new().name("pass dispatcher".into()).spawn(dispatcher).expect("dispatcher"));
+        // Not joined as the run stops: a node it's waiting for (a device opening) can take a while.
+        let waiting = Arc::new(Waiting { snapshot: Mutex::new(None), given: Condvar::new() });
+        let (preparer_schedule, preparer_shared, preparer_waiting) =
+            (schedule.clone(), shared.clone(), waiting.clone());
+        let preparer = move || prepare_snapshots(&preparer_schedule, &preparer_shared, &preparer_waiting, to_prepare);
+        std::thread::Builder::new().name("preparing snapshots".into()).spawn(preparer).expect("preparer");
 
         let (version, received) = (AtomicU64::new(snapshot.version), RefCell::default());
-        Runner { schedule, shared, threads, workers, version, received }
+        Runner { schedule, shared, waiting, threads, workers, version, received }
     }
 
     /// The graph of the latest snapshot given to the run.
     #[cfg(test)]
-    pub fn graph(&self) -> Arc<Graph<N>> {
+    pub fn graph(&self) -> Arc<super::Graph<N>> {
         self.schedule.latest.load().snapshot.graph.clone()
     }
 
@@ -603,25 +1031,37 @@ impl<N: NodesEnum> Runner<N> {
         self.shared.next_pass.load(Ordering::Relaxed) as f64 * PASS_DURATION
     }
 
-    /// Moves the run on to a newer snapshot, with each node's state handed on to it while the node's data streams are
-    /// the same (see `Scheduled`). It runs from the next pass if its plan's laid out as the one before's (as after a
-    /// change of settings), and this returns true; otherwise, once the workers have made buffers for it, the one
-    /// before carrying on meanwhile.
+    /// Moves the run on to a newer snapshot, once its nodes have prepared their state for it, carrying on with what
+    /// they had or not (see `Scheduled`): it waits its turn to be prepared, replacing any that's waiting already (see
+    /// `prepare_snapshots`). Returns whether its plan's laid out as the latest's given the run before (as after a change
+    /// of settings), so it needs no new buffers; otherwise it also waits for the workers to make them. Meanwhile, the
+    /// one before carries on.
     pub fn update(&self, snapshot: &Snapshot<N>) -> bool {
         if self.version.swap(snapshot.version, Ordering::Relaxed) == snapshot.version {
             return true;
         }
-        // Only the GUI updates it, so nothing changes it in between.
-        let before = self.schedule.latest.load_full();
-        let same_buffers = before.snapshot.plan.same_shape(&snapshot.plan);
-        let scheduled = Scheduled::new(Arc::new(snapshot.clone()), Some(&before), &self.shared);
-        if same_buffers {
-            log::trace!("Snapshot v{} carries on with the same buffers", snapshot.version);
-        } else {
-            log::info!("Snapshot v{} needs new buffers: {}", snapshot.version, describe(&snapshot.plan));
+        let mut waiting = self.waiting.snapshot.lock().unwrap();
+        let before =
+            waiting.as_ref().map_or_else(|| self.schedule.latest.load().snapshot.plan.clone(), |w| w.plan.clone());
+        let same_buffers = before.same_shape(&snapshot.plan);
+        if let Some(replaced) = waiting.replace(snapshot.clone()) {
+            log::trace!("Snapshot v{} replaced v{} waiting to be prepared", snapshot.version, replaced.version);
         }
-        self.schedule.latest.store(Arc::new(scheduled));
+        drop(waiting);
+        self.waiting.given.notify_one();
         same_buffers
+    }
+
+    /// What about their hardware the nodes of the latest snapshot given to the run say someone should decide, once they
+    /// have all prepared, with its version. It runs meanwhile; the app deals with them by giving the run another (with
+    /// the nodes' settings fixed, or the nodes disabled), or stopping.
+    pub fn user_decisions(&self) -> Option<(u64, UserDecisions<N>)> {
+        let latest = self.schedule.latest.load();
+        if !latest.prepared() {
+            return None;
+        }
+        let decisions = latest.decisions.lock().unwrap();
+        (!decisions.is_empty()).then(|| (latest.snapshot.version, decisions.clone()))
     }
 
     /// The versions passes have started running against since this was last asked.
@@ -652,7 +1092,8 @@ impl<N: NodesEnum> Runner<N> {
             version: scheduled.snapshot.version,
             plan: scheduled.snapshot.plan.clone(),
             ready: scheduled.ready.load(Ordering::Relaxed),
-            preparing_to_record: scheduled.snapshot.recording.as_ref().is_some_and(|r| !r.is_ready()),
+            preparing: scheduled.preparing(),
+            decisions: scheduled.decisions.lock().unwrap().len(),
             step_times: scheduled.slots.times.iter().map(|times| times.get()).collect(),
         };
         let running = self.schedule.running.load().as_deref().map(info);
@@ -750,7 +1191,7 @@ fn work<N: NodesEnum>(schedule: &Schedule<N>, shared: &RunCommon, index: usize) 
     let make = |scheduled: &Scheduled<N>, workspaces: &mut Vec<(Arc<Plan<N>>, Workspace<N>)>| {
         let snapshot = &scheduled.snapshot;
         slot.preparing.store(true, Ordering::Relaxed);
-        let workspace = snapshot.plan.workspace(&snapshot.graph);
+        let workspace = snapshot.plan.workspace();
         let bytes = workspace.bytes();
         shared.memory.fetch_add(bytes, Ordering::Relaxed);
         workspaces.push((snapshot.plan.clone(), workspace));
@@ -765,6 +1206,8 @@ fn work<N: NodesEnum>(schedule: &Schedule<N>, shared: &RunCommon, index: usize) 
     };
     // The newest snapshot it's got ready for.
     let mut ready_for = None;
+    // Its own state for the nodes with some, and the snapshot it's been changed to.
+    let (mut worker_states, mut changed_to) = (WorkerStates::new(), None);
     loop {
         let latest = schedule.latest.load_full();
         if ready_for != Some(latest.snapshot.version) {
@@ -790,7 +1233,12 @@ fn work<N: NodesEnum>(schedule: &Schedule<N>, shared: &RunCommon, index: usize) 
                 let at = workspaces.iter().position(|(plan, _)| plan.same_shape(&snapshot.plan));
                 let at = at.unwrap_or_else(|| make(&job.scheduled, &mut workspaces));
                 let pass = PassId { version: snapshot.version, sequence: job.sequence, node: None, node_type: None };
-                snapshot.plan.run(snapshot, pass, &mut workspaces[at].1, &job.scheduled.slots);
+                if changed_to != Some(snapshot.version) {
+                    job.scheduled.change_worker_states(index, &mut worker_states);
+                    changed_to = Some(snapshot.version);
+                }
+                let workspace = &mut workspaces[at].1;
+                snapshot.plan.run(snapshot, pass, workspace, &mut worker_states, &job.scheduled.slots);
                 let finished = Instant::now();
                 slot.pass.store(IDLE, Ordering::Relaxed);
                 slot.passes.fetch_add(1, Ordering::Relaxed);
@@ -832,11 +1280,11 @@ fn dispatch<N: NodesEnum>(schedule: &Schedule<N>, shared: &RunCommon) {
     while !shared.stop.load(Ordering::Relaxed) {
         let latest = schedule.latest.load_full();
         if !current.as_ref().is_some_and(|running| Arc::ptr_eq(running, &latest)) {
-            // Ready: laid out as the one running, or with buffers on every worker; and with its recording's nodes
-            // prepared, if it's recording.
+            // Ready: laid out as the one running, or with buffers on every worker; and with every node's state
+            // prepared.
             let same_buffers = current.as_ref().is_some_and(|c| c.snapshot.plan.same_shape(&latest.snapshot.plan));
             let buffers = same_buffers || latest.ready.load(Ordering::Acquire) >= shared.workers.len();
-            if buffers && latest.snapshot.recording.as_ref().is_none_or(|r| r.is_ready()) {
+            if buffers && latest.prepared() {
                 if current.is_none() {
                     due = Instant::now() + duration;
                 }
@@ -891,6 +1339,7 @@ pub mod tests {
     use super::super::{Port, PortRole};
     use super::*;
     use crate::NodeType;
+    use crate::engine::Graph;
     use crate::engine::NodeTypeEnum;
 
     use crate::Buffer;
@@ -899,6 +1348,16 @@ pub mod tests {
     fn add(graph: &mut Graph<Nodes>, name: &str) -> NodeId {
         let node_type = NodeType::named(name).unwrap();
         graph.add(Nodes::create(node_type), [0.0, 0.0])
+    }
+
+    /// An Acquisition Board, acquiring from a test board of its own (see `serve_test_board`).
+    fn add_board(graph: &mut Graph<Nodes>) -> NodeId {
+        use crate::standard::ephys::board::{Source, serve_test_board};
+        let board = add(graph, "Acquisition Board");
+        if let Some(Nodes::AcquisitionBoard(b)) = graph.get_mut(board).map(|e| &mut e.node) {
+            b.source = Source::Fake { address: serve_test_board() };
+        }
+        board
     }
 
     fn link(graph: &mut Graph<Nodes>, from: NodeId, output: usize, to: NodeId, input: usize) {
@@ -915,14 +1374,14 @@ pub mod tests {
             .map(|sequence| {
                 let slot = slot.clone();
                 std::thread::spawn(move || {
-                    slot.with(sequence, |state| state.downcast_mut::<Vec<u64>>().unwrap().push(sequence))
+                    slot.with(sequence, &|_, _| {}, |state| state.downcast_mut::<Vec<u64>>().unwrap().push(sequence))
                 })
             })
             .collect();
         for thread in threads {
             thread.join().unwrap();
         }
-        let order = slot.with(8, |state| state.downcast_ref::<Vec<u64>>().unwrap().clone());
+        let order = slot.with(8, &|_, _| {}, |state| state.downcast_ref::<Vec<u64>>().unwrap().clone());
         assert_eq!(order, (0..8).collect::<Vec<_>>());
     }
 
@@ -941,18 +1400,30 @@ pub mod tests {
         link(&mut graph, board, 0, filter, 0);
         link(&mut graph, filter, 0, viewer, 0);
         link(&mut graph, board, 0, writer, 0);
-        // Recording, so the writer runs.
-        let recording = Some(Arc::new(crate::engine::Recording::default()));
+        // Recording, so the writer runs; somewhere its files can't be made (in a file), so it doesn't take its copy.
+        let file = std::env::temp_dir().join(format!("ephys-rs-not-a-directory-{}", std::process::id()));
+        std::fs::write(&file, b"").unwrap();
+        let place = crate::base_directory::Place::directory(file.join("recording"));
+        let recording = Some(Arc::new(crate::engine::Recording::new(Some(place), chrono::Local::now())));
         let snapshot = Arc::new(Snapshot::bake(0, Arc::new(graph), Some(Instant::now()), recording));
         let plan = &snapshot.plan;
-        let scheduled = Scheduled::new(snapshot.clone(), None, &RunCommon::default());
+        let (scheduled, to_prepare) = Scheduled::new(snapshot.clone(), None, &RunCommon::default());
+        scheduled.prepare(to_prepare);
         let slots = &scheduled.slots;
-        let mut workspace = plan.workspace(&snapshot.graph);
+        let mut workspace = plan.workspace();
+        let mut worker_states = WorkerStates::new();
+        scheduled.change_worker_states(0, &mut worker_states);
         let filtered = plan.steps.iter().find(|s| s.id == filter).unwrap().outputs[0];
         let copied = plan.steps.iter().find(|s| s.id == writer).unwrap().inputs[0].unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         for sequence in 0.. {
-            plan.run(&snapshot, PassId { version: 0, sequence, node: None, node_type: None }, &mut workspace, slots);
+            plan.run(
+                &snapshot,
+                PassId { version: 0, sequence, node: None, node_type: None },
+                &mut workspace,
+                &mut worker_states,
+                slots,
+            );
             let (Some(Buffer::Continuous(filtered)), Some(Buffer::Continuous(copied))) =
                 (&workspace.buffers[filtered], &workspace.buffers[copied])
             else {
@@ -999,7 +1470,7 @@ pub mod tests {
     #[test]
     fn working_memory_is_each_workers_own() {
         let mut graph = Graph::default();
-        let board = add(&mut graph, "Acquisition Board");
+        let board = add_board(&mut graph);
         let reference = add(&mut graph, "Reference");
         let filter = add(&mut graph, "Band-pass Filter");
         let viewer = add(&mut graph, "LFP Viewer");
@@ -1008,9 +1479,13 @@ pub mod tests {
         link(&mut graph, filter, 0, viewer, 0);
         let plan = Plan::new(&graph, false);
         let step = |id| plan.steps.iter().find(|s| s.id == id).unwrap();
-        assert!(step(reference).state.is_none() && step(reference).memory.is_some(), "no sync point");
-        assert!(step(filter).state.is_some(), "the filter's history is carried over");
-        assert_eq!(plan.workspace(&graph).memory.len(), 1);
+        assert!(step(reference).state.is_none() && step(reference).worker, "no sync point");
+        assert!(step(filter).state.is_some() && !step(filter).worker, "the filter's history is carried over");
+        // Each worker makes its own from what the reference prepared for it.
+        let runner = Runner::start(&Snapshot::new(0, graph), 2);
+        let stats = wait_for_passes(&runner, 10);
+        assert!(stats.completed >= 10, "{stats:?}");
+        assert!(runner.user_decisions().is_none(), "the reference prepared its workers' state");
     }
 
     #[test]
@@ -1030,16 +1505,25 @@ pub mod tests {
         link(&mut graph, detector, 0, viewer, 0);
         let snapshot = Arc::new(Snapshot::new(0, graph));
         let plan = &snapshot.plan;
-        let scheduled = Scheduled::new(snapshot.clone(), None, &RunCommon::default());
+        let (scheduled, to_prepare) = Scheduled::new(snapshot.clone(), None, &RunCommon::default());
+        scheduled.prepare(to_prepare);
         let slots = &scheduled.slots;
-        let mut workspace = plan.workspace(&snapshot.graph);
+        let mut workspace = plan.workspace();
+        let mut worker_states = WorkerStates::new();
+        scheduled.change_worker_states(0, &mut worker_states);
         // A second of samples, as they come from the board in real time.
         let (mut spikes, mut samples) = (0, 0);
         let filter_output = plan.steps.iter().find(|s| s.id == filter).unwrap().outputs[0];
         let detector_output = plan.steps.iter().find(|s| s.id == detector).unwrap().outputs[0];
         let deadline = Instant::now() + Duration::from_secs(5);
         for sequence in 0.. {
-            plan.run(&snapshot, PassId { version: 0, sequence, node: None, node_type: None }, &mut workspace, slots);
+            plan.run(
+                &snapshot,
+                PassId { version: 0, sequence, node: None, node_type: None },
+                &mut workspace,
+                &mut worker_states,
+                slots,
+            );
             let Some(Buffer::Spikes(output)) = &workspace.buffers[detector_output] else { panic!("spikes buffer") };
             spikes += output.spikes.len();
             let Some(Buffer::Continuous(filtered)) = &workspace.buffers[filter_output] else { panic!("continuous") };
@@ -1093,10 +1577,26 @@ pub mod tests {
         }
     }
 
-    /// A node's state, in a snapshot the run's been given.
-    fn state_of(scheduled: &Scheduled<Nodes>, node: NodeId) -> Arc<StateSlot> {
+    /// Where a node's state is, in a snapshot the run's been given, once it's running (and has taken its state from the
+    /// snapshot before, if it's carried on with it): state carried on is the same, moved from slot to slot.
+    fn state_of(runner: &Runner<Nodes>, scheduled: &Scheduled<Nodes>, node: NodeId) -> usize {
+        wait_for_passes(runner, runner.stats().completed + 2);
         let step = scheduled.snapshot.plan.steps.iter().find(|step| step.id == node).expect("it runs");
-        scheduled.slots.states[step.state.expect("it has state")].clone()
+        let slot = &scheduled.slots.states[step.state.expect("it has state")];
+        assert!(!slot.pending.load(Ordering::Acquire), "it's taken its state");
+        // Safety: only the box's address is read, which only changes as the slot takes its state, which it has.
+        let state: &Box<dyn Any + Send> = unsafe { &*slot.state.get() };
+        &**state as *const (dyn Any + Send) as *const () as usize
+    }
+
+    /// Whether a node's state in a snapshot that's been run was left behind as the next took over: what's left of it
+    /// after its new state was made, rather than taken as it was (carried on).
+    fn left_behind(scheduled: &Scheduled<Nodes>, node: NodeId) -> bool {
+        let step = scheduled.snapshot.plan.steps.iter().find(|step| step.id == node).expect("it ran");
+        let slot = &scheduled.slots.states[step.state.expect("it had state")];
+        // Safety: nothing uses the slot of a snapshot that's been taken over.
+        let state: &Box<dyn Any + Send> = unsafe { &*slot.state.get() };
+        !state.is::<()>()
     }
 
     /// What a node shares with the GUI, in a snapshot the run's been given.
@@ -1110,7 +1610,7 @@ pub mod tests {
     #[test]
     fn snapshots_hand_on_each_nodes_state_while_its_streams_are_the_same() {
         let mut graph = Graph::default();
-        let board = add(&mut graph, "Acquisition Board");
+        let board = add_board(&mut graph);
         let filter = add(&mut graph, "Band-pass Filter");
         let viewer = add(&mut graph, "LFP Viewer");
         link(&mut graph, board, 0, filter, 0);
@@ -1118,6 +1618,7 @@ pub mod tests {
         let mut snapshot = Snapshot::new(0, graph.clone());
         let runner = Runner::start(&snapshot, 2);
         let first = until_running(&runner, 0);
+        let filter_state = state_of(&runner, &first, filter);
         assert!(!runner.shared().pools(viewer).is_empty(), "the viewer's display");
         let mut next = |graph: &Graph<Nodes>| {
             snapshot = Snapshot::new(snapshot.version + 1, graph.clone());
@@ -1131,7 +1632,7 @@ pub mod tests {
         let tuned = next(&graph);
         assert!(runner.update(&tuned));
         let running = until_running(&runner, tuned.version);
-        assert!(Arc::ptr_eq(&state_of(&first, filter), &state_of(&running, filter)), "the filter's history");
+        assert_eq!(filter_state, state_of(&runner, &running, filter), "the filter's history");
         assert!(Arc::ptr_eq(&shared_of(&first, viewer), &shared_of(&running, viewer)), "the viewer's display");
 
         // Another viewer needs new buffers: it runs once they're made, everything that was there handed on.
@@ -1142,7 +1643,7 @@ pub mod tests {
         let more = next(&graph);
         assert!(!runner.update(&more));
         let running = until_running(&runner, more.version);
-        assert!(Arc::ptr_eq(&state_of(&first, filter), &state_of(&running, filter)), "the filter's, still");
+        assert_eq!(filter_state, state_of(&runner, &running, filter), "the filter's, still");
         assert!(Arc::ptr_eq(&shared_of(&first, viewer), &shared_of(&running, viewer)), "the viewer's, still");
         assert!(!runner.shared().pools(second).is_empty(), "with the new viewer's");
         let completed = runner.stats().completed;
@@ -1156,7 +1657,7 @@ pub mod tests {
     #[test]
     fn a_node_whose_streams_change_starts_afresh() {
         let mut graph = Graph::default();
-        let board = add(&mut graph, "Acquisition Board");
+        let board = add_board(&mut graph);
         let filter = add(&mut graph, "Band-pass Filter");
         let detector = add(&mut graph, "Spike Detector");
         let spikes = add(&mut graph, "Spike Viewer");
@@ -1165,15 +1666,16 @@ pub mod tests {
         link(&mut graph, detector, 0, spikes, 0);
         let runner = Runner::start(&Snapshot::new(0, graph.clone()), 2);
         let first = until_running(&runner, 0);
+        wait_for_passes(&runner, runner.stats().completed + 2);
         if let Some(Nodes::SpikeDetector(d)) = graph.get_mut(detector).map(|e| &mut e.node) {
             d.pre += 4;
         }
         assert!(!runner.update(&Snapshot::new(1, graph)), "longer waveforms need other buffers");
-        let running = until_running(&runner, 1);
-        assert!(Arc::ptr_eq(&state_of(&first, filter), &state_of(&running, filter)), "the filter carries on");
-        assert!(!Arc::ptr_eq(&state_of(&first, detector), &state_of(&running, detector)), "the detector's afresh");
-        assert!(!Arc::ptr_eq(&state_of(&first, spikes), &state_of(&running, spikes)), "as is what it feeds");
+        until_running(&runner, 1);
         wait_for_passes(&runner, runner.stats().completed + 5);
+        assert!(!left_behind(&first, filter), "the filter carries on");
+        assert!(left_behind(&first, detector), "the detector's afresh");
+        assert!(left_behind(&first, spikes), "as is what it feeds");
     }
 
     /// A recording takes effect as the first pass of the snapshot with it is sent: from when that pass's time starts.
@@ -1192,25 +1694,70 @@ pub mod tests {
         assert!(effective <= Instant::now());
     }
 
-    /// A snapshot recording doesn't run until its recording's nodes have prepared: the one before carries on.
+    /// A snapshot doesn't run until its nodes have prepared their state for it: the one before carries on.
     #[test]
-    fn a_recording_waits_for_its_nodes_to_prepare() {
-        let graph = Arc::new(Graph::default());
+    fn a_snapshot_waits_for_its_nodes_to_prepare() {
+        let mut graph = Graph::default();
+        let board = add_board(&mut graph);
+        let graph = Arc::new(graph);
         let started = Instant::now();
         let runner = Runner::start(&Snapshot::bake(0, graph.clone(), Some(started), None), 1);
         until_running(&runner, 0);
-        let recording = Arc::new(crate::engine::Recording::new(None, chrono::Local::now()));
-        let snapshot = Snapshot::bake(1, graph, Some(started), Some(recording.clone()));
-        runner.update(&snapshot);
+        let snapshot = Arc::new(Snapshot::bake(1, graph, Some(started), None));
+        assert!(snapshot.plan.steps.iter().any(|step| step.id == board && step.state.is_some()), "has state");
+        // Given the run, but its nodes not yet prepared.
+        let before = runner.schedule.latest.load_full();
+        let (scheduled, to_prepare) = Scheduled::new(snapshot, Some(&before), &runner.shared);
+        let scheduled = Arc::new(scheduled);
+        runner.schedule.latest.store(scheduled.clone());
         let passes = runner.clock();
         while runner.clock() < passes + 5.0 * PASS_DURATION {
             std::thread::sleep(Duration::from_millis(5));
         }
-        let running = runner.schedule.running.load_full().unwrap();
-        assert_eq!(running.snapshot.version, 0, "the one before, meanwhile");
-        assert!(recording.effective().is_none());
-        recording.prepare(&snapshot, &Default::default());
+        assert_eq!(runner.schedule.running.load_full().unwrap().snapshot.version, 0, "the one before, meanwhile");
+        assert_eq!(runner.inspect().preparing.unwrap().preparing, [board]);
+        scheduled.prepare(to_prepare);
         until_running(&runner, 1);
-        assert!(recording.effective().is_some());
+    }
+
+    /// A slot takes its state from the one before at its first pass: as it is (carried on), or handed to the fresh
+    /// state its node prepared; through a slot whose snapshot never ran, too.
+    #[test]
+    fn state_is_carried_on_or_handed_over_at_the_first_pass() {
+        // The new state, from the proto-state: what it has, then the old's.
+        let change: ChangeFn = &|state, proto_state| {
+            let state = state.downcast_mut::<Vec<u64>>().unwrap();
+            let proto_state = proto_state.downcast_mut::<Vec<u64>>().unwrap();
+            proto_state.append(state);
+            std::mem::swap(state, proto_state);
+        };
+        let first = Arc::new(StateSlot::new(Box::new(vec![1u64])));
+        first.begin(0);
+        first.with(0, change, |state| state.downcast_mut::<Vec<u64>>().unwrap().push(2));
+        // Never run: carrying on from the first.
+        let never = Arc::new(StateSlot::empty());
+        never.fill(Box::new(()), Some(From { slot: first.clone(), carry: true }));
+        // With a proto-state, made the new state with what the one that never ran would have had.
+        let last = Arc::new(StateSlot::empty());
+        last.fill(Box::new(vec![10u64]), Some(From { slot: never.clone(), carry: false }));
+        assert!(last.ready());
+        last.begin(1);
+        let state = last.with(1, change, |state| state.downcast_ref::<Vec<u64>>().unwrap().clone());
+        assert_eq!(state, [10, 1, 2]);
+        assert!(Arc::into_inner(first).unwrap().is_empty(), "carried on from");
+        let mut never = Arc::into_inner(never).unwrap();
+        assert!(!never.is_empty(), "what's left, to let go of in the background");
+    }
+
+    /// A slot isn't ready until it's filled, nor while the slot it's to take its state from isn't (and isn't in use).
+    #[test]
+    fn a_slot_is_ready_once_it_and_what_it_takes_from_are() {
+        let before = Arc::new(StateSlot::empty());
+        let after = Arc::new(StateSlot::empty());
+        assert!(!after.ready());
+        after.fill(Box::new(()), Some(From { slot: before.clone(), carry: true }));
+        assert!(!after.ready(), "the one before isn't");
+        before.fill(Box::new(1u64), None);
+        assert!(after.ready());
     }
 }

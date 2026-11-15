@@ -22,10 +22,11 @@ The parts of the API are there for three different reasons, and it helps to know
 
 - **The data model: what the node is and does.** These have to be right for the node to work: its ports (`inputs`,
   `outputs`), its settings (`settings`, `set_setting`) and the settings of others it can see (`controls`), `process`
-  and the `State` it carries from pass to pass, the triggers it takes, and `prepare_to_record`.
+  and its state (prepared for each snapshot: `prepare_for_snapshot`), and the triggers it takes.
 - **Optimisation: how cheaply it runs.** Leaving these at their defaults is always correct, only slower or using more
   memory: `evaluate_buffer_usage`, `evaluate_tree_shake` (one exception: a writer says it only runs while recording,
-  with something to record, or it would write empty files), working memory instead of state (`CARRIED_OVER = false`), and pools for buffers its threads swap.
+  with something to record, or it would write empty files), worker state instead of shared state where nothing's carried over (`WorkerState`), and pools for buffers its threads
+  swap.
 - **The experience of using it: how it looks and behaves for people.** These change nothing it computes: its category,
   name and description (`INFO`), `warnings`, its window (`gui_ui`, and `WINDOW_SIZE`), whether
   it's in the basic view (`SHOW_IN_BASIC_DEFAULT`), and how its threads show in the dev tools (`threads`,
@@ -44,16 +45,47 @@ The parts of the API are there for three different reasons, and it helps to know
 
 ## Running
 
-`process(pass, state)` is called once a pass, on a worker thread, with the pass's buffers (see
-[`PassContext`](../src/engine/pass_context.rs)): `inputs` to read, `outputs` to fill (already sized: nothing should be allocated
-per pass), the settings its `controls` see, whether it's recording, what it shares with the GUI, and its triggers. `self` is the snapshot's
-settings: the latest, as of the pass.
+`process(pass, state, worker_state)` is called once a pass, on a worker thread, with the pass's buffers (see
+[`PassContext`](../src/engine/pass_context.rs)): `inputs` to read, `outputs` to fill (already sized: nothing should be
+allocated per pass), the settings its `controls` see, whether it's recording, what it shares with the GUI, and its
+triggers. `self` is the snapshot's settings: the latest, as of the pass.
 
-- **State.** `type State` is what it keeps between passes, made by `initial_state(inputs)`, and `()` for none. It
-  implements `PassState`, saying why it's needed (`WHY`, shown in the dev tools at the sync point it makes). State
-  that's only working memory (nothing carried over: `CARRIED_OVER = false`) is each worker's own, and makes no sync
-  point. State carries on from snapshot to snapshot while the node's data streams in and out stay the same, and is
-  made afresh when they change.
+- **State.** A node has two kinds, each `()` for none:
+  - `type State` is carried from pass to pass (a filter's history). Passes hand it on in order, so they wait for each
+    other there (a sync point); it implements `PassState`, saying why it's needed (`WHY`, shown in the dev tools).
+  - `type WorkerState` is each worker's own: scratch space, kept so it isn't remade every pass, with nothing carried
+    over, so no waiting. The Reference and Channel Selector have it.
+- **Preparing for a snapshot.** This is where state is made. Every node with state prepares for each snapshot the run's
+  given (`prepare_for_snapshot`), one after another on a thread of the run's, before any pass runs against it (the
+  snapshot before carries on meanwhile). It's told its input data streams, what its controls see, the snapshot's
+  recording if it's recording, what its controls can trigger, how many workers there are, and how it was in the
+  snapshot before (`previous`: its settings and data streams then, and whether they're the same now). It answers with
+  a `Prepared`:
+  - `proto_shared_state` and `proto_worker_state` (one per worker): state made ahead of time, to become its state as
+    the snapshot takes over, or `None` for nothing new, so its state carries on. A node new to the run, or whose data
+    streams have changed (`context.same_streams()`), must make what it has. Most nodes do just that:
+    `if context.same_streams() { return Prepared::nothing().into(); }`, then their state for the new streams.
+  - `decisions`: anything about its hardware someone should decide (see below).
+
+  It answers now (`Prepare::Now`), or, if it's started something slow (opening a device, on a thread of its own, or with
+  `Prepare::on_thread`), once that's done (`Prepare::Wait`): the waits come once every node's been asked, so they
+  overlap. Once it's prepared, that's it: hardware it couldn't open isn't tried again, and hardware that fails later
+  just stops giving it data, which it says.
+
+  At the snapshot's first pass, the new state's made from the proto-state: `on_snapshot_change(state, proto_state)` on
+  the worker running it, once the pass before has finished with the old state. By default the proto-state's swapped
+  in; a node can take what it likes across from the old state instead (a device it has open, say), quickly. Each
+  worker's own state is simply replaced by the one made for it, as nothing in it is carried over. What's left of the
+  old is let go of in the background. Trying a node
+  out, `fresh_state(&node, &inputs)` (or `fresh_states`) is what it makes.
+- **Hardware not as set.** A source opening a device as it prepares checks it against its settings, and gives a
+  `UserDecision` for each thing that isn't as set: what (`what`), and the node with settings matching the hardware, if
+  there are such settings (`fix`: the whole fix, with each). A device that can't be opened is one, with no fix. The
+  snapshot runs meanwhile, the node doing what it can (a board whose headstages aren't on the ports set acquires none
+  of them), and the app asks whether to take on the fix, carry on without the node (disabling it), or stop. A node
+  that makes nothing new keeps what it was asked about before. A node that fails to prepare (it panics, or doesn't make
+  state it needs) is asked about the same way, and doesn't run: its outputs are left empty. See the
+  [board](../standard/src/ephys/board/node.rs) and the [camera](../standard/src/tracking/camera/node.rs).
 - **Buffer usage.** `evaluate_buffer_usage(inputs, outputs)`, asked once per plan, says how the node uses its buffers
   (a `BufferUsage`):
   - **In place.** `in_place[output]` names an input whose buffer the output can be made in, when nothing else needs
@@ -187,8 +219,8 @@ says whether it can be sent now. Only taking it differs, as that's on a differen
   [Spike Detector](../standard/src/spikes/spike_detector.rs) work this way, triggered from the Spike Viewer.
 - **`Delivery::Direct`** (`RunOnFiles`): needs no pass, or even a run. It's delivered on the GUI's thread, whatever's
   going on, to `Node::on_trigger`, as the `Trigger` (`if let Trigger::RunOnFiles(files) = trigger`), with the same
-  `UiContext` as its window's. As well as from a window, a node can send one through a control with a `TriggerHandle`, from the `ControlTriggers` it's given in
-  `prepare_to_record` (`handle(control, TriggerKind::RunOnFiles)`), which it can keep and use from any thread. (Only a
+  `UiContext` as its window's. As well as from a window, a node can send one through a control with a `TriggerHandle`, from the `ControlTriggers` it's given as it
+  prepares (`PrepareContext::triggers`, `handle(control, TriggerKind::RunOnFiles)`), which it can keep and use from any thread. (Only a
   direct trigger has a handle, as a handle can outlive the run: there's none for a pass trigger.)
 
 On their way, triggers are carried as `AnyTrigger`s (boxed), so the run's and the app's queues needn't know the
@@ -199,24 +231,25 @@ applied while settings are locked.
 
 ## Threads of its own
 
-A node can run threads (started in `initial_state`, stopped when its state's dropped). It lists them in `threads()`,
+A node can run threads (started as it prepares its state, stopped when its state's dropped). It lists them in `threads()`,
 with which way data goes and why it's a thread, draws what each is up to in `thread_ui`, and reports any pool of
 buffers it swaps with the passes in `thread_pool`, all for the dev tools. A source's thread fills buffers shaped like
 the node's outputs from a [`Pool`](../standard/src/pool.rs), which `process` swaps into the pass; see the
 [board's capture](../standard/src/ephys/board/capture.rs). A writer's passes swap their data into chunks
 from a pool, for its thread to write; see [`recording`](../standard/src/recording/mod.rs).
 
-Fresh state (when a node's data streams change) is made before the old is dropped. So a thread holding something
-that opening again would disturb can carry on from one state to the next: the state holds an `Arc` of it, found by
-what it's open to in a list of `Weak`s, and it's closed once the last state using it is done. The VR Computer keeps its connection like
+New state (when a node's data streams change) is made before the old is dropped. So a thread holding something
+that opening again would disturb can carry on from one state to the next: taken across in `on_snapshot_change`, or
+held as an `Arc`, found by what it's open to in a list of `Weak`s, and closed once the last state using it is done. The VR Computer keeps its connection like
 this, and the [Arduino](../standard/src/other/arduino.rs) its serial port, as opening it resets the Arduino.
 
 ## Recording
 
-`prepare_to_record` is called on a thread of its own before recording starts (a writer opening its files), for each
-node in the recording's plan (planned for recording, so with its writers), given when the recording was asked for, to name or date what it writes by: the same for every node, and for the settings saved with
-it, as preparing can take a while. What it returns comes back to the first pass that records
-(`PassContext::take_prepared`). Passes see whether it's recording (`PassContext::recording()`), and when acquiring and
+A recording's snapshot is planned for recording, so with its writers, and its nodes prepare for it as for any
+snapshot (`prepare_for_snapshot`): given the recording (`PrepareContext::recording`), with when it was asked for, to name or date
+what they write by (the same for every node, and for the settings saved with it, as preparing can take a while). A
+writer opens its files then, and carries on with them through the recording's snapshots, but not into another
+recording (`recording_changed`). Passes see whether it's recording (`PassContext::recording()`), and when acquiring and
 recording started, by the monotonic clock, from their snapshot (`PassContext::snapshot`, a `SnapshotLite`). A node's
 thread can find how long, as of whenever it asks, from a pass's snapshot: shared, to keep (the newest it's been given,
 say, as the VR Computer's thread does). The run carries on with the snapshot before until every node's prepared and the workers have buffers for the

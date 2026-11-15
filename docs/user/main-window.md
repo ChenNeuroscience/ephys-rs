@@ -27,6 +27,20 @@ From left to right:
 **Play** starts acquiring: sources (boards, cameras) start sending data, everything downstream processes it, and the
 viewers show it. Nothing is written to disk. Use this to check everything before recording.
 
+As it starts, each board and camera is opened and checked against its settings: a board's headstages are on the
+ports set, its bandwidth is what its chips can do, a camera's frames are the size set. If anything isn't as set, or
+the hardware can't be opened, it asks, for each node, while everything runs in the background (a board whose
+headstages aren't as set acquires none of them meanwhile, a camera at another size skips its frames):
+
+- **Use the hardware's settings**: change the node's settings to match the hardware.
+- **Carry on without it**: disable the node.
+
+or **Stop**. Taking on the hardware's settings is an edit, saved with the file, so next time it matches and there's
+nothing to ask. Hardware that can't be opened isn't tried again until Play's pressed again, and hardware that fails
+while running stops giving data, saying so in its window.
+
+![Hardware not as set](../../tests/snapshots/hardware_not_as_set.png)
+
 **Record** starts writing, through every writer node in the graph (Write LTX, Write Raw). Press it again to stop
 recording. Acquisition carries on. Stopping acquisition (Play) stops recording too.
 

@@ -14,13 +14,11 @@
 //!
 //! Samples are numbered, and timed, from the start of recording.
 
-use ephys_rs::engine::BufferUsage;
-use ephys_rs::engine::TreeShake;
+use ephys_rs::engine::{BufferUsage, Prepare, PrepareContext, Prepared, TreeShake};
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
-use chrono::Local;
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 
@@ -52,8 +50,6 @@ pub struct WriteRaw {}
 /// While running: the inputs' streams as the run started, the writer's thread while recording, and its status.
 #[derive(Default)]
 pub struct Recorder {
-    continuous: Option<Continuous>,
-    events: Option<Events>,
     writing: Option<Writing<Chunk>>,
 }
 
@@ -99,6 +95,7 @@ impl Chunk {
 
 impl Node<Edges> for WriteRaw {
     type State = Recorder;
+    type WorkerState = ();
     /// What it shows, for its window.
     type Shared = Pool<Status>;
     type UiState = ();
@@ -162,42 +159,36 @@ impl Node<Edges> for WriteRaw {
         status_ui(ui, pool.and_then(Pool::newest).as_deref(), true, context.theme);
     }
 
-    fn initial_state(&self, inputs: &[Option<DataStream>]) -> Recorder {
-        let continuous = match inputs[0] {
+    /// While recording, opens the files and starts the thread to write them (carrying on with them through the
+    /// recording's snapshots, as long as its inputs are the same).
+    fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Recorder, (), Self> {
+        if context.same_streams() && !context.recording_changed {
+            return Prepared::nothing().into();
+        }
+        let continuous = match context.inputs[0] {
             Some(DataStream::Continuous(c)) => Some(c),
             _ => None,
         };
-        let events = match inputs[1] {
+        let events = match context.inputs[1] {
             Some(DataStream::Events(e)) => Some(e),
             _ => None,
         };
-        Recorder { continuous, events, ..Default::default() }
-    }
-
-    /// Opens the files, and starts the thread to write them.
-    fn prepare_to_record(
-        &self,
-        inputs: &[Option<DataStream>],
-        _controls: &[Option<crate::Setting>],
-        base_directory: Option<&ephys_rs::base_directory::Place>,
-        start_requested_date: &chrono::DateTime<Local>,
-        triggers: &ephys_rs::triggers::ControlTriggers<crate::Trigger>,
-    ) -> Option<Box<dyn std::any::Any + Send>> {
-        let Recorder { continuous, events, .. } = self.initial_state(inputs);
-        let folder = recording_path(base_directory, start_requested_date);
-        let files = RawFiles::open(&folder, continuous, events);
-        Some(Box::new(Chunk::writing(&folder, continuous, events, files, after_recording(triggers, AFTER_RECORDING))))
+        let writing = context.recording.map(|recording| {
+            let folder = recording_path(recording.base_directory(), recording.start_requested_date());
+            let files = RawFiles::open(&folder, continuous, events);
+            let after = after_recording(context.triggers, AFTER_RECORDING);
+            Chunk::writing(&folder, continuous, events, files, after)
+        });
+        Prepared::shared(Recorder { writing }).into()
     }
 
     /// While recording, hands the pass's data to the writer's thread, swapping the buffers it's in for a chunk's.
-    fn process(&self, pass: &mut PassContext<Edges>, recorder: &mut Recorder) {
-        match (pass.recording(), &recorder.writing) {
-            (true, None) => {
-                let writing = pass.take_prepared::<Writing<Chunk>>();
-                recorder.writing = Some(writing.unwrap_or_else(|| Writing::failed("it wasn't prepared to record")));
-            }
-            (false, Some(_)) => recorder.writing = None, // finishes the files
-            _ => {}
+    fn process(&self, pass: &mut PassContext<Edges>, recorder: &mut Recorder, _: &mut ()) {
+        if !pass.recording() {
+            recorder.writing = None; // finishes the files
+        } else if recorder.writing.is_none() {
+            // It only runs while recording, so prepares for it: it says if that's ever not so.
+            recorder.writing = Some(Writing::failed("it wasn't prepared to record"));
         }
         if let Some(writing) = &recorder.writing
             && let Some(mut chunk) = writing.chunk()

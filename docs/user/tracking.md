@@ -21,7 +21,9 @@ Video from a camera:
 - The **fake camera** in `synthetic_streams/`, for trying things without hardware.
 
 **Settings**: which camera (and its serial number), the **Frame size** and the **Frame rate**. Its exposure and gain
-are set from a Tracker View.
+are set from a Tracker View. The frame size is checked as the camera opens, against its first frame: if it's sending
+another size, Play asks whether to use it (see [Playing and recording](main-window.md#playing-and-recording)). If the
+size changes while running, frames are skipped, and its window offers to use the camera's.
 
 ## Position Detector
 

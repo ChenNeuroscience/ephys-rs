@@ -5,7 +5,7 @@
 //! distance from it, fill what's recorded (`Gains::fill_uv`). Sign doesn't count.
 
 use eframe::egui;
-use ephys_rs::engine::{BufferUsage, TreeShake};
+use ephys_rs::engine::{BufferUsage, Prepare, PrepareContext, Prepared, TreeShake};
 use serde::{Deserialize, Serialize};
 
 use crate::standard::auto_detect::{Distribution, PercentMultiple, SAMPLING, auto_detect_ui, detecting};
@@ -69,6 +69,7 @@ impl Sampling {
 
 impl Node<Edges> for ContinuousGain {
     type State = Gaining;
+    type WorkerState = ();
     type Shared = ();
     type UiState = ();
     type GlobalSettings = ();
@@ -116,9 +117,16 @@ impl Node<Edges> for ContinuousGain {
         &[crate::TriggerKind::AutoDetect]
     }
 
+    fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Gaining, (), Self> {
+        if context.same_streams() {
+            return Prepared::nothing().into();
+        }
+        Prepared::shared(Gaining::default()).into()
+    }
+
     /// When triggered, samples each channel (in µV) for a while, then triggers an update to gains from it; and multiplies each
     /// channel by its gain.
-    fn process(&self, pass: &mut PassContext<Edges>, gaining: &mut Gaining) {
+    fn process(&self, pass: &mut PassContext<Edges>, gaining: &mut Gaining, _: &mut ()) {
         let input = match pass.inputs[0] {
             Some(Buffer::Continuous(input)) => Some(input),
             _ => None,
@@ -260,7 +268,7 @@ mod tests {
         let level = PercentMultiple { percent: 98.0, multiple: 3.0 };
         let gain = ContinuousGain { sampling: 4.0, level, ..Default::default() };
         let stream = Continuous { channels: 2, sample_rate: 1000.0 };
-        let mut state = gain.initial_state(&[Some(DataStream::Continuous(stream))]);
+        let mut state = ephys_rs::engine::fresh_state(&gain, &[Some(DataStream::Continuous(stream))]);
         let (triggers, direct) =
             (ephys_rs::pass_triggers::PassTriggers::default(), ephys_rs::triggers::DirectTriggers::default());
         triggers.trigger(
@@ -282,7 +290,7 @@ mod tests {
             let mut outputs = [Buffer::Continuous(stream.buffer(PASS_DURATION))];
             let mut pass = PassContext::new(sequence, PASS_DURATION, &inputs, &mut outputs);
             (pass.triggers, pass.direct) = (&triggers, &direct);
-            gain.process(&mut pass, &mut state);
+            gain.process(&mut pass, &mut state, &mut ());
             let Buffer::Continuous(out) = &outputs[0] else { unreachable!() };
             let expected = -100.0 * gain.gains.get(0);
             assert_eq!(out.channel(0)[10], expected, "multiplied by the gain");

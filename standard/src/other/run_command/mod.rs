@@ -698,6 +698,7 @@ fn files_help(senders: &[String]) -> String {
 
 impl Node<Edges> for RunCommand {
     type State = ();
+    type WorkerState = ();
     type Shared = ();
     type UiState = CommandState;
     type GlobalSettings = ();
@@ -1203,7 +1204,6 @@ mod tests {
         let asked = Arc::new(Recording::new(Some(place), chrono::Local::now()));
         let recording =
             ephys_rs::engine::Snapshot::bake(1, snapshot.graph.clone(), snapshot.started, Some(asked.clone()));
-        asked.prepare(&recording, &direct);
         runner.update(&recording);
         let deadline = Instant::now() + Duration::from_secs(10);
         while asked.effective().is_none_or(|e| e.at.elapsed() < Duration::from_millis(500)) && Instant::now() < deadline

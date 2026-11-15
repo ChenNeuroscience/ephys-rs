@@ -26,7 +26,8 @@ use crate::standard::tracking::{Crop, Detection, Positions};
 use crate::standard::widgets::{named_settings_grid, section};
 use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
 use ephys_rs::engine::{
-    Category, Control, EdgeType, Input, Node, NodeInfo, Output, PassContext, PoolStatus, Shared, UiContext,
+    Category, Control, EdgeType, Input, Node, NodeInfo, Output, PassContext, PoolStatus, Prepare, PrepareContext,
+    Prepared, Shared, UiContext,
 };
 use ephys_rs::theme::Colours;
 
@@ -144,6 +145,7 @@ impl Node<Edges> for TrackerView {
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
     type State = Tracking;
+    type WorkerState = ();
     type Shared = TrackerShared;
     type UiState = TrackerUi;
     type GlobalSettings = ();
@@ -172,18 +174,22 @@ impl Node<Edges> for TrackerView {
     }
 
     /// Room for the LEDs' sizes over `led_chart::SECONDS`, so it isn't allocated while running.
-    fn initial_state(&self, inputs: &[Option<DataStream>]) -> Tracking {
+    fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Tracking, (), Self> {
+        let inputs = context.inputs;
+        if context.same_streams() {
+            return Prepared::nothing().into();
+        }
         let fps = match inputs[1] {
             Some(DataStream::Positions(positions)) => positions.fps as f64,
             _ => 0.0,
         };
         let history = History::with_capacity((fps * led_chart::SECONDS) as usize + 16);
-        Tracking { history, ..Default::default() }
+        Prepared::shared(Tracking { history, ..Default::default() }).into()
     }
 
     /// Records the LEDs' sizes, and keeps the pass's last frame, the LEDs found in it and the camera's stats. A
     /// pass without a frame is only shown if the camera isn't running, to say why.
-    fn process(&self, pass: &mut PassContext<Edges>, tracking: &mut Tracking) {
+    fn process(&self, pass: &mut PassContext<Edges>, tracking: &mut Tracking, _: &mut ()) {
         let Tracking { history, pending, recording, latest } = tracking;
         let TrackerShared { shown, path } = pass.shared::<TrackerShared>();
         if pass.recording() && !*recording {
@@ -947,7 +953,7 @@ mod tests {
             let mut pass = PassContext::new(0, 0.02, &inputs, &mut []);
             (pass.shared, pass.node) = (shared, view);
             pass.set_recording(recording);
-            TrackerView::default().process(&mut pass, &mut tracking);
+            TrackerView::default().process(&mut pass, &mut tracking, &mut ());
         };
         // What the GUI's side has, once it's taken what's been sent.
         let mut xs = || {
@@ -1072,49 +1078,21 @@ mod tests {
         let first = Snapshot::new(0, graph.clone());
         let runner = Runner::start(&first, 2);
 
-        let mut update = None;
+        // Opening the camera, it found the frames aren't the size set: decided (as someone would) before running.
+        let mut differences = None;
         assert!(wait_for(|| {
-            update = runner.direct_triggers().take_settings_updates().into_iter().next();
-            update.is_some()
+            differences = runner.user_decisions();
+            differences.is_some()
         }));
-        let (_, setting, value) = update.unwrap();
-        let value = value.downcast::<crate::Setting>().unwrap();
-        graph.get_mut(camera).unwrap().node.set_setting(setting, *value);
+        let (_, differences) = differences.unwrap();
+        let whats: Vec<_> = differences.iter().map(|(_, d)| &d.what).collect();
+        assert_eq!(whats, ["frames are 640×480, not the 320×240 set"]);
+        let fix = differences.into_iter().find_map(|(_, d)| d.fix).expect("the camera at the size it's sending");
+        graph.get_mut(camera).unwrap().node = fix;
         assert!(!runner.update(&Snapshot::new(1, graph)), "new buffers");
         assert!(wait_for(|| leds_shown(&runner, view) == Some(2)), "both LEDs: {:?}", leds_shown(&runner, view));
     }
 
-    #[test]
-    fn the_camera_updates_to_the_size_its_sending_unless_recording() {
-        let mut graph = Graph::default();
-        let camera = add(&mut graph, "Camera");
-        let address = super::super::camera::serve_test_scene(320, 240);
-        if let Some(Nodes::Camera(c)) = graph.get_mut(camera).map(|e| &mut e.node) {
-            c.source = super::super::camera::Source::Fake { address };
-        }
-        let idle = Snapshot::new(0, graph);
-        let recorded = Some(std::sync::Arc::new(ephys_rs::engine::Recording::default()));
-        let recording = ephys_rs::engine::Snapshot::bake(1, idle.graph.clone(), idle.started, recorded);
-        let runner = Runner::start(&recording, 2);
-        let updated = || {
-            let updates = runner.direct_triggers().take_settings_updates();
-            updates.into_iter().find_map(|(_, _, value)| value.downcast::<crate::Setting>().ok()).map(|value| *value)
-        };
-        std::thread::sleep(Duration::from_millis(1000));
-        assert!(updated().is_none(), "settings are locked while recording");
-
-        assert!(runner.update(&ephys_rs::engine::Snapshot::bake(2, recording.graph.clone(), recording.started, None)));
-        let mut value = None;
-        assert!(wait_for(|| {
-            value = updated();
-            value.is_some()
-        }));
-        let Some(crate::Setting::Camera(settings)) = value else { panic!("the camera's settings") };
-        assert_eq!(settings.frame_size, [320, 240]);
-        assert_eq!(settings.frame_rate, 50.0, "and the rest as they were");
-    }
-
-    /// The window, laid out as in the tracker plugin, on a made-up frame. See tests/snapshots/.
     #[test]
     fn window() {
         use crate::standard::themes::THEMES;

@@ -19,7 +19,8 @@ use crate::standard::ephys::{Continuous, ContinuousBuffer};
 use crate::standard::widgets::{input_summary, require_input, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind};
 use ephys_rs::engine::{
-    Category, DataStreamType, EdgeInfo, EdgeType, Input, Node, NodeInfo, Output, PassContext, UiContext,
+    Category, DataStreamType, EdgeInfo, EdgeType, Input, Node, NodeInfo, Output, PassContext, Prepare, PrepareContext,
+    Prepared, UiContext,
 };
 
 /// About how many samples a second the spectra are worked out from.
@@ -104,6 +105,10 @@ impl DataStreamType for Spectra {
         to.done.clone_from(&from.done);
         to.bins = from.bins;
     }
+
+    fn empty(buffer: &mut SpectraBuffer) {
+        buffer.done.fill(false);
+    }
 }
 
 impl ephys_rs::engine::PassState for Analysis {
@@ -113,6 +118,7 @@ impl ephys_rs::engine::PassState for Analysis {
 
 impl Node<Edges> for Spectrum {
     type State = Analysis;
+    type WorkerState = ();
     type Shared = ();
     type UiState = ();
     type GlobalSettings = ();
@@ -145,16 +151,20 @@ impl Node<Edges> for Spectrum {
         require_input(inputs, "a continuous data stream")
     }
 
-    fn initial_state(&self, inputs: &[Option<DataStream>]) -> Analysis {
+    fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Analysis, (), Self> {
+        let inputs = context.inputs;
+        if context.same_streams() {
+            return Prepared::nothing().into();
+        }
         let mut analysis = Analysis::default();
         if let Some(DataStream::Continuous(c)) = inputs[0] {
             analysis.reshape(c.channels as usize, c.sample_rate, self.band);
             analysis.rate = c.sample_rate;
         }
-        analysis
+        Prepared::shared(analysis).into()
     }
 
-    fn process(&self, pass: &mut PassContext<Edges>, analysis: &mut Analysis) {
+    fn process(&self, pass: &mut PassContext<Edges>, analysis: &mut Analysis, _: &mut ()) {
         let Some(Some(Buffer::Continuous(input))) = pass.inputs.first() else { return };
         let rate = analysis.rate;
         analysis.reshape(input.channels, rate, self.band);
@@ -331,7 +341,7 @@ mod tests {
     fn the_spectrum_peaks_at_the_rhythm() {
         let spectrum = Spectrum::default();
         let stream = Continuous { channels: 2, sample_rate: 30000.0 };
-        let mut analysis = spectrum.initial_state(&[Some(DataStream::Continuous(stream))]);
+        let mut analysis = ephys_rs::engine::fresh_state(&spectrum, &[Some(DataStream::Continuous(stream))]);
         let mut input = stream.buffer(PASS_DURATION);
         let per_pass = 600;
         input.len = per_pass;
@@ -346,7 +356,7 @@ mod tests {
             let buffer = Buffer::Continuous(input);
             let inputs = [Some(&buffer)];
             let mut pass = PassContext::new(sequence, PASS_DURATION, &inputs, &mut []);
-            spectrum.process(&mut pass, &mut analysis);
+            spectrum.process(&mut pass, &mut analysis, &mut ());
             let Buffer::Continuous(b) = buffer else { unreachable!() };
             input = b;
         }

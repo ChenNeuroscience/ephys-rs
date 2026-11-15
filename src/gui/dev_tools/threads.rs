@@ -469,8 +469,13 @@ fn workers_ui<N: NodesEnum>(
                 "Getting ready for snapshot v{}: {} of {count} workers have buffers for it",
                 preparing.version, preparing.ready
             );
-            if preparing.preparing_to_record {
-                text.push_str(", and its nodes are preparing to record (writers opening their files)");
+            if !preparing.preparing.is_empty() {
+                let names: Vec<String> =
+                    preparing.preparing.iter().filter_map(|&id| Some(graph.get(id)?.label.clone())).collect();
+                text.push_str(&format!(", and these nodes are preparing their state for it: {}", names.join(", ")));
+            }
+            if preparing.decisions > 0 {
+                text.push_str(&format!(", with {} things about hardware to decide", preparing.decisions));
             }
             ui.label(small(text, colours.warning));
         }
@@ -766,12 +771,12 @@ fn memory<N: NodesEnum>(
                 }
             });
             let states = plan.steps().iter().filter(|s| s.state.is_some()).count();
-            let working = plan.steps().iter().filter(|s| s.memory.is_some()).count();
+            let working = plan.steps().iter().filter(|s| s.worker).count();
             let copies = plan.steps().iter().map(|s| s.copies.len()).sum::<usize>();
             ui.label(small(
                 format!(
-                    "Also: {states} node states (one each, handed from pass to pass), {working} nodes' working \
-                     memory (each worker its own, so no waiting), and the pools nodes share with their threads and \
+                    "Also: {states} node states (one each, handed from pass to pass), {working} nodes' worker \
+                     state (each worker its own, so no waiting), and the pools nodes share with their threads and \
                      windows. {copies} of the buffers are copies the plan makes, for nodes taking them."
                 ),
                 colours.text_secondary,

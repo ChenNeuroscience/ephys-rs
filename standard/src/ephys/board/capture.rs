@@ -2,8 +2,9 @@
 //! are doing. They're decoded straight into a pool of a pass's buffers (`Samples`), which the Acquisition Board
 //! node's passes swap for the workers' own (see `crate::standard::pool`): each pass takes whatever's
 //! arrived since the last, and nothing's copied. The digital inputs' changes are found as they're decoded. The
-//! thread's status (what it's doing, the sample rate, losses) is shared for display. If the board can't be opened,
-//! or fails, it keeps trying.
+//! thread's status (what it's doing, the sample rate, losses) is shared for display. It opens the board once (as the
+//! node prepares, which waits for it: see `Capture::started`); if it can't, or the board fails later, it stops, saying
+//! why, and the node's passes have nothing from it.
 //!
 //! Fresh node state doesn't open the board again: if nothing it's acquiring has changed, its `Capture` carries on with
 //! the one acquiring (new state's made before the old's let go of), and the same pool. A new configuration does, once
@@ -19,6 +20,9 @@ use super::{BoardInfo, Config, Samples, Source};
 use crate::standard::ephys::{Continuous, Event, Events};
 use crate::standard::pool::{Pool, SLACK_PASSES};
 
+/// How long to wait for a board's capture that's been taken over to close it.
+const CLOSING_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Seconds the measured sample rate is over.
 const RATE_WINDOW: f64 = 2.0;
 
@@ -28,7 +32,7 @@ pub enum State {
     #[default]
     Starting,
     Running,
-    /// Something's wrong (e.g. no board); it keeps trying.
+    /// Something's wrong (e.g. no board), so it's stopped.
     Problem(String),
 }
 
@@ -40,6 +44,8 @@ pub struct Status {
     pub info: Option<BoardInfo>,
     /// Problems setting the board up that don't stop it working.
     pub warnings: Vec<String>,
+    /// The bandwidth it's acquiring with, once started, if it says (see `Board::bandwidth`).
+    pub bandwidth: Option<super::Bandwidth>,
     pub samples: u64,
     /// Samples the board skipped (from gaps in its sample numbers).
     pub board_dropped: u64,
@@ -139,6 +145,14 @@ impl Capture {
             log::info!("Carrying on with the board");
             return Capture { running: capture };
         }
+        // Acquiring otherwise: it's taken over, the old capture stopping (its passes having nothing more from it) so
+        // this one can open the board.
+        for entry in running.iter().filter(|entry| entry.source == source) {
+            if let Some(old) = entry.capture.upgrade() {
+                log::info!("Taking the board over, to acquire as now set");
+                old.shared.stop.store(true, Ordering::Relaxed);
+            }
+        }
         let shared = Arc::new(Shared { stop: AtomicBool::new(false), status: Mutex::new(Status::default()) });
         let bytes = shape.samples().bytes();
         let pool = Pool::new((0..SLACK_PASSES).map(|_| shape.samples()), bytes);
@@ -151,6 +165,18 @@ impl Capture {
         let capture = Arc::new(Running { shared, pool, thread: Some(thread) });
         running.push(Entry { source, config, shape, capture: Arc::downgrade(&capture) });
         Capture { running: capture }
+    }
+
+    /// Waits up to `timeout` for the board to start, or fail to, and says how it's going: still starting, if it hasn't.
+    pub fn started(&self, timeout: Duration) -> Status {
+        let until = Instant::now() + timeout;
+        loop {
+            let status = self.running.shared.status.lock().unwrap().clone();
+            if status.state != State::Starting || Instant::now() >= until {
+                return status;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     /// The buffers the passes swap with.
@@ -180,38 +206,43 @@ fn capture(shared: &Shared, source: &Source, config: &Config, shape: Shape, pool
         }
         status.state = state;
     };
-    let wait = || {
-        let retry_at = Instant::now() + Duration::from_millis(500);
-        while !stopping() && Instant::now() < retry_at {
-            std::thread::sleep(Duration::from_millis(20));
-        }
-    };
     let lines = shape.events.lines.min(32);
     let mask = if lines == 32 { u32::MAX } else { (1 << lines) - 1 };
-    while !stopping() {
-        // Before `board`, so it's let go of after it's closed.
-        let Some(_claim) = Claim::take(source) else {
-            set_state(State::Problem("waiting for board: it's in use, or still closing".into()));
-            wait();
-            continue;
+    // Once: it stops if it can't, or if the board fails.
+    {
+        // Before `board`, so it's let go of after it's closed: waiting a while for a capture it's taken the board over
+        // from to close it.
+        let until = Instant::now() + CLOSING_TIMEOUT;
+        let claim = loop {
+            match Claim::take(source) {
+                Some(claim) => break Some(claim),
+                None if Instant::now() < until && !stopping() => std::thread::sleep(Duration::from_millis(20)),
+                None => break None,
+            }
         };
+        let Some(_claim) = claim else {
+            set_state(State::Problem("couldn't open the board: it's in use".into()));
+            return;
+        };
+        if stopping() {
+            return;
+        }
         let mut board = match super::open(source) {
             Ok(board) => board,
             Err(e) => {
-                set_state(State::Problem(format!("waiting for board: {e}")));
-                wait();
-                continue;
+                set_state(State::Problem(format!("couldn't open the board: {e}")));
+                return;
             }
         };
         shared.status.lock().unwrap().info = Some(board.info().clone());
         if let Err(e) = board.start(config) {
             set_state(State::Problem(format!("couldn't start the board: {e}")));
-            wait();
-            continue;
+            return;
         }
         {
             let mut status = shared.status.lock().unwrap();
             status.warnings = board.warnings();
+            status.bandwidth = board.bandwidth();
             status.state = State::Running;
             log::info!("Acquiring from {}", board.info().description);
             for warning in &status.warnings {
@@ -242,12 +273,13 @@ fn capture(shared: &Shared, source: &Source, config: &Config, shape: Shape, pool
                 Ok(true) => {}
                 Ok(false) => continue, // nothing came yet: check for stopping, and try again
                 Err(e) => {
-                    set_state(State::Problem(format!("board error, reconnecting: {e}")));
+                    set_state(State::Problem(format!("board error, so it's stopped: {e}")));
                     break;
                 }
             }
             ttl.clear();
             let mut lost_events = 0;
+            pool.drop_unwanted();
             let into_pool = (!mismatched)
                 .then(|| {
                     pool.fill(Samples::clear, |samples| {
@@ -294,7 +326,7 @@ fn capture(shared: &Shared, source: &Source, config: &Config, shape: Shape, pool
             let decoded = match decoded {
                 Ok(decoded) => decoded,
                 Err(e) => {
-                    set_state(State::Problem(format!("board error, reconnecting: {e}")));
+                    set_state(State::Problem(format!("board error, so it's stopped: {e}")));
                     break;
                 }
             };

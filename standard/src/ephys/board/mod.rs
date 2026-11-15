@@ -60,6 +60,14 @@ impl Headstage {
         headstages.iter().map(|h| h.channels).sum()
     }
 
+    /// Whether a board with headstages `found` can read `wanted`: each on a port with one there as big, or twice as big
+    /// (a 64 channel headstage can be read as 32, a 32 as 16).
+    pub fn readable(wanted: &[Headstage], found: &[Headstage]) -> bool {
+        wanted.iter().all(|w| {
+            found.iter().any(|f| f.port == w.port && (f.channels == w.channels || f.channels == 2 * w.channels))
+        })
+    }
+
     /// "A1 32, B1 64".
     pub fn describe(headstages: &[Headstage]) -> String {
         if headstages.is_empty() {
@@ -101,7 +109,7 @@ impl Default for Bandwidth {
 pub struct Config {
     pub sample_rate: u32,
     pub bandwidth: Bandwidth,
-    /// The headstages wanted (a board that can read them as set does; otherwise it reads those it has).
+    /// The headstages wanted: a board reads them as set, or (if it can't) none of them.
     pub headstages: Vec<Headstage>,
 }
 
@@ -199,6 +207,11 @@ pub trait Board: Send {
     fn warnings(&self) -> Vec<String> {
         Vec::new()
     }
+
+    /// The bandwidth it's acquiring with, once started, if it says: as near as its chips get to what was asked for.
+    fn bandwidth(&self) -> Option<Bandwidth> {
+        None
+    }
 }
 
 /// Which board to acquire from.
@@ -226,7 +239,9 @@ impl Source {
 
 impl Default for Source {
     fn default() -> Self {
-        Source::Fake { address: FAKE_ADDRESS.into() }
+        // Tests don't find a fake board someone happens to be running: there's none, unless they serve one.
+        let address = if cfg!(test) { "127.0.0.1:9" } else { FAKE_ADDRESS };
+        Source::Fake { address: address.into() }
     }
 }
 

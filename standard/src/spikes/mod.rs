@@ -148,6 +148,12 @@ impl DataStreamType for Spikes {
         to.thresholds.clone_from(&from.thresholds);
         to.gains.clone_from(&from.gains);
     }
+
+    fn empty(buffer: &mut SpikesBuffer) {
+        buffer.spikes.clear();
+        buffer.waveforms.clear();
+        buffer.pass_samples = 0;
+    }
 }
 
 /// What Write LTX's −128 to 127 cover, of amplified µV, until it's set: ±250 µV, as ephys-rs has always recorded. What

@@ -62,6 +62,16 @@ edit, undone or redone, a run starting or stopping, recording starting or stoppi
 run against them. Undo and redo step between the items of the history (the graph and annotations, as each edit left
 them), not snapshots: undoing an edit changes the graph, which is baked like any edit.
 
+Given a snapshot, the run has each node with state prepare for it (`Node::prepare_for_snapshot`), one snapshot at a
+time, on a thread of its own; a newer snapshot given meanwhile replaces one waiting its turn, so a burst of changes
+prepares only the latest. A node makes its state ahead of time (proto-states: shared, and one per worker), or nothing
+new, so its state carries on; slow work (opening a device) is started and waited for once every node's been asked.
+At the snapshot's first pass the new state's made from the proto-state (`Node::on_snapshot_change`), and each worker's
+replaced by its own, so nothing's allocated on the passes. A source checks its hardware as it
+prepares, and says what someone should decide (`UserDecision`): the snapshot runs meanwhile, and the app asks
+([`user_decisions`](../src/gui/user_decisions.rs)) whether to take on the hardware's settings, carry on without the
+node, or stop. A node that fails to prepare is asked about the same way, and doesn't run.
+
 ## Plans and passes
 
 [`run.rs`](../src/engine/run.rs) runs the graph, as [`plan.rs`](../src/engine/plan.rs) plans it, giving
@@ -146,8 +156,7 @@ The passes never wait on the GUI, nor it on them.
   Recording Control does, by a TTL line. A pass's snapshot, as much of it as nodes can see (`PassContext::snapshot`, a
   `SnapshotLite`), says when acquisition and recording started, by the monotonic clock (`started`, and
   `Recorded::started`, when the app took the recording on), the latter as opposed to when it was asked for, which names
-  and dates it (`Recording::start_requested_date`); and whether it's recording (`PassContext::recording`), with what
-  nodes prepared (`PassContext::take_prepared`). A node's own thread, which carries on between passes, can keep a pass's
+  and dates it (`Recording::start_requested_date`); and whether it's recording (`PassContext::recording`). A node's own thread, which carries on between passes, can keep a pass's
   snapshot, without locks: the very one, shared (how long it's been acquiring and recording, as of whenever it asks).
   The VR Computer's keeps the newest its passes hand over.
 
@@ -192,7 +201,7 @@ File › Settings… ([`preferences`](../src/gui/preferences.rs)) has the rest o
 ## Recording
 
 Pressing Record bakes a snapshot recording, planned for it: writers run only while recording, and so does whatever
-only feeds them. Every node in its plan prepares (`Node::prepare_to_record`: writers open their files, on a thread),
+only feeds them. Its nodes prepare for it, as for any snapshot (`Node::prepare_for_snapshot`: writers open their files, on threads),
 in the [base directory](base-directories.md) chosen in the toolbar, while the workers make buffers for the plan; the
 run carries on with the snapshot before until both are ready, and the recording takes effect with the first pass that
 runs it (`Recording::effective`, also in Write LTX's `.set` file, beside when it was asked for). Nodes see

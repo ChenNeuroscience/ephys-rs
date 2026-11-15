@@ -64,6 +64,9 @@ impl DataStreamType for CameraStats {
     fn copy(from: &CaptureStats, to: &mut CaptureStats) {
         to.copy_from(from);
     }
+
+    /// Stats are as of whenever they were last copied: there's nothing to empty.
+    fn empty(_buffer: &mut CaptureStats) {}
 }
 
 /// Camera settings that another node (the Tracker View) can adjust.
@@ -73,9 +76,9 @@ pub struct CameraSettings {
     /// Frames per second, for a camera that takes one: also the rate declared for the video stream, whatever the camera
     /// does (an externally triggered one goes by its trigger), so changing it starts the node afresh.
     pub frame_rate: f64,
-    /// The video stream's frame size, so changing it starts the node afresh too. Frames of other sizes are skipped: the
-    /// camera triggers an update to the size it's sending, unless it's recording (see
-    /// `PassContext::trigger_settings_update`).
+    /// The video stream's frame size, so changing it starts the node afresh too. It's checked as the node prepares,
+    /// against the camera's first frame: if the camera's sending another size, someone's to decide (see
+    /// `UserDecision`). Frames of another size that come later are skipped, which the node's window says.
     pub frame_size: [u32; 2],
     /// Microseconds.
     pub exposure: Control,

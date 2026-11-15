@@ -124,6 +124,10 @@ impl DataStreamType for Continuous {
             to.channel_mut(channel).copy_from_slice(&from.channel(channel)[..len]);
         }
     }
+
+    fn empty(buffer: &mut ContinuousBuffer) {
+        buffer.len = 0;
+    }
 }
 
 /// A digital event: a line going high or low, at a sample within the pass.
@@ -156,6 +160,11 @@ impl DataStreamType for Events {
     fn copy(from: &EventsBuffer, to: &mut EventsBuffer) {
         to.events.clone_from(&from.events);
         to.pass_samples = from.pass_samples;
+    }
+
+    fn empty(buffer: &mut EventsBuffer) {
+        buffer.events.clear();
+        buffer.pass_samples = 0;
     }
 }
 

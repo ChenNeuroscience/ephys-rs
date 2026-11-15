@@ -17,7 +17,10 @@ use crate::standard::spikes::{Spike, Spikes, Thresholds};
 use crate::standard::widgets::{combo, input_summary, named_settings_grid, require_input, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
 use ephys_rs::engine::EdgeType;
-use ephys_rs::engine::{Category, Input, Node, NodeInfo, Output, PASS_DURATION, PassContext, SettingPort, UiContext};
+use ephys_rs::engine::{
+    Category, Input, Node, NodeInfo, Output, PASS_DURATION, PassContext, Prepare, PrepareContext, Prepared,
+    SettingPort, UiContext,
+};
 use ephys_rs::gui::widgets::info_icon;
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -134,18 +137,24 @@ impl Node<Edges> for SpikeDetector {
     }
 
     type State = Detector;
+    type WorkerState = ();
     type Shared = ();
     type UiState = ();
     type GlobalSettings = ();
 
-    fn initial_state(&self, inputs: &[Option<DataStream>]) -> Detector {
-        match inputs[0] {
+    fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Detector, (), Self> {
+        let inputs = context.inputs;
+        if context.same_streams() {
+            return Prepared::nothing().into();
+        }
+        Prepared::shared(match inputs[0] {
             Some(DataStream::Continuous(c)) => Detector::new(self.stream(c.channels, c.sample_rate)),
             _ => Detector::default(),
-        }
+        })
+        .into()
     }
 
-    fn process(&self, pass: &mut PassContext<Edges>, detector: &mut Detector) {
+    fn process(&self, pass: &mut PassContext<Edges>, detector: &mut Detector, _: &mut ()) {
         let Some(Some(Buffer::Continuous(input))) = pass.inputs.first() else { return };
         let Some(Buffer::Spikes(output)) = pass.outputs.get_mut(0) else { return };
         output.clear();
@@ -390,7 +399,7 @@ mod tests {
     /// Runs passes of `samples` through a detector, returning the spikes found (with their pass).
     fn detect(detector: &SpikeDetector, channels: u32, passes: &[Vec<Vec<f32>>]) -> Vec<(usize, Spike, Vec<f32>)> {
         let stream = Continuous { channels, sample_rate: 30000.0 };
-        let mut state = detector.initial_state(&[Some(DataStream::Continuous(stream))]);
+        let mut state = ephys_rs::engine::fresh_state(detector, &[Some(DataStream::Continuous(stream))]);
         let spikes = detector.stream(channels, 30000.0);
         let mut found = Vec::new();
         for (index, pass) in passes.iter().enumerate() {
@@ -403,7 +412,7 @@ mod tests {
             let mut outputs = [Buffer::Spikes(spikes.buffer(PASS_DURATION))];
             let inputs = [Some(&input)];
             let mut pass = PassContext::new(index as u64, PASS_DURATION, &inputs, &mut outputs);
-            detector.process(&mut pass, &mut state);
+            detector.process(&mut pass, &mut state, &mut ());
             let Buffer::Spikes(output) = &outputs[0] else { unreachable!() };
             for (i, spike) in output.spikes.iter().enumerate() {
                 found.push((index, *spike, output.waveform(i).to_vec()));
@@ -497,7 +506,7 @@ mod tests {
             ..Default::default()
         };
         let stream = Continuous { channels: 4, sample_rate: 30000.0 };
-        let mut state = detector.initial_state(&[Some(DataStream::Continuous(stream))]);
+        let mut state = ephys_rs::engine::fresh_state(&detector, &[Some(DataStream::Continuous(stream))]);
         let spikes = detector.stream(4, 30000.0);
         let (triggers, direct) =
             (ephys_rs::pass_triggers::PassTriggers::default(), ephys_rs::triggers::DirectTriggers::default());
@@ -520,7 +529,7 @@ mod tests {
             let inputs = [Some(&input)];
             let mut pass = PassContext::new(sequence, PASS_DURATION, &inputs, &mut outputs);
             (pass.triggers, pass.direct) = (&triggers, &direct);
-            detector.process(&mut pass, &mut state);
+            detector.process(&mut pass, &mut state, &mut ());
         }
         let updates = direct.take_settings_updates();
         let Some(Setting::Thresholds(thresholds)) = updates[0].2.downcast_ref::<Setting>() else { panic!() };

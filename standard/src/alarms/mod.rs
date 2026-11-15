@@ -346,4 +346,8 @@ impl DataStreamType for AlarmStates {
     fn copy(from: &AlarmStatesBuffer, to: &mut AlarmStatesBuffer) {
         to.states.clone_from(&from.states);
     }
+
+    fn empty(buffer: &mut AlarmStatesBuffer) {
+        buffer.states.clear();
+    }
 }

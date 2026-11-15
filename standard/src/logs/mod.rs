@@ -101,6 +101,10 @@ impl DataStreamType for LogLines {
         to.lengths.clone_from(&from.lengths);
         to.times.clone_from(&from.times);
     }
+
+    fn empty(buffer: &mut LogLinesBuffer) {
+        buffer.clear();
+    }
 }
 
 #[cfg(test)]

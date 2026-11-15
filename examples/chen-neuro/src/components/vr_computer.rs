@@ -535,6 +535,7 @@ impl Node<Edges> for VrComputer {
     };
 
     type State = Receiving;
+    type WorkerState = ();
     /// What it shows, for its window.
     type Shared = Pool<Status>;
     type UiState = ();
@@ -604,11 +605,21 @@ impl Node<Edges> for VrComputer {
         }
     }
 
-    fn initial_state(&self, _inputs: &[Option<DataStream>]) -> Receiving {
-        Receiving { connection: Some(Connection::start((self.ip.clone(), self.port))), ..Default::default() }
+    fn prepare_for_snapshot(
+        &self,
+        context: &ephys_rs::engine::PrepareContext<Edges, Self>,
+    ) -> ephys_rs::engine::Prepare<Receiving, (), Self> {
+        if context.same_streams() {
+            return ephys_rs::engine::Prepared::nothing().into();
+        }
+        ephys_rs::engine::Prepared::shared(Receiving {
+            connection: Some(Connection::start((self.ip.clone(), self.port))),
+            ..Default::default()
+        })
+        .into()
     }
 
-    fn process(&self, pass: &mut PassContext<Edges>, receiving: &mut Receiving) {
+    fn process(&self, pass: &mut PassContext<Edges>, receiving: &mut Receiving, _: &mut ()) {
         // Changing the address doesn't make the state afresh.
         if !receiving.connection.as_ref().is_some_and(|c| c.is_to(&self.ip, self.port)) {
             receiving.connection = Some(Connection::start((self.ip.clone(), self.port)));

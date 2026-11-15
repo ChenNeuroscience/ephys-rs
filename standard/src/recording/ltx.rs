@@ -29,7 +29,7 @@
 //! their own, as they are (whatever a reader makes of a key with a space in it, or one that's the same as another header),
 //! except that line breaks are written as spaces, as a header's a line.
 
-use ephys_rs::engine::{BufferUsage, DataStreamsEnum, TreeShake};
+use ephys_rs::engine::{BufferUsage, DataStreamsEnum, Prepare, PrepareContext, Prepared, TreeShake};
 use std::fs::File;
 use std::io::{self, BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -157,6 +157,7 @@ impl Chunk {
 
 impl Node<Edges> for WriteLtx {
     type State = Recorder;
+    type WorkerState = ();
     /// What it shows, for its window.
     type Shared = Pool<Status>;
     type UiState = ();
@@ -248,30 +249,29 @@ impl Node<Edges> for WriteLtx {
         status_ui(ui, pool.and_then(Pool::newest).as_deref(), true, context.theme);
     }
 
-    /// Opens the files, and starts the thread to write them.
-    fn prepare_to_record(
-        &self,
-        inputs: &[Option<DataStream>],
-        controls: &[Option<Setting>],
-        base_directory: Option<&ephys_rs::base_directory::Place>,
-        start_requested_date: &DateTime<Local>,
-        triggers: &ephys_rs::triggers::ControlTriggers<crate::Trigger>,
-    ) -> Option<Box<dyn std::any::Any + Send>> {
-        let base = recording_path(base_directory, start_requested_date);
-        let (streams, recorded) = (Streams::of(inputs), Recorded::of(controls, self.scales));
-        let files = LtxFiles::open(&base, *start_requested_date, streams, recorded);
-        Some(Box::new(Chunk::writing(&base, streams, files, after_recording(triggers, AFTER_RECORDING))))
+    /// While recording, opens the files and starts the thread to write them (carrying on with them through the
+    /// recording's snapshots, as long as its inputs are the same).
+    fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Recorder, (), Self> {
+        if context.same_streams() && !context.recording_changed {
+            return Prepared::nothing().into();
+        }
+        let writing = context.recording.map(|recording| {
+            let date = recording.start_requested_date();
+            let base = recording_path(recording.base_directory(), date);
+            let (streams, recorded) = (Streams::of(context.inputs), Recorded::of(context.controls, self.scales));
+            let files = LtxFiles::open(&base, *date, streams, recorded);
+            Chunk::writing(&base, streams, files, after_recording(context.triggers, AFTER_RECORDING))
+        });
+        Prepared::shared(Recorder { writing }).into()
     }
 
     /// While recording, hands the pass's data to the writer's thread, swapping the buffers it's in for a chunk's.
-    fn process(&self, pass: &mut PassContext<Edges>, recorder: &mut Recorder) {
-        match (pass.recording(), &recorder.writing) {
-            (true, None) => {
-                let writing = pass.take_prepared::<Writing<Chunk>>();
-                recorder.writing = Some(writing.unwrap_or_else(|| Writing::failed("it wasn't prepared to record")));
-            }
-            (false, Some(_)) => recorder.writing = None, // finishes the files
-            _ => {}
+    fn process(&self, pass: &mut PassContext<Edges>, recorder: &mut Recorder, _: &mut ()) {
+        if !pass.recording() {
+            recorder.writing = None; // finishes the files
+        } else if recorder.writing.is_none() {
+            // It only runs while recording, so prepares for it: it says if that's ever not so.
+            recorder.writing = Some(Writing::failed("it wasn't prepared to record"));
         }
         if let Some(writing) = &recorder.writing
             && let Some(mut chunk) = writing.chunk()

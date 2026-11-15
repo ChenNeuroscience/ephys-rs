@@ -8,7 +8,7 @@
 //! referenced data, it outputs the references themselves: a channel each.
 
 use eframe::egui::{self, Color32, RichText};
-use ephys_rs::engine::{BufferUsage, TreeShake};
+use ephys_rs::engine::{BufferUsage, Prepare, PrepareContext, Prepared, TreeShake};
 use serde::{Deserialize, Serialize};
 
 use crate::standard::ephys::{Continuous, ContinuousBuffer};
@@ -333,12 +333,6 @@ pub struct Referencing {
     values: Vec<f32>,
 }
 
-impl ephys_rs::engine::PassState for Referencing {
-    const WHY: &'static str = "Only working memory (what the settings work out to, and room for the references' \
-                               values), kept so it isn't remade every pass: each worker has its own.";
-    const CARRIED_OVER: bool = false;
-}
-
 impl Referencing {
     fn plan(&mut self, settings: &Reference, count: usize) {
         if self.settings.as_ref() == Some(settings) && self.count == count {
@@ -376,7 +370,8 @@ impl Node<Edges> for Reference {
         TreeShake::needing_all(inputs.contains(&true) && outputs.contains(&true), inputs.len())
     }
 
-    type State = Referencing;
+    type State = ();
+    type WorkerState = Referencing;
     type Shared = ();
     type UiState = ();
     type GlobalSettings = ();
@@ -396,7 +391,15 @@ impl Node<Edges> for Reference {
         }
     }
 
-    fn process(&self, pass: &mut PassContext<Edges>, state: &mut Referencing) {
+    /// Each worker's room to work in.
+    fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<(), Referencing, Self> {
+        if context.same_streams() {
+            return Prepared::nothing().into();
+        }
+        Prepared::worker((0..context.workers).map(|_| Referencing::default()).collect()).into()
+    }
+
+    fn process(&self, pass: &mut PassContext<Edges>, _: &mut (), state: &mut Referencing) {
         let input = match pass.inputs[0] {
             Some(Buffer::Continuous(input)) => Some(input),
             _ => None,
@@ -658,7 +661,7 @@ mod tests {
         let inputs = [Some(&input)];
         let mut outputs = [Buffer::Continuous(stream.buffer(PASS_DURATION))];
         let mut pass = PassContext::new(0, PASS_DURATION, &inputs, &mut outputs);
-        reference.process(&mut pass, &mut Referencing::default());
+        reference.process(&mut pass, &mut (), &mut Referencing::default());
         let Buffer::Continuous(output) = &outputs[0] else { unreachable!() };
         (0..channels.len()).map(|c| output.channel(c).to_vec()).collect()
     }
@@ -739,7 +742,11 @@ mod tests {
         let references = Continuous { channels: 3, ..stream };
         let mut outputs =
             [Buffer::Continuous(stream.buffer(PASS_DURATION)), Buffer::Continuous(references.buffer(PASS_DURATION))];
-        reference.process(&mut PassContext::new(0, PASS_DURATION, &inputs, &mut outputs), &mut Referencing::default());
+        reference.process(
+            &mut PassContext::new(0, PASS_DURATION, &inputs, &mut outputs),
+            &mut (),
+            &mut Referencing::default(),
+        );
         let Buffer::Continuous(references) = &outputs[1] else { unreachable!() };
         assert_eq!(references.channel(0), &[1.0, 2.0][..], "even if nothing uses it");
         assert_eq!(references.channel(1), &[0.0, 0.0][..], "of nothing");

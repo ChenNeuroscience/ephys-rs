@@ -5,8 +5,8 @@
 //! toolbar, as wide as it likes, and says where recordings go (a `Place`): for the next recording, or the one going
 //! on. That's a directory, and perhaps a prefix for what's written there (a subject's trial, say), which writers use
 //! rather than their own.
-//! When recording's asked for, the GUI asks it, and hands that to every node preparing to record
-//! (`Node::prepare_to_record`, then `PassContext::base_directory`); writers decide what to do with it (write in it,
+//! When recording's asked for, the GUI asks it, and hands that to every node preparing for the recording's snapshot
+//! (`PrepareContext::recording`, see `Node::prepare_for_snapshot`, then `PassContext::base_directory`); writers decide what to do with it (write in it,
 //! say, or in a subdirectory of it). It's told when recordings start and stop. What each type keeps (the directory
 //! chosen, say), and which is in use, is saved as JSON: with the app's preferences, and in saved files (so with each
 //! recording too), and given back when it's next made or the file's opened.

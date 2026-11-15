@@ -57,7 +57,7 @@ chen-neuro adds another, in [`trials.rs`](../examples/chen-neuro/src/components/
 ## Writers
 
 When recording's asked for, the GUI asks the base directory in use where the recording goes. Every node then gets it as it
-prepares to record (`Node::prepare_to_record`), and from its passes while recording (`PassContext::base_directory`). Its
+prepares for the recording's snapshot (`Node::prepare_for_snapshot`, in `PrepareContext::recording`), and from its passes while recording (`PassContext::base_directory`). Its
 window gets it too (`UiContext::base_directory`), to show where it'll write. The standard writers write in the base
 directory ([`recording_path`](../standard/src/recording/mod.rs)), named with its prefix, if it has one, otherwise the
 time it started, as the settings saved with it are. A prefix is only

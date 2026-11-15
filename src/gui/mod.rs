@@ -25,6 +25,7 @@ mod preferences;
 mod shortcuts;
 mod style;
 mod toolbar;
+mod user_decisions;
 
 /// Pieces of the GUI for components to draw with, so they look of a piece with it.
 pub mod widgets {
@@ -257,6 +258,9 @@ pub struct App<N: NodesEnum, A: AnnotationsEnum> {
     /// For tests: added to how long it's been since then.
     #[cfg(test)]
     idle_extra: std::time::Duration,
+    /// For tests: the run's stats as shown, rather than as they are, for screenshots that don't change.
+    #[cfg(test)]
+    shown_stats: Option<engine::Stats>,
     /// What's unattended, as of the last time round: drawn as a warning, while it's one.
     unattended: preferences::Unattended,
     /// Each node's state on the GUI's side (see `Node::UiState`), while the graph has the node.
@@ -325,6 +329,9 @@ pub struct App<N: NodesEnum, A: AnnotationsEnum> {
     ran: Option<engine::Snapshot<N>>,
     /// The report of a crash the last time the program ran, until it's been said where it is.
     last_crash: Option<PathBuf>,
+    /// Asking what to do about nodes whose hardware isn't as their settings say, while the run's holding a snapshot
+    /// for it (see `notice_decisions`).
+    asking: Option<user_decisions::Asking<N>>,
 }
 
 impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
@@ -347,6 +354,8 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             last_input: Instant::now(),
             #[cfg(test)]
             idle_extra: std::time::Duration::ZERO,
+            #[cfg(test)]
+            shown_stats: None,
             unattended: preferences::Unattended::Fine,
             ui_states: UiStates::default(),
             stopped_unattended: Vec::new(),
@@ -379,6 +388,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             last_cpu: None,
             ran: None,
             last_crash: None,
+            asking: None,
             quick_actions: &[],
             problems: (0, 0),
             about: None,
@@ -760,8 +770,8 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         }
     }
 
-    /// Asks for a recording: bakes a snapshot recording it (planned for recording, so with its writers), and has the
-    /// nodes in its plan prepare to record (see `Node::prepare_to_record`) on a thread of their own. The run carries
+    /// Asks for a recording: bakes a snapshot recording it (planned for recording, so with its writers), whose nodes
+    /// prepare for it (see `Node::prepare_for_snapshot`: writers opening their files, say) as the run's given it. The run carries
     /// on with the snapshot before until they're ready and the workers have buffers for the new plan; recording
     /// takes effect with its first pass (noticed in `keep_running`).
     fn prepare_to_record(&mut self, ctx: &egui::Context) {
@@ -773,18 +783,8 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             Some(base) => log::info!("Preparing to record, in {}", base),
             None => log::info!("Preparing to record"),
         }
-        let recording = Arc::new(engine::Recording::new(base, start_requested_date));
-        self.set_recording(Some(recording.clone()));
-        let snapshot = self.snapshot.clone();
-        let (repaint, triggers) = (ctx.clone(), self.direct_triggers.clone());
-        let spawned = std::thread::Builder::new().name("preparing to record".into()).spawn(move || {
-            recording.prepare(&snapshot, &triggers);
-            repaint.request_repaint();
-        });
-        if let Err(e) = spawned {
-            self.set_recording(None);
-            self.set_status(ctx, format!("Couldn't prepare to record: {e}"));
-        }
+        self.set_recording(Some(Arc::new(engine::Recording::new(base, start_requested_date))));
+        ctx.request_repaint();
     }
 
     /// Asks for a recording, or stops one (or cancels it, while it's preparing): a new snapshot, which the run moves
@@ -1090,6 +1090,42 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         }
     }
 
+    /// Notices what about their hardware the nodes of the latest snapshot say someone should decide (see
+    /// `Runner::user_decisions`), to ask (see `decisions_window`), as it runs.
+    fn notice_decisions(&mut self) {
+        let found = self.runner.as_ref().and_then(Runner::user_decisions);
+        let Some((version, found)) = found.filter(|(version, _)| *version == self.snapshot.version) else {
+            self.asking = None;
+            return;
+        };
+        if self.asking.as_ref().is_none_or(|asking| asking.version != version) {
+            log::warn!("Nodes' hardware isn't as their settings say: asking what to do");
+            self.asking = Some(user_decisions::Asking::new(version, found));
+        }
+    }
+
+    /// Asks what to do about nodes whose hardware isn't as their settings say, while it's to be decided (see
+    /// `notice_decisions`): what's decided is an edit, taken into the history at once, so it's done even while
+    /// settings are locked.
+    fn decisions_window(&mut self, ctx: &egui::Context) {
+        let colours = self.colours();
+        let Some(asking) = &mut self.asking else { return };
+        match asking.show(ctx, &self.graph, colours) {
+            user_decisions::Outcome::Open => {}
+            user_decisions::Outcome::CarryOn => {
+                if let Some(asking) = self.asking.take() {
+                    asking.apply(&mut self.graph);
+                    self.history.commit(&self.graph, &self.annotations);
+                }
+            }
+            user_decisions::Outcome::Stop => {
+                self.asking = None;
+                log::info!("Stopped: nodes' hardware isn't as their settings say");
+                self.stop_running();
+            }
+        }
+    }
+
     /// The About window, until it's dismissed.
     fn about_window(&mut self, ctx: &egui::Context) {
         let (text, source, colours) = (self.about_text, self.source, self.colours());
@@ -1347,7 +1383,11 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                 }
                 if let Some(runner) = &self.runner {
                     ui.separator();
-                    let stats = ui.scope(|ui| self.run_stats(ui, &runner.stats())).response.rect;
+                    #[cfg(test)]
+                    let shown = self.shown_stats.clone().unwrap_or_else(|| runner.stats());
+                    #[cfg(not(test))]
+                    let shown = runner.stats();
+                    let stats = ui.scope(|ui| self.run_stats(ui, &shown)).response.rect;
                     // Watched rather than made a button, so the stats keep their own tooltips.
                     if ui.rect_contains_pointer(stats) {
                         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -1688,6 +1728,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         self.create_menu(&ctx, &resolved);
         self.paste_window(&ctx);
         self.crash_window(&ctx);
+        self.decisions_window(&ctx);
         self.about_window(&ctx);
         let colours = self.colours();
         if let Some(help) = &mut self.shortcuts {
@@ -1711,6 +1752,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         crate::console::drain();
         self.direct_triggers.wake(ctx);
         self.deliver_triggers(ctx);
+        self.notice_decisions();
         self.background(ctx);
         self.stop_unattended();
         self.upkeep(ctx);
@@ -2358,6 +2400,7 @@ mod tests {
             shared(&app.runner, &app.last_run).map(|shared| Arc::as_ptr(&shared))
         };
         assert_eq!(found(&harness), None, "nothing's run yet");
+        with_test_hardware(&mut harness);
         harness.state_mut().perform(&ctx, Action::Play);
         harness.run_steps(2);
         engine::tests::wait_for_passes(harness.state().runner.as_ref().unwrap(), 1);
@@ -2403,9 +2446,122 @@ mod tests {
         assert_ne!(found(&harness), second);
     }
 
+    /// Points the example's board and camera somewhere there's none, wherever this runs (the example's fake ones
+    /// might be running, or not).
+    fn without_hardware(harness: &mut Harness<TestApp>) {
+        use crate::standard::ephys::board::Source as BoardSource;
+        use crate::standard::tracking::camera::Source as CameraSource;
+        let ids: Vec<NodeId> = harness.state().graph.ids().collect();
+        for id in ids {
+            match harness.state_mut().graph.get_mut(id).map(|e| &mut e.node) {
+                Some(Nodes::AcquisitionBoard(b)) => b.source = BoardSource::Fake { address: "127.0.0.1:9".into() },
+                Some(Nodes::Camera(c)) => c.source = CameraSource::Fake { address: "127.0.0.1:9".into() },
+                _ => {}
+            }
+        }
+        harness.run_steps(2);
+    }
+
+    /// Points the example's board and camera at test ones of their own, as set, so nothing's asked as it runs.
+    fn with_test_hardware(harness: &mut Harness<TestApp>) {
+        use crate::standard::ephys::board::{Source as BoardSource, serve_test_board};
+        use crate::standard::tracking::camera::{Source as CameraSource, serve_test_scene};
+        let ids: Vec<NodeId> = harness.state().graph.ids().collect();
+        for id in ids {
+            match harness.state_mut().graph.get_mut(id).map(|e| &mut e.node) {
+                Some(Nodes::AcquisitionBoard(b)) => b.source = BoardSource::Fake { address: serve_test_board() },
+                Some(Nodes::Camera(c)) => {
+                    let [width, height] = c.settings.frame_size;
+                    c.source = CameraSource::Fake { address: serve_test_scene(width, height) };
+                }
+                _ => {}
+            }
+        }
+        harness.run_steps(2);
+    }
+
+    /// Waits for the app to ask about hardware that isn't as set (see `user_decisions`).
+    fn until_asked(harness: &mut Harness<TestApp>) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while harness.state().asking.is_none() && std::time::Instant::now() < deadline {
+            harness.run_steps(1);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(harness.state().asking.is_some(), "asked");
+        harness.run_steps(2);
+    }
+
+    /// Hardware not as set is asked about before running, if someone should decide (the board's headstages on other
+    /// ports), and otherwise taken on (the camera's frame size); deciding to use the hardware's settings takes them on,
+    /// and it runs. See tests/snapshots/.
+    #[test]
+    fn hardware_not_as_set_is_asked_about_before_running() {
+        use crate::standard::ephys::board::{Headstage, Source as BoardSource, serve_test_board};
+        use crate::standard::tracking::camera::{Source as CameraSource, serve_test_scene};
+        let mut harness = harness();
+        let (board, camera) = (node_named(harness.state(), "Acquisition Board"), node_named(harness.state(), "Camera"));
+        if let Some(Nodes::AcquisitionBoard(b)) = harness.state_mut().graph.get_mut(board).map(|e| &mut e.node) {
+            b.source = BoardSource::Fake { address: serve_test_board() };
+            let headstage = |port: &str| Headstage { port: port.into(), channels: 32 };
+            b.headstages = vec![headstage("D1"), headstage("D2")];
+        }
+        if let Some(Nodes::Camera(c)) = harness.state_mut().graph.get_mut(camera).map(|e| &mut e.node) {
+            c.source = CameraSource::Fake { address: serve_test_scene(320, 240) };
+        }
+        harness.run_steps(2);
+        harness.get_by_label("Play (Space)").click();
+        until_asked(&mut harness);
+        // It runs meanwhile: shown with stats that don't change from one run of the test to the next.
+        harness.state_mut().shown_stats = Some(engine::Stats { workers: 4, ..Default::default() });
+        harness.run_steps(2);
+        harness.snapshot("hardware_not_as_set");
+        harness.get_by_label("Carry on").click();
+        harness.run_steps(2);
+        let graph = &harness.state().graph;
+        let Some(Nodes::AcquisitionBoard(b)) = graph.get(board).map(|e| &e.node) else { panic!("the board") };
+        assert_eq!(Headstage::describe(&b.headstages), "A1 32, B1 32", "the board's");
+        let Some(Nodes::Camera(c)) = graph.get(camera).map(|e| &e.node) else { panic!("the camera") };
+        assert_eq!(c.settings.frame_size, [320, 240], "the camera's");
+        let stats = engine::tests::wait_for_passes(harness.state().runner.as_ref().unwrap(), 1);
+        assert!(stats.completed > 0, "{stats:?}");
+        assert!(harness.state().asking.is_none());
+    }
+
+    /// Hardware that can't be opened is asked about too: done without (its nodes disabled), the rest runs.
+    #[test]
+    fn hardware_that_cant_be_opened_can_be_done_without() {
+        let mut harness = harness();
+        without_hardware(&mut harness);
+        harness.get_by_label("Play (Space)").click();
+        until_asked(&mut harness);
+        harness.get_by_label("Carry on").click();
+        harness.run_steps(2);
+        assert!(harness.state().asking.is_none());
+        let stats = engine::tests::wait_for_passes(harness.state().runner.as_ref().unwrap(), 1);
+        assert!(stats.completed > 0, "{stats:?}");
+        let disabled = harness.state().graph.iter().filter(|(_, e)| e.disabled).count();
+        assert_eq!(disabled, 2, "the board and the camera");
+    }
+
+    /// Stopping, instead, stops the run, changing nothing.
+    #[test]
+    fn hardware_not_as_set_can_be_a_reason_to_stop() {
+        let mut harness = harness();
+        without_hardware(&mut harness);
+        let graph = harness.state().graph.clone();
+        harness.get_by_label("Play (Space)").click();
+        until_asked(&mut harness);
+        harness.get_by_label("Stop").click();
+        harness.run_steps(2);
+        assert!(harness.state().runner.is_none());
+        assert!(harness.state().asking.is_none());
+        assert!(engine::same_processing(&graph, &harness.state().graph));
+    }
+
     #[test]
     fn play_runs_the_graph() {
         let mut harness = harness();
+        with_test_hardware(&mut harness);
         harness.get_by_label("Play (Space)").click();
         harness.run_steps(2);
         assert!(harness.state().runner.is_some());

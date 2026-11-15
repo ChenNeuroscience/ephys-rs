@@ -91,6 +91,8 @@ pub struct RhythmBoard<T: Transport> {
     /// The sample counter's start, and where the samples so far have taken it (counting through its wraps).
     sample: u64,
     warnings: Vec<String>,
+    /// The bandwidth it's acquiring with, once started.
+    bandwidth: Option<Bandwidth>,
     running: bool,
 }
 
@@ -112,6 +114,7 @@ impl<T: Transport> RhythmBoard<T> {
             aux_due: Vec::new(),
             sample: 0,
             warnings: Vec::new(),
+            bandwidth: None,
             running: false,
         };
         let t = &mut board.transport;
@@ -260,7 +263,8 @@ impl<T: Transport> RhythmBoard<T> {
     }
 
     /// The data streams to read for `wanted` headstages, if the board has them (an RHD2132 can be read as 16
-    /// channels, an RHD2164 as 32); otherwise for every headstage found, at full channel counts.
+    /// channels, an RHD2164 as 32); otherwise none, saying so. It never reads others instead: their channels would be
+    /// taken for the ones set.
     fn choose_streams(&self, wanted: &[Headstage]) -> (Vec<Stream>, Option<String>) {
         let max = self.transport.max_streams() as usize;
         let streams_for = |headstages: &[Headstage]| -> Option<Vec<Stream>> {
@@ -282,15 +286,12 @@ impl<T: Transport> RhythmBoard<T> {
         match streams_for(wanted) {
             Some(streams) => (streams, None),
             None => {
-                let found = self.found_headstages();
-                let mut streams = streams_for(&found).unwrap_or_default();
-                streams.truncate(max);
                 let note = format!(
-                    "The board's headstages are {}, so it's acquiring all those rather than the {} set",
-                    Headstage::describe(&found),
+                    "The board's headstages are {}, not the {} set, so it's acquiring none of them",
+                    Headstage::describe(&self.found_headstages()),
                     Headstage::describe(wanted)
                 );
-                (streams, Some(note))
+                (Vec::new(), Some(note))
             }
         }
     }
@@ -329,16 +330,8 @@ impl<T: Transport> Board for RhythmBoard<T> {
         }
         self.enable_streams(streams.len() as u32);
         self.streams = streams;
-        let (lower, upper, dsp) = self.upload_registers(&config.bandwidth);
-        let near = |got: f64, asked: f64| (got - asked).abs() <= 0.05 * asked;
-        if !near(lower, config.bandwidth.lower_hz) || !near(upper, config.bandwidth.upper_hz) {
-            self.warnings.push(format!("The chips' bandwidth is {lower:.2} to {upper:.0} Hz, as near as they get"));
-        }
-        if let (Some(dsp), Some(asked)) = (dsp, config.bandwidth.dsp_hz)
-            && !near(dsp, asked)
-        {
-            self.warnings.push(format!("The DSP high-pass is at {dsp:.2} Hz, as near as it gets"));
-        }
+        let (lower_hz, upper_hz, dsp_hz) = self.upload_registers(&config.bandwidth);
+        self.bandwidth = Some(Bandwidth { lower_hz, upper_hz, dsp_hz });
         self.aux = vec![[0.0; 3]; self.streams.len()];
         self.aux_due = vec![[0.0; 3]; self.streams.len()];
         self.sample = 0;
@@ -428,6 +421,10 @@ impl<T: Transport> Board for RhythmBoard<T> {
 
     fn warnings(&self) -> Vec<String> {
         self.warnings.clone()
+    }
+
+    fn bandwidth(&self) -> Option<Bandwidth> {
+        self.bandwidth
     }
 }
 

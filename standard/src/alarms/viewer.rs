@@ -31,8 +31,8 @@ use crate::standard::widgets::{mark_mixed, open_settings_button, require_input};
 use crate::standard::widgets::{power, small_toggle};
 use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
 use ephys_rs::engine::{
-    Category, Control, Flow, Input, Node, NodeInfo, NodeThread, Output, PassContext, PassState, PoolStatus, Shared,
-    UiContext,
+    Category, Control, Flow, Input, Node, NodeInfo, NodeThread, Output, PassContext, PassState, PoolStatus, Prepare,
+    PrepareContext, Prepared, Shared, UiContext,
 };
 use ephys_rs::gui::widgets::Icon;
 use ephys_rs::theme::Colours;
@@ -173,6 +173,7 @@ pub struct AlarmsDisplay {
 
 impl Node<Edges> for AlarmViewer {
     type State = Sending;
+    type WorkerState = ();
     type Shared = SentStates;
     type UiState = AlarmsUi;
     type GlobalSettings = ();
@@ -212,8 +213,15 @@ impl Node<Edges> for AlarmViewer {
         }]
     }
 
+    fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Sending, (), Self> {
+        if context.same_streams() {
+            return Prepared::nothing().into();
+        }
+        Prepared::shared(Sending::default()).into()
+    }
+
     /// Sends the pass's alarm states to the GUI's side.
-    fn process(&self, pass: &mut PassContext<Edges>, sending: &mut Sending) {
+    fn process(&self, pass: &mut PassContext<Edges>, sending: &mut Sending, _: &mut ()) {
         let Some(Some(Buffer::AlarmStates(input))) = pass.inputs.first().copied() else { return };
         let pending = &mut sending.pending;
         pending.push(Update::Pass { seconds: pass.duration, recording: pass.recording() });
@@ -711,7 +719,7 @@ mod tests {
             let mut pass = PassContext::new(0, 0.02, &inputs, &mut []);
             pass.shared = by_node.get::<SentStates>(viewer).unwrap();
             pass.set_recording(recording);
-            AlarmViewer::default().process(&mut pass, &mut sending);
+            AlarmViewer::default().process(&mut pass, &mut sending, &mut ());
             background(&mut graph, viewer, &by_node, &gui, recording);
         }
         *gui.into_inner().downcast().unwrap()

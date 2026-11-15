@@ -26,6 +26,7 @@ impl Node<Edges> for VideoViewer {
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
     type State = ();
+    type WorkerState = ();
     /// The latest frames, for its window: their buffers, swapped in (so a pool of buffers like the pass's).
     type Shared = Pool<VideoBuffer>;
     type UiState = ();
@@ -55,7 +56,7 @@ impl Node<Edges> for VideoViewer {
     }
 
     /// Swaps the pass's frames (if it has any) into the pool its window reads from: nothing's copied.
-    fn process(&self, pass: &mut PassContext<Edges>, _: &mut ()) {
+    fn process(&self, pass: &mut PassContext<Edges>, _: &mut (), _: &mut ()) {
         let Some(Buffer::Video(video)) = pass.input(0) else { return };
         if video.frames == 0 {
             return;

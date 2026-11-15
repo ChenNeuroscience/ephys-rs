@@ -25,7 +25,8 @@ use crate::standard::pool::Pool;
 use crate::standard::widgets::{combo, named_settings_grid, setting};
 use crate::{DataStream, Edges};
 use ephys_rs::engine::{
-    Category, Flow, Node, NodeInfo, NodeThread, Output, PassContext, PassState, ThreadContext, UiContext,
+    Category, Flow, Node, NodeInfo, NodeThread, Output, PassContext, PassState, Prepare, PrepareContext, Prepared,
+    ThreadContext, UiContext,
 };
 use ephys_rs::gui::widgets::{Icon, small_icon_button};
 
@@ -349,6 +350,7 @@ impl Node<Edges> for Arduino {
     };
 
     type State = Connected;
+    type WorkerState = ();
     /// How it's getting on, for its window.
     type Shared = Pool<Status>;
     type UiState = ();
@@ -380,11 +382,15 @@ impl Node<Edges> for Arduino {
         }
     }
 
-    fn initial_state(&self, _inputs: &[Option<DataStream>]) -> Connected {
-        Connected { connection: Some(Connection::start((self.port.clone(), self.baud))), asked: None }
+    fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Connected, (), Self> {
+        if context.same_streams() {
+            return Prepared::nothing().into();
+        }
+        Prepared::shared(Connected { connection: Some(Connection::start((self.port.clone(), self.baud))), asked: None })
+            .into()
     }
 
-    fn process(&self, pass: &mut PassContext<Edges>, connected: &mut Connected) {
+    fn process(&self, pass: &mut PassContext<Edges>, connected: &mut Connected, _: &mut ()) {
         let key = (self.port.clone(), self.baud);
         if connected.connection.as_ref().is_none_or(|c| c.key != key) {
             connected.connection = Some(Connection::start(key));
@@ -506,13 +512,13 @@ mod tests {
     #[test]
     fn the_pins_wanted_are_worked_out_again_only_when_they_could_change() {
         let mut node = Arduino::default();
-        let mut connected = node.initial_state(&[]);
+        let mut connected = ephys_rs::engine::fresh_state(&node, &[]);
         let shown = Pool::<Status>::default();
         let handed = |node: &Arduino, connected: &mut Connected, recording: bool| {
             let mut pass = PassContext::new(0, 0.02, &[], &mut []);
             pass.shared = &shown;
             pass.set_recording(recording);
-            node.process(&mut pass, connected);
+            node.process(&mut pass, connected, &mut ());
             connected.connection.as_ref().unwrap().running.shared.wanted.load_full()
         };
         let first = handed(&node, &mut connected, false);

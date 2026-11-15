@@ -24,7 +24,10 @@ use crate::standard::spikes::{
 };
 use crate::standard::widgets::{open_settings_button, require_input};
 use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
-use ephys_rs::engine::{Category, Control, EdgeType, Input, Node, NodeInfo, Output, PassContext, Shortcut, UiContext};
+use ephys_rs::engine::{
+    Category, Control, EdgeType, Input, Node, NodeInfo, Output, PassContext, Prepare, PrepareContext, Prepared,
+    Shortcut, UiContext,
+};
 use ephys_rs::gui::widgets::Icon;
 use std::time::{Duration, Instant};
 
@@ -207,6 +210,7 @@ fn group_title(kind: &str, group: usize, channels: std::ops::Range<u32>) -> Stri
 
 impl Node<Edges> for SpikeViewer {
     type State = Recent;
+    type WorkerState = ();
     /// What it shows, for its window.
     type Shared = Pool<RecentDisplay>;
     type UiState = AutoDetecting;
@@ -247,12 +251,16 @@ impl Node<Edges> for SpikeViewer {
         ]
     }
 
-    fn initial_state(&self, inputs: &[Option<DataStream>]) -> Recent {
-        let Some(DataStream::Spikes(stream)) = inputs[0] else { return Recent::default() };
+    fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Recent, (), Self> {
+        let inputs = context.inputs;
+        if context.same_streams() {
+            return Prepared::nothing().into();
+        }
+        let Some(DataStream::Spikes(stream)) = inputs[0] else { return Prepared::shared(Recent::default()).into() };
         let groups = stream.groups() as usize;
         let keep = WAVEFORMS;
         let size = (stream.group_size * stream.waveform_samples()) as usize;
-        Recent {
+        Prepared::shared(Recent {
             stream: Some(stream),
             keep,
             waveforms: vec![0.0; groups * keep * size],
@@ -261,10 +269,11 @@ impl Node<Edges> for SpikeViewer {
             total: vec![0; groups],
             thresholds: vec![DEFAULT_THRESHOLD_UV; stream.channels as usize],
             gains: vec![1.0; stream.channels as usize],
-        }
+        })
+        .into()
     }
 
-    fn process(&self, pass: &mut PassContext<Edges>, recent: &mut Recent) {
+    fn process(&self, pass: &mut PassContext<Edges>, recent: &mut Recent, _: &mut ()) {
         let Some(Some(Buffer::Spikes(input))) = pass.inputs.first() else { return };
         let Some(stream) = recent.stream else { return };
         let size = input.group_size * input.samples;

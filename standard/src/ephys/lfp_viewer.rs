@@ -34,7 +34,10 @@ use crate::standard::pool::Pool;
 use crate::standard::spikes::{Channels, GainScope, Gains, gain_field};
 use crate::standard::widgets::{TIME_AXIS_HEIGHT, inline_block, open_settings_button, require_input, time_axis_ui};
 use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
-use ephys_rs::engine::{Category, Control, EdgeType, Input, Node, NodeInfo, Output, PassContext, UiContext};
+use ephys_rs::engine::{
+    Category, Control, EdgeType, Input, Node, NodeInfo, Output, PassContext, Prepare, PrepareContext, Prepared,
+    UiContext,
+};
 use ephys_rs::gui::widgets::{Icon, small_toggle_button};
 
 /// Columns across the view.
@@ -272,6 +275,7 @@ struct Rows<'a> {
 
 impl Node<Edges> for LfpViewer {
     type State = Traces;
+    type WorkerState = ();
     /// What the passes send its window: each pass's new columns (every one taken, in order).
     type Shared = Pool<TracesUpdate>;
     /// The traces as the window has them, from what the passes send.
@@ -312,15 +316,19 @@ impl Node<Edges> for LfpViewer {
         require_input(inputs, "a continuous data stream")
     }
 
-    fn initial_state(&self, inputs: &[Option<DataStream>]) -> Traces {
+    fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Traces, (), Self> {
+        let inputs = context.inputs;
+        if context.same_streams() {
+            return Prepared::nothing().into();
+        }
         let rate = match inputs[0] {
             Some(DataStream::Continuous(c)) => c.sample_rate,
             _ => 30000.0,
         };
-        Traces { rate, ..Default::default() }
+        Prepared::shared(Traces { rate, ..Default::default() }).into()
     }
 
-    fn process(&self, pass: &mut PassContext<Edges>, traces: &mut Traces) {
+    fn process(&self, pass: &mut PassContext<Edges>, traces: &mut Traces, _: &mut ()) {
         let Some(Some(Buffer::Continuous(input))) = pass.inputs.first() else { return };
         let rate = traces.rate;
         // Every channel: the view scrolls through them.

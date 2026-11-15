@@ -2,7 +2,9 @@
 //! passes are doing. Each frame's copied from the camera straight into a pool of a pass's video buffers, which the
 //! Camera node's passes swap for the workers' own (see `crate::standard::pool`): each pass takes the
 //! frames that have come since the last, and nothing more's copied. The thread's status (what it's doing, the frame
-//! rate, drops) is shared for display. If the camera can't be opened, or fails, it keeps trying.
+//! rate, drops) is shared for display. It opens the camera once (as the node prepares, which waits for it: see
+//! `Capture::first_frame`); if it can't, or the camera fails later, it stops, saying why, and the node's passes have
+//! nothing from it.
 //!
 //! Opening a camera takes a couple of seconds, so fresh node state doesn't: its `Capture` carries on with the camera
 //! that's capturing (new state's made before the old's let go of), changing only the pool if the frame size has
@@ -34,7 +36,7 @@ pub enum State {
     #[default]
     Starting,
     Running,
-    /// Something's wrong (e.g. no camera); it keeps trying.
+    /// Something's wrong (e.g. no camera), so it's stopped.
     Problem(String),
 }
 
@@ -152,6 +154,28 @@ impl Capture {
         Capture { running: capture, pool }
     }
 
+    /// Waits up to `opening` for the camera to open, or fail to, and then up to `frame` for its first frame, and says
+    /// how it's going.
+    pub fn first_frame(&self, opening: Duration, frame: Duration) -> Status {
+        let status = || {
+            let mut copy = Status::default();
+            copy.copy_from(&self.running.shared.status.lock().unwrap());
+            copy
+        };
+        let wait = |until: Instant, done: &dyn Fn(&Status) -> bool| loop {
+            let status = status();
+            if done(&status) || Instant::now() >= until {
+                return status;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let opened = wait(Instant::now() + opening, &|s| s.state != State::Starting);
+        if opened.state != State::Running {
+            return opened;
+        }
+        wait(Instant::now() + frame, &|s| s.frames > 0 || s.state != State::Running)
+    }
+
     /// Changes the frame rate, exposure and gain.
     pub fn apply(&self, settings: &CameraSettings) {
         *self.running.shared.settings.lock().unwrap() = *settings;
@@ -205,17 +229,14 @@ fn capture(shared: &Shared, source: &Source) {
         status.state = state;
     };
     let mut notes = Notes::default();
-    while !stopping() {
+    // Once: it stops if it can't, or if the camera fails.
+    {
         let settings = *shared.settings.lock().unwrap();
         let mut camera = match camera::open(source, &settings, &mut |text| notes.say(text)) {
             Ok(camera) => camera,
             Err(e) => {
-                set_state(State::Problem(format!("waiting for camera: {e}")));
-                let retry_at = Instant::now() + Duration::from_millis(500);
-                while !stopping() && Instant::now() < retry_at {
-                    std::thread::sleep(Duration::from_millis(20));
-                }
-                continue;
+                set_state(State::Problem(format!("couldn't open the camera: {e}")));
+                return;
             }
         };
         {
@@ -224,7 +245,6 @@ fn capture(shared: &Shared, source: &Source) {
             status.state = State::Running;
             log::info!("Capturing from {}", status.description);
         }
-        notes = Notes::default();
         for warning in camera.warnings() {
             log::warn!("Camera: {warning}");
         }
@@ -257,7 +277,7 @@ fn capture(shared: &Shared, source: &Source) {
                     continue;
                 }
                 Err(e) => {
-                    set_state(State::Problem(format!("camera error, reconnecting: {e}")));
+                    set_state(State::Problem(format!("camera error, so it's stopped: {e}")));
                     break;
                 }
             };
@@ -271,6 +291,7 @@ fn capture(shared: &Shared, source: &Source) {
             let mut expected = [0, 0];
             let pool = shared.target.lock().unwrap().1.clone();
             // Into the next slot of the buffer being filled, if it's the size the passes expect.
+            pool.drop_unwanted();
             let into_pool = pool.fill(
                 |video| video.frames = 0,
                 |video| {

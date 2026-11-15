@@ -55,7 +55,7 @@ impl<'a, E: Edges> PassContext<'a, E> {
         PassContext { sequence, duration, node, inputs, taken, outputs, controls, snapshot, shared, triggers, direct }
     }
 
-    /// A snapshot for trying a node out: running as of now, and recording or not (with nothing prepared).
+    /// A snapshot for trying a node out: running as of now, and recording or not.
     #[cfg(test)]
     fn trying(recording: bool) -> &'a Arc<dyn SnapshotLite> {
         let recording = recording.then(|| {
@@ -68,7 +68,7 @@ impl<'a, E: Edges> PassContext<'a, E> {
         Box::leak(Box::new(trying))
     }
 
-    /// For trying a node out: running as of now, and recording or not (with nothing prepared).
+    /// For trying a node out: running as of now, and recording or not.
     #[cfg(test)]
     pub fn set_recording(&mut self, recording: bool) {
         self.snapshot = Self::trying(recording);
@@ -142,12 +142,5 @@ impl<'a, E: Edges> PassContext<'a, E> {
     /// The base directory the recording's in (see `crate::base_directory`), while recording, if there is one.
     pub fn base_directory(&self) -> Option<&crate::base_directory::Place> {
         self.snapshot.recording()?.base_directory()
-    }
-
-    /// What the node prepared to record (see `Node::prepare_to_record`), which is `T`, if it did: given once, to the
-    /// first pass that asks while recording.
-    pub fn take_prepared<T: 'static>(&self) -> Option<T> {
-        let prepared = self.snapshot.recording()?.take(self.node)?;
-        Some(*prepared.downcast().expect("what the node's own prepare_to_record made"))
     }
 }

@@ -99,6 +99,10 @@ impl DataStreamType for Positions {
     fn copy(from: &PositionsBuffer, to: &mut PositionsBuffer) {
         to.samples.clone_from(&from.samples);
     }
+
+    fn empty(buffer: &mut PositionsBuffer) {
+        buffer.samples.clear();
+    }
 }
 
 /// A pass's video frames (often none or one), each `width` × `height` bytes of grey.
@@ -153,6 +157,10 @@ impl DataStreamType for Video {
         to.pixels[..size].copy_from_slice(&from.pixels[..size]);
         to.ids[..to.frames].copy_from_slice(&from.ids[..to.frames]);
         to.times[..to.frames].copy_from_slice(&from.times[..to.frames]);
+    }
+
+    fn empty(buffer: &mut VideoBuffer) {
+        buffer.frames = 0;
     }
 }
 
