@@ -98,7 +98,7 @@ triggers. `self` is the snapshot's settings: the latest, as of the pass.
     dev tools). A node that only reads an input doesn't take it.
 - **The tree shake: whether it runs, and what it needs.** It's up to the node: `evaluate_tree_shake(inputs, outputs,
   recording, triggered)`, given which of its inputs have something running into them, which of its outputs have
-  something running that needs them, whether the snapshot's recording, and whether it's working on a pass trigger, says
+  something running that needs them, whether the snapshot's recording, and whether it has a snapshot trigger, says
   whether it runs, and which inputs it needs (a `TreeShake`). An input it doesn't need isn't passed,
   and doesn't count as in use for what feeds it (the LFP viewer's spectrum, switched off, stops the
   [Spectrum](../standard/src/ephys/spectrum.rs) node). The plan starts with everything that can run running
@@ -109,8 +109,8 @@ triggers. `self` is the snapshot's settings: the latest, as of the pass.
   answers did, with a warning in the console. By default, a node runs, needing every input, whatever's in use: the
   path without the optimisation, so leaving it is always correct. A node that only makes data for others runs only
   while they're in use, as the processing nodes do. A writer runs only while recording, and given something to record,
-  as what it does matters beyond the graph; so what only feeds writers runs only while recording, except while it's working on a pass trigger (an auto detect),
-  which it has to run to get done: the app plans afresh as triggers are sent and finish, so a Continuous Gain feeding
+  as what it does matters beyond the graph; so what only feeds writers runs only while recording, except while it has a snapshot trigger (an auto detect),
+  which it has to run to get done: each trigger sent, or taken away, is a new snapshot, so a Continuous Gain feeding
   only a writer can have its gains detected before recording. Run Command never runs in a pass: it's only ever sent things to do. A node with an output that can't be known doesn't run. Settings change the plan, so what a
   node needs is for what's switched on and off, not what changes pass to pass.
 
@@ -214,24 +214,27 @@ enum, with a variant for each, and `TriggerKind`, naming them, as it does for da
 along settings edges, after all. A node lists the kinds each setting takes, of either delivery, in `triggers(setting)`
 (`&[TriggerKind::AutoDetect]`). Sending one is the same either way: a control connected to the setting sends it
 (`UiContext::trigger(Some(control), AutoDetect)`), as can the node's own window (`None`), and `UiContext::can_trigger`
-says whether it can be sent now. Only taking it differs, as that's on a different thread.
+says whether it can be sent now. Either way, it goes to the app; what the app does with it differs.
 
-- **`Delivery::Pass`** (`AutoDetect`): for what needs the data going by, so it needs a run. The node's next pass takes
-  it (`PassContext::triggered(TriggerKind::AutoDetect)`, which gives back the `Trigger`), reports progress
-  (`PassContext::trigger_progress`, shown with `UiContext::trigger_progress`), and finishes
-  (`PassContext::trigger_done`). Meanwhile it can be stopped (`UiContext::cancel_trigger`): the passes then see
-  `PassContext::trigger_cancelled`, and abandon it. Since passes can't change the graph, it triggers an update of what
-  it finds (`PassContext::trigger_settings_update(setting, value)`), and the GUI applies it as an edit. The [Continuous
+- **`Delivery::Snapshot`** (`AutoDetect`): for what needs the data going by, so it needs a run. The app bakes it into a
+  new snapshot ([`sent_triggers.rs`](../src/sent_triggers.rs)), one a node at a time, each sent with an id of its own.
+  The node prepares for it like anything else in a snapshot (`PrepareContext::trigger`, and `trigger_changed()`: an
+  auto detect makes its room to sample into, and lets go of it once the trigger's gone), runs while it has it (the
+  tree shake's `triggered`), and its passes report progress (`PassContext::trigger_progress`, shown with
+  `UiContext::trigger_progress`) and finish (`PassContext::trigger_done`). The app then takes the trigger away, in
+  another snapshot; until that takes over, the passes still have it, so the node's state says it's done. Stopping it
+  (`UiContext::cancel_trigger`) is the app taking it away early. Since passes can't change the graph, it triggers an
+  update of what it finds (`PassContext::trigger_settings_update(setting, value)`), and the GUI applies it as an edit. The [Continuous
   Gain](../standard/src/ephys/continuous_gain.rs), [Spike Gain](../standard/src/spikes/spike_gain.rs) and
   [Spike Detector](../standard/src/spikes/spike_detector.rs) work this way, triggered from the Spike Viewer.
 - **`Delivery::Direct`** (`RunOnFiles`): needs no pass, or even a run. It's delivered on the GUI's thread, whatever's
   going on, to `Node::on_trigger`, as the `Trigger` (`if let Trigger::RunOnFiles(files) = trigger`), with the same
   `UiContext` as its window's. As well as from a window, a node can send one through a control with a `TriggerHandle`, from the `ControlTriggers` it's given as it
   prepares (`PrepareContext::triggers`, `handle(control, TriggerKind::RunOnFiles)`), which it can keep and use from any thread. (Only a
-  direct trigger has a handle, as a handle can outlive the run: there's none for a pass trigger.)
+  direct trigger has a handle, as a handle can outlive the run: there's none for a snapshot trigger.)
 
-On their way, triggers are carried as `AnyTrigger`s (boxed), so the run's and the app's queues needn't know the
-program's enum, as node state is kept; what's sent and what's taken is always the enum.
+On their way to the app, triggers are carried as `AnyTrigger`s (boxed), so its queues needn't know the program's
+enum; what's sent and what's taken is always the enum, and snapshots carry it as that.
 
 Every setting also takes a direct update of its value without saying so, the settings update above, which isn't
 applied while settings are locked.

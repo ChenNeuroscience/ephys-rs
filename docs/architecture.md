@@ -145,11 +145,12 @@ The passes never wait on the GUI, nor it on them.
 - **Direct triggers** ([`triggers.rs`](../src/triggers.rs)) don't wait for a pass: the app delivers them on the GUI's
   thread, running or not, so they belong to it rather than a run. A setting's update from a pass is one.
 - Once a run's stopped, the app keeps what its last snapshot shared, so everything goes on showing what it last had,
-  until the next run, or until the graph changes so it would need new buffers (`Plan::same_shape`). Pass triggers need a run.
+  until the next run, or until the graph changes so it would need new buffers (`Plan::same_shape`). Snapshot triggers need a run.
 - The GUI can **trigger** a node (`Node::triggers`), from another node's window through a settings edge, or from the
-  node's own. A pass trigger (`AutoDetect`, say) goes to the run's
-  [`PassTriggers`](../src/pass_triggers.rs): a pass takes it (`PassContext::triggered`), says
-  how it's going, and when it's done. A direct one goes to the app, as above. Which is up to the trigger's type.
+  node's own. Every trigger goes to the app. A snapshot trigger (`AutoDetect`, say) is baked into the snapshots
+  ([`sent_triggers.rs`](../src/sent_triggers.rs)), one a node: the node prepares for it, runs while it has it, and its
+  passes say how it's going, and when it's done, in the run's `TriggerProgress`; the app then takes it away, in another
+  snapshot. A direct one goes to the node on the GUI's thread, as above. Which is up to the trigger's type.
 - Passes can't change the graph, but can **trigger an update** of a setting (`PassContext::trigger_settings_update`),
   which the GUI applies as an edit, unless settings are locked.
 - They can have the app start or stop recording (`PassContext::trigger_recording`), as the toolbar's Record does: TTL

@@ -3,9 +3,10 @@
 //! Each trigger type (`TriggerType`) carries what it needs to, and the program lists them with its edge types
 //! (`edge_types!`), which makes its enum of them (`TriggersEnum`), as it does of data streams and settings. A node says
 //! which kinds of them each of its settings takes (`Node::triggers`). How one's delivered is up to its type
-//! (`TriggerType::DELIVERY`), and sending one is the same either way (`UiContext::trigger`). A pass trigger waits in the
-//! run's `PassTriggers` for a pass to take it (`PassContext::triggered`; see `crate::pass_triggers`): "auto detect"
-//! needs the data going by, so it needs a run, and says how it's getting on. A direct trigger goes to the app's
+//! (`TriggerType::DELIVERY`), and sending one is the same either way (`UiContext::trigger`): to the app. A snapshot
+//! trigger is carried by the snapshots the app bakes until the node's done with it (see `crate::sent_triggers`):
+//! "auto detect" needs the data going by, so it needs a run, and says how it's getting on. A direct trigger goes to the
+//! app's
 //! `DirectTriggers`, which it delivers to `Node::on_trigger` on the GUI's thread as soon as it can, whether anything's
 //! running or not: from a thread that's outlived the run that started it, say. A node sends one through a control with
 //! a `TriggerHandle`, from `ControlTriggers`, which it can keep for later and use from any thread.
@@ -36,15 +37,16 @@ pub trait TriggerType: Send + 'static {
 /// How a trigger gets to the node it's sent to.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Delivery {
-    /// To a pass, which takes it (`PassContext::triggered`) with the data going by, says how it's getting on, and when
-    /// it's done. Only while running.
-    Pass,
+    /// In the snapshots the app bakes, till the node's done with it: the node prepares for it, and its passes do it
+    /// with the data going by, saying how they're getting on, and when it's done (see `crate::sent_triggers`). Only
+    /// while running.
+    Snapshot,
     /// Straight to the node, on the GUI's thread (`Node::on_trigger`), running or not.
     Direct,
 }
 
 /// The program's trigger types: an enum with a variant for each, made by `edge_types!`.
-pub trait TriggersEnum: Clone + Send + 'static {
+pub trait TriggersEnum: Clone + Send + Sync + 'static {
     /// Which type a trigger is, without what it carries: what a node says its settings take.
     type Kind: Copy + Eq + std::hash::Hash + std::fmt::Debug + Send + Sync + Into<TriggerKey> + 'static;
 
@@ -196,7 +198,7 @@ impl<T: TriggersEnum> ControlTriggers<T> {
     }
 
     /// A handle on triggers of kind `kind` to what control `control` connects to, if that takes them. Only of a direct
-    /// trigger: a handle can outlive the run, which a pass trigger needs.
+    /// trigger: a handle can outlive the run, which a snapshot trigger needs.
     pub fn handle(&self, control: usize, kind: T::Kind) -> Option<TriggerHandle<T>> {
         if kind.into().delivery != Delivery::Direct {
             return None;
@@ -207,8 +209,8 @@ impl<T: TriggersEnum> ControlTriggers<T> {
     }
 }
 
-/// A program's triggers, for tests: `Go`, a direct trigger carrying a number, and `Level`, a pass trigger carrying a
-/// level, as `edge_types!` would make them.
+/// A program's triggers, for tests: `Go`, a direct trigger carrying a number, and `Level`, a snapshot trigger carrying
+/// a level, as `edge_types!` would make them.
 #[cfg(test)]
 pub(crate) mod testing {
     use super::*;
@@ -229,7 +231,7 @@ pub(crate) mod testing {
         fn from(kind: TestKind) -> Self {
             match kind {
                 TestKind::Go => TriggerKey { index: 0, name: "go", delivery: Delivery::Direct },
-                TestKind::Level => TriggerKey { index: 1, name: "level", delivery: Delivery::Pass },
+                TestKind::Level => TriggerKey { index: 1, name: "level", delivery: Delivery::Snapshot },
             }
         }
     }
@@ -260,7 +262,7 @@ mod tests {
         let controls = ControlTriggers::<TestTrigger>::new(triggers.clone(), controls);
         assert!(controls.handle(0, TestKind::Go).is_none(), "connected to nothing");
         assert!(controls.handle(2, TestKind::Go).is_none(), "no such control");
-        assert!(controls.handle(1, TestKind::Level).is_none(), "a pass trigger: a handle could outlive the run");
+        assert!(controls.handle(1, TestKind::Level).is_none(), "a snapshot trigger: a handle could outlive the run");
         controls.handle(1, TestKind::Go).unwrap().trigger(TestTrigger::Go(7));
         let delivered: Vec<(NodeId, TestTrigger)> = triggers
             .take()
@@ -279,7 +281,7 @@ mod tests {
         let key = |kind: crate::TriggerKind| TriggerKey::from(kind);
         assert_eq!(
             key(crate::TriggerKind::AutoDetect),
-            TriggerKey { index: 0, name: "auto detect", delivery: Delivery::Pass }
+            TriggerKey { index: 0, name: "auto detect", delivery: Delivery::Snapshot }
         );
         let run = key(crate::TriggerKind::RunOnFiles);
         assert_eq!((run.index, run.name, run.delivery), (1, "run on files", Delivery::Direct));

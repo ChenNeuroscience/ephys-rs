@@ -1,12 +1,15 @@
-//! Choosing settings from the data ("auto detect"): a node's trigger (see `Node::triggers`), which its passes take,
-//! sample the data for a while, then trigger settings updates from. The Spike Gain, Continuous Gain and Spike Detector have one,
-//! triggered from their windows or a viewer's; these are the pieces they share.
+//! Choosing settings from the data ("auto detect"): a snapshot trigger (see `Node::triggers` and
+//! `ephys_rs::sent_triggers`). While a node has one, the node runs, with buffers it made for the trigger as it prepared
+//! (see `auto_detecting`), which its passes sample the data into for a while, then trigger settings updates from. The
+//! Spike Gain, Continuous Gain and Spike Detector have one, triggered from their windows or a viewer's; these are the
+//! pieces they share.
 
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 
 use crate::Edges;
 use ephys_rs::engine::UiContext;
+use ephys_rs::sent_triggers::Sent;
 use ephys_rs::triggers::{Delivery, TriggerType};
 
 /// The trigger: sample the data for a while, then choose settings from it.
@@ -15,8 +18,22 @@ pub struct AutoDetect;
 
 impl TriggerType for AutoDetect {
     const NAME: &'static str = "auto detect";
-    const DELIVERY: Delivery = Delivery::Pass;
+    const DELIVERY: Delivery = Delivery::Snapshot;
 }
+
+/// Whether a node's snapshot trigger, as it prepares (`PrepareContext::trigger`), is an auto detect: if so, the node
+/// makes what it samples into.
+pub fn auto_detecting(trigger: Option<&Sent<crate::Trigger>>) -> bool {
+    matches!(trigger.map(|sent| &sent.trigger), Some(crate::Trigger::AutoDetect(_)))
+}
+
+/// An auto detect, as sent, for trying nodes out.
+#[cfg(test)]
+pub fn sent() -> Sent<crate::Trigger> {
+    let trigger = crate::Trigger::AutoDetect(AutoDetect);
+    Sent { id: 1, key: crate::TriggerKind::AutoDetect.into(), trigger }
+}
+
 /// How long the passes can sample for, in seconds.
 pub const SAMPLING: std::ops::RangeInclusive<f32> = 4.0..=60.0;
 
@@ -48,6 +65,13 @@ impl Default for Distribution {
 }
 
 impl Distribution {
+    /// Back to having had nothing, keeping its room.
+    pub fn clear(&mut self) {
+        self.positive.fill(0);
+        self.negative.fill(0);
+        (self.count, self.sum) = (0, 0.0);
+    }
+
     pub fn add(&mut self, value: f32) {
         if !value.is_finite() {
             return;

@@ -12,7 +12,9 @@ use eframe::egui;
 use ephys_rs::engine::TreeShake;
 use serde::{Deserialize, Serialize};
 
-use crate::standard::auto_detect::{Distribution, PercentMultiple, SAMPLING, auto_detect_ui, detecting};
+use crate::standard::auto_detect::{
+    Distribution, PercentMultiple, SAMPLING, auto_detect_ui, auto_detecting, detecting,
+};
 use crate::standard::spikes::{Spike, Spikes, Thresholds};
 use crate::standard::widgets::{combo, input_summary, named_settings_grid, require_input, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
@@ -81,11 +83,35 @@ pub struct Detector {
     stride: usize,
     /// For each group, the first position (in `samples`) its next spike's peak can be at.
     next: Vec<i64>,
-    /// While choosing thresholds from the data: seconds sampled, of how many; and each channel's samples so far.
-    sampling: Option<(f64, f64, Vec<Distribution>)>,
 }
 
-impl ephys_rs::engine::PassState for Detector {
+/// What the node carries from pass to pass: the detector, and, only while the node has an auto detect (see
+/// `crate::standard::auto_detect`), what it's choosing thresholds from.
+#[derive(Default)]
+pub struct Detecting {
+    /// `None` only in a proto-state made for an auto detect starting or ending, the node's data streams being the same:
+    /// the detector so far carries on (see `on_snapshot_change`).
+    detector: Option<Detector>,
+    sampling: Option<Sampling>,
+}
+
+/// While choosing thresholds from the data: seconds sampled, of how many; and each channel's samples so far.
+struct Sampling {
+    elapsed: f64,
+    seconds: f64,
+    /// Each channel's samples (none, once it's done).
+    data: Vec<Distribution>,
+    /// Whether the thresholds have been chosen: the auto detect's still in the snapshot, till the app takes it away.
+    done: bool,
+}
+
+impl Sampling {
+    fn new(seconds: f64, channels: usize) -> Self {
+        Sampling { elapsed: 0.0, seconds, data: vec![Distribution::default(); channels], done: false }
+    }
+}
+
+impl ephys_rs::engine::PassState for Detecting {
     const WHY: &'static str = "Each channel's last samples (so a spike across two passes is found whole), when each \
                                group can next spike (so a group's spikes don't overlap), and while choosing \
                                thresholds, the samples so far.";
@@ -104,7 +130,6 @@ impl Detector {
             tail,
             stride: tail + pass + SCAN,
             next: vec![0; spikes.groups() as usize],
-            ..Default::default()
         }
     }
 
@@ -137,29 +162,46 @@ impl Node<Edges> for SpikeDetector {
         TreeShake::needing_all(inputs.contains(&true) && (outputs.contains(&true) || triggered), inputs.len())
     }
 
-    type State = Detector;
+    type State = Detecting;
     type WorkerState = ();
     type Shared = ();
     type UiState = ();
     type GlobalSettings = ();
 
-    fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Detector, (), Self> {
-        let inputs = context.inputs;
-        if context.same_streams() {
+    /// The detector, for the node's data streams, unless they're the same; and while it has an auto detect, each
+    /// channel's room to sample into.
+    fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Detecting, (), Self> {
+        if context.same_streams() && !context.trigger_changed() {
             return Prepared::nothing().into();
         }
-        Prepared::shared(match inputs[0] {
-            Some(DataStream::Continuous(c)) => Detector::new(self.stream(c.channels, c.sample_rate)),
-            _ => Detector::default(),
-        })
-        .into()
+        let input = match context.inputs[0] {
+            Some(DataStream::Continuous(c)) => Some(c),
+            _ => None,
+        };
+        let detector = (!context.same_streams()).then(|| match input {
+            Some(c) => Detector::new(self.stream(c.channels, c.sample_rate)),
+            None => Detector::default(),
+        });
+        let seconds = self.sampling.clamp(*SAMPLING.start(), *SAMPLING.end()) as f64;
+        let channels = input.map_or(0, |c| c.channels as usize);
+        let sampling = auto_detecting(context.trigger).then(|| Sampling::new(seconds, channels));
+        Prepared::shared(Detecting { detector, sampling }).into()
     }
 
-    fn process(&self, pass: &mut PassContext<Edges>, detector: &mut Detector, _: &mut ()) {
+    /// The detector so far carries on unless the node made a new one; the sampling's always what the node prepared.
+    fn on_snapshot_change(&self, state: &mut Detecting, proto_state: &mut Detecting) {
+        if proto_state.detector.is_some() {
+            std::mem::swap(&mut state.detector, &mut proto_state.detector);
+        }
+        std::mem::swap(&mut state.sampling, &mut proto_state.sampling);
+    }
+
+    fn process(&self, pass: &mut PassContext<Edges>, state: &mut Detecting, _: &mut ()) {
         let Some(Some(Buffer::Continuous(input))) = pass.inputs.first() else { return };
         let Some(Buffer::Spikes(output)) = pass.outputs.get_mut(0) else { return };
         output.clear();
         output.pass_samples = input.len;
+        let Detecting { detector: Some(detector), sampling } = state else { return };
         let Some(spikes) = detector.spikes else { return };
         let channels = (spikes.channels as usize).min(input.channels);
         let n = input.len;
@@ -234,7 +276,7 @@ impl Node<Edges> for SpikeDetector {
             let row = &mut detector.samples[channel * stride..(channel + 1) * stride];
             row.copy_within(n..n + tail, 0);
         }
-        self.choose_thresholds(pass, detector, channels);
+        self.choose_thresholds(pass, sampling);
     }
 
     fn inputs(&self) -> Vec<Input<Edges>> {
@@ -335,34 +377,27 @@ impl Node<Edges> for SpikeDetector {
 }
 
 impl SpikeDetector {
-    /// When triggered, samples each channel for a while, then triggers an update to thresholds from it.
-    fn choose_thresholds(&self, pass: &PassContext<Edges>, detector: &mut Detector, channels: usize) {
-        if pass.triggered(crate::TriggerKind::AutoDetect).is_some() {
-            let seconds = self.sampling.clamp(*SAMPLING.start(), *SAMPLING.end()) as f64;
-            detector.sampling = Some((0.0, seconds, vec![Distribution::default(); channels]));
-        }
-        if detector.sampling.is_some() && pass.trigger_cancelled(crate::TriggerKind::AutoDetect) {
-            detector.sampling = None;
-        }
-        if let Some((elapsed, seconds, data)) = &mut detector.sampling {
+    /// While it has an auto detect, samples each channel for a while, then triggers an update to thresholds from it.
+    fn choose_thresholds(&self, pass: &PassContext<Edges>, sampling: &mut Option<Sampling>) {
+        if let Some(sampling) = sampling.as_mut().filter(|s| !s.done) {
             if let Some(Some(Buffer::Continuous(input))) = pass.inputs.first() {
-                for (channel, data) in data.iter_mut().enumerate().take(input.channels) {
+                for (channel, data) in sampling.data.iter_mut().enumerate().take(input.channels) {
                     input.channel(channel).iter().for_each(|x| data.add(*x));
                 }
             }
-            *elapsed += pass.duration;
-            pass.trigger_progress(crate::TriggerKind::AutoDetect, (*elapsed / *seconds) as f32);
-            if *elapsed >= *seconds {
+            sampling.elapsed += pass.duration;
+            pass.trigger_progress((sampling.elapsed / sampling.seconds) as f32);
+            if sampling.elapsed >= sampling.seconds {
                 let mut thresholds = self.thresholds.clone();
-                for (channel, data) in data.iter().enumerate() {
+                for (channel, data) in sampling.data.iter().enumerate() {
                     let level = self.level.either_side(data);
                     if level > 0.0 {
                         thresholds.set(channel, level.max(0.5));
                     }
                 }
                 pass.trigger_settings_update(0, Setting::Thresholds(thresholds));
-                pass.trigger_done(crate::TriggerKind::AutoDetect);
-                detector.sampling = None;
+                pass.trigger_done();
+                *sampling = Sampling { done: true, ..Sampling::new(sampling.seconds, 0) };
             }
         }
     }
@@ -508,14 +543,12 @@ mod tests {
             ..Default::default()
         };
         let stream = Continuous { channels: 4, sample_rate: 30000.0 };
-        let mut state = ephys_rs::engine::fresh_state(&detector, &[Some(DataStream::Continuous(stream))]);
+        let sent = crate::standard::auto_detect::sent();
+        let inputs = [Some(DataStream::Continuous(stream))];
+        let mut state = ephys_rs::engine::fresh_states_triggered(&detector, &inputs, Some(&sent)).0;
         let spikes = detector.stream(4, 30000.0);
-        let (triggers, direct) =
-            (ephys_rs::pass_triggers::PassTriggers::default(), ephys_rs::triggers::DirectTriggers::default());
-        triggers.trigger(
-            ephys_rs::engine::NodeId(0),
-            ephys_rs::triggers::AnyTrigger::new(crate::Trigger::AutoDetect(crate::standard::auto_detect::AutoDetect)),
-        );
+        let (progress, direct) =
+            (ephys_rs::sent_triggers::TriggerProgress::default(), ephys_rs::triggers::DirectTriggers::default());
         let passes = (4.0 / PASS_DURATION).round() as u64;
         for sequence in 0..passes {
             let mut input = stream.buffer(PASS_DURATION);
@@ -530,7 +563,7 @@ mod tests {
             let mut outputs = [Buffer::Spikes(spikes.buffer(PASS_DURATION))];
             let inputs = [Some(&input)];
             let mut pass = PassContext::new(sequence, PASS_DURATION, &inputs, &mut outputs);
-            (pass.triggers, pass.direct) = (&triggers, &direct);
+            (pass.trigger, pass.progress, pass.direct) = (Some(&sent), &progress, &direct);
             detector.process(&mut pass, &mut state, &mut ());
         }
         let updates = direct.take_settings_updates();

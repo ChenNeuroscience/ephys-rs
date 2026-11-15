@@ -1,6 +1,7 @@
 //! Drawing the layout of panes (see `crate::layout`, which says where they go): each pane's contents, its tab,
 //! and what dragging and closing tabs does.
 
+use crate::sent_triggers::LiveTriggers;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -38,6 +39,8 @@ pub struct Panes<'a, N: NodesEnum, A: AnnotationsEnum> {
     pub resolved: &'a Resolved<N::Edges>,
     pub colours: &'static Colours,
     pub runner: Option<&'a Runner<N>>,
+    /// The snapshot triggers sent, and how they're getting on, while running.
+    pub live: Option<LiveTriggers<'a, <N::Edges as crate::engine::Edges>::Trigger>>,
     /// What the running nodes' passes share with the GUI, or what the last run's shared, once it's stopped.
     pub shared: Option<&'a crate::engine::SharedByNode>,
     /// Each node's state on the GUI's side (see `Node::UiState`).
@@ -87,7 +90,7 @@ pub fn node_ui<N: NodesEnum>(
     graph: &mut Graph<N>,
     resolved: &Resolved<N::Edges>,
     colours: &Colours,
-    live: Option<&crate::pass_triggers::PassTriggers>,
+    live: Option<LiveTriggers<'_, <N::Edges as crate::engine::Edges>::Trigger>>,
     shared: Option<&crate::engine::SharedByNode>,
     ui_state: Option<&crate::engine::UiStateCell>,
     base_directory: Option<&crate::base_directory::Place>,
@@ -284,11 +287,10 @@ impl<N: NodesEnum, A: AnnotationsEnum> Panes<'_, N, A> {
                 self.frame_times,
             ),
             Pane::Node(id) => {
-                let (graph, resolved, colours, runner, locked) =
-                    (&mut *self.graph, self.resolved, self.colours, self.runner, self.locked);
+                let (graph, resolved, colours, live, locked) =
+                    (&mut *self.graph, self.resolved, self.colours, self.live, self.locked);
                 let (advanced, base, shared) = (self.mode == Mode::Advanced, self.base_directory, self.shared);
                 let ui_state = self.ui_states.get(graph, id);
-                let live = runner.map(|r| r.pass_triggers());
                 padded(ui, |ui| {
                     let (events, ticked) = (&mut *self.events, &mut *self.ticked);
                     node_ui(

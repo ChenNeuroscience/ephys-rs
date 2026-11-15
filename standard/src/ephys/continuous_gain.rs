@@ -8,7 +8,9 @@ use eframe::egui;
 use ephys_rs::engine::{BufferUsage, Prepare, PrepareContext, Prepared, TreeShake};
 use serde::{Deserialize, Serialize};
 
-use crate::standard::auto_detect::{Distribution, PercentMultiple, SAMPLING, auto_detect_ui, detecting};
+use crate::standard::auto_detect::{
+    Distribution, PercentMultiple, SAMPLING, auto_detect_ui, auto_detecting, detecting,
+};
 use crate::standard::spikes::{Channels, DEFAULT_RANGE_UV, GainScope, Gains, RANGES_UV, fill_field, gain_field};
 
 use crate::standard::widgets::{input_summary, named_settings_grid, require_input, setting};
@@ -36,7 +38,8 @@ impl Default for ContinuousGain {
     }
 }
 
-/// While choosing the gains from the data: what's been added up of each channel so far.
+/// While choosing the gains from the data (an auto detect: see `crate::standard::auto_detect`): what's been added up of
+/// each channel so far. Only while the node has an auto detect.
 #[derive(Default)]
 pub struct Gaining {
     sampling: Option<Sampling>,
@@ -50,11 +53,17 @@ impl ephys_rs::engine::PassState for Gaining {
 struct Sampling {
     elapsed: f64,
     seconds: f64,
-    /// Each channel's samples.
+    /// Each channel's samples (none, once it's done).
     data: Vec<Distribution>,
+    /// Whether the gains have been chosen: the auto detect's still in the snapshot, till the app takes it away.
+    done: bool,
 }
 
 impl Sampling {
+    fn new(seconds: f64, channels: usize) -> Self {
+        Sampling { elapsed: 0.0, seconds, data: vec![Distribution::default(); channels], done: false }
+    }
+
     /// Each channel's range (µV): `level` of what's sampled.
     fn choose(&self, level: PercentMultiple) -> Vec<f32> {
         self.data
@@ -118,15 +127,22 @@ impl Node<Edges> for ContinuousGain {
         &[crate::TriggerKind::AutoDetect]
     }
 
+    /// While it has an auto detect, each channel's room to sample into.
     fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Gaining, (), Self> {
-        if context.same_streams() {
+        if context.same_streams() && !context.trigger_changed() {
             return Prepared::nothing().into();
         }
-        Prepared::shared(Gaining::default()).into()
+        let channels = match context.inputs[0] {
+            Some(DataStream::Continuous(stream)) => stream.channels as usize,
+            _ => 0,
+        };
+        let seconds = self.sampling.clamp(*SAMPLING.start(), *SAMPLING.end()) as f64;
+        let sampling = auto_detecting(context.trigger).then(|| Sampling::new(seconds, channels));
+        Prepared::shared(Gaining { sampling }).into()
     }
 
-    /// When triggered, samples each channel (in µV) for a while, then triggers an update to gains from it; and multiplies each
-    /// channel by its gain.
+    /// While it has an auto detect, samples each channel (in µV) for a while, then triggers an update to gains from it;
+    /// and multiplies each channel by its gain.
     fn process(&self, pass: &mut PassContext<Edges>, gaining: &mut Gaining, _: &mut ()) {
         let input = match pass.inputs[0] {
             Some(Buffer::Continuous(input)) => Some(input),
@@ -135,15 +151,7 @@ impl Node<Edges> for ContinuousGain {
         let Some(Buffer::Continuous(output)) = pass.outputs.get_mut(0) else { return };
         output.transform(input, |_, x| x);
         let channels = output.channels;
-        if pass.triggered(crate::TriggerKind::AutoDetect).is_some() {
-            let seconds = self.sampling.clamp(*SAMPLING.start(), *SAMPLING.end()) as f64;
-            gaining.sampling = Some(Sampling { elapsed: 0.0, seconds, data: vec![Distribution::default(); channels] });
-        }
-        if gaining.sampling.is_some() && pass.trigger_cancelled(crate::TriggerKind::AutoDetect) {
-            gaining.sampling = None;
-        }
-        let Some(Buffer::Continuous(output)) = pass.outputs.get_mut(0) else { return };
-        if let Some(sampling) = &mut gaining.sampling {
+        if let Some(sampling) = gaining.sampling.as_mut().filter(|s| !s.done) {
             for (channel, data) in sampling.data.iter_mut().enumerate() {
                 output.channel(channel).iter().for_each(|x| data.add(*x));
             }
@@ -156,11 +164,11 @@ impl Node<Edges> for ContinuousGain {
                 gains.set_ranges(&sampling.choose(self.level), layout);
                 gains
             });
-            pass.trigger_progress(crate::TriggerKind::AutoDetect, progress);
+            pass.trigger_progress(progress);
             if let Some(gains) = chosen {
                 pass.trigger_settings_update(0, Setting::Gains(gains));
-                pass.trigger_done(crate::TriggerKind::AutoDetect);
-                gaining.sampling = None;
+                pass.trigger_done();
+                *sampling = Sampling { done: true, ..Sampling::new(sampling.seconds, 0) };
             }
         }
 
@@ -263,20 +271,18 @@ impl Node<Edges> for ContinuousGain {
 mod tests {
     use super::*;
     use crate::standard::ephys::Continuous;
-    use ephys_rs::engine::{DataStreamType, NodeId, PASS_DURATION};
+    use ephys_rs::engine::{DataStreamType, PASS_DURATION};
 
     #[test]
     fn multiplies_and_chooses_gains_from_the_data() {
         let level = PercentMultiple { percent: 98.0, multiple: 3.0 };
         let gain = ContinuousGain { sampling: 4.0, level, ..Default::default() };
         let stream = Continuous { channels: 2, sample_rate: 1000.0 };
-        let mut state = ephys_rs::engine::fresh_state(&gain, &[Some(DataStream::Continuous(stream))]);
-        let (triggers, direct) =
-            (ephys_rs::pass_triggers::PassTriggers::default(), ephys_rs::triggers::DirectTriggers::default());
-        triggers.trigger(
-            NodeId(0),
-            ephys_rs::triggers::AnyTrigger::new(crate::Trigger::AutoDetect(crate::standard::auto_detect::AutoDetect)),
-        );
+        let sent = crate::standard::auto_detect::sent();
+        let inputs = [Some(DataStream::Continuous(stream))];
+        let mut state = ephys_rs::engine::fresh_states_triggered(&gain, &inputs, Some(&sent)).0;
+        let (progress, direct) =
+            (ephys_rs::sent_triggers::TriggerProgress::default(), ephys_rs::triggers::DirectTriggers::default());
         let passes = (4.0 / PASS_DURATION).round() as u64;
         for sequence in 0..passes {
             // 100 µV either side of zero on the first channel, 300 on the second.
@@ -291,7 +297,7 @@ mod tests {
             let inputs = [Some(&input)];
             let mut outputs = [Buffer::Continuous(stream.buffer(PASS_DURATION))];
             let mut pass = PassContext::new(sequence, PASS_DURATION, &inputs, &mut outputs);
-            (pass.triggers, pass.direct) = (&triggers, &direct);
+            (pass.trigger, pass.progress, pass.direct) = (Some(&sent), &progress, &direct);
             gain.process(&mut pass, &mut state, &mut ());
             let Buffer::Continuous(out) = &outputs[0] else { unreachable!() };
             let expected = -100.0 * gain.gains.get(0);

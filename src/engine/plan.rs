@@ -78,9 +78,6 @@ struct Link {
     to: super::PortRef,
 }
 
-/// The nodes working on a pass trigger (sent, and not yet done or stopped), as the run's `PassTriggers` keeps them.
-pub type Triggering = BTreeSet<NodeId>;
-
 /// How many times a node's asked for its tree shake before its answer's taken as it stands (see `settle`).
 const SETTLE_ASKS: usize = 8;
 
@@ -154,12 +151,12 @@ fn settle(
 impl<N: NodesEnum> Plan<N> {
     /// Plans how to run `graph`, `recording` or not (see `Node::evaluate_tree_shake`).
     pub fn new(graph: &Graph<N>, recording: bool) -> Self {
-        Self::triggering(graph, recording, &Triggering::new())
+        Self::triggering(graph, recording, &BTreeSet::new())
     }
 
-    /// Plans how to run `graph`, as `new` does, telling the nodes in `triggering` that they're working on a pass
-    /// trigger (an auto detect, say), which they have to run to get done (see `Node::evaluate_tree_shake`).
-    pub fn triggering(graph: &Graph<N>, recording: bool, triggering: &Triggering) -> Self {
+    /// Plans how to run `graph`, as `new` does, telling the nodes in `triggered` that they have a snapshot trigger (an
+    /// auto detect, say), which they have to run to get done (see `Node::evaluate_tree_shake`).
+    pub fn triggering(graph: &Graph<N>, recording: bool, triggered: &BTreeSet<NodeId>) -> Self {
         let resolved = graph.resolve();
         let topological = graph.topological_order();
         // Which nodes run is up to them (see `settle`): of those that can, not disabled, with every output known.
@@ -177,7 +174,7 @@ impl<N: NodesEnum> Plan<N> {
             &can_run,
             &links,
             |id, inputs, outputs| match graph.get(id) {
-                Some(e) => e.node.evaluate_tree_shake(inputs, outputs, recording, triggering.contains(&id)),
+                Some(e) => e.node.evaluate_tree_shake(inputs, outputs, recording, triggered.contains(&id)),
                 None => TreeShake::needing_all(false, inputs.len()),
             },
             |id| graph.get(id).map_or_else(|| format!("{id:?}"), |e| e.label.clone()),

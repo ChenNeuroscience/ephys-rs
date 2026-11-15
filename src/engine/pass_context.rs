@@ -6,8 +6,8 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use super::{Buffer, Edges, NodeId, SnapshotLite, TriggerKind};
-use crate::pass_triggers::PassTriggers;
+use super::{Buffer, Edges, NodeId, SnapshotLite};
+use crate::sent_triggers::{Sent, TriggerProgress};
 use crate::triggers::DirectTriggers;
 
 /// The length of time each pass covers, in seconds.
@@ -33,8 +33,12 @@ pub struct PassContext<'a, E: Edges> {
     pub(super) snapshot: &'a Arc<dyn SnapshotLite>,
     /// What the node shares with the GUI (its `Node::Shared`): see `shared`.
     pub shared: &'a dyn Any,
-    /// The run's pass triggers (see `triggered`).
-    pub triggers: &'a PassTriggers,
+    /// The snapshot trigger sent to the node, if there is one (see `crate::sent_triggers`). The node prepared for it
+    /// (see `PrepareContext::trigger`), so its state has what it needs; its passes say how it's getting on
+    /// (`trigger_progress`), and when it's done (`trigger_done`).
+    pub trigger: Option<&'a Sent<E::Trigger>>,
+    /// Where the passes say how the snapshot triggers are getting on: the run's.
+    pub progress: &'a TriggerProgress,
     /// Where direct triggers go: the app's (see `trigger_settings_update`).
     pub direct: &'a DirectTriggers,
 }
@@ -49,10 +53,23 @@ impl<'a, E: Edges> PassContext<'a, E> {
         outputs: &'a mut [Buffer<E>],
     ) -> Self {
         let taken: &'a mut [Option<Buffer<E>>] = Box::leak(Box::new([]));
-        let (triggers, direct) = (Box::leak(Box::default()), Box::leak(Box::default()));
-        let (node, controls, shared) = (NodeId(0), &[], &());
+        let (progress, direct) = (Box::leak(Box::default()), Box::leak(Box::default()));
+        let (node, controls, shared, trigger) = (NodeId(0), &[], &(), None);
         let snapshot = Self::trying(false);
-        PassContext { sequence, duration, node, inputs, taken, outputs, controls, snapshot, shared, triggers, direct }
+        PassContext {
+            sequence,
+            duration,
+            node,
+            inputs,
+            taken,
+            outputs,
+            controls,
+            snapshot,
+            shared,
+            trigger,
+            progress,
+            direct,
+        }
     }
 
     /// A snapshot for trying a node out: running as of now, and recording or not.
@@ -91,26 +108,19 @@ impl<'a, E: Edges> PassContext<'a, E> {
         self.shared.downcast_ref().expect("the node's own Node::Shared")
     }
 
-    /// The node's pass trigger of kind `kind` (see `Node::triggers`), if it's been triggered, taking it: the node then
-    /// says how it's getting on (`trigger_progress`) until it's done (`trigger_done`).
-    pub fn triggered(&self, kind: TriggerKind<E>) -> Option<E::Trigger> {
-        self.triggers.take_trigger(self.node, kind)
+    /// The node says here how far along its snapshot trigger is (see `trigger`), from 0 to 1, for the GUI to show.
+    pub fn trigger_progress(&self, progress: f32) {
+        if let Some(trigger) = self.trigger {
+            self.progress.set(self.node, trigger.id, progress);
+        }
     }
 
-    /// Whether the node's trigger of kind `kind`, taken, has been stopped since: the node should abandon what it's doing
-    /// for it (it's then done).
-    pub fn trigger_cancelled(&self, kind: TriggerKind<E>) -> bool {
-        self.triggers.take_cancel(self.node, kind.into())
-    }
-
-    /// How far along the node's trigger of kind `kind` is, from 0 to 1, for the GUI to show.
-    pub fn trigger_progress(&self, kind: TriggerKind<E>, progress: f32) {
-        self.triggers.set_trigger_progress(self.node, kind.into(), Some(progress.clamp(0.0, 1.0)));
-    }
-
-    /// The node's trigger of kind `kind` is done.
-    pub fn trigger_done(&self, kind: TriggerKind<E>) {
-        self.triggers.set_trigger_progress(self.node, kind.into(), None);
+    /// The node says here that its snapshot trigger is done. The app then takes the trigger away, in a new snapshot;
+    /// until that takes over, the node's passes still have it, so the node's state should say it's done.
+    pub fn trigger_done(&self) {
+        if let Some(trigger) = self.trigger {
+            self.progress.done(self.node, trigger.id);
+        }
     }
 
     /// Triggers an update of the node's setting `setting` (by index) to `value`, which the app applies as an edit

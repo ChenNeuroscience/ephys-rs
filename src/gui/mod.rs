@@ -49,6 +49,7 @@ use crate::base_directory::{BaseDirectories, BaseDirectoryType, Place};
 use crate::config_patching::{self, PatchSets, Versions};
 use crate::engine::{self, Graph, NodeId, NodeTypeEnum, NodesEnum, Port, PortRef, Resolved, Runner, Snapshot, Stats};
 use crate::layout::{Layout, Mode, Pane};
+use crate::sent_triggers::LiveTriggers;
 use crate::theme::{Colours, Theme};
 use crate::triggers::Triggered;
 use actions::Action;
@@ -165,8 +166,10 @@ pub enum Event {
     },
     /// Open a node's window (see `Layout::toggle`), or close it: from a pane, if it's done from one.
     ToggleWindow(NodeId, Option<Pane>),
-    /// Send a node a direct trigger (see `crate::triggers`).
+    /// Send a node a trigger (see `crate::triggers`): a direct one, or one for snapshots to carry, while running.
     Trigger(NodeId, crate::triggers::AnyTrigger),
+    /// Stop the snapshot trigger sent to a node, if it hasn't finished.
+    StopTrigger(NodeId),
     /// Open a node's window (see `Layout::open`), or bring it to the front if it's open: from a pane, if it's done
     /// from one.
     OpenWindow(NodeId, Option<Pane>),
@@ -298,8 +301,9 @@ pub struct App<N: NodesEnum, A: AnnotationsEnum> {
     started: Option<std::time::Instant>,
     /// The recording taken on, while recording.
     recording: Option<Arc<engine::Recording>>,
-    /// The nodes working on a pass trigger, which the snapshot plans to run (see `Plan::triggering`).
-    triggering: engine::Triggering,
+    /// The snapshot triggers sent while running, and not yet done or stopped, which snapshots carry (see
+    /// `crate::sent_triggers`).
+    triggers: crate::sent_triggers::SentTriggers<<N::Edges as engine::Edges>::Trigger>,
     /// The graph running, while it is.
     runner: Option<Runner<N>>,
     /// What the last run shared, once it's stopped: see `LastRun`.
@@ -377,7 +381,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             versions: 0,
             started: None,
             recording: None,
-            triggering: Default::default(),
+            triggers: Default::default(),
             graph,
             annotations,
             layout: Layout::default(),
@@ -436,7 +440,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         self.versions += 1;
         let graph = self.history.current.graph.clone();
         self.snapshot =
-            Snapshot::bake(self.versions, graph, self.started, self.recording.clone(), self.triggering.clone());
+            Snapshot::bake(self.versions, graph, self.started, self.recording.clone(), self.triggers.current().clone());
     }
 
     /// Bakes again if the graph's changed: edited, undone or redone (taken into the history), or another opened.
@@ -705,6 +709,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         self.last_run =
             self.runner.take().map(|runner| LastRun { shared: runner.shared(), plan: self.snapshot.plan.clone() });
         self.started = None;
+        self.triggers.clear();
         self.bake();
     }
 
@@ -1339,10 +1344,13 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         self.notice_recording();
         let plan = &self.snapshot.plan;
         self.last_run.take_if(|last| !last.plan.same_shape(plan));
-        // A node working on a pass trigger runs till it's done, so the plan changes as triggers come and go.
-        let triggering = self.runner.as_ref().map(|runner| runner.pass_triggers().nodes()).unwrap_or_default();
-        if triggering != self.triggering {
-            self.triggering = triggering;
+        // Snapshot triggers that are done are taken away, in a new snapshot.
+        let finished = self.runner.as_ref().map(|r| r.trigger_progress().finished(self.triggers.current()));
+        let mut taken = false;
+        for node in finished.unwrap_or_default() {
+            taken |= self.triggers.remove(node);
+        }
+        if taken {
             self.bake();
         }
         let Some(runner) = &self.runner else { return };
@@ -1495,7 +1503,10 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                             &mut self.graph,
                             resolved,
                             colours,
-                            self.runner.as_ref().map(Runner::pass_triggers),
+                            self.runner.as_ref().map(|runner| LiveTriggers {
+                                sent: self.triggers.current(),
+                                progress: runner.trigger_progress(),
+                            }),
                             shared.as_deref(),
                             ui_state,
                             base.as_ref(),
@@ -1527,7 +1538,22 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         match event {
             Event::OpenMenu { screen, scene, from } => self.menu = Some(CreateMenu::new(screen, scene, from)),
             Event::ToggleWindow(id, from) => self.layout.toggle(id, from),
-            Event::Trigger(id, trigger) => self.direct_triggers.trigger(id, trigger),
+            Event::Trigger(id, trigger) => match trigger.key().delivery {
+                crate::triggers::Delivery::Direct => self.direct_triggers.trigger(id, trigger),
+                crate::triggers::Delivery::Snapshot => {
+                    if self.runner.is_some()
+                        && let Some(trigger) = trigger.take()
+                    {
+                        self.triggers.send(id, trigger);
+                        self.bake();
+                    }
+                }
+            },
+            Event::StopTrigger(id) => {
+                if self.triggers.remove(id) {
+                    self.bake();
+                }
+            }
             Event::OpenWindow(id, from) => self.layout.open(id, from),
             Event::FloatWindow(id) => self.layout.float(id),
             Event::Duplicate(id) => {
@@ -1719,6 +1745,10 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                 resolved: &resolved,
                 colours,
                 runner: self.runner.as_ref(),
+                live: self
+                    .runner
+                    .as_ref()
+                    .map(|runner| LiveTriggers { sent: self.triggers.current(), progress: runner.trigger_progress() }),
                 shared: shared.as_deref(),
                 ui_states: &self.ui_states,
                 base_directory: base.as_ref(),
@@ -1806,7 +1836,10 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         let (colours, base, running, locked) =
             (self.colours(), self.base_directories.place(), self.runner.is_some(), self.locked());
         let advanced = self.layout.mode == Mode::Advanced;
-        let live = self.runner.as_ref().map(Runner::pass_triggers);
+        let live = self
+            .runner
+            .as_ref()
+            .map(|runner| LiveTriggers { sent: self.triggers.current(), progress: runner.trigger_progress() });
         let mut events = Vec::new();
         for id in self.graph.ids().filter(|id| !ticked.nodes.contains(id)).collect::<Vec<_>>() {
             let (Some(state), Some(ui_state)) = (resolved.get(&id), self.ui_states.get(&self.graph, id)) else {
@@ -3575,6 +3608,13 @@ mod tests {
         );
     }
 
+    /// How far along node `node`'s auto detect is, as its window sees it, if it's been sent and isn't done.
+    fn auto_detect_progress(app: &TestApp, node: NodeId) -> Option<f32> {
+        let runner = app.runner.as_ref()?;
+        let live = LiveTriggers { sent: app.triggers.current(), progress: runner.trigger_progress() };
+        live.progress(node, crate::TriggerKind::AutoDetect.into())
+    }
+
     /// In the rig, the Continuous Gain only feeds the LTX writer, which only runs while recording; but its gains are
     /// to be detected before recording.
     #[test]
@@ -3588,15 +3628,13 @@ mod tests {
         let (mut triggered, mut progress) = (false, 0.0f32);
         while progress == 0.0 && std::time::Instant::now() < deadline {
             harness.run_steps(1);
-            if let Some(runner) = harness.state().runner.as_ref() {
-                if !triggered && runner.stats().completed > 5 {
-                    let trigger = crate::Trigger::AutoDetect(crate::standard::auto_detect::AutoDetect);
-                    runner.pass_triggers().trigger(gain, ephys_rs::triggers::AnyTrigger::new(trigger));
-                    triggered = true;
-                } else if triggered {
-                    let now = runner.pass_triggers().trigger_progress(gain, crate::TriggerKind::AutoDetect);
-                    progress = now.unwrap_or(1.0);
-                }
+            let completed = harness.state().runner.as_ref().map_or(0, |runner| runner.stats().completed);
+            if !triggered && completed > 5 {
+                let trigger = crate::Trigger::AutoDetect(crate::standard::auto_detect::AutoDetect);
+                harness.state_mut().handle(&ctx, Event::Trigger(gain, ephys_rs::triggers::AnyTrigger::new(trigger)));
+                triggered = true;
+            } else if triggered {
+                progress = auto_detect_progress(harness.state(), gain).unwrap_or(1.0);
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
@@ -3625,9 +3663,7 @@ mod tests {
         // Not the Run menu's: the viewer's, drawn after it.
         harness.get_all_by_label("Run").last().expect("the viewer's Run").click();
         harness.run_steps(2);
-        let progress = |h: &Harness<TestApp>| {
-            h.state().runner.as_ref().unwrap().pass_triggers().trigger_progress(gain, crate::TriggerKind::AutoDetect)
-        };
+        let progress = |h: &Harness<TestApp>| auto_detect_progress(h.state(), gain);
         assert!(progress(&harness).is_some(), "the Spike Gain's auto detect, triggered");
         // While it's going, it can be stopped.
         harness.get_by_label("Stop").click();
@@ -3659,9 +3695,7 @@ mod tests {
         let ctx = harness.ctx.clone();
         harness.state_mut().perform(&ctx, Action::Play);
         harness.run_steps(2);
-        let progress = |h: &Harness<TestApp>, node| {
-            h.state().runner.as_ref().unwrap().pass_triggers().trigger_progress(node, crate::TriggerKind::AutoDetect)
-        };
+        let progress = |h: &Harness<TestApp>, node| auto_detect_progress(h.state(), node);
         // Not the Run menu's: the viewer's, drawn after it.
         harness.get_all_by_label("Run").last().expect("the viewer's Run").click();
         harness.run_steps(2);
@@ -3669,8 +3703,7 @@ mod tests {
         assert_eq!(progress(&harness, gain), None, "the gains wait for them");
         assert!(harness.query_by_label("thresholds, then gains").is_some(), "it says so");
         // The thresholds done (or stopped from the detector's own window), the gains go.
-        let runner = harness.state().runner.as_ref().unwrap();
-        runner.pass_triggers().cancel(detector, crate::TriggerKind::AutoDetect);
+        harness.state_mut().handle(&ctx, Event::StopTrigger(detector));
         harness.run_steps(2);
         assert!(progress(&harness, gain).is_some(), "then the gains");
         harness.get_by_label("Stop").click();

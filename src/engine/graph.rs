@@ -11,6 +11,7 @@ use super::{
     Control, Dimension, EdgeInfo, EdgeTypesEnum, Edges, Input, Node, NodesEnum, Output, Plan, SettingPort, TriggerKind,
     UiContext,
 };
+use crate::sent_triggers::SnapshotTriggers;
 use crate::theme::Colours;
 
 /// A node in a graph, unique within it and never reused, so it's the same node through undo, redo and saving.
@@ -782,28 +783,29 @@ pub struct Snapshot<N: NodesEnum> {
     pub started: Option<Instant>,
     /// The recording, while recording.
     pub recording: Option<Arc<Recording>>,
-    /// The pass triggers nodes are working on, which they run for (see `Node::evaluate_tree_shake`).
-    pub triggering: Arc<super::Triggering>,
+    /// The snapshot triggers sent to its nodes and not yet done (see `crate::sent_triggers`), which they prepare and run
+    /// for.
+    pub triggers: Arc<SnapshotTriggers<<N::Edges as Edges>::Trigger>>,
 }
 
 impl<N: NodesEnum> Snapshot<N> {
     /// Bakes what the passes need of `graph`, and of a run that `started` (while running), with `recording` (while
-    /// recording) and the pass triggers its nodes are working on (`triggering`): planning how to run it from scratch.
+    /// recording) and the snapshot triggers sent to its nodes (`triggers`): planning how to run it from scratch.
     pub fn bake(
         version: u64,
         graph: Arc<Graph<N>>,
         started: Option<Instant>,
         recording: Option<Arc<Recording>>,
-        triggering: super::Triggering,
+        triggers: Arc<SnapshotTriggers<<N::Edges as Edges>::Trigger>>,
     ) -> Self {
         let controls = graph
             .iter()
             .filter(|(_, entry)| !entry.node.controls().is_empty())
             .map(|(id, _)| (id, graph.control_values(id)))
             .collect();
-        let plan = Arc::new(Plan::triggering(&graph, recording.is_some(), &triggering));
-        let triggering = Arc::new(triggering);
-        Snapshot { version, graph, plan, controls: Arc::new(controls), started, recording, triggering }
+        let triggered = triggers.keys().copied().collect();
+        let plan = Arc::new(Plan::triggering(&graph, recording.is_some(), &triggered));
+        Snapshot { version, graph, plan, controls: Arc::new(controls), started, recording, triggers }
     }
 
     /// `graph`, as a run started just now would have it, not recording (for trying graphs out: the app bakes its own).
@@ -821,7 +823,7 @@ impl<N: NodesEnum> Clone for Snapshot<N> {
             controls: self.controls.clone(),
             started: self.started,
             recording: self.recording.clone(),
-            triggering: self.triggering.clone(),
+            triggers: self.triggers.clone(),
         }
     }
 }

@@ -92,19 +92,19 @@ impl<'a, E: Edges> UiContext<'a, E> {
     }
 
     /// Whether a trigger of kind `kind` can be sent: to a setting that takes it (for a control, the one it's connected
-    /// to), and for a pass trigger, the graph running.
+    /// to), and for a snapshot trigger, the graph running.
     pub fn can_trigger(&self, control: Option<usize>, kind: super::TriggerKind<E>) -> bool {
         self.tools.as_ref().is_some_and(|t| t.can_trigger(control, kind.into()))
     }
 
-    /// How far along the pass trigger of kind `kind` is (0 to 1), if it's been sent and isn't done. Never, for a direct
-    /// trigger.
+    /// How far along the snapshot trigger of kind `kind` is (0 to 1), if it's been sent and isn't done. Never, for a
+    /// direct trigger.
     pub fn trigger_progress(&self, control: Option<usize>, kind: super::TriggerKind<E>) -> Option<f32> {
         self.tools.as_ref().and_then(|t| t.trigger_progress(control, kind.into()))
     }
 
-    /// Stops the pass trigger of kind `kind`, if it's been sent and isn't done: the node abandons what it was doing for
-    /// it.
+    /// Stops the snapshot trigger of kind `kind`, if it's been sent and isn't done: the app takes it away, in a new
+    /// snapshot, so the node lets go of what it was doing for it.
     pub fn cancel_trigger(&mut self, control: Option<usize>, kind: super::TriggerKind<E>) {
         if let Some(tools) = &mut self.tools {
             tools.cancel_trigger(control, kind.into());

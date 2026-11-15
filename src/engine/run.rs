@@ -47,7 +47,7 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError};
 use crossbeam_utils::CachePadded;
 
 use crate::console::{self, PassId};
-use crate::pass_triggers::PassTriggers;
+use crate::sent_triggers::TriggerProgress;
 use crate::triggers::DirectTriggers;
 
 use super::pass_context::*;
@@ -109,7 +109,8 @@ impl<N: NodesEnum> Plan<N> {
                     controls,
                     snapshot: &baked,
                     shared: run.shared.any(step.id).unwrap_or(&()),
-                    triggers: &run.triggers,
+                    trigger: snapshot.triggers.get(&step.id),
+                    progress: &run.progress,
                     direct: &run.direct,
                 };
                 let start = Instant::now();
@@ -195,7 +196,7 @@ struct RunSlots {
     /// By the plan's state slot (`Step::state`).
     states: Vec<Arc<StateSlot>>,
     shared: Arc<SharedByNode>,
-    triggers: Arc<PassTriggers>,
+    progress: Arc<TriggerProgress>,
     direct: Arc<DirectTriggers>,
     /// By step.
     times: Vec<Arc<StepTimes>>,
@@ -426,8 +427,9 @@ struct RunCommon {
     dropped: AtomicU64,
     /// Where workers report to the GUI.
     reports: Reports,
-    /// The pass triggers the GUI sends, and where the passes send direct triggers: the app's.
-    triggers: Arc<PassTriggers>,
+    /// Where the passes say how their snapshot triggers are getting on, and where they send direct triggers: the
+    /// app's.
+    progress: Arc<TriggerProgress>,
     direct: Arc<DirectTriggers>,
     /// What each worker is up to.
     workers: Vec<WorkerSlot>,
@@ -640,7 +642,7 @@ impl<N: NodesEnum> Scheduled<N> {
         let slots = RunSlots {
             states: (0..plan.state_inputs.len()).map(|_| Arc::new(StateSlot::empty())).collect(),
             shared: Arc::new(SharedByNode(shared)),
-            triggers: run.triggers.clone(),
+            progress: run.progress.clone(),
             direct: run.direct.clone(),
             times,
         };
@@ -687,6 +689,7 @@ impl<N: NodesEnum> Scheduled<N> {
                     node: &before.snapshot.graph.get(node.id)?.node,
                     inputs: &before.snapshot.plan.step_inputs[before.step],
                     same_streams: before.same_streams,
+                    trigger: before.snapshot.triggers.get(&node.id),
                 })
             });
             let context = PrepareContext {
@@ -695,6 +698,7 @@ impl<N: NodesEnum> Scheduled<N> {
                 controls: snapshot.controls.get(&node.id).map_or(&[][..], Vec::as_slice),
                 recording: snapshot.recording.as_deref(),
                 triggers: &triggers,
+                trigger: snapshot.triggers.get(&node.id),
                 previous,
                 recording_changed: self.recording_changed,
                 workers,
@@ -1007,9 +1011,9 @@ impl<N: NodesEnum> Runner<N> {
         &self.shared.direct
     }
 
-    /// The run's pass triggers, for the GUI to send.
-    pub fn pass_triggers(&self) -> &PassTriggers {
-        &self.shared.triggers
+    /// How the snapshot triggers are getting on, as the passes say (see `crate::sent_triggers`).
+    pub fn trigger_progress(&self) -> &TriggerProgress {
+        &self.shared.progress
     }
 
     /// What the nodes running share with the GUI: the snapshot being run's, or, until one is, the one being got ready.

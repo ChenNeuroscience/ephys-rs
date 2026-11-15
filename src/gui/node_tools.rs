@@ -7,8 +7,8 @@ use eframe::egui;
 use super::Event;
 use super::icons::Icon;
 use super::toolbar;
-use crate::engine::{Graph, NodeId, NodeToolbar, NodesEnum, Port, PortRole};
-use crate::pass_triggers::PassTriggers;
+use crate::engine::{Edges, Graph, NodeId, NodeToolbar, NodesEnum, Port, PortRole};
+use crate::sent_triggers::{LiveTriggers, TriggerProgress};
 use crate::triggers::{AnyTrigger, Delivery, TriggerKey};
 
 /// A node's toolbar, for a frame: what it shows, and where what's clicked goes.
@@ -23,19 +23,22 @@ pub struct NodeTools<'e> {
     /// it's connected to, if it is.
     pub own_triggers: Vec<TriggerKey>,
     pub controls: Vec<Option<(NodeId, Vec<TriggerKey>)>>,
-    /// Where pass triggers go, while running. Direct triggers go through `events`.
-    pub pass_triggers: Option<&'e PassTriggers>,
+    /// While running, the snapshot triggers sent to the node and the ones its controls connect to (each node, the
+    /// trigger's id and kind), and how they're getting on. Triggers go through `events`, to the app.
+    pub sent: Vec<(NodeId, u64, TriggerKey)>,
+    pub progress: Option<&'e TriggerProgress>,
     /// What's clicked becomes these.
     pub events: &'e mut Vec<Event>,
 }
 
 impl<'e> NodeTools<'e> {
-    /// For node `id`'s window: what it can trigger, through its own settings and its controls.
+    /// For node `id`'s window: what it can trigger, through its own settings and its controls, and, while running
+    /// (`live`), how what it's sent is getting on.
     pub fn new<N: NodesEnum>(
         graph: &Graph<N>,
         id: NodeId,
         advanced: bool,
-        pass_triggers: Option<&'e PassTriggers>,
+        live: Option<LiveTriggers<'e, <N::Edges as Edges>::Trigger>>,
         events: &'e mut Vec<Event>,
     ) -> Option<Self> {
         let entry = graph.get(id)?;
@@ -47,9 +50,15 @@ impl<'e> NodeTools<'e> {
                 let edge = graph.live_edges_from(Port { node: id, role: PortRole::Control, index }).next()?;
                 Some((edge.to.node, keys(graph.get(edge.to.node)?.node.triggers(edge.to.port))))
             })
-            .collect();
+            .collect::<Vec<Option<(NodeId, Vec<TriggerKey>)>>>();
         let (show_in_basic, enabled) = (entry.shown_in_basic(), !entry.disabled);
-        Some(NodeTools { id, show_in_basic, enabled, advanced, own_triggers, controls, pass_triggers, events })
+        let nodes = std::iter::once(id).chain(controls.iter().flatten().map(|(node, _)| *node));
+        let sent = match &live {
+            Some(live) => nodes.filter_map(|node| live.sent.get(&node).map(|s| (node, s.id, s.key))).collect(),
+            None => Vec::new(),
+        };
+        let progress = live.map(|live| live.progress);
+        Some(NodeTools { id, show_in_basic, enabled, advanced, own_triggers, controls, sent, progress, events })
     }
 
     /// The node whose trigger of kind `kind` is meant, if it takes one: the node itself, or the one a control connects
@@ -67,29 +76,29 @@ impl<'e> NodeTools<'e> {
 
 impl NodeToolbar for NodeTools<'_> {
     fn trigger(&mut self, control: Option<usize>, trigger: AnyTrigger) {
-        let Some(node) = self.trigger_node(control, trigger.key()) else { return };
-        match (trigger.key().delivery, self.pass_triggers) {
-            (Delivery::Pass, Some(triggers)) => triggers.trigger(node, trigger),
-            (Delivery::Pass, None) => {}
-            (Delivery::Direct, _) => self.events.push(Event::Trigger(node, trigger)),
+        if self.can_trigger(control, trigger.key())
+            && let Some(node) = self.trigger_node(control, trigger.key())
+        {
+            self.events.push(Event::Trigger(node, trigger));
         }
     }
 
     fn can_trigger(&self, control: Option<usize>, kind: TriggerKey) -> bool {
-        let running = self.pass_triggers.is_some() || kind.delivery == Delivery::Direct;
+        let running = self.progress.is_some() || kind.delivery == Delivery::Direct;
         running && self.trigger_node(control, kind).is_some()
     }
 
     fn trigger_progress(&self, control: Option<usize>, kind: TriggerKey) -> Option<f32> {
-        if kind.delivery != Delivery::Pass {
-            return None;
-        }
-        self.pass_triggers?.trigger_progress(self.trigger_node(control, kind)?, kind)
+        let node = self.trigger_node(control, kind)?;
+        let &(_, id, _) = self.sent.iter().find(|(n, _, k)| *n == node && *k == kind)?;
+        Some(self.progress?.of(node, id))
     }
 
     fn cancel_trigger(&mut self, control: Option<usize>, kind: TriggerKey) {
-        if let (Some(node), Some(triggers)) = (self.trigger_node(control, kind), self.pass_triggers) {
-            triggers.cancel(node, kind);
+        if let Some(node) = self.trigger_node(control, kind)
+            && self.sent.iter().any(|(n, _, k)| *n == node && *k == kind)
+        {
+            self.events.push(Event::StopTrigger(node));
         }
     }
 
@@ -175,8 +184,8 @@ mod tests {
     use crate::standard::auto_detect::AutoDetect;
     use crate::standard::other::run_command::RunOnFiles;
 
-    /// A direct trigger is sent whether or not anything's running, to the app (as an event); a pass trigger only to a
-    /// run.
+    /// Either kind of trigger goes to the app (as an event): a direct one whether or not anything's running, a snapshot
+    /// trigger only while running, whose progress the node's window then sees.
     #[test]
     fn a_trigger_goes_the_way_it_is_delivered() {
         let mut graph = Graph::<Nodes>::default();
@@ -185,9 +194,10 @@ mod tests {
             graph.add(Nodes::create(node_type), [0.0, 0.0])
         };
         let (command, gain) = (add(&mut graph, "Run Command"), add(&mut graph, "Spike Gain"));
-        let triggers = PassTriggers::default();
+        let progress = crate::sent_triggers::TriggerProgress::default();
+        let mut sent = crate::sent_triggers::SentTriggers::default();
         for running in [false, true] {
-            let live = running.then_some(&triggers);
+            let live = running.then_some(LiveTriggers { sent: sent.current(), progress: &progress });
             let mut events = Vec::new();
             let mut tools = NodeTools::new(&graph, command, true, live, &mut events).unwrap();
             assert!(tools.can_trigger(None, TriggerKind::RunOnFiles.into()), "running or not");
@@ -199,9 +209,15 @@ mod tests {
             let mut events = Vec::new();
             let mut tools = NodeTools::new(&graph, gain, true, live, &mut events).unwrap();
             assert_eq!(tools.can_trigger(None, TriggerKind::AutoDetect.into()), running, "only to a run");
+            assert_eq!(tools.trigger_progress(None, TriggerKind::AutoDetect.into()), None, "not sent yet");
             tools.trigger(None, AnyTrigger::new(crate::Trigger::from(AutoDetect)));
-            assert!(events.is_empty());
-            assert_eq!(triggers.trigger_progress(gain, TriggerKind::AutoDetect), running.then_some(0.0));
+            assert_eq!(matches!(events.as_slice(), [Event::Trigger(node, _)] if *node == gain), running);
         }
+        // Once the app's sent it, the window sees how it's getting on.
+        sent.send(gain, crate::Trigger::from(AutoDetect));
+        let live = Some(LiveTriggers { sent: sent.current(), progress: &progress });
+        let mut events = Vec::new();
+        let tools = NodeTools::new(&graph, gain, true, live, &mut events).unwrap();
+        assert_eq!(tools.trigger_progress(None, TriggerKind::AutoDetect.into()), Some(0.0));
     }
 }
