@@ -38,7 +38,7 @@ impl Node<Edges> for BandPassFilter {
     };
 
     /// Only while it's given something, and something needs what it makes.
-    fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool], _recording: bool) -> TreeShake {
+    fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool], _recording: bool, _triggered: bool) -> TreeShake {
         TreeShake::needing_all(inputs.contains(&true) && outputs.contains(&true), inputs.len())
     }
 
@@ -107,7 +107,8 @@ impl Node<Edges> for BandPassFilter {
         warnings
     }
 
-    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+        let Some(ui) = ui else { return };
         ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, context| {
             settings_grid(ui, |ui| {
                 setting(ui, "Low cut-off", |ui| {

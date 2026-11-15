@@ -220,8 +220,7 @@ pub fn fresh_states<E: Edges, N: super::Node<E>>(
     let context = PrepareContext::trying(inputs, None, &triggers);
     let prepared = node.prepare_for_snapshot(&context).wait();
     let shared = or_unit(prepared.proto_shared_state).expect("a node with state makes it when it's new");
-    let worker = or_unit(prepared.proto_worker_state.and_then(|mut states| states.pop()))
-        .expect("a node with worker state makes it when it's new");
+    let worker = prepared.proto_worker_state.and_then(|mut states| states.pop()).unwrap_or_default();
     (shared, worker)
 }
 

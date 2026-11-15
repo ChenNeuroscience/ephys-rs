@@ -173,10 +173,12 @@ pane shows in each mode is up to it (`UiContext::advanced`). Where panes go when
 default layout, a column on the left and two groups one above another on the right.
 
 Each time round the app does what isn't drawing first, in `App::logic` (eframe's `App::logic`): taking what's come from
-runs and nodes' threads, the nodes' work on the GUI's thread (`Node::gui_background`, with each node's state on the GUI's
-side, `Node::UiState`), stopping what's unattended, and keeping the run up to date with the graph. eframe calls it before
-each frame, and while the window's hidden (minimised, say) whenever the app's woken (`request_repaint`, as a run does
-every quarter second), without drawing; then, if the window's shown, the app draws (`App::show`).
+runs and nodes' threads, stopping what's unattended, and keeping the run up to date with the graph. eframe calls it
+before each frame, and while the window's hidden (minimised, say) whenever the app's woken (`request_repaint`, as a
+run does every 20 ms), without drawing; then, if the window's shown, the app draws (`App::show`). The app
+calls every node once a frame (`Node::on_gui_tick`, with its state on the GUI's side, `Node::UiState`): with a `ui` while
+drawing its window, if it's shown, and without, for the rest, once the frame's drawn, or from `App::logic` while
+nothing's drawn.
 
 What's kept between runs, whatever file's open, is in the app's preferences: the `eframe::Storage` that `App::save`
 writes to (the theme, the base directories, the recent files and the settings, under the `*_KEY`s in

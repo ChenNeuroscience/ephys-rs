@@ -4,7 +4,6 @@
 //! view.
 
 use std::collections::VecDeque;
-use std::time::Instant;
 
 use eframe::egui::{self, RichText};
 use serde::{Deserialize, Serialize};
@@ -111,19 +110,10 @@ impl Node<Edges> for LogViewer {
         pass.shared::<SentLines>().0.send_pending(pending);
     }
 
-    /// Takes the lines sent, keeping the latest.
-    fn gui_background(&mut self, context: &mut UiContext<Edges>) -> Option<Instant> {
-        let sent = context.shared::<SentLines>()?;
-        let mut kept = context.ui_state::<KeptLines>();
-        sent.0.receive_all(|entries| {
-            kept.0.extend(entries);
-            let excess = kept.0.len().saturating_sub(KEPT);
-            kept.0.drain(..excess);
-        });
-        None
-    }
-
-    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+    /// The viewer takes what its passes have sent, then draws its window if there's a `ui` to draw it in.
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+        self.take_updates(context);
+        let Some(ui) = ui else { return };
         let mut kept = context.ui_state::<KeptLines>();
         let entries = &mut kept.0;
         ui.horizontal(|ui| {
@@ -135,7 +125,8 @@ impl Node<Edges> for LogViewer {
         });
         if entries.is_empty() {
             let message = if context.running { "No log lines yet" } else { "Press Play to see the log" };
-            return plots::unconnected(ui, context.theme, message);
+            plots::unconnected(ui, context.theme, message);
+            return;
         }
         let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
         let scroll = egui::ScrollArea::both().auto_shrink(false).stick_to_bottom(true);
@@ -148,7 +139,19 @@ impl Node<Edges> for LogViewer {
                 });
             }
         });
-        plots::repaint_with_data(ui, context.running);
+    }
+}
+
+impl LogViewer {
+    /// The viewer takes the lines its passes sent, keeping the latest.
+    fn take_updates(&mut self, context: &mut UiContext<Edges>) {
+        let Some(sent) = context.shared::<SentLines>() else { return };
+        let mut kept = context.ui_state::<KeptLines>();
+        sent.0.receive_all(|entries| {
+            kept.0.extend(entries);
+            let excess = kept.0.len().saturating_sub(KEPT);
+            kept.0.drain(..excess);
+        });
     }
 }
 
@@ -221,10 +224,10 @@ mod tests {
             pass(&mut viewing, gui.sent(), &lines);
         }
         // What was sent before the pool ran out, and the rest with the next pass.
-        gui.run(|node, context| _ = node.gui_background(context));
+        gui.run(|node, context| node.on_gui_tick(None, context));
         assert_eq!(gui.lines().len(), WINDOW_BUFFERS * per_pass);
         pass(&mut viewing, gui.sent(), &[]);
-        gui.run(|node, context| _ = node.gui_background(context));
+        gui.run(|node, context| node.on_gui_tick(None, context));
         let kept = gui.lines();
         let last = passes * per_pass - 1;
         assert_eq!(kept.len(), KEPT);
@@ -239,8 +242,8 @@ mod tests {
         pass(&mut viewing, gui.sent(), &lines(&[(1526.125, "trial 1 rewarded at the north arm")]));
         let mut harness = egui_kittest::Harness::builder().with_size([560.0, 200.0]).wgpu().build_ui_state(
             |ui, gui: &mut Gui| {
-                gui.run(|node, context| _ = node.gui_background(context));
-                gui.run(|node, context| node.gui_ui(ui, context));
+                gui.run(|node, context| node.on_gui_tick(None, context));
+                gui.run(|node, context| node.on_gui_tick(Some(ui), context));
             },
             gui,
         );

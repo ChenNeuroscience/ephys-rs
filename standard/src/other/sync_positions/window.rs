@@ -52,7 +52,7 @@ impl SyncState {
 }
 
 impl SyncPositions {
-    pub(super) fn window(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+    pub(super) fn draw_window(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
         ui.horizontal(|ui| context.node_toolbar(ui));
         egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| self.body(ui, context));
     }

@@ -185,7 +185,8 @@ impl Node<Edges> for TtlViewer {
         });
     }
 
-    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+        let Some(ui) = ui else { return };
         let locked = context.locked;
         ui.horizontal(|ui| {
             ui.add_enabled_ui(!locked, |ui| {
@@ -199,19 +200,20 @@ impl Node<Edges> for TtlViewer {
             context.node_toolbar(ui);
         });
         let Some(DataStream::Events(stream)) = context.inputs[0] else {
-            return plots::unconnected(ui, context.theme, "Connect events to view them");
+            plots::unconnected(ui, context.theme, "Connect events to view them");
+            return;
         };
         let pool = context.shared::<Pool<LinesDisplay>>();
         let Some(display) = pool.and_then(Pool::newest).filter(|d| d.lines > 0) else {
             let message = format!("{} · press Play to see them", stream.summary());
-            return plots::unconnected(ui, context.theme, &message);
+            plots::unconnected(ui, context.theme, &message);
+            return;
         };
         let theme = context.theme;
         let area = ui.available_rect_before_wrap();
         ui.painter().rect_filled(area, 2.0, theme.surface_sunken);
         let row = self.line_height.clamp(12.0, 200.0);
         egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| Self::lines_ui(ui, &display, row, theme));
-        plots::repaint_with_data(ui, context.running);
     }
 }
 
@@ -343,7 +345,7 @@ mod tests {
                     true,
                     false,
                     None,
-                    |node, context| node.gui_ui(ui, context),
+                    |node, context| node.on_gui_tick(Some(ui), context),
                 );
             },
             graph,

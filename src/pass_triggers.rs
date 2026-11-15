@@ -59,6 +59,15 @@ impl PassTriggers {
         self.triggers().insert((node, trigger.key()), PassTrigger::Triggered(trigger));
     }
 
+    /// The nodes with a trigger sent and not yet done (or stopped, until a pass sees it has been), which have to run
+    /// to get it done (see `Plan::triggering`).
+    pub fn nodes(&self) -> crate::engine::Triggering {
+        if self.pending.load(Ordering::Acquire) == 0 {
+            return Default::default();
+        }
+        self.triggers().keys().map(|(node, _)| *node).collect()
+    }
+
     /// How far along node `node`'s trigger of kind `kind` is (0 to 1), if it's been triggered and isn't done (or
     /// stopped).
     pub fn trigger_progress(&self, node: NodeId, kind: impl Into<TriggerKey>) -> Option<f32> {

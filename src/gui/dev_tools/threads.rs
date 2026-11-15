@@ -771,13 +771,11 @@ fn memory<N: NodesEnum>(
                 }
             });
             let states = plan.steps().iter().filter(|s| s.state.is_some()).count();
-            let working = plan.steps().iter().filter(|s| s.worker).count();
             let copies = plan.steps().iter().map(|s| s.copies.len()).sum::<usize>();
             ui.label(small(
                 format!(
-                    "Also: {states} node states (one each, handed from pass to pass), {working} nodes' worker \
-                     state (each worker its own, so no waiting), and the pools nodes share with their threads and \
-                     windows. {copies} of the buffers are copies the plan makes, for nodes taking them."
+                    "Also: {states} node states (one each, handed from pass to pass), each worker's own state \
+                     for each node (so no waiting), and the pools nodes share with their threads and windows. {copies} of the buffers are copies the plan makes, for nodes taking them."
                 ),
                 colours.text_secondary,
             ));

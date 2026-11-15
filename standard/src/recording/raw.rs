@@ -109,7 +109,7 @@ impl Node<Edges> for WriteRaw {
 
     /// Only while recording, and given something to record: otherwise there'd be nothing to write, but files all the
     /// same. So what feeds only writers runs only while recording.
-    fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool], recording: bool) -> TreeShake {
+    fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool], recording: bool, _triggered: bool) -> TreeShake {
         TreeShake::needing_all(recording && inputs.contains(&true), inputs.len())
     }
 
@@ -208,7 +208,8 @@ impl Node<Edges> for WriteRaw {
         show_status(recorder.writing.as_ref(), pass.shared::<Pool<Status>>(), pass.sequence);
     }
 
-    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+        let Some(ui) = ui else { return };
         ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, context| {
             location_summary(ui, context.base_directory, "a folder");
             ui.add_space(4.0);

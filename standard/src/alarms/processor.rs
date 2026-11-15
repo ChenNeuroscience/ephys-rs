@@ -262,7 +262,7 @@ impl Node<Edges> for AlarmProcessor {
 
     /// Only the inputs an alarm that's on watches; and only while it's given one of those, and something needs what
     /// it makes.
-    fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool], _recording: bool) -> TreeShake {
+    fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool], _recording: bool, _triggered: bool) -> TreeShake {
         let needs: Vec<bool> = (0..inputs.len()).map(|input| self.needs(input)).collect();
         let given = inputs.iter().zip(&needs).any(|(&used, &needed)| used && needed);
         TreeShake { runs: given && outputs.contains(&true), needs }
@@ -343,7 +343,8 @@ impl Node<Edges> for AlarmProcessor {
         }
     }
 
-    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+        let Some(ui) = ui else { return };
         ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, context| {
             alarms_ui(ui, &mut node.alarms, streams(context.inputs));
         });

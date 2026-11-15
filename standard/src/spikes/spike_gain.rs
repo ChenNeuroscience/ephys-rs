@@ -194,8 +194,9 @@ impl Node<Edges> for SpikeGain {
     };
 
     /// Only while it's given something, and something needs what it makes.
-    fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool], _recording: bool) -> TreeShake {
-        TreeShake::needing_all(inputs.contains(&true) && outputs.contains(&true), inputs.len())
+    fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool], _recording: bool, triggered: bool) -> TreeShake {
+        // While detecting, whatever needs what it makes: its gains are wanted before recording, say.
+        TreeShake::needing_all(inputs.contains(&true) && (outputs.contains(&true) || triggered), inputs.len())
     }
 
     fn inputs(&self) -> Vec<Input<Edges>> {
@@ -289,7 +290,8 @@ impl Node<Edges> for SpikeGain {
         }
     }
 
-    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+        let Some(ui) = ui else { return };
         ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, context| {
             let channels = match context.inputs[0] {
                 Some(DataStream::Spikes(s)) => {
@@ -711,7 +713,7 @@ mod tests {
         let mut harness = egui_kittest::Harness::builder().with_size([420.0, 440.0]).wgpu().build_ui_state(
             |ui, graph: &mut Graph<Nodes>| {
                 graph.edit(id, &inputs, &THEMES[0].colours, None, None, None, false, false, None, |node, context| {
-                    node.gui_ui(ui, context)
+                    node.on_gui_tick(Some(ui), context)
                 });
             },
             graph,

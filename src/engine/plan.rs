@@ -6,7 +6,7 @@
 //! copy: if the node can be the last to read the data, it takes the buffer itself; otherwise the plan copies the data
 //! into a buffer of the node's own, as soon as it's made, which the node takes instead (a copy point).
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::OnceLock;
 
 use super::pass_context::*;
@@ -32,8 +32,6 @@ pub struct Step {
     /// The node's state, if it carries any over: an index into the run's state slots. Each pass waits here for
     /// the pass before to hand the state over.
     pub state: Option<usize>,
-    /// Whether each worker has state of its own for the node (see `Node::WorkerState`).
-    pub worker: bool,
 }
 
 /// A copy of a buffer the plan makes, for a node taking it that can't be the last to read it.
@@ -79,6 +77,9 @@ struct Link {
     from: super::PortRef,
     to: super::PortRef,
 }
+
+/// The nodes working on a pass trigger (sent, and not yet done or stopped), as the run's `PassTriggers` keeps them.
+pub type Triggering = BTreeSet<NodeId>;
 
 /// How many times a node's asked for its tree shake before its answer's taken as it stands (see `settle`).
 const SETTLE_ASKS: usize = 8;
@@ -153,6 +154,12 @@ fn settle(
 impl<N: NodesEnum> Plan<N> {
     /// Plans how to run `graph`, `recording` or not (see `Node::evaluate_tree_shake`).
     pub fn new(graph: &Graph<N>, recording: bool) -> Self {
+        Self::triggering(graph, recording, &Triggering::new())
+    }
+
+    /// Plans how to run `graph`, as `new` does, telling the nodes in `triggering` that they're working on a pass
+    /// trigger (an auto detect, say), which they have to run to get done (see `Node::evaluate_tree_shake`).
+    pub fn triggering(graph: &Graph<N>, recording: bool, triggering: &Triggering) -> Self {
         let resolved = graph.resolve();
         let topological = graph.topological_order();
         // Which nodes run is up to them (see `settle`): of those that can, not disabled, with every output known.
@@ -170,7 +177,7 @@ impl<N: NodesEnum> Plan<N> {
             &can_run,
             &links,
             |id, inputs, outputs| match graph.get(id) {
-                Some(e) => e.node.evaluate_tree_shake(inputs, outputs, recording),
+                Some(e) => e.node.evaluate_tree_shake(inputs, outputs, recording, triggering.contains(&id)),
                 None => TreeShake::needing_all(false, inputs.len()),
             },
             |id| graph.get(id).map_or_else(|| format!("{id:?}"), |e| e.label.clone()),
@@ -282,7 +289,6 @@ impl<N: NodesEnum> Plan<N> {
                 state_inputs.push((id, state.input_streams.clone()));
                 state_inputs.len() - 1
             });
-            let worker = entry.node.has_worker_state();
             // The inputs it takes but can't be the last to read: copied for it, once they're made.
             let mut takes = Vec::with_capacity(inputs.len());
             for (input, buffer) in inputs.iter_mut().enumerate() {
@@ -312,7 +318,7 @@ impl<N: NodesEnum> Plan<N> {
             let copies = Vec::new();
             step_inputs.push(state.input_streams.clone());
             step_outputs.push(state.outputs.iter().map(|output| output.stream).collect());
-            steps.push(Step { id, inputs, outputs, in_place: made_in_place, takes, state: node_state, worker, copies });
+            steps.push(Step { id, inputs, outputs, in_place: made_in_place, takes, state: node_state, copies });
         }
         Plan { steps, buffers, state_inputs, step_inputs, step_outputs, bytes: OnceLock::new() }
     }

@@ -178,7 +178,8 @@ impl Node<Edges> for Camera {
         pass.shared::<Pool<CaptureStats>>().send_newest(pass.sequence, |shown| shown.copy_from(stats));
     }
 
-    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+        let Some(ui) = ui else { return };
         ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, context| {
             settings_grid(ui, |ui| {
                 setting(ui, "Camera", |ui| source_ui(ui, &mut node.source));

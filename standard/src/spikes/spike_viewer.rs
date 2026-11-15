@@ -29,7 +29,6 @@ use ephys_rs::engine::{
     Shortcut, UiContext,
 };
 use ephys_rs::gui::widgets::Icon;
-use std::time::{Duration, Instant};
 
 /// A channel's plot's width, for its height.
 const ASPECT: f32 = 0.75;
@@ -314,17 +313,14 @@ impl Node<Edges> for SpikeViewer {
         });
     }
 
-    /// Detecting the gains once the thresholds are done, whether its window's shown or not.
-    fn gui_background(&mut self, context: &mut UiContext<Edges>) -> Option<Instant> {
-        let mut detecting = context.ui_state::<AutoDetecting>();
-        detecting.carry_on(context);
-        (!detecting.next.is_empty()).then(|| Instant::now() + Duration::from_millis(100))
-    }
-
-    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+    /// The viewer takes what its passes have sent, then draws its window if there's a `ui` to draw it in.
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+        self.take_updates(context);
+        let Some(ui) = ui else { return };
         let locked = context.locked;
         let Some(DataStream::Spikes(stream)) = context.inputs[0] else {
-            return plots::unconnected(ui, context.theme, "Connect spikes to view them");
+            plots::unconnected(ui, context.theme, "Connect spikes to view them");
+            return;
         };
         let pool = context.shared::<Pool<RecentDisplay>>();
         let reading = pool.and_then(Pool::newest).filter(|d| d.stream.is_some());
@@ -354,7 +350,14 @@ impl Node<Edges> for SpikeViewer {
         if let Some(gains) = gains {
             context.controls[GAINS_CONTROL] = Some(Setting::Gains(gains));
         }
-        plots::repaint_with_data(ui, context.running);
+    }
+}
+
+impl SpikeViewer {
+    /// The viewer carries on detecting the gains once the thresholds are done, whether or not its window's shown.
+    fn take_updates(&mut self, context: &mut UiContext<Edges>) {
+        let mut detecting = context.ui_state::<AutoDetecting>();
+        detecting.carry_on(context);
     }
 }
 

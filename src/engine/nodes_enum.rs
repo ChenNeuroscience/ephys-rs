@@ -52,11 +52,10 @@ pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + S
     fn settings(&self) -> Vec<SettingPort<Self::Edges>>;
     fn set_setting(&mut self, index: usize, value: <Self::Edges as Edges>::Setting);
     fn controls(&self) -> Vec<Control<Self::Edges>>;
-    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Self::Edges>);
-    fn gui_background(&mut self, context: &mut UiContext<Self::Edges>) -> Option<std::time::Instant>;
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Self::Edges>);
     /// Its `UiState` as it starts.
     fn new_ui_state(&self) -> Box<dyn Any>;
-    fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool], recording: bool) -> TreeShake;
+    fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool], recording: bool, triggered: bool) -> TreeShake;
     fn evaluate_buffer_usage(&self, inputs: usize, outputs: usize) -> BufferUsage;
     fn triggers(&self, setting: usize) -> &'static [super::TriggerKind<Self::Edges>];
     fn sends(&self, control: usize) -> &'static [super::TriggerKind<Self::Edges>];
@@ -70,8 +69,9 @@ pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + S
     fn has_state(&self) -> bool;
     /// Why it does (see `PassState::WHY`).
     fn state_reason(&self) -> &'static str;
-    /// Whether each worker has state of its own for the node (see `Node::WorkerState`).
-    fn has_worker_state(&self) -> bool;
+    /// The node's `WorkerState` as each worker starts with it, unless the node made one (see
+    /// `Node::prepare_for_snapshot`).
+    fn new_worker_state(&self) -> Box<dyn Any + Send>;
     fn prepare_for_snapshot(
         &self,
         context: &PrepareContext<Self::Edges, Self>,
@@ -240,15 +240,12 @@ macro_rules! nodes_enum {
                 match self { $($name::$variant(n) => $crate::engine::Node::controls(n)),+ }
             }
 
-            fn gui_ui(&mut self, ui: &mut eframe::egui::Ui, context: &mut $crate::engine::UiContext<$edges>) {
-                match self { $($name::$variant(n) => $crate::engine::Node::gui_ui(n, ui, context)),+ }
-            }
-
-            fn gui_background(
+            fn on_gui_tick(
                 &mut self,
+                ui: Option<&mut eframe::egui::Ui>,
                 context: &mut $crate::engine::UiContext<$edges>,
-            ) -> Option<std::time::Instant> {
-                match self { $($name::$variant(n) => $crate::engine::Node::gui_background(n, context)),+ }
+            ) {
+                match self { $($name::$variant(n) => $crate::engine::Node::on_gui_tick(n, ui, context)),+ }
             }
 
             fn new_ui_state(&self) -> Box<dyn std::any::Any> {
@@ -259,9 +256,9 @@ macro_rules! nodes_enum {
                 }
             }
 
-            fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool], recording: bool) -> $crate::engine::TreeShake {
+            fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool], recording: bool, triggered: bool) -> $crate::engine::TreeShake {
                 match self {
-                    $($name::$variant(n) => $crate::engine::Node::evaluate_tree_shake(n, inputs, outputs, recording)),+
+                    $($name::$variant(n) => $crate::engine::Node::evaluate_tree_shake(n, inputs, outputs, recording, triggered)),+
                 }
             }
 
@@ -299,10 +296,10 @@ macro_rules! nodes_enum {
                 }
             }
 
-            fn has_worker_state(&self) -> bool {
+            fn new_worker_state(&self) -> Box<dyn std::any::Any + Send> {
                 match self {
                     $($name::$variant(_) => {
-                        $crate::engine::is_state::<<$ty as $crate::engine::Node<$edges>>::WorkerState>()
+                        Box::new(<<$ty as $crate::engine::Node<$edges>>::WorkerState as Default>::default())
                     }),+
                 }
             }

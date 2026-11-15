@@ -69,20 +69,23 @@ impl Node<Edges> for VideoViewer {
         pool.send_as_of(sequence, frames);
     }
 
-    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+        let Some(ui) = ui else { return };
         let locked = context.locked;
         ui.horizontal(|ui| {
             ui.add_enabled_ui(!locked, |ui| ui.checkbox(&mut self.crosshair, "Crosshair"));
             context.node_toolbar(ui);
         });
         let Some(DataStream::Video(stream)) = context.inputs[0] else {
-            return plots::unconnected(ui, context.theme, "Connect video to view it");
+            plots::unconnected(ui, context.theme, "Connect video to view it");
+            return;
         };
         // The last of the latest frames sent.
         let pool = context.shared::<Pool<VideoBuffer>>();
         let Some(frames) = pool.and_then(Pool::newest).filter(|f| f.frames > 0 && f.width > 0) else {
             let message = if context.running { "Waiting for frames…" } else { "Press Play to see the video" };
-            return plots::unconnected(ui, context.theme, message);
+            plots::unconnected(ui, context.theme, message);
+            return;
         };
         let last = frames.frames - 1;
         let frame =
@@ -102,6 +105,5 @@ impl Node<Edges> for VideoViewer {
             FontId::proportional(11.0),
             Color32::WHITE,
         );
-        plots::repaint_with_data(ui, context.running);
     }
 }

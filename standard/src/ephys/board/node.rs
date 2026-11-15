@@ -265,7 +265,8 @@ impl Node<Edges> for AcquisitionBoard {
         }
     }
 
-    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+        let Some(ui) = ui else { return };
         ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, context| {
             let theme = context.theme;
             settings_grid(ui, |ui| {
@@ -586,7 +587,7 @@ mod tests {
                     true,
                     false,
                     None,
-                    |node, context| node.gui_ui(ui, context),
+                    |node, context| node.on_gui_tick(Some(ui), context),
                 );
             },
             graph,

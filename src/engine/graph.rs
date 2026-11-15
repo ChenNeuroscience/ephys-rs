@@ -782,29 +782,33 @@ pub struct Snapshot<N: NodesEnum> {
     pub started: Option<Instant>,
     /// The recording, while recording.
     pub recording: Option<Arc<Recording>>,
+    /// The pass triggers nodes are working on, which they run for (see `Node::evaluate_tree_shake`).
+    pub triggering: Arc<super::Triggering>,
 }
 
 impl<N: NodesEnum> Snapshot<N> {
     /// Bakes what the passes need of `graph`, and of a run that `started` (while running), with `recording` (while
-    /// recording): planning how to run it from scratch.
+    /// recording) and the pass triggers its nodes are working on (`triggering`): planning how to run it from scratch.
     pub fn bake(
         version: u64,
         graph: Arc<Graph<N>>,
         started: Option<Instant>,
         recording: Option<Arc<Recording>>,
+        triggering: super::Triggering,
     ) -> Self {
         let controls = graph
             .iter()
             .filter(|(_, entry)| !entry.node.controls().is_empty())
             .map(|(id, _)| (id, graph.control_values(id)))
             .collect();
-        let plan = Arc::new(Plan::new(&graph, recording.is_some()));
-        Snapshot { version, graph, plan, controls: Arc::new(controls), started, recording }
+        let plan = Arc::new(Plan::triggering(&graph, recording.is_some(), &triggering));
+        let triggering = Arc::new(triggering);
+        Snapshot { version, graph, plan, controls: Arc::new(controls), started, recording, triggering }
     }
 
     /// `graph`, as a run started just now would have it, not recording (for trying graphs out: the app bakes its own).
     pub fn new(version: u64, graph: Graph<N>) -> Self {
-        Self::bake(version, Arc::new(graph), Some(Instant::now()), None)
+        Self::bake(version, Arc::new(graph), Some(Instant::now()), None, Default::default())
     }
 }
 
@@ -817,6 +821,7 @@ impl<N: NodesEnum> Clone for Snapshot<N> {
             controls: self.controls.clone(),
             started: self.started,
             recording: self.recording.clone(),
+            triggering: self.triggering.clone(),
         }
     }
 }

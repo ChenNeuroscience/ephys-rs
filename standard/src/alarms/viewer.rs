@@ -2,8 +2,8 @@
 //! switches edit the Alarm Processor's settings through a control; adding, removing and the rest are in its own window,
 //! which it has a button for, in basic mode too. The processor's data stays with it: this only gets the alarms' states.
 //!
-//! Its passes send every pass's alarm states to the GUI's side (`Update`), where its work on the GUI's thread (see
-//! `Node::gui_background`) keeps track of them, whether its window's open or not, for the window to show.
+//! Its passes send every pass's alarm states to the GUI's side (`Update`), where the viewer, called on by the app each
+//! frame (see `Node::on_gui_tick`), keeps track of them, whether its window's open or not, for the window to show.
 //!
 //! Switching an alarm off changes what the processor needs, and so the plan. While recording, the graph can't change, so
 //! an alarm switched off is only ignored here (`Overrides`); that's saved in the settings once recording's stopped. And an
@@ -16,8 +16,6 @@
 //! can go either way (`Overrides` again).
 //!
 //! The buttons for all the alarms are only shortcuts: they set each one.
-
-use std::time::Instant;
 
 use eframe::egui::{self, Color32, CornerRadius, RichText, Stroke};
 use serde::{Deserialize, Serialize};
@@ -236,9 +234,50 @@ impl Node<Edges> for AlarmViewer {
         pass.shared::<SentStates>().0.send_pending(pending);
     }
 
-    /// Goes through the passes sent, keeping track of the alarms going off, and pipping as they do; and once recording's
-    /// over, saves what was switched while it was.
-    fn gui_background(&mut self, context: &mut UiContext<Edges>) -> Option<Instant> {
+    /// The viewer takes what its passes have sent, then draws its window if there's a `ui` to draw it in.
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+        self.take_updates(context);
+        let Some(ui) = ui else { return };
+        let (Some(DataStream::AlarmStates(stream)), Some(Setting::Alarms(alarms))) =
+            (context.inputs[0], context.controls[ALARMS].as_ref())
+        else {
+            ui.horizontal(|ui| context.node_toolbar(ui));
+            plots::unconnected(ui, context.theme, "Connect an Alarm Processor's alarms and its setting");
+            return;
+        };
+        let mut alarms = alarms.clone();
+        let (locked, theme) = (context.locked, context.theme);
+        let mut gui = context.ui_state::<AlarmsUi>();
+        let AlarmsUi { shown, overrides, .. } = &mut *gui;
+        // Nothing to show until it's run.
+        let states = (!shown.states.is_empty()).then_some(shown.states.as_slice());
+        let going_off = shown.going_off.as_slice();
+
+        ui.horizontal(|ui| context.node_toolbar(ui));
+        banner(ui, theme, &alarms, stream, states);
+        ui.add_space(6.0);
+        let waiting_to_sound = context.running && !locked && any_sound(&alarms, overrides, &self.sounding);
+        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+            all_row(ui, &mut alarms, overrides, locked, &mut self.sounding, waiting_to_sound, |ui| {
+                open_settings_button(ui, context, ALARMS, "Alarm Processor");
+            });
+            ui.add_space(2.0);
+            for alarm in &mut alarms.list {
+                let state = states.and_then(|states| states.iter().find(|state| state.id == alarm.id).copied());
+                let off_for = going_off.iter().find(|(id, _)| *id == alarm.id).map(|(_, seconds)| *seconds);
+                let sounding = &mut self.sounding;
+                ui.push_id(alarm.id, |ui| row(ui, theme, alarm, stream, state, off_for, overrides, locked, sounding));
+                ui.add_space(4.0);
+            }
+        });
+        context.controls[ALARMS] = Some(Setting::Alarms(alarms));
+    }
+}
+
+impl AlarmViewer {
+    /// The viewer goes through the passes sent, keeping track of the alarms going off, and pipping as they do; and once
+    /// recording's over, it saves what was switched while recording.
+    fn take_updates(&mut self, context: &mut UiContext<Edges>) {
         let mut ui = context.ui_state::<AlarmsUi>();
         let AlarmsUi { shown, going_off, recording, overrides, tone } = &mut *ui;
         if !context.locked && (!overrides.ignored.is_empty() || !overrides.sounds.is_empty()) {
@@ -248,7 +287,7 @@ impl Node<Edges> for AlarmViewer {
             };
             overrides.save(alarms, &mut self.sounding);
         }
-        let sent = context.shared::<SentStates>()?;
+        let Some(sent) = context.shared::<SentStates>() else { return };
         // A pass's states, once they've all come.
         let mut pass = |seconds: f64, now_recording: bool, states: &mut Vec<AlarmState>| {
             for state in states.iter_mut() {
@@ -283,43 +322,6 @@ impl Node<Edges> for AlarmViewer {
         });
         shown.going_off.clear();
         shown.going_off.extend(going_off.iter().map(|going| (going.id, going.seconds)));
-        None
-    }
-
-    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
-        let (Some(DataStream::AlarmStates(stream)), Some(Setting::Alarms(alarms))) =
-            (context.inputs[0], context.controls[ALARMS].as_ref())
-        else {
-            ui.horizontal(|ui| context.node_toolbar(ui));
-            return plots::unconnected(ui, context.theme, "Connect an Alarm Processor's alarms and its setting");
-        };
-        let mut alarms = alarms.clone();
-        let (locked, theme) = (context.locked, context.theme);
-        let mut gui = context.ui_state::<AlarmsUi>();
-        let AlarmsUi { shown, overrides, .. } = &mut *gui;
-        // Nothing to show until it's run.
-        let states = (!shown.states.is_empty()).then_some(shown.states.as_slice());
-        let going_off = shown.going_off.as_slice();
-
-        ui.horizontal(|ui| context.node_toolbar(ui));
-        banner(ui, theme, &alarms, stream, states);
-        ui.add_space(6.0);
-        let waiting_to_sound = context.running && !locked && any_sound(&alarms, overrides, &self.sounding);
-        egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-            all_row(ui, &mut alarms, overrides, locked, &mut self.sounding, waiting_to_sound, |ui| {
-                open_settings_button(ui, context, ALARMS, "Alarm Processor");
-            });
-            ui.add_space(2.0);
-            for alarm in &mut alarms.list {
-                let state = states.and_then(|states| states.iter().find(|state| state.id == alarm.id).copied());
-                let off_for = going_off.iter().find(|(id, _)| *id == alarm.id).map(|(_, seconds)| *seconds);
-                let sounding = &mut self.sounding;
-                ui.push_id(alarm.id, |ui| row(ui, theme, alarm, stream, state, off_for, overrides, locked, sounding));
-                ui.add_space(4.0);
-            }
-        });
-        context.controls[ALARMS] = Some(Setting::Alarms(alarms));
-        plots::repaint_with_data(ui, context.running);
     }
 }
 
@@ -701,7 +703,7 @@ mod tests {
     ) {
         let inputs = [Some(DataStream::AlarmStates(STREAM))];
         graph.edit(viewer, &inputs, &THEMES[0].colours, Some(by_node), Some(gui), None, true, locked, None, |n, c| {
-            _ = n.gui_background(c);
+            n.on_gui_tick(None, c);
         });
     }
 
@@ -789,7 +791,7 @@ mod tests {
                     running,
                     locked,
                     None,
-                    |node, context| node.gui_ui(ui, context),
+                    |node, context| node.on_gui_tick(Some(ui), context),
                 );
             },
             graph,

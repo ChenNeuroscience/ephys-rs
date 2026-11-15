@@ -251,22 +251,10 @@ impl Node<Edges> for TrackerView {
         });
     }
 
-    /// Takes the path sent.
-    fn gui_background(&mut self, context: &mut UiContext<Edges>) -> Option<std::time::Instant> {
-        let shared = context.shared::<TrackerShared>()?;
-        let path = &mut context.ui_state::<TrackerUi>().path;
-        shared.path.receive_all(|updates| {
-            for update in updates {
-                match update {
-                    PathUpdate::Restart => path.clear(),
-                    PathUpdate::Point(point) => path.push(point),
-                }
-            }
-        });
-        None
-    }
-
-    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+    /// The view takes what its passes have sent, then draws its window if there's a `ui` to draw it in.
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+        self.take_updates(context);
+        let Some(ui) = ui else { return };
         // The node's toolbar, along the top.
         if context.tools.is_some() {
             ui.horizontal(|ui| context.node_toolbar(ui));
@@ -286,6 +274,22 @@ impl Node<Edges> for TrackerView {
             });
             self.camera_ui(ui, context, arrangement);
         }
+    }
+}
+
+impl TrackerView {
+    /// The view takes the path its passes sent.
+    fn take_updates(&mut self, context: &mut UiContext<Edges>) {
+        let Some(shared) = context.shared::<TrackerShared>() else { return };
+        let path = &mut context.ui_state::<TrackerUi>().path;
+        shared.path.receive_all(|updates| {
+            for update in updates {
+                match update {
+                    PathUpdate::Restart => path.clear(),
+                    PathUpdate::Point(point) => path.push(point),
+                }
+            }
+        });
     }
 }
 
@@ -381,7 +385,6 @@ impl TrackerView {
             None => format!("{length:.0} px"),
         };
         path_ui(ui, rect, xf, &mut context.ui_state::<TrackerUi>().path, length, context.theme);
-        plots::repaint_with_data(ui, context.running);
     }
 
     /// The camera's and the detector's settings (through the controls), in sections whose headers say what's
@@ -576,7 +579,6 @@ fn positions_ui(ui: &mut egui::Ui, context: &UiContext<Edges>, display: Option<&
         None => format!("{length:.0} px"),
     };
     path_ui(ui, rect, xf, &mut context.ui_state::<TrackerUi>().path, length, context.theme);
-    plots::repaint_with_data(ui, context.running);
 }
 
 /// What's known of positions without video, which there's nothing to adjust of.
@@ -960,7 +962,7 @@ mod tests {
             let colours = &crate::standard::themes::THEMES[0].colours;
             let inputs = [None, None, None];
             graph.edit(view, &inputs, colours, Some(&by_node), Some(&ui_state), None, true, false, None, |n, c| {
-                _ = n.gui_background(c)
+                n.on_gui_tick(None, c)
             });
             let state = ui_state.borrow();
             state.downcast_ref::<TrackerUi>().unwrap().path.iter().map(|p| p[0]).collect::<Vec<_>>()
@@ -1184,7 +1186,7 @@ mod tests {
                     true,
                     false,
                     None,
-                    |node, context| node.gui_ui(ui, context),
+                    |node, context| node.on_gui_tick(Some(ui), context),
                 );
             },
             graph,
@@ -1250,7 +1252,7 @@ mod tests {
                     true,
                     false,
                     None,
-                    |node, context| node.gui_ui(ui, context),
+                    |node, context| node.on_gui_tick(Some(ui), context),
                 );
             },
             graph,

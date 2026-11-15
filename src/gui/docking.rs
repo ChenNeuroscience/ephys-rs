@@ -64,12 +64,22 @@ pub struct Panes<'a, N: NodesEnum, A: AnnotationsEnum> {
     /// The files last opened or saved, latest first.
     pub recent: &'a [PathBuf],
     pub events: &'a mut Vec<Event>,
+    /// The nodes whose windows have been drawn this frame (see `Node::on_gui_tick`).
+    pub ticked: &'a mut Ticked,
     /// For the dev tools' chart; and each pane's time this frame, as it's drawn.
     pub frame_times: &'a FrameTimes,
     pub timings: &'a mut Vec<(String, f32)>,
 }
 
-/// A node's window content (see `Node::gui_ui`), with its toolbar. It finds what its passes share with it in `shared`:
+/// The app records here which nodes it's called on to draw their windows this frame (see `Node::on_gui_tick`), so it
+/// calls the rest without.
+#[derive(Default)]
+pub struct Ticked {
+    pub nodes: HashSet<NodeId>,
+}
+
+/// Draws a node's window content, with its toolbar, by calling on the node (see `Node::on_gui_tick`), and records that
+/// in `ticked`. It finds what its passes share with it in `shared`:
 /// the run's, or the last run's. Its triggers need a run to go to, while there is one (`live`).
 #[allow(clippy::too_many_arguments)]
 pub fn node_ui<N: NodesEnum>(
@@ -85,6 +95,7 @@ pub fn node_ui<N: NodesEnum>(
     advanced: bool,
     id: NodeId,
     events: &mut Vec<Event>,
+    ticked: &mut Ticked,
 ) {
     let Some(state) = resolved.get(&id) else { return };
     let Some(mut tools) = NodeTools::new(graph, id, advanced, live, events) else { return };
@@ -101,8 +112,9 @@ pub fn node_ui<N: NodesEnum>(
         running,
         locked,
         tools,
-        |node: &mut N, context| node.gui_ui(ui, context),
+        |node: &mut N, context| node.on_gui_tick(Some(ui), context),
     );
+    ticked.nodes.insert(id);
 }
 
 /// What was clicked in a floating window's header.
@@ -278,8 +290,11 @@ impl<N: NodesEnum, A: AnnotationsEnum> Panes<'_, N, A> {
                 let ui_state = self.ui_states.get(graph, id);
                 let live = runner.map(|r| r.pass_triggers());
                 padded(ui, |ui| {
-                    let events = &mut *self.events;
-                    node_ui(ui, graph, resolved, colours, live, shared, ui_state, base, locked, advanced, id, events)
+                    let (events, ticked) = (&mut *self.events, &mut *self.ticked);
+                    node_ui(
+                        ui, graph, resolved, colours, live, shared, ui_state, base, locked, advanced, id, events,
+                        ticked,
+                    )
                 })
             }
         }

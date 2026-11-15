@@ -10,9 +10,7 @@ use crate::standard::ephys::reference::{channels_ui, parse_channels};
 use crate::standard::ephys::{ChannelSelection, Continuous};
 use crate::standard::widgets::{inline_block, input_summary, power, require_input};
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
-use ephys_rs::engine::{
-    Category, Input, Node, NodeInfo, Output, PassContext, Prepare, PrepareContext, Prepared, SettingPort, UiContext,
-};
+use ephys_rs::engine::{Category, Input, Node, NodeInfo, Output, PassContext, SettingPort, UiContext};
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -55,7 +53,7 @@ impl Node<Edges> for ChannelSelector {
     };
 
     /// Only while it's given something, and something needs what it makes.
-    fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool], _recording: bool) -> TreeShake {
+    fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool], _recording: bool, _triggered: bool) -> TreeShake {
         TreeShake::needing_all(inputs.contains(&true) && outputs.contains(&true), inputs.len())
     }
 
@@ -90,14 +88,6 @@ impl Node<Edges> for ChannelSelector {
         warnings
     }
 
-    /// Each worker's room to work in.
-    fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<(), Passed, Self> {
-        if context.same_streams() {
-            return Prepared::nothing().into();
-        }
-        Prepared::worker((0..context.workers).map(|_| Passed::default()).collect()).into()
-    }
-
     fn process(&self, pass: &mut PassContext<Edges>, _: &mut (), passed: &mut Passed) {
         let Some(Some(Buffer::Continuous(input))) = pass.inputs.first() else { return };
         let Some(Buffer::Continuous(output)) = pass.outputs.get_mut(0) else { return };
@@ -124,7 +114,8 @@ impl Node<Edges> for ChannelSelector {
         }
     }
 
-    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+        let Some(ui) = ui else { return };
         ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, context| {
             let count = match context.inputs[0] {
                 Some(DataStream::Continuous(c)) => c.channels,
@@ -248,8 +239,13 @@ mod tests {
         let runner = Runner::start(&snapshot, 2);
         let place = Place { directory: dir.clone(), prefix: Some("trial a".into()) };
         let asked = Arc::new(Recording::new(Some(place), chrono::Local::now()));
-        let recording =
-            ephys_rs::engine::Snapshot::bake(1, snapshot.graph.clone(), snapshot.started, Some(asked.clone()));
+        let recording = ephys_rs::engine::Snapshot::bake(
+            1,
+            snapshot.graph.clone(),
+            snapshot.started,
+            Some(asked.clone()),
+            Default::default(),
+        );
         assert!(!runner.update(&recording), "recording runs the writer, with buffers of its own");
         let deadline = Instant::now() + Duration::from_secs(10);
         while asked.effective().is_none_or(|e| e.at.elapsed() < Duration::from_millis(500)) && Instant::now() < deadline
@@ -265,13 +261,19 @@ mod tests {
             let shared = Some(&*shared);
             let mut harness = egui_kittest::Harness::builder().with_size([800.0, 600.0]).build_ui(|ui| {
                 graph.edit(id, &inputs, &THEMES[0].colours, shared, None, None, true, false, None, |node, context| {
-                    node.gui_ui(ui, context);
+                    node.on_gui_tick(Some(ui), context);
                 });
             });
             harness.run_steps(2);
         }
 
-        runner.update(&ephys_rs::engine::Snapshot::bake(2, recording.graph.clone(), recording.started, None));
+        runner.update(&ephys_rs::engine::Snapshot::bake(
+            2,
+            recording.graph.clone(),
+            recording.started,
+            None,
+            Default::default(),
+        ));
         drop(runner);
         ephys_rs::background::wait();
         let mut files = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path());
@@ -294,7 +296,7 @@ mod tests {
                 let stream = Continuous { channels: 16, sample_rate: 30000.0 };
                 let inputs = [Some(DataStream::Continuous(stream))];
                 graph.edit(id, &inputs, &THEMES[0].colours, None, None, None, false, false, None, |_, context| {
-                    selector.gui_ui(ui, context)
+                    selector.on_gui_tick(Some(ui), context)
                 });
             },
             ChannelSelector { apply: false, channels: "1-4".into() },

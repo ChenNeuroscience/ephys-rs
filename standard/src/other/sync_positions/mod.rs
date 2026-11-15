@@ -356,7 +356,13 @@ impl Node<Edges> for SyncPositions {
     }
 
     /// Never in a pass: it's sent what to do (see `on_trigger`), and has nothing to do with the data going by.
-    fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool], _recording: bool) -> ephys_rs::engine::TreeShake {
+    fn evaluate_tree_shake(
+        &self,
+        inputs: &[bool],
+        _outputs: &[bool],
+        _recording: bool,
+        _triggered: bool,
+    ) -> ephys_rs::engine::TreeShake {
         ephys_rs::engine::TreeShake::needing_all(false, inputs.len())
     }
 
@@ -377,8 +383,10 @@ impl Node<Edges> for SyncPositions {
         }
     }
 
-    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
-        self.window(ui, context);
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+        if let Some(ui) = ui {
+            self.draw_window(ui, context);
+        }
     }
 }
 

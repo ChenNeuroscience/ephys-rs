@@ -302,7 +302,7 @@ impl Node<Edges> for LfpViewer {
 
     /// The spectra only while they're shown: otherwise, the Spectrum node needn't run at all. It runs while it's
     /// given something it needs.
-    fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool], _recording: bool) -> TreeShake {
+    fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool], _recording: bool, _triggered: bool) -> TreeShake {
         let needs: Vec<bool> = (0..inputs.len()).map(|input| input != 1 || self.spectrum).collect();
         let given = inputs.iter().zip(&needs).any(|(&used, &needed)| used && needed);
         TreeShake { runs: given, needs }
@@ -365,17 +365,6 @@ impl Node<Edges> for LfpViewer {
         }
     }
 
-    /// Takes what the passes have sent, every update in order, whether the window's shown or not.
-    fn gui_background(&mut self, context: &mut UiContext<Edges>) -> Option<std::time::Instant> {
-        let pool = context.shared::<Pool<TracesUpdate>>()?;
-        let mut kept = context.ui_state::<TracesDisplay>();
-        while let Some(update) = pool.try_full() {
-            kept.apply(&update);
-            pool.give_back(update);
-        }
-        None
-    }
-
     fn controls(&self) -> Vec<Control<Edges>> {
         vec![
             Control { name: "gains", kind: SettingKind::Gains, read_only: false, on_right: false },
@@ -384,10 +373,14 @@ impl Node<Edges> for LfpViewer {
         ]
     }
 
-    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+    /// The viewer takes what its passes have sent, then draws its window if there's a `ui` to draw it in.
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+        self.take_updates(context);
+        let Some(ui) = ui else { return };
         let locked = context.locked;
         let Some(DataStream::Continuous(stream)) = context.inputs[0] else {
-            return plots::unconnected(ui, context.theme, "Connect a continuous data stream to view it");
+            plots::unconnected(ui, context.theme, "Connect a continuous data stream to view it");
+            return;
         };
         let mut selection = match &context.controls[SELECTION] {
             Some(Setting::ChannelSelection(s)) => Some(s.clone()),
@@ -403,13 +396,16 @@ impl Node<Edges> for LfpViewer {
         };
         let kept = context.ui_state::<TracesDisplay>();
         let display = kept.received.then_some(&*kept);
+        // The references are edited on the rows (an R for each), so only once there are rows, with data to show.
         let reference_rows = display.is_some() && context.inputs[2].is_some();
         let applied = selection.as_ref().is_some_and(|s| s.apply);
-        self.toolbar(ui, context, stream, applied, reference.as_mut(), gains.as_mut(), reference_rows);
+        let shown_reference = reference.as_mut().filter(|_| reference_rows);
+        self.toolbar(ui, context, stream, applied, shown_reference, gains.as_mut());
 
         let Some(display) = display else {
             let message = format!("{} · press Play to see the traces", stream.summary());
-            return plots::unconnected(ui, context.theme, &message);
+            plots::unconnected(ui, context.theme, &message);
+            return;
         };
         let spectra = match (&display.spectra, context.inputs[1]) {
             (Some(buffer), Some(DataStream::Spectra(stream))) => Some((buffer, stream)),
@@ -439,7 +435,18 @@ impl Node<Edges> for LfpViewer {
         if let Some(gains) = gains {
             context.controls[GAINS] = Some(Setting::Gains(gains));
         }
-        plots::repaint_with_data(ui, context.running);
+    }
+}
+
+impl LfpViewer {
+    /// The viewer takes what its passes have sent, every update in order, whether or not its window's shown.
+    fn take_updates(&mut self, context: &mut UiContext<Edges>) {
+        let Some(pool) = context.shared::<Pool<TracesUpdate>>() else { return };
+        let mut kept = context.ui_state::<TracesDisplay>();
+        while let Some(update) = pool.try_full() {
+            kept.apply(&update);
+            pool.give_back(update);
+        }
     }
 }
 
@@ -454,7 +461,6 @@ impl LfpViewer {
 
     /// The span, scale and rows' height, the spectrum, and (if they're connected) the gains and the reference, which
     /// can't be changed while a selection's `applied`: it can't be told from what's shown.
-    #[allow(clippy::too_many_arguments)]
     fn toolbar(
         &mut self,
         ui: &mut egui::Ui,
@@ -463,7 +469,6 @@ impl LfpViewer {
         applied: bool,
         reference: Option<&mut Reference>,
         gains: Option<&mut Gains>,
-        reference_rows: bool,
     ) {
         ui.add_enabled_ui(!context.locked, |ui| {
             ui.horizontal_wrapped(|ui| {
@@ -489,7 +494,7 @@ impl LfpViewer {
                 if let Some(reference) = reference {
                     inline_block(ui, "reference", true, |ui| {
                         let shown = ui.add_enabled_ui(!applied, |ui| {
-                            reference_ui(ui, reference, stream.channels, reference_rows);
+                            reference_ui(ui, reference, stream.channels);
                         });
                         shown.response.on_disabled_hover_text("Disable the selection to change it");
                         if context.advanced() {
@@ -840,28 +845,14 @@ fn word_button(
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-/// The references (a Reference's, for the spikes), compactly: adding one, and, if they've no rows of their own to have it
-/// on, what's particular to each.
-fn reference_ui(ui: &mut egui::Ui, reference: &mut Reference, channels: u32, rows: bool) {
+/// The references (a Reference's, for the spikes), for the toolbar: adding one. What's particular to each is on the rows.
+fn reference_ui(ui: &mut egui::Ui, reference: &mut Reference, channels: u32) {
     ui.strong("Reference").on_hover_text(
         "What each channel has subtracted: its reference group's mean or median. R puts a channel in a group, and a \
          channel's in one at most. The traces here aren't referenced",
     );
     if reference.list.is_empty() {
         ui.weak("none");
-    }
-    if !rows {
-        let mut edit = None;
-        for (index, computation) in reference.list.iter().enumerate() {
-            ui.label(egui::RichText::new((index + 1).to_string()).color(reference_colour(index)));
-            let (method, _) = ui.allocate_exact_size(egui::vec2(NUMBERS_WIDTH, 14.0), Sense::hover());
-            let (remove, _) = ui.allocate_exact_size(DELETE_SIZE, Sense::hover());
-            let buttons = reference_buttons(ui, method, remove, computation, index);
-            edit = edit.or(buttons);
-        }
-        if let Some(edit) = edit {
-            edit.apply(reference, channels);
-        }
     }
     if ui.small_button("+").on_hover_text("Add a reference group, of the channels in none").clicked() {
         reference.add(channels);

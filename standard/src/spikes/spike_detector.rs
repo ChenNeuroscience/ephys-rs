@@ -132,8 +132,9 @@ impl Node<Edges> for SpikeDetector {
     };
 
     /// Only while it's given something, and something needs what it makes.
-    fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool], _recording: bool) -> TreeShake {
-        TreeShake::needing_all(inputs.contains(&true) && outputs.contains(&true), inputs.len())
+    fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool], _recording: bool, triggered: bool) -> TreeShake {
+        // While detecting, whatever needs what it makes: its gains are wanted before recording, say.
+        TreeShake::needing_all(inputs.contains(&true) && (outputs.contains(&true) || triggered), inputs.len())
     }
 
     type State = Detector;
@@ -277,7 +278,8 @@ impl Node<Edges> for SpikeDetector {
         &[crate::TriggerKind::AutoDetect]
     }
 
-    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+        let Some(ui) = ui else { return };
         ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, context| {
             let (rate, channels) = match context.inputs[0] {
                 Some(DataStream::Continuous(c)) => (c.sample_rate, c.channels as usize),

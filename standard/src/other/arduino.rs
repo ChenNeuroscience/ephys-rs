@@ -408,7 +408,8 @@ impl Node<Edges> for Arduino {
         }
     }
 
-    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+        let Some(ui) = ui else { return };
         let status = context.shared::<Pool<Status>>().and_then(Pool::newest).map(|s| s.clone());
         let (running, warning) = (context.running, context.theme.warning);
         ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, _context| {

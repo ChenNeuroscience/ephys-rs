@@ -286,7 +286,7 @@ fn window_harness(ran: Option<&Path>) -> egui_kittest::Harness<'static, Graph<No
                 false,
                 false,
                 None,
-                |node, context| node.gui_ui(ui, context),
+                |node, context| node.on_gui_tick(Some(ui), context),
             );
         },
         graph,

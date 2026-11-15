@@ -28,7 +28,7 @@ The parts of the API are there for three different reasons, and it helps to know
   with something to record, or it would write empty files), worker state instead of shared state where nothing's carried over (`WorkerState`), and pools for buffers its threads
   swap.
 - **The experience of using it: how it looks and behaves for people.** These change nothing it computes: its category,
-  name and description (`INFO`), `warnings`, its window (`gui_ui`, and `WINDOW_SIZE`), whether
+  name and description (`INFO`), `warnings`, its window (`on_gui_tick`, and `WINDOW_SIZE`), whether
   it's in the basic view (`SHOW_IN_BASIC_DEFAULT`), and how its threads show in the dev tools (`threads`,
   `thread_pool`, `thread_ui`).
 
@@ -54,8 +54,9 @@ triggers. `self` is the snapshot's settings: the latest, as of the pass.
   - `type State` is carried from pass to pass (a filter's history). Passes hand it on in order, so they wait for each
     other there (a sync point); it implements `PassState`, saying why it's needed (`WHY`, shown in the dev tools).
   - `type WorkerState` is each worker's own: scratch space, kept so it isn't remade every pass, with nothing carried
-    over, so no waiting. The Reference and Channel Selector have it.
-- **Preparing for a snapshot.** This is where state is made. Every node with state prepares for each snapshot the run's
+    over, so no waiting. Every node has some (`()` for none); the engine gives each worker `Default`'s unless the node
+    makes its own as it prepares. The Reference and Channel Selector have it.
+- **Preparing for a snapshot.** This is where state is made. Every node prepares for each snapshot the run's
   given (`prepare_for_snapshot`), one after another on a thread of the run's, before any pass runs against it (the
   snapshot before carries on meanwhile). It's told its input data streams, what its controls see, the snapshot's
   recording if it's recording, what its controls can trigger, how many workers there are, and how it was in the
@@ -96,8 +97,9 @@ triggers. `self` is the snapshot's settings: the latest, as of the pass.
     every other reader can run first, otherwise a copy the plan makes as soon as the data's made (a copy point, in the
     dev tools). A node that only reads an input doesn't take it.
 - **The tree shake: whether it runs, and what it needs.** It's up to the node: `evaluate_tree_shake(inputs, outputs,
-  recording)`, given which of its inputs have something running into them, which of its outputs have something running
-  that needs them, and whether the snapshot's recording, says whether it runs, and which inputs it needs (a `TreeShake`). An input it doesn't need isn't passed,
+  recording, triggered)`, given which of its inputs have something running into them, which of its outputs have
+  something running that needs them, whether the snapshot's recording, and whether it's working on a pass trigger, says
+  whether it runs, and which inputs it needs (a `TreeShake`). An input it doesn't need isn't passed,
   and doesn't count as in use for what feeds it (the LFP viewer's spectrum, switched off, stops the
   [Spectrum](../standard/src/ephys/spectrum.rs) node). The plan starts with everything that can run running
   and needing everything, asks each node in turn, upstream first, and whenever one's answer changes, asks its
@@ -107,17 +109,21 @@ triggers. `self` is the snapshot's settings: the latest, as of the pass.
   answers did, with a warning in the console. By default, a node runs, needing every input, whatever's in use: the
   path without the optimisation, so leaving it is always correct. A node that only makes data for others runs only
   while they're in use, as the processing nodes do. A writer runs only while recording, and given something to record,
-  as what it does matters beyond the graph; so what only feeds writers runs only while recording. Run Command never runs in a pass: it's only ever sent things to do. A node with an output that can't be known doesn't run. Settings change the plan, so what a
+  as what it does matters beyond the graph; so what only feeds writers runs only while recording, except while it's working on a pass trigger (an auto detect),
+  which it has to run to get done: the app plans afresh as triggers are sent and finish, so a Continuous Gain feeding
+  only a writer can have its gains detected before recording. Run Command never runs in a pass: it's only ever sent things to do. A node with an output that can't be known doesn't run. Settings change the plan, so what a
   node needs is for what's switched on and off, not what changes pass to pass.
 
 ## Its window
 
-Double-clicking a node opens its window, `gui_ui`. By default it's the standard window
-([`node_window::standard`](../src/gui/node_window.rs)): its name, toolbar, what it is, any problems, and its ports.
-A node with settings to set there shows them in the standard window, as most do:
+Double-clicking a node opens its window. The app calls `on_gui_tick(ui, context)` for every node once a frame, with a
+`ui` to draw the window in while it's shown (and `None` otherwise: see below). By default a node draws the standard
+window ([`node_window::standard`](../src/gui/node_window.rs)): its name, toolbar, what it is, any problems, and its
+ports. A node with settings to set there shows them in the standard window, as most do:
 
 ```rust
-fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+    let Some(ui) = ui else { return };
     standard(self, ui, context, |node, ui, context| { /* node's settings */ });
 }
 ```
@@ -170,7 +176,7 @@ type Shared = Pool<TracesDisplay>;
 // In process: fill a buffer (an earlier send's, to overwrite), and queue it as of the pass.
 pass.shared::<Pool<TracesDisplay>>().send_newest(pass.sequence, |display| display.fill_from(...));
 
-// In gui_ui: the newest queued, held for as long as the view likes.
+// In on_gui_tick, drawing: the newest queued, held for as long as the view likes.
 let pool = context.shared::<Pool<TracesDisplay>>();
 let Some(display) = pool.and_then(Pool::newest) else { return };
 ```
@@ -188,12 +194,13 @@ direct trigger gets the same context (`on_trigger`), so it too. It's the place f
 started (as [Run Command](../standard/src/other/run_command/mod.rs) does): the node itself is cloned for undo's
 history and when it's duplicated, and compared every frame, so it should hold only its settings.
 
-Work that isn't drawing, but has to happen whether the window's shown or not, goes in `gui_background(context)`: the app
-calls it on the GUI's thread on every frame, before drawing it, and, while the window's hidden (minimised, say),
-whenever it's woken (see `App::logic`). It gets the same `UiContext` as the window, so it can take what the passes
-share, keep it in its `UiState`, and edit settings as a window would. It returns when it next needs calling, if it does,
-and the app's woken then. When everything the passes send matters, not only the newest, they send it all, in order
-(`Pool::send_pending`), and `gui_background` takes it (`Pool::receive_all`): the
+Work that isn't drawing, but has to happen whether the window's shown or not, goes in `on_gui_tick` too, whether or not
+there's a `ui`. The app calls it for every node once a frame: while drawing a shown window, and for every other node
+once the frame's drawn; and, while the app's window is hidden (minimised, say), whenever the app's woken (see
+`App::logic`). The node gets the same `UiContext` either way, so it can take what the passes share, keep it in its
+`UiState`, and edit settings as a window would. While running, the app tries to draw 50 frames a second; while stopped,
+only when something changes (input, say). When everything the passes send matters, not only the newest, they send it all, in order (`Pool::send_pending`),
+and the node takes it (`Pool::receive_all`; the standard nodes do it in a method of their own, `take_updates`): the
 [Log Viewer](../standard/src/logs/log_viewer.rs) keeps lines this way, the Tracker View its path, and the
 [Alarm Viewer](../standard/src/alarms/viewer.rs) keeps track of alarms going off, pipping as they do, with
 its window closed too.

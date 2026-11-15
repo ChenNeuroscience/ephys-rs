@@ -1,5 +1,5 @@
-//! The standard window, for a node to show (`Node::gui_ui`, as it does by default): its name (to edit), its toolbar,
-//! what it is, any problems, its settings, and what its ports carry and are connected to.
+//! The standard window, which a node draws by default (see `Node::on_gui_tick`): its name (to edit), its toolbar, what
+//! it is, any problems, its settings, and what its ports carry and are connected to.
 
 use eframe::egui::{self, RichText};
 
@@ -94,7 +94,7 @@ mod tests {
     use crate::Nodes;
     use crate::engine::Graph;
     use crate::engine::NodesEnum;
-    use crate::gui::docking::{PANE_MARGIN, node_ui};
+    use crate::gui::docking::{PANE_MARGIN, Ticked, node_ui};
     use crate::standard::themes::THEMES;
 
     /// Stopped, what the last run shared is there to read, but there's no run for a trigger to go to.
@@ -112,7 +112,21 @@ mod tests {
                     let mut events = Vec::new();
                     let live = running.then_some(&triggers);
                     let colours = &THEMES[0].colours;
-                    node_ui(ui, graph, &resolved, colours, live, None, None, None, false, true, id, &mut events);
+                    node_ui(
+                        ui,
+                        graph,
+                        &resolved,
+                        colours,
+                        live,
+                        None,
+                        None,
+                        None,
+                        false,
+                        true,
+                        id,
+                        &mut events,
+                        &mut Ticked::default(),
+                    );
                 },
                 graph,
             );
@@ -135,7 +149,21 @@ mod tests {
                 let mut events = Vec::new();
                 egui::Frame::new().inner_margin(PANE_MARGIN).show(ui, |ui| {
                     let colours = &THEMES[0].colours;
-                    node_ui(ui, graph, &resolved, colours, None, None, None, None, false, true, id, &mut events);
+                    node_ui(
+                        ui,
+                        graph,
+                        &resolved,
+                        colours,
+                        None,
+                        None,
+                        None,
+                        None,
+                        false,
+                        true,
+                        id,
+                        &mut events,
+                        &mut Ticked::default(),
+                    );
                 });
             },
             graph,

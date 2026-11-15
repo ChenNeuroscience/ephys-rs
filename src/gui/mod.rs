@@ -56,6 +56,9 @@ use canvas::{Canvas, HEADER, NODE_WIDTH, Selection, Tool};
 use create_menu::{Choice, CreateMenu};
 use docking::Panes;
 
+/// While running, the nodes have new data all the time, so the app tries to draw a frame every 20 ms (50 a second):
+/// about one a pass, and not every frame the display could show, which on a 120 Hz display is more than twice as often.
+const FRAME_INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);
 /// Runs the app built from `C`'s components, opening the file at `path` (or an empty graph).
 ///
 /// With `--version` as the first argument, says the version and stops.
@@ -295,6 +298,8 @@ pub struct App<N: NodesEnum, A: AnnotationsEnum> {
     started: Option<std::time::Instant>,
     /// The recording taken on, while recording.
     recording: Option<Arc<engine::Recording>>,
+    /// The nodes working on a pass trigger, which the snapshot plans to run (see `Plan::triggering`).
+    triggering: engine::Triggering,
     /// The graph running, while it is.
     runner: Option<Runner<N>>,
     /// What the last run shared, once it's stopped: see `LastRun`.
@@ -329,6 +334,8 @@ pub struct App<N: NodesEnum, A: AnnotationsEnum> {
     ran: Option<engine::Snapshot<N>>,
     /// The report of a crash the last time the program ran, until it's been said where it is.
     last_crash: Option<PathBuf>,
+    /// Whether the app has called on every node since `logic` last ran (see `tick_nodes`).
+    ticked_since_logic: bool,
     /// Asking what to do about nodes whose hardware isn't as their settings say, while the run's holding a snapshot
     /// for it (see `notice_decisions`).
     asking: Option<user_decisions::Asking<N>>,
@@ -342,7 +349,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         let graph = Graph::default();
         let history = History::new(&graph, &annotations);
         // Of the history item's own graph, so it isn't baked again (see `bake_edits`).
-        let snapshot = Snapshot::bake(0, history.current.graph.clone(), None, None);
+        let snapshot = Snapshot::bake(0, history.current.graph.clone(), None, None, Default::default());
         App {
             path: None,
             saved: None,
@@ -370,6 +377,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             versions: 0,
             started: None,
             recording: None,
+            triggering: Default::default(),
             graph,
             annotations,
             layout: Layout::default(),
@@ -389,6 +397,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             ran: None,
             last_crash: None,
             asking: None,
+            ticked_since_logic: true,
             quick_actions: &[],
             problems: (0, 0),
             about: None,
@@ -426,7 +435,8 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
     fn bake(&mut self) {
         self.versions += 1;
         let graph = self.history.current.graph.clone();
-        self.snapshot = Snapshot::bake(self.versions, graph, self.started, self.recording.clone());
+        self.snapshot =
+            Snapshot::bake(self.versions, graph, self.started, self.recording.clone(), self.triggering.clone());
     }
 
     /// Bakes again if the graph's changed: edited, undone or redone (taken into the history), or another opened.
@@ -1329,6 +1339,12 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         self.notice_recording();
         let plan = &self.snapshot.plan;
         self.last_run.take_if(|last| !last.plan.same_shape(plan));
+        // A node working on a pass trigger runs till it's done, so the plan changes as triggers come and go.
+        let triggering = self.runner.as_ref().map(|runner| runner.pass_triggers().nodes()).unwrap_or_default();
+        if triggering != self.triggering {
+            self.triggering = triggering;
+            self.bake();
+        }
         let Some(runner) = &self.runner else { return };
         let snapshot = &self.snapshot;
         let same_buffers = runner.update(snapshot);
@@ -1355,8 +1371,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         for first in runner.first_uses() {
             self.frame_times.first_use(first.version, first.sequence, first.at);
         }
-        // Keep the stats in the status bar fresh.
-        ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        ctx.request_repaint_after(FRAME_INTERVAL);
     }
 
     /// Returns whether the run's stats were clicked (to open the dev tools), and whether the count of errors and
@@ -1443,7 +1458,13 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
 
     /// Floating node windows, over everything else. They're styled like docked ones: a tab bar with the one
     /// tab, rather than a window title bar.
-    fn floating_windows(&mut self, ctx: &egui::Context, resolved: &Resolved<N::Edges>, events: &mut Vec<Event>) {
+    fn floating_windows(
+        &mut self,
+        ctx: &egui::Context,
+        resolved: &Resolved<N::Edges>,
+        events: &mut Vec<Event>,
+        ticked: &mut docking::Ticked,
+    ) {
         let locked = self.locked();
         let colours = self.colours();
         let advanced = self.layout.mode == Mode::Advanced;
@@ -1482,6 +1503,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                             advanced,
                             id,
                             events,
+                            ticked,
                         );
                     });
                 });
@@ -1683,6 +1705,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         let colours = self.colours();
         let background = egui::Frame::NONE.fill(colours.surface);
         let locked = self.locked();
+        let mut ticked = docking::Ticked::default();
         let mut timings = Vec::new();
         let graph_tools = self.graph_tools();
         let base = self.base_directories.place();
@@ -1712,6 +1735,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                 open_windows: &open_windows,
                 recent: &self.recent,
                 events: &mut events,
+                ticked: &mut ticked,
                 frame_times: &self.frame_times,
                 timings: &mut timings,
             };
@@ -1720,8 +1744,10 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         for (part, ms) in timings {
             self.frame_times.add(&part, ms);
         }
-        self.floating_windows(&ctx, &resolved, &mut events);
+        self.floating_windows(&ctx, &resolved, &mut events, &mut ticked);
         let started = Instant::now();
+        self.tick_nodes(&ctx, ticked);
+        self.ticked_since_logic = true;
         for event in events {
             self.handle(&ctx, event);
         }
@@ -1745,7 +1771,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
 
     /// The app's work that isn't drawing: before each frame, and while the window's hidden (minimised, say) whenever
     /// something's asked for the app to be woken (see `eframe::App::logic`). What's come from runs and nodes' threads,
-    /// the nodes' work on the GUI's thread (see `Node::gui_background`), stopping what's unattended, and keeping the run up
+    /// calling on the nodes while nothing's drawn (see `Node::on_gui_tick`), stopping what's unattended, and keeping the run up
     /// to date.
     pub fn logic(&mut self, ctx: &egui::Context) {
         // Keep (and echo) what's been logged, so the log's queue doesn't fill.
@@ -1753,7 +1779,10 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         self.direct_triggers.wake(ctx);
         self.deliver_triggers(ctx);
         self.notice_decisions();
-        self.background(ctx);
+        // Drawing a frame calls on every node; while the window's hidden, nothing's drawn, so the app calls on them here.
+        if !std::mem::replace(&mut self.ticked_since_logic, false) {
+            self.tick_nodes(ctx, docking::Ticked::default());
+        }
         self.stop_unattended();
         self.upkeep(ctx);
     }
@@ -1767,10 +1796,10 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         self.keep_running(ctx);
     }
 
-    /// The nodes' work on the GUI's thread (see `Node::gui_background`), each with its state on the GUI's side, and its
-    /// triggers, as its window has (to trigger one once another's done, say); woken again when the first of them asks to
-    /// be.
-    fn background(&mut self, ctx: &egui::Context) {
+    /// Calls on each node the app hasn't called on this frame to draw its window (those not in `ticked`), with nothing to
+    /// draw in (see `Node::on_gui_tick`), each with its state on the GUI's side and its triggers, as its window has (to
+    /// trigger one thing once another's done, say); and wakes the app when the first node next wants calling.
+    fn tick_nodes(&mut self, ctx: &egui::Context, ticked: docking::Ticked) {
         self.ui_states.keep(&self.graph);
         let resolved = self.graph.resolve();
         let shared = shared(&self.runner, &self.last_run);
@@ -1778,9 +1807,8 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             (self.colours(), self.base_directories.place(), self.runner.is_some(), self.locked());
         let advanced = self.layout.mode == Mode::Advanced;
         let live = self.runner.as_ref().map(Runner::pass_triggers);
-        let mut wake: Option<Instant> = None;
         let mut events = Vec::new();
-        for id in self.graph.ids().collect::<Vec<_>>() {
+        for id in self.graph.ids().filter(|id| !ticked.nodes.contains(id)).collect::<Vec<_>>() {
             let (Some(state), Some(ui_state)) = (resolved.get(&id), self.ui_states.get(&self.graph, id)) else {
                 continue;
             };
@@ -1788,7 +1816,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                 continue;
             };
             let inputs = &state.input_streams;
-            let next = self.graph.edit(
+            self.graph.edit(
                 id,
                 inputs,
                 colours,
@@ -1798,17 +1826,11 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                 running,
                 locked,
                 Some(&mut tools),
-                |node, context| node.gui_background(context),
+                |node, context| node.on_gui_tick(None, context),
             );
-            if let Some(next) = next.flatten() {
-                wake = Some(wake.map_or(next, |wake| wake.min(next)));
-            }
         }
         for event in events {
             self.handle(ctx, event);
-        }
-        if let Some(at) = wake {
-            ctx.request_repaint_after(at.saturating_duration_since(Instant::now()));
         }
     }
 }
@@ -3551,6 +3573,35 @@ mod tests {
             Some(false),
             "taken out of basic mode"
         );
+    }
+
+    /// In the rig, the Continuous Gain only feeds the LTX writer, which only runs while recording; but its gains are
+    /// to be detected before recording.
+    #[test]
+    fn auto_detect_runs_a_node_nothing_needs_yet() {
+        let mut harness = harness();
+        with_test_hardware(&mut harness);
+        let gain = node_named(harness.state(), "Continuous Gain");
+        let ctx = harness.ctx.clone();
+        harness.state_mut().perform(&ctx, Action::Play);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let (mut triggered, mut progress) = (false, 0.0f32);
+        while progress == 0.0 && std::time::Instant::now() < deadline {
+            harness.run_steps(1);
+            if let Some(runner) = harness.state().runner.as_ref() {
+                if !triggered && runner.stats().completed > 5 {
+                    let trigger = crate::Trigger::AutoDetect(crate::standard::auto_detect::AutoDetect);
+                    runner.pass_triggers().trigger(gain, ephys_rs::triggers::AnyTrigger::new(trigger));
+                    triggered = true;
+                } else if triggered {
+                    let now = runner.pass_triggers().trigger_progress(gain, crate::TriggerKind::AutoDetect);
+                    progress = now.unwrap_or(1.0);
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(triggered, "the run got going");
+        assert!(progress > 0.0, "the auto detect made progress");
     }
 
     #[test]

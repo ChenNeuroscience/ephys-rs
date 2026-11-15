@@ -301,108 +301,6 @@ impl RunCommand {
         }
     }
 
-    fn window(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
-        ui.horizontal(|ui| context.node_toolbar(ui));
-        ui.horizontal(|ui| {
-            ui.label("Runs a program on files, in a terminal window of its own.");
-            help_link(ui, "Examples", examples);
-        });
-        let warning = "Recording performance may suffer if the computer's resources are strained by other running \
-                       commands.";
-        ui.label(RichText::new(warning).color(context.theme.warning));
-        ui.add_space(6.0);
-        let job = context.ui_state::<CommandState>().job.clone();
-        let (locked, running) = (context.locked, job.running());
-        // What's connected supplies all the files, while it is.
-        let senders = context.controlled_by.first().map_or(&[][..], Vec::as_slice);
-        let connected = !senders.is_empty();
-        let preview = context.ui_state::<CommandState>().preview.of(&self.settings, connected);
-        // Nothing changes while it's running, to what it shows as running.
-        // How many files picked here match, of how many.
-        let matched = preview.picked.as_ref().ok().map(Vec::len);
-        let counts = preview.listed.zip(matched).map(|(listed, matched)| (matched, listed));
-        let chained = context.control_connected(AFTER_RUNNING);
-        self.settings_section(ui, senders, counts, chained, locked || running);
-        ui.add_space(6.0);
-        let (picked, runs) = (&preview.picked, &preview.runs);
-        let results = job.runs_with(&self.settings);
-        ui.separator();
-        ui.horizontal(|ui| {
-            // How many there are: not for an example, as that's up to what's sent.
-            let count = match (&results, runs) {
-                (Some(results), _) => format!(" ({})", results.len()),
-                (None, Ok(runs)) if !connected => format!(" ({})", runs.len()),
-                _ => String::new(),
-            };
-            ui.strong(match &results {
-                Some(_) if running => format!("Commands{count} · running"),
-                Some(_) => format!("Commands{count} · last run"),
-                None if connected => "Commands · an example".into(),
-                None => format!("Commands{count}"),
-            });
-            ui.add_space(6.0);
-            // Whatever's locked, something heavy can always be stopped.
-            if running {
-                if ui.button("Stop").on_hover_text("Stop what's running in its terminal").clicked() {
-                    job.stop();
-                }
-            } else {
-                let run = ui.add_enabled(runs.is_ok() && !locked && !connected, egui::Button::new("Run"));
-                let run = if connected {
-                    run.on_disabled_hover_text("It runs by itself on the files sent")
-                } else {
-                    run.on_hover_text("Open a terminal, and run these there")
-                };
-                // As if it were sent them: so it's the same, after, either way.
-                if run.clicked()
-                    && let Ok(files) = picked
-                {
-                    context.trigger(None, RunOnFiles(files.clone()));
-                }
-                if connected {
-                    ui.weak(format!("Run triggered by {}", any_of(senders)));
-                }
-            }
-        });
-        ui.add_space(2.0);
-        let code = egui::Frame::new()
-            .fill(ui.visuals().extreme_bg_color)
-            .corner_radius(4.0)
-            .inner_margin(egui::Margin::symmetric(8, 6));
-        code.show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            // Only the rows showing are laid out, so a row's a line: there may be hundreds.
-            let list = egui::ScrollArea::vertical().max_height(180.0).auto_shrink([false, true]);
-            let row_height =
-                ui.text_style_height(&egui::TextStyle::Monospace).max(ui.text_style_height(&egui::TextStyle::Body));
-            match (&results, runs) {
-                (Some(results), _) => {
-                    list.show_rows(ui, row_height, results.len(), |ui, rows| {
-                        results[rows].iter().for_each(|progress| progress_row(ui, progress, context.theme));
-                    });
-                }
-                (None, Ok(_)) => {
-                    list.show_rows(ui, row_height, preview.shown.len(), |ui, rows| {
-                        for shown in &preview.shown[rows] {
-                            ui.add(egui::Label::new(RichText::new(shown).monospace()).truncate()).on_hover_text(shown);
-                        }
-                    });
-                }
-                (None, Err(problem)) => {
-                    ui.weak(problem);
-                }
-            }
-        });
-        if let Some(problem) = job.problem() {
-            ui.add_space(4.0);
-            ui.add(egui::Label::new(RichText::new(problem).color(context.theme.warning)).wrap());
-        }
-        if running {
-            // It ends elsewhere, with nothing to tell the GUI.
-            ui.ctx().request_repaint_after(Duration::from_millis(100));
-        }
-    }
-
     /// The files to run it on by hand, unless `senders` supply them, then the rest of the settings.
     /// `counts` are how many files picked here match the name, of how many, if they're known.
     fn settings_section(
@@ -737,7 +635,13 @@ impl Node<Edges> for RunCommand {
     }
 
     /// Never in a pass: it's sent what to do (see `on_trigger`), and has nothing to do with the data going by.
-    fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool], _recording: bool) -> ephys_rs::engine::TreeShake {
+    fn evaluate_tree_shake(
+        &self,
+        inputs: &[bool],
+        _outputs: &[bool],
+        _recording: bool,
+        _triggered: bool,
+    ) -> ephys_rs::engine::TreeShake {
         ephys_rs::engine::TreeShake::needing_all(false, inputs.len())
     }
 
@@ -754,8 +658,107 @@ impl Node<Edges> for RunCommand {
         }
     }
 
-    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
-        self.window(ui, context);
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+        let Some(ui) = ui else { return };
+        ui.horizontal(|ui| context.node_toolbar(ui));
+        ui.horizontal(|ui| {
+            ui.label("Runs a program on files, in a terminal window of its own.");
+            help_link(ui, "Examples", examples);
+        });
+        let warning = "Recording performance may suffer if the computer's resources are strained by other running \
+                       commands.";
+        ui.label(RichText::new(warning).color(context.theme.warning));
+        ui.add_space(6.0);
+        let job = context.ui_state::<CommandState>().job.clone();
+        let (locked, running) = (context.locked, job.running());
+        // What's connected supplies all the files, while it is.
+        let senders = context.controlled_by.first().map_or(&[][..], Vec::as_slice);
+        let connected = !senders.is_empty();
+        let preview = context.ui_state::<CommandState>().preview.of(&self.settings, connected);
+        // Nothing changes while it's running, to what it shows as running.
+        // How many files picked here match, of how many.
+        let matched = preview.picked.as_ref().ok().map(Vec::len);
+        let counts = preview.listed.zip(matched).map(|(listed, matched)| (matched, listed));
+        let chained = context.control_connected(AFTER_RUNNING);
+        self.settings_section(ui, senders, counts, chained, locked || running);
+        ui.add_space(6.0);
+        let (picked, runs) = (&preview.picked, &preview.runs);
+        let results = job.runs_with(&self.settings);
+        ui.separator();
+        ui.horizontal(|ui| {
+            // How many there are: not for an example, as that's up to what's sent.
+            let count = match (&results, runs) {
+                (Some(results), _) => format!(" ({})", results.len()),
+                (None, Ok(runs)) if !connected => format!(" ({})", runs.len()),
+                _ => String::new(),
+            };
+            ui.strong(match &results {
+                Some(_) if running => format!("Commands{count} · running"),
+                Some(_) => format!("Commands{count} · last run"),
+                None if connected => "Commands · an example".into(),
+                None => format!("Commands{count}"),
+            });
+            ui.add_space(6.0);
+            // Whatever's locked, something heavy can always be stopped.
+            if running {
+                if ui.button("Stop").on_hover_text("Stop what's running in its terminal").clicked() {
+                    job.stop();
+                }
+            } else {
+                let run = ui.add_enabled(runs.is_ok() && !locked && !connected, egui::Button::new("Run"));
+                let run = if connected {
+                    run.on_disabled_hover_text("It runs by itself on the files sent")
+                } else {
+                    run.on_hover_text("Open a terminal, and run these there")
+                };
+                // As if it were sent them: so it's the same, after, either way.
+                if run.clicked()
+                    && let Ok(files) = picked
+                {
+                    context.trigger(None, RunOnFiles(files.clone()));
+                }
+                if connected {
+                    ui.weak(format!("Run triggered by {}", any_of(senders)));
+                }
+            }
+        });
+        ui.add_space(2.0);
+        let code = egui::Frame::new()
+            .fill(ui.visuals().extreme_bg_color)
+            .corner_radius(4.0)
+            .inner_margin(egui::Margin::symmetric(8, 6));
+        code.show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            // Only the rows showing are laid out, so a row's a line: there may be hundreds.
+            let list = egui::ScrollArea::vertical().max_height(180.0).auto_shrink([false, true]);
+            let row_height =
+                ui.text_style_height(&egui::TextStyle::Monospace).max(ui.text_style_height(&egui::TextStyle::Body));
+            match (&results, runs) {
+                (Some(results), _) => {
+                    list.show_rows(ui, row_height, results.len(), |ui, rows| {
+                        results[rows].iter().for_each(|progress| progress_row(ui, progress, context.theme));
+                    });
+                }
+                (None, Ok(_)) => {
+                    list.show_rows(ui, row_height, preview.shown.len(), |ui, rows| {
+                        for shown in &preview.shown[rows] {
+                            ui.add(egui::Label::new(RichText::new(shown).monospace()).truncate()).on_hover_text(shown);
+                        }
+                    });
+                }
+                (None, Err(problem)) => {
+                    ui.weak(problem);
+                }
+            }
+        });
+        if let Some(problem) = job.problem() {
+            ui.add_space(4.0);
+            ui.add(egui::Label::new(RichText::new(problem).color(context.theme.warning)).wrap());
+        }
+        if running {
+            // It ends elsewhere, with nothing to tell the GUI.
+            ui.ctx().request_repaint_after(Duration::from_millis(100));
+        }
     }
 }
 
@@ -1202,8 +1205,13 @@ mod tests {
         // In a base directory of the test's own (writers write in it).
         let place = ephys_rs::base_directory::Place::directory(&dir);
         let asked = Arc::new(Recording::new(Some(place), chrono::Local::now()));
-        let recording =
-            ephys_rs::engine::Snapshot::bake(1, snapshot.graph.clone(), snapshot.started, Some(asked.clone()));
+        let recording = ephys_rs::engine::Snapshot::bake(
+            1,
+            snapshot.graph.clone(),
+            snapshot.started,
+            Some(asked.clone()),
+            Default::default(),
+        );
         runner.update(&recording);
         let deadline = Instant::now() + Duration::from_secs(10);
         while asked.effective().is_none_or(|e| e.at.elapsed() < Duration::from_millis(500)) && Instant::now() < deadline
@@ -1284,7 +1292,7 @@ mod tests {
             move |ui, graph: &mut Graph<Nodes>| {
                 let state = Some(&state);
                 graph.edit(id, &inputs, &THEMES[0].colours, None, state, None, false, false, None, |node, context| {
-                    node.gui_ui(ui, context)
+                    node.on_gui_tick(Some(ui), context)
                 });
             },
             graph,
@@ -1366,7 +1374,7 @@ mod tests {
                         false,
                         false,
                         None,
-                        |node, context| node.gui_ui(ui, context),
+                        |node, context| node.on_gui_tick(Some(ui), context),
                     );
                 },
                 graph,

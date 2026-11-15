@@ -8,7 +8,7 @@
 //! referenced data, it outputs the references themselves: a channel each.
 
 use eframe::egui::{self, Color32, RichText};
-use ephys_rs::engine::{BufferUsage, Prepare, PrepareContext, Prepared, TreeShake};
+use ephys_rs::engine::{BufferUsage, TreeShake};
 use serde::{Deserialize, Serialize};
 
 use crate::standard::ephys::{Continuous, ContinuousBuffer};
@@ -366,7 +366,7 @@ impl Node<Edges> for Reference {
     };
 
     /// Only while it's given something, and something needs what it makes.
-    fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool], _recording: bool) -> TreeShake {
+    fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool], _recording: bool, _triggered: bool) -> TreeShake {
         TreeShake::needing_all(inputs.contains(&true) && outputs.contains(&true), inputs.len())
     }
 
@@ -389,14 +389,6 @@ impl Node<Edges> for Reference {
         if let Setting::Reference(reference) = value {
             *self = reference;
         }
-    }
-
-    /// Each worker's room to work in.
-    fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<(), Referencing, Self> {
-        if context.same_streams() {
-            return Prepared::nothing().into();
-        }
-        Prepared::worker((0..context.workers).map(|_| Referencing::default()).collect()).into()
     }
 
     fn process(&self, pass: &mut PassContext<Edges>, _: &mut (), state: &mut Referencing) {
@@ -469,7 +461,8 @@ impl Node<Edges> for Reference {
         warnings
     }
 
-    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+        let Some(ui) = ui else { return };
         ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, context| {
             let count = match context.inputs[0] {
                 Some(DataStream::Continuous(c)) => c.channels,
@@ -836,7 +829,7 @@ mod tests {
         let mut harness = egui_kittest::Harness::builder().with_size([360.0, 300.0]).wgpu().build_ui_state(
             |ui, graph: &mut Graph<Nodes>| {
                 graph.edit(id, &inputs, &THEMES[0].colours, None, None, None, false, false, None, |node, context| {
-                    node.gui_ui(ui, context)
+                    node.on_gui_tick(Some(ui), context)
                 });
             },
             graph,

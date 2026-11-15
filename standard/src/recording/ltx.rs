@@ -172,7 +172,7 @@ impl Node<Edges> for WriteLtx {
 
     /// Only while recording, and given something to record: otherwise there'd be nothing to write, but files all the
     /// same. So what feeds only writers runs only while recording.
-    fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool], recording: bool) -> TreeShake {
+    fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool], recording: bool, _triggered: bool) -> TreeShake {
         TreeShake::needing_all(recording && inputs.contains(&true), inputs.len())
     }
 
@@ -290,7 +290,8 @@ impl Node<Edges> for WriteLtx {
         show_status(recorder.writing.as_ref(), pass.shared::<Pool<Status>>(), pass.sequence);
     }
 
-    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+        let Some(ui) = ui else { return };
         ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, context| {
             settings_grid(ui, |ui| {
                 let scales = &mut node.scales;
@@ -1069,7 +1070,7 @@ mod tests {
         let mut harness = egui_kittest::Harness::builder().with_size([460.0, 300.0]).wgpu().build_ui_state(
             |ui, graph: &mut Graph<Nodes>| {
                 graph.edit(id, &inputs, &THEMES[0].colours, None, None, None, false, false, None, |node, context| {
-                    node.gui_ui(ui, context)
+                    node.on_gui_tick(Some(ui), context)
                 });
             },
             graph,

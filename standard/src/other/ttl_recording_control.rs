@@ -108,7 +108,8 @@ impl Node<Edges> for TtlRecordingControl {
         pass.shared::<Pool<Seen>>().send_newest(pass.sequence, |shown| *shown = seen);
     }
 
-    fn gui_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+        let Some(ui) = ui else { return };
         let lines = match context.inputs.first() {
             Some(Some(DataStream::Events(stream))) => Some(stream.lines),
             _ => None,

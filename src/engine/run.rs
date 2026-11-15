@@ -95,7 +95,7 @@ impl<N: NodesEnum> Plan<N> {
                 .zip(&step.takes)
                 .map(|(b, &takes)| if takes { b.and_then(|b| workspace[b].take()) } else { None })
                 .collect();
-            let worker_state = step.worker.then(|| worker_states.get_mut(&step.id)).flatten();
+            let worker_state = worker_states.get_mut(&step.id);
             let (work, wait, ran) = {
                 let inputs: Vec<Option<&Buffer<N::Edges>>> =
                     step.inputs.iter().map(|b| b.and_then(|b| workspace[b].as_ref())).collect();
@@ -171,7 +171,7 @@ type PreparedAny<N> = Prepared<Box<dyn Any + Send>, Box<dyn Any + Send>, N>;
 /// What about their hardware nodes say someone should decide, by node (see `Runner::user_decisions`).
 pub type UserDecisions<N> = Vec<(NodeId, UserDecision<N>)>;
 
-/// A worker's own state for each node with some (see `Node::WorkerState`), kept from snapshot to snapshot whatever
+/// A worker's own state for each node (see `Node::WorkerState`), kept from snapshot to snapshot whatever
 /// their plans.
 type WorkerStates = HashMap<NodeId, Box<dyn Any + Send>>;
 
@@ -566,7 +566,7 @@ struct Scheduled<N: NodesEnum> {
     unprepared: AtomicUsize,
     /// What about their hardware its nodes say someone should decide (see `Runner::user_decisions`).
     decisions: Mutex<Vec<(NodeId, UserDecision<N>)>>,
-    /// For each node with worker state that prepared it, what the workers are to make theirs from.
+    /// For each node that prepared, what the workers are to make theirs from.
     worker_protos: Mutex<HashMap<NodeId, WorkerProtoStates>>,
     /// What's left of workers' old states as they changed to this snapshot's, to let go of in the background.
     leftovers: Mutex<Vec<Box<dyn Any + Send>>>,
@@ -591,7 +591,7 @@ struct Before<N: NodesEnum> {
     same_streams: bool,
     /// Its shared state's slot there, if it had shared state.
     slot: Option<Arc<StateSlot>>,
-    /// What the workers were to make their states from, if it had worker state.
+    /// What the workers were to make their states from.
     worker_protos: Option<WorkerProtoStates>,
     /// What it said someone should decide (kept, if it makes nothing new).
     decisions: Vec<UserDecision<N>>,
@@ -614,20 +614,18 @@ impl<N: NodesEnum> Scheduled<N> {
         let (mut shared, mut times) = (HashMap::new(), Vec::with_capacity(plan.steps.len()));
         for (i, step) in plan.steps.iter().enumerate() {
             let then = step_before(i);
-            if step.state.is_some() || step.worker {
-                let before = then.map(|(before, j, same_streams)| {
-                    let decisions = before.decisions.lock().unwrap();
-                    Before {
-                        snapshot: before.snapshot.clone(),
-                        step: j,
-                        same_streams,
-                        slot: before.snapshot.plan.steps[j].state.map(|state| before.slots.states[state].clone()),
-                        worker_protos: before.worker_protos.lock().unwrap().get(&step.id).cloned(),
-                        decisions: decisions.iter().filter(|(id, _)| *id == step.id).map(|(_, d)| d.clone()).collect(),
-                    }
-                });
-                to_prepare.push(ToPrepare { id: step.id, step: i, slot: step.state, before });
-            }
+            let before = then.map(|(before, j, same_streams)| {
+                let decisions = before.decisions.lock().unwrap();
+                Before {
+                    snapshot: before.snapshot.clone(),
+                    step: j,
+                    same_streams,
+                    slot: before.snapshot.plan.steps[j].state.map(|state| before.slots.states[state].clone()),
+                    worker_protos: before.worker_protos.lock().unwrap().get(&step.id).cloned(),
+                    decisions: decisions.iter().filter(|(id, _)| *id == step.id).map(|(_, d)| d.clone()).collect(),
+                }
+            });
+            to_prepare.push(ToPrepare { id: step.id, step: i, slot: step.state, before });
             let Some(entry) = graph.get(step.id) else {
                 times.push(Arc::default());
                 continue;
@@ -720,7 +718,6 @@ impl<N: NodesEnum> Scheduled<N> {
     fn fill(&self, node: ToPrepare<N>, prepared: Option<PreparedAny<N>>) {
         let ToPrepare { id, slot, before, .. } = node;
         let entry = self.snapshot.graph.get(id);
-        let worker = entry.is_some_and(|entry| entry.node.has_worker_state());
         let failed = |why: &str| (Box::new(()) as Box<dyn Any + Send>, None, Some(why.to_owned()));
         let (mut shared, mut worker_protos, mut problem) = (None, None, None);
         let mut decisions = Vec::new();
@@ -745,24 +742,19 @@ impl<N: NodesEnum> Scheduled<N> {
                         (None, _) => failed("it didn't make its state, which it needs (it's new, or its data changed)"),
                     });
                 }
-                if worker {
-                    let workers = self.workers;
-                    match (proto_worker_state, before.as_ref().and_then(|b| b.worker_protos.clone())) {
-                        (Some(protos), _) if protos.len() == workers => {
-                            worker_protos = Some(Arc::new(Mutex::new(protos.into_iter().map(Some).collect())));
-                        }
-                        (Some(protos), _) => {
-                            let what = format!("it made {} workers' states, not {workers}", protos.len());
-                            problem = Some(what);
-                        }
-                        (None, Some(protos)) if same_streams => worker_protos = Some(protos),
-                        (None, _) => {
-                            problem = Some(
-                                "it didn't make its workers' state, which it needs (it's new, or its data \
-                                            changed)"
-                                    .to_owned(),
-                            )
-                        }
+                let workers = self.workers;
+                let fresh =
+                    |protos: Vec<Box<dyn Any + Send>>| Arc::new(Mutex::new(protos.into_iter().map(Some).collect()));
+                match (proto_worker_state, before.as_ref().and_then(|b| b.worker_protos.clone())) {
+                    (Some(protos), _) if protos.len() == workers => worker_protos = Some(fresh(protos)),
+                    (Some(protos), _) => {
+                        problem = Some(format!("it made {} workers' states, not {workers}", protos.len()))
+                    }
+                    (None, Some(protos)) if same_streams => worker_protos = Some(protos),
+                    // New to the run, or its data streams changed: each worker starts with the default.
+                    (None, _) => {
+                        let node = &entry.expect("a node that prepared").node;
+                        worker_protos = Some(fresh((0..workers).map(|_| node.new_worker_state()).collect()));
                     }
                 }
             }
@@ -1405,7 +1397,8 @@ pub mod tests {
         std::fs::write(&file, b"").unwrap();
         let place = crate::base_directory::Place::directory(file.join("recording"));
         let recording = Some(Arc::new(crate::engine::Recording::new(Some(place), chrono::Local::now())));
-        let snapshot = Arc::new(Snapshot::bake(0, Arc::new(graph), Some(Instant::now()), recording));
+        let snapshot =
+            Arc::new(Snapshot::bake(0, Arc::new(graph), Some(Instant::now()), recording, Default::default()));
         let plan = &snapshot.plan;
         let (scheduled, to_prepare) = Scheduled::new(snapshot.clone(), None, &RunCommon::default());
         scheduled.prepare(to_prepare);
@@ -1479,13 +1472,13 @@ pub mod tests {
         link(&mut graph, filter, 0, viewer, 0);
         let plan = Plan::new(&graph, false);
         let step = |id| plan.steps.iter().find(|s| s.id == id).unwrap();
-        assert!(step(reference).state.is_none() && step(reference).worker, "no sync point");
-        assert!(step(filter).state.is_some() && !step(filter).worker, "the filter's history is carried over");
-        // Each worker makes its own from what the reference prepared for it.
+        assert!(step(reference).state.is_none(), "no sync point");
+        assert!(step(filter).state.is_some(), "the filter's history is carried over");
+        // Each worker starts with the reference's default worker state.
         let runner = Runner::start(&Snapshot::new(0, graph), 2);
         let stats = wait_for_passes(&runner, 10);
         assert!(stats.completed >= 10, "{stats:?}");
-        assert!(runner.user_decisions().is_none(), "the reference prepared its workers' state");
+        assert!(runner.user_decisions().is_none(), "the reference had its workers' state");
     }
 
     #[test]
@@ -1683,11 +1676,11 @@ pub mod tests {
     fn a_recording_takes_effect_with_its_snapshots_first_pass() {
         let graph = Arc::new(Graph::default());
         let started = Instant::now();
-        let runner = Runner::start(&Snapshot::bake(0, graph.clone(), Some(started), None), 1);
+        let runner = Runner::start(&Snapshot::bake(0, graph.clone(), Some(started), None, Default::default()), 1);
         until_running(&runner, 0);
         let recording = Arc::new(crate::engine::Recording::default());
         let asked = Instant::now();
-        runner.update(&Snapshot::bake(1, graph, Some(started), Some(recording.clone())));
+        runner.update(&Snapshot::bake(1, graph, Some(started), Some(recording.clone()), Default::default()));
         until_running(&runner, 1);
         let effective = recording.effective().expect("taken effect").at;
         assert!(effective >= asked - Duration::from_secs_f64(PASS_DURATION), "not before it was given the run");
@@ -1701,9 +1694,9 @@ pub mod tests {
         let board = add_board(&mut graph);
         let graph = Arc::new(graph);
         let started = Instant::now();
-        let runner = Runner::start(&Snapshot::bake(0, graph.clone(), Some(started), None), 1);
+        let runner = Runner::start(&Snapshot::bake(0, graph.clone(), Some(started), None, Default::default()), 1);
         until_running(&runner, 0);
-        let snapshot = Arc::new(Snapshot::bake(1, graph, Some(started), None));
+        let snapshot = Arc::new(Snapshot::bake(1, graph, Some(started), None, Default::default()));
         assert!(snapshot.plan.steps.iter().any(|step| step.id == board && step.state.is_some()), "has state");
         // Given the run, but its nodes not yet prepared.
         let before = runner.schedule.latest.load_full();
