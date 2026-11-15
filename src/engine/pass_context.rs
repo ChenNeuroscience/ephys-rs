@@ -1,13 +1,12 @@
 //! Passes: each a `PASS_DURATION` of time, which a worker runs through every node in the plan's order (see `run`).
 //! Each node's `process` is given its context in the pass (`PassContext`): its inputs, buffers for its outputs, its
 //! controls' settings, the snapshot the pass runs against (as nodes see it: whether it's recording, say), what it
-//! shares with the GUI, and its triggers.
+//! shares with the GUI, and where it sends direct triggers and its progress.
 
 use std::any::Any;
 use std::sync::Arc;
 
-use super::{Buffer, Edges, NodeId, SnapshotLite};
-use crate::sent_triggers::{Sent, TriggerProgress};
+use super::{Buffer, Edges, NodeId, Progress, SnapshotLite};
 use crate::triggers::DirectTriggers;
 
 /// The length of time each pass covers, in seconds.
@@ -33,12 +32,9 @@ pub struct PassContext<'a, E: Edges> {
     pub(super) snapshot: &'a Arc<dyn SnapshotLite>,
     /// What the node shares with the GUI (its `Node::Shared`): see `shared`.
     pub shared: &'a dyn Any,
-    /// The snapshot trigger sent to the node, if there is one (see `crate::sent_triggers`). The node prepared for it
-    /// (see `PrepareContext::trigger`), so its state has what it needs; its passes say how it's getting on
-    /// (`trigger_progress`), and when it's done (`trigger_done`).
-    pub trigger: Option<&'a Sent<E::Trigger>>,
-    /// Where the passes say how the snapshot triggers are getting on: the run's.
-    pub progress: &'a TriggerProgress,
+    /// Where the passes say how they're getting on with what they've been asked to do (see `report_progress`): the
+    /// run's.
+    pub progress: &'a Progress,
     /// Where direct triggers go: the app's (see `trigger_settings_update`).
     pub direct: &'a DirectTriggers,
 }
@@ -54,22 +50,9 @@ impl<'a, E: Edges> PassContext<'a, E> {
     ) -> Self {
         let taken: &'a mut [Option<Buffer<E>>] = Box::leak(Box::new([]));
         let (progress, direct) = (Box::leak(Box::default()), Box::leak(Box::default()));
-        let (node, controls, shared, trigger) = (NodeId(0), &[], &(), None);
+        let (node, controls, shared) = (NodeId(0), &[], &());
         let snapshot = Self::trying(false);
-        PassContext {
-            sequence,
-            duration,
-            node,
-            inputs,
-            taken,
-            outputs,
-            controls,
-            snapshot,
-            shared,
-            trigger,
-            progress,
-            direct,
-        }
+        PassContext { sequence, duration, node, inputs, taken, outputs, controls, snapshot, shared, progress, direct }
     }
 
     /// A snapshot for trying a node out: running as of now, and recording or not.
@@ -108,19 +91,11 @@ impl<'a, E: Edges> PassContext<'a, E> {
         self.shared.downcast_ref().expect("the node's own Node::Shared")
     }
 
-    /// The node says here how far along its snapshot trigger is (see `trigger`), from 0 to 1, for the GUI to show.
-    pub fn trigger_progress(&self, progress: f32) {
-        if let Some(trigger) = self.trigger {
-            self.progress.set(self.node, trigger.id, progress);
-        }
-    }
-
-    /// The node says here that its snapshot trigger is done. The app then takes the trigger away, in a new snapshot;
-    /// until that takes over, the node's passes still have it, so the node's state should say it's done.
-    pub fn trigger_done(&self) {
-        if let Some(trigger) = self.trigger {
-            self.progress.done(self.node, trigger.id);
-        }
+    /// A node can be asked to do something over a while, with the data going by (an auto detect, say), by a transient
+    /// setting saying when it was asked (see `EdgeType::clear_transient`). The node's passes say here how far along
+    /// they are with what was asked at `asked`, from 0 to 1, for the GUI to show (`UiContext::progress`).
+    pub fn report_progress(&self, asked: std::time::Instant, fraction: f32) {
+        self.progress.report(self.node, asked, fraction);
     }
 
     /// Triggers an update of the node's setting `setting` (by index) to `value`, which the app applies as an edit

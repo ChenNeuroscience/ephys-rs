@@ -49,7 +49,6 @@ use crate::base_directory::{BaseDirectories, BaseDirectoryType, Place};
 use crate::config_patching::{self, PatchSets, Versions};
 use crate::engine::{self, Graph, NodeId, NodeTypeEnum, NodesEnum, Port, PortRef, Resolved, Runner, Snapshot, Stats};
 use crate::layout::{Layout, Mode, Pane};
-use crate::sent_triggers::LiveTriggers;
 use crate::theme::{Colours, Theme};
 use crate::triggers::Triggered;
 use actions::Action;
@@ -166,10 +165,8 @@ pub enum Event {
     },
     /// Open a node's window (see `Layout::toggle`), or close it: from a pane, if it's done from one.
     ToggleWindow(NodeId, Option<Pane>),
-    /// Send a node a trigger (see `crate::triggers`): a direct one, or one for snapshots to carry, while running.
+    /// Send a node a trigger (see `crate::triggers`).
     Trigger(NodeId, crate::triggers::AnyTrigger),
-    /// Stop the snapshot trigger sent to a node, if it hasn't finished.
-    StopTrigger(NodeId),
     /// Open a node's window (see `Layout::open`), or bring it to the front if it's open: from a pane, if it's done
     /// from one.
     OpenWindow(NodeId, Option<Pane>),
@@ -301,9 +298,6 @@ pub struct App<N: NodesEnum, A: AnnotationsEnum> {
     started: Option<std::time::Instant>,
     /// The recording taken on, while recording.
     recording: Option<Arc<engine::Recording>>,
-    /// The snapshot triggers sent while running, and not yet done or stopped, which snapshots carry (see
-    /// `crate::sent_triggers`).
-    triggers: crate::sent_triggers::SentTriggers<<N::Edges as engine::Edges>::Trigger>,
     /// The graph running, while it is.
     runner: Option<Runner<N>>,
     /// What the last run shared, once it's stopped: see `LastRun`.
@@ -353,7 +347,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         let graph = Graph::default();
         let history = History::new(&graph, &annotations);
         // Of the history item's own graph, so it isn't baked again (see `bake_edits`).
-        let snapshot = Snapshot::bake(0, history.current.graph.clone(), None, None, Default::default());
+        let snapshot = Snapshot::bake(0, history.current.graph.clone(), None, None);
         App {
             path: None,
             saved: None,
@@ -381,7 +375,6 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             versions: 0,
             started: None,
             recording: None,
-            triggers: Default::default(),
             graph,
             annotations,
             layout: Layout::default(),
@@ -439,8 +432,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
     fn bake(&mut self) {
         self.versions += 1;
         let graph = self.history.current.graph.clone();
-        self.snapshot =
-            Snapshot::bake(self.versions, graph, self.started, self.recording.clone(), self.triggers.current().clone());
+        self.snapshot = Snapshot::bake(self.versions, graph, self.started, self.recording.clone());
     }
 
     /// Bakes again if the graph's changed: edited, undone or redone (taken into the history), or another opened.
@@ -709,8 +701,16 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         self.last_run =
             self.runner.take().map(|runner| LastRun { shared: runner.shared(), plan: self.snapshot.plan.clone() });
         self.started = None;
-        self.triggers.clear();
+        // What the nodes were asked to do with the data (an auto detect, say) stops with it.
+        self.clear_transient();
         self.bake();
+    }
+
+    /// Clears the nodes' transient settings (see `EdgeType::clear_transient`), as if they'd never been set: not as an
+    /// edit.
+    fn clear_transient(&mut self) {
+        self.graph.clear_transient();
+        self.history.clear_transient();
     }
 
     /// Stops recording, or preparing to.
@@ -790,6 +790,8 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
     /// on with the snapshot before until they're ready and the workers have buffers for the new plan; recording
     /// takes effect with its first pass (noticed in `keep_running`).
     fn prepare_to_record(&mut self, ctx: &egui::Context) {
+        // Settings are locked while recording, so what the nodes were asked to do (an auto detect, say) stops.
+        self.clear_transient();
         self.history.commit(&self.graph, &self.annotations);
         // When it's asked for, which names and dates it: now, not once the nodes are ready, which can be a while.
         let start_requested_date = chrono::Local::now();
@@ -882,7 +884,9 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         let mut copies = HashMap::new();
         for id in &self.selection.nodes {
             let Some(entry) = self.graph.get(*id) else { continue };
-            let (node, pos) = (entry.node.clone(), offset(entry.pos));
+            let (mut node, pos) = (entry.node.clone(), offset(entry.pos));
+            // A copy isn't asked to do what the original was.
+            crate::engine::clear_transient(&mut node);
             copies.insert(*id, self.graph.add(node, pos));
         }
         for edge in self.graph.edges().to_vec() {
@@ -1344,15 +1348,6 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         self.notice_recording();
         let plan = &self.snapshot.plan;
         self.last_run.take_if(|last| !last.plan.same_shape(plan));
-        // Snapshot triggers that are done are taken away, in a new snapshot.
-        let finished = self.runner.as_ref().map(|r| r.trigger_progress().finished(self.triggers.current()));
-        let mut taken = false;
-        for node in finished.unwrap_or_default() {
-            taken |= self.triggers.remove(node);
-        }
-        if taken {
-            self.bake();
-        }
         let Some(runner) = &self.runner else { return };
         let snapshot = &self.snapshot;
         let same_buffers = runner.update(snapshot);
@@ -1503,10 +1498,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                             &mut self.graph,
                             resolved,
                             colours,
-                            self.runner.as_ref().map(|runner| LiveTriggers {
-                                sent: self.triggers.current(),
-                                progress: runner.trigger_progress(),
-                            }),
+                            self.runner.as_ref().map(Runner::progress),
                             shared.as_deref(),
                             ui_state,
                             base.as_ref(),
@@ -1538,22 +1530,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         match event {
             Event::OpenMenu { screen, scene, from } => self.menu = Some(CreateMenu::new(screen, scene, from)),
             Event::ToggleWindow(id, from) => self.layout.toggle(id, from),
-            Event::Trigger(id, trigger) => match trigger.key().delivery {
-                crate::triggers::Delivery::Direct => self.direct_triggers.trigger(id, trigger),
-                crate::triggers::Delivery::Snapshot => {
-                    if self.runner.is_some()
-                        && let Some(trigger) = trigger.take()
-                    {
-                        self.triggers.send(id, trigger);
-                        self.bake();
-                    }
-                }
-            },
-            Event::StopTrigger(id) => {
-                if self.triggers.remove(id) {
-                    self.bake();
-                }
-            }
+            Event::Trigger(id, trigger) => self.direct_triggers.trigger(id, trigger),
             Event::OpenWindow(id, from) => self.layout.open(id, from),
             Event::FloatWindow(id) => self.layout.float(id),
             Event::Duplicate(id) => {
@@ -1745,10 +1722,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                 resolved: &resolved,
                 colours,
                 runner: self.runner.as_ref(),
-                live: self
-                    .runner
-                    .as_ref()
-                    .map(|runner| LiveTriggers { sent: self.triggers.current(), progress: runner.trigger_progress() }),
+                progress: self.runner.as_ref().map(Runner::progress),
                 shared: shared.as_deref(),
                 ui_states: &self.ui_states,
                 base_directory: base.as_ref(),
@@ -1836,10 +1810,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         let (colours, base, running, locked) =
             (self.colours(), self.base_directories.place(), self.runner.is_some(), self.locked());
         let advanced = self.layout.mode == Mode::Advanced;
-        let live = self
-            .runner
-            .as_ref()
-            .map(|runner| LiveTriggers { sent: self.triggers.current(), progress: runner.trigger_progress() });
+        let live = self.runner.as_ref().map(Runner::progress);
         let mut events = Vec::new();
         for id in self.graph.ids().filter(|id| !ticked.nodes.contains(id)).collect::<Vec<_>>() {
             let (Some(state), Some(ui_state)) = (resolved.get(&id), self.ui_states.get(&self.graph, id)) else {
@@ -2089,7 +2060,19 @@ impl<N: NodesEnum, A: AnnotationsEnum> History<N, A> {
         !self.redo.is_empty()
     }
 
-    fn restored(&self) -> (Graph<N>, Annotations<A>) {
+    /// Clears the current item's transient settings (see `EdgeType::clear_transient`), as if they'd never been set.
+    fn clear_transient(&mut self) {
+        let mut graph = (*self.current.graph).clone();
+        graph.clear_transient();
+        if graph != *self.current.graph {
+            self.current.graph = Arc::new(graph);
+        }
+    }
+
+    /// The current item, to restore: without its transient settings (see `EdgeType::clear_transient`), so bringing it
+    /// back doesn't ask anything of the nodes again. The item's changed to match, so it isn't taken as an edit.
+    fn restored(&mut self) -> (Graph<N>, Annotations<A>) {
+        self.clear_transient();
         ((*self.current.graph).clone(), (*self.current.annotations).clone())
     }
 
@@ -2423,7 +2406,8 @@ mod tests {
         harness.state_mut().perform(&ctx, Action::Play);
         harness.run_steps(2);
         let detector = node_named(harness.state(), "Spike Detector");
-        let thresholds = crate::Setting::Thresholds(crate::standard::spikes::Thresholds(vec![60.0]));
+        let thresholds =
+            crate::Setting::Thresholds(crate::standard::spikes::Thresholds { values: vec![60.0], detect: None });
         let value = Box::new(thresholds.clone());
         harness.state().direct_triggers.trigger_settings_update(detector, 0, value);
         harness.state_mut().perform(&ctx, Action::Play);
@@ -2439,7 +2423,8 @@ mod tests {
         let detector = node_named(harness.state(), "Spike Detector");
         let before = harness.state().graph.get(detector).unwrap().node.settings()[0].value.clone();
         harness.state_mut().set_recording(Some(Arc::new(engine::Recording::default())));
-        let thresholds = crate::Setting::Thresholds(crate::standard::spikes::Thresholds(vec![60.0]));
+        let thresholds =
+            crate::Setting::Thresholds(crate::standard::spikes::Thresholds { values: vec![60.0], detect: None });
         harness.state().direct_triggers.trigger_settings_update(detector, 0, Box::new(thresholds));
         harness.run_steps(2);
         assert_eq!(harness.state().graph.get(detector).unwrap().node.settings()[0].value, before);
@@ -2472,7 +2457,7 @@ mod tests {
         harness.run_steps(2);
         assert_eq!(found(&harness), run, "a node moved");
         if let Some(entry) = harness.state_mut().graph.get_mut(detector) {
-            entry.node.set_setting(0, crate::standard::spikes::Thresholds(vec![60.0]).into());
+            entry.node.set_setting(0, crate::standard::spikes::Thresholds { values: vec![60.0], detect: None }.into());
         }
         harness.run_steps(2);
         assert_eq!(found(&harness), run, "a value changed");
@@ -2626,7 +2611,7 @@ mod tests {
         let first = harness.state().runner.as_ref().unwrap().graph().clone();
         let gain_free = node_named(harness.state(), "Spike Detector");
         if let Some(entry) = harness.state_mut().graph.get_mut(gain_free) {
-            entry.node.set_setting(0, crate::standard::spikes::Thresholds(vec![60.0]).into());
+            entry.node.set_setting(0, crate::standard::spikes::Thresholds { values: vec![60.0], detect: None }.into());
         }
         harness.run_steps(2);
         assert!(!Arc::ptr_eq(&first, &harness.state().runner.as_ref().unwrap().graph()));
@@ -3080,7 +3065,9 @@ mod tests {
             let app = harness.state_mut();
             let before = app.graph.get(detector).unwrap().node.clone();
             if let Some(entry) = app.graph.get_mut(detector) {
-                entry.node.set_setting(0, crate::standard::spikes::Thresholds(vec![77.0]).into());
+                entry
+                    .node
+                    .set_setting(0, crate::standard::spikes::Thresholds { values: vec![77.0], detect: None }.into());
             }
             let copied = paste_settings::copy(&app.graph, &[detector], &app.config_patches);
             app.graph.get_mut(detector).unwrap().node = before;
@@ -3608,11 +3595,30 @@ mod tests {
         );
     }
 
-    /// How far along node `node`'s auto detect is, as its window sees it, if it's been sent and isn't done.
+    /// When node `node`'s setting (its gains, or thresholds) was asked to be detected from the data, if it is.
+    fn auto_detect_asked(app: &TestApp, node: NodeId) -> Option<std::time::Instant> {
+        match &app.graph.get(node)?.node.settings().first()?.value {
+            crate::Setting::Gains(gains) => gains.detect,
+            crate::Setting::Thresholds(thresholds) => thresholds.detect,
+            _ => None,
+        }
+    }
+
+    /// How far along node `node`'s auto detect is, as its window sees it, while it's asked for.
     fn auto_detect_progress(app: &TestApp, node: NodeId) -> Option<f32> {
-        let runner = app.runner.as_ref()?;
-        let live = LiveTriggers { sent: app.triggers.current(), progress: runner.trigger_progress() };
-        live.progress(node, crate::TriggerKind::AutoDetect.into())
+        let asked = auto_detect_asked(app, node)?;
+        Some(app.runner.as_ref().map_or(0.0, |runner| runner.progress().of(node, asked)))
+    }
+
+    /// Asks for node `node`'s setting (its gains, or thresholds) to be detected from the data, as of `at`, or (`None`)
+    /// no longer: as its window does.
+    fn ask_to_auto_detect(app: &mut TestApp, node: NodeId, at: Option<std::time::Instant>) {
+        match app.graph.get_mut(node).map(|entry| &mut entry.node) {
+            Some(Nodes::ContinuousGain(gain)) => gain.gains.detect = at,
+            Some(Nodes::SpikeGain(gain)) => gain.gains.detect = at,
+            Some(Nodes::SpikeDetector(detector)) => detector.thresholds.detect = at,
+            _ => panic!("not a node that detects its settings"),
+        }
     }
 
     /// In the rig, the Continuous Gain only feeds the LTX writer, which only runs while recording; but its gains are
@@ -3630,8 +3636,7 @@ mod tests {
             harness.run_steps(1);
             let completed = harness.state().runner.as_ref().map_or(0, |runner| runner.stats().completed);
             if !triggered && completed > 5 {
-                let trigger = crate::Trigger::AutoDetect(crate::standard::auto_detect::AutoDetect);
-                harness.state_mut().handle(&ctx, Event::Trigger(gain, ephys_rs::triggers::AnyTrigger::new(trigger)));
+                ask_to_auto_detect(harness.state_mut(), gain, Some(std::time::Instant::now()));
                 triggered = true;
             } else if triggered {
                 progress = auto_detect_progress(harness.state(), gain).unwrap_or(1.0);
@@ -3703,7 +3708,7 @@ mod tests {
         assert_eq!(progress(&harness, gain), None, "the gains wait for them");
         assert!(harness.query_by_label("thresholds, then gains").is_some(), "it says so");
         // The thresholds done (or stopped from the detector's own window), the gains go.
-        harness.state_mut().handle(&ctx, Event::StopTrigger(detector));
+        ask_to_auto_detect(harness.state_mut(), detector, None);
         harness.run_steps(2);
         assert!(progress(&harness, gain).is_some(), "then the gains");
         harness.get_by_label("Stop").click();
@@ -3843,6 +3848,40 @@ mod tests {
         assert!(ttl.contains("ttl_2 0.750000 0\r\n") && !ttl.contains("ttl_2 -"), "only while recording: {ttl}");
         assert_eq!(file(".txt"), b"0.500000 trial 1\r\n", "by the VR computer's clock, from the first position");
         std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    /// Undoing an auto detect's result brings the old gains back without asking for them to be detected again, and
+    /// redoing the asking doesn't ask again either: bringing a graph back never asks anything of its nodes.
+    #[test]
+    fn undo_and_redo_never_ask_again() {
+        let mut graph = Graph::<Nodes>::default();
+        graph.add(Nodes::create(NodeType::named("Continuous Gain").unwrap()), [0.0, 0.0]);
+        let annotations = Annotations::<AnnotationTypes>::default();
+        let mut history = History::new(&graph, &annotations);
+        fn gains(graph: &mut Graph<Nodes>) -> &mut crate::standard::spikes::Gains {
+            let gain = graph.ids().next().unwrap();
+            match &mut graph.get_mut(gain).unwrap().node {
+                Nodes::ContinuousGain(node) => &mut node.gains,
+                _ => unreachable!(),
+            }
+        }
+        let before = gains(&mut graph).clone();
+        gains(&mut graph).detect = Some(std::time::Instant::now());
+        history.commit(&graph, &annotations);
+        // The result: the gains chosen, no longer asked.
+        let chosen = crate::standard::spikes::Gains { gains: vec![2.0], detect: None, ..before.clone() };
+        *gains(&mut graph) = chosen.clone();
+        history.commit(&graph, &annotations);
+
+        let (mut undone, _) = history.undo().unwrap();
+        assert_eq!(*gains(&mut undone), before, "the old gains, not asked for");
+        history.commit(&undone, &annotations);
+        assert!(history.can_redo(), "bringing it back isn't an edit");
+        let (mut redone, _) = history.redo().unwrap();
+        assert_eq!(*gains(&mut redone), chosen);
+        history.undo();
+        let (mut asking, _) = history.redo().unwrap();
+        assert_eq!(gains(&mut asking).detect, None, "redoing the asking doesn't ask again");
     }
 
     #[test]

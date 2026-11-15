@@ -302,7 +302,7 @@ impl Node<Edges> for LfpViewer {
 
     /// The spectra only while they're shown: otherwise, the Spectrum node needn't run at all. It runs while it's
     /// given something it needs.
-    fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool], _recording: bool, _triggered: bool) -> TreeShake {
+    fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool], _recording: bool) -> TreeShake {
         let needs: Vec<bool> = (0..inputs.len()).map(|input| input != 1 || self.spectrum).collect();
         let given = inputs.iter().zip(&needs).any(|(&used, &needed)| used && needed);
         TreeShake { runs: given, needs }
@@ -868,7 +868,7 @@ fn gains_ui(ui: &mut egui::Ui, context: &mut UiContext<Edges>, gains: &mut Gains
          comes in, in µV, before them",
     );
     let layout = Channels { count: channels as usize, group_size: 1 };
-    let detecting = context.trigger_progress(Some(GAINS), crate::TriggerKind::AutoDetect).is_some();
+    let detecting = gains.detect.is_some();
     if gains.scope == GainScope::All {
         let mut gain = gains.get(0);
         let field = ui.add_enabled_ui(!detecting, |ui| gain_field(ui, &mut gain, false)).inner;
@@ -878,7 +878,7 @@ fn gains_ui(ui: &mut egui::Ui, context: &mut UiContext<Edges>, gains: &mut Gains
     } else {
         ui.label("each channel's");
     }
-    auto_detect_ui(ui, context, Some(GAINS), "Sample each channel, then set its gain");
+    auto_detect_ui(ui, context, Some(GAINS), &mut gains.detect, "Sample each channel, then set its gain");
 }
 
 /// Whether a selection's channels are "all".

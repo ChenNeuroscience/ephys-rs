@@ -1,37 +1,23 @@
-//! Choosing settings from the data ("auto detect"): a snapshot trigger (see `Node::triggers` and
-//! `ephys_rs::sent_triggers`). While a node has one, the node runs, with buffers it made for the trigger as it prepared
-//! (see `auto_detecting`), which its passes sample the data into for a while, then trigger settings updates from. The
-//! Spike Gain, Continuous Gain and Spike Detector have one, triggered from their windows or a viewer's; these are the
-//! pieces they share.
+//! Choosing settings from the data ("auto detect"). The setting to choose (gains, or thresholds) says when it was asked
+//! to be detected (`detect`), a transient setting (see `EdgeType::clear_transient`): while it's asked, the node runs,
+//! with room to sample into that it made as it prepared, which its passes sample the data into for a while, reporting
+//! how far along they are (`PassContext::report_progress`), then set the setting from what they found, no longer asked
+//! (`PassContext::trigger_settings_update`). The Spike Gain, Continuous Gain and Spike Detector have one, asked from
+//! their windows or a viewer's; these are the pieces they share.
+
+use std::time::Instant;
 
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 
 use crate::Edges;
 use ephys_rs::engine::UiContext;
-use ephys_rs::sent_triggers::Sent;
-use ephys_rs::triggers::{Delivery, TriggerType};
 
-/// The trigger: sample the data for a while, then choose settings from it.
-#[derive(Clone, Debug, PartialEq)]
-pub struct AutoDetect;
-
-impl TriggerType for AutoDetect {
-    const NAME: &'static str = "auto detect";
-    const DELIVERY: Delivery = Delivery::Snapshot;
-}
-
-/// Whether a node's snapshot trigger, as it prepares (`PrepareContext::trigger`), is an auto detect: if so, the node
-/// makes what it samples into.
-pub fn auto_detecting(trigger: Option<&Sent<crate::Trigger>>) -> bool {
-    matches!(trigger.map(|sent| &sent.trigger), Some(crate::Trigger::AutoDetect(_)))
-}
-
-/// An auto detect, as sent, for trying nodes out.
-#[cfg(test)]
-pub fn sent() -> Sent<crate::Trigger> {
-    let trigger = crate::Trigger::AutoDetect(AutoDetect);
-    Sent { id: 1, key: crate::TriggerKind::AutoDetect.into(), trigger }
+/// Whether a node's request to detect a setting (`detect`) is another than in the snapshot before (`before`, if the
+/// node was in it): asked, asked again, or no longer (it's done, or stopped). If not, what the node made for it still
+/// stands.
+pub fn asked_again(detect: Option<Instant>, before: Option<Option<Instant>>) -> bool {
+    before != Some(detect)
 }
 
 /// How long the passes can sample for, in seconds.
@@ -164,19 +150,25 @@ impl PercentMultiple {
     }
 }
 
-/// A button for the auto-detect trigger (of the node's own settings, or of the setting `control` connects to),
-/// and how it's going: for this node's window, and a viewer's.
-pub fn auto_detect_ui(ui: &mut egui::Ui, context: &mut UiContext<Edges>, control: Option<usize>, tip: &str) {
+/// Auto detect, for a setting whose request is `detect` (the node's own, or one that control `control` connects to):
+/// a button to ask, while acquiring (it needs data) and not recording, and while it's asked, how far along it is, and
+/// a button to stop it. For the node's window, and a viewer's.
+pub fn auto_detect_ui(
+    ui: &mut egui::Ui,
+    context: &UiContext<Edges>,
+    control: Option<usize>,
+    detect: &mut Option<Instant>,
+    tip: &str,
+) {
     ui.horizontal(|ui| {
-        // While detecting, it can be stopped.
-        if let Some(progress) = context.trigger_progress(control, crate::TriggerKind::AutoDetect) {
+        if let Some(asked) = *detect {
             if ui.button("Stop").on_hover_text("Stop detecting, leaving things as they were").clicked() {
-                context.cancel_trigger(control, crate::TriggerKind::AutoDetect);
+                *detect = None;
             }
-            ui.add(egui::ProgressBar::new(progress).desired_width(80.0).show_percentage());
+            ui.add(egui::ProgressBar::new(context.progress(control, asked)).desired_width(80.0).show_percentage());
             return;
         }
-        let can = context.can_trigger(control, crate::TriggerKind::AutoDetect) && !context.locked;
+        let can = context.running && !context.locked;
         let why = if context.locked { "Not while recording" } else { "Only while acquiring: it needs data" };
         if ui
             .add_enabled(can, egui::Button::new("Auto detect"))
@@ -184,14 +176,9 @@ pub fn auto_detect_ui(ui: &mut egui::Ui, context: &mut UiContext<Edges>, control
             .on_disabled_hover_text(why)
             .clicked()
         {
-            context.trigger(control, AutoDetect);
+            *detect = Some(Instant::now());
         }
     });
-}
-
-/// Whether the node's auto-detect is going (its settings for it can't change meanwhile).
-pub fn detecting(context: &UiContext<Edges>) -> bool {
-    context.trigger_progress(None, crate::TriggerKind::AutoDetect).is_some()
 }
 
 #[cfg(test)]

@@ -106,12 +106,11 @@ mod tests {
             let node_type = NodeType::SpikeGain;
             let id = graph.add(Nodes::create(node_type), [0.0, 0.0]);
             let resolved = graph.resolve();
-            let (sent, progress) = (Default::default(), crate::sent_triggers::TriggerProgress::default());
+            let progress = crate::engine::Progress::default();
             let mut harness = egui_kittest::Harness::builder().with_size([520.0, 500.0]).wgpu().build_ui_state(
                 move |ui, graph: &mut Graph<Nodes>| {
                     let mut events = Vec::new();
-                    let live =
-                        running.then_some(crate::sent_triggers::LiveTriggers { sent: &sent, progress: &progress });
+                    let live = running.then_some(&progress);
                     let colours = &THEMES[0].colours;
                     node_ui(
                         ui,

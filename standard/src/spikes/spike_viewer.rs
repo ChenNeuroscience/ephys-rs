@@ -12,10 +12,11 @@
 //! expect them to point up. The threshold, amplified with them, is the line above the middle, and fainter below it,
 //! as spikes are found either way.
 
+use std::time::Instant;
+
 use eframe::egui::{self, Align2, FontId, Key, Pos2, Rect, Sense, Shape, Stroke};
 use serde::{Deserialize, Serialize};
 
-use crate::standard::auto_detect::AutoDetect;
 use crate::standard::plots::{self, axis_ui};
 use crate::standard::pool::Pool;
 use crate::standard::spikes::{
@@ -99,20 +100,37 @@ pub struct AutoDetecting {
 }
 
 impl AutoDetecting {
-    /// Triggers the next, once what's running is done; or gives up, if it can't be (as acquiring's stopped, say).
+    /// Asks for the next, once what's asked is done; or gives up, if it can't be (as acquiring's stopped, say).
     fn carry_on(&mut self, context: &mut UiContext<Edges>) {
-        let running = [THRESHOLDS, GAINS_CONTROL]
-            .into_iter()
-            .any(|c| context.trigger_progress(Some(c), crate::TriggerKind::AutoDetect).is_some());
+        let running = [THRESHOLDS, GAINS_CONTROL].into_iter().any(|c| asked(context, c).is_some());
         if running || self.next.is_empty() {
             return;
         }
         let control = self.next.remove(0);
-        if context.locked || !context.can_trigger(Some(control), crate::TriggerKind::AutoDetect) {
+        if context.locked || !context.running || !context.control_connected(control) {
             self.next.clear();
             return;
         }
-        context.trigger(Some(control), AutoDetect);
+        ask(context, control, Some(Instant::now()));
+    }
+}
+
+/// When the setting control `control` connects to (the thresholds, or the gains) was asked to be detected from the
+/// data, if it is (see `crate::standard::auto_detect`).
+fn asked(context: &UiContext<Edges>, control: usize) -> Option<Instant> {
+    match &context.controls[control] {
+        Some(Setting::Thresholds(thresholds)) => thresholds.detect,
+        Some(Setting::Gains(gains)) => gains.detect,
+        _ => None,
+    }
+}
+
+/// Asks for the setting control `control` connects to to be detected from the data, as of `at`, or (`None`) no longer.
+fn ask(context: &mut UiContext<Edges>, control: usize, at: Option<Instant>) {
+    match &mut context.controls[control] {
+        Some(Setting::Thresholds(thresholds)) => thresholds.detect = at,
+        Some(Setting::Gains(gains)) => gains.detect = at,
+        _ => {}
     }
 }
 
@@ -405,7 +423,7 @@ impl SpikeViewer {
             // What it's detecting, while it is.
             let running: Vec<(usize, f32)> = [GAINS_CONTROL, THRESHOLDS]
                 .into_iter()
-                .filter_map(|c| context.trigger_progress(Some(c), crate::TriggerKind::AutoDetect).map(|p| (c, p)))
+                .filter_map(|c| asked(context, c).map(|asked| (c, context.progress(Some(c), asked))))
                 .collect();
             // And what's to come after.
             let next = context.ui_state::<AutoDetecting>().next.clone();
@@ -427,7 +445,7 @@ impl SpikeViewer {
                 if stop.on_hover_text("Stop detecting, leaving what's not done as it was").clicked() {
                     context.ui_state::<AutoDetecting>().next.clear();
                     for &(control, _) in &running {
-                        context.cancel_trigger(Some(control), crate::TriggerKind::AutoDetect);
+                        ask(context, control, None);
                     }
                 }
                 let what = |control| if control == THRESHOLDS { "thresholds" } else { "gains" };
@@ -442,9 +460,7 @@ impl SpikeViewer {
                     .filter(|&&(c, _, _)| !context.control_connected(c))
                     .map(|&(_, what, by)| format!("connect its {what} to a {by}"))
                     .collect();
-                let can = missing.is_empty()
-                    && !context.locked
-                    && controls.iter().all(|&(c, _, _)| context.can_trigger(Some(c), crate::TriggerKind::AutoDetect));
+                let can = missing.is_empty() && !context.locked && context.running;
                 let why = if !missing.is_empty() {
                     format!("To detect them, {}", missing.join(", and "))
                 } else if context.locked {
@@ -459,7 +475,7 @@ impl SpikeViewer {
                 let run = ui.add_enabled(can, egui::Button::new("Run").small());
                 if run.on_hover_text(tip).on_disabled_hover_text(why).clicked() {
                     let (first, rest) = (controls[0].0, controls[1..].iter().map(|c| c.0).collect());
-                    context.trigger(Some(first), AutoDetect);
+                    ask(context, first, Some(Instant::now()));
                     context.ui_state::<AutoDetecting>().next = rest;
                 }
             }

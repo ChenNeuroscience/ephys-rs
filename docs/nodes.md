@@ -97,9 +97,8 @@ triggers. `self` is the snapshot's settings: the latest, as of the pass.
     every other reader can run first, otherwise a copy the plan makes as soon as the data's made (a copy point, in the
     dev tools). A node that only reads an input doesn't take it.
 - **The tree shake: whether it runs, and what it needs.** It's up to the node: `evaluate_tree_shake(inputs, outputs,
-  recording, triggered)`, given which of its inputs have something running into them, which of its outputs have
-  something running that needs them, whether the snapshot's recording, and whether it has a snapshot trigger, says
-  whether it runs, and which inputs it needs (a `TreeShake`). An input it doesn't need isn't passed,
+  recording)`, given which of its inputs have something running into them, which of its outputs have something running
+  that needs them, and whether the snapshot's recording, as well as its settings (`self`), says whether it runs, and which inputs it needs (a `TreeShake`). An input it doesn't need isn't passed,
   and doesn't count as in use for what feeds it (the LFP viewer's spectrum, switched off, stops the
   [Spectrum](../standard/src/ephys/spectrum.rs) node). The plan starts with everything that can run running
   and needing everything, asks each node in turn, upstream first, and whenever one's answer changes, asks its
@@ -109,9 +108,9 @@ triggers. `self` is the snapshot's settings: the latest, as of the pass.
   answers did, with a warning in the console. By default, a node runs, needing every input, whatever's in use: the
   path without the optimisation, so leaving it is always correct. A node that only makes data for others runs only
   while they're in use, as the processing nodes do. A writer runs only while recording, and given something to record,
-  as what it does matters beyond the graph; so what only feeds writers runs only while recording, except while it has a snapshot trigger (an auto detect),
-  which it has to run to get done: each trigger sent, or taken away, is a new snapshot, so a Continuous Gain feeding
-  only a writer can have its gains detected before recording. Run Command never runs in a pass: it's only ever sent things to do. A node with an output that can't be known doesn't run. Settings change the plan, so what a
+  as what it does matters beyond the graph; so what only feeds writers runs only while recording, except while it's asked to do something with the data
+  (an auto detect: see below), which it has to run to get done; so a Continuous Gain feeding only a writer can have its
+  gains detected before recording. Run Command never runs in a pass: it's only ever sent things to do. A node with an output that can't be known doesn't run. Settings change the plan, so what a
   node needs is for what's switched on and off, not what changes pass to pass.
 
 ## Its window
@@ -144,7 +143,7 @@ convention, nodes with a view are. Keys its window answers to (G over a Spike Vi
   settings menu.
 - `node_toolbar_buttons`: the same, with buttons of the pane's own beside them, at the right of the toolbar.
 - `controlled_by`: for each setting, the names of the nodes with a control connected to it.
-- `trigger`, `can_trigger`, `trigger_progress`, `cancel_trigger`, `open_control_target`: see below.
+- `trigger`, `can_trigger`, `progress`, `open_control_target`: see below.
 
 Help that's more than a tooltip (examples, a cheat sheet) goes behind `widgets::help_link`: dimmed text with a dotted
 underline, its help in a popup while the pointer's over it, or, clicked, until something else is. `widgets::with_help`
@@ -207,34 +206,35 @@ its window closed too.
 
 ## Triggers
 
-Anything sent to a node is a trigger. Each trigger type implements [`TriggerType`](../src/triggers.rs), carrying
-whatever it needs to (`AutoDetect` nothing; `RunOnFiles` the files), with a name to show, and how it's delivered
-(`DELIVERY`). The program lists them with its edge types, in `edge_types!` (`triggers:`), which makes its `Trigger`
-enum, with a variant for each, and `TriggerKind`, naming them, as it does for data streams and settings: they're sent
-along settings edges, after all. A node lists the kinds each setting takes, of either delivery, in `triggers(setting)`
-(`&[TriggerKind::AutoDetect]`). Sending one is the same either way: a control connected to the setting sends it
-(`UiContext::trigger(Some(control), AutoDetect)`), as can the node's own window (`None`), and `UiContext::can_trigger`
-says whether it can be sent now. Either way, it goes to the app; what the app does with it differs.
+Anything sent to a node is a trigger: a one-off event, carrying whatever it needs to (`RunOnFiles` its files). Each
+trigger type implements [`TriggerType`](../src/triggers.rs), with a name to show. The program lists them with its edge
+types, in `edge_types!` (`triggers:`), which makes its `Trigger` enum, with a variant for each, and `TriggerKind`,
+naming them, as it does for data streams and settings: they're sent along settings edges, after all. A node lists the
+kinds each setting takes in `triggers(setting)` (`&[TriggerKind::RunOnFiles]`). A control connected to the setting
+sends one (`UiContext::trigger(Some(control), trigger)`), as can the node's own window (`None`), and
+`UiContext::can_trigger` says whether it can be. It needs no pass, or even a run: the app delivers it on the GUI's
+thread, whatever's going on, to `Node::on_trigger`, as the `Trigger` (`let Trigger::RunOnFiles(files) = trigger`),
+with the same `UiContext` as its window's. As well as from a window, a node can send one through a control with a
+`TriggerHandle`, from the `ControlTriggers` it's given as it prepares (`PrepareContext::triggers`,
+`handle(control, TriggerKind::RunOnFiles)`), which it can keep and use from any thread. On their way to the app,
+triggers are carried as `AnyTrigger`s (boxed), so its queues needn't know the program's enum; what's sent and what's
+taken is always the enum.
 
-- **`Delivery::Snapshot`** (`AutoDetect`): for what needs the data going by, so it needs a run. The app bakes it into a
-  new snapshot ([`sent_triggers.rs`](../src/sent_triggers.rs)), one a node at a time, each sent with an id of its own.
-  The node prepares for it like anything else in a snapshot (`PrepareContext::trigger`, and `trigger_changed()`: an
-  auto detect makes its room to sample into, and lets go of it once the trigger's gone), runs while it has it (the
-  tree shake's `triggered`), and its passes report progress (`PassContext::trigger_progress`, shown with
-  `UiContext::trigger_progress`) and finish (`PassContext::trigger_done`). The app then takes the trigger away, in
-  another snapshot; until that takes over, the passes still have it, so the node's state says it's done. Stopping it
-  (`UiContext::cancel_trigger`) is the app taking it away early. Since passes can't change the graph, it triggers an
-  update of what it finds (`PassContext::trigger_settings_update(setting, value)`), and the GUI applies it as an edit. The [Continuous
-  Gain](../standard/src/ephys/continuous_gain.rs), [Spike Gain](../standard/src/spikes/spike_gain.rs) and
-  [Spike Detector](../standard/src/spikes/spike_detector.rs) work this way, triggered from the Spike Viewer.
-- **`Delivery::Direct`** (`RunOnFiles`): needs no pass, or even a run. It's delivered on the GUI's thread, whatever's
-  going on, to `Node::on_trigger`, as the `Trigger` (`if let Trigger::RunOnFiles(files) = trigger`), with the same
-  `UiContext` as its window's. As well as from a window, a node can send one through a control with a `TriggerHandle`, from the `ControlTriggers` it's given as it
-  prepares (`PrepareContext::triggers`, `handle(control, TriggerKind::RunOnFiles)`), which it can keep and use from any thread. (Only a
-  direct trigger has a handle, as a handle can outlive the run: there's none for a snapshot trigger.)
+## Asking a node to do something with the data
 
-On their way to the app, triggers are carried as `AnyTrigger`s (boxed), so its queues needn't know the program's
-enum; what's sent and what's taken is always the enum, and snapshots carry it as that.
+Asking a node to do something over a while, with the data going by, isn't a trigger: it's a **transient setting**,
+saying when it was asked, as the gains and thresholds have for auto detect (`Gains::detect`, `Thresholds::detect`).
+It's a setting like any other: a window, or a viewer through a control, asks by setting it, a change is a new
+snapshot, it's undoable, and it's locked while recording. The node prepares for it (an auto detect makes room to
+sample into, comparing the request with `context.previous`'s, and lets go of it once there's none), runs while it's
+asked (in its tree shake), and its passes report how far along they are (`PassContext::report_progress`, as of when
+it was asked; shown with `UiContext::progress`). Once they're done, they set what they found, no longer asked, in one
+settings update (`PassContext::trigger_settings_update(setting, value)`), which the GUI applies as an edit; until that
+takes over, the node's state says it's done. Stopping it is setting it to none. Nothing asks again just by bringing a
+graph back: transient settings aren't saved (`#[serde(skip)]`), and the app clears them (`EdgeType::clear_transient`)
+when it restores a graph from its history (undo or redo), duplicates a node, starts recording, or stops running. The
+[Continuous Gain](../standard/src/ephys/continuous_gain.rs), [Spike Gain](../standard/src/spikes/spike_gain.rs) and
+[Spike Detector](../standard/src/spikes/spike_detector.rs) work this way, asked from their windows or a viewer's.
 
 Every setting also takes a direct update of its value without saying so, the settings update above, which isn't
 applied while settings are locked.

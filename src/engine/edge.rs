@@ -28,6 +28,18 @@ pub trait EdgeType: Clone + PartialEq + Debug + Send + Sync + 'static {
 
     /// Short description, e.g. "32 ch · 30 kHz".
     fn summary(&self) -> String;
+
+    /// Part of a setting can ask its node to do something over a while, with the data going by, rather than say how
+    /// it's set up: when auto detect was asked for, say (`Gains::detect`, in the standard nodes). This transient part
+    /// is a setting like any other: a change is a new snapshot, which the node prepares for (room to sample into, say),
+    /// it's undoable, and it's locked while recording. While a node's asked, it runs (see `Node::evaluate_tree_shake`),
+    /// its passes report how far along they are (`PassContext::report_progress`), and once they're done, they clear it
+    /// themselves, along with whatever they set (`PassContext::trigger_settings_update`). Nothing should ask again just
+    /// by bringing a graph back, though: the transient part isn't saved (`#[serde(skip)]`), and the app clears it here,
+    /// for each of a node's settings that other nodes can edit (see `Node::settings`), whenever it restores a graph from
+    /// its history (undo or redo), duplicates a node, starts recording, or stops running (see `Graph::clear_transient`).
+    /// By default, a setting has none.
+    fn clear_transient(&mut self) {}
 }
 
 /// The closed set of edge types for one dimension: an enum with one variant per type. Implemented by
@@ -41,6 +53,8 @@ pub trait EdgeTypesEnum: Clone + PartialEq + Debug + Send + Sync + 'static {
     fn kind(&self) -> Self::Kind;
     fn kind_index(kind: Self::Kind) -> usize;
     fn summary(&self) -> String;
+    /// See `EdgeType::clear_transient`.
+    fn clear_transient(&mut self);
 }
 
 /// Which edge type a value of `S` is (see `EdgeTypesEnum::Kind`).
@@ -117,7 +131,7 @@ pub enum Dimension {
 ///         Thresholds(spikes::Thresholds),
 ///     }
 ///     triggers: pub enum Trigger, TriggerKind {
-///         AutoDetect(auto_detect::AutoDetect),
+///         RunOnFiles(run_command::RunOnFiles),
 ///     }
 /// }
 /// ```
@@ -161,10 +175,8 @@ macro_rules! edge_types {
 
         impl From<$tkind> for $crate::triggers::TriggerKey {
             fn from(kind: $tkind) -> Self {
-                const TYPES: &[(&str, $crate::triggers::Delivery)] =
-                    &[$((<$tt as $crate::triggers::TriggerType>::NAME, <$tt as $crate::triggers::TriggerType>::DELIVERY)),+];
-                let (name, delivery) = TYPES[kind as usize];
-                $crate::triggers::TriggerKey { index: kind as usize, name, delivery }
+                const NAMES: &[&str] = &[$(<$tt as $crate::triggers::TriggerType>::NAME),+];
+                $crate::triggers::TriggerKey { index: kind as usize, name: NAMES[kind as usize] }
             }
         }
 
@@ -236,6 +248,10 @@ macro_rules! edge_types {
 
             fn summary(&self) -> String {
                 match self { $($value::$variant(v) => $crate::engine::EdgeType::summary(v)),+ }
+            }
+
+            fn clear_transient(&mut self) {
+                match self { $($value::$variant(v) => $crate::engine::EdgeType::clear_transient(v)),+ }
             }
         }
 

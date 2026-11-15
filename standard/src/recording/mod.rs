@@ -382,26 +382,15 @@ mod tests {
         let place = ephys_rs::base_directory::Place { directory: dir.clone(), prefix: Some("trial a".into()) };
         // The writers only run while recording, so are planned for it, and open their files before it starts.
         let asked = Arc::new(Recording::new(Some(place), chrono::Local::now()));
-        let recording = ephys_rs::engine::Snapshot::bake(
-            1,
-            snapshot.graph.clone(),
-            snapshot.started,
-            Some(asked.clone()),
-            Default::default(),
-        );
+        let recording =
+            ephys_rs::engine::Snapshot::bake(1, snapshot.graph.clone(), snapshot.started, Some(asked.clone()));
         assert!(!snapshot.plan.steps().iter().any(|s| s.id == ltx), "no writers while not recording");
         assert!(!runner.update(&recording), "recording runs the writers, with buffers of their own");
         let deadline = Instant::now() + Duration::from_secs(10);
         while asked.effective().is_none_or(|e| e.at.elapsed() < Duration::from_secs(1)) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
         }
-        runner.update(&ephys_rs::engine::Snapshot::bake(
-            2,
-            recording.graph.clone(),
-            recording.started,
-            None,
-            Default::default(),
-        ));
+        runner.update(&ephys_rs::engine::Snapshot::bake(2, recording.graph.clone(), recording.started, None));
         drop(runner);
         ephys_rs::background::wait();
 

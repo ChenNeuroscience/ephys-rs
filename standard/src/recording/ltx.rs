@@ -172,7 +172,7 @@ impl Node<Edges> for WriteLtx {
 
     /// Only while recording, and given something to record: otherwise there'd be nothing to write, but files all the
     /// same. So what feeds only writers runs only while recording.
-    fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool], recording: bool, _triggered: bool) -> TreeShake {
+    fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool], recording: bool) -> TreeShake {
         TreeShake::needing_all(recording && inputs.contains(&true), inputs.len())
     }
 

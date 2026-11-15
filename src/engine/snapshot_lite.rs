@@ -77,22 +77,17 @@ mod tests {
     #[test]
     fn it_says_how_long_as_of_now_from_the_times_baked() {
         let (graph, started) = (Arc::new(Graph::default()), Instant::now() - Duration::from_secs(5));
-        let running = Snapshot::<crate::Nodes>::bake(1, graph.clone(), Some(started), None, Default::default());
+        let running = Snapshot::<crate::Nodes>::bake(1, graph.clone(), Some(started), None);
         assert!(running.acquiring_for().unwrap() >= Duration::from_secs(5));
         assert_eq!((running.version(), running.recording_for()), (1, None));
         let recorded = Arc::new(Recording::default());
-        let recording =
-            Snapshot::<crate::Nodes>::bake(2, graph.clone(), Some(started), Some(recorded.clone()), Default::default());
+        let recording = Snapshot::<crate::Nodes>::bake(2, graph.clone(), Some(started), Some(recorded.clone()));
         assert_eq!(recording.recording_started(), None, "not until it takes effect");
         let at = Instant::now() - Duration::from_millis(300);
         recorded.take_effect(at);
         recorded.take_effect(Instant::now());
         assert_eq!(recording.recording_started(), Some(at), "when it first took effect");
         assert!(recording.recording_for().unwrap() < Duration::from_secs(1));
-        assert_eq!(
-            Snapshot::<crate::Nodes>::bake(3, graph, None, None, Default::default()).acquiring_for(),
-            None,
-            "not running"
-        );
+        assert_eq!(Snapshot::<crate::Nodes>::bake(3, graph, None, None).acquiring_for(), None, "not running");
     }
 }

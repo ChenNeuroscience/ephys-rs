@@ -223,15 +223,21 @@ fn spread(values: &[f32], default: f32, show: impl Fn(f32) -> String) -> String 
 /// above it).
 #[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct Thresholds(pub Vec<f32>);
+pub struct Thresholds {
+    pub values: Vec<f32>,
+    /// When they were asked to be detected from the data, until they are (see `crate::standard::auto_detect`): a
+    /// transient setting, not saved (see `EdgeType::clear_transient`).
+    #[serde(skip)]
+    pub detect: Option<std::time::Instant>,
+}
 
 impl Thresholds {
     pub fn get(&self, channel: usize) -> f32 {
-        per_channel(&self.0, channel, DEFAULT_THRESHOLD_UV)
+        per_channel(&self.values, channel, DEFAULT_THRESHOLD_UV)
     }
 
     pub fn set(&mut self, channel: usize, uv: f32) {
-        set_per_channel(&mut self.0, channel, uv.max(0.1), DEFAULT_THRESHOLD_UV);
+        set_per_channel(&mut self.values, channel, uv.max(0.1), DEFAULT_THRESHOLD_UV);
     }
 }
 
@@ -243,7 +249,11 @@ impl EdgeType for Thresholds {
     };
 
     fn summary(&self) -> String {
-        spread(&self.0, DEFAULT_THRESHOLD_UV, |t| format!("{t:.0} µV"))
+        spread(&self.values, DEFAULT_THRESHOLD_UV, |t| format!("{t:.0} µV"))
+    }
+
+    fn clear_transient(&mut self) {
+        self.detect = None;
     }
 }
 
@@ -288,11 +298,15 @@ pub struct Gains {
     pub scope: GainScope,
     /// Each channel's gain (channels past the end have the default range's).
     pub gains: Vec<f32>,
+    /// When they were asked to be detected from the data, until they are (see `crate::standard::auto_detect`): a
+    /// transient setting, not saved (see `EdgeType::clear_transient`).
+    #[serde(skip)]
+    pub detect: Option<std::time::Instant>,
 }
 
 impl Default for Gains {
     fn default() -> Self {
-        Gains { fill_uv: RECORDED_FULL_SCALE_UV, scope: GainScope::default(), gains: Vec::new() }
+        Gains { fill_uv: RECORDED_FULL_SCALE_UV, scope: GainScope::default(), gains: Vec::new(), detect: None }
     }
 }
 
@@ -415,6 +429,10 @@ impl EdgeType for Gains {
     fn summary(&self) -> String {
         let ranges: Vec<f32> = (0..self.gains.len()).map(|c| self.range_uv(c)).collect();
         spread(&ranges, DEFAULT_RANGE_UV, |r| format!("±{r:.0} µV"))
+    }
+
+    fn clear_transient(&mut self) {
+        self.detect = None;
     }
 }
 

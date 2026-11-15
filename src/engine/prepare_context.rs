@@ -5,7 +5,6 @@
 //! say) is done.
 
 use super::{Edges, NodeId, Recording};
-use crate::sent_triggers::Sent;
 use crate::triggers::ControlTriggers;
 
 /// A node's answer as it prepares for a snapshot (see `Node::prepare_for_snapshot`). `S` is its state, `W` each worker's
@@ -138,8 +137,6 @@ pub struct Previous<'a, E: Edges, N> {
     pub inputs: &'a [Option<E::DataStream>],
     /// Whether its data streams, in and out, are the same now, so state made for them still fits.
     pub same_streams: bool,
-    /// The snapshot trigger it had then, if any.
-    pub trigger: Option<&'a Sent<E::Trigger>>,
 }
 
 /// What a node's told as it prepares for a snapshot (see `Node::prepare_for_snapshot`). `N` is the node.
@@ -153,10 +150,6 @@ pub struct PrepareContext<'a, E: Edges, N> {
     pub recording: Option<&'a Recording>,
     /// What its controls can trigger directly (see `crate::triggers`).
     pub triggers: &'a ControlTriggers<E::Trigger>,
-    /// The snapshot trigger sent to it, if there is one (an auto detect, say: see `crate::sent_triggers`). The node
-    /// makes what it needs for the trigger here (the buffers to sample into, say), and lets go of it once the trigger's
-    /// gone.
-    pub trigger: Option<&'a Sent<E::Trigger>>,
     /// How it was in the snapshot before, if it was in it.
     pub previous: Option<Previous<'a, E, N>>,
     /// Whether the snapshot before was recording something else, or nothing: recording starts (or stops) with this
@@ -168,8 +161,7 @@ pub struct PrepareContext<'a, E: Edges, N> {
 
 impl<'a, E: Edges, N> PrepareContext<'a, E, N> {
     /// For trying a node out: with inputs `inputs`, recording `recording` if there is one, new to the run, with no
-    /// controls connected, triggering `triggers` (usually none: `ControlTriggers::none`), on one worker, and sent no
-    /// snapshot trigger.
+    /// controls connected, triggering `triggers` (usually none: `ControlTriggers::none`), on one worker.
     pub fn trying(
         inputs: &'a [Option<E::DataStream>],
         recording: Option<&'a Recording>,
@@ -181,7 +173,6 @@ impl<'a, E: Edges, N> PrepareContext<'a, E, N> {
             controls: &[],
             recording,
             triggers,
-            trigger: None,
             previous: None,
             recording_changed: recording.is_some(),
             workers: 1,
@@ -191,12 +182,6 @@ impl<'a, E: Edges, N> PrepareContext<'a, E, N> {
     /// Whether it was in the snapshot before with the same data streams, so the state it has still fits.
     pub fn same_streams(&self) -> bool {
         self.previous.as_ref().is_some_and(|previous| previous.same_streams)
-    }
-
-    /// Whether its snapshot trigger is another than in the snapshot before: sent, sent again, or taken away (it's done,
-    /// or stopped). If not, whatever it made for the trigger still stands.
-    pub fn trigger_changed(&self) -> bool {
-        self.trigger.map(|t| t.id) != self.previous.as_ref().and_then(|p| p.trigger).map(|t| t.id)
     }
 
     /// Whether it was in the snapshot before with the same data streams and settings (`node` being itself now).
@@ -216,10 +201,8 @@ impl<'a, E: Edges, N> PrepareContext<'a, E, N> {
             controls: self.controls,
             recording: self.recording,
             triggers: self.triggers,
-            trigger: self.trigger,
             previous: self.previous.as_ref().and_then(|p| {
-                let (inputs, same_streams, trigger) = (p.inputs, p.same_streams, p.trigger);
-                Some(Previous { node: previous(p.node)?, inputs, same_streams, trigger })
+                Some(Previous { node: previous(p.node)?, inputs: p.inputs, same_streams: p.same_streams })
             }),
             recording_changed: self.recording_changed,
             workers: self.workers,
@@ -233,17 +216,8 @@ pub fn fresh_states<E: Edges, N: super::Node<E>>(
     node: &N,
     inputs: &[Option<E::DataStream>],
 ) -> (N::State, N::WorkerState) {
-    fresh_states_triggered(node, inputs, None)
-}
-
-/// The states `node` makes, as `fresh_states`, with snapshot trigger `trigger` sent to it.
-pub fn fresh_states_triggered<E: Edges, N: super::Node<E>>(
-    node: &N,
-    inputs: &[Option<E::DataStream>],
-    trigger: Option<&Sent<E::Trigger>>,
-) -> (N::State, N::WorkerState) {
     let triggers = ControlTriggers::none();
-    let context = PrepareContext { trigger, ..PrepareContext::trying(inputs, None, &triggers) };
+    let context = PrepareContext::trying(inputs, None, &triggers);
     let prepared = node.prepare_for_snapshot(&context).wait();
     let shared = or_unit(prepared.proto_shared_state).expect("a node with state makes it when it's new");
     let worker = prepared.proto_worker_state.and_then(|mut states| states.pop()).unwrap_or_default();

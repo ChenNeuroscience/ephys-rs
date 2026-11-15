@@ -1,7 +1,6 @@
 //! Drawing the layout of panes (see `crate::layout`, which says where they go): each pane's contents, its tab,
 //! and what dragging and closing tabs does.
 
-use crate::sent_triggers::LiveTriggers;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -39,8 +38,8 @@ pub struct Panes<'a, N: NodesEnum, A: AnnotationsEnum> {
     pub resolved: &'a Resolved<N::Edges>,
     pub colours: &'static Colours,
     pub runner: Option<&'a Runner<N>>,
-    /// The snapshot triggers sent, and how they're getting on, while running.
-    pub live: Option<LiveTriggers<'a, <N::Edges as crate::engine::Edges>::Trigger>>,
+    /// How far along nodes are with what they've been asked to do, while running.
+    pub progress: Option<&'a crate::engine::Progress>,
     /// What the running nodes' passes share with the GUI, or what the last run's shared, once it's stopped.
     pub shared: Option<&'a crate::engine::SharedByNode>,
     /// Each node's state on the GUI's side (see `Node::UiState`).
@@ -83,14 +82,15 @@ pub struct Ticked {
 
 /// Draws a node's window content, with its toolbar, by calling on the node (see `Node::on_gui_tick`), and records that
 /// in `ticked`. It finds what its passes share with it in `shared`:
-/// the run's, or the last run's. Its triggers need a run to go to, while there is one (`live`).
+/// the run's, or the last run's. While running, it sees how far along nodes are with what they've been asked to do
+/// (`live`).
 #[allow(clippy::too_many_arguments)]
 pub fn node_ui<N: NodesEnum>(
     ui: &mut egui::Ui,
     graph: &mut Graph<N>,
     resolved: &Resolved<N::Edges>,
     colours: &Colours,
-    live: Option<LiveTriggers<'_, <N::Edges as crate::engine::Edges>::Trigger>>,
+    live: Option<&crate::engine::Progress>,
     shared: Option<&crate::engine::SharedByNode>,
     ui_state: Option<&crate::engine::UiStateCell>,
     base_directory: Option<&crate::base_directory::Place>,
@@ -288,7 +288,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> Panes<'_, N, A> {
             ),
             Pane::Node(id) => {
                 let (graph, resolved, colours, live, locked) =
-                    (&mut *self.graph, self.resolved, self.colours, self.live, self.locked);
+                    (&mut *self.graph, self.resolved, self.colours, self.progress, self.locked);
                 let (advanced, base, shared) = (self.mode == Mode::Advanced, self.base_directory, self.shared);
                 let ui_state = self.ui_states.get(graph, id);
                 padded(ui, |ui| {

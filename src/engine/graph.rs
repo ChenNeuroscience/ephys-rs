@@ -11,7 +11,6 @@ use super::{
     Control, Dimension, EdgeInfo, EdgeTypesEnum, Edges, Input, Node, NodesEnum, Output, Plan, SettingPort, TriggerKind,
     UiContext,
 };
-use crate::sent_triggers::SnapshotTriggers;
 use crate::theme::Colours;
 
 /// A node in a graph, unique within it and never reused, so it's the same node through undo, redo and saving.
@@ -353,6 +352,11 @@ impl<N: NodesEnum> Graph<N> {
 
     pub fn get(&self, id: NodeId) -> Option<&NodeEntry<N>> {
         self.nodes.get(&id)
+    }
+
+    /// Clears the transient part of every node's settings that other nodes can edit (see `EdgeType::clear_transient`).
+    pub fn clear_transient(&mut self) {
+        self.nodes.values_mut().for_each(|entry| clear_transient(&mut entry.node));
     }
 
     pub fn get_mut(&mut self, id: NodeId) -> Option<&mut NodeEntry<N>> {
@@ -768,6 +772,18 @@ impl Recording {
     }
 }
 
+/// Clears the transient part of `node`'s settings that other nodes can edit (see `EdgeType::clear_transient`), setting
+/// only those it changes.
+pub fn clear_transient<N: NodesEnum>(node: &mut N) {
+    for (index, setting) in node.settings().into_iter().enumerate() {
+        let mut value = setting.value.clone();
+        value.clear_transient();
+        if value != setting.value {
+            node.set_setting(index, value);
+        }
+    }
+}
+
 /// What the passes need to know, baked from what the app has (see `bake`): the graph, with all its settings, what its
 /// nodes' controls see, the plan for running it, and the run's times and recording. Each processing pass runs against
 /// one, and gives node code what it can see of it (`SnapshotLite`, see `PassContext::snapshot`). A new one's baked
@@ -783,34 +799,29 @@ pub struct Snapshot<N: NodesEnum> {
     pub started: Option<Instant>,
     /// The recording, while recording.
     pub recording: Option<Arc<Recording>>,
-    /// The snapshot triggers sent to its nodes and not yet done (see `crate::sent_triggers`), which they prepare and run
-    /// for.
-    pub triggers: Arc<SnapshotTriggers<<N::Edges as Edges>::Trigger>>,
 }
 
 impl<N: NodesEnum> Snapshot<N> {
     /// Bakes what the passes need of `graph`, and of a run that `started` (while running), with `recording` (while
-    /// recording) and the snapshot triggers sent to its nodes (`triggers`): planning how to run it from scratch.
+    /// recording): planning how to run it from scratch.
     pub fn bake(
         version: u64,
         graph: Arc<Graph<N>>,
         started: Option<Instant>,
         recording: Option<Arc<Recording>>,
-        triggers: Arc<SnapshotTriggers<<N::Edges as Edges>::Trigger>>,
     ) -> Self {
         let controls = graph
             .iter()
             .filter(|(_, entry)| !entry.node.controls().is_empty())
             .map(|(id, _)| (id, graph.control_values(id)))
             .collect();
-        let triggered = triggers.keys().copied().collect();
-        let plan = Arc::new(Plan::triggering(&graph, recording.is_some(), &triggered));
-        Snapshot { version, graph, plan, controls: Arc::new(controls), started, recording, triggers }
+        let plan = Arc::new(Plan::new(&graph, recording.is_some()));
+        Snapshot { version, graph, plan, controls: Arc::new(controls), started, recording }
     }
 
     /// `graph`, as a run started just now would have it, not recording (for trying graphs out: the app bakes its own).
     pub fn new(version: u64, graph: Graph<N>) -> Self {
-        Self::bake(version, Arc::new(graph), Some(Instant::now()), None, Default::default())
+        Self::bake(version, Arc::new(graph), Some(Instant::now()), None)
     }
 }
 
@@ -823,7 +834,6 @@ impl<N: NodesEnum> Clone for Snapshot<N> {
             controls: self.controls.clone(),
             started: self.started,
             recording: self.recording.clone(),
-            triggers: self.triggers.clone(),
         }
     }
 }
@@ -942,7 +952,7 @@ mod tests {
         graph.connect(port(viewer, PortRole::Control, 0), port(detector, PortRole::Setting, 0)).unwrap();
         assert_eq!(graph.topological_order(), vec![board, detector, viewer]);
 
-        let thresholds = |uv: Vec<f32>| Setting::Thresholds(spikes::Thresholds(uv));
+        let thresholds = |uv: Vec<f32>| Setting::Thresholds(spikes::Thresholds { values: uv, detect: None });
         assert_eq!(graph.control_values(viewer), vec![Some(thresholds(vec![])), None]);
         let theme = &crate::standard::themes::THEMES[0].colours;
         graph.edit(viewer, &[], theme, None, None, None, false, false, None, |_, context| {

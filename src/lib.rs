@@ -1,12 +1,11 @@
 //! ephys-rs: electrophysiology acquisition, processing and recording, built around a node graph.
 //!
 //! The crate's own modules are the framework: the graph engine (`engine`), annotations (`annotation`), themes
-//! (`theme`), the log (`console`), triggers (`triggers`), and those a snapshot carries
-//! (`sent_triggers`), threads finishing in the background (`background`), how plots over time lay out time (`time_axis`),
-//! quick actions (`quick_action`), and the GUI (`gui`). None of it knows about particular node, edge or annotation
-//! types, or themes: those are in the ephys-rs-standard crate (the standard components, in standard/), and a program's
-//! own. A program lists the parts it's made of and runs them: see `Components`, `gui::run`, and `examples/chen-neuro/`
-//! for one.
+//! (`theme`), the log (`console`), triggers (`triggers`), threads finishing in the background (`background`), how
+//! plots over time lay out time (`time_axis`), quick actions (`quick_action`), and the GUI (`gui`). None of it knows
+//! about particular node, edge or annotation types, or themes: those are in the ephys-rs-standard crate (the standard
+//! components, in standard/), and a program's own. A program lists the parts it's made of and runs them: see
+//! `Components`, `gui::run`, and `examples/chen-neuro/` for one.
 
 pub mod annotation;
 pub mod background;
@@ -21,7 +20,6 @@ pub mod gui;
 pub mod layout;
 pub mod quick_action;
 pub mod search_folders;
-pub mod sent_triggers;
 pub mod theme;
 pub mod time_axis;
 pub mod triggers;

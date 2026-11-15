@@ -2,14 +2,14 @@
 //!
 //! Each trigger type (`TriggerType`) carries what it needs to, and the program lists them with its edge types
 //! (`edge_types!`), which makes its enum of them (`TriggersEnum`), as it does of data streams and settings. A node says
-//! which kinds of them each of its settings takes (`Node::triggers`). How one's delivered is up to its type
-//! (`TriggerType::DELIVERY`), and sending one is the same either way (`UiContext::trigger`): to the app. A snapshot
-//! trigger is carried by the snapshots the app bakes until the node's done with it (see `crate::sent_triggers`):
-//! "auto detect" needs the data going by, so it needs a run, and says how it's getting on. A direct trigger goes to the
-//! app's
-//! `DirectTriggers`, which it delivers to `Node::on_trigger` on the GUI's thread as soon as it can, whether anything's
-//! running or not: from a thread that's outlived the run that started it, say. A node sends one through a control with
-//! a `TriggerHandle`, from `ControlTriggers`, which it can keep for later and use from any thread.
+//! which kinds of them each of its settings takes (`Node::triggers`). Sending one (`UiContext::trigger`) puts it in the
+//! app's `DirectTriggers`, which delivers it to `Node::on_trigger` on the GUI's thread as soon as it can, whether
+//! anything's running or not: from a thread that's outlived the run that started it, say. A node sends one through a
+//! control with a `TriggerHandle`, from `ControlTriggers`, which it can keep for later and use from any thread.
+//!
+//! A trigger's a one-off event, carrying what it needs to (files to run on, say). Asking a node to do something with
+//! the data going by, over a while, isn't one: that's a transient setting (an auto detect's request: see
+//! `EdgeType::clear_transient`), which the node's passes act on like any other setting.
 //!
 //! Every setting also takes a direct update of its value, without saying so (`PassContext::trigger_settings_update`),
 //! which the app applies as an edit, unless settings are locked. And a pass can have the app start or stop recording
@@ -30,19 +30,6 @@ use super::engine::NodeId;
 pub trait TriggerType: Send + 'static {
     /// What it's called where it's shown: in the dev tools, say.
     const NAME: &'static str;
-    /// How it gets to the node.
-    const DELIVERY: Delivery;
-}
-
-/// How a trigger gets to the node it's sent to.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum Delivery {
-    /// In the snapshots the app bakes, till the node's done with it: the node prepares for it, and its passes do it
-    /// with the data going by, saying how they're getting on, and when it's done (see `crate::sent_triggers`). Only
-    /// while running.
-    Snapshot,
-    /// Straight to the node, on the GUI's thread (`Node::on_trigger`), running or not.
-    Direct,
 }
 
 /// The program's trigger types: an enum with a variant for each, made by `edge_types!`.
@@ -53,13 +40,12 @@ pub trait TriggersEnum: Clone + Send + Sync + 'static {
     fn kind(&self) -> Self::Kind;
 }
 
-/// A kind of trigger, as the core keeps track of them without knowing the program's enum: which variant it is, what
-/// it's called and how it's delivered. Each `TriggersEnum::Kind` converts into one.
+/// A kind of trigger, as the core keeps track of them without knowing the program's enum: which variant it is, and
+/// what it's called. Each `TriggersEnum::Kind` converts into one.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct TriggerKey {
     pub index: usize,
     pub name: &'static str,
-    pub delivery: Delivery,
 }
 
 /// A trigger on its way, of the program's `TriggersEnum`: taken as that by whatever it's for.
@@ -116,7 +102,6 @@ impl DirectTriggers {
 
     /// Sends node `node` the direct trigger `trigger`.
     pub fn trigger(&self, node: NodeId, trigger: AnyTrigger) {
-        debug_assert_eq!(trigger.key().delivery, Delivery::Direct, "{}", trigger.key().name);
         self.send(node, Triggered::Trigger(trigger));
     }
 
@@ -197,20 +182,15 @@ impl<T: TriggersEnum> ControlTriggers<T> {
         ControlTriggers { triggers: Arc::default(), controls: Vec::new() }
     }
 
-    /// A handle on triggers of kind `kind` to what control `control` connects to, if that takes them. Only of a direct
-    /// trigger: a handle can outlive the run, which a snapshot trigger needs.
+    /// A handle on triggers of kind `kind` to what control `control` connects to, if that takes them.
     pub fn handle(&self, control: usize, kind: T::Kind) -> Option<TriggerHandle<T>> {
-        if kind.into().delivery != Delivery::Direct {
-            return None;
-        }
         let targets = self.controls.get(control)?.iter();
         let nodes: Vec<NodeId> = targets.filter(|(_, kinds)| kinds.contains(&kind)).map(|(node, _)| *node).collect();
         (!nodes.is_empty()).then(|| TriggerHandle { triggers: self.triggers.clone(), nodes, kind })
     }
 }
 
-/// A program's triggers, for tests: `Go`, a direct trigger carrying a number, and `Level`, a snapshot trigger carrying
-/// a level, as `edge_types!` would make them.
+/// A program's triggers, for tests: `Go`, carrying a number, and `Level`, carrying a level, as `edge_types!` would make them.
 #[cfg(test)]
 pub(crate) mod testing {
     use super::*;
@@ -230,8 +210,8 @@ pub(crate) mod testing {
     impl From<TestKind> for TriggerKey {
         fn from(kind: TestKind) -> Self {
             match kind {
-                TestKind::Go => TriggerKey { index: 0, name: "go", delivery: Delivery::Direct },
-                TestKind::Level => TriggerKey { index: 1, name: "level", delivery: Delivery::Snapshot },
+                TestKind::Go => TriggerKey { index: 0, name: "go" },
+                TestKind::Level => TriggerKey { index: 1, name: "level" },
             }
         }
     }
@@ -257,13 +237,13 @@ mod tests {
     fn a_control_triggers_what_it_connects_to_that_takes_the_trigger() {
         let triggers = Arc::new(DirectTriggers::default());
         let both: &'static [TestKind] = &[TestKind::Go, TestKind::Level];
-        let neither: &'static [TestKind] = &[];
-        let controls = vec![vec![], vec![(NodeId(1), both), (NodeId(2), neither), (NodeId(3), both)]];
+        let level: &'static [TestKind] = &[TestKind::Level];
+        let controls = vec![vec![], vec![(NodeId(1), both), (NodeId(2), level), (NodeId(3), both)]];
         let controls = ControlTriggers::<TestTrigger>::new(triggers.clone(), controls);
         assert!(controls.handle(0, TestKind::Go).is_none(), "connected to nothing");
         assert!(controls.handle(2, TestKind::Go).is_none(), "no such control");
-        assert!(controls.handle(1, TestKind::Level).is_none(), "a snapshot trigger: a handle could outlive the run");
         controls.handle(1, TestKind::Go).unwrap().trigger(TestTrigger::Go(7));
+        controls.handle(1, TestKind::Level).unwrap().trigger(TestTrigger::Level(0.5));
         let delivered: Vec<(NodeId, TestTrigger)> = triggers
             .take()
             .into_iter()
@@ -272,19 +252,16 @@ mod tests {
                 _ => panic!(),
             })
             .collect();
-        assert_eq!(delivered, vec![(NodeId(1), TestTrigger::Go(7)), (NodeId(3), TestTrigger::Go(7))]);
+        let go = [(NodeId(1), TestTrigger::Go(7)), (NodeId(3), TestTrigger::Go(7))];
+        let level = [1, 2, 3].map(|node| (NodeId(node), TestTrigger::Level(0.5)));
+        assert_eq!(delivered, [go.as_slice(), level.as_slice()].concat(), "each to what takes it");
     }
 
-    /// What `edge_types!` makes: each kind's name and delivery are its type's.
+    /// What `edge_types!` makes: each kind's name is its type's.
     #[test]
-    fn the_programs_trigger_kinds_say_their_types_name_and_delivery() {
-        let key = |kind: crate::TriggerKind| TriggerKey::from(kind);
-        assert_eq!(
-            key(crate::TriggerKind::AutoDetect),
-            TriggerKey { index: 0, name: "auto detect", delivery: Delivery::Snapshot }
-        );
-        let run = key(crate::TriggerKind::RunOnFiles);
-        assert_eq!((run.index, run.name, run.delivery), (1, "run on files", Delivery::Direct));
+    fn the_programs_trigger_kinds_say_their_types_name() {
+        let run = TriggerKey::from(crate::TriggerKind::RunOnFiles);
+        assert_eq!((run.index, run.name), (0, "run on files"));
         let trigger = crate::Trigger::from(crate::standard::other::run_command::RunOnFiles(Vec::new()));
         assert_eq!(trigger.kind(), crate::TriggerKind::RunOnFiles);
     }

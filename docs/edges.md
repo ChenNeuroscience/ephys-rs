@@ -17,7 +17,7 @@ edge_types! {
         // ...
     }
     triggers: pub enum Trigger, TriggerKind {
-        AutoDetect(auto_detect::AutoDetect),
+        RunOnFiles(run_command::RunOnFiles),
         // ...
     }
 }

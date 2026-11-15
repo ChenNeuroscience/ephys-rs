@@ -23,7 +23,7 @@ use crate::{DataStream, Edges, Setting, SettingKind, Trigger, TriggerKind};
 use ephys_rs::engine::{Category, Control, EdgeInfo, EdgeType, Node, NodeInfo, Output, SettingPort, UiContext};
 use ephys_rs::gui::widgets::{Icon, help_link, small_icon_button};
 use ephys_rs::theme::Colours;
-use ephys_rs::triggers::{ControlTriggers, Delivery, TriggerHandle, TriggerType};
+use ephys_rs::triggers::{ControlTriggers, TriggerHandle, TriggerType};
 
 mod terminal;
 
@@ -36,7 +36,6 @@ pub struct RunOnFiles(pub Vec<PathBuf>);
 
 impl TriggerType for RunOnFiles {
     const NAME: &'static str = "run on files";
-    const DELIVERY: Delivery = Delivery::Direct;
 }
 
 /// In the arguments: replaced by a file, running the program once for each.
@@ -635,13 +634,7 @@ impl Node<Edges> for RunCommand {
     }
 
     /// Never in a pass: it's sent what to do (see `on_trigger`), and has nothing to do with the data going by.
-    fn evaluate_tree_shake(
-        &self,
-        inputs: &[bool],
-        _outputs: &[bool],
-        _recording: bool,
-        _triggered: bool,
-    ) -> ephys_rs::engine::TreeShake {
+    fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool], _recording: bool) -> ephys_rs::engine::TreeShake {
         ephys_rs::engine::TreeShake::needing_all(false, inputs.len())
     }
 
@@ -651,11 +644,9 @@ impl Node<Edges> for RunCommand {
 
     /// Runs the program on the files sent (by hand, too), and then, as it says, what's connected after it.
     fn on_trigger(&mut self, trigger: Trigger, context: &mut UiContext<Edges>, triggers: &ControlTriggers<Trigger>) {
-        if let Trigger::RunOnFiles(RunOnFiles(paths)) = trigger {
-            let (files, after) =
-                (self.settings.matching(paths), triggers.handle(AFTER_RUNNING, TriggerKind::RunOnFiles));
-            self.run_on(&context.ui_state::<CommandState>().job, files, after);
-        }
+        let Trigger::RunOnFiles(RunOnFiles(paths)) = trigger;
+        let (files, after) = (self.settings.matching(paths), triggers.handle(AFTER_RUNNING, TriggerKind::RunOnFiles));
+        self.run_on(&context.ui_state::<CommandState>().job, files, after);
     }
 
     fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
@@ -1205,13 +1196,8 @@ mod tests {
         // In a base directory of the test's own (writers write in it).
         let place = ephys_rs::base_directory::Place::directory(&dir);
         let asked = Arc::new(Recording::new(Some(place), chrono::Local::now()));
-        let recording = ephys_rs::engine::Snapshot::bake(
-            1,
-            snapshot.graph.clone(),
-            snapshot.started,
-            Some(asked.clone()),
-            Default::default(),
-        );
+        let recording =
+            ephys_rs::engine::Snapshot::bake(1, snapshot.graph.clone(), snapshot.started, Some(asked.clone()));
         runner.update(&recording);
         let deadline = Instant::now() + Duration::from_secs(10);
         while asked.effective().is_none_or(|e| e.at.elapsed() < Duration::from_millis(500)) && Instant::now() < deadline

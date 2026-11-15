@@ -46,8 +46,8 @@ use arc_swap::{ArcSwap, ArcSwapOption};
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError};
 use crossbeam_utils::CachePadded;
 
+use super::Progress;
 use crate::console::{self, PassId};
-use crate::sent_triggers::TriggerProgress;
 use crate::triggers::DirectTriggers;
 
 use super::pass_context::*;
@@ -109,7 +109,6 @@ impl<N: NodesEnum> Plan<N> {
                     controls,
                     snapshot: &baked,
                     shared: run.shared.any(step.id).unwrap_or(&()),
-                    trigger: snapshot.triggers.get(&step.id),
                     progress: &run.progress,
                     direct: &run.direct,
                 };
@@ -196,7 +195,7 @@ struct RunSlots {
     /// By the plan's state slot (`Step::state`).
     states: Vec<Arc<StateSlot>>,
     shared: Arc<SharedByNode>,
-    progress: Arc<TriggerProgress>,
+    progress: Arc<Progress>,
     direct: Arc<DirectTriggers>,
     /// By step.
     times: Vec<Arc<StepTimes>>,
@@ -427,9 +426,9 @@ struct RunCommon {
     dropped: AtomicU64,
     /// Where workers report to the GUI.
     reports: Reports,
-    /// Where the passes say how their snapshot triggers are getting on, and where they send direct triggers: the
-    /// app's.
-    progress: Arc<TriggerProgress>,
+    /// Where the passes say how they're getting on with what they've been asked to do, and where they send direct
+    /// triggers: the app's.
+    progress: Arc<Progress>,
     direct: Arc<DirectTriggers>,
     /// What each worker is up to.
     workers: Vec<WorkerSlot>,
@@ -689,7 +688,6 @@ impl<N: NodesEnum> Scheduled<N> {
                     node: &before.snapshot.graph.get(node.id)?.node,
                     inputs: &before.snapshot.plan.step_inputs[before.step],
                     same_streams: before.same_streams,
-                    trigger: before.snapshot.triggers.get(&node.id),
                 })
             });
             let context = PrepareContext {
@@ -698,7 +696,6 @@ impl<N: NodesEnum> Scheduled<N> {
                 controls: snapshot.controls.get(&node.id).map_or(&[][..], Vec::as_slice),
                 recording: snapshot.recording.as_deref(),
                 triggers: &triggers,
-                trigger: snapshot.triggers.get(&node.id),
                 previous,
                 recording_changed: self.recording_changed,
                 workers,
@@ -1011,8 +1008,8 @@ impl<N: NodesEnum> Runner<N> {
         &self.shared.direct
     }
 
-    /// How the snapshot triggers are getting on, as the passes say (see `crate::sent_triggers`).
-    pub fn trigger_progress(&self) -> &TriggerProgress {
+    /// How far along nodes are with what they've been asked to do, as their passes say (see `Progress`).
+    pub fn progress(&self) -> &Progress {
         &self.shared.progress
     }
 
@@ -1401,8 +1398,7 @@ pub mod tests {
         std::fs::write(&file, b"").unwrap();
         let place = crate::base_directory::Place::directory(file.join("recording"));
         let recording = Some(Arc::new(crate::engine::Recording::new(Some(place), chrono::Local::now())));
-        let snapshot =
-            Arc::new(Snapshot::bake(0, Arc::new(graph), Some(Instant::now()), recording, Default::default()));
+        let snapshot = Arc::new(Snapshot::bake(0, Arc::new(graph), Some(Instant::now()), recording));
         let plan = &snapshot.plan;
         let (scheduled, to_prepare) = Scheduled::new(snapshot.clone(), None, &RunCommon::default());
         scheduled.prepare(to_prepare);
@@ -1680,11 +1676,11 @@ pub mod tests {
     fn a_recording_takes_effect_with_its_snapshots_first_pass() {
         let graph = Arc::new(Graph::default());
         let started = Instant::now();
-        let runner = Runner::start(&Snapshot::bake(0, graph.clone(), Some(started), None, Default::default()), 1);
+        let runner = Runner::start(&Snapshot::bake(0, graph.clone(), Some(started), None), 1);
         until_running(&runner, 0);
         let recording = Arc::new(crate::engine::Recording::default());
         let asked = Instant::now();
-        runner.update(&Snapshot::bake(1, graph, Some(started), Some(recording.clone()), Default::default()));
+        runner.update(&Snapshot::bake(1, graph, Some(started), Some(recording.clone())));
         until_running(&runner, 1);
         let effective = recording.effective().expect("taken effect").at;
         assert!(effective >= asked - Duration::from_secs_f64(PASS_DURATION), "not before it was given the run");
@@ -1698,9 +1694,9 @@ pub mod tests {
         let board = add_board(&mut graph);
         let graph = Arc::new(graph);
         let started = Instant::now();
-        let runner = Runner::start(&Snapshot::bake(0, graph.clone(), Some(started), None, Default::default()), 1);
+        let runner = Runner::start(&Snapshot::bake(0, graph.clone(), Some(started), None), 1);
         until_running(&runner, 0);
-        let snapshot = Arc::new(Snapshot::bake(1, graph, Some(started), None, Default::default()));
+        let snapshot = Arc::new(Snapshot::bake(1, graph, Some(started), None));
         assert!(snapshot.plan.steps.iter().any(|step| step.id == board && step.state.is_some()), "has state");
         // Given the run, but its nodes not yet prepared.
         let before = runner.schedule.latest.load_full();

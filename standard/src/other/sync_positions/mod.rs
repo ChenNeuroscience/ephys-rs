@@ -356,13 +356,7 @@ impl Node<Edges> for SyncPositions {
     }
 
     /// Never in a pass: it's sent what to do (see `on_trigger`), and has nothing to do with the data going by.
-    fn evaluate_tree_shake(
-        &self,
-        inputs: &[bool],
-        _outputs: &[bool],
-        _recording: bool,
-        _triggered: bool,
-    ) -> ephys_rs::engine::TreeShake {
+    fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool], _recording: bool) -> ephys_rs::engine::TreeShake {
         ephys_rs::engine::TreeShake::needing_all(false, inputs.len())
     }
 
@@ -373,13 +367,12 @@ impl Node<Edges> for SyncPositions {
     /// Syncs the recording whose `.set` file's among the files sent (by hand, too), then sends them on to what's
     /// connected after it.
     fn on_trigger(&mut self, trigger: Trigger, context: &mut UiContext<Edges>, triggers: &ControlTriggers<Trigger>) {
-        if let Trigger::RunOnFiles(RunOnFiles(paths)) = trigger {
-            let job = &context.ui_state::<SyncState>().job;
-            let after = triggers.handle(AFTER_SYNCING, TriggerKind::RunOnFiles);
-            match paths.iter().find(|path| path.extension().is_some_and(|e| e == "set")) {
-                Some(set) => job.start(set.clone(), paths.clone(), self.settings.clone(), after),
-                None => job.fail("There's no .set file among the files sent".into()),
-            }
+        let Trigger::RunOnFiles(RunOnFiles(paths)) = trigger;
+        let job = &context.ui_state::<SyncState>().job;
+        let after = triggers.handle(AFTER_SYNCING, TriggerKind::RunOnFiles);
+        match paths.iter().find(|path| path.extension().is_some_and(|e| e == "set")) {
+            Some(set) => job.start(set.clone(), paths.clone(), self.settings.clone(), after),
+            None => job.fail("There's no .set file among the files sent".into()),
         }
     }
 

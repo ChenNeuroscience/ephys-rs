@@ -48,7 +48,7 @@ impl Node<Edges> for PositionDetector {
     };
 
     /// Only while it's given something, and something needs what it makes.
-    fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool], _recording: bool, _triggered: bool) -> TreeShake {
+    fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool], _recording: bool) -> TreeShake {
         TreeShake::needing_all(inputs.contains(&true) && outputs.contains(&true), inputs.len())
     }
 

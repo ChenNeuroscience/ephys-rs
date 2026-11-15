@@ -53,7 +53,7 @@ impl Node<Edges> for ChannelSelector {
     };
 
     /// Only while it's given something, and something needs what it makes.
-    fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool], _recording: bool, _triggered: bool) -> TreeShake {
+    fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool], _recording: bool) -> TreeShake {
         TreeShake::needing_all(inputs.contains(&true) && outputs.contains(&true), inputs.len())
     }
 
@@ -239,13 +239,8 @@ mod tests {
         let runner = Runner::start(&snapshot, 2);
         let place = Place { directory: dir.clone(), prefix: Some("trial a".into()) };
         let asked = Arc::new(Recording::new(Some(place), chrono::Local::now()));
-        let recording = ephys_rs::engine::Snapshot::bake(
-            1,
-            snapshot.graph.clone(),
-            snapshot.started,
-            Some(asked.clone()),
-            Default::default(),
-        );
+        let recording =
+            ephys_rs::engine::Snapshot::bake(1, snapshot.graph.clone(), snapshot.started, Some(asked.clone()));
         assert!(!runner.update(&recording), "recording runs the writer, with buffers of its own");
         let deadline = Instant::now() + Duration::from_secs(10);
         while asked.effective().is_none_or(|e| e.at.elapsed() < Duration::from_millis(500)) && Instant::now() < deadline
@@ -267,13 +262,7 @@ mod tests {
             harness.run_steps(2);
         }
 
-        runner.update(&ephys_rs::engine::Snapshot::bake(
-            2,
-            recording.graph.clone(),
-            recording.started,
-            None,
-            Default::default(),
-        ));
+        runner.update(&ephys_rs::engine::Snapshot::bake(2, recording.graph.clone(), recording.started, None));
         drop(runner);
         ephys_rs::background::wait();
         let mut files = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().path());

@@ -970,7 +970,7 @@ mod tests {
         let graph = Arc::new(Graph::default());
         let started = Some(Instant::now() - Duration::from_secs_f64(1.5));
         let lite = |snapshot: Snapshot<crate::components::Nodes>| Arc::new(snapshot) as Arc<dyn SnapshotLite>;
-        shared.keep_newest(&lite(Snapshot::bake(1, graph.clone(), started, None, Default::default())));
+        shared.keep_newest(&lite(Snapshot::bake(1, graph.clone(), started, None)));
         let seconds = |value: &Value| value.as_f64().unwrap();
         stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
         let mut states = BufReader::new(stream.try_clone().unwrap());
@@ -983,8 +983,8 @@ mod tests {
         let recording = Arc::new(Recording::default());
         recording.take_effect(Instant::now()); // as its first pass would
         let recording = Some(recording);
-        shared.keep_newest(&lite(Snapshot::bake(2, graph.clone(), started, recording, Default::default())));
-        shared.keep_newest(&lite(Snapshot::bake(1, graph, started, None, Default::default())));
+        shared.keep_newest(&lite(Snapshot::bake(2, graph.clone(), started, recording)));
+        shared.keep_newest(&lite(Snapshot::bake(1, graph, started, None)));
         assert_eq!(shared.snapshot.load().as_ref().unwrap().version(), 2, "a pass on an older one doesn't undo it");
         let started = Instant::now();
         assert!((0.0..0.5).contains(&seconds(&state()["recording_for"])));

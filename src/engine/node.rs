@@ -232,7 +232,7 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     /// changes (input, say). The app calls this for every node once a frame. If the node's window is shown, `ui` is
     /// there to draw the window in; if not, `ui` is `None`, and the app still calls this so the node can do work that
     /// carries on regardless (taking what its passes send, say). With or without a `ui`, the node can edit its
-    /// settings and what its controls see, and trigger things (one thing once another's done, say).
+    /// settings and what its controls see, and send triggers (one thing once another's done, say).
     ///
     /// By default, the node draws the standard window, with nothing of its own to set: its name, what it is, any
     /// problems, and its ports (see `crate::gui::node_window::standard`). A node with settings shows them in the
@@ -259,11 +259,11 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     /// (`context.workers`). These become the node's state and each worker's as the snapshot takes over (see
     /// `on_snapshot_change`; a worker's proto-state simply replaces the worker's old state). The node also says what
     /// about its hardware someone should decide (`UserDecision`). To go by, the node has its data streams
-    /// (`context.inputs`), its controls, whether the snapshot's recording (a writer opens its files, say), any snapshot
-    /// trigger sent to it (`context.trigger`: an auto detect needs room to sample into, say), and how the node was in
-    /// the snapshot before (`context.previous`). A node that makes no proto-state carries its state on as
-    /// it is, which only fits if the node's data streams are the same (`context.same_streams()`): so a node new to the
-    /// run, or whose data streams have changed, must make its shared state (each worker's gets `Default`'s if
+    /// (`context.inputs`), its settings (`self`: an auto detect asked for needs room to sample into, say), its
+    /// controls, whether the snapshot's recording (a writer opens its files, say), and how the node was in the
+    /// snapshot before (`context.previous`, with its settings then). A node that makes no proto-state carries its state
+    /// on as it is, which only fits if the node's data streams are the same (`context.same_streams()`): so a node new
+    /// to the run, or whose data streams have changed, must make its shared state (each worker's gets `Default`'s if
     /// the node makes none). By default, the node makes nothing.
     ///
     /// The engine asks the nodes one after another, on the thread preparing the snapshot, while passes carry on with
@@ -291,23 +291,23 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     /// Before a graph runs, the plan works out which nodes run, and which of their inputs' data each node needs (the
     /// tree shake), so nothing works on data that nothing uses. The plan asks each node here, telling the node which of
     /// its inputs (by index) have something running into them, which of its outputs have something running that needs
-    /// them, whether the snapshot's recording (a recording's plan is made when Record's pressed, so its nodes prepare
-    /// for it), and whether the snapshot has a snapshot trigger for the node (`triggered`: see `triggers`). The plan
-    /// starts with everything that can run running and needing everything, and asks again whenever what a node would
-    /// be told changes, until nothing does; so a node's answer must depend only on what the node's told, and its
-    /// settings. The answers settle as long as more in use never makes a node run or need less. A node that keeps
-    /// changing its answer runs and needs whatever either of its last two answers did (see `settle`, in `plan`).
+    /// them, and whether the snapshot's recording (a recording's plan is made when Record's pressed, so its nodes
+    /// prepare for it); and the node has its settings (`self`). The plan starts with everything that can run running
+    /// and needing everything, and asks again whenever what a node would be told changes, until nothing does; so a
+    /// node's answer must depend only on what the node's told, and its settings. The answers settle as long as more in
+    /// use never makes a node run or need less. A node that keeps changing its answer runs and needs whatever either of
+    /// its last two answers did (see `settle`, in `plan`).
     ///
     /// By default the node runs, needing every input, whatever's in use: that's always correct, only maybe slower.
-    /// Nodes that only make data for others run only while something needs it, as the processing nodes do. A node
-    /// whose running matters beyond the graph says when it runs: a writer only while recording, and given something to
-    /// record. A node only gets a snapshot trigger done by running, so a node that takes snapshot triggers should run
-    /// while `triggered`, even if nothing needs what it makes yet; otherwise the trigger's never done. A gain feeding
-    /// only a writer, say, has its gains detected before recording. A node needn't need an input (a viewer with part of
-    /// its view hidden, say), and then the plan doesn't count that input as using what feeds it. A change of settings
-    /// means a new plan (new buffers for it), so tree shaking is for what's switched on and off, not what changes from
-    /// pass to pass.
-    fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool], _recording: bool, _triggered: bool) -> TreeShake {
+    /// Nodes that only make data for others run only while something needs it, as the processing nodes do. A node whose
+    /// running matters beyond the graph says when it runs: a writer only while recording, and given something to
+    /// record. A node asked to do something with the data (by a transient setting: see `EdgeType::clear_transient`) can
+    /// only do it by running, so it should run while it's asked, even if nothing needs what it makes yet: a gain
+    /// feeding only a writer, say, has its gains detected before recording. A node needn't need an input (a viewer with
+    /// part of its view hidden, say), and then the plan doesn't count that input as using what feeds it. A change of
+    /// settings means a new plan (new buffers for it), so tree shaking is for what's switched on and off, not what
+    /// changes from pass to pass.
+    fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool], _recording: bool) -> TreeShake {
         TreeShake::needing_all(true, inputs.len())
     }
 
@@ -319,18 +319,12 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
         BufferUsage::none(inputs, outputs)
     }
 
-    /// Besides a new value, a setting can take triggers: things sent through the setting ("auto detect", say). The node
-    /// lists here the triggers one of its settings (by index) takes. A control connected to the setting can send one
-    /// (`UiContext::trigger`, or a `TriggerHandle`), as can the node's own window. Every trigger goes to the app, and
-    /// each says what the app does with it (see `crate::triggers`):
-    ///
-    /// - The app bakes a snapshot trigger into a new snapshot (see `crate::sent_triggers`), one a node at a time. The
-    ///   node prepares for it (`PrepareContext::trigger`), runs while it has it (`evaluate_tree_shake`'s `triggered`),
-    ///   and its passes say how it's getting on and when it's done (`PassContext::trigger_progress`, `trigger_done`),
-    ///   updating the node's settings if they like (`PassContext::trigger_settings_update`). The app then takes the
-    ///   trigger away, in another snapshot; until that takes over, the node's passes still have the trigger, so the
-    ///   node's state should say it's done. Stopping the trigger is the app taking it away early.
-    /// - A direct trigger goes to `on_trigger`, on the GUI's thread, whether or not anything's running.
+    /// Besides a new value, a setting can take triggers: one-off events sent through the setting, carrying what they
+    /// need to (files to run on, say: see `crate::triggers`). The node lists here the triggers one of its settings (by
+    /// index) takes. A control connected to the setting can send one (`UiContext::trigger`, or a `TriggerHandle`), as
+    /// can the node's own window, and the app delivers it to `on_trigger`, whether or not anything's running. (Asking a
+    /// node to do something with the data going by isn't a trigger, but a transient setting: see
+    /// `EdgeType::clear_transient`.)
     fn triggers(&self, _setting: usize) -> &'static [super::TriggerKind<E>] {
         &[]
     }
@@ -343,8 +337,8 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
         &[]
     }
 
-    /// Some triggers are delivered directly, on the GUI's thread, rather than in a snapshot (see `triggers`). The node
-    /// handles those here, with the same context as the node's window (so the node's `UiState` can keep work the
+    /// The app delivers the triggers sent to the node (see `triggers`) on the GUI's thread, and the node handles them
+    /// here, with the same context as the node's window (so the node's `UiState` can keep work the
     /// node starts that isn't a setting), and with what the node's own controls can trigger in turn (directly, from
     /// any thread, at any time: see `ControlTriggers::handle`).
     fn on_trigger(

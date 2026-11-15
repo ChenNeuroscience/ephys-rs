@@ -82,7 +82,7 @@ Connected to a detector's thresholds and a gain's gains, it sets them:
   shows them as they're recorded.
 - Over a channel, press **T** to type its threshold (µV of what comes in), or **G** its gain (×). Up and down step it,
   Enter applies it, Esc cancels.
-- **Auto detect** (gains, thresholds, or both) and **Run** triggers the detector's and gain's own auto detect. Both
+- **Auto detect** (gains, thresholds, or both) and **Run** starts the detector's and gain's own auto detect. Both
   are done one after the other, the thresholds first, as the gains can go by them: it says which it's on, and what's
   next. The cogs beside **Gains** and **Thresholds** open their nodes' settings, which say how.
 

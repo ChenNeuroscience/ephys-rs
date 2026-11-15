@@ -59,7 +59,6 @@ ephys_rs::edge_types! {
         Sync(sync_positions::SyncSettings),
     }
     triggers: pub enum Trigger, TriggerKind {
-        AutoDetect(auto_detect::AutoDetect),
         RunOnFiles(run_command::RunOnFiles),
     }
 }
