@@ -50,14 +50,13 @@ const WHY_DISPATCHER: &str = "On a thread of its own so passes start on time, wh
 const WHY_WORKERS: &str = "Several, so a pass can start while the one before is still running: one slow pass doesn't \
                            hold up the next, and the work's spread over the cores. Each runs whole passes.";
 
-/// What an era is, beside the snapshot running.
-const WHAT_AN_ERA_IS: &str = "An era is consecutive snapshots that share a plan, and with it the nodes' state carried \
-                              from pass to pass (a filter's history, say) and the workers' buffers. It's named after \
-                              its first snapshot. A new era starts when a snapshot needs a new plan: when it changes \
-                              which nodes run (some settings switch them on or off), the order they run in, or the \
-                              buffers between them, as adding or removing a node or an edge does. Most changes of \
-                              settings (a filter's cut-off, say) don't, so passes carry on in the same era, keeping \
-                              the nodes' state.";
+/// What a snapshot keeps from the one before, beside the snapshot running.
+const WHAT_A_SNAPSHOT_KEEPS: &str = "Each snapshot runs with what each node had in the one before (its state, carried \
+                                     from pass to pass, and what it shows), for every node whose data streams in and \
+                                     out are the same: a change of settings, or adding or removing another node, \
+                                     leaves them be. A node whose streams change starts afresh. A snapshot whose plan \
+                                     needs other buffers (a node or an edge added or removed, say) runs once every \
+                                     worker has made them, the one before carrying on meanwhile.";
 
 /// Helpers that come and go, and why each is a thread.
 const HELPERS: [(&str, &str); 4] = [
@@ -68,8 +67,8 @@ const HELPERS: [(&str, &str); 4] = [
     ),
     (
         "Dropping node state",
-        "Lets go of what an old era's nodes held, closing their files and stopping their capture threads. On a \
-         thread of its own as that can take a while, and passes and the GUI mustn't wait for it.",
+        "Lets go of what nodes no snapshot carries on with held, closing their files and stopping their capture \
+         threads. On a thread of its own as that can take a while, and passes and the GUI mustn't wait for it.",
     ),
     (
         "Preparing to record",
@@ -413,7 +412,7 @@ fn dispatcher<N: NodesEnum>(ui: &mut egui::Ui, colours: &Colours, info: Option<&
         let dropped = info.stats.dropped;
         let colour = if dropped > 0 { colours.warning } else { colours.text_secondary };
         ui.label(small(format!("{dropped} dropped (queue full)"), colour));
-        let queued = info.running.as_ref().map_or(0, |e| e.queued);
+        let queued = info.queued;
         pool_row(ui, colours, pass_queue(queued, info.queue_capacity), |ui| {
             ui.label(small("Queue", colours.text_secondary));
         });
@@ -449,10 +448,10 @@ fn workers_ui<N: NodesEnum>(
     let title = format!("Pass workers × {count}");
     let running = info.and_then(|i| i.running.as_ref());
     let detail = match running {
-        Some(era) => format!("snapshot v{} (era started @ v{})", era.version, era.first),
+        Some(running) => format!("snapshot v{}", running.version),
         None => format!("snapshot v{}", snapshot.version),
     };
-    let detail_why = running.is_some().then_some(WHAT_AN_ERA_IS);
+    let detail_why = running.is_some().then_some(WHAT_A_SNAPSHOT_KEEPS);
     container(ui, colours, &title, WHY_WORKERS, &detail, detail_why, count, info.is_some(), |ui| {
         match info {
             Some(info) => {
@@ -466,14 +465,17 @@ fn workers_ui<N: NodesEnum>(
             }
         }
         if let Some(preparing) = info.and_then(|i| i.preparing.as_ref()) {
-            let text = format!(
-                "Getting ready for a new era, from snapshot v{}: {} of {count} workers have buffers",
-                preparing.first, preparing.ready
+            let mut text = format!(
+                "Getting ready for snapshot v{}: {} of {count} workers have buffers for it",
+                preparing.version, preparing.ready
             );
+            if preparing.preparing_to_record {
+                text.push_str(", and its nodes are preparing to record (writers opening their files)");
+            }
             ui.label(small(text, colours.warning));
         }
         ui.add_space(6.0);
-        let times = running.map(|era| &era.step_times[..]);
+        let times = running.map(|running| &running.step_times[..]);
         let each_pass = match times {
             Some(times) => {
                 let work: f64 = times.iter().map(|t| t.work_us).sum();
@@ -491,22 +493,19 @@ fn workers_ui<N: NodesEnum>(
     });
 }
 
-/// What each worker is doing: the pass it's running, idle, or still on an older era.
+/// What each worker is doing: the pass it's running (an older snapshot's, saying which), idle, or making buffers.
 fn worker_chips<N: NodesEnum>(ui: &mut egui::Ui, colours: &Colours, info: &RunInfo<N>) {
-    let running = info.running.as_ref().map(|era| era.first);
+    let running = info.running.as_ref().map(|running| running.version);
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
         for (index, worker) in info.workers.iter().enumerate() {
-            let (text, fill, ink) = match (worker.pass, worker.era) {
-                (_, None) => (format!("{index} making buffers"), colours.control, colours.text_secondary),
-                (Some(pass), Some(era)) if Some(era) == running => {
-                    (format!("{index} p{pass}"), colours.accent, colours.on_accent)
+            let (text, fill, ink) = match (worker.pass, worker.version) {
+                _ if worker.preparing => (format!("{index} making buffers"), colours.control, colours.text_secondary),
+                (Some(pass), Some(version)) if Some(version) != running => {
+                    (format!("{index} v{version}·p{pass}"), colours.warning, colours.on_accent)
                 }
-                (Some(pass), Some(era)) => (format!("{index} e{era}·p{pass}"), colours.warning, colours.on_accent),
-                (None, Some(era)) if Some(era) == running => {
-                    (format!("{index} idle"), colours.control, colours.text_primary)
-                }
-                (None, Some(era)) => (format!("{index} on e{era}"), colours.control, colours.warning),
+                (Some(pass), _) => (format!("{index} p{pass}"), colours.accent, colours.on_accent),
+                (None, _) => (format!("{index} idle"), colours.control, colours.text_primary),
             };
             let font = FontId::monospace(10.5);
             // All as wide as the widest a chip gets, so they don't change size as workers take passes.
@@ -918,8 +917,8 @@ fn window_pool(pool: PoolStatus) -> Pooled<'static> {
 /// The pass queue, between the dispatcher and the workers.
 fn pass_queue(queued: usize, capacity: usize) -> Pooled<'static> {
     let tip = format!(
-        "The pass queue: the dispatcher puts each pass on it when its time's up, and a free worker takes it off. {queued} \
-         waiting, of the {capacity} that can: beyond that, passes are dropped. Each era has its own."
+        "The pass queue: the dispatcher puts each pass on it when its time's up, and a free worker takes it off. \
+         {queued} waiting, of the {capacity} that can: beyond that, passes are dropped."
     );
     let empty = capacity.saturating_sub(queued);
     let text = format!("{queued} of {capacity}");

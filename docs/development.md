@@ -96,10 +96,10 @@ released.
 ## Performance
 
 The dev tools (Ctrl/⌘ Alt I) show each step's time in the passes (its work, and any wait at a sync point), the passes'
-and the GUI's frames over time, and the buffers and pools. The charts mark changes to the run (new eras, versions,
+and the GUI's frames over time, and the buffers and pools. The charts mark changes to the run (new buffers, versions,
 recording) twice: a dashed line when the change was asked for, and a solid one at the first pass to use it
 (`Runner::first_uses`). Hovering either says what changed, and the solid one how long it took: a pass or so for new
-settings, longer for a new era, as passes carry on with the old one until a worker's ready for it.
+settings, longer for one needing new buffers, as passes carry on with the snapshot before until every worker has them.
 Release builds keep line tables, so profilers and crash backtraces name lines.
 
 ## The README's tour

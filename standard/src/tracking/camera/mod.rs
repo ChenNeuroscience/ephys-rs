@@ -71,10 +71,11 @@ impl DataStreamType for CameraStats {
 #[serde(default)]
 pub struct CameraSettings {
     /// Frames per second, for a camera that takes one: also the rate declared for the video stream, whatever the camera
-    /// does (an externally triggered one goes by its trigger), so changing it starts a new era.
+    /// does (an externally triggered one goes by its trigger), so changing it starts the node afresh.
     pub frame_rate: f64,
-    /// The video stream's frame size, so changing it starts a new era too. Frames of other sizes are skipped: the camera
-    /// triggers an update to the size it's sending, unless it's recording (see `PassContext::trigger_settings_update`).
+    /// The video stream's frame size, so changing it starts the node afresh too. Frames of other sizes are skipped: the
+    /// camera triggers an update to the size it's sending, unless it's recording (see
+    /// `PassContext::trigger_settings_update`).
     pub frame_size: [u32; 2],
     /// Microseconds.
     pub exposure: Control,

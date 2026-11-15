@@ -736,7 +736,7 @@ impl Node<Edges> for RunCommand {
     }
 
     /// Never in a pass: it's sent what to do (see `on_trigger`), and has nothing to do with the data going by.
-    fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool]) -> ephys_rs::engine::TreeShake {
+    fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool], _recording: bool) -> ephys_rs::engine::TreeShake {
         ephys_rs::engine::TreeShake::needing_all(false, inputs.len())
     }
 
@@ -1200,16 +1200,14 @@ mod tests {
         let runner = Runner::start_with(&snapshot, 2, direct.clone());
         // In a base directory of the test's own (writers write in it).
         let place = ephys_rs::base_directory::Place::directory(&dir);
-        let recording = Recording::prepare(&snapshot, Some(place), chrono::Local::now(), &direct);
-        let recording = ephys_rs::engine::Snapshot::bake(
-            1,
-            snapshot.graph.clone(),
-            snapshot.started,
-            Some(ephys_rs::engine::Recorded::now(Arc::new(recording))),
-        );
+        let asked = Arc::new(Recording::new(Some(place), chrono::Local::now()));
+        let recording =
+            ephys_rs::engine::Snapshot::bake(1, snapshot.graph.clone(), snapshot.started, Some(asked.clone()));
+        asked.prepare(&recording, &direct);
         runner.update(&recording);
         let deadline = Instant::now() + Duration::from_secs(10);
-        while runner.clock() < 0.5 && Instant::now() < deadline {
+        while asked.effective().is_none_or(|e| e.at.elapsed() < Duration::from_millis(500)) && Instant::now() < deadline
+        {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(direct.take().is_empty(), "still recording");

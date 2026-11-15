@@ -24,8 +24,8 @@ The parts of the API are there for three different reasons, and it helps to know
   `outputs`), its settings (`settings`, `set_setting`) and the settings of others it can see (`controls`), `process`
   and the `State` it carries from pass to pass, the triggers it takes, and `prepare_to_record`.
 - **Optimisation: how cheaply it runs.** Leaving these at their defaults is always correct, only slower or using more
-  memory: `evaluate_buffer_usage`, `evaluate_tree_shake` (one exception: a writer says it only runs with something
-  to record, or it would write empty files), working memory instead of state (`CARRIED_OVER = false`), and pools for buffers its threads swap.
+  memory: `evaluate_buffer_usage`, `evaluate_tree_shake` (one exception: a writer says it only runs while recording,
+  with something to record, or it would write empty files), working memory instead of state (`CARRIED_OVER = false`), and pools for buffers its threads swap.
 - **The experience of using it: how it looks and behaves for people.** These change nothing it computes: its category,
   name and description (`INFO`), `warnings`, its window (`gui_ui`, and `WINDOW_SIZE`), whether
   it's in the basic view (`SHOW_IN_BASIC_DEFAULT`), and how its threads show in the dev tools (`threads`,
@@ -45,14 +45,15 @@ The parts of the API are there for three different reasons, and it helps to know
 ## Running
 
 `process(pass, state)` is called once a pass, on a worker thread, with the pass's buffers (see
-[`PassContext`](../src/engine/pass.rs)): `inputs` to read, `outputs` to fill (already sized: nothing should be allocated
+[`PassContext`](../src/engine/pass_context.rs)): `inputs` to read, `outputs` to fill (already sized: nothing should be allocated
 per pass), the settings its `controls` see, whether it's recording, what it shares with the GUI, and its triggers. `self` is the snapshot's
 settings: the latest, as of the pass.
 
 - **State.** `type State` is what it keeps between passes, made by `initial_state(inputs)`, and `()` for none. It
   implements `PassState`, saying why it's needed (`WHY`, shown in the dev tools at the sync point it makes). State
   that's only working memory (nothing carried over: `CARRIED_OVER = false`) is each worker's own, and makes no sync
-  point. State is fresh each era.
+  point. State carries on from snapshot to snapshot while the node's data streams in and out stay the same, and is
+  made afresh when they change.
 - **Buffer usage.** `evaluate_buffer_usage(inputs, outputs)`, asked once per plan, says how the node uses its buffers
   (a `BufferUsage`):
   - **In place.** `in_place[output]` names an input whose buffer the output can be made in, when nothing else needs
@@ -62,9 +63,9 @@ settings: the latest, as of the pass.
     `PassContext::take_input` always gives the node a buffer: the input's own, if no one edits that data in place and
     every other reader can run first, otherwise a copy the plan makes as soon as the data's made (a copy point, in the
     dev tools). A node that only reads an input doesn't take it.
-- **The tree shake: whether it runs, and what it needs.** It's up to the node: `evaluate_tree_shake(inputs, outputs)`,
-  given which of its inputs have something running into them, and which of its outputs have something running that
-  needs them, says whether it runs, and which inputs it needs (a `TreeShake`). An input it doesn't need isn't passed,
+- **The tree shake: whether it runs, and what it needs.** It's up to the node: `evaluate_tree_shake(inputs, outputs,
+  recording)`, given which of its inputs have something running into them, which of its outputs have something running
+  that needs them, and whether the snapshot's recording, says whether it runs, and which inputs it needs (a `TreeShake`). An input it doesn't need isn't passed,
   and doesn't count as in use for what feeds it (the LFP viewer's spectrum, switched off, stops the
   [Spectrum](../standard/src/ephys/spectrum.rs) node). The plan starts with everything that can run running
   and needing everything, asks each node in turn, upstream first, and whenever one's answer changes, asks its
@@ -73,8 +74,8 @@ settings: the latest, as of the pass.
   answer keeps changing is asked only so many times, then runs, and needs each input, if either of its last two
   answers did, with a warning in the console. By default, a node runs, needing every input, whatever's in use: the
   path without the optimisation, so leaving it is always correct. A node that only makes data for others runs only
-  while they're in use, as the processing nodes do. A writer runs only while it's given something to record, as
-  what it does matters beyond the graph. Run Command never runs in a pass: it's only ever sent things to do. A node with an output that can't be known doesn't run. Settings change the plan, so what a
+  while they're in use, as the processing nodes do. A writer runs only while recording, and given something to record,
+  as what it does matters beyond the graph; so what only feeds writers runs only while recording. Run Command never runs in a pass: it's only ever sent things to do. A node with an output that can't be known doesn't run. Settings change the plan, so what a
   node needs is for what's switched on and off, not what changes pass to pass.
 
 ## Its window
@@ -120,10 +121,10 @@ are full examples.
 ## Sharing with its window
 
 A node says what its passes share with the GUI (its window, and the dev tools: `ThreadContext::shared`) as
-`type Shared` (see [`shared.rs`](../src/engine/shared.rs)), and `()` for nothing. One's made for each era it
-runs in, by `shared(inputs)` (by default, `Default`'s), so it's sized for the data streams of the time. The passes reach
+`type Shared` (see [`shared.rs`](../src/engine/shared.rs)), and `()` for nothing. One's made afresh whenever its
+data streams change, by `shared(inputs)` (by default, `Default`'s), so it's sized for the data streams of the time. The passes reach
 it with `PassContext::shared`, and the window with `UiContext::shared`, both as the type. Once a run's stopped, the app
-keeps its last era's, so what's shown stays. It reports its pools of buffers (`Shared::pools`), for the dev tools to
+keeps its last snapshot's, so what's shown stays. It reports its pools of buffers (`Shared::pools`), for the dev tools to
 show on the GUI.
 
 The usual thing to share is a [`Pool`](../standard/src/pool.rs) of buffers: the same cross-thread pool
@@ -205,20 +206,22 @@ the node's outputs from a [`Pool`](../standard/src/pool.rs), which `process` swa
 [board's capture](../standard/src/ephys/board/capture.rs). A writer's passes swap their data into chunks
 from a pool, for its thread to write; see [`recording`](../standard/src/recording/mod.rs).
 
-Each era makes its state afresh, but before the last era's is dropped. So a thread holding something that opening
-again would disturb can carry on from one era to the next: the state holds an `Arc` of it, found by what it's open to
-in a list of `Weak`s, and it's closed once the last era using it is done. The VR Computer keeps its connection like
+Fresh state (when a node's data streams change) is made before the old is dropped. So a thread holding something
+that opening again would disturb can carry on from one state to the next: the state holds an `Arc` of it, found by
+what it's open to in a list of `Weak`s, and it's closed once the last state using it is done. The VR Computer keeps its connection like
 this, and the [Arduino](../standard/src/other/arduino.rs) its serial port, as opening it resets the Arduino.
 
 ## Recording
 
-`prepare_to_record` is called on a thread of its own before recording starts (a writer opening its files), given when
-the recording starts, to name or date what it writes by: the same for every node, and for the settings saved with
+`prepare_to_record` is called on a thread of its own before recording starts (a writer opening its files), for each
+node in the recording's plan (planned for recording, so with its writers), given when the recording was asked for, to name or date what it writes by: the same for every node, and for the settings saved with
 it, as preparing can take a while. What it returns comes back to the first pass that records
 (`PassContext::take_prepared`). Passes see whether it's recording (`PassContext::recording()`), and when acquiring and
 recording started, by the monotonic clock, from their snapshot (`PassContext::snapshot`, a `SnapshotLite`). A node's
 thread can find how long, as of whenever it asks, from a pass's snapshot: shared, to keep (the newest it's been given,
-say, as the VR Computer's thread does). The graph can't change while recording, so everything that records has prepared.
+say, as the VR Computer's thread does). The run carries on with the snapshot before until every node's prepared and the workers have buffers for the
+recording's plan, and the graph can't change while recording, so everything that records has prepared. The recording
+takes effect with its first pass, and its durations count from then (`Recording::effective`).
 A pass can start or stop recording itself (`PassContext::trigger_recording`), as the toolbar's Record does: see
 [TTL Recording Control](../standard/src/other/ttl_recording_control.rs).
 

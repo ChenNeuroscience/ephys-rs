@@ -10,9 +10,11 @@
 //!   by the camera's clock, as positions are, counting from the same first position.
 //! - `name.txt`: log lines, with no headers: each as `<seconds> <line>`, its time counting from the same first position.
 //!
-//! Each file but `name.txt` is `key value` header lines, then the data between `data_start` and `data_end`; counts and the
-//! duration are filled in at the end. Timestamps count 96 kHz ticks from the start of recording, and multi-byte
-//! values are big-endian. Spikes' samples are -128 to 127, covering the full scale: their waveforms should come
+//! Each file but `name.txt` is `key value` header lines, then the data between `data_start` and `data_end`; counts and
+//! the duration (from the first pass recorded) are filled in at the end, and the `.set` file's `recording_requested`
+//! (when Record was pressed, which names the files) and `recording_effective` (its first pass), to the millisecond.
+//! Timestamps count 96 kHz ticks from the start of recording, and multi-byte values are big-endian.
+//! Spikes' samples are -128 to 127, covering the full scale: their waveforms should come
 //! amplified by a Spike Gain (see `Gains`), whose gains (connected, read-only, to `gains`) are recorded in the `.set`
 //! file, in Axona's terms: its full scale, and the gains that fit the same over it (`ADC_fullscale_mv`, `gain_ch_0`...).
 //! The EEG (its `eeg` input) should come at 5 kHz (from a Downsample), amplified too, by a Continuous Gain, whose gains
@@ -113,10 +115,11 @@ impl ephys_rs::engine::PassState for Recorder {
 }
 
 /// A pass's data, for the writer's thread: in buffers like the passes' own, to swap with them. For each input, its
-/// buffer if it's connected, and whether the pass gave it any data.
+/// buffer if it's connected, and whether the pass gave it any data; and when the recording took effect.
 pub struct Chunk {
     inputs: [Option<Buffer>; INPUTS],
     given: [bool; INPUTS],
+    effective: Option<DateTime<Local>>,
 }
 
 /// Its inputs: spikes, eeg, positions, events, pos ttl and log.
@@ -126,7 +129,7 @@ impl Chunk {
     /// Empty, with a buffer for each of `streams`.
     fn new(streams: Streams) -> Self {
         let inputs = streams.inputs().map(|stream| stream.map(|s| s.buffer(PASS_DURATION)));
-        Chunk { inputs, given: [false; INPUTS] }
+        Chunk { inputs, given: [false; INPUTS], effective: None }
     }
 
     /// Input `index`'s data, if the pass gave it any.
@@ -166,9 +169,10 @@ impl Node<Edges> for WriteLtx {
                       changes and log lines in the LTX format, for legacy tetrode analysis code.",
     };
 
-    /// Only while it's given something to record: otherwise there'd be nothing to write, but files all the same.
-    fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool]) -> TreeShake {
-        TreeShake::needing_all(inputs.contains(&true), inputs.len())
+    /// Only while recording, and given something to record: otherwise there'd be nothing to write, but files all the
+    /// same. So what feeds only writers runs only while recording.
+    fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool], recording: bool) -> TreeShake {
+        TreeShake::needing_all(recording && inputs.contains(&true), inputs.len())
     }
 
     fn inputs(&self) -> Vec<Input<Edges>> {
@@ -272,7 +276,8 @@ impl Node<Edges> for WriteLtx {
         if let Some(writing) = &recorder.writing
             && let Some(mut chunk) = writing.chunk()
         {
-            let Chunk { inputs, given } = &mut chunk;
+            chunk.effective = pass.snapshot().recording().and_then(|r| r.effective()).map(|e| e.date);
+            let Chunk { inputs, given, .. } = &mut chunk;
             for (index, (buffer, given)) in inputs.iter_mut().zip(given).enumerate() {
                 *given = false;
                 if let (Some(buffer), Some(taken)) = (buffer, pass.take_input(index)) {
@@ -460,6 +465,9 @@ struct LtxFile {
     in_data: bool,
 }
 
+/// When recording was asked for and took effect, in the `.set` file.
+const PRECISE_TIME: &str = "%Y-%m-%d %H:%M:%S%.3f";
+
 /// Room for a value filled in at the end.
 const PLACEHOLDER: &str = "              ";
 
@@ -550,7 +558,9 @@ struct Pos {
 
 /// A recording's LTX files, written on the writer's thread.
 struct LtxFiles {
+    /// When recording was asked for, and when it took effect (its first pass), once a chunk's said.
     start: DateTime<Local>,
+    effective: Option<DateTime<Local>>,
     streams: Streams,
     set: LtxFile,
     tetrodes: Vec<Tetrode>,
@@ -670,6 +680,7 @@ impl LtxFiles {
         log::info!("Recording LTX to {}", base.display());
         Ok(LtxFiles {
             start,
+            effective: None,
             streams,
             set,
             tetrodes,
@@ -757,6 +768,7 @@ fn open_pos(mut f: LtxFile, positions: Positions, detection: Option<&Detection>)
 
 impl Files<Chunk> for LtxFiles {
     fn write(&mut self, chunk: &Chunk) -> io::Result<u64> {
+        self.effective = self.effective.or(chunk.effective);
         let mut bytes = 0;
         if let (Some(spikes), Some(Buffer::Spikes(buffer))) = (self.streams.spikes, chunk.input(0)) {
             let (k, samples) = (spikes.group_size as usize, spikes.waveform_samples() as usize);
@@ -862,8 +874,14 @@ impl Files<Chunk> for LtxFiles {
         Ok(bytes)
     }
 
-    fn finish(self: Box<Self>) -> io::Result<Vec<PathBuf>> {
-        let seconds = (Local::now() - self.start).num_seconds().max(0) as u64;
+    fn finish(mut self: Box<Self>) -> io::Result<Vec<PathBuf>> {
+        // From the first pass recorded, as its timestamps are.
+        let since = self.effective.unwrap_or(self.start);
+        let seconds = (Local::now() - since).num_seconds().max(0) as u64;
+        self.set.header("recording_requested", self.start.format(PRECISE_TIME))?;
+        if let Some(effective) = self.effective {
+            self.set.header("recording_effective", effective.format(PRECISE_TIME))?;
+        }
         let mut paths = vec![self.set.finish(seconds, 0)?];
         for tetrode in self.tetrodes {
             paths.push(tetrode.file.finish(seconds, tetrode.spikes)?);
@@ -1109,10 +1127,13 @@ mod tests {
         eeg_gains.set_range(0, 200.0, crate::standard::spikes::Channels { count: 2, group_size: 1 });
         let eeg_selection = Some(ChannelSelection { apply: true, channels: "5, 7".into() });
         let recorded = Recorded { detection: None, gains, eeg_selection, eeg_gains, scales: Scales::default() };
-        let mut files = Box::new(LtxFiles::open(&base, Local::now(), streams, recorded).unwrap());
+        let requested = Local::now();
+        let mut files = Box::new(LtxFiles::open(&base, requested, streams, recorded).unwrap());
 
         // A spike 300 samples into the second pass of 600: at 900 samples, 30 ms, 2880 ticks.
         let mut chunk = Chunk::new(streams);
+        let effective = requested + chrono::Duration::milliseconds(40);
+        chunk.effective = Some(effective);
         let Buffer::Spikes(buffer) = chunk.give(0) else { unreachable!() };
         buffer.pass_samples = 600;
         files.write(&chunk).unwrap();
@@ -1166,6 +1187,9 @@ mod tests {
         assert_eq!(header(&set, "gain_ch_3"), "6000");
         assert_eq!((header(&set, "EEG_ch_1"), header(&set, "EEG_ch_2")), ("5".into(), "7".into()));
         assert_eq!(header(&set, "EEG_gain_1"), "7500");
+        let (asked, took) = (header(&set, "recording_requested"), header(&set, "recording_effective"));
+        assert_eq!(asked, requested.format(PRECISE_TIME).to_string(), "to the millisecond");
+        assert_eq!(took, effective.format(PRECISE_TIME).to_string());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

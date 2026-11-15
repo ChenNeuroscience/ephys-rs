@@ -258,7 +258,7 @@ impl Node<Edges> for AlarmProcessor {
 
     /// Only the inputs an alarm that's on watches; and only while it's given one of those, and something needs what
     /// it makes.
-    fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool]) -> TreeShake {
+    fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool], _recording: bool) -> TreeShake {
         let needs: Vec<bool> = (0..inputs.len()).map(|input| self.needs(input)).collect();
         let given = inputs.iter().zip(&needs).any(|(&used, &needed)| used && needed);
         TreeShake { runs: given && outputs.contains(&true), needs }

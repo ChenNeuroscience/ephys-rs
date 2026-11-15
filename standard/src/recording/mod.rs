@@ -374,7 +374,7 @@ mod tests {
                 .find(|&i| graph.connect(port(board, PortRole::Output, 0), port(writer, PortRole::Input, i)).is_ok());
             assert!(input.is_some(), "{name} records continuous data");
             let snapshot = Snapshot::new(0, graph);
-            let recorded = Some(ephys_rs::engine::Recorded::now(Arc::new(Recording::default())));
+            let recorded = Some(Arc::new(Recording::default()));
             let recording = ephys_rs::engine::Snapshot::bake(1, snapshot.graph.clone(), snapshot.started, recorded);
             let runner = Runner::start(&recording, 2);
             let problem = || {
@@ -415,17 +415,15 @@ mod tests {
         let runner = Runner::start(&snapshot, 2);
         // The base directory has a prefix (a subject's trial, say).
         let place = ephys_rs::base_directory::Place { directory: dir.clone(), prefix: Some("trial a".into()) };
-        // The writers open their files before recording starts.
-        let prepared = Recording::prepare(&snapshot, Some(place), chrono::Local::now(), &Default::default());
-        let recording = ephys_rs::engine::Snapshot::bake(
-            1,
-            snapshot.graph.clone(),
-            snapshot.started,
-            Some(ephys_rs::engine::Recorded::now(Arc::new(prepared))),
-        );
-        assert!(runner.update(&recording), "recording carries on the same run");
+        // The writers only run while recording, so are planned for it, and open their files before it starts.
+        let asked = Arc::new(Recording::new(Some(place), chrono::Local::now()));
+        let recording =
+            ephys_rs::engine::Snapshot::bake(1, snapshot.graph.clone(), snapshot.started, Some(asked.clone()));
+        assert!(!snapshot.plan.steps().iter().any(|s| s.id == ltx), "no writers while not recording");
+        asked.prepare(&recording, &Default::default());
+        assert!(!runner.update(&recording), "recording runs the writers, with buffers of their own");
         let deadline = Instant::now() + Duration::from_secs(10);
-        while runner.clock() < 1.0 && Instant::now() < deadline {
+        while asked.effective().is_none_or(|e| e.at.elapsed() < Duration::from_secs(1)) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
         }
         runner.update(&ephys_rs::engine::Snapshot::bake(2, recording.graph.clone(), recording.started, None));

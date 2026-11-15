@@ -3,10 +3,10 @@
 //! its own built on the Firmata library. It's for whatever the Arduino does with them: a sketch might start pulsing
 //! a timing LED when a pin's set high, say.
 //!
-//! The serial port's opened on a thread of its own (see `talk`), when it starts running, and kept open from era to
-//! era, as opening it resets most Arduinos. It waits for the sketch to say its Firmata version before setting any
-//! pins, as what's sent while it's starting is lost; then sets each pin as the passes want, and, when it stops, sets
-//! them low again.
+//! The serial port's opened on a thread of its own (see `talk`), when it starts running, and kept open while its
+//! node's state is made afresh, as opening it resets most Arduinos. It waits for the sketch to say its Firmata version
+//! before setting any pins, as what's sent while it's starting is lost; then sets each pin as the passes want, and,
+//! when it stops, sets them low again.
 
 use std::collections::BTreeSet;
 use std::io::{ErrorKind, Read, Write};
@@ -299,7 +299,7 @@ impl Drop for Running {
 /// The ports open, by port and baud rate. Weak, so one closes once nothing's using it.
 static RUNNING: Mutex<Vec<(Key, Weak<Running>)>> = Mutex::new(Vec::new());
 
-/// An era's use of a port.
+/// A node state's use of a port.
 struct Connection {
     key: Key,
     running: Arc<Running>,
@@ -629,12 +629,12 @@ mod tests {
     }
 
     #[test]
-    fn its_port_is_kept_open_from_era_to_era_and_closed_when_its_done_with() {
+    fn its_port_is_kept_open_for_fresh_state_and_closed_when_its_done_with() {
         let key = ("/dev/no such port".to_string(), DEFAULT_BAUD);
         let connection = Connection::start(key.clone());
         let shared = connection.running.shared.clone();
         let again = Connection::start(key.clone());
-        assert!(Arc::ptr_eq(&again.running, &connection.running), "another era's carries on with it");
+        assert!(Arc::ptr_eq(&again.running, &connection.running), "fresh state carries on with it");
         let other = Connection::start((key.0.clone(), 9600));
         assert!(!Arc::ptr_eq(&other.running, &connection.running), "at another baud rate it's opened again");
         let start = Instant::now();

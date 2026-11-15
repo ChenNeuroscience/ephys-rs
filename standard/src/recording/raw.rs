@@ -110,9 +110,10 @@ impl Node<Edges> for WriteRaw {
         description: "Records continuous data and digital inputs as they are, in Open Ephys's binary format.",
     };
 
-    /// Only while it's given something to record: otherwise there'd be nothing to write, but files all the same.
-    fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool]) -> TreeShake {
-        TreeShake::needing_all(inputs.contains(&true), inputs.len())
+    /// Only while recording, and given something to record: otherwise there'd be nothing to write, but files all the
+    /// same. So what feeds only writers runs only while recording.
+    fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool], recording: bool) -> TreeShake {
+        TreeShake::needing_all(recording && inputs.contains(&true), inputs.len())
     }
 
     fn inputs(&self) -> Vec<Input<Edges>> {

@@ -4,7 +4,7 @@
 
 use std::time::{Duration, Instant};
 
-use super::{NodesEnum, Recorded, Snapshot};
+use super::{NodesEnum, Recording, Snapshot};
 
 /// What node code can see of a snapshot: a subset of it.
 pub trait SnapshotLite: Send + Sync {
@@ -13,12 +13,12 @@ pub trait SnapshotLite: Send + Sync {
     /// When the run started (Play pressed), by the monotonic clock, while running.
     fn started(&self) -> Option<Instant>;
 
-    /// The recording, while recording, with when it took effect.
-    fn recorded(&self) -> Option<&Recorded>;
+    /// The recording, while recording.
+    fn recording(&self) -> Option<&Recording>;
 
-    /// When the recording took effect, by the same clock as `started`, while recording.
+    /// When the recording took effect (see `Recording::effective`), by the same clock as `started`, once it has.
     fn recording_started(&self) -> Option<Instant> {
-        self.recorded().map(|recorded| recorded.started)
+        Some(self.recording()?.effective()?.at)
     }
 
     /// How long it's been acquiring, now, while running.
@@ -41,8 +41,8 @@ impl<N: NodesEnum> SnapshotLite for Snapshot<N> {
         self.started
     }
 
-    fn recorded(&self) -> Option<&Recorded> {
-        self.recording.as_ref()
+    fn recording(&self) -> Option<&Recording> {
+        self.recording.as_deref()
     }
 }
 
@@ -50,7 +50,7 @@ impl<N: NodesEnum> SnapshotLite for Snapshot<N> {
 #[cfg(test)]
 pub(super) struct Trying {
     pub started: Instant,
-    pub recorded: Option<Recorded>,
+    pub recording: Option<std::sync::Arc<Recording>>,
 }
 
 #[cfg(test)]
@@ -63,15 +63,15 @@ impl SnapshotLite for Trying {
         Some(self.started)
     }
 
-    fn recorded(&self) -> Option<&Recorded> {
-        self.recorded.as_ref()
+    fn recording(&self) -> Option<&Recording> {
+        self.recording.as_deref()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::{Graph, Recorded, Recording};
+    use crate::engine::{Graph, Recording};
     use std::sync::Arc;
 
     #[test]
@@ -80,9 +80,13 @@ mod tests {
         let running = Snapshot::<crate::Nodes>::bake(1, graph.clone(), Some(started), None);
         assert!(running.acquiring_for().unwrap() >= Duration::from_secs(5));
         assert_eq!((running.version(), running.recording_for()), (1, None));
-        let recorded = Recorded::now(Arc::new(Recording::default()));
+        let recorded = Arc::new(Recording::default());
         let recording = Snapshot::<crate::Nodes>::bake(2, graph.clone(), Some(started), Some(recorded.clone()));
-        assert_eq!(recording.recording_started(), Some(recorded.started));
+        assert_eq!(recording.recording_started(), None, "not until it takes effect");
+        let at = Instant::now() - Duration::from_millis(300);
+        recorded.take_effect(at);
+        recorded.take_effect(Instant::now());
+        assert_eq!(recording.recording_started(), Some(at), "when it first took effect");
         assert!(recording.recording_for().unwrap() < Duration::from_secs(1));
         assert_eq!(Snapshot::<crate::Nodes>::bake(3, graph, None, None).acquiring_for(), None, "not running");
     }

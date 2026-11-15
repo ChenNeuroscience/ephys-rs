@@ -26,10 +26,10 @@
 //! it's been acquiring, and recording, if it is, for the VR computer to show, as of when it's sent. The thread finds
 //! those itself, from the newest snapshot its passes have handed over, without waiting on them.
 //!
-//! `time` is in seconds by the VR computer's own clock, which has to be consistent for as long as it's connected: a line
-//! without one isn't understood. It's kept as it is, for what's downstream: Write LTX counts from the first position
-//! recorded. Messages arrive on a thread of their own, which carries on from era to era, like a camera's capture, so
-//! nothing's lost by reconnecting.
+//! `time` is in seconds by the VR computer's own clock, which has to be consistent for as long as it's connected: a
+//! line without one isn't understood. It's kept as it is, for what's downstream: Write LTX counts from the first
+//! position recorded. Messages arrive on a thread of their own, which carries on when its node's state is made afresh,
+//! like a camera's capture, so nothing's lost by reconnecting.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::io::{BufRead, BufReader, ErrorKind, Write};
@@ -477,7 +477,7 @@ impl Drop for Running {
 /// The connections open, by address. Weak, so one closes once nothing's using it.
 static RUNNING: Mutex<Vec<(Address, Weak<Running>)>> = Mutex::new(Vec::new());
 
-/// An era's use of a connection.
+/// A node state's use of a connection.
 struct Connection {
     address: Address,
     running: Arc<Running>,
@@ -609,7 +609,7 @@ impl Node<Edges> for VrComputer {
     }
 
     fn process(&self, pass: &mut PassContext<Edges>, receiving: &mut Receiving) {
-        // Changing the address doesn't start a new era.
+        // Changing the address doesn't make the state afresh.
         if !receiving.connection.as_ref().is_some_and(|c| c.is_to(&self.ip, self.port)) {
             receiving.connection = Some(Connection::start((self.ip.clone(), self.port)));
         }
@@ -723,7 +723,7 @@ fn status_ui(ui: &mut egui::Ui, status: &Status, warning: egui::Color32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ephys_rs::engine::{DataStreamType, Graph, PASS_DURATION, Recorded, Recording, Snapshot};
+    use ephys_rs::engine::{DataStreamType, Graph, PASS_DURATION, Recording, Snapshot};
     use std::io::Write;
     use std::net::TcpListener;
 
@@ -968,7 +968,9 @@ mod tests {
             serde_json::from_str::<Value>(&line).unwrap()
         };
         assert!((1.5..2.5).contains(&seconds(&state()["acquiring_for"])));
-        let recording = Some(Recorded::now(Arc::new(Recording::default())));
+        let recording = Arc::new(Recording::default());
+        recording.take_effect(Instant::now()); // as its first pass would
+        let recording = Some(recording);
         shared.keep_newest(&lite(Snapshot::bake(2, graph.clone(), started, recording)));
         shared.keep_newest(&lite(Snapshot::bake(1, graph, started, None)));
         assert_eq!(shared.snapshot.load().as_ref().unwrap().version(), 2, "a pass on an older one doesn't undo it");
@@ -997,7 +999,7 @@ mod tests {
         let (mut stream, _) = listener.accept().unwrap();
         stream.write_all(b"{\"type\": \"log\", \"time\": 9, \"line\": \"back\"}\n").unwrap();
         wait(&|| shared.inbox.lock().unwrap().logs.len() == 1);
-        // A connection carries on for another era's use of it.
+        // A connection carries on for fresh state's use of it.
         let another = Connection::start(("127.0.0.1".into(), port));
         assert!(Arc::ptr_eq(&another.running, &connection.running));
     }

@@ -58,9 +58,13 @@ impl<'a, E: Edges> PassContext<'a, E> {
     /// A snapshot for trying a node out: running as of now, and recording or not (with nothing prepared).
     #[cfg(test)]
     fn trying(recording: bool) -> &'a Arc<dyn SnapshotLite> {
-        let recorded = recording.then(|| super::Recorded::now(Arc::default()));
+        let recording = recording.then(|| {
+            let recording = super::Recording::default();
+            recording.take_effect(std::time::Instant::now());
+            Arc::new(recording)
+        });
         let trying: Arc<dyn SnapshotLite> =
-            Arc::new(super::snapshot_lite::Trying { started: std::time::Instant::now(), recorded });
+            Arc::new(super::snapshot_lite::Trying { started: std::time::Instant::now(), recording });
         Box::leak(Box::new(trying))
     }
 
@@ -72,7 +76,7 @@ impl<'a, E: Edges> PassContext<'a, E> {
 
     /// Whether the graph is recording.
     pub fn recording(&self) -> bool {
-        self.snapshot.recorded().is_some()
+        self.snapshot.recording().is_some()
     }
 
     /// The snapshot this pass runs against, as nodes can see it (`SnapshotLite`), shared: for a node's own thread, which
@@ -137,13 +141,13 @@ impl<'a, E: Edges> PassContext<'a, E> {
 
     /// The base directory the recording's in (see `crate::base_directory`), while recording, if there is one.
     pub fn base_directory(&self) -> Option<&crate::base_directory::Place> {
-        self.snapshot.recorded()?.recording.base_directory()
+        self.snapshot.recording()?.base_directory()
     }
 
     /// What the node prepared to record (see `Node::prepare_to_record`), which is `T`, if it did: given once, to the
     /// first pass that asks while recording.
     pub fn take_prepared<T: 'static>(&self) -> Option<T> {
-        let prepared = self.snapshot.recorded()?.recording.take(self.node)?;
+        let prepared = self.snapshot.recording()?.take(self.node)?;
         Some(*prepared.downcast().expect("what the node's own prepare_to_record made"))
     }
 }

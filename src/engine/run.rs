@@ -19,22 +19,22 @@
 //!
 //! Workers report each pass they run to the GUI on a queue of its own, for the stats, never waiting on it.
 //!
-//! When the graph changes while running, the new snapshot is swapped in between passes if its plan has the
-//! same shape (the same nodes and buffers, as after a change of settings): nodes see their new settings on
-//! the next pass and adjust (keeping their state). Otherwise it starts a new era, with its own node state
-//! and pass queue. Workers make buffers for the new plan as they come free (once they've nothing of the old
-//! one queued), and the dispatcher only sends passes for it once a worker is ready, to the workers that are;
-//! until then, passes carry on with the old one. So a worker is never handed a pass it isn't ready to run.
-//! Snapshots and eras are swapped in atomically (`ArcSwap`), so a pass takes the latest as it starts, waiting on
-//! nothing.
+//! When the graph changes while running, each node hands its state, and what it shares with the GUI, on to the
+//! new snapshot if it's the same node with the same input and output data streams: it sees its new settings on
+//! the next pass and adjusts. Otherwise it starts afresh (`Scheduled::new`). The dispatcher attaches the
+//! snapshot to each pass it sends, so snapshots only move forward pass by pass. It switches to a new snapshot
+//! once it's ready: at once if its plan has the same shape as the running one's (the same steps and buffers, as
+//! after a change of settings), otherwise once every worker has made buffers for it, as they come free; until
+//! then, passes carry on with the one before. So a worker is never handed a pass it isn't ready to run. A
+//! recording takes effect with its snapshot's first pass (`Recording::take_effect`).
 //!
 //!
-//! What each pass is given is in `pass`, and how it's planned in `plan`.
+//! What each pass is given is in `pass_context`, and how it's planned in `plan`.
 
 use std::any::Any;
 use std::cell::RefCell;
 use std::cell::UnsafeCell;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -48,23 +48,14 @@ use crate::console::{self, PassId};
 use crate::pass_triggers::PassTriggers;
 use crate::triggers::DirectTriggers;
 
-use super::pass::*;
+use super::pass_context::*;
 use super::plan::*;
 use super::{Buffer, DataStreamsEnum, Edges, Graph, NodeId, NodesEnum, SharedByNode, Snapshot, SnapshotLite};
 
 type DataStream<N> = <<N as NodesEnum>::Edges as Edges>::DataStream;
 
-/// What the workers do with a plan: make its node state, and their buffers for it, and run its passes.
+/// What the workers do with a plan: make their buffers for it, and run its passes.
 impl<N: NodesEnum> Plan<N> {
-    /// Each stateful node's state for the first pass.
-    fn initial_states(&self, graph: &Graph<N>) -> Vec<StateSlot> {
-        let state = |id: NodeId, inputs: &[Option<DataStream<N>>]| graph.get(id).map(|e| e.node.initial_state(inputs));
-        self.state_inputs
-            .iter()
-            .map(|(id, inputs)| StateSlot::new(state(*id, inputs).unwrap_or_else(|| Box::new(()))))
-            .collect()
-    }
-
     /// The buffers a worker runs passes on, and its own working memory for the nodes that have some.
     fn workspace(&self, graph: &Graph<N>) -> Workspace<N> {
         let memory = |id: NodeId, inputs: &[Option<DataStream<N>>]| graph.get(id).map(|e| e.node.initial_state(inputs));
@@ -167,32 +158,17 @@ impl<N: NodesEnum> Workspace<N> {
     }
 }
 
-/// What the workers share during a run of one plan, besides the graph: the nodes' state, what they share with the GUI,
-/// the run's triggers, and how long each step's taking.
+/// What the workers share running one snapshot, besides its graph: the nodes' state, what they share with the GUI, and
+/// how long each step's taking (each handed on from the snapshot before, by node: see `Scheduled::new`), and the run's
+/// triggers.
 struct RunSlots {
-    states: Vec<StateSlot>,
+    /// By the plan's state slot (`Step::state`).
+    states: Vec<Arc<StateSlot>>,
     shared: Arc<SharedByNode>,
     triggers: Arc<PassTriggers>,
     direct: Arc<DirectTriggers>,
-    times: Vec<StepTimes>,
-}
-
-impl RunSlots {
-    fn new<N: NodesEnum>(plan: &Plan<N>, graph: &Graph<N>, run: &RunCommon) -> Self {
-        let times = plan.steps.iter().map(|_| StepTimes::default()).collect();
-        let shared = plan
-            .steps
-            .iter()
-            .zip(&plan.step_inputs)
-            .filter_map(|(step, inputs)| Some((step.id, graph.get(step.id)?.node.shared(inputs))));
-        RunSlots {
-            states: plan.initial_states(graph),
-            shared: Arc::new(SharedByNode(shared.collect())),
-            triggers: run.triggers.clone(),
-            direct: run.direct.clone(),
-            times,
-        }
-    }
+    /// By step.
+    times: Vec<Arc<StepTimes>>,
 }
 
 /// How long a step's taking, on average over its last few dozen passes (in µs, as `f64` bits): working, and
@@ -229,10 +205,14 @@ pub struct StepTime {
     pub wait_us: f64,
 }
 
-/// A node's state, handed from each pass to the next in turn (see the module docs).
+/// A node's state, handed from each pass to the next in turn (see the module docs), and from one snapshot to the next
+/// while the node's data streams stay the same.
 struct StateSlot {
     /// The pass whose turn it is to use the state.
     turn: CachePadded<AtomicU64>,
+    /// Whether its turns have begun: they're begun at the first pass of the first snapshot it's run in, and carry on
+    /// from there through the snapshots it's handed on to.
+    begun: AtomicBool,
     state: UnsafeCell<Box<dyn Any + Send>>,
 }
 
@@ -241,7 +221,18 @@ unsafe impl Sync for StateSlot {}
 
 impl StateSlot {
     fn new(state: Box<dyn Any + Send>) -> Self {
-        StateSlot { turn: CachePadded::new(AtomicU64::new(0)), state: UnsafeCell::new(state) }
+        StateSlot {
+            turn: CachePadded::new(AtomicU64::new(0)),
+            begun: AtomicBool::new(false),
+            state: UnsafeCell::new(state),
+        }
+    }
+
+    /// Begins its turns at pass `first`, unless they've begun (it's carried on from a snapshot already running).
+    fn begin(&self, first: u64) {
+        if !self.begun.swap(true, Ordering::AcqRel) {
+            self.turn.store(first, Ordering::Release);
+        }
     }
 
     /// Waits for pass `sequence`'s turn, runs `f` on the state, then hands it to the next pass.
@@ -297,7 +288,7 @@ struct Record {
     lag: Duration,
 }
 
-/// What the runner, its workers and its dispatcher share, through every era: counts and recent passes for the
+/// What the runner, its workers and its dispatcher share, through every snapshot: counts and recent passes for the
 /// stats, the triggers, and what each worker's doing.
 #[derive(Default)]
 struct RunCommon {
@@ -357,16 +348,18 @@ pub struct FirstUse {
 /// What a pass in `WorkerSlot::pass` is when the worker isn't running one.
 const IDLE: u64 = u64::MAX;
 
-/// What a worker's era (`WorkerSlot::era`) is before it has buffers for one.
-const NO_ERA: u64 = u64::MAX;
+/// What a worker's snapshot (`WorkerSlot::version`) is before it's run a pass.
+const NO_VERSION: u64 = u64::MAX;
 
 /// What a worker is up to, for the dev tools.
 #[derive(Default)]
 struct WorkerSlot {
-    /// The era it has buffers for, by its first snapshot's version (`NO_ERA` until it has some).
-    era: AtomicU64,
+    /// The version of the snapshot of the pass it's running, or last ran (`NO_VERSION` before its first).
+    version: AtomicU64,
     /// The pass it's running, or `IDLE`.
     pass: AtomicU64,
+    /// Whether it's making buffers for a newer snapshot's plan.
+    preparing: AtomicBool,
     /// The memory of its buffers.
     memory: AtomicUsize,
     passes: AtomicU64,
@@ -375,106 +368,134 @@ struct WorkerSlot {
 /// What a worker is up to.
 #[derive(Clone, Debug)]
 pub struct WorkerInfo {
-    /// The era it has buffers for, by its first snapshot's version, once it has some.
-    pub era: Option<u64>,
+    /// The version of the snapshot of the pass it's running, or last ran.
+    pub version: Option<u64>,
     /// The pass it's running, if any.
     pub pass: Option<u64>,
+    /// Whether it's making buffers for a newer snapshot's plan.
+    pub preparing: bool,
     /// The memory of its buffers, in bytes.
     pub memory: usize,
     /// Passes it has run.
     pub passes: u64,
 }
 
-/// A snapshot era (see `SnapshotEra`).
-pub struct SnapshotEraInfo<N: NodesEnum> {
-    /// The version of its first snapshot, which names it.
-    pub first: u64,
-    /// The version of the latest snapshot its passes run against.
+/// A snapshot the run's been given (see `Scheduled`).
+pub struct ScheduledInfo<N: NodesEnum> {
     pub version: u64,
     pub plan: Arc<Plan<N>>,
-    /// Workers with buffers for it.
+    /// Workers with buffers for its plan.
     pub ready: usize,
-    /// Passes waiting for a worker.
-    pub queued: usize,
+    /// While its recording's nodes are still preparing for it (see `Recording::prepare`).
+    pub preparing_to_record: bool,
     /// How long each of the plan's steps is taking.
     pub step_times: Vec<StepTime>,
 }
 
 /// Everything about a run, as of now, for the dev tools.
 pub struct RunInfo<N: NodesEnum> {
-    /// The era passes are being sent for, once a worker's ready for one.
-    pub running: Option<SnapshotEraInfo<N>>,
-    /// A newer era workers are getting ready for, if there is one.
-    pub preparing: Option<SnapshotEraInfo<N>>,
+    /// The snapshot passes are being sent for, once there is one.
+    pub running: Option<ScheduledInfo<N>>,
+    /// A newer one, not yet ready (workers making buffers for its plan, or its recording's nodes preparing), if
+    /// there is one.
+    pub preparing: Option<ScheduledInfo<N>>,
     pub workers: Vec<WorkerInfo>,
     /// The next pass the dispatcher will send.
     pub next_pass: u64,
-    /// How many passes can wait for a worker before they're dropped.
+    /// Passes waiting for a worker, and how many can before they're dropped.
+    pub queued: usize,
     pub queue_capacity: usize,
     pub stats: Stats,
 }
 
-/// A pass on the queue, for a worker to run.
-struct Job {
+/// A pass on the queue, for a worker to run, with the snapshot it runs: given it as it's sent, so passes only ever see
+/// snapshots in order.
+struct Job<N: NodesEnum> {
     sequence: u64,
     /// When the pass's data was all due: the end of the time it covers.
     due: Instant,
+    scheduled: Arc<Scheduled<N>>,
 }
 
-/// A snapshot era: consecutive snapshots of a run that run the same way (planned the same), and what they share as
-/// they run: the node state carried from pass to pass, what nodes share with the GUI, and the queue passes are
-/// dispatched on. Named after its first snapshot. Each pass runs against the latest snapshot of the era, with the plan
-/// of its first (the same shape), which the workers' buffers are made for. A snapshot that runs differently starts a
-/// new era, which the dispatcher moves on to once a worker is ready for it: an era's made before its first pass and
-/// winds down after its last.
-struct SnapshotEra<N: NodesEnum> {
-    /// The version of its first snapshot, which names it.
-    first: u64,
-    /// Swapped for a newer one as settings change: each pass runs against the latest when it starts.
-    snapshot: ArcSwap<Snapshot<N>>,
-    plan: Arc<Plan<N>>,
+/// A snapshot the run's been given, and what its passes share as they run (`RunSlots`). Each node's state, what it
+/// shares with the GUI, and its step's times are handed on from the snapshot before when it's the same node with the
+/// same data streams in and out (when its state, made for those, still fits: as within a snapshot, it adapts to any
+/// change of settings that leaves them the same), and made afresh otherwise. The dispatcher runs it once it's ready: at
+/// once if its plan's laid out as the one running's, or else once every worker has buffers for it (meanwhile, the one
+/// before carries on).
+struct Scheduled<N: NodesEnum> {
+    snapshot: Arc<Snapshot<N>>,
     slots: RunSlots,
-    /// How many workers have a workspace for this era, ready to run its passes.
+    /// Workers with buffers for its plan.
     ready: AtomicUsize,
-    /// Taken by the dispatcher when it starts sending this era's passes; dropping it lets the workers on this
-    /// era know there will be no more.
-    sender: Mutex<Option<Sender<Job>>>,
-    receiver: Receiver<Job>,
-    shared: Arc<RunCommon>,
 }
 
-impl<N: NodesEnum> SnapshotEra<N> {
-    fn new(snapshot: &Snapshot<N>, workers: usize, shared: Arc<RunCommon>) -> Self {
-        let plan = snapshot.plan.clone();
-        let slots = RunSlots::new(&plan, &snapshot.graph, &shared);
-        // A few passes may queue, beyond which they're dropped.
-        let (sender, receiver) = crossbeam_channel::bounded(queue_capacity(workers));
-        SnapshotEra {
-            first: snapshot.version,
-            snapshot: ArcSwap::from_pointee(snapshot.clone()),
-            plan,
-            slots,
-            ready: AtomicUsize::new(0),
-            sender: Mutex::new(Some(sender)),
-            receiver,
-            shared,
+impl<N: NodesEnum> Scheduled<N> {
+    fn new(snapshot: Arc<Snapshot<N>>, before: Option<&Scheduled<N>>, run: &RunCommon) -> Self {
+        let (plan, graph) = (&snapshot.plan, &snapshot.graph);
+        // The step before of the same node with the same data streams, if there is one.
+        let same = |i: usize| {
+            let before = before?;
+            let then = &before.snapshot.plan;
+            let id = plan.steps[i].id;
+            let j = then.steps.iter().position(|step| step.id == id)?;
+            (then.step_inputs[j] == plan.step_inputs[i] && then.step_outputs[j] == plan.step_outputs[i]).then_some(j)
+        };
+        let mut states: Vec<Option<Arc<StateSlot>>> = vec![None; plan.state_inputs.len()];
+        let (mut shared, mut times) = (HashMap::new(), Vec::with_capacity(plan.steps.len()));
+        for (i, step) in plan.steps.iter().enumerate() {
+            let Some(entry) = graph.get(step.id) else {
+                times.push(Arc::default());
+                continue;
+            };
+            let then = same(i).and_then(|j| Some((before?, j)));
+            if let Some(slot) = step.state {
+                let carried = then
+                    .and_then(|(before, j)| Some(before.slots.states[before.snapshot.plan.steps[j].state?].clone()));
+                states[slot] =
+                    Some(carried.unwrap_or_else(|| {
+                        Arc::new(StateSlot::new(entry.node.initial_state(&plan.state_inputs[slot].1)))
+                    }));
+            }
+            let carried = then.and_then(|(before, _)| before.slots.shared.0.get(&step.id).cloned());
+            shared.insert(step.id, carried.unwrap_or_else(|| Arc::from(entry.node.shared(&plan.step_inputs[i]))));
+            // A step's times go with its node, whatever its streams.
+            let kept = before.and_then(|before| {
+                let j = before.snapshot.plan.steps.iter().position(|then| then.id == step.id)?;
+                Some(before.slots.times[j].clone())
+            });
+            times.push(kept.unwrap_or_default());
         }
+        let states =
+            states.into_iter().map(|slot| slot.unwrap_or_else(|| Arc::new(StateSlot::new(Box::new(()))))).collect();
+        let slots = RunSlots {
+            states,
+            shared: Arc::new(SharedByNode(shared)),
+            triggers: run.triggers.clone(),
+            direct: run.direct.clone(),
+            times,
+        };
+        Scheduled { snapshot, slots, ready: AtomicUsize::new(0) }
     }
 
-    /// Readies the node states for this era's first pass, `first`.
-    fn begin(&self, first: u64) {
+    /// Readies it to run from pass `first`, which covers the time from `at`: the turns of the node state made for it
+    /// begin there (what's handed on carries on), and its recording, if it has one, takes effect then.
+    fn begin(&self, first: u64, at: Instant) {
         for slot in &self.slots.states {
-            slot.turn.store(first, Ordering::Release);
+            slot.begin(first);
+        }
+        if let Some(recording) = &self.snapshot.recording {
+            recording.take_effect(at);
         }
     }
 }
 
-impl<N: NodesEnum> Drop for SnapshotEra<N> {
-    /// Passes still queued when no worker is left to run them were never run. The nodes' state is let go of in
-    /// the background (see `let_go_of`).
+impl<N: NodesEnum> Drop for Scheduled<N> {
+    /// The nodes' state it had that isn't handed on (to a newer snapshot) is let go of in the background (see
+    /// `let_go_of`).
     fn drop(&mut self) {
-        self.shared.dropped.fetch_add(self.receiver.len() as u64, Ordering::Relaxed);
-        let_go_of(std::mem::take(&mut self.slots.states));
+        let states = std::mem::take(&mut self.slots.states);
+        let_go_of(states.into_iter().filter_map(Arc::into_inner).collect());
     }
 }
 
@@ -490,15 +511,19 @@ fn let_go_of(states: Vec<StateSlot>) {
     }
 }
 
-/// The eras a run has: the newest (which workers prepare for), and the one being dispatched.
-struct SnapshotEras<N: NodesEnum> {
-    wanted: ArcSwap<SnapshotEra<N>>,
-    running: ArcSwapOption<SnapshotEra<N>>,
+/// What the runner, its workers and its dispatcher share about the snapshots: the newest given to the run (ready or
+/// not), the one passes are being sent for, and the pass queue.
+struct Schedule<N: NodesEnum> {
+    latest: ArcSwap<Scheduled<N>>,
+    running: ArcSwapOption<Scheduled<N>>,
+    /// Taken by the dispatcher; dropping it, when it stops, lets the workers know there'll be no more.
+    sender: Mutex<Option<Sender<Job<N>>>>,
+    receiver: Receiver<Job<N>>,
 }
 
 /// The graph running: a dispatcher and a pool of workers, until dropped.
 pub struct Runner<N: NodesEnum> {
-    eras: Arc<SnapshotEras<N>>,
+    schedule: Arc<Schedule<N>>,
     shared: Arc<RunCommon>,
     threads: Vec<JoinHandle<()>>,
     workers: usize,
@@ -518,34 +543,43 @@ impl<N: NodesEnum> Runner<N> {
         let workers = workers.max(1);
         assert!(snapshot.started.is_some(), "a run's snapshots say when it started");
         let shared = Arc::new(RunCommon {
-            workers: (0..workers).map(|_| WorkerSlot { era: AtomicU64::new(NO_ERA), ..Default::default() }).collect(),
+            workers: (0..workers)
+                .map(|_| WorkerSlot { version: AtomicU64::new(NO_VERSION), ..Default::default() })
+                .collect(),
             direct,
             ..Default::default()
         });
-        let era = Arc::new(SnapshotEra::new(snapshot, workers, shared.clone()));
+        let first = Scheduled::new(Arc::new(snapshot.clone()), None, &shared);
         log::info!("Running on {workers} workers, {} ms passes", PASS_DURATION * 1000.0);
-        log::debug!("Era from snapshot v{}: {}", era.first, describe(&era.plan));
-        let eras = Arc::new(SnapshotEras { wanted: ArcSwap::new(era), running: ArcSwapOption::empty() });
+        log::debug!("Snapshot v{}: {}", snapshot.version, describe(&snapshot.plan));
+        // A few passes may queue, beyond which they're dropped.
+        let (sender, receiver) = crossbeam_channel::bounded(queue_capacity(workers));
+        let schedule = Arc::new(Schedule {
+            latest: ArcSwap::new(Arc::new(first)),
+            running: ArcSwapOption::empty(),
+            sender: Mutex::new(Some(sender)),
+            receiver,
+        });
 
         let mut threads = Vec::new();
         for index in 0..workers {
-            let (eras, shared) = (eras.clone(), shared.clone());
-            let worker = move || work(&eras, &shared, index);
+            let (schedule, shared) = (schedule.clone(), shared.clone());
+            let worker = move || work(&schedule, &shared, index);
             threads
                 .push(std::thread::Builder::new().name(format!("pass worker {index}")).spawn(worker).expect("worker"));
         }
-        let (dispatcher_eras, dispatcher_shared) = (eras.clone(), shared.clone());
-        let dispatcher = move || dispatch(&dispatcher_eras, &dispatcher_shared);
+        let (dispatcher_schedule, dispatcher_shared) = (schedule.clone(), shared.clone());
+        let dispatcher = move || dispatch(&dispatcher_schedule, &dispatcher_shared);
         threads.push(std::thread::Builder::new().name("pass dispatcher".into()).spawn(dispatcher).expect("dispatcher"));
 
         let (version, received) = (AtomicU64::new(snapshot.version), RefCell::default());
-        Runner { eras, shared, threads, workers, version, received }
+        Runner { schedule, shared, threads, workers, version, received }
     }
 
     /// The graph of the latest snapshot given to the run.
     #[cfg(test)]
     pub fn graph(&self) -> Arc<Graph<N>> {
-        self.eras.wanted.load().snapshot.load().graph.clone()
+        self.schedule.latest.load().snapshot.graph.clone()
     }
 
     /// Where the passes send direct triggers.
@@ -558,11 +592,10 @@ impl<N: NodesEnum> Runner<N> {
         &self.shared.triggers
     }
 
-    /// What the nodes running share with the GUI: the era being run's, or, until one is, the one being got ready
-    /// for.
+    /// What the nodes running share with the GUI: the snapshot being run's, or, until one is, the one being got ready.
     pub fn shared(&self) -> Arc<SharedByNode> {
-        let era = self.eras.running.load_full().unwrap_or_else(|| self.eras.wanted.load_full());
-        era.slots.shared.clone()
+        let scheduled = self.schedule.running.load_full().unwrap_or_else(|| self.schedule.latest.load_full());
+        scheduled.slots.shared.clone()
     }
 
     /// The acquisition clock: seconds of passes sent so far.
@@ -570,27 +603,25 @@ impl<N: NodesEnum> Runner<N> {
         self.shared.next_pass.load(Ordering::Relaxed) as f64 * PASS_DURATION
     }
 
-    /// Moves the run on to a newer snapshot. If it runs the same way (as after a change of settings), passes
-    /// carry on with it from the next one, keeping the nodes' state, and this returns true. Otherwise it starts
-    /// a new era: the workers make buffers for its plan as they come free, and its passes start (with fresh
-    /// state) once one is ready; until then, passes carry on with the old one.
+    /// Moves the run on to a newer snapshot, with each node's state handed on to it while the node's data streams are
+    /// the same (see `Scheduled`). It runs from the next pass if its plan's laid out as the one before's (as after a
+    /// change of settings), and this returns true; otherwise, once the workers have made buffers for it, the one
+    /// before carrying on meanwhile.
     pub fn update(&self, snapshot: &Snapshot<N>) -> bool {
         if self.version.swap(snapshot.version, Ordering::Relaxed) == snapshot.version {
             return true;
         }
-        let baked = Arc::new(snapshot.clone());
         // Only the GUI updates it, so nothing changes it in between.
-        let wanted = self.eras.wanted.load();
-        if Arc::ptr_eq(&wanted.plan, &snapshot.plan) || wanted.plan.same_shape(&snapshot.plan) {
-            wanted.snapshot.store(baked);
-            log::trace!("Snapshot v{} carries on the era from v{}", snapshot.version, wanted.first);
-            true
+        let before = self.schedule.latest.load_full();
+        let same_buffers = before.snapshot.plan.same_shape(&snapshot.plan);
+        let scheduled = Scheduled::new(Arc::new(snapshot.clone()), Some(&before), &self.shared);
+        if same_buffers {
+            log::trace!("Snapshot v{} carries on with the same buffers", snapshot.version);
         } else {
-            let era = Arc::new(SnapshotEra::new(snapshot, self.workers, self.shared.clone()));
-            log::info!("Snapshot v{} runs differently: a new era, {}", snapshot.version, describe(&era.plan));
-            self.eras.wanted.store(era);
-            false
+            log::info!("Snapshot v{} needs new buffers: {}", snapshot.version, describe(&snapshot.plan));
         }
+        self.schedule.latest.store(Arc::new(scheduled));
+        same_buffers
     }
 
     /// The versions passes have started running against since this was last asked.
@@ -615,34 +646,28 @@ impl<N: NodesEnum> Runner<N> {
         received
     }
 
-    /// The plan passes are being dispatched for, once they are.
-    #[cfg(test)]
-    fn running_plan(&self) -> Option<Arc<Plan<N>>> {
-        self.eras.running.load().as_ref().map(|e| e.plan.clone())
-    }
-
-    /// Everything about the run as of now: its eras, workers and dispatcher, and the stats.
+    /// Everything about the run as of now: the snapshots, the workers and dispatcher, and the stats.
     pub fn inspect(&self) -> RunInfo<N> {
-        let info = |era: &SnapshotEra<N>| SnapshotEraInfo {
-            first: era.first,
-            version: era.snapshot.load().version,
-            plan: era.plan.clone(),
-            ready: era.ready.load(Ordering::Relaxed),
-            queued: era.receiver.len(),
-            step_times: era.slots.times.iter().map(StepTimes::get).collect(),
+        let info = |scheduled: &Scheduled<N>| ScheduledInfo {
+            version: scheduled.snapshot.version,
+            plan: scheduled.snapshot.plan.clone(),
+            ready: scheduled.ready.load(Ordering::Relaxed),
+            preparing_to_record: scheduled.snapshot.recording.as_ref().is_some_and(|r| !r.is_ready()),
+            step_times: scheduled.slots.times.iter().map(|times| times.get()).collect(),
         };
-        let running = self.eras.running.load().as_deref().map(info);
-        let wanted = self.eras.wanted.load_full();
-        let preparing = (running.as_ref().map(|r| r.first) != Some(wanted.first)).then(|| info(&wanted));
+        let running = self.schedule.running.load().as_deref().map(info);
+        let latest = self.schedule.latest.load_full();
+        let preparing = (running.as_ref().map(|r| r.version) != Some(latest.snapshot.version)).then(|| info(&latest));
         let workers = self
             .shared
             .workers
             .iter()
             .map(|w| {
-                let (era, pass) = (w.era.load(Ordering::Relaxed), w.pass.load(Ordering::Relaxed));
+                let (version, pass) = (w.version.load(Ordering::Relaxed), w.pass.load(Ordering::Relaxed));
                 WorkerInfo {
-                    era: (era != NO_ERA).then_some(era),
+                    version: (version != NO_VERSION).then_some(version),
                     pass: (pass != IDLE).then_some(pass),
+                    preparing: w.preparing.load(Ordering::Relaxed),
                     memory: w.memory.load(Ordering::Relaxed),
                     passes: w.passes.load(Ordering::Relaxed),
                 }
@@ -653,6 +678,7 @@ impl<N: NodesEnum> Runner<N> {
             preparing,
             workers,
             next_pass: self.shared.next_pass.load(Ordering::Relaxed),
+            queued: self.schedule.receiver.len(),
             queue_capacity: queue_capacity(self.workers),
             stats: self.stats(),
         }
@@ -698,6 +724,8 @@ impl<N: NodesEnum> Drop for Runner<N> {
         for thread in self.threads.drain(..) {
             let _ = thread.join();
         }
+        // Passes still queued when the workers stopped were never run.
+        self.shared.dropped.fetch_add(self.schedule.receiver.len() as u64, Ordering::Relaxed);
         let (completed, dropped) =
             (self.shared.completed.load(Ordering::Relaxed), self.shared.dropped.load(Ordering::Relaxed));
         log::info!("Stopped after {completed} passes ({dropped} dropped)");
@@ -707,52 +735,62 @@ impl<N: NodesEnum> Drop for Runner<N> {
 /// How long passes' times are kept (see `Runner::pass_times`).
 const PASS_TIMES: Duration = Duration::from_secs(10);
 
-/// How long an idle worker waits for a pass before checking for a newer era to get ready for.
+/// How long an idle worker waits for a pass before checking for a newer snapshot to get ready for.
 const IDLE_CHECK: Duration = Duration::from_millis(2);
 
-/// A worker: runs passes of its era, and once there's a newer one and nothing of its own queued, makes
-/// buffers for that and moves on to it. Ends when the run stops, once every pass dispatched to it is done.
-fn work<N: NodesEnum>(eras: &SnapshotEras<N>, shared: &RunCommon, index: usize) {
+/// A worker: runs the passes it's sent, each on buffers for its snapshot's plan; and makes buffers for the newest
+/// snapshot's plan, if it hasn't any laid out like it, so it's ready for its passes before they come (keeping those it
+/// has until no pass needs them). Ends when the run stops, once every pass sent to it is done.
+fn work<N: NodesEnum>(schedule: &Schedule<N>, shared: &RunCommon, index: usize) {
     let slot = &shared.workers[index];
     slot.pass.store(IDLE, Ordering::Relaxed);
-    let mut mine: Option<(Arc<SnapshotEra<N>>, Workspace<N>)> = None;
+    // Its buffers, each for the plans laid out like the one they were made for.
+    let mut workspaces: Vec<(Arc<Plan<N>>, Workspace<N>)> = Vec::new();
+    let memory = |workspaces: &[(Arc<Plan<N>>, Workspace<N>)]| workspaces.iter().map(|(_, w)| w.bytes()).sum::<usize>();
+    let make = |scheduled: &Scheduled<N>, workspaces: &mut Vec<(Arc<Plan<N>>, Workspace<N>)>| {
+        let snapshot = &scheduled.snapshot;
+        slot.preparing.store(true, Ordering::Relaxed);
+        let workspace = snapshot.plan.workspace(&snapshot.graph);
+        let bytes = workspace.bytes();
+        shared.memory.fetch_add(bytes, Ordering::Relaxed);
+        workspaces.push((snapshot.plan.clone(), workspace));
+        slot.memory.store(memory(workspaces), Ordering::Relaxed);
+        slot.preparing.store(false, Ordering::Relaxed);
+        log::debug!(
+            "Worker {index} ready for snapshot v{}, with {:.2} MB of buffers",
+            snapshot.version,
+            bytes as f64 / 1e6
+        );
+        workspaces.len() - 1
+    };
+    // The newest snapshot it's got ready for.
+    let mut ready_for = None;
     loop {
-        let wanted = eras.wanted.load();
-        let behind = match &mine {
-            None => true,
-            Some((era, _)) => !Arc::ptr_eq(era, &wanted) && era.receiver.is_empty(),
-        };
-        if behind {
-            // Free the old buffers before making the new.
-            if let Some((_, workspace)) = mine.take() {
-                shared.memory.fetch_sub(workspace.bytes(), Ordering::Relaxed);
+        let latest = schedule.latest.load_full();
+        if ready_for != Some(latest.snapshot.version) {
+            if !workspaces.iter().any(|(plan, _)| plan.same_shape(&latest.snapshot.plan)) {
+                make(&latest, &mut workspaces);
             }
-            let workspace = wanted.plan.workspace(&wanted.snapshot.load().graph);
-            let bytes = workspace.bytes();
-            shared.memory.fetch_add(bytes, Ordering::Relaxed);
-            slot.memory.store(bytes, Ordering::Relaxed);
-            slot.era.store(wanted.first, Ordering::Relaxed);
-            wanted.ready.fetch_add(1, Ordering::Release);
-            log::debug!(
-                "Worker {index} ready for the era from v{}, with {:.2} MB of buffers",
-                wanted.first,
-                bytes as f64 / 1e6
-            );
-            mine = Some((arc_swap::Guard::into_inner(wanted), workspace));
+            latest.ready.fetch_add(1, Ordering::Release);
+            ready_for = Some(latest.snapshot.version);
         }
-        let Some((era, workspace)) = &mut mine else { unreachable!() };
-        match era.receiver.recv_timeout(IDLE_CHECK) {
+        drop(latest);
+        match schedule.receiver.recv_timeout(IDLE_CHECK) {
             Ok(job) => {
                 shared.busy.fetch_add(1, Ordering::Relaxed);
                 slot.pass.store(job.sequence, Ordering::Relaxed);
                 let start = Instant::now();
-                let snapshot = era.snapshot.load_full();
+                let snapshot = &job.scheduled.snapshot;
+                slot.version.store(snapshot.version, Ordering::Relaxed);
                 if shared.newest_used.fetch_max(snapshot.version, Ordering::Relaxed) < snapshot.version {
                     let first = FirstUse { version: snapshot.version, sequence: job.sequence, at: start };
                     let _ = shared.reports.0.try_send(Report::FirstUse(first));
                 }
-                let pass = PassId { era: era.first, sequence: job.sequence, node: None, node_type: None };
-                era.plan.run(&snapshot, pass, workspace, &era.slots);
+                // Buffers for its plan: made by now, unless a newer snapshot came along before this one ran.
+                let at = workspaces.iter().position(|(plan, _)| plan.same_shape(&snapshot.plan));
+                let at = at.unwrap_or_else(|| make(&job.scheduled, &mut workspaces));
+                let pass = PassId { version: snapshot.version, sequence: job.sequence, node: None, node_type: None };
+                snapshot.plan.run(snapshot, pass, &mut workspaces[at].1, &job.scheduled.slots);
                 let finished = Instant::now();
                 slot.pass.store(IDLE, Ordering::Relaxed);
                 slot.passes.fetch_add(1, Ordering::Relaxed);
@@ -761,45 +799,54 @@ fn work<N: NodesEnum>(eras: &SnapshotEras<N>, shared: &RunCommon, index: usize) 
                 let (time, lag) = (finished - start, finished.saturating_duration_since(job.due));
                 let record = Record { sequence: job.sequence, finished, time, lag };
                 let _ = shared.reports.0.try_send(Report::Pass(record));
+                // Buffers no pass will need: neither this one's plan nor the newest's.
+                let newest = schedule.latest.load().snapshot.plan.clone();
+                workspaces.retain(|(plan, workspace)| {
+                    let kept = plan.same_shape(&snapshot.plan) || plan.same_shape(&newest);
+                    if !kept {
+                        shared.memory.fetch_sub(workspace.bytes(), Ordering::Relaxed);
+                    }
+                    kept
+                });
+                slot.memory.store(memory(&workspaces), Ordering::Relaxed);
             }
             Err(_) if shared.stop.load(Ordering::Relaxed) => break,
             Err(RecvTimeoutError::Timeout) => {}
-            // The dispatcher has moved on from this era: get ready for the next.
-            Err(RecvTimeoutError::Disconnected) => std::thread::sleep(IDLE_CHECK),
+            Err(RecvTimeoutError::Disconnected) => break,
         }
     }
-    if let Some((_, workspace)) = mine {
-        shared.memory.fetch_sub(workspace.bytes(), Ordering::Relaxed);
-    }
+    shared.memory.fetch_sub(memory(&workspaces), Ordering::Relaxed);
 }
 
-/// The dispatcher: releases each pass when its time is up, on the queue of the newest era a worker is ready
-/// for. The clock starts once the first worker is ready, so making buffers doesn't count against the run.
-fn dispatch<N: NodesEnum>(eras: &SnapshotEras<N>, shared: &RunCommon) {
+/// The dispatcher: releases each pass when its time is up, with the snapshot it's to run: the one running, until a
+/// newer one's ready (see `Scheduled`), which it then begins (its fresh node state's turns, and its recording's
+/// effective instant) at that pass. The clock starts once the first snapshot's ready, so making buffers doesn't count
+/// against the run.
+fn dispatch<N: NodesEnum>(schedule: &Schedule<N>, shared: &RunCommon) {
+    let Some(sender) = schedule.sender.lock().unwrap().take() else { return };
     let duration = Duration::from_secs_f64(PASS_DURATION);
-    let mut current: Option<(Arc<SnapshotEra<N>>, Sender<Job>)> = None;
+    let mut current: Option<Arc<Scheduled<N>>> = None;
     let (mut sequence, mut due) = (0, Instant::now());
     // Passes dropped in a row, so a run of them is reported once.
     let mut dropping = 0u64;
     while !shared.stop.load(Ordering::Relaxed) {
-        let wanted = eras.wanted.load_full();
-        let dispatching = current.as_ref().is_some_and(|(era, _)| Arc::ptr_eq(era, &wanted));
-        // Move on to the wanted era once a worker's ready for it.
-        let sender = if !dispatching && wanted.ready.load(Ordering::Acquire) > 0 {
-            wanted.sender.lock().unwrap().take()
-        } else {
-            None
-        };
-        if let Some(sender) = sender {
-            if current.is_none() {
-                due = Instant::now() + duration;
+        let latest = schedule.latest.load_full();
+        if !current.as_ref().is_some_and(|running| Arc::ptr_eq(running, &latest)) {
+            // Ready: laid out as the one running, or with buffers on every worker; and with its recording's nodes
+            // prepared, if it's recording.
+            let same_buffers = current.as_ref().is_some_and(|c| c.snapshot.plan.same_shape(&latest.snapshot.plan));
+            let buffers = same_buffers || latest.ready.load(Ordering::Acquire) >= shared.workers.len();
+            if buffers && latest.snapshot.recording.as_ref().is_none_or(|r| r.is_ready()) {
+                if current.is_none() {
+                    due = Instant::now() + duration;
+                }
+                latest.begin(sequence, due - duration);
+                log::debug!("Snapshot v{} running from pass {sequence}", latest.snapshot.version);
+                schedule.running.store(Some(latest.clone()));
+                current = Some(latest);
             }
-            wanted.begin(sequence);
-            log::debug!("The era from snapshot v{} running from pass {sequence}", wanted.first);
-            eras.running.store(Some(wanted.clone()));
-            current = Some((wanted, sender)); // dropping the old era's sender ends its passes
         }
-        let Some((_, sender)) = &current else {
+        let Some(scheduled) = &current else {
             std::thread::sleep(IDLE_CHECK);
             continue;
         };
@@ -808,7 +855,7 @@ fn dispatch<N: NodesEnum>(eras: &SnapshotEras<N>, shared: &RunCommon) {
             std::thread::sleep((due - now).min(Duration::from_millis(5)));
             continue;
         }
-        match sender.try_send(Job { sequence, due }) {
+        match sender.try_send(Job { sequence, due, scheduled: scheduled.clone() }) {
             Ok(()) => {
                 if dropping > 0 {
                     log::warn!("Dropped {dropping} passes: the workers couldn't keep up");
@@ -894,15 +941,18 @@ pub mod tests {
         link(&mut graph, board, 0, filter, 0);
         link(&mut graph, filter, 0, viewer, 0);
         link(&mut graph, board, 0, writer, 0);
-        let snapshot = Arc::new(Snapshot::new(0, graph));
+        // Recording, so the writer runs.
+        let recording = Some(Arc::new(crate::engine::Recording::default()));
+        let snapshot = Arc::new(Snapshot::bake(0, Arc::new(graph), Some(Instant::now()), recording));
         let plan = &snapshot.plan;
-        let slots = RunSlots::new(plan, &snapshot.graph, &RunCommon::default());
+        let scheduled = Scheduled::new(snapshot.clone(), None, &RunCommon::default());
+        let slots = &scheduled.slots;
         let mut workspace = plan.workspace(&snapshot.graph);
         let filtered = plan.steps.iter().find(|s| s.id == filter).unwrap().outputs[0];
         let copied = plan.steps.iter().find(|s| s.id == writer).unwrap().inputs[0].unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         for sequence in 0.. {
-            plan.run(&snapshot, PassId { era: 1, sequence, node: None, node_type: None }, &mut workspace, &slots);
+            plan.run(&snapshot, PassId { version: 0, sequence, node: None, node_type: None }, &mut workspace, slots);
             let (Some(Buffer::Continuous(filtered)), Some(Buffer::Continuous(copied))) =
                 (&workspace.buffers[filtered], &workspace.buffers[copied])
             else {
@@ -956,7 +1006,7 @@ pub mod tests {
         link(&mut graph, board, 0, reference, 0);
         link(&mut graph, reference, 0, filter, 0);
         link(&mut graph, filter, 0, viewer, 0);
-        let plan = Plan::new(&graph);
+        let plan = Plan::new(&graph, false);
         let step = |id| plan.steps.iter().find(|s| s.id == id).unwrap();
         assert!(step(reference).state.is_none() && step(reference).memory.is_some(), "no sync point");
         assert!(step(filter).state.is_some(), "the filter's history is carried over");
@@ -980,7 +1030,8 @@ pub mod tests {
         link(&mut graph, detector, 0, viewer, 0);
         let snapshot = Arc::new(Snapshot::new(0, graph));
         let plan = &snapshot.plan;
-        let slots = RunSlots::new(plan, &snapshot.graph, &RunCommon::default());
+        let scheduled = Scheduled::new(snapshot.clone(), None, &RunCommon::default());
+        let slots = &scheduled.slots;
         let mut workspace = plan.workspace(&snapshot.graph);
         // A second of samples, as they come from the board in real time.
         let (mut spikes, mut samples) = (0, 0);
@@ -988,7 +1039,7 @@ pub mod tests {
         let detector_output = plan.steps.iter().find(|s| s.id == detector).unwrap().outputs[0];
         let deadline = Instant::now() + Duration::from_secs(5);
         for sequence in 0.. {
-            plan.run(&snapshot, PassId { era: 1, sequence, node: None, node_type: None }, &mut workspace, &slots);
+            plan.run(&snapshot, PassId { version: 0, sequence, node: None, node_type: None }, &mut workspace, slots);
             let Some(Buffer::Spikes(output)) = &workspace.buffers[detector_output] else { panic!("spikes buffer") };
             spikes += output.spikes.len();
             let Some(Buffer::Continuous(filtered)) = &workspace.buffers[filter_output] else { panic!("continuous") };
@@ -1030,10 +1081,34 @@ pub mod tests {
         }
     }
 
-    /// What nodes share with the GUI is made for each era (sized for its data streams), and kept through changes
-    /// of settings.
+    /// The snapshot passes are being sent for, once it's `version` (a few seconds at most).
+    fn until_running(runner: &Runner<Nodes>, version: u64) -> Arc<Scheduled<Nodes>> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(running) = runner.schedule.running.load_full().filter(|r| r.snapshot.version == version) {
+                return running;
+            }
+            assert!(Instant::now() < deadline, "snapshot v{version} should run");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// A node's state, in a snapshot the run's been given.
+    fn state_of(scheduled: &Scheduled<Nodes>, node: NodeId) -> Arc<StateSlot> {
+        let step = scheduled.snapshot.plan.steps.iter().find(|step| step.id == node).expect("it runs");
+        scheduled.slots.states[step.state.expect("it has state")].clone()
+    }
+
+    /// What a node shares with the GUI, in a snapshot the run's been given.
+    fn shared_of(scheduled: &Scheduled<Nodes>, node: NodeId) -> Arc<dyn crate::engine::Shared> {
+        scheduled.slots.shared.0.get(&node).expect("it runs").clone()
+    }
+
+    /// Each node's state, and what it shares with the GUI, are handed on from snapshot to snapshot while its data
+    /// streams stay the same, whether the plan's laid out the same (a change of settings) or needs new buffers (another
+    /// node added); a snapshot needing new buffers runs once the workers have them, the run carrying on meanwhile.
     #[test]
-    fn settings_changes_carry_on_and_others_start_a_new_era() {
+    fn snapshots_hand_on_each_nodes_state_while_its_streams_are_the_same() {
         let mut graph = Graph::default();
         let board = add(&mut graph, "Acquisition Board");
         let filter = add(&mut graph, "Band-pass Filter");
@@ -1042,43 +1117,100 @@ pub mod tests {
         link(&mut graph, filter, 0, viewer, 0);
         let mut snapshot = Snapshot::new(0, graph.clone());
         let runner = Runner::start(&snapshot, 2);
-        let shared = runner.shared();
-        assert!(!shared.pools(viewer).is_empty(), "the viewer's display");
+        let first = until_running(&runner, 0);
+        assert!(!runner.shared().pools(viewer).is_empty(), "the viewer's display");
         let mut next = |graph: &Graph<Nodes>| {
             snapshot = Snapshot::new(snapshot.version + 1, graph.clone());
             snapshot.clone()
         };
 
-        // A new cut-off is a change of settings: the run carries on with it.
+        // A new cut-off is a change of settings: the same buffers, and everything handed on.
         if let Some(Nodes::BandPassFilter(f)) = graph.get_mut(filter).map(|e| &mut e.node) {
             f.high_hz = 3000.0;
         }
-        assert!(runner.update(&next(&graph)));
+        let tuned = next(&graph);
+        assert!(runner.update(&tuned));
+        let running = until_running(&runner, tuned.version);
+        assert!(Arc::ptr_eq(&state_of(&first, filter), &state_of(&running, filter)), "the filter's history");
+        assert!(Arc::ptr_eq(&shared_of(&first, viewer), &shared_of(&running, viewer)), "the viewer's display");
 
-        // A node that isn't connected doesn't run, so doesn't change anything; connected (with something needing
-        // its output), it does.
+        // Another viewer needs new buffers: it runs once they're made, everything that was there handed on.
         let gain = add(&mut graph, "Continuous Gain");
-        assert!(runner.update(&next(&graph)));
-        link(&mut graph, board, 0, gain, 0);
-        assert!(runner.update(&next(&graph)), "nothing needs its output");
-        assert!(Arc::ptr_eq(&runner.shared(), &shared), "the same era's");
         let second = add(&mut graph, "LFP Viewer");
+        link(&mut graph, board, 0, gain, 0);
         link(&mut graph, gain, 0, second, 0);
-        let latest = next(&graph);
-        assert!(!runner.update(&latest));
+        let more = next(&graph);
+        assert!(!runner.update(&more));
+        let running = until_running(&runner, more.version);
+        assert!(Arc::ptr_eq(&state_of(&first, filter), &state_of(&running, filter)), "the filter's, still");
+        assert!(Arc::ptr_eq(&shared_of(&first, viewer), &shared_of(&running, viewer)), "the viewer's, still");
+        assert!(!runner.shared().pools(second).is_empty(), "with the new viewer's");
+        let completed = runner.stats().completed;
+        let stats = wait_for_passes(&runner, completed + 5);
+        assert!(stats.completed >= completed + 5, "passes carry on: {stats:?}");
+        assert_eq!(stats.dropped, 0, "none lost: {stats:?}");
+    }
 
-        // Passes move on to the new plan once a worker has buffers for it, without a pass going undone.
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while !runner.running_plan().is_some_and(|p| Arc::ptr_eq(&p, &latest.plan)) {
-            assert!(Instant::now() < deadline, "passes should move on to the new plan");
+    /// A node whose data streams change starts afresh (its state was made for them), and so does what it feeds: here,
+    /// the Spike Detector's waveforms getting longer. The rest carries on.
+    #[test]
+    fn a_node_whose_streams_change_starts_afresh() {
+        let mut graph = Graph::default();
+        let board = add(&mut graph, "Acquisition Board");
+        let filter = add(&mut graph, "Band-pass Filter");
+        let detector = add(&mut graph, "Spike Detector");
+        let spikes = add(&mut graph, "Spike Viewer");
+        link(&mut graph, board, 0, filter, 0);
+        link(&mut graph, filter, 0, detector, 0);
+        link(&mut graph, detector, 0, spikes, 0);
+        let runner = Runner::start(&Snapshot::new(0, graph.clone()), 2);
+        let first = until_running(&runner, 0);
+        if let Some(Nodes::SpikeDetector(d)) = graph.get_mut(detector).map(|e| &mut e.node) {
+            d.pre += 4;
+        }
+        assert!(!runner.update(&Snapshot::new(1, graph)), "longer waveforms need other buffers");
+        let running = until_running(&runner, 1);
+        assert!(Arc::ptr_eq(&state_of(&first, filter), &state_of(&running, filter)), "the filter carries on");
+        assert!(!Arc::ptr_eq(&state_of(&first, detector), &state_of(&running, detector)), "the detector's afresh");
+        assert!(!Arc::ptr_eq(&state_of(&first, spikes), &state_of(&running, spikes)), "as is what it feeds");
+        wait_for_passes(&runner, runner.stats().completed + 5);
+    }
+
+    /// A recording takes effect as the first pass of the snapshot with it is sent: from when that pass's time starts.
+    #[test]
+    fn a_recording_takes_effect_with_its_snapshots_first_pass() {
+        let graph = Arc::new(Graph::default());
+        let started = Instant::now();
+        let runner = Runner::start(&Snapshot::bake(0, graph.clone(), Some(started), None), 1);
+        until_running(&runner, 0);
+        let recording = Arc::new(crate::engine::Recording::default());
+        let asked = Instant::now();
+        runner.update(&Snapshot::bake(1, graph, Some(started), Some(recording.clone())));
+        until_running(&runner, 1);
+        let effective = recording.effective().expect("taken effect").at;
+        assert!(effective >= asked - Duration::from_secs_f64(PASS_DURATION), "not before it was given the run");
+        assert!(effective <= Instant::now());
+    }
+
+    /// A snapshot recording doesn't run until its recording's nodes have prepared: the one before carries on.
+    #[test]
+    fn a_recording_waits_for_its_nodes_to_prepare() {
+        let graph = Arc::new(Graph::default());
+        let started = Instant::now();
+        let runner = Runner::start(&Snapshot::bake(0, graph.clone(), Some(started), None), 1);
+        until_running(&runner, 0);
+        let recording = Arc::new(crate::engine::Recording::new(None, chrono::Local::now()));
+        let snapshot = Snapshot::bake(1, graph, Some(started), Some(recording.clone()));
+        runner.update(&snapshot);
+        let passes = runner.clock();
+        while runner.clock() < passes + 5.0 * PASS_DURATION {
             std::thread::sleep(Duration::from_millis(5));
         }
-        let now = runner.shared();
-        assert!(!Arc::ptr_eq(&now, &shared), "the new era's");
-        assert!(!now.pools(second).is_empty() && shared.pools(second).is_empty(), "with the new viewer's");
-        let completed = runner.stats().completed;
-        let stats = wait_for_passes(&runner, completed + 1);
-        assert!(stats.completed > completed, "{stats:?}");
-        assert_eq!(stats.dropped, 0, "{stats:?}");
+        let running = runner.schedule.running.load_full().unwrap();
+        assert_eq!(running.snapshot.version, 0, "the one before, meanwhile");
+        assert!(recording.effective().is_none());
+        recording.prepare(&snapshot, &Default::default());
+        until_running(&runner, 1);
+        assert!(recording.effective().is_some());
     }
 }

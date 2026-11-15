@@ -5,9 +5,9 @@
 //! thread's status (what it's doing, the sample rate, losses) is shared for display. If the board can't be opened,
 //! or fails, it keeps trying.
 //!
-//! A new era doesn't open the board again: if nothing it's acquiring has changed, its `Capture` carries on with the
-//! one acquiring (new state's made before the old's let go of), and the same pool. A new configuration does, once the
-//! old has closed. It's closed once nothing's using it, when the run stops.
+//! Fresh node state doesn't open the board again: if nothing it's acquiring has changed, its `Capture` carries on with
+//! the one acquiring (new state's made before the old's let go of), and the same pool. A new configuration does, once
+//! the old has closed. It's closed once nothing's using it, when the run stops.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -123,7 +123,7 @@ impl Drop for Claim {
     }
 }
 
-/// An era's use of a board acquiring.
+/// A node state's use of a board acquiring.
 pub struct Capture {
     running: Arc<Running>,
 }
@@ -392,7 +392,7 @@ mod tests {
     }
 
     #[test]
-    fn eras_carry_on_with_the_board_and_a_new_configuration_waits_for_it_to_close() {
+    fn fresh_state_carries_on_with_the_board_and_a_new_configuration_waits_for_it_to_close() {
         // The test board takes one connection, so samples coming later show it wasn't opened again.
         let source = Source::Fake { address: crate::standard::ephys::board::serve_test_board() };
         let config = Config { sample_rate: 30000, bandwidth: Bandwidth::default(), headstages: Vec::new() };

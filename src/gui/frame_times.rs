@@ -41,8 +41,8 @@ struct Waiting {
 pub enum MarkKind {
     /// Recording started or stopped.
     Recording,
-    /// A new snapshot that runs differently: a new era, with fresh state.
-    Era,
+    /// A new snapshot whose plan needed new buffers.
+    NewBuffers,
     /// A new version the run carried on with (new settings, say).
     Version,
 }

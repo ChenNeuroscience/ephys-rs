@@ -150,7 +150,7 @@ fn report(what: &str) {
     let _ = writeln!(text, "{what}\n");
     let _ = writeln!(text, "Thread: {}", thread.name().unwrap_or("(unnamed)"));
     if let Some(pass) = console::current_pass() {
-        let _ = write!(text, "Running pass {} of era {}", pass.sequence, pass.era);
+        let _ = write!(text, "Running pass {} of snapshot v{}", pass.sequence, pass.version);
         if let Some(node) = pass.node {
             let _ = write!(text, ", node {}", node.0);
         }

@@ -1,11 +1,13 @@
 //! What a node's passes share with the GUI: its window, its work on the GUI's thread, and the dev tools. Each node type
 //! says what (`Node::Shared`): pools of buffers, usually (see `crate::standard::pool`), which the passes
-//! fill and the GUI takes from. One's made for each node that runs, with each era (`Node::shared`), sized for its
-//! inputs' data streams then, so it's always the right shape. Once a run's stopped, the app keeps its last era's, so
-//! what's shown stays, until the next run or a change to the graph that would start a new era.
+//! fill and the GUI takes from. One's made for each node that runs (`Node::shared`), sized for its inputs' data streams
+//! then, so it's always the right shape, and handed on from one snapshot to the next while the node's streams stay the
+//! same (as its state is: see `crate::engine::run`). Once a run's stopped, the app keeps its last, so what's shown
+//! stays, until the next run or a change to the graph that would need new ones.
 
 use std::any::Any;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use super::{NodeId, PoolStatus};
 
@@ -19,9 +21,9 @@ pub trait Shared: Any + Send + Sync {
 
 impl Shared for () {}
 
-/// What each node that runs in an era shares, by node.
+/// What each node that runs shares, by node.
 #[derive(Default)]
-pub struct SharedByNode(pub(super) HashMap<NodeId, Box<dyn Shared>>);
+pub struct SharedByNode(pub(super) HashMap<NodeId, Arc<dyn Shared>>);
 
 impl SharedByNode {
     /// Node `node`'s, if it runs, and it's a `T` (its `Node::Shared`).
@@ -37,7 +39,7 @@ impl SharedByNode {
 
     /// With node `node`'s as `shared` (for trying a window out, say).
     pub fn with(mut self, node: NodeId, shared: impl Shared) -> Self {
-        self.0.insert(node, Box::new(shared));
+        self.0.insert(node, Arc::new(shared));
         self
     }
 

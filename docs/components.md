@@ -12,9 +12,9 @@ incomplete, or stop coming, or aren't the size set.
 
 The video stream's size has to be known before running, for its buffers, so it's a setting: the Camera node's Frame
 size, one of its camera settings. Frames of any other size are skipped. When they come, the camera triggers an update to the size
-they are (`PassContext::trigger_settings_update`, like other auto-detected settings), which starts a new era.
+they are (`PassContext::trigger_settings_update`, like other auto-detected settings), which changes the video stream, so the node starts afresh.
 
-A new era doesn't open the camera again, as that takes a couple of seconds: it carries on with the one capturing, only
+Starting afresh doesn't open the camera again, as that takes a couple of seconds: it carries on with the one capturing, only
 changing the buffers if the frame size has, and setting the frame rate on it if that has (a triggered camera goes by its
 trigger, so there it only changes the rate declared for the video). Stopping closes it, so other programs can use it, and
 changing its source opens another. See [`capture.rs`](../standard/src/tracking/camera/capture.rs).
@@ -52,13 +52,13 @@ pass (`AlarmStatesBuffer`), a few numbers for each alarm.
 The processor sits with the data. The [Alarm Viewer](../standard/src/alarms/viewer.rs) shows how the alarms
 stand, and has their on and off switches, which edit the processor's settings through a control, so nothing bulky goes to
 the window. Each alarm counts in bins, a fiftieth of its period each, and doesn't go off until it's
-seen a whole period, so a new period, or era, starts it waiting again. Time is counted in passes, not samples, so a
+seen a whole period, so a new period, or fresh state (its streams changing), starts it waiting again. Time is counted in passes, not samples, so a
 source that stops looks like a low rate.
 
 The buttons for all the alarms are only shortcuts, setting each one, so there's no separate on or off to go out of step.
 
 An input's only needed while an alarm that's on watches it (`Node::evaluate_tree_shake`), so switching the last one off changes the
-plan, and starts a new era. While
+plan. While
 recording the graph can't change, so the viewer only ignores what it's switched off, and saves that in the settings
 once recording's stopped, if its window's open by then (otherwise it's lost when the run stops). An alarm off when
 recording started has no data coming, so it can't come on until then.

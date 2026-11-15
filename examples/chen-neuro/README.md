@@ -66,11 +66,11 @@ for any of this: it makes `.pos.ttl` as for a camera's timing LED, so the file's
 `timing_led_*` headers are the defaults, with the radius 0 saying there's no real spot.
 
 Headers are written as recording starts, so settings can't change while recording. Ones that differ log an error and wait:
-only the latest is kept, in the connection's inbox, so it survives a new era, and the update's triggered once recording stops,
+only the latest is kept, in the connection's inbox, so it survives the node starting afresh, and the update's triggered once recording stops,
 until the node has it. So a connection's last settings aren't lost, though the recording has the ones it started with.
 
 A `ttl`'s `idx` counts from 1, as the LTX files' `ttl_<n>` do, so it's the `pos ttl` stream's line `idx - 1`. Its
-`Events::lines` is `ttl_channels`, and passes drop events on lines beyond it, logging an error once an era, so what's
+`Events::lines` is `ttl_channels`, and passes drop events on lines beyond it, logging an error once until the stream changes, so what's
 downstream never sees a line the stream doesn't have.
 
 It sends the VR computer its `state` too, on the connection's thread, which writes between reads: once a second, and as

@@ -134,7 +134,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             Action::Advanced => Some(self.layout.mode == Mode::Advanced),
             Action::Theme(index) => Some(self.theme == index),
             Action::Play => Some(self.runner.is_some()),
-            Action::Record => Some(self.recording.is_some() || self.preparing.is_some()),
+            Action::Record => Some(self.recording.is_some()),
             _ => None,
         }
     }
@@ -245,16 +245,16 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             }
             self.play_clock(ui);
             ui.add_space(6.0);
-            let recording = self.recording.is_some();
+            let recording = self.is_recording();
             let text = if recording {
                 "Stop recording"
-            } else if self.preparing.is_some() {
+            } else if self.is_preparing() {
                 "Preparing to record (the writers opening their files): click to cancel"
             } else {
                 "Record (starting the graph, if it isn't running)"
             };
             let tip = self.tooltip(&ctx, Action::Record, text);
-            if tool_button(ui, Icon::Record, &tip, true, recording || self.preparing.is_some()).clicked() {
+            if tool_button(ui, Icon::Record, &tip, true, self.recording.is_some()).clicked() {
                 chosen = Some(Action::Record);
             }
             self.record_clock(ui, recording);
@@ -292,7 +292,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             return false;
         }
         let colours = self.colours();
-        let recording = self.recording.is_some() || self.preparing.is_some();
+        let recording = self.recording.is_some();
         if let Some(current) = self.base_directories.current() {
             current.toolbar_ui(ui, &BaseDirectoryContext { theme: colours, recording });
         }
@@ -332,13 +332,12 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
     /// How long it's been recording, greyed out when it isn't (and saying so while getting ready to).
     fn record_clock(&self, ui: &mut egui::Ui, recording: bool) {
         let colours = self.colours();
-        let since =
-            if recording { self.runner.as_ref().map_or(0.0, |r| r.clock()) - self.recording_since } else { 0.0 };
+        let since = self.recording_since.map_or(0.0, |since| self.runner.as_ref().map_or(0.0, |r| r.clock()) - since);
         let text = egui::RichText::new(super::clock_text(since)).monospace();
         let text = if recording { text.color(colours.error) } else { text.color(colours.text_disabled) };
         ui.add_space(2.0);
         ui.label(text).on_hover_text("How long it's been recording");
-        if self.preparing.is_some() {
+        if self.is_preparing() {
             ui.label(egui::RichText::new("preparing…").color(colours.text_secondary));
         }
     }

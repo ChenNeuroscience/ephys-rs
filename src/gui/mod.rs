@@ -286,17 +286,15 @@ pub struct App<N: NodesEnum, A: AnnotationsEnum> {
     /// When the run started (Play pressed), by the monotonic clock, while running.
     started: Option<std::time::Instant>,
     /// The recording taken on, while recording.
-    recording: Option<engine::Recorded>,
+    recording: Option<Arc<engine::Recording>>,
     /// The graph running, while it is.
     runner: Option<Runner<N>>,
     /// What the last run shared, once it's stopped: see `LastRun`.
     last_run: Option<LastRun<N>>,
     /// Direct triggers on their way (see `crate::triggers`): the app's, as they can come after a run.
     direct_triggers: Arc<crate::triggers::DirectTriggers>,
-    /// The acquisition clock when recording last started.
-    recording_since: f64,
-    /// While the nodes prepare to record, where the recording comes from when they're ready.
-    preparing: Option<std::sync::mpsc::Receiver<engine::Recording>>,
+    /// The acquisition clock when the recording took effect (its first pass), once it has.
+    recording_since: Option<f64>,
     dev_tools: dev_tools::DevTools,
     /// Offered in the basic view.
     quick_actions: &'static [crate::quick_action::QuickAction<N>],
@@ -370,8 +368,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             runner: None,
             last_run: None,
             direct_triggers: Arc::default(),
-            recording_since: 0.0,
-            preparing: None,
+            recording_since: None,
             dev_tools: dev_tools::DevTools::default(),
             workers: engine::default_workers(),
             frame_times: Default::default(),
@@ -634,7 +631,18 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
 
     /// Whether settings are locked: while recording, or preparing to.
     fn locked(&self) -> bool {
-        self.recording.is_some() || self.preparing.is_some()
+        self.recording.is_some()
+    }
+
+    /// Whether recording's been asked for and hasn't yet taken effect: its nodes preparing for it (writers opening
+    /// their files), or the workers making buffers for its plan.
+    fn is_preparing(&self) -> bool {
+        self.recording.is_some() && self.recording_since.is_none()
+    }
+
+    /// Whether recording, from its first pass.
+    fn is_recording(&self) -> bool {
+        self.recording_since.is_some()
     }
 
     /// While recording, undoes any change to how the graph processes (a setting, an edge, a node added or
@@ -670,7 +678,6 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
     /// Stops running, and recording, keeping what the run shared (see `LastRun`).
     fn stop_running(&mut self) {
         self.set_recording(None);
-        self.preparing = None;
         self.last_run =
             self.runner.take().map(|runner| LastRun { shared: runner.shared(), plan: self.snapshot.plan.clone() });
         self.started = None;
@@ -679,11 +686,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
 
     /// Stops recording, or preparing to.
     fn stop_recording(&mut self) {
-        if self.recording.is_some() {
-            self.set_recording(None);
-        } else if self.preparing.take().is_some() {
-            log::info!("Cancelled recording");
-        }
+        self.set_recording(None);
     }
 
     /// Stops recording, or acquisition, when no one's used the app for as long as the preferences say (whether the
@@ -753,15 +756,12 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         }
     }
 
-    /// Has the nodes prepare to record (see `Node::prepare_to_record`), on a thread of their own: once they're
-    /// ready, recording starts (in `keep_running`).
+    /// Asks for a recording: bakes a snapshot recording it (planned for recording, so with its writers), and has the
+    /// nodes in its plan prepare to record (see `Node::prepare_to_record`) on a thread of their own. The run carries
+    /// on with the snapshot before until they're ready and the workers have buffers for the new plan; recording
+    /// takes effect with its first pass (noticed in `keep_running`).
     fn prepare_to_record(&mut self, ctx: &egui::Context) {
         self.history.commit(&self.graph, &self.annotations);
-        self.bake_edits();
-        let snapshot = self.snapshot.clone();
-        let (sender, receiver) = std::sync::mpsc::channel();
-        let repaint = ctx.clone();
-        let triggers = self.direct_triggers.clone();
         // When it's asked for, which names and dates it: now, not once the nodes are ready, which can be a while.
         let start_requested_date = chrono::Local::now();
         let base = self.base_directories.place_at(&start_requested_date);
@@ -769,44 +769,61 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             Some(base) => log::info!("Preparing to record, in {}", base),
             None => log::info!("Preparing to record"),
         }
+        let recording = Arc::new(engine::Recording::new(base, start_requested_date));
+        self.set_recording(Some(recording.clone()));
+        let snapshot = self.snapshot.clone();
+        let (repaint, triggers) = (ctx.clone(), self.direct_triggers.clone());
         let spawned = std::thread::Builder::new().name("preparing to record".into()).spawn(move || {
-            let _ = sender.send(engine::Recording::prepare(&snapshot, base, start_requested_date, &triggers));
+            recording.prepare(&snapshot, &triggers);
             repaint.request_repaint();
         });
-        match spawned {
-            Ok(_) => self.preparing = Some(receiver),
-            Err(e) => self.set_status(ctx, format!("Couldn't prepare to record: {e}")),
+        if let Err(e) = spawned {
+            self.set_recording(None);
+            self.set_status(ctx, format!("Couldn't prepare to record: {e}"));
         }
     }
 
-    /// Starts or stops recording, taking it on now: a new snapshot, which the run carries on with. Recording isn't an
-    /// edit, so it's not undone, and doesn't count as an unsaved change.
+    /// Asks for a recording, or stops one (or cancels it, while it's preparing): a new snapshot, which the run moves
+    /// on to once it's ready (see `Recording`). Recording isn't an edit, so it's not undone, and doesn't count as an
+    /// unsaved change.
     fn set_recording(&mut self, recording: Option<Arc<engine::Recording>>) {
         let same = match (&self.recording, &recording) {
-            (Some(a), Some(b)) => Arc::ptr_eq(&a.recording, b),
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
             (a, b) => a.is_none() && b.is_none(),
         };
         if same {
             return;
         }
-        let on = recording.is_some();
-        let place = recording.as_ref().and_then(|r| r.base_directory().cloned());
-        self.recording = recording.map(engine::Recorded::now);
-        self.bake();
         let clock = self.runner.as_ref().map_or(0.0, |r| r.clock());
-        if let Some(base) = self.base_directories.current() {
-            match &place {
-                Some(place) => base.recording_started(place),
-                None if !on => base.recording_stopped(),
-                None => {}
+        match self.recording_since.take() {
+            Some(since) => {
+                if let Some(base) = self.base_directories.current() {
+                    base.recording_stopped();
+                }
+                log::info!("Stopped recording after {}", clock_text(clock - since));
+            }
+            None if self.recording.is_some() => log::info!("Cancelled recording"),
+            None => {}
+        }
+        self.recording = recording;
+        self.bake();
+    }
+
+    /// Once the recording's taken effect (its first pass has been sent): counts it from then, and saves the settings
+    /// with it.
+    fn notice_recording(&mut self) {
+        let Some(recording) = self.recording.clone().filter(|_| self.recording_since.is_none()) else { return };
+        let Some(effective) = recording.effective() else { return };
+        let ago = effective.at.elapsed().as_secs_f64();
+        let clock = (self.runner.as_ref().map_or(0.0, |r| r.clock()) - ago).max(0.0);
+        self.recording_since = Some(clock);
+        if let Some(place) = recording.base_directory() {
+            self.save_with_recording(place, recording.start_requested_date());
+            if let Some(base) = self.base_directories.current() {
+                base.recording_started(place);
             }
         }
-        if on {
-            self.recording_since = clock;
-            log::info!("Recording, from {}", clock_text(clock));
-        } else {
-            log::info!("Stopped recording after {}", clock_text(clock - self.recording_since));
-        }
+        log::info!("Recording, from {}", clock_text(clock));
     }
 
     fn undo(&mut self) {
@@ -1121,7 +1138,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             }
             self.canvas.frame_all();
         }
-        let recording = self.recording.is_some() || self.preparing.is_some();
+        let recording = self.recording.is_some();
         let types = self.base_directories.types();
         if let (Some(name), false) = (change.base_directory, recording)
             && let Some(index) = types.iter().position(|t| t.name == name)
@@ -1213,7 +1230,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                 }
             }
             Action::Record => {
-                if self.recording.is_some() || self.preparing.is_some() {
+                if self.recording.is_some() {
                     self.stop_recording();
                 } else {
                     if self.runner.is_none() {
@@ -1269,32 +1286,26 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
 
     /// Keeps the runner on the latest snapshot (see `Runner::update`).
     fn keep_running(&mut self, ctx: &egui::Context) {
-        if let Some(recording) = self.preparing.as_ref().and_then(|r| r.try_recv().ok()) {
-            self.preparing = None;
-            if let Some(place) = recording.base_directory() {
-                self.save_with_recording(place, recording.start_requested_date());
-            }
-            self.set_recording(Some(Arc::new(recording)));
-        }
+        self.notice_recording();
         let plan = &self.snapshot.plan;
         self.last_run.take_if(|last| !last.plan.same_shape(plan));
         let Some(runner) = &self.runner else { return };
         let snapshot = &self.snapshot;
-        let same_era = runner.update(snapshot);
+        let same_buffers = runner.update(snapshot);
         // Marking what changed, for the dev tools' chart.
         if let Some(before) = self.ran.take_if(|ran| ran.version != snapshot.version) {
             if let Some((label, detail)) = describe_change(&before, snapshot) {
                 use frame_times::MarkKind;
                 let kind = if before.recording.is_some() != snapshot.recording.is_some() {
                     MarkKind::Recording
-                } else if same_era {
+                } else if same_buffers {
                     MarkKind::Version
                 } else {
-                    MarkKind::Era
+                    MarkKind::NewBuffers
                 };
                 let label = match kind {
                     MarkKind::Recording => label,
-                    MarkKind::Era => format!("v{} new era", snapshot.version),
+                    MarkKind::NewBuffers => format!("v{} new buffers", snapshot.version),
                     MarkKind::Version => format!("v{}", snapshot.version),
                 };
                 self.frame_times.mark(snapshot.version, kind, label, detail);
@@ -1908,7 +1919,7 @@ impl<N: NodesEnum> UiStates<N> {
 }
 
 /// What the last run shared, kept once it's stopped, for the windows to go on showing as it was, until the next run, or
-/// until the graph changes in a way that would have started a new era, and what's kept might no longer fit it.
+/// until the graph changes in a way that would need new buffers, and what's kept might no longer fit it.
 struct LastRun<N: NodesEnum> {
     shared: Arc<engine::SharedByNode>,
     plan: Arc<engine::Plan<N>>,

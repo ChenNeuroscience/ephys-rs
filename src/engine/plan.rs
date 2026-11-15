@@ -9,7 +9,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::OnceLock;
 
-use super::pass::*;
+use super::pass_context::*;
 use super::{BufferUsage, DataStreamsEnum, Edges, Graph, NodeId, NodesEnum, Port, PortRole, TreeShake};
 
 type DataStream<N> = <<N as NodesEnum>::Edges as Edges>::DataStream;
@@ -69,6 +69,9 @@ pub struct Plan<N: NodesEnum> {
     pub(super) memory_inputs: Vec<(NodeId, Vec<Option<DataStream<N>>>)>,
     /// For each step, the same (for what it shares with the GUI).
     pub(super) step_inputs: Vec<Vec<Option<DataStream<N>>>>,
+    /// The same, for each step's outputs: with its inputs, what says whether a node's state can carry on from one
+    /// snapshot's plan to the next (see `run`).
+    pub(super) step_outputs: Vec<Vec<Option<DataStream<N>>>>,
     /// The memory each buffer takes, once asked (see `buffer_bytes`).
     bytes: OnceLock<Vec<usize>>,
 }
@@ -150,7 +153,8 @@ fn settle(
 }
 
 impl<N: NodesEnum> Plan<N> {
-    pub fn new(graph: &Graph<N>) -> Self {
+    /// Plans how to run `graph`, `recording` or not (see `Node::evaluate_tree_shake`).
+    pub fn new(graph: &Graph<N>, recording: bool) -> Self {
         let resolved = graph.resolve();
         let topological = graph.topological_order();
         // Which nodes run is up to them (see `settle`): of those that can, not disabled, with every output known.
@@ -168,7 +172,7 @@ impl<N: NodesEnum> Plan<N> {
             &can_run,
             &links,
             |id, inputs, outputs| match graph.get(id) {
-                Some(e) => e.node.evaluate_tree_shake(inputs, outputs),
+                Some(e) => e.node.evaluate_tree_shake(inputs, outputs, recording),
                 None => TreeShake::needing_all(false, inputs.len()),
             },
             |id| graph.get(id).map_or_else(|| format!("{id:?}"), |e| e.label.clone()),
@@ -247,8 +251,9 @@ impl<N: NodesEnum> Plan<N> {
             }
         }
 
-        let (mut steps, mut buffers, mut state_inputs, mut memory_inputs, mut step_inputs) =
-            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let (mut steps, mut buffers, mut state_inputs, mut memory_inputs) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let (mut step_inputs, mut step_outputs) = (Vec::new(), Vec::new());
         // The buffer each output (of the nodes so far) is in.
         let mut buffer_of: HashMap<(NodeId, usize), usize> = HashMap::new();
         for id in order(&runs, &before) {
@@ -313,9 +318,10 @@ impl<N: NodesEnum> Plan<N> {
             }
             let copies = Vec::new();
             step_inputs.push(state.input_streams.clone());
+            step_outputs.push(state.outputs.iter().map(|output| output.stream).collect());
             steps.push(Step { id, inputs, outputs, in_place: made_in_place, takes, state: node_state, memory, copies });
         }
-        Plan { steps, buffers, state_inputs, memory_inputs, step_inputs, bytes: OnceLock::new() }
+        Plan { steps, buffers, state_inputs, memory_inputs, step_inputs, step_outputs, bytes: OnceLock::new() }
     }
 
     /// The nodes that run, in the order they run in each pass.
@@ -440,13 +446,13 @@ mod tests {
         let end = add(&mut graph, "LFP Viewer");
         link(&mut graph, filter, 0, end, 0);
         // Board (continuous and events), then gain and filter working in the board's continuous buffer.
-        let plan = Plan::new(&graph);
+        let plan = Plan::new(&graph, false);
         assert_eq!(plan.buffers.len(), 2);
 
         // A viewer also reading the board's data runs before the gain edits it, so the gain still works in place.
         let viewer = add(&mut graph, "LFP Viewer");
         link(&mut graph, board, 0, viewer, 0);
-        let plan = Plan::new(&graph);
+        let plan = Plan::new(&graph, false);
         assert_eq!(plan.buffers.len(), 2);
         assert!(position(&plan, viewer) < position(&plan, gain));
 
@@ -455,7 +461,7 @@ mod tests {
         link(&mut graph, board, 0, second_gain, 0);
         let second_end = add(&mut graph, "LFP Viewer");
         link(&mut graph, second_gain, 0, second_end, 0);
-        let plan = Plan::new(&graph);
+        let plan = Plan::new(&graph, false);
         assert_eq!(plan.buffers.len(), 3);
         assert!(position(&plan, second_gain) < position(&plan, gain));
     }
@@ -469,8 +475,10 @@ mod tests {
         link(&mut graph, board, 0, writer, 0);
         link(&mut graph, board, 1, writer, 1);
         link(&mut graph, board, 0, viewer, 0);
+        // Not run unless recording.
+        assert!(Plan::new(&graph, false).steps.iter().all(|s| s.id != writer));
         // The writer takes both the board's buffers, after the viewer's read the continuous one.
-        let plan = Plan::new(&graph);
+        let plan = Plan::new(&graph, true);
         let step = |plan: &Plan<Nodes>, id| plan.steps.iter().find(|s| s.id == id).unwrap().takes.clone();
         assert_eq!(step(&plan, writer), vec![true, true]);
         assert!(position(&plan, viewer) < position(&plan, writer));
@@ -480,7 +488,7 @@ mod tests {
         link(&mut graph, board, 0, filter, 0);
         let end = add(&mut graph, "LFP Viewer");
         link(&mut graph, filter, 0, end, 0);
-        let plan = Plan::new(&graph);
+        let plan = Plan::new(&graph, true);
         assert_eq!(step(&plan, writer), vec![true, true], "it's always given buffers to take");
         let board_step = plan.steps.iter().find(|s| s.id == board).unwrap();
         let writer_step = plan.steps.iter().find(|s| s.id == writer).unwrap();
@@ -499,14 +507,14 @@ mod tests {
         link(&mut graph, board, 0, spectrum, 0);
         link(&mut graph, board, 0, viewer, 0);
         link(&mut graph, spectrum, 0, viewer, 1);
-        let runs = |graph: &Graph<Nodes>, id| Plan::new(graph).steps.iter().any(|s| s.id == id);
+        let runs = |graph: &Graph<Nodes>, id| Plan::new(graph, false).steps.iter().any(|s| s.id == id);
         assert!(runs(&graph, spectrum), "the viewer shows the spectra");
         if let Some(Nodes::LfpViewer(v)) = graph.get_mut(viewer).map(|e| &mut e.node) {
             v.spectrum = false;
         }
         assert!(!runs(&graph, spectrum), "nothing needs them");
         assert!(runs(&graph, board) && runs(&graph, viewer), "sources and viewers run regardless");
-        let plan = Plan::new(&graph);
+        let plan = Plan::new(&graph, false);
         assert_eq!(plan.steps.iter().find(|s| s.id == viewer).unwrap().inputs[1], None, "nor are they passed");
     }
 
@@ -518,7 +526,7 @@ mod tests {
         let alone = add(&mut graph, "TTL Viewer");
         let writer = add(&mut graph, "Write Raw");
         link(&mut graph, board, 0, viewer, 0);
-        let runs = |graph: &Graph<Nodes>, id| Plan::new(graph).steps.iter().any(|s| s.id == id);
+        let runs = |graph: &Graph<Nodes>, id| Plan::new(graph, false).steps.iter().any(|s| s.id == id);
         assert!(runs(&graph, board), "a source runs, as nodes do unless they say otherwise");
         assert!(runs(&graph, viewer), "something's running on its input");
         assert!(runs(&graph, alone), "nor need it say otherwise: there's just nothing to show");
@@ -577,7 +585,7 @@ mod tests {
         let viewer = add(&mut graph, "LFP Viewer");
         link(&mut graph, board, 0, spectrum, 0);
         link(&mut graph, spectrum, 0, viewer, 1);
-        let runs = |graph: &Graph<Nodes>, id| Plan::new(graph).steps.iter().any(|s| s.id == id);
+        let runs = |graph: &Graph<Nodes>, id| Plan::new(graph, false).steps.iter().any(|s| s.id == id);
         assert!(runs(&graph, spectrum) && runs(&graph, viewer), "it shows the spectra");
         if let Some(Nodes::LfpViewer(v)) = graph.get_mut(viewer).map(|e| &mut e.node) {
             v.spectrum = false;

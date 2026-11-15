@@ -56,7 +56,7 @@ pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + S
     fn gui_background(&mut self, context: &mut UiContext<Self::Edges>) -> Option<std::time::Instant>;
     /// Its `UiState` as it starts.
     fn new_ui_state(&self) -> Box<dyn Any>;
-    fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool]) -> TreeShake;
+    fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool], recording: bool) -> TreeShake;
     fn evaluate_buffer_usage(&self, inputs: usize, outputs: usize) -> BufferUsage;
     fn triggers(&self, setting: usize) -> &'static [super::TriggerKind<Self::Edges>];
     fn sends(&self, control: usize) -> &'static [super::TriggerKind<Self::Edges>];
@@ -256,9 +256,9 @@ macro_rules! nodes_enum {
                 }
             }
 
-            fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool]) -> $crate::engine::TreeShake {
+            fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool], recording: bool) -> $crate::engine::TreeShake {
                 match self {
-                    $($name::$variant(n) => $crate::engine::Node::evaluate_tree_shake(n, inputs, outputs)),+
+                    $($name::$variant(n) => $crate::engine::Node::evaluate_tree_shake(n, inputs, outputs, recording)),+
                 }
             }
 

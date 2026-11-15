@@ -220,31 +220,33 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
         None
     }
 
-    /// What its passes share with the GUI, made for each era it runs in, for its inputs' data streams then
-    /// (`inputs`). By default, `Default`'s.
+    /// What its passes share with the GUI, made afresh whenever its data streams change, for its inputs' data streams
+    /// then (`inputs`), and otherwise handed on from snapshot to snapshot. By default, `Default`'s.
     fn shared(&self, _inputs: &[Option<E::DataStream>]) -> Self::Shared {
         Self::Shared::default()
     }
 
-    /// The state for the first pass. `inputs` has the data stream connected to each input, if any.
+    /// The state for its first pass, and whenever its input or output data streams change. `inputs` has the data stream
+    /// connected to each input, if any.
     fn initial_state(&self, _inputs: &[Option<E::DataStream>]) -> Self::State {
         Self::State::default()
     }
 
     /// The tree shake: whether the node runs, and which of its inputs' data it needs, given which of its inputs (by
-    /// index) have something running into them, and which of its outputs have something running that needs them. The
-    /// plan starts with everything that can run running and needing everything, and asks again whenever what a node
-    /// would be told changes, until nothing does; so the answer must depend only on what it's told, and its settings.
-    /// It settles as long as more in use never makes a node run or need less; one that keeps changing its mind runs,
-    /// and needs, whatever either of its last two answers did (see `settle`, in `plan`).
+    /// index) have something running into them, which of its outputs have something running that needs them, and
+    /// whether the snapshot's recording (a recording's plan is made when Record's pressed, so its nodes prepare for it:
+    /// see `prepare_to_record`). The plan starts with everything that can run running and needing everything, and asks
+    /// again whenever what a node would be told changes, until nothing does; so the answer must depend only on what
+    /// it's told, and its settings. It settles as long as more in use never makes a node run or need less; one that
+    /// keeps changing its mind runs, and needs, whatever either of its last two answers did (see `settle`, in `plan`).
     ///
     /// By default, it runs, needing every input, whatever's in use: leaving it is always correct, only maybe slower. A
     /// node that only makes data for others runs only while something needs it, as the processing nodes do. One whose
-    /// running matters beyond the graph says when: a writer only while it's given something to record. A node needn't
-    /// need an input (a viewer with part of its view hidden, say): then the plan doesn't count it as in use for what
-    /// feeds it. Changing settings changes the plan (a new era), so they're for what's switched on and off, not what
-    /// changes pass to pass.
-    fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool]) -> TreeShake {
+    /// running matters beyond the graph says when: a writer only while recording, and given something to record. A node
+    /// needn't need an input (a viewer with part of its view hidden, say): then the plan doesn't count it as in use for
+    /// what feeds it. Changing settings changes the plan (new buffers for it), so they're for what's switched on and
+    /// off, not what changes pass to pass.
+    fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool], _recording: bool) -> TreeShake {
         TreeShake::needing_all(true, inputs.len())
     }
 
@@ -291,8 +293,8 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     /// controls see, the base directory recordings go in, if there is one (see `crate::base_directory`), when the
     /// recording starts (to name or date it by: the same for every node, and the settings saved with it), and what its
     /// controls can trigger directly (see `crate::triggers`).
-    /// Called on a thread of its own when recording's asked for; passes only start recording once every node's
-    /// ready, so this can take its time. What it returns is the node's (with `PassContext::take_prepared`) on the first
+    /// Called on a thread of its own when recording's asked for, for each node in the recording's plan; passes only
+    /// start recording once every node's ready (the snapshot before carrying on meanwhile), so this can take its time. What it returns is the node's (with `PassContext::take_prepared`) on the first
     /// pass that records.
     fn prepare_to_record(
         &self,

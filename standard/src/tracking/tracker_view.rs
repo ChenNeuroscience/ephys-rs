@@ -1022,7 +1022,7 @@ mod tests {
         let (_, setting, value) = update.unwrap();
         let value = value.downcast::<crate::Setting>().unwrap();
         graph.get_mut(camera).unwrap().node.set_setting(setting, *value);
-        assert!(!runner.update(&Snapshot::new(1, graph)), "a new era");
+        assert!(!runner.update(&Snapshot::new(1, graph)), "new buffers");
         assert!(wait_for(|| leds_shown(&runner, view) == Some(2)), "both LEDs: {:?}", leds_shown(&runner, view));
     }
 
@@ -1035,8 +1035,7 @@ mod tests {
             c.source = super::super::camera::Source::Fake { address };
         }
         let idle = Snapshot::new(0, graph);
-        let recorded =
-            Some(ephys_rs::engine::Recorded::now(std::sync::Arc::new(ephys_rs::engine::Recording::default())));
+        let recorded = Some(std::sync::Arc::new(ephys_rs::engine::Recording::default()));
         let recording = ephys_rs::engine::Snapshot::bake(1, idle.graph.clone(), idle.started, recorded);
         let runner = Runner::start(&recording, 2);
         let updated = || {

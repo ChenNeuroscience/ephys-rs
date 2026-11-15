@@ -355,7 +355,7 @@ impl Node<Edges> for SyncPositions {
     }
 
     /// Never in a pass: it's sent what to do (see `on_trigger`), and has nothing to do with the data going by.
-    fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool]) -> ephys_rs::engine::TreeShake {
+    fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool], _recording: bool) -> ephys_rs::engine::TreeShake {
         ephys_rs::engine::TreeShake::needing_all(false, inputs.len())
     }
 

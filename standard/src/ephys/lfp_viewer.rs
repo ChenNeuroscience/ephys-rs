@@ -298,7 +298,7 @@ impl Node<Edges> for LfpViewer {
 
     /// The spectra only while they're shown: otherwise, the Spectrum node needn't run at all. It runs while it's
     /// given something it needs.
-    fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool]) -> TreeShake {
+    fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool], _recording: bool) -> TreeShake {
         let needs: Vec<bool> = (0..inputs.len()).map(|input| input != 1 || self.spectrum).collect();
         let given = inputs.iter().zip(&needs).any(|(&used, &needed)| used && needed);
         TreeShake { runs: given, needs }

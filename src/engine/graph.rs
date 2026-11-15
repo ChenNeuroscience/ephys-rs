@@ -706,10 +706,10 @@ impl<N: NodesEnum> Graph<N> {
 /// For each node with controls, the value of the setting each is connected to, if it is.
 pub type ControlValues<N> = HashMap<NodeId, Vec<Option<Setting<N>>>>;
 
-/// A recording, once the nodes have prepared for it (see `Node::prepare_to_record`): its base directory (see
-/// `crate::base_directory`), when it was asked for, and what each node prepared, until its first recording pass takes
-/// it. When it took effect is the app's to say, as it takes it on (see `Recorded`).
-#[derive(Default)]
+/// A recording, from when it's asked for: its base directory (see `crate::base_directory`), when it was asked for and
+/// when it took effect, and what each node prepared for it (see `Node::prepare_to_record`), until its first recording
+/// pass takes it. A snapshot recording it doesn't run until its nodes have prepared (`is_ready`), the one before
+/// carrying on meanwhile.
 pub struct Recording {
     /// Where it's written, if there's a base directory.
     base_directory: Option<crate::base_directory::Place>,
@@ -717,32 +717,65 @@ pub struct Recording {
     start_requested_date: chrono::DateTime<chrono::Local>,
     /// What each node prepared, until its first recording pass takes it.
     prepared: Mutex<HashMap<NodeId, Box<dyn Any + Send>>>,
+    /// Whether its nodes have prepared (see `prepare`).
+    ready: std::sync::atomic::AtomicBool,
+    /// When it took effect: when the first pass recording it started (see `take_effect`).
+    effective: std::sync::OnceLock<Effective>,
+}
+
+/// When a recording took effect: the start of the time covered by its first pass (as opposed to when it was asked
+/// for), by the monotonic clock (for durations) and by the calendar (for files' headers).
+#[derive(Clone, Copy, Debug)]
+pub struct Effective {
+    pub at: Instant,
+    pub date: chrono::DateTime<chrono::Local>,
+}
+
+impl Default for Recording {
+    /// One with nothing to prepare, so ready: for trying nodes out.
+    fn default() -> Self {
+        let recording = Recording::new(None, chrono::Local::now());
+        recording.ready.store(true, std::sync::atomic::Ordering::Release);
+        recording
+    }
 }
 
 impl Recording {
-    /// Has every node that runs in `snapshot` prepare to record, in `base_directory` (if there is one), as asked for
-    /// at `start_requested_date`: the one time everything that names or dates the recording goes by. Can take a while (opening files,
-    /// say), so isn't for the GUI's thread.
-    pub fn prepare<N: NodesEnum>(
-        snapshot: &Snapshot<N>,
+    /// Asked for at `start_requested_date`, in `base_directory` (if there is one): the one time everything that names
+    /// or dates the recording goes by. Not ready until its nodes have prepared (see `prepare`).
+    pub fn new(
         base_directory: Option<crate::base_directory::Place>,
         start_requested_date: chrono::DateTime<chrono::Local>,
-        triggers: &Arc<crate::triggers::DirectTriggers>,
     ) -> Self {
+        Recording {
+            base_directory,
+            start_requested_date,
+            prepared: Default::default(),
+            ready: Default::default(),
+            effective: Default::default(),
+        }
+    }
+
+    /// Has every node that runs in `snapshot` (one recording this, so planned for it) prepare to record, and then
+    /// it's ready. Can take a while (opening files, say), so isn't for the GUI's thread.
+    pub fn prepare<N: NodesEnum>(&self, snapshot: &Snapshot<N>, triggers: &Arc<crate::triggers::DirectTriggers>) {
         let resolved = snapshot.graph.resolve();
-        let mut prepared = HashMap::new();
         for step in snapshot.plan.steps() {
             let (Some(entry), Some(state)) = (snapshot.graph.get(step.id), resolved.get(&step.id)) else { continue };
             let controls = snapshot.controls.get(&step.id).map_or(&[][..], Vec::as_slice);
-            let base = base_directory.as_ref();
+            let base = self.base_directory.as_ref();
             let reach = snapshot.graph.control_triggers(step.id, triggers);
-            if let Some(ready) =
-                entry.node.prepare_to_record(&state.input_streams, controls, base, &start_requested_date, &reach)
-            {
-                prepared.insert(step.id, ready);
+            let date = &self.start_requested_date;
+            if let Some(ready) = entry.node.prepare_to_record(&state.input_streams, controls, base, date, &reach) {
+                self.prepared.lock().unwrap().insert(step.id, ready);
             }
         }
-        Recording { base_directory, start_requested_date, prepared: Mutex::new(prepared) }
+        self.ready.store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Whether its nodes have prepared, so a snapshot recording it can run.
+    pub fn is_ready(&self) -> bool {
+        self.ready.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Its base directory, if there is one.
@@ -750,28 +783,28 @@ impl Recording {
         self.base_directory.as_ref()
     }
 
-    /// When it was asked for, by the calendar (see `prepare`).
+    /// When it was asked for, by the calendar (see `new`).
     pub fn start_requested_date(&self) -> &chrono::DateTime<chrono::Local> {
         &self.start_requested_date
+    }
+
+    /// When it took effect, once it has (a pass recording it has been sent).
+    pub fn effective(&self) -> Option<&Effective> {
+        self.effective.get()
+    }
+
+    /// Takes effect at `at` (the start of the time its first pass covers), if it hasn't already: the dispatcher's, as it
+    /// sends the first pass of a snapshot recording it (or a test's).
+    pub fn take_effect(&self, at: Instant) {
+        self.effective.get_or_init(|| {
+            let ago = chrono::Duration::from_std(Instant::now().saturating_duration_since(at)).unwrap_or_default();
+            Effective { at, date: chrono::Local::now() - ago }
+        });
     }
 
     /// What node `id` prepared, if it did and it hasn't been taken.
     pub fn take(&self, id: NodeId) -> Option<Box<dyn Any + Send>> {
         self.prepared.lock().unwrap().remove(&id)
-    }
-}
-
-/// A recording the app's taken on, and when, by the monotonic clock: when the passes record from, for durations.
-#[derive(Clone)]
-pub struct Recorded {
-    pub recording: Arc<Recording>,
-    pub started: Instant,
-}
-
-impl Recorded {
-    /// `recording`, taken on now.
-    pub fn now(recording: Arc<Recording>) -> Self {
-        Recorded { recording, started: Instant::now() }
     }
 }
 
@@ -789,19 +822,24 @@ pub struct Snapshot<N: NodesEnum> {
     /// When the run started (Play pressed), by the monotonic clock, while running.
     pub started: Option<Instant>,
     /// The recording, while recording.
-    pub recording: Option<Recorded>,
+    pub recording: Option<Arc<Recording>>,
 }
 
 impl<N: NodesEnum> Snapshot<N> {
     /// Bakes what the passes need of `graph`, and of a run that `started` (while running), with `recording` (while
     /// recording): planning how to run it from scratch.
-    pub fn bake(version: u64, graph: Arc<Graph<N>>, started: Option<Instant>, recording: Option<Recorded>) -> Self {
+    pub fn bake(
+        version: u64,
+        graph: Arc<Graph<N>>,
+        started: Option<Instant>,
+        recording: Option<Arc<Recording>>,
+    ) -> Self {
         let controls = graph
             .iter()
             .filter(|(_, entry)| !entry.node.controls().is_empty())
             .map(|(id, _)| (id, graph.control_values(id)))
             .collect();
-        let plan = Arc::new(Plan::new(&graph));
+        let plan = Arc::new(Plan::new(&graph, recording.is_some()));
         Snapshot { version, graph, plan, controls: Arc::new(controls), started, recording }
     }
 
@@ -968,7 +1006,8 @@ mod tests {
         graph.connect(port(detector, PortRole::Output, 0), port(viewer, PortRole::Input, 0)).unwrap();
         let control = graph.connect(port(viewer, PortRole::Control, 0), port(detector, PortRole::Setting, 0)).unwrap();
         let streams = |graph: &Graph<Nodes>, id| graph.resolve()[&id].input_streams[0].is_some();
-        let planned = |graph: &Graph<Nodes>, id| super::super::Plan::new(graph).steps().iter().any(|s| s.id == id);
+        let planned =
+            |graph: &Graph<Nodes>, id| super::super::Plan::new(graph, false).steps().iter().any(|s| s.id == id);
         assert!(streams(&graph, viewer) && planned(&graph, detector));
 
         // A disabled node makes nothing, and doesn't run.

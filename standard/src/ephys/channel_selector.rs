@@ -58,7 +58,7 @@ impl Node<Edges> for ChannelSelector {
     };
 
     /// Only while it's given something, and something needs what it makes.
-    fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool]) -> TreeShake {
+    fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool], _recording: bool) -> TreeShake {
         TreeShake::needing_all(inputs.contains(&true) && outputs.contains(&true), inputs.len())
     }
 
@@ -245,16 +245,14 @@ mod tests {
         let snapshot = Snapshot::new(0, graph.clone());
         let runner = Runner::start(&snapshot, 2);
         let place = Place { directory: dir.clone(), prefix: Some("trial a".into()) };
-        let prepared = Recording::prepare(&snapshot, Some(place), chrono::Local::now(), &Default::default());
-        let recording = ephys_rs::engine::Snapshot::bake(
-            1,
-            snapshot.graph.clone(),
-            snapshot.started,
-            Some(ephys_rs::engine::Recorded::now(Arc::new(prepared))),
-        );
-        assert!(runner.update(&recording), "recording carries on the same run");
+        let asked = Arc::new(Recording::new(Some(place), chrono::Local::now()));
+        let recording =
+            ephys_rs::engine::Snapshot::bake(1, snapshot.graph.clone(), snapshot.started, Some(asked.clone()));
+        asked.prepare(&recording, &Default::default());
+        assert!(!runner.update(&recording), "recording runs the writer, with buffers of its own");
         let deadline = Instant::now() + Duration::from_secs(10);
-        while runner.clock() < 0.5 && Instant::now() < deadline {
+        while asked.effective().is_none_or(|e| e.at.elapsed() < Duration::from_millis(500)) && Instant::now() < deadline
+        {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(runner.clock() >= 0.5, "samples came through, to {} s", runner.clock());
