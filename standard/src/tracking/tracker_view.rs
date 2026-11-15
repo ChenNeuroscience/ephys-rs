@@ -9,16 +9,19 @@
 use eframe::egui::{self, Color32, ColorImage, Rect, RichText, Sense, TextureHandle, TextureOptions};
 use serde::{Deserialize, Serialize};
 
+use std::sync::Arc;
+
 use super::camera::CaptureStats;
 use super::camera::capture::State;
 use super::camera::node::camera_settings_ui;
+use super::frame_gpu::{self, Upload};
 use super::led_chart::{self, History};
 use super::position_detector::{calibration_ui, crop_ui, detection_ui, timing_led_ui};
 use crate::standard::plots;
 use crate::standard::pool::Pool;
 use crate::standard::tracking::VideoBuffer;
 use crate::standard::tracking::overlay::{self, Drag, Overlay, Overlays, Xform};
-use crate::standard::tracking::pipeline::{Blob, row_spans};
+use crate::standard::tracking::pipeline::{Blob, RowSpans, row_spans};
 use crate::standard::tracking::{Crop, Detection, Positions};
 use crate::standard::widgets::{named_settings_grid, section};
 use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
@@ -788,16 +791,29 @@ pub fn show_frame(
     let scale = (area.width() / image.x).min(area.height() / image.y);
     let rect = Rect::from_center_size(area.center(), image * scale);
     let response = ui.interact(rect, ui.scope_id().with("frame"), Sense::click_and_drag());
+    draw_frame(ui, rect, frame, detection, overlays);
+    (rect, response)
+}
 
-    // Only redrawn when the frame or how it's shown changes.
+/// Draws `frame` in `rect`, shaded on the GPU if it can be (see `frame_gpu`), otherwise coloured here.
+fn draw_frame(ui: &egui::Ui, rect: Rect, frame: FrameView, detection: Option<&Detection>, overlays: &Overlays) {
+    if frame.width == 0 || frame.height == 0 || frame.pixels.len() < frame.width * frame.height {
+        return;
+    }
+    let id = ui.scope_id().with("frame texture");
+    if ephys_rs::gui::gpu::available(ui.ctx()) {
+        let upload: Arc<Upload> = ui.data_mut(|d| d.get_temp_mut_or_default::<Arc<Upload>>(id).clone());
+        upload.set(frame);
+        return frame_gpu::paint(ui, id, upload, rect, detection, overlays);
+    }
+    // Only coloured again when the frame or how it's shown changes.
     let shown = Shown {
         frame: (frame.id, frame.width, frame.height),
         detection: detection
             .map(|d| (d.threshold, d.edge_threshold(), d.crop, d.edge_width(), d.timing_spot(), d.timing_threshold())),
         overlays: (overlays.crop.visible, overlays.detection.visible, overlays.timing.visible),
     };
-    let texture_id = ui.scope_id().with("frame texture");
-    let cached: Option<(TextureHandle, Shown)> = ui.data(|d| d.get_temp(texture_id));
+    let cached: Option<(TextureHandle, Shown)> = ui.data(|d| d.get_temp(id));
     let texture = match cached {
         Some((texture, previous)) if previous == shown => texture,
         cached => {
@@ -809,13 +825,12 @@ pub fn show_frame(
                 }
                 None => ui.ctx().load_texture("frame", image, TextureOptions::LINEAR),
             };
-            ui.data_mut(|d| d.insert_temp(texture_id, (texture.clone(), shown)));
+            ui.data_mut(|d| d.insert_temp(id, (texture.clone(), shown)));
             texture
         }
     };
     let uv = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
     ui.painter().image(texture.id(), rect, uv, Color32::WHITE);
-    (rect, response)
 }
 
 /// What a frame's texture shows, so it's only redrawn when that changes.
@@ -828,38 +843,81 @@ struct Shown {
     overlays: (bool, bool, bool),
 }
 
-/// The frame in colour: grey, with above-threshold pixels in the crop highlighted (when detection's shown),
-/// and the outside of the crop black (when the crop's hidden). The timing LED's spot, if it's shown, is seen whatever the
-/// crop, with its own threshold.
+/// The frame in colour: grey, with above-threshold pixels in the crop highlighted (when detection's shown), and the
+/// outside of the crop black (when the crop's hidden). The timing LED's spot, if it's shown, is seen whatever the crop,
+/// with its own threshold. For showing it without the GPU (which shades it as it's drawn: see `frame_gpu`).
 fn colour_image(frame: FrameView, detection: Option<&Detection>, overlays: &Overlays) -> ColorImage {
     let (width, height) = (frame.width, frame.height);
     let mut pixels = Vec::with_capacity(width * height);
-    for (y, row) in frame.pixels.chunks_exact(width.max(1)).enumerate() {
-        let spans = detection.map(|d| (d, row_spans(d, y as u32, width as u32)));
-        for (x, &value) in row.iter().enumerate() {
-            let x = x as u32;
-            let colour = match spans {
-                None => Color32::from_gray(value),
-                Some((detection, spans)) => {
-                    let inside = x >= spans.outer.0 && x < spans.outer.1;
-                    let in_band = !(x >= spans.inner.0 && x < spans.inner.1);
-                    let threshold = if in_band { detection.edge_threshold() } else { detection.threshold };
-                    let in_timing = x >= spans.timing.0 && x < spans.timing.1;
-                    if in_timing && overlays.timing.visible {
-                        if value > detection.timing_threshold() { HIGHLIGHT } else { Color32::from_gray(value) }
-                    } else if !inside && !overlays.crop.visible && detection.crop != Crop::None {
-                        Color32::BLACK
-                    } else if inside && !in_timing && overlays.detection.visible && value > threshold {
-                        HIGHLIGHT
-                    } else {
-                        Color32::from_gray(value)
-                    }
+    let mut runs = Vec::new();
+    for (y, row) in frame.pixels.chunks_exact(width.max(1)).take(height).enumerate() {
+        row_runs(detection, overlays, y, width, &mut runs);
+        for &(start, end, look) in &runs {
+            let row = &row[start..end];
+            match look {
+                Look::Grey => pixels.extend(row.iter().map(|&v| Color32::from_gray(v))),
+                Look::Black => pixels.extend(std::iter::repeat_n(Color32::BLACK, row.len())),
+                Look::Above(t) => {
+                    pixels.extend(row.iter().map(|&v| if v > t { HIGHLIGHT } else { Color32::from_gray(v) }))
                 }
-            };
-            pixels.push(colour);
+            }
         }
     }
     ColorImage::new([width, height], pixels)
+}
+
+/// How a run of a row's pixels is shown.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Look {
+    Grey,
+    Black,
+    /// Highlighted above this threshold, grey otherwise.
+    Above(u8),
+}
+
+/// Row `y` as runs of pixels shown the same way (start, end, look), covering it: cut where the crop, its edge band
+/// and the timing LED's spot start and end, so each run's coloured without testing each pixel.
+fn row_runs(
+    detection: Option<&Detection>,
+    overlays: &Overlays,
+    y: usize,
+    width: usize,
+    runs: &mut Vec<(usize, usize, Look)>,
+) {
+    runs.clear();
+    let Some(detection) = detection else {
+        runs.push((0, width, Look::Grey));
+        return;
+    };
+    let spans = row_spans(detection, y as u32, width as u32);
+    let mut cuts = [0, width, 0, 0, 0, 0, 0, 0];
+    for (i, (start, end)) in [spans.outer, spans.inner, spans.timing].into_iter().enumerate() {
+        cuts[2 + 2 * i] = (start as usize).min(width);
+        cuts[3 + 2 * i] = (end as usize).min(width);
+    }
+    cuts.sort_unstable();
+    for pair in cuts.windows(2).filter(|pair| pair[0] < pair[1]) {
+        let look = look(detection, overlays, &spans, pair[0] as u32);
+        match runs.last_mut() {
+            Some(last) if last.2 == look => last.1 = pair[1],
+            _ => runs.push((pair[0], pair[1], look)),
+        }
+    }
+}
+
+/// How pixel `x` of a row with `spans` is shown.
+fn look(detection: &Detection, overlays: &Overlays, spans: &RowSpans, x: u32) -> Look {
+    let within = |(start, end): (u32, u32)| x >= start && x < end;
+    let (inside, in_band, in_timing) = (within(spans.outer), !within(spans.inner), within(spans.timing));
+    if in_timing && overlays.timing.visible {
+        Look::Above(detection.timing_threshold())
+    } else if !inside && !overlays.crop.visible && detection.crop != Crop::None {
+        Look::Black
+    } else if inside && !in_timing && overlays.detection.visible {
+        Look::Above(if in_band { detection.edge_threshold() } else { detection.threshold })
+    } else {
+        Look::Grey
+    }
 }
 
 #[cfg(test)]
@@ -1223,5 +1281,175 @@ mod tests {
         harness.run_steps(3);
         harness.snapshot("tracker_view_positions");
         assert!(harness.state() == &before, "it's only shown");
+    }
+
+    /// As `colour_image` was, testing every pixel, to check it against: the frame in colour: grey, with above-threshold
+    /// pixels in the crop highlighted (when detection's shown), and the outside of the crop black (when the crop's
+    /// hidden). The timing LED's spot, if it's shown, is seen whatever the crop, with its own threshold.
+    fn colour_image_per_pixel(frame: FrameView, detection: Option<&Detection>, overlays: &Overlays) -> ColorImage {
+        let (width, height) = (frame.width, frame.height);
+        let mut pixels = Vec::with_capacity(width * height);
+        for (y, row) in frame.pixels.chunks_exact(width.max(1)).enumerate() {
+            let spans = detection.map(|d| (d, row_spans(d, y as u32, width as u32)));
+            for (x, &value) in row.iter().enumerate() {
+                let x = x as u32;
+                let colour = match spans {
+                    None => Color32::from_gray(value),
+                    Some((detection, spans)) => {
+                        let inside = x >= spans.outer.0 && x < spans.outer.1;
+                        let in_band = !(x >= spans.inner.0 && x < spans.inner.1);
+                        let threshold = if in_band { detection.edge_threshold() } else { detection.threshold };
+                        let in_timing = x >= spans.timing.0 && x < spans.timing.1;
+                        if in_timing && overlays.timing.visible {
+                            if value > detection.timing_threshold() { HIGHLIGHT } else { Color32::from_gray(value) }
+                        } else if !inside && !overlays.crop.visible && detection.crop != Crop::None {
+                            Color32::BLACK
+                        } else if inside && !in_timing && overlays.detection.visible && value > threshold {
+                            HIGHLIGHT
+                        } else {
+                            Color32::from_gray(value)
+                        }
+                    }
+                };
+                pixels.push(colour);
+            }
+        }
+        ColorImage::new([width, height], pixels)
+    }
+
+    /// Detection with an edge band and a timing LED, and every combination of what's shown.
+    fn ways_of_showing() -> Vec<(Option<Detection>, Overlays)> {
+        let mut detection = Detection {
+            threshold: 120,
+            crop: Crop::Square { center: [64.0, 50.0], size: 70.0, angle: 0.3 },
+            ..Default::default()
+        };
+        detection.edge = crate::standard::tracking::EdgeThreshold { enabled: true, width: 6.0, threshold: 180 };
+        detection.timing_led.enabled = true;
+        (detection.timing_led.center, detection.timing_led.radius) = ([10.0, 12.0], 6.0);
+        (detection.timing_led.separate, detection.timing_led.threshold) = (true, 90);
+        let mut ways = vec![(None, Overlays::default())];
+        for bits in 0..8 {
+            let mut overlays = Overlays::default();
+            (overlays.crop.visible, overlays.detection.visible, overlays.timing.visible) =
+                (bits & 1 != 0, bits & 2 != 0, bits & 4 != 0);
+            ways.push((Some(detection.clone()), overlays));
+            ways.push((Some(Detection { crop: Crop::None, ..detection.clone() }), overlays));
+        }
+        ways
+    }
+
+    /// A frame of every grey, in a pattern.
+    fn test_pixels(width: usize, height: usize) -> Vec<u8> {
+        (0..width * height).map(|i| (i * 37 % 256) as u8).collect()
+    }
+
+    #[test]
+    fn colouring_by_runs_is_as_testing_every_pixel() {
+        let (width, height) = (131, 97);
+        let pixels = test_pixels(width, height);
+        let frame = FrameView { width, height, pixels: &pixels, id: 1 };
+        for (detection, overlays) in ways_of_showing() {
+            let by_runs = colour_image(frame, detection.as_ref(), &overlays);
+            let each = colour_image_per_pixel(frame, detection.as_ref(), &overlays);
+            assert_eq!(by_runs.size, each.size);
+            assert!(by_runs.pixels == each.pixels, "{:?}", detection.map(|d| d.crop));
+        }
+    }
+
+    #[test]
+    fn shaded_on_the_gpu_as_coloured_without_it() {
+        let (width, height) = (131, 97);
+        let pixels = test_pixels(width, height);
+        let (renderer, gpu) = ephys_rs::gui::gpu::test_renderer();
+        let shown = pixels.clone();
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size([width as f32, height as f32])
+            .renderer(renderer)
+            .build_ui_state(
+                move |ui, (detection, overlays): &mut (Option<Detection>, Overlays)| {
+                    let frame = FrameView { width, height, pixels: &shown, id: 1 };
+                    let rect = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width as f32, height as f32));
+                    draw_frame(ui, rect, frame, detection.as_ref(), overlays);
+                },
+                (None, Overlays::default()),
+            );
+        ephys_rs::gui::gpu::install(&harness.ctx, &gpu);
+        assert!(ephys_rs::gui::gpu::available(&harness.ctx), "shaded on the GPU, not coloured as it's checked against");
+        let frame = FrameView { width, height, pixels: &pixels, id: 1 };
+        for (detection, overlays) in ways_of_showing() {
+            *harness.state_mut() = (detection.clone(), overlays);
+            harness.run_steps(2);
+            let image = harness.render().expect("rendered");
+            let expected = colour_image(frame, detection.as_ref(), &overlays);
+            let wrong: Vec<(usize, usize)> = (0..height)
+                .flat_map(|y| (0..width).map(move |x| (x, y)))
+                .filter(|&(x, y)| {
+                    let [r, g, b, _] = image.get_pixel(x as u32, y as u32).0;
+                    let want = expected.pixels[y * width + x];
+                    [r, g, b] != [want.r(), want.g(), want.b()]
+                })
+                .collect();
+            assert!(
+                wrong.is_empty(),
+                "{} pixels differ, first {:?}: {:?}",
+                wrong.len(),
+                wrong.first(),
+                detection.map(|d| d.crop)
+            );
+        }
+    }
+
+    /// Drawn smaller than it is, a pixel above the threshold isn't lost.
+    #[test]
+    fn shrunk_on_the_gpu_a_lone_bright_pixel_still_shows() {
+        let (width, height) = (400, 300);
+        let mut pixels = vec![20u8; width * height];
+        pixels[151 * width + 203] = 250;
+        let (renderer, gpu) = ephys_rs::gui::gpu::test_renderer();
+        let mut harness =
+            egui_kittest::Harness::builder().with_size([100.0, 75.0]).renderer(renderer).build_ui(move |ui| {
+                let frame = FrameView { width, height, pixels: &pixels, id: 1 };
+                let detection = Detection { threshold: 200, ..Default::default() };
+                let overlays = Overlays { detection: Overlay { visible: true, locked: false }, ..Default::default() };
+                draw_frame(
+                    ui,
+                    Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(100.0, 75.0)),
+                    frame,
+                    Some(&detection),
+                    &overlays,
+                );
+            });
+        ephys_rs::gui::gpu::install(&harness.ctx, &gpu);
+        harness.run_steps(2);
+        let image = harness.render().expect("rendered");
+        let lit: Vec<_> =
+            image.enumerate_pixels().filter(|(_, _, p)| p.0[..3] == [255, 70, 70]).map(|(x, y, _)| (x, y)).collect();
+        assert_eq!(lit, vec![(50, 37)], "the one screen pixel over it");
+        let [r, g, b, _] = image.get_pixel(10, 10).0;
+        assert_eq!([r, g, b], [20, 20, 20], "elsewhere, the frame's grey");
+    }
+
+    /// How long colouring a 1280 × 1024 frame takes, in a release build: `cargo test --release colouring_takes --
+    /// --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn colouring_takes() {
+        let (width, height) = (1280, 1024);
+        let pixels = test_pixels(width, height);
+        let frame = FrameView { width, height, pixels: &pixels, id: 1 };
+        let detection =
+            Detection { crop: Crop::Square { center: [640.0, 512.0], size: 800.0, angle: 0.1 }, ..Default::default() };
+        let overlays = Overlays::default();
+        let time = |f: &dyn Fn() -> ColorImage| {
+            let start = std::time::Instant::now();
+            for _ in 0..50 {
+                std::hint::black_box(f());
+            }
+            start.elapsed().as_secs_f64() * 1000.0 / 50.0
+        };
+        let each = time(&|| colour_image_per_pixel(frame, Some(&detection), &overlays));
+        let runs = time(&|| colour_image(frame, Some(&detection), &overlays));
+        eprintln!("each pixel {each:.2} ms, by runs {runs:.2} ms");
     }
 }

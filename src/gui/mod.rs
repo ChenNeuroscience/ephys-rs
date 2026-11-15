@@ -13,6 +13,7 @@ mod dialog;
 mod disk_space;
 mod docking;
 mod frame_times;
+pub mod gpu;
 mod help;
 mod icons;
 #[cfg(target_os = "macos")]
@@ -89,6 +90,9 @@ pub fn run<C: Components>(path: Option<PathBuf>) -> eframe::Result {
         options,
         Box::new(|cc| {
             let mut app = app;
+            if let Some(render_state) = &cc.wgpu_render_state {
+                gpu::install(&cc.egui_ctx, render_state);
+            }
             let saved: Option<String> = cc.storage.and_then(|s| eframe::get_value(s, THEME_KEY));
             if let Some(index) = saved.and_then(|name| app.themes.iter().position(|t| t.name == name)) {
                 app.theme = index;
@@ -2045,7 +2049,9 @@ mod tests {
         // Most tests work on the graph.
         app.layout.mode = Mode::Advanced;
         assert!(app.status.is_none(), "the example opens");
-        let mut harness = Harness::builder().with_size([1400.0, 850.0]).wgpu().build_ui_state(run_app, app);
+        let (renderer, gpu) = super::gpu::test_renderer();
+        let mut harness = Harness::builder().with_size([1400.0, 850.0]).renderer(renderer).build_ui_state(run_app, app);
+        super::gpu::install(&harness.ctx, &gpu);
         harness.run_steps(3);
         harness
     }
@@ -2969,7 +2975,9 @@ mod tests {
     fn says_where_the_last_crash_report_is() {
         let mut app = TestApp::new(THEMES);
         app.last_crash = Some(PathBuf::from("/reports/crash-2026-11-02-210040.txt"));
-        let mut harness = Harness::builder().with_size([1000.0, 600.0]).wgpu().build_ui_state(run_app, app);
+        let (renderer, gpu) = super::gpu::test_renderer();
+        let mut harness = Harness::builder().with_size([1000.0, 600.0]).renderer(renderer).build_ui_state(run_app, app);
+        super::gpu::install(&harness.ctx, &gpu);
         harness.run_steps(2);
         assert!(harness.query_by_label_contains("crash-2026-11-02-210040.txt").is_some(), "where it is");
         harness.snapshot("last_crash");
@@ -2986,7 +2994,9 @@ mod tests {
             serde_json::json!({ "types": { "Subject, date and trial": { "directory": "/nowhere/recordings" } } });
         let types = crate::components::BASE_DIRECTORIES;
         app.base_directories = BaseDirectories::new(types, Some(&saved));
-        let mut harness = Harness::builder().with_size([1400.0, 920.0]).wgpu().build_ui_state(run_app, app);
+        let (renderer, gpu) = super::gpu::test_renderer();
+        let mut harness = Harness::builder().with_size([1400.0, 920.0]).renderer(renderer).build_ui_state(run_app, app);
+        super::gpu::install(&harness.ctx, &gpu);
         harness.run_steps(3);
         assert_eq!(harness.state().layout.mode, Mode::Basic, "it starts in the basic view");
         harness.snapshot("basic_empty");
@@ -3163,7 +3173,9 @@ mod tests {
     #[test]
     fn what_no_one_is_using_stops_with_a_warning_first_and_a_notice_after() {
         let app = TestApp::new(THEMES);
-        let mut harness = Harness::builder().with_size([900.0, 600.0]).wgpu().build_ui_state(run_app, app);
+        let (renderer, gpu) = super::gpu::test_renderer();
+        let mut harness = Harness::builder().with_size([900.0, 600.0]).renderer(renderer).build_ui_state(run_app, app);
+        super::gpu::install(&harness.ctx, &gpu);
         harness.run_steps(2);
         let ctx = harness.ctx.clone();
         harness.state_mut().perform(&ctx, Action::Record);

@@ -161,7 +161,8 @@ fn make_tour() {
     let app = TestApp::new(THEMES)
         .with_quick_actions(crate::components::quick_actions::QUICK_ACTIONS)
         .with_base_directories(crate::components::BASE_DIRECTORIES);
-    let harness = Harness::builder().with_size(SIZE).with_pixels_per_point(SCALE).wgpu().build_ui_state(
+    let (renderer, gpu) = crate::gui::gpu::test_renderer();
+    let harness = Harness::builder().with_size(SIZE).with_pixels_per_point(SCALE).renderer(renderer).build_ui_state(
         |ui, app: &mut TestApp| {
             app.logic(&ui.ctx().clone());
             app.show(ui);
@@ -169,6 +170,7 @@ fn make_tour() {
         },
         app,
     );
+    crate::gui::gpu::install(&harness.ctx, &gpu);
     let mut tour = Tour { harness, frames: Vec::new() };
     let ctx = tour.harness.ctx.clone();
     let button = egui::accesskit::Role::Button;
