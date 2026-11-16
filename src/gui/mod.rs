@@ -1498,7 +1498,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                             &mut self.graph,
                             resolved,
                             colours,
-                            self.runner.as_ref().map(Runner::progress),
+                            self.runner.is_some(),
                             shared.as_deref(),
                             ui_state,
                             base.as_ref(),
@@ -1722,7 +1722,6 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                 resolved: &resolved,
                 colours,
                 runner: self.runner.as_ref(),
-                progress: self.runner.as_ref().map(Runner::progress),
                 shared: shared.as_deref(),
                 ui_states: &self.ui_states,
                 base_directory: base.as_ref(),
@@ -1810,13 +1809,12 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         let (colours, base, running, locked) =
             (self.colours(), self.base_directories.place(), self.runner.is_some(), self.locked());
         let advanced = self.layout.mode == Mode::Advanced;
-        let live = self.runner.as_ref().map(Runner::progress);
         let mut events = Vec::new();
         for id in self.graph.ids().filter(|id| !ticked.nodes.contains(id)).collect::<Vec<_>>() {
             let (Some(state), Some(ui_state)) = (resolved.get(&id), self.ui_states.get(&self.graph, id)) else {
                 continue;
             };
-            let Some(mut tools) = node_tools::NodeTools::new(&self.graph, id, advanced, live, &mut events) else {
+            let Some(mut tools) = node_tools::NodeTools::new(&self.graph, id, advanced, &mut events) else {
                 continue;
             };
             let inputs = &state.input_streams;
@@ -2406,8 +2404,10 @@ mod tests {
         harness.state_mut().perform(&ctx, Action::Play);
         harness.run_steps(2);
         let detector = node_named(harness.state(), "Spike Detector");
-        let thresholds =
-            crate::Setting::Thresholds(crate::standard::spikes::Thresholds { values: vec![60.0], detect: None });
+        let thresholds = crate::Setting::Thresholds(crate::standard::spikes::Thresholds {
+            values: vec![60.0],
+            ..Default::default()
+        });
         let value = Box::new(thresholds.clone());
         harness.state().direct_triggers.trigger_settings_update(detector, 0, value);
         harness.state_mut().perform(&ctx, Action::Play);
@@ -2423,8 +2423,10 @@ mod tests {
         let detector = node_named(harness.state(), "Spike Detector");
         let before = harness.state().graph.get(detector).unwrap().node.settings()[0].value.clone();
         harness.state_mut().set_recording(Some(Arc::new(engine::Recording::default())));
-        let thresholds =
-            crate::Setting::Thresholds(crate::standard::spikes::Thresholds { values: vec![60.0], detect: None });
+        let thresholds = crate::Setting::Thresholds(crate::standard::spikes::Thresholds {
+            values: vec![60.0],
+            ..Default::default()
+        });
         harness.state().direct_triggers.trigger_settings_update(detector, 0, Box::new(thresholds));
         harness.run_steps(2);
         assert_eq!(harness.state().graph.get(detector).unwrap().node.settings()[0].value, before);
@@ -2457,7 +2459,10 @@ mod tests {
         harness.run_steps(2);
         assert_eq!(found(&harness), run, "a node moved");
         if let Some(entry) = harness.state_mut().graph.get_mut(detector) {
-            entry.node.set_setting(0, crate::standard::spikes::Thresholds { values: vec![60.0], detect: None }.into());
+            entry.node.set_setting(
+                0,
+                crate::standard::spikes::Thresholds { values: vec![60.0], ..Default::default() }.into(),
+            );
         }
         harness.run_steps(2);
         assert_eq!(found(&harness), run, "a value changed");
@@ -2611,7 +2616,10 @@ mod tests {
         let first = harness.state().runner.as_ref().unwrap().graph().clone();
         let gain_free = node_named(harness.state(), "Spike Detector");
         if let Some(entry) = harness.state_mut().graph.get_mut(gain_free) {
-            entry.node.set_setting(0, crate::standard::spikes::Thresholds { values: vec![60.0], detect: None }.into());
+            entry.node.set_setting(
+                0,
+                crate::standard::spikes::Thresholds { values: vec![60.0], ..Default::default() }.into(),
+            );
         }
         harness.run_steps(2);
         assert!(!Arc::ptr_eq(&first, &harness.state().runner.as_ref().unwrap().graph()));
@@ -3065,9 +3073,10 @@ mod tests {
             let app = harness.state_mut();
             let before = app.graph.get(detector).unwrap().node.clone();
             if let Some(entry) = app.graph.get_mut(detector) {
-                entry
-                    .node
-                    .set_setting(0, crate::standard::spikes::Thresholds { values: vec![77.0], detect: None }.into());
+                entry.node.set_setting(
+                    0,
+                    crate::standard::spikes::Thresholds { values: vec![77.0], ..Default::default() }.into(),
+                );
             }
             let copied = paste_settings::copy(&app.graph, &[detector], &app.config_patches);
             app.graph.get_mut(detector).unwrap().node = before;
@@ -3595,8 +3604,8 @@ mod tests {
         );
     }
 
-    /// When node `node`'s setting (its gains, or thresholds) was asked to be detected from the data, if it is.
-    fn auto_detect_asked(app: &TestApp, node: NodeId) -> Option<std::time::Instant> {
+    /// When auto detect was started for node `node`'s setting (its gains, or thresholds), if it's going.
+    fn auto_detect_started(app: &TestApp, node: NodeId) -> Option<std::time::Instant> {
         match &app.graph.get(node)?.node.settings().first()?.value {
             crate::Setting::Gains(gains) => gains.detect,
             crate::Setting::Thresholds(thresholds) => thresholds.detect,
@@ -3604,15 +3613,20 @@ mod tests {
         }
     }
 
-    /// How far along node `node`'s auto detect is, as its window sees it, while it's asked for.
+    /// How far along node `node`'s auto detect is, as its window sees it, while it's going.
     fn auto_detect_progress(app: &TestApp, node: NodeId) -> Option<f32> {
-        let asked = auto_detect_asked(app, node)?;
-        Some(app.runner.as_ref().map_or(0.0, |runner| runner.progress().of(node, asked)))
+        let started = auto_detect_started(app, node)?;
+        let sampling = match &app.graph.get(node)?.node.settings().first()?.value {
+            crate::Setting::Gains(gains) => gains.sampling,
+            crate::Setting::Thresholds(thresholds) => thresholds.sampling,
+            _ => return None,
+        };
+        Some(crate::standard::auto_detect::estimated_progress(started, sampling))
     }
 
-    /// Asks for node `node`'s setting (its gains, or thresholds) to be detected from the data, as of `at`, or (`None`)
-    /// no longer: as its window does.
-    fn ask_to_auto_detect(app: &mut TestApp, node: NodeId, at: Option<std::time::Instant>) {
+    /// Starts auto detect for node `node`'s setting (its gains, or thresholds), as of `at`, or (`None`) stops it: as its
+    /// window does.
+    fn set_auto_detect(app: &mut TestApp, node: NodeId, at: Option<std::time::Instant>) {
         match app.graph.get_mut(node).map(|entry| &mut entry.node) {
             Some(Nodes::ContinuousGain(gain)) => gain.gains.detect = at,
             Some(Nodes::SpikeGain(gain)) => gain.gains.detect = at,
@@ -3636,7 +3650,7 @@ mod tests {
             harness.run_steps(1);
             let completed = harness.state().runner.as_ref().map_or(0, |runner| runner.stats().completed);
             if !triggered && completed > 5 {
-                ask_to_auto_detect(harness.state_mut(), gain, Some(std::time::Instant::now()));
+                set_auto_detect(harness.state_mut(), gain, Some(std::time::Instant::now()));
                 triggered = true;
             } else if triggered {
                 progress = auto_detect_progress(harness.state(), gain).unwrap_or(1.0);
@@ -3708,7 +3722,7 @@ mod tests {
         assert_eq!(progress(&harness, gain), None, "the gains wait for them");
         assert!(harness.query_by_label("thresholds, then gains").is_some(), "it says so");
         // The thresholds done (or stopped from the detector's own window), the gains go.
-        ask_to_auto_detect(harness.state_mut(), detector, None);
+        set_auto_detect(harness.state_mut(), detector, None);
         harness.run_steps(2);
         assert!(progress(&harness, gain).is_some(), "then the gains");
         harness.get_by_label("Stop").click();
@@ -3874,14 +3888,14 @@ mod tests {
         history.commit(&graph, &annotations);
 
         let (mut undone, _) = history.undo().unwrap();
-        assert_eq!(*gains(&mut undone), before, "the old gains, not asked for");
+        assert_eq!(*gains(&mut undone), before, "the old gains, not detecting");
         history.commit(&undone, &annotations);
         assert!(history.can_redo(), "bringing it back isn't an edit");
         let (mut redone, _) = history.redo().unwrap();
         assert_eq!(*gains(&mut redone), chosen);
         history.undo();
-        let (mut asking, _) = history.redo().unwrap();
-        assert_eq!(gains(&mut asking).detect, None, "redoing the asking doesn't ask again");
+        let (mut starting, _) = history.redo().unwrap();
+        assert_eq!(gains(&mut starting).detect, None, "redoing the start doesn't start it again");
     }
 
     #[test]

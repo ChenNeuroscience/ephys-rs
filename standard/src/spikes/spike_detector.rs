@@ -1,7 +1,7 @@
 //! The Spike Detector: finds spikes in groups of channels (tetrodes, say) of continuous data: a crossing of a
 //! channel's threshold (µV past zero, either way: below its negative, or above it), on any of a group's channels,
 //! then the waveform on all of them around the peak that follows (its furthest from zero). Each channel's threshold
-//! is a setting, set by hand, from a Spike Viewer, or chosen from the data when it's asked to be ("auto detect": see
+//! is a setting, set by hand, from a Spike Viewer, or chosen from the data ("auto detect": see
 //! `Thresholds::detect`): a
 //! percentile of the channel's samples over a while, on whichever side of zero it's further out, times a factor.
 //!
@@ -9,13 +9,11 @@
 //! spikes always fit the buffer (see `Spikes`). A spike is only found once its whole waveform has come, so
 //! those near the end of a pass come with the next, which carries on from the end of this one.
 
-use std::time::Instant;
-
 use eframe::egui;
 use ephys_rs::engine::TreeShake;
 use serde::{Deserialize, Serialize};
 
-use crate::standard::auto_detect::{Distribution, PercentMultiple, SAMPLING, asked_again, auto_detect_ui};
+use crate::standard::auto_detect::{Distribution, PercentMultiple, SAMPLING, auto_detect_ui, detect_changed};
 use crate::standard::spikes::{Spike, Spikes, Thresholds};
 use crate::standard::widgets::{combo, input_summary, named_settings_grid, require_input, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
@@ -27,7 +25,7 @@ use ephys_rs::engine::{
 use ephys_rs::gui::widgets::info_icon;
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(from = "Saved")]
 pub struct SpikeDetector {
     /// Channels in each group: 4 for tetrodes, 1 for single electrodes.
     pub group_size: u32,
@@ -35,10 +33,8 @@ pub struct SpikeDetector {
     pub pre: u32,
     pub post: u32,
     pub thresholds: Thresholds,
-    /// Thresholds chosen from the data are this, of each channel's samples either side of zero, sampled for so many
-    /// seconds.
+    /// Thresholds chosen from the data are this, of each channel's samples either side of zero.
     pub level: PercentMultiple,
-    pub sampling: f32,
 }
 
 impl Default for SpikeDetector {
@@ -49,8 +45,35 @@ impl Default for SpikeDetector {
             post: 32,
             thresholds: Thresholds::default(),
             level: PercentMultiple { percent: 98.0, multiple: 2.1 },
-            sampling: 20.0,
         }
+    }
+}
+
+/// What graphs have saved: as it is now, or with how long auto detect samples for on the node, not its thresholds.
+#[derive(Deserialize)]
+#[serde(default)]
+struct Saved {
+    group_size: u32,
+    pre: u32,
+    post: u32,
+    thresholds: Thresholds,
+    level: PercentMultiple,
+    sampling: Option<f32>,
+}
+
+impl Default for Saved {
+    fn default() -> Self {
+        let SpikeDetector { group_size, pre, post, thresholds, level } = SpikeDetector::default();
+        Saved { group_size, pre, post, thresholds, level, sampling: None }
+    }
+}
+
+impl From<Saved> for SpikeDetector {
+    fn from(Saved { group_size, pre, post, mut thresholds, level, sampling }: Saved) -> Self {
+        if let Some(sampling) = sampling {
+            thresholds.sampling = sampling;
+        }
+        SpikeDetector { group_size, pre, post, thresholds, level }
     }
 }
 
@@ -86,7 +109,7 @@ pub struct Detector {
     next: Vec<i64>,
 }
 
-/// What the node carries from pass to pass: the detector, and, only while the thresholds are asked to be detected (see
+/// What the node carries from pass to pass: the detector, and, only while the thresholds are being detected (see
 /// `crate::standard::auto_detect`), what it's choosing them from.
 #[derive(Default)]
 pub struct Detecting {
@@ -98,20 +121,18 @@ pub struct Detecting {
 
 /// While choosing thresholds from the data: seconds sampled, of how many; and each channel's samples so far.
 struct Sampling {
-    /// When it was asked for (see `Thresholds::detect`).
-    asked: Instant,
     elapsed: f64,
     seconds: f64,
     /// Each channel's samples (none, once it's done).
     data: Vec<Distribution>,
-    /// Whether the thresholds have been chosen: they're still asked to be in the snapshot, till the update choosing
-    /// them (which also says they're no longer asked) takes over.
+    /// Whether the thresholds have been chosen: `detect`'s still set in the snapshot, till the update choosing them
+    /// (which also clears it) takes over.
     done: bool,
 }
 
 impl Sampling {
-    fn new(asked: Instant, seconds: f64, channels: usize) -> Self {
-        Sampling { asked, elapsed: 0.0, seconds, data: vec![Distribution::default(); channels], done: false }
+    fn new(seconds: f64, channels: usize) -> Self {
+        Sampling { elapsed: 0.0, seconds, data: vec![Distribution::default(); channels], done: false }
     }
 }
 
@@ -173,11 +194,11 @@ impl Node<Edges> for SpikeDetector {
     type UiState = ();
     type GlobalSettings = ();
 
-    /// The detector, for the node's data streams, unless they're the same; and while the thresholds are asked to be
+    /// The detector, for the node's data streams, unless they're the same; and while the thresholds are being
     /// detected, each channel's room to sample into.
     fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Detecting, (), Self> {
         let before = context.previous.as_ref().map(|previous| previous.node.thresholds.detect);
-        if context.same_streams() && !asked_again(self.thresholds.detect, before) {
+        if context.same_streams() && !detect_changed(self.thresholds.detect, before) {
             return Prepared::nothing().into();
         }
         let input = match context.inputs[0] {
@@ -188,9 +209,9 @@ impl Node<Edges> for SpikeDetector {
             Some(c) => Detector::new(self.stream(c.channels, c.sample_rate)),
             None => Detector::default(),
         });
-        let seconds = self.sampling.clamp(*SAMPLING.start(), *SAMPLING.end()) as f64;
+        let seconds = self.thresholds.sampling.clamp(*SAMPLING.start(), *SAMPLING.end()) as f64;
         let channels = input.map_or(0, |c| c.channels as usize);
-        let sampling = self.thresholds.detect.map(|asked| Sampling::new(asked, seconds, channels));
+        let sampling = self.thresholds.detect.map(|_| Sampling::new(seconds, channels));
         Prepared::shared(Detecting { detector, sampling }).into()
     }
 
@@ -364,16 +385,18 @@ impl Node<Edges> for SpikeDetector {
                         .response
                     });
                     setting(ui, "Sampling for", |ui| {
-                        ui.add(egui::DragValue::new(&mut node.sampling).range(SAMPLING).speed(0.2).suffix(" s"))
-                            .on_hover_text("How long to sample for")
+                        ui.add(
+                            egui::DragValue::new(&mut node.thresholds.sampling).range(SAMPLING).speed(0.2).suffix(" s"),
+                        )
+                        .on_hover_text("How long to sample for")
                     });
                 });
             });
             auto_detect_ui(
                 ui,
                 context,
-                None,
                 &mut node.thresholds.detect,
+                node.thresholds.sampling,
                 "Sample each channel, then set its threshold",
             );
             if channels > 0 {
@@ -385,8 +408,8 @@ impl Node<Edges> for SpikeDetector {
 }
 
 impl SpikeDetector {
-    /// While the thresholds are asked to be detected, samples each channel for a while, then triggers an update to
-    /// thresholds from it, no longer asked.
+    /// While the thresholds are being detected, samples each channel for a while, then triggers an update to
+    /// thresholds from it, with `detect` cleared.
     fn choose_thresholds(&self, pass: &PassContext<Edges>, sampling: &mut Option<Sampling>) {
         if let Some(sampling) = sampling.as_mut().filter(|s| !s.done) {
             if let Some(Some(Buffer::Continuous(input))) = pass.inputs.first() {
@@ -395,7 +418,6 @@ impl SpikeDetector {
                 }
             }
             sampling.elapsed += pass.duration;
-            pass.report_progress(sampling.asked, (sampling.elapsed / sampling.seconds) as f32);
             if sampling.elapsed >= sampling.seconds {
                 let mut thresholds = Thresholds { detect: None, ..self.thresholds.clone() };
                 for (channel, data) in sampling.data.iter().enumerate() {
@@ -405,7 +427,7 @@ impl SpikeDetector {
                     }
                 }
                 pass.trigger_settings_update(0, Setting::Thresholds(thresholds));
-                *sampling = Sampling { done: true, ..Sampling::new(sampling.asked, sampling.seconds, 0) };
+                *sampling = Sampling { done: true, ..Sampling::new(sampling.seconds, 0) };
             }
         }
     }
@@ -543,21 +565,38 @@ mod tests {
         assert!(found.len() >= 10, "{}", found.len());
     }
 
+    /// Graphs saved with how long auto detect samples for on the node, and the thresholds just their values, keep it,
+    /// in the thresholds now; and the gains' nodes likewise.
     #[test]
-    fn chooses_thresholds_from_the_noise_when_triggered() {
-        let detector = SpikeDetector {
-            sampling: 4.0,
-            level: PercentMultiple { percent: 98.0, multiple: 2.0 },
-            ..Default::default()
-        };
+    fn graphs_saved_before_keep_how_long_auto_detect_samples_for() {
+        let old = serde_json::json!({"thresholds": [50.0, 60.0], "sampling": 12.0});
+        let detector: SpikeDetector = serde_json::from_value(old).unwrap();
+        assert_eq!(
+            (detector.thresholds.values.as_slice(), detector.thresholds.sampling),
+            ([50.0, 60.0].as_slice(), 12.0)
+        );
+        let saved: SpikeDetector = serde_json::from_value(serde_json::to_value(&detector).unwrap()).unwrap();
+        assert!(saved == detector, "saved as it is now, and opened again the same");
+        let gain: crate::standard::spikes::spike_gain::SpikeGain =
+            serde_json::from_value(serde_json::json!({"sampling": 7.0})).unwrap();
+        assert_eq!(gain.gains.sampling, 7.0);
+        let gain: crate::standard::ephys::continuous_gain::ContinuousGain =
+            serde_json::from_value(serde_json::json!({"gains": {"scope": "All"}})).unwrap();
+        assert_eq!(gain.gains.sampling, crate::standard::spikes::DEFAULT_SAMPLING_SECONDS, "not said: the default");
+    }
+
+    #[test]
+    fn chooses_thresholds_from_the_noise_when_detecting() {
+        let mut detector =
+            SpikeDetector { level: PercentMultiple { percent: 98.0, multiple: 2.0 }, ..Default::default() };
+        detector.thresholds.sampling = 4.0;
         let stream = Continuous { channels: 4, sample_rate: 30000.0 };
-        let asked = std::time::Instant::now();
+        let started = std::time::Instant::now();
         let inputs = [Some(DataStream::Continuous(stream))];
-        let mut detector = detector;
-        detector.thresholds.detect = Some(asked);
+        detector.thresholds.detect = Some(started);
         let mut state = ephys_rs::engine::fresh_state(&detector, &inputs);
         let spikes = detector.stream(4, 30000.0);
-        let (progress, direct) = (ephys_rs::engine::Progress::default(), ephys_rs::triggers::DirectTriggers::default());
+        let direct = ephys_rs::triggers::DirectTriggers::default();
         let passes = (4.0 / PASS_DURATION).round() as u64;
         for sequence in 0..passes {
             let mut input = stream.buffer(PASS_DURATION);
@@ -572,7 +611,7 @@ mod tests {
             let mut outputs = [Buffer::Spikes(spikes.buffer(PASS_DURATION))];
             let inputs = [Some(&input)];
             let mut pass = PassContext::new(sequence, PASS_DURATION, &inputs, &mut outputs);
-            (pass.progress, pass.direct) = (&progress, &direct);
+            pass.direct = &direct;
             detector.process(&mut pass, &mut state, &mut ());
         }
         let updates = direct.take_settings_updates();

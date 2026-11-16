@@ -14,6 +14,8 @@
 
 use std::time::Instant;
 
+use crate::standard::auto_detect::estimated_progress;
+
 use eframe::egui::{self, Align2, FontId, Key, Pos2, Rect, Sense, Shape, Stroke};
 use serde::{Deserialize, Serialize};
 
@@ -43,7 +45,7 @@ const WAVEFORMS: usize = 30;
 pub struct SpikeViewer {
     /// Each channel's plot's height, in points (its width follows).
     pub plot_height: f32,
-    /// What to detect from the data, when asked.
+    /// What to detect from the data, when it's run.
     pub detect: Detect,
     /// The amplified µV either side of zero the plots show (the spikes as they're recorded): the gains' full scale, to
     /// begin with.
@@ -100,9 +102,9 @@ pub struct AutoDetecting {
 }
 
 impl AutoDetecting {
-    /// Asks for the next, once what's asked is done; or gives up, if it can't be (as acquiring's stopped, say).
+    /// Starts the next, once what's going is done; or gives up, if it can't be (as acquiring's stopped, say).
     fn carry_on(&mut self, context: &mut UiContext<Edges>) {
-        let running = [THRESHOLDS, GAINS_CONTROL].into_iter().any(|c| asked(context, c).is_some());
+        let running = [THRESHOLDS, GAINS_CONTROL].into_iter().any(|c| detecting(context, c).is_some());
         if running || self.next.is_empty() {
             return;
         }
@@ -111,22 +113,22 @@ impl AutoDetecting {
             self.next.clear();
             return;
         }
-        ask(context, control, Some(Instant::now()));
+        set_detect(context, control, Some(Instant::now()));
     }
 }
 
-/// When the setting control `control` connects to (the thresholds, or the gains) was asked to be detected from the
-/// data, if it is (see `crate::standard::auto_detect`).
-fn asked(context: &UiContext<Edges>, control: usize) -> Option<Instant> {
+/// When auto detect was started for the setting control `control` connects to (the thresholds, or the gains), if it's
+/// going, and how many seconds it samples for (see `crate::standard::auto_detect`).
+fn detecting(context: &UiContext<Edges>, control: usize) -> Option<(Instant, f32)> {
     match &context.controls[control] {
-        Some(Setting::Thresholds(thresholds)) => thresholds.detect,
-        Some(Setting::Gains(gains)) => gains.detect,
+        Some(Setting::Thresholds(thresholds)) => thresholds.detect.map(|started| (started, thresholds.sampling)),
+        Some(Setting::Gains(gains)) => gains.detect.map(|started| (started, gains.sampling)),
         _ => None,
     }
 }
 
-/// Asks for the setting control `control` connects to to be detected from the data, as of `at`, or (`None`) no longer.
-fn ask(context: &mut UiContext<Edges>, control: usize, at: Option<Instant>) {
+/// Starts auto detect for the setting control `control` connects to, as of `at`, or (`None`) stops it.
+fn set_detect(context: &mut UiContext<Edges>, control: usize, at: Option<Instant>) {
     match &mut context.controls[control] {
         Some(Setting::Thresholds(thresholds)) => thresholds.detect = at,
         Some(Setting::Gains(gains)) => gains.detect = at,
@@ -423,7 +425,9 @@ impl SpikeViewer {
             // What it's detecting, while it is.
             let running: Vec<(usize, f32)> = [GAINS_CONTROL, THRESHOLDS]
                 .into_iter()
-                .filter_map(|c| asked(context, c).map(|asked| (c, context.progress(Some(c), asked))))
+                .filter_map(|c| {
+                    detecting(context, c).map(|(started, sampling)| (c, estimated_progress(started, sampling)))
+                })
                 .collect();
             // And what's to come after.
             let next = context.ui_state::<AutoDetecting>().next.clone();
@@ -445,7 +449,7 @@ impl SpikeViewer {
                 if stop.on_hover_text("Stop detecting, leaving what's not done as it was").clicked() {
                     context.ui_state::<AutoDetecting>().next.clear();
                     for &(control, _) in &running {
-                        ask(context, control, None);
+                        set_detect(context, control, None);
                     }
                 }
                 let what = |control| if control == THRESHOLDS { "thresholds" } else { "gains" };
@@ -475,7 +479,7 @@ impl SpikeViewer {
                 let run = ui.add_enabled(can, egui::Button::new("Run").small());
                 if run.on_hover_text(tip).on_disabled_hover_text(why).clicked() {
                     let (first, rest) = (controls[0].0, controls[1..].iter().map(|c| c.0).collect());
-                    ask(context, first, Some(Instant::now()));
+                    set_detect(context, first, Some(Instant::now()));
                     context.ui_state::<AutoDetecting>().next = rest;
                 }
             }

@@ -221,14 +221,51 @@ fn spread(values: &[f32], default: f32, show: impl Fn(f32) -> String) -> String 
 
 /// Each channel's spike detection threshold: µV past zero, either way (a spike's a crossing below its negative, or
 /// above it).
-#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
-#[serde(transparent)]
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+#[serde(from = "SavedThresholds")]
 pub struct Thresholds {
     pub values: Vec<f32>,
-    /// When they were asked to be detected from the data, until they are (see `crate::standard::auto_detect`): a
-    /// transient setting, not saved (see `EdgeType::clear_transient`).
+    /// Seconds auto detect samples the data for, to choose them from (see `crate::standard::auto_detect`).
+    pub sampling: f32,
+    /// When auto detect was started for them, until it's done: a transient setting, not saved (see
+    /// `EdgeType::clear_transient`).
     #[serde(skip)]
     pub detect: Option<std::time::Instant>,
+}
+
+impl Default for Thresholds {
+    fn default() -> Self {
+        Thresholds { values: Vec::new(), sampling: DEFAULT_SAMPLING_SECONDS, detect: None }
+    }
+}
+
+/// What graphs have saved of thresholds: as they are now, or just the values, before they said how long auto detect
+/// samples for.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum SavedThresholds {
+    Now {
+        values: Vec<f32>,
+        #[serde(default = "default_sampling")]
+        sampling: f32,
+    },
+    Values(Vec<f32>),
+}
+
+impl From<SavedThresholds> for Thresholds {
+    fn from(saved: SavedThresholds) -> Self {
+        match saved {
+            SavedThresholds::Now { values, sampling } => Thresholds { values, sampling, detect: None },
+            SavedThresholds::Values(values) => Thresholds { values, ..Default::default() },
+        }
+    }
+}
+
+/// Seconds auto detect samples the data for, to begin with.
+pub const DEFAULT_SAMPLING_SECONDS: f32 = 20.0;
+
+fn default_sampling() -> f32 {
+    DEFAULT_SAMPLING_SECONDS
 }
 
 impl Thresholds {
@@ -298,15 +335,18 @@ pub struct Gains {
     pub scope: GainScope,
     /// Each channel's gain (channels past the end have the default range's).
     pub gains: Vec<f32>,
-    /// When they were asked to be detected from the data, until they are (see `crate::standard::auto_detect`): a
-    /// transient setting, not saved (see `EdgeType::clear_transient`).
+    /// Seconds auto detect samples the data for, to choose them from (see `crate::standard::auto_detect`).
+    pub sampling: f32,
+    /// When auto detect was started for them, until it's done: a transient setting, not saved (see
+    /// `EdgeType::clear_transient`).
     #[serde(skip)]
     pub detect: Option<std::time::Instant>,
 }
 
 impl Default for Gains {
     fn default() -> Self {
-        Gains { fill_uv: RECORDED_FULL_SCALE_UV, scope: GainScope::default(), gains: Vec::new(), detect: None }
+        let (scope, sampling) = (GainScope::default(), DEFAULT_SAMPLING_SECONDS);
+        Gains { fill_uv: RECORDED_FULL_SCALE_UV, scope, gains: Vec::new(), sampling, detect: None }
     }
 }
 

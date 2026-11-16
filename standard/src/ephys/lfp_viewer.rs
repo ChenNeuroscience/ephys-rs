@@ -878,7 +878,7 @@ fn gains_ui(ui: &mut egui::Ui, context: &mut UiContext<Edges>, gains: &mut Gains
     } else {
         ui.label("each channel's");
     }
-    auto_detect_ui(ui, context, Some(GAINS), &mut gains.detect, "Sample each channel, then set its gain");
+    auto_detect_ui(ui, context, &mut gains.detect, gains.sampling, "Sample each channel, then set its gain");
 }
 
 /// Whether a selection's channels are "all".

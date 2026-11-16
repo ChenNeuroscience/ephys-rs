@@ -7,7 +7,7 @@ use eframe::egui;
 use super::Event;
 use super::icons::Icon;
 use super::toolbar;
-use crate::engine::{Graph, NodeId, NodeToolbar, NodesEnum, Port, PortRole, Progress};
+use crate::engine::{Graph, NodeId, NodeToolbar, NodesEnum, Port, PortRole};
 use crate::triggers::{AnyTrigger, TriggerKey};
 
 /// A node's toolbar, for a frame: what it shows, and where what's clicked goes.
@@ -22,22 +22,13 @@ pub struct NodeTools<'e> {
     /// it's connected to, if it is.
     pub own_triggers: Vec<TriggerKey>,
     pub controls: Vec<Option<(NodeId, Vec<TriggerKey>)>>,
-    /// While running, how far along nodes are with what they've been asked to do (see `UiContext::progress`).
-    pub progress: Option<&'e Progress>,
     /// What's clicked becomes these.
     pub events: &'e mut Vec<Event>,
 }
 
 impl<'e> NodeTools<'e> {
-    /// For node `id`'s window: what it can trigger, through its own settings and its controls, and while running, how
-    /// far along nodes are with what they've been asked to do (`progress`).
-    pub fn new<N: NodesEnum>(
-        graph: &Graph<N>,
-        id: NodeId,
-        advanced: bool,
-        progress: Option<&'e Progress>,
-        events: &'e mut Vec<Event>,
-    ) -> Option<Self> {
+    /// For node `id`'s window: what it can trigger, through its own settings and its controls.
+    pub fn new<N: NodesEnum>(graph: &Graph<N>, id: NodeId, advanced: bool, events: &'e mut Vec<Event>) -> Option<Self> {
         let entry = graph.get(id)?;
         let node = &entry.node;
         let keys = |kinds: &[crate::engine::TriggerKind<N::Edges>]| kinds.iter().map(|&k| k.into()).collect();
@@ -49,7 +40,7 @@ impl<'e> NodeTools<'e> {
             })
             .collect();
         let (show_in_basic, enabled) = (entry.shown_in_basic(), !entry.disabled);
-        Some(NodeTools { id, show_in_basic, enabled, advanced, own_triggers, controls, progress, events })
+        Some(NodeTools { id, show_in_basic, enabled, advanced, own_triggers, controls, events })
     }
 
     /// The node whose trigger of kind `kind` is meant, if it takes one: the node itself, or the one a control connects
@@ -74,17 +65,6 @@ impl NodeToolbar for NodeTools<'_> {
 
     fn can_trigger(&self, control: Option<usize>, kind: TriggerKey) -> bool {
         self.trigger_node(control, kind).is_some()
-    }
-
-    fn progress(&self, control: Option<usize>, asked: std::time::Instant) -> f32 {
-        let node = match control {
-            None => Some(self.id),
-            Some(control) => self.controls.get(control).and_then(|c| c.as_ref()).map(|(node, _)| *node),
-        };
-        match (node, self.progress) {
-            (Some(node), Some(progress)) => progress.of(node, asked),
-            _ => 0.0,
-        }
     }
 
     fn open_control_target(&mut self, control: usize) {
@@ -177,35 +157,16 @@ mod tests {
             graph.add(Nodes::create(node_type), [0.0, 0.0])
         };
         let (command, gain) = (add(&mut graph, "Run Command"), add(&mut graph, "Spike Gain"));
-        let progress = Progress::default();
-        for running in [false, true] {
-            let live = running.then_some(&progress);
-            let mut events = Vec::new();
-            let mut tools = NodeTools::new(&graph, command, true, live, &mut events).unwrap();
-            assert!(tools.can_trigger(None, TriggerKind::RunOnFiles.into()), "running or not");
-            tools.trigger(None, AnyTrigger::new(crate::Trigger::from(RunOnFiles(Vec::new()))));
-            assert!(matches!(events.as_slice(), [Event::Trigger(node, _)] if *node == command));
-
-            let mut events = Vec::new();
-            let mut tools = NodeTools::new(&graph, gain, true, live, &mut events).unwrap();
-            assert!(!tools.can_trigger(None, TriggerKind::RunOnFiles.into()), "not what it takes");
-            tools.trigger(None, AnyTrigger::new(crate::Trigger::from(RunOnFiles(Vec::new()))));
-            assert!(events.is_empty());
-        }
-    }
-
-    /// A window sees how far along its node is with what it was asked to do, while running.
-    #[test]
-    fn a_window_sees_its_nodes_progress() {
-        let mut graph = Graph::<Nodes>::default();
-        let gain = graph.add(Nodes::create(NodeType::named("Spike Gain").unwrap()), [0.0, 0.0]);
-        let (progress, asked) = (Progress::default(), std::time::Instant::now());
-        progress.report(gain, asked, 0.5);
         let mut events = Vec::new();
-        let tools = NodeTools::new(&graph, gain, true, Some(&progress), &mut events).unwrap();
-        assert_eq!(tools.progress(None, asked), 0.5);
-        assert_eq!(tools.progress(Some(0), asked), 0.0, "no such control");
-        let tools = NodeTools::new(&graph, gain, true, None, &mut events).unwrap();
-        assert_eq!(tools.progress(None, asked), 0.0, "not running");
+        let mut tools = NodeTools::new(&graph, command, true, &mut events).unwrap();
+        assert!(tools.can_trigger(None, TriggerKind::RunOnFiles.into()));
+        tools.trigger(None, AnyTrigger::new(crate::Trigger::from(RunOnFiles(Vec::new()))));
+        assert!(matches!(events.as_slice(), [Event::Trigger(node, _)] if *node == command));
+
+        let mut events = Vec::new();
+        let mut tools = NodeTools::new(&graph, gain, true, &mut events).unwrap();
+        assert!(!tools.can_trigger(None, TriggerKind::RunOnFiles.into()), "not what it takes");
+        tools.trigger(None, AnyTrigger::new(crate::Trigger::from(RunOnFiles(Vec::new()))));
+        assert!(events.is_empty());
     }
 }

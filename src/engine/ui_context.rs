@@ -97,14 +97,6 @@ impl<'a, E: Edges> UiContext<'a, E> {
         self.tools.as_ref().is_some_and(|t| t.can_trigger(control, kind.into()))
     }
 
-    /// A node can be asked to do something over a while, with the data going by (an auto detect, say), by a transient
-    /// setting saying when it was asked (see `EdgeType::clear_transient`). This says how far along the node is (the
-    /// node itself, or the one control `control` connects to) with what was asked at `asked`, from 0 to 1, as its
-    /// passes say (`PassContext::report_progress`): 0 until they do, or while not running.
-    pub fn progress(&self, control: Option<usize>, asked: std::time::Instant) -> f32 {
-        self.tools.as_ref().map_or(0.0, |t| t.progress(control, asked))
-    }
-
     /// Opens the window of the node control `control` connects to (to change its settings there, say).
     pub fn open_control_target(&mut self, control: usize) {
         if let Some(tools) = &mut self.tools {
@@ -133,8 +125,6 @@ pub trait NodeToolbar {
     /// Sends a trigger (see `UiContext::trigger`).
     fn trigger(&mut self, control: Option<usize>, trigger: AnyTrigger);
     fn can_trigger(&self, control: Option<usize>, kind: TriggerKey) -> bool;
-    /// How far along it is, or the node a control connects to, with what was asked when (see `UiContext::progress`).
-    fn progress(&self, control: Option<usize>, asked: std::time::Instant) -> f32;
     fn open_control_target(&mut self, control: usize);
 
     /// Whether the app's in advanced mode.

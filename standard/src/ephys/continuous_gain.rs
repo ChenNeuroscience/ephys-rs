@@ -1,16 +1,14 @@
 //! The Continuous Gain: multiplies each channel of continuous data (µV) by its gain, as an amplifier does (×2 doubles
-//! it), into amplified µV: what's recorded (Write LTX's EEG's int8 values cover ±250 µV of them). Gains can be one
-//! for all channels, or one each (see `Gains`). They can be chosen from the data when they're asked to be ("auto
-//! detect", from its window or a viewer's: see `Gains::detect`): its passes sample each channel for a while, then have its mean, plus a multiple of a percentile's
-//! distance from it, fill what's recorded (`Gains::fill_uv`). Sign doesn't count.
-
-use std::time::Instant;
+//! it), into amplified µV: what's recorded (Write LTX's EEG's int8 values cover ±250 µV of them). Gains can be one for
+//! all channels, or one each (see `Gains`). They can be chosen from the data when their auto detect's started (from its
+//! window or a viewer's: see `Gains::detect`): its passes sample each channel for a while, then have its mean, plus a
+//! multiple of a percentile's distance from it, fill what's recorded (`Gains::fill_uv`). Sign doesn't count.
 
 use eframe::egui;
 use ephys_rs::engine::{BufferUsage, Prepare, PrepareContext, Prepared, TreeShake};
 use serde::{Deserialize, Serialize};
 
-use crate::standard::auto_detect::{Distribution, PercentMultiple, SAMPLING, asked_again, auto_detect_ui};
+use crate::standard::auto_detect::{Distribution, PercentMultiple, SAMPLING, auto_detect_ui, detect_changed};
 use crate::standard::spikes::{Channels, DEFAULT_RANGE_UV, GainScope, Gains, RANGES_UV, fill_field, gain_field};
 
 use crate::standard::widgets::{input_summary, named_settings_grid, require_input, setting};
@@ -19,11 +17,9 @@ use ephys_rs::engine::{Category, Input, Node, NodeInfo, Output, PassContext, Set
 use ephys_rs::gui::widgets::info_icon;
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(from = "Saved")]
 pub struct ContinuousGain {
     pub gains: Gains,
-    /// Seconds to sample the data for, to choose the gains from.
-    pub sampling: f32,
     /// What's to fill what's recorded, when choosing them: this, of each channel's samples.
     pub level: PercentMultiple,
 }
@@ -31,15 +27,39 @@ pub struct ContinuousGain {
 impl Default for ContinuousGain {
     fn default() -> Self {
         ContinuousGain {
-            gains: Gains { scope: GainScope::All, ..Default::default() },
-            sampling: 10.0,
+            gains: Gains { scope: GainScope::All, sampling: 10.0, ..Default::default() },
             level: PercentMultiple { percent: 98.0, multiple: 2.0 },
         }
     }
 }
 
+/// What graphs have saved: as it is now, or with how long auto detect samples for on the node, not its gains.
+#[derive(Deserialize)]
+#[serde(default)]
+struct Saved {
+    gains: Gains,
+    level: PercentMultiple,
+    sampling: Option<f32>,
+}
+
+impl Default for Saved {
+    fn default() -> Self {
+        let ContinuousGain { gains, level } = ContinuousGain::default();
+        Saved { gains, level, sampling: None }
+    }
+}
+
+impl From<Saved> for ContinuousGain {
+    fn from(Saved { mut gains, level, sampling }: Saved) -> Self {
+        if let Some(sampling) = sampling {
+            gains.sampling = sampling;
+        }
+        ContinuousGain { gains, level }
+    }
+}
+
 /// While choosing the gains from the data (an auto detect: see `crate::standard::auto_detect`): what's been added up of
-/// each channel so far. Only while the gains are asked to be detected.
+/// each channel so far. Only while the gains are being detected.
 #[derive(Default)]
 pub struct Gaining {
     sampling: Option<Sampling>,
@@ -51,20 +71,18 @@ impl ephys_rs::engine::PassState for Gaining {
 }
 
 struct Sampling {
-    /// When it was asked for (see `Gains::detect`).
-    asked: Instant,
     elapsed: f64,
     seconds: f64,
     /// Each channel's samples (none, once it's done).
     data: Vec<Distribution>,
-    /// Whether the gains have been chosen: they're still asked to be in the snapshot, till the update choosing them
-    /// (which also says they're no longer asked) takes over.
+    /// Whether the gains have been chosen: `detect`'s still set in the snapshot, till the update choosing them (which
+    /// also clears it) takes over.
     done: bool,
 }
 
 impl Sampling {
-    fn new(asked: Instant, seconds: f64, channels: usize) -> Self {
-        Sampling { asked, elapsed: 0.0, seconds, data: vec![Distribution::default(); channels], done: false }
+    fn new(seconds: f64, channels: usize) -> Self {
+        Sampling { elapsed: 0.0, seconds, data: vec![Distribution::default(); channels], done: false }
     }
 
     /// Each channel's range (µV): `level` of what's sampled.
@@ -127,23 +145,23 @@ impl Node<Edges> for ContinuousGain {
         }
     }
 
-    /// While the gains are asked to be detected, each channel's room to sample into.
+    /// While the gains are being detected, each channel's room to sample into.
     fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Gaining, (), Self> {
         let before = context.previous.as_ref().map(|previous| previous.node.gains.detect);
-        if context.same_streams() && !asked_again(self.gains.detect, before) {
+        if context.same_streams() && !detect_changed(self.gains.detect, before) {
             return Prepared::nothing().into();
         }
         let channels = match context.inputs[0] {
             Some(DataStream::Continuous(stream)) => stream.channels as usize,
             _ => 0,
         };
-        let seconds = self.sampling.clamp(*SAMPLING.start(), *SAMPLING.end()) as f64;
-        let sampling = self.gains.detect.map(|asked| Sampling::new(asked, seconds, channels));
+        let seconds = self.gains.sampling.clamp(*SAMPLING.start(), *SAMPLING.end()) as f64;
+        let sampling = self.gains.detect.map(|_| Sampling::new(seconds, channels));
         Prepared::shared(Gaining { sampling }).into()
     }
 
-    /// While the gains are asked to be detected, samples each channel (in µV) for a while, then triggers an update to
-    /// gains from it, no longer asked; and multiplies each channel by its gain.
+    /// While the gains are being detected, samples each channel (in µV) for a while, then triggers an update to
+    /// gains from it, with `detect` cleared; and multiplies each channel by its gain.
     fn process(&self, pass: &mut PassContext<Edges>, gaining: &mut Gaining, _: &mut ()) {
         let input = match pass.inputs[0] {
             Some(Buffer::Continuous(input)) => Some(input),
@@ -157,7 +175,6 @@ impl Node<Edges> for ContinuousGain {
                 output.channel(channel).iter().for_each(|x| data.add(*x));
             }
             sampling.elapsed += pass.duration;
-            let progress = (sampling.elapsed / sampling.seconds) as f32;
             let done = sampling.elapsed >= sampling.seconds;
             let layout = Channels { count: channels, group_size: 1 };
             let chosen = done.then(|| {
@@ -165,10 +182,9 @@ impl Node<Edges> for ContinuousGain {
                 gains.set_ranges(&sampling.choose(self.level), layout);
                 gains
             });
-            pass.report_progress(sampling.asked, progress);
             if let Some(gains) = chosen {
                 pass.trigger_settings_update(0, Setting::Gains(gains));
-                *sampling = Sampling { done: true, ..Sampling::new(sampling.asked, sampling.seconds, 0) };
+                *sampling = Sampling { done: true, ..Sampling::new(sampling.seconds, 0) };
             }
         }
 
@@ -255,12 +271,18 @@ impl Node<Edges> for ContinuousGain {
                         .response
                     });
                     setting(ui, "Sampling for", |ui| {
-                        ui.add(egui::DragValue::new(&mut node.sampling).range(SAMPLING).speed(0.2).suffix(" s"))
+                        ui.add(egui::DragValue::new(&mut node.gains.sampling).range(SAMPLING).speed(0.2).suffix(" s"))
                             .on_hover_text("How long to sample for")
                     });
                 });
             });
-            auto_detect_ui(ui, context, None, &mut node.gains.detect, "Sample each channel, then set its gain");
+            auto_detect_ui(
+                ui,
+                context,
+                &mut node.gains.detect,
+                node.gains.sampling,
+                "Sample each channel, then set its gain",
+            );
             ui.add_space(4.0);
             input_summary(ui, context.inputs);
         });
@@ -276,14 +298,14 @@ mod tests {
     #[test]
     fn multiplies_and_chooses_gains_from_the_data() {
         let level = PercentMultiple { percent: 98.0, multiple: 3.0 };
-        let gain = ContinuousGain { sampling: 4.0, level, ..Default::default() };
+        let mut gain = ContinuousGain { level, ..Default::default() };
+        gain.gains.sampling = 4.0;
         let stream = Continuous { channels: 2, sample_rate: 1000.0 };
-        let asked = std::time::Instant::now();
+        let started = std::time::Instant::now();
         let inputs = [Some(DataStream::Continuous(stream))];
-        let mut gain = gain;
-        gain.gains.detect = Some(asked);
+        gain.gains.detect = Some(started);
         let mut state = ephys_rs::engine::fresh_state(&gain, &inputs);
-        let (progress, direct) = (ephys_rs::engine::Progress::default(), ephys_rs::triggers::DirectTriggers::default());
+        let direct = ephys_rs::triggers::DirectTriggers::default();
         let passes = (4.0 / PASS_DURATION).round() as u64;
         for sequence in 0..passes {
             // 100 µV either side of zero on the first channel, 300 on the second.
@@ -298,7 +320,7 @@ mod tests {
             let inputs = [Some(&input)];
             let mut outputs = [Buffer::Continuous(stream.buffer(PASS_DURATION))];
             let mut pass = PassContext::new(sequence, PASS_DURATION, &inputs, &mut outputs);
-            (pass.progress, pass.direct) = (&progress, &direct);
+            pass.direct = &direct;
             gain.process(&mut pass, &mut state, &mut ());
             let Buffer::Continuous(out) = &outputs[0] else { unreachable!() };
             let expected = -100.0 * gain.gains.get(0);

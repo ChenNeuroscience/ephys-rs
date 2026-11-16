@@ -1,9 +1,10 @@
-//! Choosing settings from the data ("auto detect"). The setting to choose (gains, or thresholds) says when it was asked
-//! to be detected (`detect`), a transient setting (see `EdgeType::clear_transient`): while it's asked, the node runs,
-//! with room to sample into that it made as it prepared, which its passes sample the data into for a while, reporting
-//! how far along they are (`PassContext::report_progress`), then set the setting from what they found, no longer asked
-//! (`PassContext::trigger_settings_update`). The Spike Gain, Continuous Gain and Spike Detector have one, asked from
-//! their windows or a viewer's; these are the pieces they share.
+//! Choosing settings from the data ("auto detect"). The setting to choose (gains, or thresholds) says how long to
+//! sample the data for (`sampling`), and when its auto detect was started (`detect`), a transient setting (see
+//! `EdgeType::clear_transient`). While that's set, the node runs, with room to sample into that it made as it prepared,
+//! which its passes sample the data into for that long, then set the setting from what they found, with `detect`
+//! cleared (`PassContext::trigger_settings_update`). Whatever can see the setting (the node's window, or a viewer's
+//! through a control) can tell how far along it is from those two (`estimated_progress`). The Spike Gain, Continuous
+//! Gain and Spike Detector have one; these are the pieces they share.
 
 use std::time::Instant;
 
@@ -13,10 +14,10 @@ use serde::{Deserialize, Serialize};
 use crate::Edges;
 use ephys_rs::engine::UiContext;
 
-/// Whether a node's request to detect a setting (`detect`) is another than in the snapshot before (`before`, if the
-/// node was in it): asked, asked again, or no longer (it's done, or stopped). If not, what the node made for it still
-/// stands.
-pub fn asked_again(detect: Option<Instant>, before: Option<Option<Instant>>) -> bool {
+/// Whether a setting's auto detect (`detect`, when it was started) is another than in the snapshot before (`before`, if
+/// the node was in it): started, started again, or cleared (it's done, or stopped). If not, what the node made for it
+/// still stands.
+pub fn detect_changed(detect: Option<Instant>, before: Option<Option<Instant>>) -> bool {
     before != Some(detect)
 }
 
@@ -150,22 +151,30 @@ impl PercentMultiple {
     }
 }
 
-/// Auto detect, for a setting whose request is `detect` (the node's own, or one that control `control` connects to):
-/// a button to ask, while acquiring (it needs data) and not recording, and while it's asked, how far along it is, and
-/// a button to stop it. For the node's window, and a viewer's.
+/// How far along detecting a setting is, from 0 to 1, from when it was started (`started`), and how many seconds it
+/// samples for (`sampling`). The node doesn't say, so this is near enough: its passes start sampling once the snapshot
+/// starting it takes over, and the Spike Gain starts again if the thresholds change meanwhile.
+pub fn estimated_progress(started: Instant, sampling: f32) -> f32 {
+    (started.elapsed().as_secs_f32() / sampling.clamp(*SAMPLING.start(), *SAMPLING.end())).min(1.0)
+}
+
+/// Auto detect, for a setting that samples for `sampling` seconds, started at `detect`, if it is (the node's own, or
+/// one a control connects to): a button to start it, while acquiring (it needs data) and not recording, and while it's
+/// going, how far along it is, and a button to stop it. For the node's window, and a viewer's.
 pub fn auto_detect_ui(
     ui: &mut egui::Ui,
     context: &UiContext<Edges>,
-    control: Option<usize>,
     detect: &mut Option<Instant>,
+    sampling: f32,
     tip: &str,
 ) {
     ui.horizontal(|ui| {
-        if let Some(asked) = *detect {
+        if let Some(started) = *detect {
             if ui.button("Stop").on_hover_text("Stop detecting, leaving things as they were").clicked() {
                 *detect = None;
             }
-            ui.add(egui::ProgressBar::new(context.progress(control, asked)).desired_width(80.0).show_percentage());
+            let progress = estimated_progress(started, sampling);
+            ui.add(egui::ProgressBar::new(progress).desired_width(80.0).show_percentage());
             return;
         }
         let can = context.running && !context.locked;

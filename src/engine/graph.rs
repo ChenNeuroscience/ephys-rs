@@ -952,7 +952,7 @@ mod tests {
         graph.connect(port(viewer, PortRole::Control, 0), port(detector, PortRole::Setting, 0)).unwrap();
         assert_eq!(graph.topological_order(), vec![board, detector, viewer]);
 
-        let thresholds = |uv: Vec<f32>| Setting::Thresholds(spikes::Thresholds { values: uv, detect: None });
+        let thresholds = |uv: Vec<f32>| Setting::Thresholds(spikes::Thresholds { values: uv, ..Default::default() });
         assert_eq!(graph.control_values(viewer), vec![Some(thresholds(vec![])), None]);
         let theme = &crate::standard::themes::THEMES[0].colours;
         graph.edit(viewer, &[], theme, None, None, None, false, false, None, |_, context| {

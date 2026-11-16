@@ -46,7 +46,6 @@ use arc_swap::{ArcSwap, ArcSwapOption};
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError};
 use crossbeam_utils::CachePadded;
 
-use super::Progress;
 use crate::console::{self, PassId};
 use crate::triggers::DirectTriggers;
 
@@ -109,7 +108,6 @@ impl<N: NodesEnum> Plan<N> {
                     controls,
                     snapshot: &baked,
                     shared: run.shared.any(step.id).unwrap_or(&()),
-                    progress: &run.progress,
                     direct: &run.direct,
                 };
                 let start = Instant::now();
@@ -195,7 +193,6 @@ struct RunSlots {
     /// By the plan's state slot (`Step::state`).
     states: Vec<Arc<StateSlot>>,
     shared: Arc<SharedByNode>,
-    progress: Arc<Progress>,
     direct: Arc<DirectTriggers>,
     /// By step.
     times: Vec<Arc<StepTimes>>,
@@ -426,9 +423,7 @@ struct RunCommon {
     dropped: AtomicU64,
     /// Where workers report to the GUI.
     reports: Reports,
-    /// Where the passes say how they're getting on with what they've been asked to do, and where they send direct
-    /// triggers: the app's.
-    progress: Arc<Progress>,
+    /// Where the passes send direct triggers: the app's.
     direct: Arc<DirectTriggers>,
     /// What each worker is up to.
     workers: Vec<WorkerSlot>,
@@ -641,7 +636,6 @@ impl<N: NodesEnum> Scheduled<N> {
         let slots = RunSlots {
             states: (0..plan.state_inputs.len()).map(|_| Arc::new(StateSlot::empty())).collect(),
             shared: Arc::new(SharedByNode(shared)),
-            progress: run.progress.clone(),
             direct: run.direct.clone(),
             times,
         };
@@ -1006,11 +1000,6 @@ impl<N: NodesEnum> Runner<N> {
     /// Where the passes send direct triggers.
     pub fn direct_triggers(&self) -> &DirectTriggers {
         &self.shared.direct
-    }
-
-    /// How far along nodes are with what they've been asked to do, as their passes say (see `Progress`).
-    pub fn progress(&self) -> &Progress {
-        &self.shared.progress
     }
 
     /// What the nodes running share with the GUI: the snapshot being run's, or, until one is, the one being got ready.

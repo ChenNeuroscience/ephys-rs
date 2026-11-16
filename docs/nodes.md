@@ -108,8 +108,8 @@ triggers. `self` is the snapshot's settings: the latest, as of the pass.
   answers did, with a warning in the console. By default, a node runs, needing every input, whatever's in use: the
   path without the optimisation, so leaving it is always correct. A node that only makes data for others runs only
   while they're in use, as the processing nodes do. A writer runs only while recording, and given something to record,
-  as what it does matters beyond the graph; so what only feeds writers runs only while recording, except while it's asked to do something with the data
-  (an auto detect: see below), which it has to run to get done; so a Continuous Gain feeding only a writer can have its
+  as what it does matters beyond the graph; so what only feeds writers runs only while recording, except while a transient setting has it do something with
+  the data (an auto detect: see below), which it has to run to get done; so a Continuous Gain feeding only a writer can have its
   gains detected before recording. Run Command never runs in a pass: it's only ever sent things to do. A node with an output that can't be known doesn't run. Settings change the plan, so what a
   node needs is for what's switched on and off, not what changes pass to pass.
 
@@ -143,7 +143,7 @@ convention, nodes with a view are. Keys its window answers to (G over a Spike Vi
   settings menu.
 - `node_toolbar_buttons`: the same, with buttons of the pane's own beside them, at the right of the toolbar.
 - `controlled_by`: for each setting, the names of the nodes with a control connected to it.
-- `trigger`, `can_trigger`, `progress`, `open_control_target`: see below.
+- `trigger`, `can_trigger`, `open_control_target`: see below.
 
 Help that's more than a tooltip (examples, a cheat sheet) goes behind `widgets::help_link`: dimmed text with a dotted
 underline, its help in a popup while the pointer's over it, or, clicked, until something else is. `widgets::with_help`
@@ -220,21 +220,22 @@ with the same `UiContext` as its window's. As well as from a window, a node can 
 triggers are carried as `AnyTrigger`s (boxed), so its queues needn't know the program's enum; what's sent and what's
 taken is always the enum.
 
-## Asking a node to do something with the data
+## Transient settings
 
-Asking a node to do something over a while, with the data going by, isn't a trigger: it's a **transient setting**,
-saying when it was asked, as the gains and thresholds have for auto detect (`Gains::detect`, `Thresholds::detect`).
-It's a setting like any other: a window, or a viewer through a control, asks by setting it, a change is a new
-snapshot, it's undoable, and it's locked while recording. The node prepares for it (an auto detect makes room to
-sample into, comparing the request with `context.previous`'s, and lets go of it once there's none), runs while it's
-asked (in its tree shake), and its passes report how far along they are (`PassContext::report_progress`, as of when
-it was asked; shown with `UiContext::progress`). Once they're done, they set what they found, no longer asked, in one
-settings update (`PassContext::trigger_settings_update(setting, value)`), which the GUI applies as an edit; until that
-takes over, the node's state says it's done. Stopping it is setting it to none. Nothing asks again just by bringing a
-graph back: transient settings aren't saved (`#[serde(skip)]`), and the app clears them (`EdgeType::clear_transient`)
-when it restores a graph from its history (undo or redo), duplicates a node, starts recording, or stops running. The
+Having a node do something over a while, with the data going by, isn't a trigger: it's a **transient setting**, as
+the gains and thresholds have for auto detect (`Gains::detect`, `Thresholds::detect`: when it was started). It's a
+setting like any other: a window, or a viewer through a control, sets it, a change is a new snapshot, it's undoable,
+and it's locked while recording. The node prepares for it (an auto detect makes room to sample into, comparing with
+the setting in `context.previous`, and lets go of it once it's clear), and runs while it's set (in its tree shake).
+Once the node's passes are done, they set what they found, with the transient setting cleared, in one settings update
+(`PassContext::trigger_settings_update(setting, value)`), which the GUI applies as an edit; until that takes over, the
+node's state says it's done. Stopping it is clearing it. Anything that can see the setting can tell how far along it
+is: an auto detect's setting also says how long it samples for (`sampling`), so a window, or a viewer through a
+control, estimates it from when it was started (`auto_detect::estimated_progress`). Being transient, it isn't kept:
+transient settings aren't saved (`#[serde(skip)]`), and the app clears them (`EdgeType::clear_transient`) when it
+restores a graph from its history (undo or redo), duplicates a node, starts recording, or stops running. The
 [Continuous Gain](../standard/src/ephys/continuous_gain.rs), [Spike Gain](../standard/src/spikes/spike_gain.rs) and
-[Spike Detector](../standard/src/spikes/spike_detector.rs) work this way, asked from their windows or a viewer's.
+[Spike Detector](../standard/src/spikes/spike_detector.rs) work this way, started from their windows or a viewer's.
 
 Every setting also takes a direct update of its value without saying so, the settings update above, which isn't
 applied while settings are locked.

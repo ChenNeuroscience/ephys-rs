@@ -29,16 +29,15 @@ pub trait EdgeType: Clone + PartialEq + Debug + Send + Sync + 'static {
     /// Short description, e.g. "32 ch · 30 kHz".
     fn summary(&self) -> String;
 
-    /// Part of a setting can ask its node to do something over a while, with the data going by, rather than say how
-    /// it's set up: when auto detect was asked for, say (`Gains::detect`, in the standard nodes). This transient part
-    /// is a setting like any other: a change is a new snapshot, which the node prepares for (room to sample into, say),
-    /// it's undoable, and it's locked while recording. While a node's asked, it runs (see `Node::evaluate_tree_shake`),
-    /// its passes report how far along they are (`PassContext::report_progress`), and once they're done, they clear it
-    /// themselves, along with whatever they set (`PassContext::trigger_settings_update`). Nothing should ask again just
-    /// by bringing a graph back, though: the transient part isn't saved (`#[serde(skip)]`), and the app clears it here,
-    /// for each of a node's settings that other nodes can edit (see `Node::settings`), whenever it restores a graph from
-    /// its history (undo or redo), duplicates a node, starts recording, or stops running (see `Graph::clear_transient`).
-    /// By default, a setting has none.
+    /// Part of a setting can be transient: it has the node do something over a while, with the data going by, rather
+    /// than say how the node's set up (when auto detect was started, say: `Gains::detect`, in the standard nodes). A
+    /// transient setting is a setting like any other: a change is a new snapshot, which the node prepares for (room to
+    /// sample into, say), it's undoable, and it's locked while recording. While it's set, the node runs (see
+    /// `Node::evaluate_tree_shake`), and once the node's passes are done, they clear it themselves, along with whatever
+    /// they set (`PassContext::trigger_settings_update`). Being transient, it isn't kept: it isn't saved
+    /// (`#[serde(skip)]`), and the app clears it here, for each of a node's settings that other nodes can edit (see
+    /// `Node::settings`), whenever it restores a graph from its history (undo or redo), duplicates a node, starts
+    /// recording, or stops running (see `Graph::clear_transient`). By default, a setting has none.
     fn clear_transient(&mut self) {}
 }
 

@@ -147,10 +147,9 @@ The passes never wait on the GUI, nor it on them.
 - Once a run's stopped, the app keeps what its last snapshot shared, so everything goes on showing what it last had,
   until the next run, or until the graph changes so it would need new buffers (`Plan::same_shape`).
 - The GUI can **trigger** a node (`Node::triggers`), from another node's window through a settings edge, or from the
-  node's own: a one-off event, delivered on the GUI's thread, as above. Asking a node to do something with the data
+  node's own: a one-off event, delivered on the GUI's thread, as above. Having a node do something with the data
   over a while (an auto detect) is a **transient setting** instead (`EdgeType::clear_transient`): the node prepares for
-  it, runs while it's asked, and its passes say how far along they are, in the run's
-  [`Progress`](../src/engine/progress.rs), then clear it with what they found.
+  it, runs while it's set, and its passes clear it with what they found.
 - Passes can't change the graph, but can **trigger an update** of a setting (`PassContext::trigger_settings_update`),
   which the GUI applies as an edit, unless settings are locked.
 - They can have the app start or stop recording (`PassContext::trigger_recording`), as the toolbar's Record does: TTL

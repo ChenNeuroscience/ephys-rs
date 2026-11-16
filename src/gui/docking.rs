@@ -38,8 +38,6 @@ pub struct Panes<'a, N: NodesEnum, A: AnnotationsEnum> {
     pub resolved: &'a Resolved<N::Edges>,
     pub colours: &'static Colours,
     pub runner: Option<&'a Runner<N>>,
-    /// How far along nodes are with what they've been asked to do, while running.
-    pub progress: Option<&'a crate::engine::Progress>,
     /// What the running nodes' passes share with the GUI, or what the last run's shared, once it's stopped.
     pub shared: Option<&'a crate::engine::SharedByNode>,
     /// Each node's state on the GUI's side (see `Node::UiState`).
@@ -82,15 +80,14 @@ pub struct Ticked {
 
 /// Draws a node's window content, with its toolbar, by calling on the node (see `Node::on_gui_tick`), and records that
 /// in `ticked`. It finds what its passes share with it in `shared`:
-/// the run's, or the last run's. While running, it sees how far along nodes are with what they've been asked to do
-/// (`live`).
+/// the run's, or the last run's, and whether the graph's `running`.
 #[allow(clippy::too_many_arguments)]
 pub fn node_ui<N: NodesEnum>(
     ui: &mut egui::Ui,
     graph: &mut Graph<N>,
     resolved: &Resolved<N::Edges>,
     colours: &Colours,
-    live: Option<&crate::engine::Progress>,
+    running: bool,
     shared: Option<&crate::engine::SharedByNode>,
     ui_state: Option<&crate::engine::UiStateCell>,
     base_directory: Option<&crate::base_directory::Place>,
@@ -101,9 +98,9 @@ pub fn node_ui<N: NodesEnum>(
     ticked: &mut Ticked,
 ) {
     let Some(state) = resolved.get(&id) else { return };
-    let Some(mut tools) = NodeTools::new(graph, id, advanced, live, events) else { return };
+    let Some(mut tools) = NodeTools::new(graph, id, advanced, events) else { return };
     let tools = Some(&mut tools as &mut dyn crate::engine::NodeToolbar);
-    let (streams, running) = (&state.input_streams, live.is_some());
+    let streams = &state.input_streams;
     // A view stays live while recording (changes it makes to settings are undone: see `App::lock`).
     graph.edit(
         id,
@@ -287,14 +284,14 @@ impl<N: NodesEnum, A: AnnotationsEnum> Panes<'_, N, A> {
                 self.frame_times,
             ),
             Pane::Node(id) => {
-                let (graph, resolved, colours, live, locked) =
-                    (&mut *self.graph, self.resolved, self.colours, self.progress, self.locked);
+                let (graph, resolved, colours, running, locked) =
+                    (&mut *self.graph, self.resolved, self.colours, self.runner.is_some(), self.locked);
                 let (advanced, base, shared) = (self.mode == Mode::Advanced, self.base_directory, self.shared);
                 let ui_state = self.ui_states.get(graph, id);
                 padded(ui, |ui| {
                     let (events, ticked) = (&mut *self.events, &mut *self.ticked);
                     node_ui(
-                        ui, graph, resolved, colours, live, shared, ui_state, base, locked, advanced, id, events,
+                        ui, graph, resolved, colours, running, shared, ui_state, base, locked, advanced, id, events,
                         ticked,
                     )
                 })

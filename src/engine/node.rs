@@ -259,7 +259,7 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     /// (`context.workers`). These become the node's state and each worker's as the snapshot takes over (see
     /// `on_snapshot_change`; a worker's proto-state simply replaces the worker's old state). The node also says what
     /// about its hardware someone should decide (`UserDecision`). To go by, the node has its data streams
-    /// (`context.inputs`), its settings (`self`: an auto detect asked for needs room to sample into, say), its
+    /// (`context.inputs`), its settings (`self`: an auto detect started needs room to sample into, say), its
     /// controls, whether the snapshot's recording (a writer opens its files, say), and how the node was in the
     /// snapshot before (`context.previous`, with its settings then). A node that makes no proto-state carries its state
     /// on as it is, which only fits if the node's data streams are the same (`context.same_streams()`): so a node new
