@@ -2668,8 +2668,15 @@ mod tests {
                 crate::standard::spikes::Thresholds { values: vec![60.0], ..Default::default() }.into(),
             );
         }
-        harness.run_steps(2);
-        assert!(!Arc::ptr_eq(&first, &harness.state().runner.as_ref().unwrap().graph()));
+        // The app hands the run the new snapshot once the one before's prepared, which can take a while on a slow machine.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let carried_on =
+            |harness: &Harness<TestApp>| !Arc::ptr_eq(&first, &harness.state().runner.as_ref().unwrap().graph());
+        while !carried_on(&harness) && std::time::Instant::now() < deadline {
+            harness.run_steps(1);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(carried_on(&harness), "carried on with the new snapshot");
         harness.key_press(Key::Space);
         harness.run_steps(2);
         assert!(harness.state().runner.is_none());
