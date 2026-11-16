@@ -159,13 +159,8 @@ impl Registers {
 
     /// The amplifiers' lower bandwidth nearest `hz` the on-chip resistors allow. Returns the bandwidth set.
     pub fn set_lower_bandwidth(&mut self, hz: f64) -> f64 {
-        let hz = hz.min(1500.0);
-        let log = hz.log10();
-        let target = if hz < 4.0 {
-            1.0061 * 10f64.powf(4.9391 - 1.2088 * log + 0.5698 * log * log + 0.1442 * log * log * log)
-        } else {
-            1.0061 * 10f64.powf(4.7351 - 0.5916 * log + 0.08482 * log * log)
-        };
+        let hz = hz.clamp(LOWEST_LOWER_HZ, HIGHEST_LOWER_HZ);
+        let target = lower_rl_for(hz);
         let (base, dac3) = if hz < 0.15 { (3500.0 + 3_000_000.0, 1) } else { (3500.0, 0) };
         let (rl, d1, d2) = dacs(target, base, 175.0, 12700.0, 127, 63);
         (self.rl_dac1, self.rl_dac2, self.rl_dac3) = (d1, d2, dac3);
@@ -301,14 +296,36 @@ fn dacs(target: f64, base: f64, fine: f64, coarse: f64, fine_steps: i32, coarse_
     (actual, fine_count, coarse_count)
 }
 
-fn lower_bandwidth_from_rl(rl: f64) -> f64 {
-    let rl = rl.max(5100.0);
-    let (a, b, c) = if rl < 30000.0 {
-        (0.08482, -0.5916, 4.7351 - (rl / 1.0061).log10())
+/// The range of lower bandwidths asked for (Hz).
+const LOWEST_LOWER_HZ: f64 = 0.01;
+const HIGHEST_LOWER_HZ: f64 = 1500.0;
+
+/// The resistance the amplifiers' lower bandwidth needs to be `hz`, as Intan fits it: one curve below 4 Hz, another
+/// above. Higher for lower bandwidths.
+fn lower_rl_for(hz: f64) -> f64 {
+    let log = hz.log10();
+    if hz < 4.0 {
+        1.0061 * 10f64.powf(4.9391 - 1.2088 * log + 0.5698 * log * log + 0.1442 * log * log * log)
     } else {
-        (0.3303, -1.2100, 4.9873 - (rl / 1.0061).log10())
-    };
-    10f64.powf((-b - (b * b - 4.0 * a * c).sqrt()) / (2.0 * a))
+        1.0061 * 10f64.powf(4.7351 - 0.5916 * log + 0.08482 * log * log)
+    }
+}
+
+/// The lower bandwidth a resistance `rl` gives: the one `lower_rl_for` says needs it, found by halving the range. Intan's
+/// own formula for this fits a different curve below 4 Hz, so the bandwidth it said a resistance gives, asked for, came
+/// out a step higher: setting what the chips said they got never settled.
+fn lower_bandwidth_from_rl(rl: f64) -> f64 {
+    let (mut low, mut high) = (LOWEST_LOWER_HZ.log10(), HIGHEST_LOWER_HZ.log10());
+    for _ in 0..64 {
+        let middle = (low + high) / 2.0;
+        // Higher bandwidths need less resistance.
+        if lower_rl_for(10f64.powf(middle)) > rl {
+            low = middle;
+        } else {
+            high = middle;
+        }
+    }
+    10f64.powf((low + high) / 2.0)
 }
 
 fn read(register: i32) -> u32 {
@@ -356,6 +373,28 @@ mod tests {
         assert_eq!(list[0], 0xff00, "read register 63");
         assert_eq!(list[2] & 0xff00, 0x8000, "write register 0");
         assert_eq!(list[54], 0x5500, "calibrate");
+    }
+
+    /// What the chips say a bandwidth comes out at, asked for, comes out the same: so a board's settings set to what it
+    /// got (see `AcquisitionBoard`'s decisions) stay as they are.
+    #[test]
+    fn asking_for_what_a_bandwidth_came_out_at_gets_the_same() {
+        let mut registers = Registers::new(30000.0);
+        for asked in [0.05, 0.1, 0.5, 1.0, 1.71, 3.0, 4.5, 10.0, 300.0] {
+            let got = registers.set_lower_bandwidth(asked);
+            assert_eq!(registers.set_lower_bandwidth(got), got, "lower, asked {asked}");
+            // Below about 0.1 Hz, as low as they go.
+            let near = if asked < 0.1 { (got - 0.1).abs() < 0.01 } else { (got - asked).abs() / asked < 0.2 };
+            assert!(near, "lower, asked {asked}, got {got}");
+        }
+        for asked in [100.0, 3000.0, 7500.0, 10000.0] {
+            let got = registers.set_upper_bandwidth(asked);
+            assert_eq!(registers.set_upper_bandwidth(got), got, "upper, asked {asked}");
+        }
+        for asked in [0.5, 1.0, 10.0] {
+            let got = registers.set_dsp_cutoff(asked);
+            assert_eq!(registers.set_dsp_cutoff(got), got, "DSP, asked {asked}");
+        }
     }
 
     #[test]

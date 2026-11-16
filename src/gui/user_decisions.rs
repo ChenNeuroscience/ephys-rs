@@ -51,7 +51,8 @@ pub struct Asking<N: NodesEnum> {
 /// What's been decided, if anything, as `Asking` is shown.
 pub enum Outcome {
     Open,
-    CarryOn,
+    /// Apply what's chosen for each node, running on.
+    Apply,
     Stop,
 }
 
@@ -89,8 +90,11 @@ impl<N: NodesEnum> Asking<N> {
             if ui.button("Stop").on_hover_text("Stop running, changing nothing").clicked() {
                 outcome = Outcome::Stop;
             }
-            if dialog::at_right(ui, |ui| ui.button("Carry on").clicked()) {
-                outcome = Outcome::CarryOn;
+            let apply = dialog::at_right(ui, |ui| {
+                ui.button("Apply").on_hover_text("Do what's chosen for each node, and run on").clicked()
+            });
+            if apply {
+                outcome = Outcome::Apply;
             }
         };
         // It stays until it's decided: clicking outside or Esc doesn't dismiss it.

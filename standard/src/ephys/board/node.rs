@@ -92,7 +92,7 @@ impl AcquisitionBoard {
             fixed.headstages = info.headstages.clone();
         }
         if let Some(got) = status.bandwidth
-            && got != self.bandwidth
+            && !got.near(&self.bandwidth)
         {
             let dsp = got.dsp_hz.map_or(String::new(), |hz| format!(", DSP high-pass {hz:.2} Hz"));
             whats.push(format!(

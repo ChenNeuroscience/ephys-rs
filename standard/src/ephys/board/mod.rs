@@ -104,6 +104,19 @@ impl Default for Bandwidth {
     }
 }
 
+impl Bandwidth {
+    /// Whether it's `other`, near enough: each cut-off within a thousandth of it, as what's saved and read back, say,
+    /// needn't be exactly the same number.
+    pub fn near(&self, other: &Bandwidth) -> bool {
+        let near = |a: f64, b: f64| (a - b).abs() <= 0.001 * a.abs().max(b.abs());
+        let dsp = match (self.dsp_hz, other.dsp_hz) {
+            (Some(a), Some(b)) => near(a, b),
+            (a, b) => a.is_none() && b.is_none(),
+        };
+        near(self.lower_hz, other.lower_hz) && near(self.upper_hz, other.upper_hz) && dsp
+    }
+}
+
 /// How to run a board.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {

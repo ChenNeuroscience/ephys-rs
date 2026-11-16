@@ -35,7 +35,7 @@ headstages aren't as set acquires none of them meanwhile, a camera at another si
 - **Use the hardware's settings**: change the node's settings to match the hardware.
 - **Carry on without it**: disable the node.
 
-or **Stop**. Taking on the hardware's settings is an edit, saved with the file, so next time it matches and there's
+then **Apply**, or **Stop**. Taking on the hardware's settings is an edit, saved with the file, so next time it matches and there's
 nothing to ask. Hardware that can't be opened isn't tried again until Play's pressed again, and hardware that fails
 while running stops giving data, saying so in its window.
 

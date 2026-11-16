@@ -1132,7 +1132,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         let Some(asking) = &mut self.asking else { return };
         match asking.show(ctx, &self.graph, colours) {
             user_decisions::Outcome::Open => {}
-            user_decisions::Outcome::CarryOn => {
+            user_decisions::Outcome::Apply => {
                 if let Some(asking) = self.asking.take() {
                     asking.apply(&mut self.graph);
                     self.history.commit(&self.graph, &self.annotations);
@@ -2561,7 +2561,7 @@ mod tests {
         harness.state_mut().shown_stats = Some(engine::Stats { workers: 4, ..Default::default() });
         harness.run_steps(2);
         harness.snapshot("hardware_not_as_set");
-        harness.get_by_label("Carry on").click();
+        harness.get_by_label("Apply").click();
         harness.run_steps(2);
         let graph = &harness.state().graph;
         let Some(Nodes::AcquisitionBoard(b)) = graph.get(board).map(|e| &e.node) else { panic!("the board") };
@@ -2580,7 +2580,7 @@ mod tests {
         without_hardware(&mut harness);
         harness.get_by_label("Play (Space)").click();
         until_asked(&mut harness);
-        harness.get_by_label("Carry on").click();
+        harness.get_by_label("Apply").click();
         harness.run_steps(2);
         assert!(harness.state().asking.is_none());
         let stats = engine::tests::wait_for_passes(harness.state().runner.as_ref().unwrap(), 1);
