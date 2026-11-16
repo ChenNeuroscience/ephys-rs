@@ -1681,17 +1681,24 @@ pub mod tests {
     /// A recording takes effect as the first pass of the snapshot with it is sent: from when that pass's time starts.
     #[test]
     fn a_recording_takes_effect_with_its_snapshots_first_pass() {
+        // The passes' times go by the dispatcher's clock, which can fall behind the wall's on a busy machine, so the
+        // test counts passes from the first snapshot's first, through a recording that takes effect then.
         let graph = Arc::new(Graph::default());
         let started = Instant::now();
-        let runner = Runner::start(&Snapshot::bake(0, graph.clone(), Some(started), None), 1);
+        let first = Arc::new(crate::engine::Recording::default());
+        let runner = Runner::start(&Snapshot::bake(0, graph.clone(), Some(started), Some(first.clone())), 1);
         until_running(&runner, 0);
         let recording = Arc::new(crate::engine::Recording::default());
-        let asked = Instant::now();
+        let sent_before = runner.shared.next_pass.load(Ordering::Relaxed);
         runner.update(&Snapshot::bake(1, graph, Some(started), Some(recording.clone())));
         until_running(&runner, 1);
-        let effective = recording.effective().expect("taken effect").at;
-        assert!(effective >= asked - Duration::from_secs_f64(PASS_DURATION), "not before it was given the run");
-        assert!(effective <= Instant::now());
+        let sent_after = runner.shared.next_pass.load(Ordering::Relaxed);
+        let since_first = recording.effective().expect("taken effect").at - first.effective().expect("taken effect").at;
+        let pass = since_first.as_secs_f64() / PASS_DURATION;
+        assert!((pass - pass.round()).abs() < 1e-6, "from the start of a pass: {pass}");
+        let pass = pass.round() as u64;
+        assert!(pass >= sent_before, "not before it was given the run: pass {pass}, {sent_before} sent before");
+        assert!(pass <= sent_after, "with the snapshot's first pass: pass {pass}, {sent_after} sent once running");
     }
 
     /// A snapshot doesn't run until its nodes have prepared their state for it: the one before carries on.
