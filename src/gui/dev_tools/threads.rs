@@ -478,7 +478,7 @@ fn workers_ui<N: NodesEnum>(
                 text.push_str(&format!(", and these nodes are preparing their state for it: {}", names.join(", ")));
             }
             if preparing.decisions > 0 {
-                text.push_str(&format!(", with {} things about hardware to decide", preparing.decisions));
+                text.push_str(&format!(", with {} things to decide", preparing.decisions));
             }
             ui.label(small(text, colours.warning));
         }

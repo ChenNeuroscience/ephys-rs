@@ -1,25 +1,31 @@
-//! As nodes prepare for a snapshot, they may say something about their hardware someone should decide (see
-//! `engine::UserDecision`). The snapshot runs meanwhile, and the app asks, for each node, whether to take on the
-//! hardware's settings or carry on without it, or to stop.
+//! As nodes prepare for a snapshot, they may say something someone should decide (see `engine::UserDecision`). The
+//! snapshot runs meanwhile, and the app asks, for each node, whether to take what the node suggests, if anything, or
+//! carry on without it, or to stop.
 
 use eframe::egui::{self, RichText};
 
 use super::dialog;
-use crate::engine::{Graph, NodeId, NodesEnum, UserDecision};
+use crate::engine::{Graph, NodeId, NodesEnum, Suggestion, UserDecision};
 use crate::theme::Colours;
 
-/// For each node whose hardware isn't as its settings say, someone chooses one of these.
+/// For each node with something to decide, someone chooses one of these.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Choice {
-    /// The node takes on the hardware's settings (the decisions' fix).
-    UseHardware,
+    /// The node's replaced by what it suggests (see `Suggestion`).
+    UseSuggestion,
     /// The node's disabled, and the run carries on without it.
     Disable,
+    /// The node's left as it is, and the app doesn't ask about the same things again while running.
+    Leave,
 }
 
-/// The dialog lists what each node says someone should decide, in the order it said, with the fix (its last: each is
-/// the whole node).
-type NodeDecisions<N> = (NodeId, Vec<String>, Option<N>);
+/// Once someone's chosen to leave a node as it is, the app doesn't ask about the same things again while running: these
+/// are the nodes left, each with what it said.
+pub type LeftAlone = Vec<(NodeId, Vec<String>)>;
+
+/// The dialog lists what each node says someone should decide, in the order it said, with what the node suggests (its
+/// last: each is the whole node).
+type NodeDecisions<N> = (NodeId, Vec<String>, Option<Suggestion<N>>);
 
 /// The dialog groups the decisions by node (see `NodeDecisions`).
 fn by_node<N: NodesEnum>(decisions: Vec<(NodeId, UserDecision<N>)>) -> Vec<NodeDecisions<N>> {
@@ -33,15 +39,15 @@ fn by_node<N: NodesEnum>(decisions: Vec<(NodeId, UserDecision<N>)>) -> Vec<NodeD
             }
         };
         nodes[at].1.push(decision.what);
-        if decision.fix.is_some() {
-            nodes[at].2 = decision.fix;
+        if decision.suggestion.is_some() {
+            nodes[at].2 = decision.suggestion;
         }
     }
     nodes
 }
 
-/// The app keeps the dialog here while it's asking what to do about nodes whose hardware isn't as their settings say,
-/// for a snapshot (by version) the run's holding.
+/// The app keeps the dialog here while it's asking what to do about nodes with something to decide, for a snapshot (by
+/// version) the run's holding.
 pub struct Asking<N: NodesEnum> {
     pub version: u64,
     nodes: Vec<NodeDecisions<N>>,
@@ -60,9 +66,10 @@ pub enum Outcome {
 impl<N: NodesEnum> Asking<N> {
     pub fn new(version: u64, decisions: Vec<(NodeId, UserDecision<N>)>) -> Self {
         let nodes = by_node(decisions);
-        // Taking on the hardware's settings where there are some, otherwise doing without the node.
-        let choices =
-            nodes.iter().map(|(_, _, fix)| if fix.is_some() { Choice::UseHardware } else { Choice::Disable }).collect();
+        // Taking what a node suggests where it suggests something, otherwise doing without the node.
+        let choice =
+            |suggestion: &Option<_>| if suggestion.is_some() { Choice::UseSuggestion } else { Choice::Disable };
+        let choices = nodes.iter().map(|(_, _, suggestion)| choice(suggestion)).collect();
         Asking { version, nodes, choices }
     }
 
@@ -70,19 +77,21 @@ impl<N: NodesEnum> Asking<N> {
         let mut outcome = Outcome::Open;
         let (nodes, choices) = (&self.nodes, &mut self.choices);
         let body = |ui: &mut egui::Ui| {
-            ui.label("Before running, these nodes found their hardware isn't as their settings say:");
+            ui.label("The following decisions need your attention:");
             ui.add_space(6.0);
-            for ((id, whats, fix), choice) in nodes.iter().zip(choices.iter_mut()) {
+            for ((id, whats, suggestion), choice) in nodes.iter().zip(choices.iter_mut()) {
                 let label = graph.get(*id).map_or("(removed)", |entry| entry.label.as_str());
                 ui.label(RichText::new(label).strong());
                 for what in whats {
                     ui.label(RichText::new(what).color(colours.warning));
                 }
-                ui.horizontal(|ui| {
-                    if fix.is_some() {
-                        ui.radio_value(choice, Choice::UseHardware, "Use the hardware's settings");
+                // One a line, as node names can be long.
+                ui.vertical(|ui| {
+                    if let Some(suggestion) = suggestion {
+                        ui.radio_value(choice, Choice::UseSuggestion, suggestion.label.as_str());
                     }
-                    ui.radio_value(choice, Choice::Disable, "Carry on without it (disabled)");
+                    ui.radio_value(choice, Choice::Disable, format!("Disable {label}"));
+                    ui.radio_value(choice, Choice::Leave, format!("Don't change {label}"));
                 });
                 ui.add_space(6.0);
             }
@@ -99,25 +108,31 @@ impl<N: NodesEnum> Asking<N> {
             }
         };
         // It stays until it's decided: clicking outside or Esc doesn't dismiss it.
-        let _ = dialog::show(ctx, "The hardware isn't as set", 520.0, colours, body, footer);
+        let _ = dialog::show(ctx, "Something to decide", 520.0, colours, body, footer);
         outcome
     }
 
-    /// The app does what's been decided to `graph` with this: each node's settings changed to the hardware's, or the
-    /// node disabled.
-    pub fn apply(self, graph: &mut Graph<N>) {
-        for ((id, _, fix), choice) in self.nodes.into_iter().zip(self.choices) {
+    /// The app does what's been decided to `graph` with this: each node replaced by what it suggests, disabled, or
+    /// left as it is. This returns the nodes left, with what each said, not to ask about again (see `LeftAlone`).
+    pub fn apply(self, graph: &mut Graph<N>) -> LeftAlone {
+        let mut left = Vec::new();
+        for ((id, whats, suggestion), choice) in self.nodes.into_iter().zip(self.choices) {
             let Some(entry) = graph.get_mut(id) else { continue };
-            match (choice, fix) {
-                (Choice::UseHardware, Some(fix)) => {
-                    log::info!("{}: taking on the hardware's settings", entry.label);
-                    entry.node = fix;
+            match (choice, suggestion) {
+                (Choice::Leave, _) => {
+                    log::info!("{}: left as it is", entry.label);
+                    left.push((id, whats));
                 }
-                (Choice::UseHardware, None) | (Choice::Disable, _) => {
+                (Choice::UseSuggestion, Some(Suggestion { label, node })) => {
+                    log::info!("{}: {label}", entry.label);
+                    entry.node = node;
+                }
+                (Choice::UseSuggestion, None) | (Choice::Disable, _) => {
                     log::warn!("{}: disabled, to carry on without it", entry.label);
                     entry.disabled = true;
                 }
             }
         }
+        left
     }
 }

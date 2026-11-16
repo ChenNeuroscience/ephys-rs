@@ -206,15 +206,15 @@ fn it_says_what_it_cant_sync() {
 #[test]
 fn once_synced_the_files_are_sent_on_with_the_positions_and_their_original() {
     use ephys_rs::engine::NodeId;
-    use ephys_rs::triggers::DirectTriggers;
+    use ephys_rs::triggers::Triggers;
     let dir = scratch("chained");
     let set = recording(&dir, 3);
-    let direct = std::sync::Arc::new(DirectTriggers::default());
+    let triggers = std::sync::Arc::new(Triggers::default());
     let kinds: &'static [crate::TriggerKind] = &[crate::TriggerKind::RunOnFiles];
-    let triggers = ControlTriggers::<Trigger>::new(direct.clone(), vec![vec![(NodeId(9), kinds)]]);
+    let controls = ControlTriggers::<Trigger>::new(triggers.clone(), vec![vec![(NodeId(9), kinds)]]);
     let egf = dir.join("session.egf");
-    wait_for(&send_then(vec![set.clone(), egf.clone()], &triggers)).unwrap();
-    let sent: Vec<_> = direct
+    wait_for(&send_then(vec![set.clone(), egf.clone()], &controls)).unwrap();
+    let sent: Vec<_> = triggers
         .take()
         .into_iter()
         .map(|(to, triggered)| match triggered {
@@ -226,8 +226,8 @@ fn once_synced_the_files_are_sent_on_with_the_positions_and_their_original() {
     assert!(matches!(&sent[..], [(NodeId(9), Some(Trigger::RunOnFiles(RunOnFiles(sent))))] if *sent == files), "once");
     // Not if it couldn't sync.
     std::fs::remove_file(dir.join("session.ttl")).unwrap();
-    wait_for(&send_then(vec![set], &triggers)).unwrap_err();
-    assert!(direct.take().is_empty());
+    wait_for(&send_then(vec![set], &controls)).unwrap_err();
+    assert!(triggers.take().is_empty());
     std::fs::remove_dir_all(dir).unwrap();
 }
 

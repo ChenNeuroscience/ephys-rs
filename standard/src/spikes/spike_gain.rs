@@ -549,7 +549,7 @@ mod tests {
         buffer.thresholds = vec![DEFAULT_THRESHOLD_UV, DEFAULT_THRESHOLD_UV, 80.0, DEFAULT_THRESHOLD_UV];
         let passes = (4.0 / PASS_DURATION).round() as u64;
         let mut outputs = [Buffer::Spikes(buffer)];
-        let direct = ephys_rs::triggers::DirectTriggers::default();
+        let triggers = ephys_rs::triggers::Triggers::default();
         for sequence in 0..passes {
             let Buffer::Spikes(spikes) = &mut outputs[0] else { unreachable!() };
             spikes.clear();
@@ -560,12 +560,12 @@ mod tests {
                 waveform[40 + 8] = if sequence % 4 == 0 { 300.0 } else { 50.0 };
             }
             let mut pass = PassContext::new(sequence, PASS_DURATION, &[], &mut outputs);
-            pass.direct = &direct;
+            pass.triggers = &triggers;
             gain.process(&mut pass, &mut state, &mut ());
             let sampling = state.sampling.as_ref().is_some_and(|s| !s.done);
             assert_eq!(sampling, sequence + 1 < passes, "samples for 4 s, at pass {sequence}");
         }
-        let updates = direct.take_settings_updates();
+        let updates = triggers.take_settings_updates();
         let Some(Setting::Gains(gains)) = updates[0].2.downcast_ref::<Setting>() else { panic!() };
         assert_eq!(gains.detect.started, None, "with auto detect cleared");
         // To within a bin of the peaks' distribution: about 1.5%.
@@ -606,11 +606,11 @@ mod tests {
         let mut buffer = stream.buffer(PASS_DURATION);
         buffer.thresholds = vec![DEFAULT_THRESHOLD_UV; 4];
         let mut outputs = [Buffer::Spikes(buffer)];
-        let direct = ephys_rs::triggers::DirectTriggers::default();
+        let triggers = ephys_rs::triggers::Triggers::default();
         let passes = (4.0 / PASS_DURATION).round() as u64;
         let mut run = |sequence, outputs: &mut [Buffer]| {
             let mut pass = PassContext::new(sequence, PASS_DURATION, &[], outputs);
-            pass.direct = &direct;
+            pass.triggers = &triggers;
             gain.process(&mut pass, &mut state, &mut ());
         };
         for sequence in 0..passes / 2 {
@@ -623,10 +623,10 @@ mod tests {
         let done = passes / 2 + passes - 1;
         for sequence in passes / 2..done {
             run(sequence, &mut outputs);
-            assert!(direct.take_settings_updates().is_empty(), "sampling again, at pass {sequence}");
+            assert!(triggers.take_settings_updates().is_empty(), "sampling again, at pass {sequence}");
         }
         run(done, &mut outputs);
-        let updates = direct.take_settings_updates();
+        let updates = triggers.take_settings_updates();
         let Some(Setting::Gains(gains)) = updates[0].2.downcast_ref::<Setting>() else { panic!() };
         // No spikes: each by its new threshold, times the factor.
         let factor = Fit::default().threshold_factor;
@@ -645,28 +645,28 @@ mod tests {
         gain.gains.detect.started = Some(started);
         let mut state = ephys_rs::engine::fresh_state(&gain, &inputs);
         let mut outputs = [Buffer::Spikes(stream.buffer(PASS_DURATION))];
-        let direct = ephys_rs::triggers::DirectTriggers::default();
+        let triggers = ephys_rs::triggers::Triggers::default();
         for sequence in 0..2 {
             let mut pass = PassContext::new(sequence, PASS_DURATION, &[], &mut outputs);
-            pass.direct = &direct;
+            pass.triggers = &triggers;
             gain.process(&mut pass, &mut state, &mut ());
         }
         assert!(state.sampling.as_ref().is_some_and(|s| s.elapsed > 0.0), "sampling");
         // Stopped: auto detect cleared, the node makes its state without the sampling.
         let was = gain.clone();
         gain.gains.detect.started = None;
-        let triggers = ephys_rs::triggers::ControlTriggers::none();
+        let controls = ephys_rs::triggers::ControlTriggers::none();
         let previous = Previous { node: &was, inputs: &inputs, same_streams: true };
-        let context = PrepareContext { previous: Some(previous), ..PrepareContext::trying(&inputs, None, &triggers) };
+        let context = PrepareContext { previous: Some(previous), ..PrepareContext::trying(&inputs, None, &controls) };
         let mut proto = gain.prepare_for_snapshot(&context).wait().proto_shared_state.expect("made afresh");
         gain.on_snapshot_change(&mut state, &mut proto);
         assert!(state.sampling.is_none(), "let go of");
         for sequence in 2..600 {
             let mut pass = PassContext::new(sequence, PASS_DURATION, &[], &mut outputs);
-            pass.direct = &direct;
+            pass.triggers = &triggers;
             gain.process(&mut pass, &mut state, &mut ());
         }
-        assert!(direct.take_settings_updates().is_empty(), "nothing chosen");
+        assert!(triggers.take_settings_updates().is_empty(), "nothing chosen");
     }
 
     /// Its window, a gain for each tetrode. See tests/snapshots/.

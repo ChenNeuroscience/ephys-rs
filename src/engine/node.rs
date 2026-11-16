@@ -257,8 +257,8 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     ///
     /// A node makes its state here, ahead of time, as proto-states: a shared one, and one per worker
     /// (`context.workers`). These become the node's state and each worker's as the snapshot takes over (see
-    /// `on_snapshot_change`; a worker's proto-state simply replaces the worker's old state). The node also says what
-    /// about its hardware someone should decide (`UserDecision`). To go by, the node has its data streams
+    /// `on_snapshot_change`; a worker's proto-state simply replaces the worker's old state). The node also says anything
+    /// someone should decide (`UserDecision`: its hardware not as its settings say, say). To go by, the node has its data streams
     /// (`context.inputs`), its settings (`self`: an auto detect started needs room to sample into, say), its
     /// controls, whether the snapshot's recording (a writer opens its files, say), and how the node was in the
     /// snapshot before (`context.previous`, with its settings then). A node that makes no proto-state carries its state
@@ -339,7 +339,7 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
 
     /// The app delivers the triggers sent to the node (see `triggers`) on the GUI's thread, and the node handles them
     /// here, with the same context as the node's window (so the node's `UiState` can keep work the
-    /// node starts that isn't a setting), and with what the node's own controls can trigger in turn (directly, from
+    /// node starts that isn't a setting), and with what the node's own controls can trigger in turn (from
     /// any thread, at any time: see `ControlTriggers::handle`).
     fn on_trigger(
         &mut self,

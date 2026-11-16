@@ -67,9 +67,9 @@ time, on a thread of its own; a newer snapshot given meanwhile replaces one wait
 prepares only the latest. A node makes its state ahead of time (proto-states: shared, and one per worker), or nothing
 new, so its state carries on; slow work (opening a device) is started and waited for once every node's been asked.
 At the snapshot's first pass the new state's made from the proto-state (`Node::on_snapshot_change`), and each worker's
-replaced by its own, so nothing's allocated on the passes. A source checks its hardware as it
-prepares, and says what someone should decide (`UserDecision`): the snapshot runs meanwhile, and the app asks
-([`user_decisions`](../src/gui/user_decisions.rs)) whether to take on the hardware's settings, carry on without the
+replaced by its own, so nothing's allocated on the passes. A node says what someone should decide as it
+prepares (`UserDecision`: a source's hardware not as its settings say, say): the snapshot runs meanwhile, and the app
+asks ([`user_decisions`](../src/gui/user_decisions.rs)) whether to take what the node suggests, carry on without the
 node, or stop. A node that fails to prepare is asked about the same way, and doesn't run.
 
 ## Plans and passes
@@ -142,7 +142,7 @@ The passes never wait on the GUI, nor it on them.
   the window reads the newest, giving the rest back. A window that needs everything sent, not only the newest (a log's
   lines, the tracker's path), takes every buffer, in order, and keeps what it likes on its own side; until it does,
   what's new waits in the node's state. The dev tools show each such pool on the GUI's thread.
-- **Direct triggers** ([`triggers.rs`](../src/triggers.rs)) don't wait for a pass: the app delivers them on the GUI's
+- **Triggers** ([`triggers.rs`](../src/triggers.rs)) don't wait for a pass: the app delivers them on the GUI's
   thread, running or not, so they belong to it rather than a run. A setting's update from a pass is one.
 - Once a run's stopped, the app keeps what its last snapshot shared, so everything goes on showing what it last had,
   until the next run, or until the graph changes so it would need new buffers (`Plan::same_shape`).

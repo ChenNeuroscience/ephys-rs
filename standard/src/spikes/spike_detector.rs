@@ -553,7 +553,7 @@ mod tests {
         detector.thresholds.detect.started = Some(started);
         let mut state = ephys_rs::engine::fresh_state(&detector, &inputs);
         let spikes = detector.stream(4, 30000.0);
-        let direct = ephys_rs::triggers::DirectTriggers::default();
+        let triggers = ephys_rs::triggers::Triggers::default();
         let passes = (4.0 / PASS_DURATION).round() as u64;
         for sequence in 0..passes {
             let mut input = stream.buffer(PASS_DURATION);
@@ -568,10 +568,10 @@ mod tests {
             let mut outputs = [Buffer::Spikes(spikes.buffer(PASS_DURATION))];
             let inputs = [Some(&input)];
             let mut pass = PassContext::new(sequence, PASS_DURATION, &inputs, &mut outputs);
-            pass.direct = &direct;
+            pass.triggers = &triggers;
             detector.process(&mut pass, &mut state, &mut ());
         }
-        let updates = direct.take_settings_updates();
+        let updates = triggers.take_settings_updates();
         let Some(Setting::Thresholds(thresholds)) = updates[0].2.downcast_ref::<Setting>() else { panic!() };
         for channel in 0..4 {
             let threshold = thresholds.get(channel);

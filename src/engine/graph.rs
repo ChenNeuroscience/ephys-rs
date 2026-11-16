@@ -645,12 +645,12 @@ impl<N: NodesEnum> Graph<N> {
             .collect()
     }
 
-    /// Node `id`'s controls can send triggers directly to the nodes they're connected to. This gives what they can
+    /// Node `id`'s controls can send triggers to the nodes they're connected to. This gives what they can
     /// send, sent on to `triggers`.
     pub fn control_triggers(
         &self,
         id: NodeId,
-        triggers: &Arc<crate::triggers::DirectTriggers>,
+        triggers: &Arc<crate::triggers::Triggers>,
     ) -> crate::triggers::ControlTriggers<<N::Edges as super::Edges>::Trigger> {
         let count = self.get(id).map_or(0, |entry| entry.node.controls().len());
         let control = |index| {

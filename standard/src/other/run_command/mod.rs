@@ -1,6 +1,6 @@
 //! Runs a program on files, in a terminal of its own, whatever the graph's doing: by hand, on files picked here, or by
 //! itself, on files sent to it with `RunOnFiles` (by a writer, once it's finished recording them, say). It's nothing
-//! to do with passes: the files come as a direct trigger (see `ephys_rs::triggers`).
+//! to do with passes: the files come as a trigger (see `ephys_rs::triggers`).
 //!
 //! The terminal's a process apart, running a script written here, so its output's there, not here, and it carries on if
 //! the app quits. To be stopped it has to be findable, and what's started here often isn't what's running (macOS's `open`
@@ -29,7 +29,7 @@ mod terminal;
 
 use terminal::{Chain, Job, Outcome, Progress};
 
-/// The trigger of a command setting, delivered directly (see `ephys_rs::triggers`): run it on these files. Whatever sends them,
+/// The trigger of a command setting (see `ephys_rs::triggers`): run it on these files. Whatever sends them,
 /// and whenever: a writer's are what it's just finished recording.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RunOnFiles(pub Vec<PathBuf>);
@@ -769,7 +769,7 @@ mod tests {
     use crate::standard::themes::THEMES;
     use ephys_rs::engine::NodeTypeEnum;
     use ephys_rs::engine::{Graph, NodeId, NodesEnum, Port, PortRole, Recording, Runner, Snapshot};
-    use ephys_rs::triggers::{DirectTriggers, Triggered};
+    use ephys_rs::triggers::{Triggered, Triggers};
 
     /// One per file, in turn, if the arguments have a file in them, otherwise just one.
     fn settings(program: &str, arguments: &str) -> CommandSettings {
@@ -813,14 +813,14 @@ mod tests {
     /// Run (by hand, or sent files), what's connected after it is sent the files once it's done.
     #[test]
     fn what_runs_after_is_sent_the_files_it_ran_on_once_its_done() {
-        let direct = Arc::new(DirectTriggers::default());
+        let triggers = Arc::new(Triggers::default());
         let kinds: &'static [TriggerKind] = &[TriggerKind::RunOnFiles];
-        let triggers = ControlTriggers::<Trigger>::new(direct.clone(), vec![vec![(NodeId(9), kinds)]]);
+        let controls = ControlTriggers::<Trigger>::new(triggers.clone(), vec![vec![(NodeId(9), kinds)]]);
         let node = RunCommand { settings: settings("/bin/sleep", "0.2") };
-        let job = send(node, Trigger::RunOnFiles(RunOnFiles(paths(&["a.dat"]))), &triggers);
-        assert!(direct.take().is_empty(), "not till it's done");
+        let job = send(node, Trigger::RunOnFiles(RunOnFiles(paths(&["a.dat"]))), &controls);
+        assert!(triggers.take().is_empty(), "not till it's done");
         wait_for_job(&job);
-        let sent = direct.take();
+        let sent = triggers.take();
         let [(NodeId(9), Triggered::Trigger(trigger))] = &sent[..] else { panic!("sent once, to what's after it") };
         assert_eq!(trigger.key(), TriggerKind::RunOnFiles.into());
     }
@@ -1190,9 +1190,9 @@ mod tests {
         graph.connect(port(board, PortRole::Output, 0), port(writer, PortRole::Input, 0)).unwrap();
         graph.connect(port(writer, PortRole::Control, 0), port(command, PortRole::Setting, 0)).unwrap();
 
-        let direct = Arc::new(DirectTriggers::default());
+        let triggers = Arc::new(Triggers::default());
         let snapshot = Snapshot::new(0, graph.clone());
-        let runner = Runner::start_with(&snapshot, 2, direct.clone());
+        let runner = Runner::start_with(&snapshot, 2, triggers.clone());
         // In a base directory of the test's own (writers write in it).
         let place = ephys_rs::base_directory::Place::directory(&dir);
         let asked = Arc::new(Recording::new(Some(place), chrono::Local::now()));
@@ -1210,12 +1210,12 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(runner.stats().completed >= recorded_from + 25, "recording: {:?}", runner.stats());
-        assert!(direct.take().is_empty(), "still recording");
+        assert!(triggers.take().is_empty(), "still recording");
         // Stopped by stopping the run, as Play does: there may be no more passes.
         drop(runner);
         ephys_rs::background::wait();
 
-        let waiting = direct.take();
+        let waiting = triggers.take();
         assert_eq!(waiting.len(), 1, "once the files are finished");
         let (to, Triggered::Trigger(trigger)) = waiting.into_iter().next().unwrap() else { panic!() };
         assert_eq!((to, trigger.key()), (command, crate::TriggerKind::RunOnFiles.into()));
@@ -1413,15 +1413,15 @@ mod chain_tests {
     use crate::NodeType;
     use crate::Nodes;
     use ephys_rs::engine::{Graph, NodeId, NodesEnum, Port, PortRole};
-    use ephys_rs::triggers::{DirectTriggers, Triggered};
+    use ephys_rs::triggers::{Triggered, Triggers};
 
     /// Whether `then`, after runs that ended with these codes (`None` if stopped; not there if not run), sends the
     /// files on to what's connected after it.
     fn sends(then: Then, runs: &[Option<Option<i64>>]) -> bool {
-        let direct = Arc::new(DirectTriggers::default());
+        let triggers = Arc::new(Triggers::default());
         let kinds: &'static [TriggerKind] = &[TriggerKind::RunOnFiles];
-        let triggers = ControlTriggers::<Trigger>::new(direct.clone(), vec![vec![(NodeId(2), kinds)]]);
-        let handle = triggers.handle(AFTER_RUNNING, TriggerKind::RunOnFiles).unwrap();
+        let controls = ControlTriggers::<Trigger>::new(triggers.clone(), vec![vec![(NodeId(2), kinds)]]);
+        let handle = controls.handle(AFTER_RUNNING, TriggerKind::RunOnFiles).unwrap();
         let progress = runs.iter().map(|run| Progress {
             shown: String::new(),
             outcome: match run {
@@ -1430,7 +1430,7 @@ mod chain_tests {
             },
         });
         Chain { handle, then, files: vec![PathBuf::from("a.dat")] }.send_after(&progress.collect::<Vec<_>>());
-        let sent: Vec<(NodeId, Option<Trigger>)> = direct
+        let sent: Vec<(NodeId, Option<Trigger>)> = triggers
             .take()
             .into_iter()
             .map(|(node, triggered)| match triggered {

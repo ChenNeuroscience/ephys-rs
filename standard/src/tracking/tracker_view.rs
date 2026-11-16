@@ -1089,7 +1089,8 @@ mod tests {
         let (_, differences) = differences.unwrap();
         let whats: Vec<_> = differences.iter().map(|(_, d)| &d.what).collect();
         assert_eq!(whats, ["frames are 640×480, not the 320×240 set"]);
-        let fix = differences.into_iter().find_map(|(_, d)| d.fix).expect("the camera at the size it's sending");
+        let fix =
+            differences.into_iter().find_map(|(_, d)| d.suggestion).expect("the camera at the size it's sending").node;
         graph.get_mut(camera).unwrap().node = fix;
         assert!(!runner.update(&Snapshot::new(1, graph)), "new buffers");
         assert!(wait_for(|| leds_shown(&runner, view) == Some(2)), "both LEDs: {:?}", leds_shown(&runner, view));

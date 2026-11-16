@@ -47,7 +47,7 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError};
 use crossbeam_utils::CachePadded;
 
 use crate::console::{self, PassId};
-use crate::triggers::DirectTriggers;
+use crate::triggers::Triggers;
 
 use super::pass_context::*;
 use super::plan::*;
@@ -108,7 +108,7 @@ impl<N: NodesEnum> Plan<N> {
                     controls,
                     snapshot: &baked,
                     shared: run.shared.any(step.id).unwrap_or(&()),
-                    direct: &run.direct,
+                    triggers: &run.triggers,
                 };
                 let start = Instant::now();
                 // When the node's state is handed over, after waiting for it, if it has any.
@@ -166,8 +166,7 @@ struct Workspace<N: NodesEnum> {
 /// The engine keeps what each node prepared alike, whatever the node's type.
 type PreparedAny<N> = Prepared<Box<dyn Any + Send>, Box<dyn Any + Send>, N>;
 
-/// Nodes say what about their hardware someone should decide; the run keeps it by node (see
-/// `Runner::user_decisions`).
+/// Nodes say what someone should decide; the run keeps it by node (see `Runner::user_decisions`).
 pub type UserDecisions<N> = Vec<(NodeId, UserDecision<N>)>;
 
 /// Each worker keeps its own state for each node (see `Node::WorkerState`), from snapshot to snapshot whatever their
@@ -187,13 +186,13 @@ impl<N: NodesEnum> Workspace<N> {
 }
 
 /// Running one snapshot, the workers share more than its graph: the nodes' state, what they share with the GUI, how
-/// long each step's taking (each handed on from the snapshot before, by node: see `Scheduled::new`), and where direct
+/// long each step's taking (each handed on from the snapshot before, by node: see `Scheduled::new`), and where triggers
 /// triggers go.
 struct RunSlots {
     /// The nodes' state, by the plan's state slot (`Step::state`).
     states: Vec<Arc<StateSlot>>,
     shared: Arc<SharedByNode>,
-    direct: Arc<DirectTriggers>,
+    triggers: Arc<Triggers>,
     /// How long each step's taking, by step.
     times: Vec<Arc<StepTimes>>,
 }
@@ -414,7 +413,7 @@ struct Record {
 }
 
 /// The runner, its workers and its dispatcher share some things through every snapshot: counts and recent passes for
-/// the stats, where direct triggers go, and what each worker's doing.
+/// the stats, where triggers go, and what each worker's doing.
 #[derive(Default)]
 struct RunCommon {
     stop: AtomicBool,
@@ -424,8 +423,8 @@ struct RunCommon {
     dropped: AtomicU64,
     /// Workers report to the GUI here.
     reports: Reports,
-    /// The passes send direct triggers here: the app's.
-    direct: Arc<DirectTriggers>,
+    /// The passes send triggers here: the app's.
+    triggers: Arc<Triggers>,
     /// The dev tools show what each worker is up to, from these.
     workers: Vec<WorkerSlot>,
     /// The dispatcher sends this pass next.
@@ -513,8 +512,7 @@ pub struct ScheduledInfo<N: NodesEnum> {
     pub ready: usize,
     /// These nodes are still preparing for the snapshot (see `Node::prepare_for_snapshot`).
     pub preparing: Vec<NodeId>,
-    /// The snapshot's nodes say this many things about their hardware someone should decide (see
-    /// `Runner::user_decisions`).
+    /// The snapshot's nodes say this many things someone should decide (see `Runner::user_decisions`).
     pub decisions: usize,
     /// Each of the plan's steps is taking this long.
     pub step_times: Vec<StepTime>,
@@ -564,8 +562,7 @@ struct Scheduled<N: NodesEnum> {
     workers: usize,
     /// This many of the snapshot's nodes haven't prepared yet.
     unprepared: AtomicUsize,
-    /// The snapshot's nodes say these things about their hardware someone should decide (see
-    /// `Runner::user_decisions`).
+    /// The snapshot's nodes say these things someone should decide (see `Runner::user_decisions`).
     decisions: Mutex<Vec<(NodeId, UserDecision<N>)>>,
     /// For each node that prepared, the proto-states the workers are to make their state from.
     worker_protos: Mutex<HashMap<NodeId, WorkerProtoStates>>,
@@ -643,7 +640,7 @@ impl<N: NodesEnum> Scheduled<N> {
         let slots = RunSlots {
             states: (0..plan.state_inputs.len()).map(|_| Arc::new(StateSlot::empty())).collect(),
             shared: Arc::new(SharedByNode(shared)),
-            direct: run.direct.clone(),
+            triggers: run.triggers.clone(),
             times,
         };
         let recording_changed = match (before.and_then(|b| b.snapshot.recording.as_ref()), &snapshot.recording) {
@@ -683,7 +680,7 @@ impl<N: NodesEnum> Scheduled<N> {
                 self.fill(node, None);
                 continue;
             };
-            let triggers = snapshot.graph.control_triggers(node.id, &self.slots.direct);
+            let triggers = snapshot.graph.control_triggers(node.id, &self.slots.triggers);
             let previous = node.before.as_ref().and_then(|before| {
                 Some(Previous {
                     node: &before.snapshot.graph.get(node.id)?.node,
@@ -768,7 +765,7 @@ impl<N: NodesEnum> Scheduled<N> {
             // It doesn't run: no shared state, and no worker state, to run with.
             let name = entry.map_or("A node", |entry| entry.node.info().name);
             log::error!("{name} couldn't prepare for snapshot v{}: {why}", self.snapshot.version);
-            decisions.push(UserDecision { what: format!("couldn't prepare: {why}"), fix: None });
+            decisions.push(UserDecision { what: format!("couldn't prepare: {why}"), suggestion: None });
             shared = slot.map(|_| failed(&why));
             worker_protos = None;
         }
@@ -961,15 +958,15 @@ impl<N: NodesEnum> Runner<N> {
         Self::start_with(snapshot, workers, Arc::default())
     }
 
-    /// The same as `start`, with the passes' direct triggers going to `direct`.
-    pub fn start_with(snapshot: &Snapshot<N>, workers: usize, direct: Arc<DirectTriggers>) -> Self {
+    /// The same as `start`, with the passes' triggers going to `triggers`.
+    pub fn start_with(snapshot: &Snapshot<N>, workers: usize, triggers: Arc<Triggers>) -> Self {
         let workers = workers.max(1);
         assert!(snapshot.started.is_some(), "a run's snapshots say when it started");
         let shared = Arc::new(RunCommon {
             workers: (0..workers)
                 .map(|_| WorkerSlot { version: AtomicU64::new(NO_VERSION), ..Default::default() })
                 .collect(),
-            direct,
+            triggers,
             ..Default::default()
         });
         let (first, to_prepare) = Scheduled::new(Arc::new(snapshot.clone()), None, &shared);
@@ -1014,9 +1011,9 @@ impl<N: NodesEnum> Runner<N> {
         self.schedule.latest.load().snapshot.graph.clone()
     }
 
-    /// The passes send direct triggers here.
-    pub fn direct_triggers(&self) -> &DirectTriggers {
-        &self.shared.direct
+    /// The passes send triggers here.
+    pub fn triggers(&self) -> &Triggers {
+        &self.shared.triggers
     }
 
     /// The GUI finds what the running nodes share with it here: the snapshot being run's, or, until one is, the one
@@ -1052,10 +1049,9 @@ impl<N: NodesEnum> Runner<N> {
         same_buffers
     }
 
-    /// Once the nodes of the latest snapshot given to the run have all prepared, they may say things about their
-    /// hardware someone should decide; this gives those, with the snapshot's version. The snapshot runs meanwhile; the
-    /// app deals with them by giving the run another (with the nodes' settings fixed, or the nodes disabled), or
-    /// stopping.
+    /// Once the nodes of the latest snapshot given to the run have all prepared, they may say things someone should
+    /// decide; this gives those, with the snapshot's version. The snapshot runs meanwhile; the app deals with them by
+    /// giving the run another (with the nodes as they suggest, or disabled), or stopping.
     pub fn user_decisions(&self) -> Option<(u64, UserDecisions<N>)> {
         let latest = self.schedule.latest.load();
         if !latest.prepared() {

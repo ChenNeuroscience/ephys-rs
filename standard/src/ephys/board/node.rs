@@ -13,7 +13,7 @@ use crate::standard::widgets::{named_settings_grid, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind};
 use ephys_rs::engine::{
     Category, Flow, Node, NodeInfo, NodeThread, Output, PassContext, PoolStatus, Prepare, PrepareContext, Prepared,
-    ThreadContext, UiContext, UserDecision,
+    Suggestion, ThreadContext, UiContext, UserDecision,
 };
 use ephys_rs::gui::widgets::{Icon, small_icon_button};
 
@@ -77,10 +77,10 @@ impl AcquisitionBoard {
     fn decisions(&self, status: &Status) -> Vec<UserDecision<Self>> {
         match &status.state {
             State::Running => {}
-            State::Problem(problem) => return vec![UserDecision { what: problem.clone(), fix: None }],
+            State::Problem(problem) => return vec![UserDecision { what: problem.clone(), suggestion: None }],
             State::Starting => {
                 let what = format!("the board hadn't started after {} s", START_TIMEOUT.as_secs());
-                return vec![UserDecision { what, fix: None }];
+                return vec![UserDecision { what, suggestion: None }];
             }
         }
         let (mut fixed, mut whats) = (self.clone(), Vec::new());
@@ -101,7 +101,8 @@ impl AcquisitionBoard {
             ));
             fixed.bandwidth = got;
         }
-        whats.into_iter().map(|what| UserDecision { what, fix: Some(fixed.clone()) }).collect()
+        let suggestion = Suggestion { label: "Use the hardware's settings".into(), node: fixed };
+        whats.into_iter().map(|what| UserDecision { what, suggestion: Some(suggestion.clone()) }).collect()
     }
 
     fn config(&self) -> Config {
@@ -520,7 +521,9 @@ mod tests {
         assert_eq!(found.len(), 1);
         let difference = &found[0];
         assert_eq!(difference.what, "the board's headstages are A1 32, B1 32, not the D1 32, D2 32 set");
-        let Some(Nodes::AcquisitionBoard(fixed)) = &difference.fix else { panic!("a fix") };
+        let suggestion = difference.suggestion.as_ref().expect("a suggestion");
+        assert_eq!(suggestion.label, "Use the hardware's settings");
+        let Nodes::AcquisitionBoard(fixed) = &suggestion.node else { panic!("the board") };
         assert_eq!(Headstage::describe(&fixed.headstages), "A1 32, B1 32");
         let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while runner.stats().completed == 0 && std::time::Instant::now() < until {
@@ -537,7 +540,7 @@ mod tests {
         let runner = ephys_rs::engine::Runner::start(&ephys_rs::engine::Snapshot::new(0, graph.clone()), 1);
         let found = decisions(&runner).expect("to decide");
         let whats: Vec<_> = found.iter().map(|d| &d.what).collect();
-        assert!(found.iter().all(|d| d.fix.is_none()), "{whats:?}");
+        assert!(found.iter().all(|d| d.suggestion.is_none()), "{whats:?}");
         assert!(whats.iter().all(|what| what.starts_with("couldn't open the board")), "{whats:?}");
         graph.get_mut(board).unwrap().disabled = true;
         runner.update(&ephys_rs::engine::Snapshot::new(1, graph));

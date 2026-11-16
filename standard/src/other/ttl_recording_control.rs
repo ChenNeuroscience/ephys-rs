@@ -167,7 +167,7 @@ mod tests {
         pass.shared = &shared;
         pass.set_recording(recording);
         node.process(&mut pass, seen, &mut ());
-        let asked = pass.direct.take().into_iter().map(|(_, triggered)| match triggered {
+        let asked = pass.triggers.take().into_iter().map(|(_, triggered)| match triggered {
             Triggered::Recording(on) => on,
             _ => panic!("recording"),
         });

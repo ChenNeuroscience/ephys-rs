@@ -12,7 +12,7 @@ use crate::standard::widgets::{setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind, Setting};
 use ephys_rs::engine::{
     Category, Flow, Node, NodeInfo, NodeThread, Output, PassContext, PoolStatus, Prepare, PrepareContext, Prepared,
-    SettingPort, ThreadContext, UiContext, UserDecision,
+    SettingPort, Suggestion, ThreadContext, UiContext, UserDecision,
 };
 
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -46,10 +46,10 @@ impl Camera {
     fn decisions(&self, status: &super::capture::Status) -> Vec<UserDecision<Self>> {
         match &status.state {
             State::Running => {}
-            State::Problem(problem) => return vec![UserDecision { what: problem.clone(), fix: None }],
+            State::Problem(problem) => return vec![UserDecision { what: problem.clone(), suggestion: None }],
             State::Starting => {
                 let what = format!("the camera hadn't opened after {} s", OPENING_TIMEOUT.as_secs());
-                return vec![UserDecision { what, fix: None }];
+                return vec![UserDecision { what, suggestion: None }];
             }
         }
         if status.frames == 0 {
@@ -58,7 +58,9 @@ impl Camera {
         let Some(size @ [w, h]) = status.last_wrong_size else { return Vec::new() };
         let [set_w, set_h] = self.settings.frame_size;
         let fixed = Camera { settings: CameraSettings { frame_size: size, ..self.settings }, ..self.clone() };
-        vec![UserDecision { what: format!("frames are {w}×{h}, not the {set_w}×{set_h} set"), fix: Some(fixed) }]
+        let what = format!("frames are {w}×{h}, not the {set_w}×{set_h} set");
+        let suggestion = Suggestion { label: "Use the hardware's settings".into(), node: fixed };
+        vec![UserDecision { what, suggestion: Some(suggestion) }]
     }
 }
 

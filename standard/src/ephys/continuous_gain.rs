@@ -293,7 +293,7 @@ mod tests {
         let inputs = [Some(DataStream::Continuous(stream))];
         gain.gains.detect.started = Some(started);
         let mut state = ephys_rs::engine::fresh_state(&gain, &inputs);
-        let direct = ephys_rs::triggers::DirectTriggers::default();
+        let triggers = ephys_rs::triggers::Triggers::default();
         let passes = (4.0 / PASS_DURATION).round() as u64;
         for sequence in 0..passes {
             // 100 µV either side of zero on the first channel, 300 on the second.
@@ -308,13 +308,13 @@ mod tests {
             let inputs = [Some(&input)];
             let mut outputs = [Buffer::Continuous(stream.buffer(PASS_DURATION))];
             let mut pass = PassContext::new(sequence, PASS_DURATION, &inputs, &mut outputs);
-            pass.direct = &direct;
+            pass.triggers = &triggers;
             gain.process(&mut pass, &mut state, &mut ());
             let Buffer::Continuous(out) = &outputs[0] else { unreachable!() };
             let expected = -100.0 * gain.gains.get(0);
             assert_eq!(out.channel(0)[10], expected, "multiplied by the gain");
         }
-        let updates = direct.take_settings_updates();
+        let updates = triggers.take_settings_updates();
         let Some(Setting::Gains(gains)) = updates[0].2.downcast_ref::<Setting>() else { panic!() };
         // One for all, to begin with: the widest of theirs, so neither clips.
         assert!((gains.range_uv(0) - 900.0).abs() < 20.0 && (gains.range_uv(1) - 900.0).abs() < 20.0);

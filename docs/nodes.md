@@ -66,7 +66,7 @@ triggers. `self` is the snapshot's settings: the latest, as of the pass.
     the snapshot takes over, or `None` for nothing new, so its state carries on. A node new to the run, or whose data
     streams have changed (`context.same_streams()`), must make what it has. Most nodes do just that:
     `if context.same_streams() { return Prepared::nothing().into(); }`, then their state for the new streams.
-  - `decisions`: anything about its hardware someone should decide (see below).
+  - `decisions`: anything someone should decide (see below).
 
   It answers now (`Prepare::Now`), or, if it's started something slow (opening a device, on a thread of its own, or with
   `Prepare::on_thread`), once that's done (`Prepare::Wait`): the waits come once every node's been asked, so they
@@ -79,11 +79,14 @@ triggers. `self` is the snapshot's settings: the latest, as of the pass.
   worker's own state is simply replaced by the one made for it, as nothing in it is carried over. What's left of the
   old is let go of in the background. Trying a node
   out, `fresh_state(&node, &inputs)` (or `fresh_states`) is what it makes.
-- **Hardware not as set.** A source opening a device as it prepares checks it against its settings, and gives a
-  `UserDecision` for each thing that isn't as set: what (`what`), and the node with settings matching the hardware, if
-  there are such settings (`fix`: the whole fix, with each). A device that can't be opened is one, with no fix. The
-  snapshot runs meanwhile, the node doing what it can (a board whose headstages aren't on the ports set acquires none
-  of them), and the app asks whether to take on the fix, carry on without the node (disabling it), or stop. A node
+- **Something to decide.** A node can give a `UserDecision` for each thing someone should decide as it prepares: what
+  (`what`, in the node's words), and maybe a `suggestion`, the node changed, offered by the node's own label for it
+  (the whole suggestion, with each). A source opening a device checks it against its settings, and gives one for each
+  thing that isn't as set, suggesting the node with settings matching the hardware ("Use the hardware's settings"), if
+  there are such settings; a device that can't be opened is one, with no suggestion. The core says nothing about
+  hardware: the copy's the node's. The snapshot runs meanwhile, the node doing what it can (a board whose headstages
+  aren't on the ports set acquires none of them), and the app asks whether to take the suggestion, carry on without the
+  node (disabling it), or stop. A node
   that makes nothing new keeps what it was asked about before. A node that fails to prepare (it panics, or doesn't make
   state it needs) is asked about the same way, and doesn't run: its outputs are left empty. See the
   [board](../standard/src/ephys/board/node.rs) and the [camera](../standard/src/tracking/camera/node.rs).
@@ -189,7 +192,7 @@ nothing's copied: the [Video Viewer](../standard/src/tracking/video_viewer.rs) d
 A node can keep state on the GUI's side, as `type UiState` (and `()` for none): the app keeps one for each node while
 the graph has it, whether its window's shown or not, and doesn't save it. Its window gets it with
 `UiContext::ui_state::<T>()`, borrowed from the app rather than the context, so the context can still be used. A
-direct trigger gets the same context (`on_trigger`), so it too. It's the place for anything that isn't a setting, such as a job the node has
+trigger gets the same context (`on_trigger`), so it too. It's the place for anything that isn't a setting, such as a job the node has
 started (as [Run Command](../standard/src/other/run_command/mod.rs) does): the node itself is cloned for undo's
 history and when it's duplicated, and compared every frame, so it should hold only its settings.
 
@@ -269,7 +272,7 @@ takes effect with its first pass, and its durations count from then (`Recording:
 A pass can start or stop recording itself (`PassContext::trigger_recording`), as the toolbar's Record does: see
 [TTL Recording Control](../standard/src/other/ttl_recording_control.rs).
 
-A writer has an "after recording" control. Connected to a setting that takes the `run_command::RunOnFiles` trigger (a direct one),
+A writer has an "after recording" control. Connected to a setting that takes the `run_command::RunOnFiles` trigger,
 it sends the paths of the files once they're finished (not when recording stops, which is sooner), and only if
 something was recorded. The [Run Command](../standard/src/other/run_command/mod.rs) node takes it, as does
 [Post-Process Positions LTX](../standard/src/other/sync_positions/mod.rs), and neither end knows what's at the other: anything can

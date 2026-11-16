@@ -4,7 +4,7 @@
 //! Each trigger type (`TriggerType`) carries what it needs to, and the program lists them with its edge types
 //! (`edge_types!`), which makes its enum of them (`TriggersEnum`), as it does of data streams and settings. A node says
 //! which kinds of them each of its settings takes (`Node::triggers`). Sending one (`UiContext::trigger`) puts it in the
-//! app's `DirectTriggers`, which delivers it to `Node::on_trigger` on the GUI's thread as soon as it can, whether
+//! app's `Triggers`, which delivers it to `Node::on_trigger` on the GUI's thread as soon as it can, whether
 //! anything's running or not: from a thread that's outlived the run that started it, say. A node sends one through a
 //! control with a `TriggerHandle`, from `ControlTriggers`, which it can keep for later and use from any thread.
 //!
@@ -12,7 +12,7 @@
 //! the data going by, over a while, isn't one: that's a transient setting (an auto detect's request: see
 //! `EdgeType::clear_transient`), which the node's passes act on like any other setting.
 //!
-//! Every setting also takes a direct update of its value, without saying so (`PassContext::trigger_settings_update`),
+//! Every setting also takes an update of its value, without saying so (`PassContext::trigger_settings_update`),
 //! which the app applies as an edit, unless settings are locked. And a pass can have the app start or stop recording
 //! (`PassContext::trigger_recording`), as the toolbar's Record does.
 //!
@@ -71,7 +71,7 @@ impl AnyTrigger {
     }
 }
 
-/// A direct trigger's for one of these.
+/// What's sent to a node through the app is one of these.
 pub enum Triggered {
     /// A new value for the node's setting `setting` (by index).
     SettingsUpdate { setting: usize, value: Box<dyn Any + Send> },
@@ -81,15 +81,16 @@ pub enum Triggered {
     Recording(bool),
 }
 
-/// Direct triggers wait here to be delivered. This is the app's, so they outlive any run.
+/// Triggers (and settings updates and requests to record) wait here to be delivered. This is the app's, so they
+/// outlive any run.
 #[derive(Default)]
-pub struct DirectTriggers {
+pub struct Triggers {
     waiting: Mutex<Vec<(NodeId, Triggered)>>,
     /// When a trigger comes, this is told, as a stopped app might not be drawing anything.
     wake: OnceLock<egui::Context>,
 }
 
-impl DirectTriggers {
+impl Triggers {
     /// The app has `ctx` draw a frame when a trigger comes, for it to be delivered, with this.
     pub fn wake(&self, ctx: &egui::Context) {
         self.wake.get_or_init(|| ctx.clone());
@@ -133,7 +134,7 @@ impl DirectTriggers {
     }
 }
 
-impl Drop for DirectTriggers {
+impl Drop for Triggers {
     /// Whatever's left when this is dropped never got to its node: the app closed first, while a thread finished up.
     fn drop(&mut self) {
         for (node, triggered) in self.take() {
@@ -148,7 +149,7 @@ impl Drop for DirectTriggers {
 /// A node keeps a handle on a trigger of one or more nodes, of one kind of the program's `T`, to send whenever, from
 /// any thread (see `ControlTriggers`).
 pub struct TriggerHandle<T: TriggersEnum> {
-    triggers: Arc<DirectTriggers>,
+    triggers: Arc<Triggers>,
     nodes: Vec<NodeId>,
     kind: T::Kind,
 }
@@ -167,15 +168,15 @@ impl<T: TriggersEnum> TriggerHandle<T> {
 /// A control connects to nodes, each with the kinds of the program's triggers `T` its setting takes.
 type Targets<T> = Vec<(NodeId, &'static [<T as TriggersEnum>::Kind])>;
 
-/// A node's controls can trigger the nodes they connect to directly. This says, for each control, the nodes it connects
+/// A node's controls can trigger the nodes they connect to. This says, for each control, the nodes it connects
 /// to, and the kinds of the program's triggers `T` the setting of theirs it connects to takes.
 pub struct ControlTriggers<T: TriggersEnum> {
-    triggers: Arc<DirectTriggers>,
+    triggers: Arc<Triggers>,
     controls: Vec<Targets<T>>,
 }
 
 impl<T: TriggersEnum> ControlTriggers<T> {
-    pub fn new(triggers: Arc<DirectTriggers>, controls: Vec<Targets<T>>) -> Self {
+    pub fn new(triggers: Arc<Triggers>, controls: Vec<Targets<T>>) -> Self {
         ControlTriggers { triggers, controls }
     }
 
@@ -238,7 +239,7 @@ mod tests {
 
     #[test]
     fn a_control_triggers_what_it_connects_to_that_takes_the_trigger() {
-        let triggers = Arc::new(DirectTriggers::default());
+        let triggers = Arc::new(Triggers::default());
         let both: &'static [TestKind] = &[TestKind::Go, TestKind::Level];
         let level: &'static [TestKind] = &[TestKind::Level];
         let controls = vec![vec![], vec![(NodeId(1), both), (NodeId(2), level), (NodeId(3), both)]];

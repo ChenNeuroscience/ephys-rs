@@ -304,9 +304,9 @@ pub struct App<N: NodesEnum, A: AnnotationsEnum> {
     runner: Option<Runner<N>>,
     /// Once a run's stopped, what it shared (see `LastRun`).
     last_run: Option<LastRun<N>>,
-    /// Direct triggers on their way (see `crate::triggers`). They're the app's, not the run's, as they can come after
+    /// Triggers on their way (see `crate::triggers`). They're the app's, not the run's, as they can come after
     /// a run.
-    direct_triggers: Arc<crate::triggers::DirectTriggers>,
+    triggers: Arc<crate::triggers::Triggers>,
     /// Once the recording's taken effect (its first pass), the acquisition clock then.
     recording_since: Option<f64>,
     dev_tools: dev_tools::DevTools,
@@ -337,9 +337,12 @@ pub struct App<N: NodesEnum, A: AnnotationsEnum> {
     last_crash: Option<PathBuf>,
     /// If the app has called on every node since `logic` last ran (see `tick_nodes`), this is set.
     ticked_since_logic: bool,
-    /// The app asks what to do about nodes whose hardware isn't as their settings say, while the run's holding a
-    /// snapshot for it (see `notice_decisions`).
+    /// The app asks what to do about nodes with something to decide, while the run's holding a snapshot for it (see
+    /// `notice_decisions`).
     asking: Option<user_decisions::Asking<N>>,
+    /// Nodes someone's chosen to leave as they are, with what each said, which the app doesn't ask about again while
+    /// running (see `user_decisions::LeftAlone`).
+    left_alone: user_decisions::LeftAlone,
 }
 
 impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
@@ -388,7 +391,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             status: None,
             runner: None,
             last_run: None,
-            direct_triggers: Arc::default(),
+            triggers: Arc::default(),
             recording_since: None,
             dev_tools: dev_tools::DevTools::default(),
             workers: engine::default_workers(),
@@ -397,6 +400,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             ran: None,
             last_crash: None,
             asking: None,
+            left_alone: Vec::new(),
             ticked_since_logic: true,
             quick_actions: &[],
             problems: (0, 0),
@@ -694,7 +698,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         self.last_run = None;
         self.started = Some(std::time::Instant::now());
         self.bake();
-        let triggers = self.direct_triggers.clone();
+        let triggers = self.triggers.clone();
         self.runner = Some(Runner::start_with(&self.snapshot, self.workers, triggers));
         self.frame_times.run_started = Some(self.frame_times.now());
         self.frame_times.run_restarted();
@@ -709,6 +713,8 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         self.started = None;
         // What the nodes were asked to do with the data (an auto detect, say) stops with it.
         self.clear_transient();
+        // The next run asks afresh about what was left as it is.
+        self.left_alone.clear();
         self.bake();
     }
 
@@ -1027,19 +1033,19 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         self.set_done(ctx, format!("Pasted settings onto {count} node{plural}{left_out} (see the console)"));
     }
 
-    /// The app delivers the direct triggers that have come (see `crate::triggers`) with this, running or not. It
+    /// The app delivers the triggers that have come (see `crate::triggers`) with this, running or not. It
     /// applies settings updates as edits, unless settings are locked, and starts or stops recording as a node asks,
     /// while running.
     fn deliver_triggers(&mut self, ctx: &egui::Context) {
         let locked = self.locked();
-        let triggered = self.direct_triggers.take();
+        let triggered = self.triggers.take();
         if !triggered.is_empty() {
             // For a node that's just been added.
             self.ui_states.keep(&self.graph);
         }
         for (id, triggered) in triggered {
             // What it can trigger in turn, through its controls.
-            let triggers = self.graph.control_triggers(id, &self.direct_triggers);
+            let triggers = self.graph.control_triggers(id, &self.triggers);
             let Some(entry) = self.graph.get_mut(id) else { continue };
             match triggered {
                 Triggered::Recording(_) if entry.disabled => {}
@@ -1121,17 +1127,25 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
     /// `Runner::user_decisions`). The app notices that here, to ask (see `decisions_window`).
     fn notice_decisions(&mut self) {
         let found = self.runner.as_ref().and_then(Runner::user_decisions);
-        let Some((version, found)) = found.filter(|(version, _)| *version == self.snapshot.version) else {
+        let Some((version, mut found)) = found.filter(|(version, _)| *version == self.snapshot.version) else {
             self.asking = None;
             return;
         };
+        // Not what's been left as it is already.
+        let left =
+            |id: &NodeId, what: &String| self.left_alone.iter().any(|(node, whats)| node == id && whats.contains(what));
+        found.retain(|(id, decision)| !left(id, &decision.what));
+        if found.is_empty() {
+            self.asking = None;
+            return;
+        }
         if self.asking.as_ref().is_none_or(|asking| asking.version != version) {
-            log::warn!("Nodes' hardware isn't as their settings say: asking what to do");
+            log::warn!("Nodes have something to decide: asking what to do");
             self.asking = Some(user_decisions::Asking::new(version, found));
         }
     }
 
-    /// The app asks what to do about nodes whose hardware isn't as their settings say, while it's to be decided (see
+    /// The app asks what to do about nodes with something to decide, while it's to be decided (see
     /// `notice_decisions`). What's decided is an edit, taken into the history at once, so it's done even while settings
     /// are locked.
     fn decisions_window(&mut self, ctx: &egui::Context) {
@@ -1141,13 +1155,14 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             user_decisions::Outcome::Open => {}
             user_decisions::Outcome::Apply => {
                 if let Some(asking) = self.asking.take() {
-                    asking.apply(&mut self.graph);
+                    let left = asking.apply(&mut self.graph);
+                    self.left_alone.extend(left);
                     self.history.commit(&self.graph, &self.annotations);
                 }
             }
             user_decisions::Outcome::Stop => {
                 self.asking = None;
-                log::info!("Stopped: nodes' hardware isn't as their settings say");
+                log::info!("Stopped, rather than decide");
                 self.stop_running();
             }
         }
@@ -1540,7 +1555,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         match event {
             Event::OpenMenu { screen, scene, from } => self.menu = Some(CreateMenu::new(screen, scene, from)),
             Event::ToggleWindow(id, from) => self.layout.toggle(id, from),
-            Event::Trigger(id, trigger) => self.direct_triggers.trigger(id, trigger),
+            Event::Trigger(id, trigger) => self.triggers.trigger(id, trigger),
             Event::OpenWindow(id, from) => self.layout.open(id, from),
             Event::FloatWindow(id) => self.layout.float(id),
             Event::Duplicate(id) => {
@@ -1789,7 +1804,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
     pub fn logic(&mut self, ctx: &egui::Context) {
         // Keep (and echo) what's been logged, so the log's queue doesn't fill.
         crate::console::drain();
-        self.direct_triggers.wake(ctx);
+        self.triggers.wake(ctx);
         self.deliver_triggers(ctx);
         self.notice_decisions();
         // Drawing a frame calls on every node; while the window's hidden, nothing's drawn, so the app calls on them here.
@@ -2385,7 +2400,7 @@ mod tests {
             node.settings.arguments = ran.display().to_string();
             node.settings.mode = crate::standard::other::run_command::Mode::Once;
         }
-        let triggers = harness.state().direct_triggers.clone();
+        let triggers = harness.state().triggers.clone();
         let kinds: &'static [crate::TriggerKind] = &[crate::TriggerKind::RunOnFiles];
         let controls = ControlTriggers::<crate::Trigger>::new(triggers, vec![vec![(id, kinds)]]);
 
@@ -2407,7 +2422,7 @@ mod tests {
         std::fs::remove_file(ran).unwrap();
     }
 
-    /// A direct trigger doesn't need a run, so one sent as it stops isn't lost.
+    /// A trigger doesn't need a run, so one sent as it stops isn't lost.
     #[test]
     fn a_settings_update_sent_just_as_the_run_stops_still_arrives() {
         let mut harness = harness();
@@ -2420,7 +2435,7 @@ mod tests {
             ..Default::default()
         });
         let value = Box::new(thresholds.clone());
-        harness.state().direct_triggers.trigger_settings_update(detector, 0, value);
+        harness.state().triggers.trigger_settings_update(detector, 0, value);
         harness.state_mut().perform(&ctx, Action::Play);
         assert!(harness.state().runner.is_none());
         harness.run_steps(2);
@@ -2438,7 +2453,7 @@ mod tests {
             values: vec![60.0],
             ..Default::default()
         });
-        harness.state().direct_triggers.trigger_settings_update(detector, 0, Box::new(thresholds));
+        harness.state().triggers.trigger_settings_update(detector, 0, Box::new(thresholds));
         harness.run_steps(2);
         assert_eq!(harness.state().graph.get(detector).unwrap().node.settings()[0].value, before);
     }
@@ -2613,6 +2628,26 @@ mod tests {
         assert!(harness.state().runner.is_none());
         assert!(harness.state().asking.is_none());
         assert!(engine::same_processing(&graph, &harness.state().graph));
+    }
+
+    /// Leaving the nodes as they are changes nothing, and the run carries on without asking about the same things again.
+    #[test]
+    fn hardware_not_as_set_can_be_left_as_it_is() {
+        let mut harness = harness();
+        without_hardware(&mut harness);
+        let graph = harness.state().graph.clone();
+        harness.get_by_label("Play (Space)").click();
+        until_asked(&mut harness);
+        for node in ["Acquisition Board", "Camera"] {
+            harness.get_by_label(&format!("Don't change {node}")).click();
+        }
+        harness.run_steps(1);
+        harness.get_by_label("Apply").click();
+        harness.run_steps(10);
+        assert!(harness.state().runner.is_some(), "still running");
+        assert!(harness.state().asking.is_none(), "not asked again");
+        assert!(engine::same_processing(&graph, &harness.state().graph), "nothing changed");
+        assert!(harness.state().graph.iter().all(|(_, entry)| !entry.disabled), "nothing disabled");
     }
 
     #[test]
@@ -3704,11 +3739,7 @@ mod tests {
         assert_eq!(progress(&harness), None, "stopped");
         // A settings update from the passes is applied, as an edit.
         let gains = crate::standard::spikes::Gains { gains: vec![0.25], ..Default::default() };
-        harness.state().direct_triggers.trigger_settings_update(
-            gain,
-            0,
-            Box::new(crate::Setting::Gains(gains.clone())),
-        );
+        harness.state().triggers.trigger_settings_update(gain, 0, Box::new(crate::Setting::Gains(gains.clone())));
         harness.run_steps(2);
         let settings = harness.state().graph.get(gain).unwrap().node.settings();
         assert_eq!(settings[0].value, crate::Setting::Gains(gains), "applied");

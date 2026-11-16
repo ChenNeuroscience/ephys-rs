@@ -1,13 +1,13 @@
 //! The engine runs the graph in passes, each covering `PASS_DURATION` of time, which a worker runs through every node
 //! in the plan's order (see `run`). As a pass reaches a node, the node's `process` is given its context in the pass
 //! (`PassContext`): its inputs, buffers for its outputs, what its controls see, the snapshot the pass runs against (as
-//! nodes see it: whether it's recording, say), what it shares with the GUI, and where it sends direct triggers.
+//! nodes see it: whether it's recording, say), what it shares with the GUI, and where it sends triggers.
 
 use std::any::Any;
 use std::sync::Arc;
 
 use super::{Buffer, Edges, NodeId, SnapshotLite};
-use crate::triggers::DirectTriggers;
+use crate::triggers::Triggers;
 
 /// Each pass covers this many seconds of data.
 pub const PASS_DURATION: f64 = 0.02;
@@ -33,8 +33,8 @@ pub struct PassContext<'a, E: Edges> {
     pub(super) snapshot: &'a Arc<dyn SnapshotLite>,
     /// The node shares this with the GUI (its `Node::Shared`: see `shared`).
     pub shared: &'a dyn Any,
-    /// The app takes direct triggers from passes here (see `trigger_settings_update`).
-    pub direct: &'a DirectTriggers,
+    /// The app takes triggers from passes here (see `trigger_settings_update`).
+    pub triggers: &'a Triggers,
 }
 
 impl<'a, E: Edges> PassContext<'a, E> {
@@ -47,10 +47,10 @@ impl<'a, E: Edges> PassContext<'a, E> {
         outputs: &'a mut [Buffer<E>],
     ) -> Self {
         let taken: &'a mut [Option<Buffer<E>>] = Box::leak(Box::new([]));
-        let direct = Box::leak(Box::default());
+        let triggers = Box::leak(Box::default());
         let (node, controls, shared) = (NodeId(0), &[], &());
         let snapshot = Self::trying(false);
-        PassContext { sequence, duration, node, inputs, taken, outputs, controls, snapshot, shared, direct }
+        PassContext { sequence, duration, node, inputs, taken, outputs, controls, snapshot, shared, triggers }
     }
 
     /// Tests try nodes out against a snapshot like this: running as of now, and recording or not.
@@ -92,13 +92,13 @@ impl<'a, E: Edges> PassContext<'a, E> {
     /// Passes can't change the graph themselves, so a node asks the app here to set its setting `setting` (by index) to
     /// `value`. The app applies it as an edit, unless settings are locked (while recording). See `crate::triggers`.
     pub fn trigger_settings_update(&self, setting: usize, value: E::Setting) {
-        self.direct.trigger_settings_update(self.node, setting, Box::new(value));
+        self.triggers.trigger_settings_update(self.node, setting, Box::new(value));
     }
 
     /// A node can have the app start (`on`) or stop recording, as the toolbar's Record does, if it isn't already.
     /// Whatever any node asks last is what happens. See `crate::triggers`.
     pub fn trigger_recording(&self, on: bool) {
-        self.direct.trigger_recording(self.node, on);
+        self.triggers.trigger_recording(self.node, on);
     }
 
     /// The node reads an input's data with this, whether the node takes the input (see `take_input`) or not.

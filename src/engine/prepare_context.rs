@@ -1,9 +1,9 @@
 //! Before passes switch to a new snapshot, the engine asks each node to get ready for it
 //! (`Node::prepare_for_snapshot`). This module has what the node is told (`PrepareContext`, including how the node was
 //! in the snapshot before) and what the node answers (`Prepared`): any state the node needs, made ahead of time as
-//! proto-states that become its state as the snapshot takes over (see `Node::on_snapshot_change`), and anything about
-//! its hardware someone should decide (`UserDecision`). A node can answer at once, or once something it's started
-//! (opening a device, say) is done (`Prepare`).
+//! proto-states that become its state as the snapshot takes over (see `Node::on_snapshot_change`), and anything someone
+//! should decide (`UserDecision`: hardware not as the node's settings say, say). A node can answer at once, or once
+//! something it's started (opening a device, say) is done (`Prepare`).
 
 use super::{Edges, NodeId, Recording};
 use crate::triggers::ControlTriggers;
@@ -18,7 +18,8 @@ pub struct Prepared<S, W, N> {
     /// Each worker can have state of its own for the node; the node can make that ahead of time too, one per worker
     /// (`PrepareContext::workers`).
     pub proto_worker_state: Option<Vec<W>>,
-    /// The node's hardware may not be as the node's settings say; the node lists here what someone should decide.
+    /// The node may find something someone should decide (its hardware not as its settings say, say), which it lists
+    /// here.
     pub decisions: Vec<UserDecision<N>>,
 }
 
@@ -64,25 +65,34 @@ impl<S, W, N> Prepared<S, W, N> {
     }
 }
 
-/// A node may find, as it prepares, that its hardware isn't as its settings say. This is one such thing, for someone to
-/// decide about: take on `fix`, if there is one, carry on without the node, or stop. The snapshot runs meanwhile, and
-/// the node does what it can (a board whose headstages aren't on the ports set acquires none of them, say). See
-/// `Runner::user_decisions`.
+/// A node may find, as it prepares, something someone should decide (its hardware not as its settings say, say). This
+/// is one such thing: someone takes the node's `suggestion`, if it has one, carries on without the node, or stops. The
+/// snapshot runs meanwhile, and the node does what it can (a board whose headstages aren't on the ports set acquires
+/// none of them, say). See `Runner::user_decisions`.
 #[derive(Clone, Debug)]
 pub struct UserDecision<N> {
-    /// The app shows people what isn't as set: "the board's headstages are D1 32, D2 32, not the A1 32, B1 32 set",
-    /// say.
+    /// The app shows people what's to decide, as the node puts it: "the board's headstages are D1 32, D2 32, not the A1
+    /// 32, B1 32 set", say.
     pub what: String,
-    /// The node can offer itself with settings matching the hardware, if there are such settings. A node with several
-    /// decisions gives the whole fix with each.
-    pub fix: Option<N>,
+    /// The node can suggest a way to settle it (see `Suggestion`). A node with several decisions gives the whole
+    /// suggestion with each.
+    pub suggestion: Option<Suggestion<N>>,
+}
+
+/// A node can suggest how to settle what's to decide: the node itself, changed (its settings matching its hardware's,
+/// say), which the app offers by the node's `label` for it ("Use the hardware's settings", say).
+#[derive(Clone, Debug)]
+pub struct Suggestion<N> {
+    pub label: String,
+    pub node: N,
 }
 
 impl<N> UserDecision<N> {
-    /// The engine keeps every node's decisions alike, whatever the node's type. This turns the fix into what the
-    /// engine keeps.
+    /// The engine keeps every node's decisions alike, whatever the node's type. This turns the suggested node into what
+    /// the engine keeps.
     pub fn map<M>(self, f: impl Fn(N) -> M) -> UserDecision<M> {
-        UserDecision { what: self.what, fix: self.fix.map(f) }
+        let suggestion = self.suggestion.map(|Suggestion { label, node }| Suggestion { label, node: f(node) });
+        UserDecision { what: self.what, suggestion }
     }
 }
 
