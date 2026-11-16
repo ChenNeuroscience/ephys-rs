@@ -261,7 +261,8 @@ pub struct App<N: NodesEnum, A: AnnotationsEnum> {
     /// For tests: added to how long it's been since then.
     #[cfg(test)]
     idle_extra: std::time::Duration,
-    /// For tests: the run's stats as shown, rather than as they are, for screenshots that don't change.
+    /// For tests: the run's stats as shown, rather than as they are, for screenshots that don't change; and with them,
+    /// the acquisition clock at zero.
     #[cfg(test)]
     shown_stats: Option<engine::Stats>,
     /// What's unattended, as of the last time round: drawn as a warning, while it's one.

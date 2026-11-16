@@ -320,6 +320,8 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
     fn play_clock(&self, ui: &mut egui::Ui) {
         let colours = self.colours();
         let clock = self.runner.as_ref().map(|r| r.clock());
+        #[cfg(test)]
+        let clock = clock.map(|clock| if self.shown_stats.is_some() { 0.0 } else { clock });
         let text = egui::RichText::new(super::clock_text(clock.unwrap_or(0.0))).monospace();
         let text = if clock.is_some() { text.color(colours.text_primary) } else { text.color(colours.text_disabled) };
         ui.add_space(2.0);

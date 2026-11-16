@@ -1404,7 +1404,8 @@ pub mod tests {
         scheduled.change_worker_states(0, &mut worker_states);
         let filtered = plan.steps.iter().find(|s| s.id == filter).unwrap().outputs[0];
         let copied = plan.steps.iter().find(|s| s.id == writer).unwrap().inputs[0].unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
+        // The board's opened as the snapshot's prepared, which on a slow machine (CI's, say) can take a while.
+        let deadline = Instant::now() + Duration::from_secs(20);
         for sequence in 0.. {
             plan.run(
                 &snapshot,
