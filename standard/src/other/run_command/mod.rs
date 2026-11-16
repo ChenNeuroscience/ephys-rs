@@ -1199,11 +1199,17 @@ mod tests {
         let recording =
             ephys_rs::engine::Snapshot::bake(1, snapshot.graph.clone(), snapshot.started, Some(asked.clone()));
         runner.update(&recording);
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while asked.effective().is_none_or(|e| e.at.elapsed() < Duration::from_millis(500)) && Instant::now() < deadline
-        {
+        // Half a second's passes, recording, done: by how many there are, not how long it's been, as a slow machine
+        // (CI's, say) falls behind.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while asked.effective().is_none() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
         }
+        let recorded_from = runner.stats().completed;
+        while runner.stats().completed < recorded_from + 25 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(runner.stats().completed >= recorded_from + 25, "recording: {:?}", runner.stats());
         assert!(direct.take().is_empty(), "still recording");
         // Stopped by stopping the run, as Play does: there may be no more passes.
         drop(runner);

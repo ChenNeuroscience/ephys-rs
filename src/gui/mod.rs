@@ -3662,8 +3662,10 @@ mod tests {
     }
 
     #[test]
-    fn viewers_trigger_auto_detect_and_settings_updates_are_applied() {
+    fn viewers_start_auto_detect_and_settings_updates_are_applied() {
         let mut harness = harness();
+        // Nothing to decide about, so nothing in the way of the viewer.
+        with_test_hardware(&mut harness);
         for writer in ["Write LTX", "Write Raw"] {
             let id = node_named(harness.state(), writer);
             harness.state_mut().graph.remove(id);
@@ -3704,6 +3706,8 @@ mod tests {
     #[test]
     fn a_viewer_detects_the_thresholds_then_the_gains() {
         let mut harness = harness();
+        // Nothing to decide about, so nothing in the way of the viewer.
+        with_test_hardware(&mut harness);
         let (viewer, gain, detector) = (
             node_named(harness.state(), "Spike Viewer"),
             node_named(harness.state(), "Spike Gain"),

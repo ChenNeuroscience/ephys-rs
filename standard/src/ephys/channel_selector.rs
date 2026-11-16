@@ -242,12 +242,17 @@ mod tests {
         let recording =
             ephys_rs::engine::Snapshot::bake(1, snapshot.graph.clone(), snapshot.started, Some(asked.clone()));
         assert!(!runner.update(&recording), "recording runs the writer, with buffers of its own");
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while asked.effective().is_none_or(|e| e.at.elapsed() < Duration::from_millis(500)) && Instant::now() < deadline
-        {
+        // A second's passes, recording, done: by how many there are, not how long it's been, as a slow machine (CI's,
+        // say) falls behind.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while asked.effective().is_none() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
         }
-        assert!(runner.clock() >= 0.5, "samples came through, to {} s", runner.clock());
+        let recorded_from = runner.stats().completed;
+        while runner.stats().completed < recorded_from + 50 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(runner.stats().completed >= recorded_from + 50, "a second's passes recorded: {:?}", runner.stats());
 
         for id in graph.ids().collect::<Vec<_>>() {
             let inputs = resolved[&id].input_streams.clone();

@@ -541,12 +541,17 @@ mod tests {
         assert!(whats.iter().all(|what| what.starts_with("couldn't open the board")), "{whats:?}");
         graph.get_mut(board).unwrap().disabled = true;
         runner.update(&ephys_rs::engine::Snapshot::new(1, graph));
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while runner.stats().completed == 0 && std::time::Instant::now() < until {
+        // Once the snapshot without it is the latest, and running: the one before (deciding) runs till then.
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let without = |runner: &ephys_rs::engine::Runner<Nodes>| {
+            runner.user_decisions().is_none() && runner.first_uses().iter().any(|first| first.version == 1)
+        };
+        let mut done = false;
+        while !done && std::time::Instant::now() < until {
+            done = without(&runner);
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        assert!(runner.stats().completed > 0, "running");
-        assert!(runner.user_decisions().is_none());
+        assert!(done, "running without it, with nothing to decide");
     }
 
     /// The settings, running, with a board whose headstages differ from those set. See tests/snapshots/.

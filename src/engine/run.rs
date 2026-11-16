@@ -894,12 +894,14 @@ struct Waiting<N: NodesEnum> {
 /// meanwhile replaces it, so a burst of changes (a slider dragged) has the latest prepared next, not each in turn. Ends
 /// once the run stops.
 fn prepare_snapshots<N: NodesEnum>(
-    schedule: &Schedule<N>,
+    schedule: &std::sync::Weak<Schedule<N>>,
     shared: &RunCommon,
     waiting: &Waiting<N>,
     first: Vec<ToPrepare<N>>,
 ) {
-    schedule.latest.load_full().prepare(first);
+    let Some(latest) = schedule.upgrade().map(|schedule| schedule.latest.load_full()) else { return };
+    latest.prepare(first);
+    drop(latest);
     loop {
         let snapshot = {
             let mut snapshot = waiting.snapshot.lock().unwrap();
@@ -913,6 +915,8 @@ fn prepare_snapshots<N: NodesEnum>(
                 snapshot = waiting.given.wait_timeout(snapshot, Duration::from_millis(50)).unwrap().0;
             }
         };
+        // The run's stopped, if there's no schedule.
+        let Some(schedule) = schedule.upgrade() else { return };
         let before = schedule.latest.load_full();
         if before.snapshot.plan.same_shape(&snapshot.plan) {
             log::trace!("Snapshot v{} carries on with the same buffers", snapshot.version);
@@ -923,6 +927,7 @@ fn prepare_snapshots<N: NodesEnum>(
         drop(before);
         let scheduled = Arc::new(scheduled);
         schedule.latest.store(scheduled.clone());
+        drop(schedule);
         scheduled.prepare(to_prepare);
     }
 }
@@ -980,10 +985,12 @@ impl<N: NodesEnum> Runner<N> {
         let (dispatcher_schedule, dispatcher_shared) = (schedule.clone(), shared.clone());
         let dispatcher = move || dispatch(&dispatcher_schedule, &dispatcher_shared);
         threads.push(std::thread::Builder::new().name("pass dispatcher".into()).spawn(dispatcher).expect("dispatcher"));
-        // Not joined as the run stops: a node it's waiting for (a device opening) can take a while.
+        // Not joined as the run stops: a node it's waiting for (a device opening) can take a while. So it only holds on
+        // to the schedule while it's using it: the snapshots, with the nodes' state, are let go of as the run stops (in
+        // the background, which the program waits for), not whenever this thread next looks.
         let waiting = Arc::new(Waiting { snapshot: Mutex::new(None), given: Condvar::new() });
         let (preparer_schedule, preparer_shared, preparer_waiting) =
-            (schedule.clone(), shared.clone(), waiting.clone());
+            (Arc::downgrade(&schedule), shared.clone(), waiting.clone());
         let preparer = move || prepare_snapshots(&preparer_schedule, &preparer_shared, &preparer_waiting, to_prepare);
         std::thread::Builder::new().name("preparing snapshots".into()).spawn(preparer).expect("preparer");
 
