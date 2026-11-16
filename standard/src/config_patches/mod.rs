@@ -3,11 +3,15 @@
 
 use ephys_rs::config_patching::PatchSet;
 
+mod auto_detect_settings;
 mod example;
 mod gains_amplify;
 
-pub const PATCHES: PatchSet =
-    PatchSet { name: "std", version: env!("CARGO_PKG_VERSION"), patches: &[example::patch, gains_amplify::patch] };
+pub const PATCHES: PatchSet = PatchSet {
+    name: "std",
+    version: env!("CARGO_PKG_VERSION"),
+    patches: &[example::patch, gains_amplify::patch, auto_detect_settings::patch],
+};
 
 #[cfg(test)]
 mod tests {

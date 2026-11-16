@@ -30,7 +30,7 @@ pub trait EdgeType: Clone + PartialEq + Debug + Send + Sync + 'static {
     fn summary(&self) -> String;
 
     /// Part of a setting can be transient: it has the node do something over a while, with the data going by, rather
-    /// than say how the node's set up (when auto detect was started, say: `Gains::detect`, in the standard nodes). A
+    /// than say how the node's set up (when auto detect was started, say: `DetectGains::started`, in the standard nodes). A
     /// transient setting is a setting like any other: a change is a new snapshot, which the node prepares for (room to
     /// sample into, say), it's undoable, and it's locked while recording. While it's set, the node runs (see
     /// `Node::evaluate_tree_shake`), and once the node's passes are done, they clear it themselves, along with whatever

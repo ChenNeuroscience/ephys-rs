@@ -223,14 +223,14 @@ taken is always the enum.
 ## Transient settings
 
 Having a node do something over a while, with the data going by, isn't a trigger: it's a **transient setting**, as
-the gains and thresholds have for auto detect (`Gains::detect`, `Thresholds::detect`: when it was started). It's a
+the gains and thresholds have for auto detect (`detect.started`: when it was started). It's a
 setting like any other: a window, or a viewer through a control, sets it, a change is a new snapshot, it's undoable,
 and it's locked while recording. The node prepares for it (an auto detect makes room to sample into, comparing with
 the setting in `context.previous`, and lets go of it once it's clear), and runs while it's set (in its tree shake).
 Once the node's passes are done, they set what they found, with the transient setting cleared, in one settings update
 (`PassContext::trigger_settings_update(setting, value)`), which the GUI applies as an edit; until that takes over, the
 node's state says it's done. Stopping it is clearing it. Anything that can see the setting can tell how far along it
-is: an auto detect's setting also says how long it samples for (`sampling`), so a window, or a viewer through a
+is: an auto detect's setting also says how long it samples for (`detect.seconds`), so a window, or a viewer through a
 control, estimates it from when it was started (`auto_detect::estimated_progress`). Being transient, it isn't kept:
 transient settings aren't saved (`#[serde(skip)]`), and the app clears them (`EdgeType::clear_transient`) when it
 restores a graph from its history (undo or redo), duplicates a node, starts recording, or stops running. The

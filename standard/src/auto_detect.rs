@@ -1,8 +1,8 @@
-//! Choosing settings from the data ("auto detect"). The setting to choose (gains, or thresholds) says how long to
-//! sample the data for (`sampling`), and when its auto detect was started (`detect`), a transient setting (see
-//! `EdgeType::clear_transient`). While that's set, the node runs, with room to sample into that it made as it prepared,
-//! which its passes sample the data into for that long, then set the setting from what they found, with `detect`
-//! cleared (`PassContext::trigger_settings_update`). Whatever can see the setting (the node's window, or a viewer's
+//! Choosing settings from the data ("auto detect"). The setting to choose (gains, or thresholds) has its auto detect's
+//! own settings in `detect`: how long it samples the data for (`seconds`), and when it was started (`started`), a
+//! transient setting (see `EdgeType::clear_transient`). While it's started, the node runs, with room to sample into that
+//! it made as it prepared, which its passes sample the data into for that long, then set the setting from what they
+//! found, with `started` cleared (`PassContext::trigger_settings_update`). Whatever can see the setting (the node's window, or a viewer's
 //! through a control) can tell how far along it is from those two (`estimated_progress`). The Spike Gain, Continuous
 //! Gain and Spike Detector have one; these are the pieces they share.
 
@@ -14,11 +14,11 @@ use serde::{Deserialize, Serialize};
 use crate::Edges;
 use ephys_rs::engine::UiContext;
 
-/// Whether a setting's auto detect (`detect`, when it was started) is another than in the snapshot before (`before`, if
-/// the node was in it): started, started again, or cleared (it's done, or stopped). If not, what the node made for it
-/// still stands.
-pub fn detect_changed(detect: Option<Instant>, before: Option<Option<Instant>>) -> bool {
-    before != Some(detect)
+/// Whether a setting's auto detect (`started`, when it was started) is another than in the snapshot before (`before`,
+/// if the node was in it): started, started again, or cleared (it's done, or stopped). If not, what the node made for
+/// it still stands.
+pub fn detect_changed(started: Option<Instant>, before: Option<Option<Instant>>) -> bool {
+    before != Some(started)
 }
 
 /// How long the passes can sample for, in seconds.
@@ -152,28 +152,28 @@ impl PercentMultiple {
 }
 
 /// How far along detecting a setting is, from 0 to 1, from when it was started (`started`), and how many seconds it
-/// samples for (`sampling`). The node doesn't say, so this is near enough: its passes start sampling once the snapshot
+/// samples for (`seconds`). The node doesn't say, so this is near enough: its passes start sampling once the snapshot
 /// starting it takes over, and the Spike Gain starts again if the thresholds change meanwhile.
-pub fn estimated_progress(started: Instant, sampling: f32) -> f32 {
-    (started.elapsed().as_secs_f32() / sampling.clamp(*SAMPLING.start(), *SAMPLING.end())).min(1.0)
+pub fn estimated_progress(started: Instant, seconds: f32) -> f32 {
+    (started.elapsed().as_secs_f32() / seconds.clamp(*SAMPLING.start(), *SAMPLING.end())).min(1.0)
 }
 
-/// Auto detect, for a setting that samples for `sampling` seconds, started at `detect`, if it is (the node's own, or
-/// one a control connects to): a button to start it, while acquiring (it needs data) and not recording, and while it's
+/// Auto detect, for a setting that samples for `seconds`, started at `started`, if it is (the node's own, or one a
+/// control connects to): a button to start it, while acquiring (it needs data) and not recording, and while it's
 /// going, how far along it is, and a button to stop it. For the node's window, and a viewer's.
 pub fn auto_detect_ui(
     ui: &mut egui::Ui,
     context: &UiContext<Edges>,
-    detect: &mut Option<Instant>,
-    sampling: f32,
+    started: &mut Option<Instant>,
+    seconds: f32,
     tip: &str,
 ) {
     ui.horizontal(|ui| {
-        if let Some(started) = *detect {
+        if let Some(at) = *started {
             if ui.button("Stop").on_hover_text("Stop detecting, leaving things as they were").clicked() {
-                *detect = None;
+                *started = None;
             }
-            let progress = estimated_progress(started, sampling);
+            let progress = estimated_progress(at, seconds);
             ui.add(egui::ProgressBar::new(progress).desired_width(80.0).show_percentage());
             return;
         }
@@ -185,7 +185,7 @@ pub fn auto_detect_ui(
             .on_disabled_hover_text(why)
             .clicked()
         {
-            *detect = Some(Instant::now());
+            *started = Some(Instant::now());
         }
     });
 }

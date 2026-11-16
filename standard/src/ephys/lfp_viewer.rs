@@ -868,7 +868,7 @@ fn gains_ui(ui: &mut egui::Ui, context: &mut UiContext<Edges>, gains: &mut Gains
          comes in, in µV, before them",
     );
     let layout = Channels { count: channels as usize, group_size: 1 };
-    let detecting = gains.detect.is_some();
+    let detecting = gains.detect.started.is_some();
     if gains.scope == GainScope::All {
         let mut gain = gains.get(0);
         let field = ui.add_enabled_ui(!detecting, |ui| gain_field(ui, &mut gain, false)).inner;
@@ -878,7 +878,13 @@ fn gains_ui(ui: &mut egui::Ui, context: &mut UiContext<Edges>, gains: &mut Gains
     } else {
         ui.label("each channel's");
     }
-    auto_detect_ui(ui, context, &mut gains.detect, gains.sampling, "Sample each channel, then set its gain");
+    auto_detect_ui(
+        ui,
+        context,
+        &mut gains.detect.started,
+        gains.detect.seconds,
+        "Sample each channel, then set its gain",
+    );
 }
 
 /// Whether a selection's channels are "all".

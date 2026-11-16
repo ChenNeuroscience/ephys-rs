@@ -121,8 +121,10 @@ impl AutoDetecting {
 /// going, and how many seconds it samples for (see `crate::standard::auto_detect`).
 fn detecting(context: &UiContext<Edges>, control: usize) -> Option<(Instant, f32)> {
     match &context.controls[control] {
-        Some(Setting::Thresholds(thresholds)) => thresholds.detect.map(|started| (started, thresholds.sampling)),
-        Some(Setting::Gains(gains)) => gains.detect.map(|started| (started, gains.sampling)),
+        Some(Setting::Thresholds(thresholds)) => {
+            thresholds.detect.started.map(|started| (started, thresholds.detect.seconds))
+        }
+        Some(Setting::Gains(gains)) => gains.detect.started.map(|started| (started, gains.detect.seconds)),
         _ => None,
     }
 }
@@ -130,8 +132,8 @@ fn detecting(context: &UiContext<Edges>, control: usize) -> Option<(Instant, f32
 /// Starts auto detect for the setting control `control` connects to, as of `at`, or (`None`) stops it.
 fn set_detect(context: &mut UiContext<Edges>, control: usize, at: Option<Instant>) {
     match &mut context.controls[control] {
-        Some(Setting::Thresholds(thresholds)) => thresholds.detect = at,
-        Some(Setting::Gains(gains)) => gains.detect = at,
+        Some(Setting::Thresholds(thresholds)) => thresholds.detect.started = at,
+        Some(Setting::Gains(gains)) => gains.detect.started = at,
         _ => {}
     }
 }
@@ -426,7 +428,7 @@ impl SpikeViewer {
             let running: Vec<(usize, f32)> = [GAINS_CONTROL, THRESHOLDS]
                 .into_iter()
                 .filter_map(|c| {
-                    detecting(context, c).map(|(started, sampling)| (c, estimated_progress(started, sampling)))
+                    detecting(context, c).map(|(started, seconds)| (c, estimated_progress(started, seconds)))
                 })
                 .collect();
             // And what's to come after.

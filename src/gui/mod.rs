@@ -3608,8 +3608,8 @@ mod tests {
     /// When auto detect was started for node `node`'s setting (its gains, or thresholds), if it's going.
     fn auto_detect_started(app: &TestApp, node: NodeId) -> Option<std::time::Instant> {
         match &app.graph.get(node)?.node.settings().first()?.value {
-            crate::Setting::Gains(gains) => gains.detect,
-            crate::Setting::Thresholds(thresholds) => thresholds.detect,
+            crate::Setting::Gains(gains) => gains.detect.started,
+            crate::Setting::Thresholds(thresholds) => thresholds.detect.started,
             _ => None,
         }
     }
@@ -3617,21 +3617,21 @@ mod tests {
     /// How far along node `node`'s auto detect is, as its window sees it, while it's going.
     fn auto_detect_progress(app: &TestApp, node: NodeId) -> Option<f32> {
         let started = auto_detect_started(app, node)?;
-        let sampling = match &app.graph.get(node)?.node.settings().first()?.value {
-            crate::Setting::Gains(gains) => gains.sampling,
-            crate::Setting::Thresholds(thresholds) => thresholds.sampling,
+        let seconds = match &app.graph.get(node)?.node.settings().first()?.value {
+            crate::Setting::Gains(gains) => gains.detect.seconds,
+            crate::Setting::Thresholds(thresholds) => thresholds.detect.seconds,
             _ => return None,
         };
-        Some(crate::standard::auto_detect::estimated_progress(started, sampling))
+        Some(crate::standard::auto_detect::estimated_progress(started, seconds))
     }
 
     /// Starts auto detect for node `node`'s setting (its gains, or thresholds), as of `at`, or (`None`) stops it: as its
     /// window does.
     fn set_auto_detect(app: &mut TestApp, node: NodeId, at: Option<std::time::Instant>) {
         match app.graph.get_mut(node).map(|entry| &mut entry.node) {
-            Some(Nodes::ContinuousGain(gain)) => gain.gains.detect = at,
-            Some(Nodes::SpikeGain(gain)) => gain.gains.detect = at,
-            Some(Nodes::SpikeDetector(detector)) => detector.thresholds.detect = at,
+            Some(Nodes::ContinuousGain(gain)) => gain.gains.detect.started = at,
+            Some(Nodes::SpikeGain(gain)) => gain.gains.detect.started = at,
+            Some(Nodes::SpikeDetector(detector)) => detector.thresholds.detect.started = at,
             _ => panic!("not a node that detects its settings"),
         }
     }
@@ -3885,10 +3885,10 @@ mod tests {
             }
         }
         let before = gains(&mut graph).clone();
-        gains(&mut graph).detect = Some(std::time::Instant::now());
+        gains(&mut graph).detect.started = Some(std::time::Instant::now());
         history.commit(&graph, &annotations);
-        // The result: the gains chosen, no longer asked.
-        let chosen = crate::standard::spikes::Gains { gains: vec![2.0], detect: None, ..before.clone() };
+        // The result: the gains chosen, no longer detecting.
+        let chosen = crate::standard::spikes::Gains { gains: vec![2.0], ..before.clone() };
         *gains(&mut graph) = chosen.clone();
         history.commit(&graph, &annotations);
 
@@ -3900,7 +3900,7 @@ mod tests {
         assert_eq!(*gains(&mut redone), chosen);
         history.undo();
         let (mut starting, _) = history.redo().unwrap();
-        assert_eq!(gains(&mut starting).detect, None, "redoing the start doesn't start it again");
+        assert_eq!(gains(&mut starting).detect.started, None, "redoing the start doesn't start it again");
     }
 
     #[test]

@@ -23,29 +23,11 @@ use ephys_rs::engine::{Category, Input, Node, NodeInfo, Output, PassContext, Set
 use ephys_rs::gui::widgets::info_icon;
 
 #[derive(Clone, PartialEq, Default, Serialize, Deserialize)]
-#[serde(from = "Saved")]
+#[serde(default)]
 pub struct SpikeGain {
     pub gains: Gains,
     /// What's to fill what's recorded (`Gains::fill_uv`), when choosing them.
     pub fit: Fit,
-}
-
-/// What graphs have saved: as it is now, or with how long auto detect samples for on the node, not its gains.
-#[derive(Default, Deserialize)]
-#[serde(default)]
-struct Saved {
-    gains: Gains,
-    fit: Fit,
-    sampling: Option<f32>,
-}
-
-impl From<Saved> for SpikeGain {
-    fn from(Saved { mut gains, fit, sampling }: Saved) -> Self {
-        if let Some(sampling) = sampling {
-            gains.sampling = sampling;
-        }
-        SpikeGain { gains, fit }
-    }
 }
 
 /// What's to fill what's recorded, for each channel, when choosing the gains: its threshold times a factor, its
@@ -210,7 +192,7 @@ impl Node<Edges> for SpikeGain {
     /// Only while it's given something, and something needs what it makes.
     fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool], _recording: bool) -> TreeShake {
         // And while detecting, whatever needs what it makes: its gains are wanted before recording, say.
-        let wanted = outputs.contains(&true) || self.gains.detect.is_some();
+        let wanted = outputs.contains(&true) || self.gains.detect.started.is_some();
         TreeShake::needing_all(inputs.contains(&true) && wanted, inputs.len())
     }
 
@@ -243,16 +225,16 @@ impl Node<Edges> for SpikeGain {
 
     /// While the gains are being detected, each channel's room to sample into.
     fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Gaining, (), Self> {
-        let before = context.previous.as_ref().map(|previous| previous.node.gains.detect);
-        if context.same_streams() && !detect_changed(self.gains.detect, before) {
+        let before = context.previous.as_ref().map(|previous| previous.node.gains.detect.started);
+        if context.same_streams() && !detect_changed(self.gains.detect.started, before) {
             return Prepared::nothing().into();
         }
         let channels = match context.inputs[0] {
             Some(DataStream::Spikes(stream)) => stream.channels as usize,
             _ => 0,
         };
-        let seconds = self.gains.sampling.clamp(*SAMPLING.start(), *SAMPLING.end()) as f64;
-        let sampling = self.gains.detect.map(|_| Sampling::new(seconds, channels));
+        let seconds = self.gains.detect.seconds.clamp(*SAMPLING.start(), *SAMPLING.end()) as f64;
+        let sampling = self.gains.detect.started.map(|_| Sampling::new(seconds, channels));
         Prepared::shared(Gaining { sampling }).into()
     }
 
@@ -275,7 +257,9 @@ impl Node<Edges> for SpikeGain {
             }
             sampling.add(spikes, pass.duration);
             if sampling.elapsed >= sampling.seconds {
-                let mut gains = Gains { detect: None, ..self.gains.clone() };
+                let mut gains = self.gains.clone();
+                // Done: no longer detecting.
+                gains.detect.started = None;
                 gains.set_ranges(&sampling.choose(self.fit), layout);
                 if self.fit.auto_invert {
                     sampling.turn_down(&mut gains, layout);
@@ -361,7 +345,7 @@ impl Node<Edges> for SpikeGain {
             // Choosing them from the data.
             ui.add_space(8.0);
             ui.strong("Auto detect");
-            let detecting = node.gains.detect.is_some();
+            let detecting = node.gains.detect.started.is_some();
             ui.add_enabled_ui(!detecting, |ui| {
                 named_settings_grid(ui, "auto detect", |ui| {
                     setting(ui, "Fit range", |ui| fill_field(ui, &mut node.gains));
@@ -434,16 +418,21 @@ impl Node<Edges> for SpikeGain {
                         .response
                     });
                     setting(ui, "Sampling for", |ui| {
-                        ui.add(egui::DragValue::new(&mut node.gains.sampling).range(SAMPLING).speed(0.2).suffix(" s"))
-                            .on_hover_text("How long to sample for")
+                        ui.add(
+                            egui::DragValue::new(&mut node.gains.detect.seconds)
+                                .range(SAMPLING)
+                                .speed(0.2)
+                                .suffix(" s"),
+                        )
+                        .on_hover_text("How long to sample for")
                     });
                 })
             });
             auto_detect_ui(
                 ui,
                 context,
-                &mut node.gains.detect,
-                node.gains.sampling,
+                &mut node.gains.detect.started,
+                node.gains.detect.seconds,
                 "Sample each channel's spikes, then set its gain",
             );
             ui.add_space(4.0);
@@ -549,12 +538,12 @@ mod tests {
     fn chooses_gains_from_the_spikes_when_detecting() {
         let fit = Fit { algorithm: Algorithm::Peaks, peak_percent: 100.0, peak_factor: 2.0, ..Default::default() };
         let mut gain = SpikeGain { fit, ..Default::default() };
-        gain.gains.sampling = 4.0;
+        gain.gains.detect.seconds = 4.0;
         let stream =
             crate::standard::spikes::Spikes { channels: 4, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32 };
         let started = std::time::Instant::now();
         let inputs = [Some(DataStream::Spikes(stream))];
-        gain.gains.detect = Some(started);
+        gain.gains.detect.started = Some(started);
         let mut state = ephys_rs::engine::fresh_state(&gain, &inputs);
         let mut buffer = stream.buffer(PASS_DURATION);
         buffer.thresholds = vec![DEFAULT_THRESHOLD_UV, DEFAULT_THRESHOLD_UV, 80.0, DEFAULT_THRESHOLD_UV];
@@ -578,7 +567,7 @@ mod tests {
         }
         let updates = direct.take_settings_updates();
         let Some(Setting::Gains(gains)) = updates[0].2.downcast_ref::<Setting>() else { panic!() };
-        assert_eq!(gains.detect, None, "with auto detect cleared");
+        assert_eq!(gains.detect.started, None, "with auto detect cleared");
         // To within a bin of the peaks' distribution: about 1.5%.
         let close = |a: f32, b: f32| (a - b).abs() < 0.02 * b;
         assert!(close(gains.range_uv(0), 200.0), "the first channel's biggest, times 2: {}", gains.range_uv(0));
@@ -607,12 +596,12 @@ mod tests {
     #[test]
     fn it_samples_again_if_the_thresholds_change_while_it_is() {
         let mut gain = SpikeGain::default();
-        gain.gains.sampling = 4.0;
+        gain.gains.detect.seconds = 4.0;
         let stream =
             crate::standard::spikes::Spikes { channels: 4, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32 };
         let started = std::time::Instant::now();
         let inputs = [Some(DataStream::Spikes(stream))];
-        gain.gains.detect = Some(started);
+        gain.gains.detect.started = Some(started);
         let mut state = ephys_rs::engine::fresh_state(&gain, &inputs);
         let mut buffer = stream.buffer(PASS_DURATION);
         buffer.thresholds = vec![DEFAULT_THRESHOLD_UV; 4];
@@ -653,7 +642,7 @@ mod tests {
             crate::standard::spikes::Spikes { channels: 4, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32 };
         let started = std::time::Instant::now();
         let inputs = [Some(DataStream::Spikes(stream))];
-        gain.gains.detect = Some(started);
+        gain.gains.detect.started = Some(started);
         let mut state = ephys_rs::engine::fresh_state(&gain, &inputs);
         let mut outputs = [Buffer::Spikes(stream.buffer(PASS_DURATION))];
         let direct = ephys_rs::triggers::DirectTriggers::default();
@@ -665,7 +654,7 @@ mod tests {
         assert!(state.sampling.as_ref().is_some_and(|s| s.elapsed > 0.0), "sampling");
         // Stopped: auto detect cleared, the node makes its state without the sampling.
         let was = gain.clone();
-        gain.gains.detect = None;
+        gain.gains.detect.started = None;
         let triggers = ephys_rs::triggers::ControlTriggers::none();
         let previous = Previous { node: &was, inputs: &inputs, same_streams: true };
         let context = PrepareContext { previous: Some(previous), ..PrepareContext::trying(&inputs, None, &triggers) };
