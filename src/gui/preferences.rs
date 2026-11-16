@@ -1,9 +1,9 @@
-//! The app's preferences (Settings…), kept between sessions with the recent files: stopping recording and acquisition
-//! when no one's been using the app for a while; which node, annotation and base directory types are offered; and how
-//! many recent files are kept.
+//! The app keeps its preferences (Settings…) between sessions, with the recent files: stopping recording and
+//! acquisition when no one's been using the app for a while; which node, annotation and base directory types are
+//! offered; and how many recent files are kept.
 //!
-//! Auto stop is the GUI's: it notes when there was last input (`App::last_input`), warns in the last minutes before a
-//! stop (any input carries on), stops, and says it did. Recording stops no later than acquisition, as stopping
+//! The GUI does the auto stopping: it notes when there was last input (`App::last_input`), warns in the last minutes
+//! before a stop (any input carries on), stops, and says it did. Recording stops no later than acquisition, as stopping
 //! acquisition stops it too.
 //!
 //! What's offered applies from the next start (`App::hidden`): it's only what can be added, or chosen, so nothing
@@ -23,23 +23,24 @@ use crate::engine::{Category, NodeInfo};
 use crate::global_settings::GlobalSettingsType;
 use crate::theme::Colours;
 
-/// How long before a stop it's warned of: five minutes, or half the limit, if that's shorter.
+/// The app warns of a stop this long before it: five minutes, or half the limit, if that's shorter.
 const WARNING: Duration = Duration::from_secs(5 * 60);
-/// The longest a limit can be, in hours: a day.
+/// A limit can be at most this many hours: a day.
 const LONGEST_HOURS: u32 = 24;
-/// The most recent files that can be kept.
+/// The app can keep at most this many recent files.
 pub const MOST_RECENT_FILES: usize = 50;
 
+/// The app keeps these preferences between sessions (see the module docs).
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Preferences {
-    /// Stop recording after this long without input.
+    /// The app stops recording after this long without input.
     pub stop_recording: IdleLimit,
-    /// Stop acquisition (the graph running) after this long without input.
+    /// The app stops acquisition (the graph running) after this long without input.
     pub stop_acquisition: IdleLimit,
-    /// What isn't offered, from the next start.
+    /// From the next start, the app doesn't offer these.
     pub hidden: Hidden,
-    /// How many recent files are kept (up to `MOST_RECENT_FILES`).
+    /// The app keeps this many recent files (up to `MOST_RECENT_FILES`).
     pub recent_files: usize,
 }
 
@@ -54,8 +55,8 @@ impl Default for Preferences {
     }
 }
 
-/// The types that aren't offered, by name: node types aren't in the add-node menu, annotation types aren't among the
-/// drawing tools, and base directory types can't be chosen (unless one's in use).
+/// Settings can hide types, by name: hidden node types aren't in the add-node menu, hidden annotation types aren't
+/// among the drawing tools, and hidden base directory types can't be chosen (unless one's in use).
 #[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Hidden {
@@ -64,22 +65,23 @@ pub struct Hidden {
     pub base_directories: BTreeSet<String>,
 }
 
-/// A limit on how long something carries on without input. Its time's kept while it's off, for when it's on again.
+/// Something can be stopped after so long without input. The limit's time is kept while it's off, for when it's on
+/// again.
 #[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
 pub struct IdleLimit {
     pub on: bool,
     pub minutes: u32,
 }
 
-/// What's stopped when no one's been using the app.
+/// When no one's been using the app, it stops one of these.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Stopping {
     Recording,
-    /// Acquisition, and recording with it.
+    /// Acquisition stops, and recording with it.
     Acquisition,
 }
 
-/// Where things stand, after so long without input.
+/// After so long without input, things stand as one of these.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Unattended {
     Fine,
@@ -88,12 +90,13 @@ pub enum Unattended {
         stopping: Stopping,
         left: Duration,
     },
-    /// Time to stop.
+    /// It's time to stop.
     Stop(Stopping),
 }
 
 impl Preferences {
-    /// After `idle` without input, running or not, and recording or not: whether something's to stop, or soon will.
+    /// The app checks with this, after `idle` without input, running or not, and recording or not, whether something's
+    /// to stop, or soon will.
     pub fn unattended(&self, idle: Duration, running: bool, recording: bool) -> Unattended {
         let minutes = |m: u32| Duration::from_secs(u64::from(m) * 60);
         let acquisition = (running && self.stop_acquisition.on)
@@ -115,7 +118,7 @@ impl Preferences {
         }
     }
 
-    /// Recording's limit: no more than acquisition's, if that's on.
+    /// Recording stops no later than acquisition, if that's on: this is recording's limit.
     fn recording_minutes(&self) -> u32 {
         match self.stop_acquisition.on {
             true => self.stop_recording.minutes.min(self.stop_acquisition.minutes),
@@ -123,13 +126,13 @@ impl Preferences {
         }
     }
 
-    /// How many recent files are kept, within what can be.
+    /// The app keeps this many recent files, within what it can.
     pub fn recent_files(&self) -> usize {
         self.recent_files.min(MOST_RECENT_FILES)
     }
 }
 
-/// `minutes`, as it's shown: "45 min", "2 h", "1 h 30 min".
+/// The app shows `minutes` as "45 min", "2 h", "1 h 30 min".
 pub fn minutes_text(minutes: u32) -> String {
     match (minutes / 60, minutes % 60) {
         (0, m) => format!("{m} min"),
@@ -138,13 +141,13 @@ pub fn minutes_text(minutes: u32) -> String {
     }
 }
 
-/// `left`, as a countdown: "4:59".
+/// The warning counts down `left` as "4:59".
 pub fn countdown(left: Duration) -> String {
     let seconds = left.as_secs();
     format!("{}:{:02}", seconds / 60, seconds % 60)
 }
 
-/// Whether `event` is someone using the app: the mouse or keyboard.
+/// Someone using the app (the mouse or keyboard) puts off a stop. This says whether `event` is that.
 pub fn is_input(event: &egui::Event) -> bool {
     use egui::Event::*;
     matches!(
@@ -162,20 +165,21 @@ pub fn is_input(event: &egui::Event) -> bool {
     )
 }
 
-/// Something stopped because no one was using the app: what, when (the time of day), and after how long without input.
+/// When the app stops something because no one was using it, it notes what, when (the time of day), and after how long
+/// without input.
 pub struct Stopped {
     pub what: &'static str,
     pub at: String,
     pub after: String,
 }
 
-/// `text` on a line of its own, centred, in `colour`.
+/// The notices show `text` on a line of its own, centred, in `colour`.
 fn centred(ui: &mut egui::Ui, text: &str, colour: egui::Color32) {
     ui.vertical_centered(|ui| ui.label(RichText::new(text).color(colour)));
 }
 
-/// The warning that `what` ("Recording") will stop in `left`, after `idle` ("55 min") without input. Any input carries
-/// on, so it needn't be closed. Returns whether Settings was asked for.
+/// The app warns with this that `what` ("Recording") will stop in `left`, after `idle` ("55 min") without input. Any
+/// input carries on, so the warning needn't be closed. This returns whether Settings was asked for.
 pub fn warning(ctx: &egui::Context, what: &str, left: Duration, idle: &str, colours: &Colours) -> bool {
     let mut open_settings = false;
     let body = |ui: &mut egui::Ui| {
@@ -201,7 +205,8 @@ pub fn warning(ctx: &egui::Context, what: &str, left: Duration, idle: &str, colo
     open_settings
 }
 
-/// The notice of what's been `stopped`. Returns whether it's been dismissed, and whether Settings was asked for.
+/// The app says what's been `stopped` with this notice, which returns whether it's been dismissed, and whether Settings
+/// was asked for.
 pub fn stopped(ctx: &egui::Context, stopped: &[Stopped], colours: &Colours) -> (bool, bool) {
     let (mut close, mut open_settings) = (false, false);
     let body = |ui: &mut egui::Ui| {
@@ -223,16 +228,16 @@ pub fn stopped(ctx: &egui::Context, stopped: &[Stopped], colours: &Colours) -> (
     (close || dismissed, open_settings)
 }
 
-/// The types the program has, to offer or not.
+/// Settings lists the types the program has, to offer or not.
 pub struct Types<'a> {
     pub nodes: &'a [&'static NodeInfo],
     pub annotations: &'a [&'static AnnotationInfo],
     pub base_directories: &'a [BaseDirectoryType],
-    /// The global settings its nodes read: a section each, after the app's own.
+    /// The global settings the program's nodes read, which get a section each, after the app's own.
     pub global: &'a [GlobalSettingsType],
 }
 
-/// A part of the Settings window, chosen on its left.
+/// The Settings window has sections, chosen on its left.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Section {
     #[default]
@@ -241,7 +246,7 @@ pub enum Section {
     Annotations,
     BaseDirectories,
     RecentFiles,
-    /// A type of global settings, by its index in `Types::global`.
+    /// A type of global settings has a section, by its index in `Types::global`.
     Global(usize),
 }
 
@@ -261,19 +266,19 @@ impl Section {
     }
 }
 
-/// The Settings window, while it's open: which section's shown.
+/// The app keeps the Settings window here while it's open: which section's shown.
 #[derive(Default)]
 pub struct SettingsWindow {
     pub section: Section,
 }
 
-/// How tall the sections are, so the window doesn't change size between them: what's longer scrolls.
+/// Every section's this tall, so the window doesn't change size between them; what's longer scrolls.
 const SECTION_HEIGHT: f32 = 340.0;
 
 impl SettingsWindow {
-    /// Shows it, editing `preferences` (and `recent`, the recent files) as it goes. `hidden_at_start` is what's been
-    /// hidden since the app started (of `types`), to say a restart's needed when that's changed. Returns whether it's
-    /// still open.
+    /// The app shows the window with this, which edits `preferences` (and `recent`, the recent files) as it goes.
+    /// `hidden_at_start` is what's been hidden since the app started (of `types`), so the window can say a restart's
+    /// needed when that's changed. This returns whether the window's still open.
     pub fn show(
         &mut self,
         ctx: &egui::Context,
@@ -417,7 +422,7 @@ impl SettingsWindow {
     }
 }
 
-/// A checkbox a line for each of `items` (its name, and what it is), on unless it's `hidden`.
+/// Settings lists types as a checkbox a line for each of `items` (its name, and what it is), on unless it's `hidden`.
 fn checklist(ui: &mut egui::Ui, items: &[(&str, &str)], hidden: &mut BTreeSet<String>) {
     for &(name, description) in items {
         let mut on = !hidden.contains(name);
@@ -430,8 +435,8 @@ fn checklist(ui: &mut egui::Ui, items: &[(&str, &str)], hidden: &mut BTreeSet<St
     }
 }
 
-/// A limit's row: whether it's on, and after how long, in hours and minutes (at most `most` minutes, in all). Minutes
-/// past an hour become hours.
+/// Each limit has a row: whether it's on, and after how long, in hours and minutes (at most `most` minutes, in all).
+/// Minutes past an hour become hours.
 fn limit_row(ui: &mut egui::Ui, name: &str, limit: &mut IdleLimit, most: u32) {
     ui.checkbox(&mut limit.on, name);
     ui.add_enabled_ui(limit.on, |ui| {
@@ -500,7 +505,7 @@ mod tests {
         assert_eq!(countdown(Duration::from_secs(299)), "4:59");
     }
 
-    /// Typed in, minutes past an hour become hours; and recording's limit stays within `most`.
+    /// Typed in, minutes past an hour become hours, and recording's limit stays within `most`.
     #[test]
     fn minutes_past_an_hour_become_hours() {
         use egui_kittest::kittest::Queryable as _;

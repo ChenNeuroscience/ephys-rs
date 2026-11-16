@@ -1,5 +1,5 @@
-//! Developer tools, as browsers have: a picture of the threads running the graph, with the plan each pass runs
-//! and the memory it takes (`threads`); how long passes and the GUI's frames take (`performance`); and the
+//! The app has developer tools, as browsers do: a picture of the threads running the graph, with the plan each pass
+//! runs and the memory it takes (`threads`); how long passes and the GUI's frames take (`performance`); and the
 //! program's log (`console`).
 
 mod ansi;
@@ -13,18 +13,18 @@ use super::frame_times::FrameTimes;
 use crate::engine::{Graph, NodesEnum, Resolved, Runner, Snapshot};
 use crate::theme::Colours;
 
-/// What the dev tools remember between frames.
+/// The dev tools remember these between frames.
 pub struct DevTools {
     console: console::ConsoleView,
     performance: performance::Performance,
-    /// The share of the space the performance and console take (from the threads).
+    /// The performance and console take this share of the space, the threads the rest.
     console_share: f32,
-    /// Whether the threads, performance and console sections are open.
+    /// Each of the threads, performance and console sections can be open or collapsed.
     open: [bool; 3],
 }
 
 impl DevTools {
-    /// Opens the console's section, and closes the others, so it has the space.
+    /// The app opens the console's section with this, closing the others, so the console has the space.
     pub fn focus_console(&mut self) {
         self.open = [false, false, true];
     }
@@ -43,16 +43,16 @@ impl Default for DevTools {
 }
 
 impl DevTools {
-    /// Filters the console to show nothing.
+    /// Tests filter the console to show nothing with this.
     #[cfg(test)]
     pub fn hide_console_lines(&mut self) {
         self.console.filter = "(nothing matches this)".into();
     }
 }
 
-/// The threads, the performance and the console, each under a header that collapses it: one above another, or
-/// (if the pane is much wider than it's tall) the threads beside the other two. A bar between the threads and the
-/// others, while both are open, can be dragged to share the space between them.
+/// The dev tools pane shows the threads, the performance and the console, each under a header that collapses it: one
+/// above another, or (if the pane is much wider than it's tall) the threads beside the other two. While both are open,
+/// a bar between the threads and the others can be dragged to share the space between them.
 #[allow(clippy::too_many_arguments)]
 pub fn show<N: NodesEnum>(
     ui: &mut egui::Ui,

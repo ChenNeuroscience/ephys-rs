@@ -1,15 +1,15 @@
-//! The program's log, for the dev tools' console: a logger (for the `log` crate's macros, which egui and wgpu
-//! use too) keeping the latest lines in memory, and echoing them to stderr.
+//! The dev tools' console shows the program's log, which a logger (for the `log` crate's macros, which egui and wgpu
+//! use too) keeps in memory, the latest lines, echoing them to stderr.
 //!
 //! Logging threads don't wait on each other, or on whoever reads the log: each message goes on a bounded lock-free
 //! queue, and one consumer (the GUI thread, as it draws, see `drain`) takes them off to keep and echo. If the
 //! queue is full (the GUI not drawing for a while, say), messages are dropped and counted rather than waited for.
-//! Logging still formats the message into a `String`, so isn't for every pass: log what changes, not what happens.
+//! Logging still formats the message into a `String`, so it isn't for every pass: log what changes, not what happens.
 //!
 //! Each line says which thread logged it and, from within a pass, which pass (and node) it was: workers say
 //! which pass they're running with `in_pass`.
 //!
-//! Everything this program logs is kept, at every level; other crates' only their warnings and errors. Messages
+//! The logger keeps everything this program logs, at every level, and only other crates' warnings and errors. Messages
 //! may style themselves with ANSI escape codes (colours, bold...), as for a terminal.
 
 use std::borrow::Cow;
@@ -25,46 +25,46 @@ use log::{Level, LevelFilter, Log, Metadata, Record};
 
 use crate::engine::NodeId;
 
-/// Lines kept, beyond which the oldest go.
+/// The logger keeps this many lines, beyond which the oldest go.
 const KEPT: usize = 10_000;
-/// Messages that can wait to be taken off the queue.
+/// This many messages can wait to be taken off the queue.
 const QUEUED: usize = 4096;
 
-/// One line of the log. A message over several lines is kept as several, all but the first continuing it.
+/// The log keeps lines. A message over several lines is kept as several, all but the first continuing it.
 #[derive(Clone, Debug)]
 pub struct Line {
-    /// Seconds since the program started.
+    /// The line was logged this many seconds after the program started.
     pub time: f64,
     pub level: Level,
-    /// Where it's from: a module path, e.g. "ephys_rs::engine::run".
+    /// The line's from here: a module path, "ephys_rs::engine::run", say.
     pub target: Cow<'static, str>,
-    /// The thread that logged it.
+    /// The thread that logged the line.
     pub thread: Thread,
-    /// The pass it was logged in, if it was.
+    /// The pass the line was logged in, if it was.
     pub pass: Option<PassId>,
     pub text: String,
     pub continues: bool,
 }
 
-/// A pass, and the node it was running when it logged.
+/// A line logged in a pass says which pass, and the node it was running.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PassId {
-    /// The version of the snapshot the pass runs (see `engine::Runner`).
+    /// The pass runs the snapshot of this version (see `engine::Runner`).
     pub version: u64,
     pub sequence: u64,
     pub node: Option<NodeId>,
-    /// The node's type, e.g. "Spike Detector".
+    /// The node's type: "Spike Detector", say.
     pub node_type: Option<&'static str>,
 }
 
 thread_local! {
-    /// The pass this thread is running, if it's a worker running one.
+    /// If this thread's a worker running a pass, the pass.
     static PASS: Cell<Option<PassId>> = const { Cell::new(None) };
 }
 
-/// Runs `f` as (part of) pass `pass`, so what it logs says so.
+/// A worker runs `f` as (part of) pass `pass` with this, so what it logs says so.
 pub fn in_pass<R>(pass: PassId, f: impl FnOnce() -> R) -> R {
-    /// Puts back the pass the thread was running before, however `f` ends.
+    /// However `f` ends, this puts back the pass the thread was running before.
     struct Restore(Option<PassId>);
     impl Drop for Restore {
         fn drop(&mut self) {
@@ -75,12 +75,12 @@ pub fn in_pass<R>(pass: PassId, f: impl FnOnce() -> R) -> R {
     f()
 }
 
-/// The pass this thread's running, if it's a worker running one (for a crash report).
+/// A crash report says which pass the thread was running, if it was a worker running one, from this.
 pub fn current_pass() -> Option<PassId> {
     PASS.get()
 }
 
-/// A message as logged, waiting on the queue.
+/// A message waits on the queue as this.
 struct Message {
     time: f64,
     level: Level,
@@ -90,40 +90,41 @@ struct Message {
     text: String,
 }
 
-/// The lines kept for the console, and counts of what's been logged, kept or not.
+/// The logger keeps the lines for the console here, and counts of what's been logged, kept or not.
 #[derive(Default)]
 struct Kept {
     lines: VecDeque<Line>,
-    /// Lines ever kept, so a viewer can tell when there are new ones.
+    /// The logger's kept this many lines ever, so a viewer can tell when there are new ones.
     count: u64,
-    /// Errors and warnings logged since the console was last cleared (or the program started), including those no
+    /// The errors and warnings logged since the console was last cleared (or the program started), including those no
     /// longer kept.
     errors: u64,
     warnings: u64,
 }
 
 impl Kept {
-    /// Forgets the lines, and the errors and warnings counted: `count` carries on, so a viewer sees the change.
+    /// Clearing forgets the lines, and the errors and warnings counted; `count` carries on, so a viewer sees the
+    /// change.
     fn clear(&mut self) {
         self.lines.clear();
         (self.errors, self.warnings) = (0, 0);
     }
 }
 
-/// The logger: logging threads queue their messages, and the console's frame takes them off the queue into what's
+/// Logging threads queue their messages with the logger, and the console's frame takes them off the queue into what's
 /// kept, so logging never waits on the console.
 struct Logger {
     start: Instant,
     queue: Sender<Message>,
     incoming: Receiver<Message>,
-    /// Only the consumer takes this, so it's never contended by logging threads.
+    /// Only the consumer takes this, so logging threads never contend for it.
     kept: Mutex<Kept>,
     dropped: AtomicU64,
-    /// Whether to echo lines to stderr.
+    /// The logger can echo lines to stderr.
     echo: bool,
 }
 
-/// This program's modules, which log at every level.
+/// This program's modules log at every level.
 const OURS: &str = env!("CARGO_CRATE_NAME");
 
 impl Log for Logger {
@@ -157,7 +158,7 @@ impl Log for Logger {
 }
 
 impl Logger {
-    /// Takes the messages waiting off the queue, to keep (and echo).
+    /// The consumer takes the messages waiting off the queue with this, to keep (and echo).
     fn drain(&self) {
         if self.incoming.is_empty() {
             return;
@@ -192,7 +193,8 @@ impl Logger {
 
 static LOGGER: OnceLock<Logger> = OnceLock::new();
 
-/// Installs the logger, if it isn't already (the tests share one). `echo` says whether to copy lines to stderr.
+/// As it starts, the program installs the logger with this, if it isn't already (the tests share one). `echo` says
+/// whether to copy lines to stderr.
 pub fn init(echo: bool) {
     static INSTALL: Once = Once::new();
     // Others calling at the same time wait until it's installed.
@@ -207,14 +209,15 @@ pub fn init(echo: bool) {
     });
 }
 
-/// Takes the messages logged since last time off the queue, to keep. The GUI calls this as it draws.
+/// As it draws, the GUI takes the messages logged since last time off the queue, to keep, with this.
 pub fn drain() {
     if let Some(logger) = LOGGER.get() {
         logger.drain();
     }
 }
 
-/// Runs `f` on the lines kept (taking any waiting first), oldest first, with how many lines have ever been kept.
+/// The console reads the lines kept through this, which runs `f` on them (taking any waiting first), oldest first, with
+/// how many lines have ever been kept.
 pub fn with_lines<R>(f: impl FnOnce(&VecDeque<Line>, u64) -> R) -> R {
     match LOGGER.get() {
         Some(logger) => {
@@ -226,7 +229,8 @@ pub fn with_lines<R>(f: impl FnOnce(&VecDeque<Line>, u64) -> R) -> R {
     }
 }
 
-/// How many errors and warnings have been logged since the console was last cleared, or the program started.
+/// The status bar counts the errors and warnings logged since the console was last cleared, or the program started,
+/// from this.
 pub fn totals() -> (u64, u64) {
     let Some(logger) = LOGGER.get() else { return (0, 0) };
     logger.drain();
@@ -234,7 +238,8 @@ pub fn totals() -> (u64, u64) {
     (kept.errors, kept.warnings)
 }
 
-/// The last `count` lines logged, as text, without waiting for the log (for a crash report: none, if it's in use).
+/// A crash report ends with the last `count` lines logged, as text, from this, which doesn't wait for the log (giving
+/// none, if it's in use).
 pub fn recent(count: usize) -> Vec<String> {
     let Some(logger) = LOGGER.get() else { return Vec::new() };
     let Ok(kept) = logger.kept.try_lock() else { return Vec::new() };
@@ -248,12 +253,13 @@ pub fn recent(count: usize) -> Vec<String> {
     lines
 }
 
-/// Messages dropped because the queue was full.
+/// The logger counts the messages dropped because the queue was full.
 pub fn dropped() -> u64 {
     LOGGER.get().map_or(0, |l| l.dropped.load(Ordering::Relaxed))
 }
 
-/// Forgets the lines kept, and the errors and warnings counted, for the status bar to count afresh.
+/// Clearing the console forgets the lines kept, and the errors and warnings counted, for the status bar to count
+/// afresh.
 pub fn clear() {
     if let Some(logger) = LOGGER.get() {
         logger.drain();

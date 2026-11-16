@@ -1,5 +1,5 @@
-//! Toolbar icons, painted rather than taken from a font so they're crisp and consistent at any scale.
-//! Each is drawn on a 16×16 grid.
+//! The toolbars' icons are painted, rather than taken from a font, so they're crisp and consistent at any scale. Each
+//! is drawn on a 16×16 grid.
 
 use std::f32::consts::PI;
 
@@ -8,7 +8,7 @@ use eframe::egui::{Color32, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, vec2
 use super::style;
 use crate::engine::Category;
 
-/// An icon, drawn with egui's painter rather than from an image, so it's crisp at any size and in any theme's
+/// Each icon is drawn with egui's painter rather than from an image, so it's crisp at any size and in any theme's
 /// colours.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Icon {
@@ -20,41 +20,41 @@ pub enum Icon {
     AddNode,
     Duplicate,
     Delete,
-    /// Arrange the nodes: boxes in columns, joined.
+    /// The button that arranges the nodes shows boxes in columns, joined.
     Arrange,
     FrameAll,
     ActualSize,
-    /// Take a docked window out, to float.
+    /// The button that takes a docked window out, to float.
     Undock,
-    /// Put a floating window back in the layout.
+    /// The button that puts a floating window back in the layout.
     Dock,
-    /// Choose the light or dark look.
+    /// The button that chooses the light or dark look.
     Theme,
-    /// Go home: the home pane, basic or graph. A house.
+    /// The button that goes home (the home pane, basic or graph) shows a house.
     Home,
-    /// On or off: the power symbol.
+    /// A switch for on or off shows the power symbol.
     Power,
-    /// Sound on or off: a speaker.
+    /// A switch for sound on or off shows a speaker.
     Sound,
-    /// A spectrum: bars of power across frequencies.
+    /// The button that shows a spectrum shows bars of power across frequencies.
     Spectrum,
-    /// Copy settings: two sheets.
+    /// The button that copies settings shows two sheets.
     Copy,
-    /// Paste settings: a clipboard.
+    /// The button that pastes settings shows a clipboard.
     Paste,
-    /// Start running the graph.
+    /// The button that starts running the graph.
     Play,
-    /// Stop running it.
+    /// The button that stops running the graph.
     Stop,
-    /// Show the developer tools: a terminal window.
+    /// The button that shows the developer tools shows a terminal window.
     DevTools,
-    /// Start or stop recording: a red dot.
+    /// The button that starts or stops recording shows a red dot.
     Record,
-    /// Advanced mode, with the graph: three nodes, joined.
+    /// The button for advanced mode, with the graph, shows three nodes, joined.
     Graph,
-    /// A pane's settings: a gear.
+    /// The button for a pane's settings shows a gear.
     Settings,
-    /// Turn a signal upside down: a spike, and under the line, its reflection.
+    /// The button that turns a signal upside down shows a spike, and under the line, its reflection.
     Invert,
 }
 
@@ -66,7 +66,7 @@ const GREEN: Color32 = Color32::from_rgb(56, 168, 82);
 const RED: Color32 = Color32::from_rgb(214, 64, 56);
 
 impl Icon {
-    /// Paints the icon to fill `rect`. `ink` is for outlines; `enabled` false greys it out.
+    /// A button paints its icon to fill `rect` with this. `ink` is for outlines; `enabled` false greys it out.
     pub fn paint(self, painter: &Painter, rect: Rect, ink: Color32, enabled: bool) {
         let s = rect.width() / 16.0;
         let p = |x: f32, y: f32| rect.min + vec2(x, y) * s;
@@ -306,7 +306,7 @@ impl Icon {
     }
 }
 
-/// A sheet of paper with a folded corner, 10×14 with its top-left at (x, y).
+/// The copy and paste icons draw a sheet of paper with a folded corner, 10×14 with its top-left at (x, y).
 fn page(painter: &Painter, p: &impl Fn(f32, f32) -> Pos2, x: f32, y: f32, fill: Color32, line: Stroke) {
     let outline = vec![p(x, y), p(x + 7.0, y), p(x + 10.0, y + 3.0), p(x + 10.0, y + 14.0), p(x, y + 14.0)];
     painter.add(Shape::convex_polygon(outline, fill, line));
@@ -319,13 +319,13 @@ fn plus(painter: &Painter, p: &impl Fn(f32, f32) -> Pos2, s: f32, x: f32, y: f32
     painter.line_segment([p(x, y - 3.0), p(x, y + 3.0)], stroke);
 }
 
-/// A small downward triangle, for dropdowns.
+/// Dropdowns show a small downward triangle, which this draws.
 pub fn dropdown_arrow(painter: &Painter, centre: Pos2, colour: Color32) {
     let points = vec![centre + vec2(-3.5, -1.5), centre + vec2(3.5, -1.5), centre + vec2(0.0, 2.5)];
     painter.add(Shape::convex_polygon(points, colour, Stroke::NONE));
 }
 
-/// An open eye when `visible`, otherwise the same eye struck through.
+/// A switch for showing something draws an open eye when `visible`, otherwise the same eye struck through.
 pub fn eye(
     painter: &egui::Painter,
     rect: egui::Rect,

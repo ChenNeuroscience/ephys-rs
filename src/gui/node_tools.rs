@@ -1,6 +1,6 @@
-//! The buttons every node has, for its window (see `NodeToolbar`): copying and pasting its settings; and in advanced
-//! mode, its settings menu (whether it shows in basic mode, and the pane's own options), enabling it, and deleting
-//! it. The standard window has them beside its name; a view puts them where it likes, through its `UiContext`.
+//! Every node's window has the same buttons (see `NodeToolbar`): copying and pasting its settings; and in advanced
+//! mode, its settings menu (whether it shows in basic mode, and the pane's own options), enabling it, and deleting it.
+//! The standard window has them beside its name; a view puts them where it likes, through its `UiContext`.
 
 use eframe::egui;
 
@@ -10,24 +10,25 @@ use super::toolbar;
 use crate::engine::{Graph, NodeId, NodeToolbar, NodesEnum, Port, PortRole};
 use crate::triggers::{AnyTrigger, TriggerKey};
 
-/// A node's toolbar, for a frame: what it shows, and where what's clicked goes.
+/// The app makes a node's toolbar each frame: what it shows, and where what's clicked goes.
 pub struct NodeTools<'e> {
     pub id: NodeId,
-    /// Whether it's in the basic view, and enabled, now.
+    /// Whether the node's in the basic view, and enabled, now.
     pub show_in_basic: bool,
     pub enabled: bool,
-    /// Whether the app's in advanced mode (otherwise, what changes the graph is left out).
+    /// In basic mode, the buttons that change the graph are left out; this says whether the app's in advanced mode.
     pub advanced: bool,
-    /// The triggers of the node's own settings; and for each of its controls, the node and the triggers of the setting
-    /// it's connected to, if it is.
+    /// The triggers the node's own settings take; and for each of its controls, the node and the triggers of the
+    /// setting it's connected to, if it is.
     pub own_triggers: Vec<TriggerKey>,
     pub controls: Vec<Option<(NodeId, Vec<TriggerKey>)>>,
-    /// What's clicked becomes these.
+    /// What's clicked becomes events, here, which the app handles once the panes are drawn.
     pub events: &'e mut Vec<Event>,
 }
 
 impl<'e> NodeTools<'e> {
-    /// For node `id`'s window: what it can trigger, through its own settings and its controls.
+    /// The app makes node `id`'s toolbar with this, knowing what the node can trigger, through its own settings and its
+    /// controls.
     pub fn new<N: NodesEnum>(graph: &Graph<N>, id: NodeId, advanced: bool, events: &'e mut Vec<Event>) -> Option<Self> {
         let entry = graph.get(id)?;
         let node = &entry.node;
@@ -43,8 +44,8 @@ impl<'e> NodeTools<'e> {
         Some(NodeTools { id, show_in_basic, enabled, advanced, own_triggers, controls, events })
     }
 
-    /// The node whose trigger of kind `kind` is meant, if it takes one: the node itself, or the one a control connects
-    /// to.
+    /// A trigger of kind `kind` goes to the node itself, or the one a control connects to. This finds that node, if it
+    /// takes such triggers.
     fn trigger_node(&self, control: Option<usize>, kind: TriggerKey) -> Option<NodeId> {
         match control {
             None => self.own_triggers.contains(&kind).then_some(self.id),

@@ -1,6 +1,6 @@
-//! The dev tools' picture of the threads: each thread as a container, with links between them where they hand
-//! things over. It reads left to right, as the graph does, the way data goes: what starts passes and brings data in, then
-//! the passes, then what the data goes to.
+//! The dev tools draw a picture of the threads: each thread as a container, with links between them where they hand
+//! things over. The picture reads left to right, as the graph does, the way data goes: what starts passes and brings
+//! data in, then the passes, then what the data goes to.
 //!
 //! - The GUI (the main thread), which makes snapshots of the graph, and shows what nodes' passes share with their
 //!   windows: each pool of buffers they share (see `Shared::pool`), linked from the node's step.
@@ -18,8 +18,8 @@
 //! A pool's always shown the same way (`pool_row`), in the thread at the other end from the passes. Each thread's info
 //! icon says why it's a thread.
 //!
-//! While running, it shows the plan being run, and what each worker is up to; otherwise, the plan of the latest
-//! snapshot, as it would run.
+//! While running, the picture shows the plan being run, and what each worker is up to; otherwise, the plan of the
+//! latest snapshot, as it would run.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -35,11 +35,11 @@ use crate::theme::Colours;
 
 type DataStream<N> = <<N as NodesEnum>::Edges as Edges>::DataStream;
 
-/// Room between the columns of threads, for the links between them.
+/// The picture leaves this much room between the columns of threads, for the links between them.
 const GAP: f32 = 80.0;
-/// Room to the left of the threads, one above another, for the links between them.
+/// With the threads one above another, the picture leaves this much room to their left, for the links between them.
 const GUTTER: f32 = 60.0;
-/// The width it takes to show the threads side by side.
+/// The picture shows the threads side by side if it has this much width.
 const WIDE: f32 = 250.0 + 450.0 + 250.0 + 2.0 * GAP + 20.0;
 const ROW: f32 = 20.0;
 
@@ -50,7 +50,7 @@ const WHY_DISPATCHER: &str = "On a thread of its own so passes start on time, wh
 const WHY_WORKERS: &str = "Several, so a pass can start while the one before is still running: one slow pass doesn't \
                            hold up the next, and the work's spread over the cores. Each runs whole passes.";
 
-/// What a snapshot keeps from the one before, beside the snapshot running.
+/// Beside the snapshot running, the picture says what a snapshot keeps from the one before.
 const WHAT_A_SNAPSHOT_KEEPS: &str = "Each snapshot runs with what each node had in the one before (its state, carried \
                                      from pass to pass, and what it shows), for every node whose data streams in and \
                                      out are the same: a change of settings, or adding or removing another node, \
@@ -58,7 +58,7 @@ const WHAT_A_SNAPSHOT_KEEPS: &str = "Each snapshot runs with what each node had 
                                      needs other buffers (a node or an edge added or removed, say) runs once every \
                                      worker has made them, the one before carrying on meanwhile.";
 
-/// Helpers that come and go, and why each is a thread.
+/// Some helper threads come and go; these are them, and why each is a thread.
 const HELPERS: [(&str, &str); 4] = [
     (
         "Measuring the disk",
@@ -81,8 +81,8 @@ const HELPERS: [(&str, &str); 4] = [
     ),
 ];
 
-/// A node's thread, as drawn: its node, where, how and which way it hands data to the node's passes, and whether it
-/// swaps buffers with them through a pool.
+/// Once a node's thread is drawn, the picture keeps its node, where it is, how and which way it hands data to the
+/// node's passes, and whether it swaps buffers with them through a pool.
 struct NodeThreadAnchor {
     node: NodeId,
     rect: Rect,
@@ -91,16 +91,16 @@ struct NodeThreadAnchor {
     pooled: bool,
 }
 
-/// Where things were drawn, to link them up once everything is.
+/// The picture keeps where things were drawn, to link them up once everything is.
 #[derive(Default)]
 struct Anchors {
     dispatcher: Option<Rect>,
-    /// The GUI's thread.
+    /// The GUI's thread is here.
     gui: Option<Rect>,
-    /// The workers' first step, taking a pass off the queue.
+    /// The workers' first step, taking a pass off the queue, is here.
     queue: Option<Rect>,
     steps: HashMap<NodeId, Rect>,
-    /// Pools nodes share with their windows, in the GUI's container: the node, and where.
+    /// The pools nodes share with their windows are in the GUI's container: the node, and where.
     displays: Vec<(NodeId, Rect)>,
     /// Nodes' threads, and how each hands data to the node's passes.
     node_threads: Vec<NodeThreadAnchor>,
@@ -171,7 +171,7 @@ pub fn show<N: NodesEnum>(
     });
 }
 
-/// An icon saying `why`, as help does (see `widgets::with_help`).
+/// Each thread has an icon saying `why` it's a thread, as help does (see `widgets::with_help`).
 fn info_icon(ui: &mut egui::Ui, colours: &Colours, why: &str) {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::click());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Link, ui.is_enabled(), "Why"));
@@ -183,8 +183,9 @@ fn info_icon(ui: &mut egui::Ui, colours: &Colours, why: &str) {
     });
 }
 
-/// A thread: a framed box with a title, saying `why` it's a thread, a `detail` on the right (with an icon saying
-/// `detail_why`, if there is one), and `stacked` > 1 drawn as a stack of that many. Returns its rect.
+/// The picture draws a thread as a framed box with a title, saying `why` it's a thread, a `detail` on the right (with
+/// an icon saying `detail_why`, if there is one), and `stacked` > 1 drawn as a stack of that many. This returns its
+/// rect.
 #[allow(clippy::too_many_arguments)]
 fn container(
     ui: &mut egui::Ui,
@@ -250,7 +251,8 @@ fn container(
     rect
 }
 
-/// A node as on the graph: its label on its category's colour, `width` wide (or as wide as the label).
+/// The picture shows a node as the graph does: its label on its category's colour, `width` wide (or as wide as the
+/// label).
 fn node_chip<N: NodesEnum>(ui: &mut egui::Ui, graph: &Graph<N>, id: NodeId, width: Option<f32>) -> egui::Response {
     let (label, category) = match graph.get(id) {
         Some(entry) => (entry.label.clone(), entry.node.info().category),
@@ -270,7 +272,7 @@ fn stream_info<N: NodesEnum>(stream: &DataStream<N>) -> &'static crate::engine::
     &<DataStream<N> as EdgeTypesEnum>::KINDS[<DataStream<N> as EdgeTypesEnum>::kind_index(stream.kind())]
 }
 
-/// A buffer: a dot in its data stream's colour, and its number.
+/// The picture shows a buffer as a dot in its data stream's colour, and its number.
 fn buffer_tag<N: NodesEnum>(ui: &mut egui::Ui, plan: &Plan<N>, buffer: usize, colours: &Colours) -> egui::Response {
     let colour = plan.buffers().get(buffer).map_or(colours.text_disabled, |s| stream_info::<N>(s).colour);
     let text = format!("b{buffer}");
@@ -286,18 +288,18 @@ fn buffer_tag<N: NodesEnum>(ui: &mut egui::Ui, plan: &Plan<N>, buffer: usize, co
     response
 }
 
-/// A small picture beside a step, for what happens there between threads or buffers.
+/// The picture marks what happens at a step between threads or buffers with a small glyph beside it.
 #[derive(Clone, Copy)]
 enum Glyph {
-    /// A sync point: waiting for another thread.
+    /// At a sync point, the step waits for another thread.
     Sync,
-    /// A copy point: data the plan copies, for a node taking it that can't be the last to read it.
+    /// At a copy point, the plan copies data for a node taking it that can't be the last to read it.
     Copy,
-    /// Made in place, in its input's buffer.
+    /// The step makes an output in place, in its input's buffer.
     InPlace,
     /// A queue between threads.
     Queue,
-    /// Buffers swapped with another thread's, rather than copied.
+    /// The step swaps buffers with another thread's, rather than copying.
     Swap,
 }
 
@@ -348,7 +350,7 @@ fn glyph(painter: &egui::Painter, rect: Rect, glyph: Glyph, colour: Color32) {
     }
 }
 
-/// A glyph with a tooltip. Returns where it is.
+/// The picture draws a glyph with a tooltip with this, which returns where it is.
 fn badge(ui: &mut egui::Ui, which: Glyph, colour: Color32, tooltip: &str) -> Rect {
     let (rect, response) = ui.allocate_exact_size(vec2(14.0, ROW), Sense::hover());
     glyph(ui.painter(), Rect::from_center_size(rect.center(), Vec2::splat(11.0)), which, colour);
@@ -356,7 +358,8 @@ fn badge(ui: &mut egui::Ui, which: Glyph, colour: Color32, tooltip: &str) -> Rec
     rect
 }
 
-/// Text just as wide as it is (a label in a row here can be given the rest of the row, and centred in it).
+/// The picture draws text just as wide as it is (a label in a row here can be given the rest of the row, and centred
+/// in it).
 fn text(ui: &mut egui::Ui, text: &str, font: FontId, colour: Color32) -> egui::Response {
     let galley = ui.painter().layout_no_wrap(text.to_string(), font, colour);
     let (rect, response) = ui.allocate_exact_size(galley.size(), Sense::hover());
@@ -368,7 +371,7 @@ fn small(text: impl Into<String>, colour: Color32) -> RichText {
     RichText::new(text).size(11.0).color(colour)
 }
 
-/// A short name for a plan, from where it is in memory: the same plan, the same name.
+/// The picture shows sizes in megabytes, or kilobytes for small ones.
 fn megabytes(bytes: usize) -> String {
     if bytes >= 100_000 { format!("{:.1} MB", bytes as f64 / 1e6) } else { format!("{:.1} kB", bytes as f64 / 1e3) }
 }
@@ -420,7 +423,7 @@ fn dispatcher<N: NodesEnum>(ui: &mut egui::Ui, colours: &Colours, info: Option<&
     anchors.dispatcher = Some(rect);
 }
 
-/// The helpers: only a quiet list, as they aren't part of how passes run, and come and go.
+/// The picture lists the helpers quietly, as they aren't part of how passes run, and come and go.
 fn helpers(ui: &mut egui::Ui, colours: &Colours) {
     ui.label(small("Helper threads, as they're needed", colours.text_disabled));
     for (name, why) in HELPERS {
@@ -498,7 +501,8 @@ fn workers_ui<N: NodesEnum>(
     });
 }
 
-/// What each worker is doing: the pass it's running (an older snapshot's, saying which), idle, or making buffers.
+/// The picture shows what each worker is doing: the pass it's running (an older snapshot's, saying which), idle, or
+/// making buffers.
 fn worker_chips<N: NodesEnum>(ui: &mut egui::Ui, colours: &Colours, info: &RunInfo<N>) {
     let running = info.running.as_ref().map(|running| running.version);
     ui.horizontal_wrapped(|ui| {
@@ -529,7 +533,7 @@ fn worker_chips<N: NodesEnum>(ui: &mut egui::Ui, colours: &Colours, info: &RunIn
     });
 }
 
-/// The plan, a step to a row, between taking the pass off the queue and finishing it.
+/// The picture shows the plan a step to a row, between taking the pass off the queue and finishing it.
 fn steps<N: NodesEnum>(
     ui: &mut egui::Ui,
     graph: &Graph<N>,
@@ -561,7 +565,8 @@ fn steps<N: NodesEnum>(
     }
 }
 
-/// A copy the plan makes once a step's run, for a node taking a buffer it can't be the last to read.
+/// The picture shows each copy the plan makes once a step's run, for a node taking a buffer it can't be the last to
+/// read.
 fn copy_row<N: NodesEnum>(
     ui: &mut egui::Ui,
     graph: &Graph<N>,
@@ -708,7 +713,7 @@ fn step_row<N: NodesEnum>(
     });
 }
 
-/// Nodes that don't run, and why.
+/// The picture lists the nodes that don't run, and why.
 fn not_running<N: NodesEnum>(ui: &mut egui::Ui, graph: &Graph<N>, colours: &Colours, plan: &Plan<N>) {
     let idle: Vec<NodeId> =
         graph.iter().map(|(id, _)| id).filter(|id| !plan.steps().iter().any(|s| s.id == *id)).collect();
@@ -729,7 +734,7 @@ fn not_running<N: NodesEnum>(ui: &mut egui::Ui, graph: &Graph<N>, colours: &Colo
     });
 }
 
-/// Each buffer a worker has for the plan, what it holds and its size, then the totals.
+/// The picture lists each buffer a worker has for the plan, what it holds and its size, then the totals.
 fn memory<N: NodesEnum>(
     ui: &mut egui::Ui,
     graph: &Graph<N>,
@@ -791,14 +796,14 @@ fn memory<N: NodesEnum>(
         .on_hover_cursor(egui::CursorIcon::PointingHand);
 }
 
-/// The curve of a link across from one column to another, from `from` to `to`: leaving and arriving level.
+/// A link across from one column to another curves from `from` to `to`, leaving and arriving level.
 fn across_points(from: Pos2, to: Pos2) -> [Pos2; 4] {
     let bend = ((to.x - from.x).abs() * 0.5).max(30.0);
     let dx = if to.x >= from.x { bend } else { -bend };
     [from, from + vec2(dx, 0.0), to - vec2(dx, 0.0), to]
 }
 
-/// The points along a curve, `by` points below it (on its lower side, whichever way it goes).
+/// A link's label runs along the curve, `by` points below it (on its lower side, whichever way it goes).
 fn parallel(curve: [Pos2; 4], by: f32) -> Vec<Pos2> {
     let shape = egui::epaint::CubicBezierShape::from_points_stroke(curve, false, Color32::TRANSPARENT, Stroke::NONE);
     let points = shape.flatten(Some(0.25));
@@ -813,29 +818,29 @@ fn parallel(curve: [Pos2; 4], by: f32) -> Vec<Pos2> {
         .collect()
 }
 
-/// What a row of squares shows: a pool of buffers, or a queue.
+/// The picture shows a pool of buffers, or a queue, as a row of squares.
 struct Pooled<'a> {
-    /// How many places there are, how many are full, whether one's being filled (or written), and how many are empty.
-    /// Any others are elsewhere for now, with the passes or a window.
+    /// The row has this many places: so many full, maybe one being filled (or written), and so many empty. Any others
+    /// are elsewhere for now, with the passes or a window.
     size: usize,
     full: usize,
     filling: bool,
     empty: usize,
-    /// How many, as words (how big's in the tip, as a window's pool doesn't know).
+    /// The row says how many, in words (how big's in the tip, as a window's pool doesn't know).
     text: String,
-    /// Its buffers' streams' colours, if they're known.
+    /// The buffers' streams' colours, if they're known.
     dots: &'a [Color32],
     tip: String,
-    /// Whether it's run out, and lost something.
+    /// If the pool's run out, and lost something, this is set.
     lost: bool,
 }
 
-/// How many squares go across, before a pool takes another line.
+/// A row has this many squares across, before a pool takes another line.
 const SQUARES_ACROSS: usize = 10;
 const SQUARE_STEP: f32 = 6.0;
 
-/// A square for each place, full ones first, then the one being filled (or written), then the empty ones (the rest
-/// being elsewhere).
+/// The row has a square for each place, full ones first, then the one being filled (or written), then the empty ones
+/// (the rest being elsewhere).
 fn squares(ui: &mut egui::Ui, colours: &Colours, pooled: &Pooled) -> egui::Response {
     let across = pooled.size.clamp(1, SQUARES_ACROSS);
     let lines = pooled.size.div_ceil(SQUARES_ACROSS).max(1);
@@ -857,8 +862,9 @@ fn squares(ui: &mut egui::Ui, colours: &Colours, pooled: &Pooled) -> egui::Respo
     response
 }
 
-/// A pool or queue, however it's used, in a thread: `lead` says whose, then its streams, how many, and a square for each
-/// place. Outlined in red if it's lost anything. Hover for the counts. Returns where it is.
+/// The picture shows a pool or queue the same way, however it's used, in a thread: `lead` says whose, then its streams,
+/// how many, and a square for each place, outlined in red if it's lost anything. Hovering shows the counts. This
+/// returns where it is.
 fn pool_row(ui: &mut egui::Ui, colours: &Colours, pooled: Pooled, lead: impl FnOnce(&mut egui::Ui)) -> Rect {
     let lines = pooled.size.div_ceil(SQUARES_ACROSS).max(1) as f32;
     let row = ui
@@ -882,7 +888,7 @@ fn pool_row(ui: &mut egui::Ui, colours: &Colours, pooled: Pooled, lead: impl FnO
     row
 }
 
-/// A pool of buffers a node's thread swaps with the passes (see `PoolStatus`).
+/// A node's thread swaps buffers with the passes through a pool (see `PoolStatus`), shown as this.
 fn thread_pool(pool: PoolStatus, dots: &[Color32]) -> Pooled<'_> {
     let mut tip = format!(
         "A pool of {} buffers of {} each ({} in all), swapped with the passes rather than copied: {} full, waiting{}, \
@@ -902,7 +908,7 @@ fn thread_pool(pool: PoolStatus, dots: &[Color32]) -> Pooled<'_> {
     Pooled { size, full, filling, empty, text: format!("× {size}"), dots, tip, lost: pool.overflows > 0 }
 }
 
-/// A pool a node shares with its window. Passes skipping sending doesn't lose anything that's recorded.
+/// A node shares a pool with its window, shown as this. Passes skipping sending doesn't lose anything that's recorded.
 fn window_pool(pool: PoolStatus) -> Pooled<'static> {
     let mut tip = format!(
         "A pool of {} buffers the node's passes fill (or swap their own into) for its window, which takes them (the \
@@ -917,7 +923,7 @@ fn window_pool(pool: PoolStatus) -> Pooled<'static> {
     Pooled { size, full, filling, empty, text: format!("× {size}"), dots: &[], tip, lost: false }
 }
 
-/// The pass queue, between the dispatcher and the workers.
+/// The pass queue, between the dispatcher and the workers, is shown as this.
 fn pass_queue(queued: usize, capacity: usize) -> Pooled<'static> {
     let tip = format!(
         "The pass queue: the dispatcher puts each pass on it when its time's up, and a free worker takes it off. \
@@ -945,7 +951,7 @@ fn legend(ui: &mut egui::Ui, colours: &Colours) {
     });
 }
 
-/// The nodes' threads that data goes `flow` from.
+/// The picture draws the nodes' threads that data goes `flow` from.
 fn node_threads<N: NodesEnum>(
     ui: &mut egui::Ui,
     graph: &Graph<N>,
@@ -1001,8 +1007,8 @@ fn node_threads<N: NodesEnum>(
     }
 }
 
-/// Curves from one thread to another where they hand things over, each kind labelled once, by where it starts.
-/// Side by side, they cross between the columns; one above another, they loop round the left, in the gutter.
+/// The picture links threads with curves where they hand things over, each kind labelled once, by where it starts.
+/// Side by side, the curves cross between the columns; one above another, they loop round the left, in the gutter.
 fn links(ui: &egui::Ui, colours: &Colours, anchors: &Anchors, wide: bool) {
     let painter = ui.painter();
     let colour = colours.text_secondary.gamma_multiply(0.7);

@@ -1,6 +1,6 @@
-//! What about their hardware nodes say someone should decide (see `engine::UserDecision`), as they prepare for a
-//! snapshot, which runs meanwhile: asked about, for each node, to take on the hardware's settings or carry on without
-//! it, or to stop.
+//! As nodes prepare for a snapshot, they may say something about their hardware someone should decide (see
+//! `engine::UserDecision`). The snapshot runs meanwhile, and the app asks, for each node, whether to take on the
+//! hardware's settings or carry on without it, or to stop.
 
 use eframe::egui::{self, RichText};
 
@@ -8,19 +8,20 @@ use super::dialog;
 use crate::engine::{Graph, NodeId, NodesEnum, UserDecision};
 use crate::theme::Colours;
 
-/// What to do about a node whose hardware isn't as its settings say.
+/// For each node whose hardware isn't as its settings say, someone chooses one of these.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Choice {
-    /// Take on the hardware's settings (the decisions' fix).
+    /// The node takes on the hardware's settings (the decisions' fix).
     UseHardware,
-    /// Carry on without the node, disabling it.
+    /// The node's disabled, and the run carries on without it.
     Disable,
 }
 
-/// What a node says someone should decide, in the order it said, with the fix (its last: each is the whole node).
+/// The dialog lists what each node says someone should decide, in the order it said, with the fix (its last: each is
+/// the whole node).
 type NodeDecisions<N> = (NodeId, Vec<String>, Option<N>);
 
-/// Each node's decisions (see `NodeDecisions`).
+/// The dialog groups the decisions by node (see `NodeDecisions`).
 fn by_node<N: NodesEnum>(decisions: Vec<(NodeId, UserDecision<N>)>) -> Vec<NodeDecisions<N>> {
     let mut nodes: Vec<NodeDecisions<N>> = Vec::new();
     for (id, decision) in decisions {
@@ -39,16 +40,16 @@ fn by_node<N: NodesEnum>(decisions: Vec<(NodeId, UserDecision<N>)>) -> Vec<NodeD
     nodes
 }
 
-/// Asking what to do about nodes whose hardware isn't as their settings say, for a snapshot (by version) the run's
-/// holding.
+/// The app keeps the dialog here while it's asking what to do about nodes whose hardware isn't as their settings say,
+/// for a snapshot (by version) the run's holding.
 pub struct Asking<N: NodesEnum> {
     pub version: u64,
     nodes: Vec<NodeDecisions<N>>,
-    /// For each node, what to do.
+    /// For each node, what's chosen.
     choices: Vec<Choice>,
 }
 
-/// What's been decided, if anything, as `Asking` is shown.
+/// Showing the dialog says what's been decided, if anything.
 pub enum Outcome {
     Open,
     /// Apply what's chosen for each node, running on.
@@ -102,7 +103,8 @@ impl<N: NodesEnum> Asking<N> {
         outcome
     }
 
-    /// Does what's been decided to `graph`: each node's settings changed to the hardware's, or the node disabled.
+    /// The app does what's been decided to `graph` with this: each node's settings changed to the hardware's, or the
+    /// node disabled.
     pub fn apply(self, graph: &mut Graph<N>) {
         for ((id, _, fix), choice) in self.nodes.into_iter().zip(self.choices) {
             let Some(entry) = graph.get_mut(id) else { continue };

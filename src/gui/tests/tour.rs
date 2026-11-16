@@ -1,8 +1,9 @@
-//! Makes the tour in the README, `assets/tour.gif`: the app's main features, a frame each, with a caption. Not a test,
-//! but it's only here that the app can be driven and drawn without a window: `scripts/make_tour.sh` runs it.
+//! The README shows a tour, `assets/tour.gif`: the app's main features, a frame each, with a caption. This makes it.
+//! It isn't a test, but it's only here that the app can be driven and drawn without a window: `scripts/make_tour.sh`
+//! runs it.
 //!
-//! It runs the real thing, on the synthetic data, from its own fake board and camera (on ports of their own, so it
-//! doesn't disturb any already running). Nothing's written: recording's shown with the writer disabled.
+//! The tour runs the real thing, on the synthetic data, from its own fake board and camera (on ports of their own, so
+//! it doesn't disturb any already running). Nothing's written: recording's shown with the writer disabled.
 
 use std::net::TcpListener;
 use std::process::{Child, Command, Stdio};
@@ -20,15 +21,16 @@ use crate::standard::ephys::board::Source as BoardSource;
 use crate::standard::tracking::Crop;
 use crate::standard::tracking::camera::Source as CameraSource;
 
-/// The window, in points, drawn at `SCALE` pixels a point (for smooth text, once it's scaled to `WIDTH`).
+/// The tour's window is this size, in points, drawn at `SCALE` pixels a point (for smooth text, once it's scaled to
+/// `WIDTH`).
 const SIZE: egui::Vec2 = egui::vec2(1280.0, 780.0);
 const SCALE: f32 = 1.5;
-/// The GIF's width, in pixels.
+/// The GIF is this wide, in pixels.
 const WIDTH: u32 = 960;
-/// How long each frame's shown.
+/// The GIF shows each frame this long.
 const SHOWN_MS: u32 = 3000;
 
-/// What's written over a frame, and the part of the window the frame shows.
+/// Each frame has a caption written over it, and shows part of the window.
 #[derive(Clone)]
 struct Caption {
     text: String,
@@ -39,7 +41,7 @@ fn caption_id() -> Id {
     Id::NULL.with("tour caption")
 }
 
-/// The caption, if there is one, along the bottom of its area, the same size whatever the area's size.
+/// A frame's caption, if there is one, goes along the bottom of its area, the same size whatever the area's size.
 fn caption_ui(ui: &egui::Ui) {
     let ctx = ui.ctx();
     let Some(caption) = ctx.data(|d| d.get_temp::<Caption>(caption_id())) else { return };
@@ -54,11 +56,12 @@ fn caption_ui(ui: &egui::Ui) {
     painter.galley(back.min + pad, text, Color32::WHITE);
 }
 
-/// A fake source, stopped when it's dropped.
+/// The tour runs fake sources, each stopped when it's dropped.
 struct Fake(Child);
 
 impl Fake {
-    /// Runs `script`, from `synthetic_streams`, on a free port. Returns it, and the address to connect to.
+    /// This runs `script`, from `synthetic_streams`, on a free port, and returns the source, and the address to connect
+    /// to.
     fn start(script: &str) -> (Self, String) {
         let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         let script = format!("{}/synthetic_streams/{script}", env!("CARGO_MANIFEST_DIR"));
@@ -78,14 +81,14 @@ impl Drop for Fake {
     }
 }
 
-/// The README's tour as it's made: the app, and the frames taken so far.
+/// While the tour's made, it keeps the app, and the frames taken so far.
 struct Tour {
     harness: Harness<'static, TestApp>,
     frames: Vec<RgbaImage>,
 }
 
 impl Tour {
-    /// Lets `seconds` pass, the GUI keeping up with the run.
+    /// The tour lets `seconds` pass, the GUI keeping up with the run.
     fn wait(&mut self, seconds: f32) {
         for _ in 0..(seconds * 20.0) as u32 {
             self.harness.run_steps(1);
@@ -101,13 +104,13 @@ impl Tour {
         node_named(self.harness.state(), label)
     }
 
-    /// Moves the pointer out of the way.
+    /// The tour moves the pointer out of the way.
     fn park_pointer(&mut self) {
         self.harness.event(egui::Event::PointerMoved(egui::pos2(1200.0, 12.0)));
         self.harness.run_steps(3);
     }
 
-    /// Shows `id`'s window, and nothing else.
+    /// The tour shows `id`'s window, and nothing else.
     fn only(&mut self, id: NodeId) {
         let mode = self.app().layout.mode;
         let layout = &mut self.app().layout;
@@ -118,12 +121,12 @@ impl Tour {
         self.park_pointer();
     }
 
-    /// Adds a frame of the whole window.
+    /// The tour adds a frame of the whole window.
     fn shot(&mut self, caption: &str) {
         self.shot_of(caption, Rect::from_min_size(egui::Pos2::ZERO, SIZE));
     }
 
-    /// Adds a frame of `area` of the window (of the window's shape), with `caption`.
+    /// The tour adds a frame of `area` of the window (of the window's shape), with `caption`.
     fn shot_of(&mut self, caption: &str, area: Rect) {
         let caption = Caption { text: caption.into(), area };
         self.harness.ctx.data_mut(|d| d.insert_temp(caption_id(), caption));
@@ -137,7 +140,7 @@ impl Tour {
         self.frames.push(imageops::resize(&frame, WIDTH, height, FilterType::Lanczos3));
     }
 
-    /// Writes the frames as the GIF, and as PNGs in `target/tour` to look through.
+    /// Once done, the tour writes the frames as the GIF, and as PNGs in `target/tour` to look through.
     fn write(self) {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let pngs = root.join("target/tour");

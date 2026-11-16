@@ -1,4 +1,5 @@
-//! Triggers: something a node's sent, through a settings edge or by the node itself, as well as its settings being set.
+//! Besides its settings being set, a node can be sent triggers: one-off events, through a settings edge or by the node
+//! itself.
 //!
 //! Each trigger type (`TriggerType`) carries what it needs to, and the program lists them with its edge types
 //! (`edge_types!`), which makes its enum of them (`TriggersEnum`), as it does of data streams and settings. A node says
@@ -15,8 +16,8 @@
 //! which the app applies as an edit, unless settings are locked. And a pass can have the app start or stop recording
 //! (`PassContext::trigger_recording`), as the toolbar's Record does.
 //!
-//! On their way, triggers are carried as `AnyTrigger`s, so the run's and the app's queues needn't know the program's
-//! enum; what's sent and what's taken is always the enum.
+//! On their way, triggers are carried as `AnyTrigger`s, so the app's queue needn't know the program's enum; what's sent
+//! and what's taken is always the enum.
 
 use std::any::Any;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -25,30 +26,31 @@ use eframe::egui;
 
 use super::engine::NodeId;
 
-/// A type of trigger: something a node can be sent, through a settings edge or by itself, carrying whatever it needs to
-/// (`RunOnFiles` its files, say). The program lists them in `edge_types!`.
+/// Each type of trigger implements this: something a node can be sent, through a settings edge or by itself, carrying
+/// whatever it needs to (`RunOnFiles` its files, say). The program lists them in `edge_types!`.
 pub trait TriggerType: Send + 'static {
-    /// What it's called where it's shown: in the dev tools, say.
+    /// The type's name where it's shown: in the dev tools, say.
     const NAME: &'static str;
 }
 
-/// The program's trigger types: an enum with a variant for each, made by `edge_types!`.
+/// `edge_types!` makes an enum of the program's trigger types, with a variant for each, and implements this for it.
 pub trait TriggersEnum: Clone + Send + Sync + 'static {
-    /// Which type a trigger is, without what it carries: what a node says its settings take.
+    /// A node says which types of trigger its settings take by their kinds: which type a trigger is, without what it
+    /// carries.
     type Kind: Copy + Eq + std::hash::Hash + std::fmt::Debug + Send + Sync + Into<TriggerKey> + 'static;
 
     fn kind(&self) -> Self::Kind;
 }
 
-/// A kind of trigger, as the core keeps track of them without knowing the program's enum: which variant it is, and
-/// what it's called. Each `TriggersEnum::Kind` converts into one.
+/// The core keeps track of kinds of trigger without knowing the program's enum, by this: which variant it is, and what
+/// it's called. Each `TriggersEnum::Kind` converts into one.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct TriggerKey {
     pub index: usize,
     pub name: &'static str,
 }
 
-/// A trigger on its way, of the program's `TriggersEnum`: taken as that by whatever it's for.
+/// A trigger of the program's `TriggersEnum` goes on its way as this, and whatever it's for takes it as the enum.
 pub struct AnyTrigger {
     key: TriggerKey,
     trigger: Box<dyn Any + Send>,
@@ -63,32 +65,32 @@ impl AnyTrigger {
         self.key
     }
 
-    /// It, as the program's `T`, if that's what it is.
+    /// The trigger, as the program's `T`, if that's what it is.
     pub fn take<T: TriggersEnum>(self) -> Option<T> {
         self.trigger.downcast().ok().map(|trigger| *trigger)
     }
 }
 
-/// What a direct trigger's for.
+/// A direct trigger's for one of these.
 pub enum Triggered {
     /// A new value for the node's setting `setting` (by index).
     SettingsUpdate { setting: usize, value: Box<dyn Any + Send> },
-    /// One of the node's direct triggers (see `Node::triggers`).
+    /// One of the node's triggers (see `Node::triggers`).
     Trigger(AnyTrigger),
-    /// Recording to start (true) or stop, as the node asked: if it isn't already.
+    /// The node asks for recording to start (true) or stop, if it isn't already.
     Recording(bool),
 }
 
-/// The direct triggers waiting to be delivered: the app's, so they outlive any run.
+/// Direct triggers wait here to be delivered. This is the app's, so they outlive any run.
 #[derive(Default)]
 pub struct DirectTriggers {
     waiting: Mutex<Vec<(NodeId, Triggered)>>,
-    /// Told when there's one, as a stopped app might not be drawing anything.
+    /// When a trigger comes, this is told, as a stopped app might not be drawing anything.
     wake: OnceLock<egui::Context>,
 }
 
 impl DirectTriggers {
-    /// Has `ctx` draw a frame when a trigger comes, for it to be delivered.
+    /// The app has `ctx` draw a frame when a trigger comes, for it to be delivered, with this.
     pub fn wake(&self, ctx: &egui::Context) {
         self.wake.get_or_init(|| ctx.clone());
     }
@@ -100,27 +102,27 @@ impl DirectTriggers {
         }
     }
 
-    /// Sends node `node` the direct trigger `trigger`.
+    /// This sends node `node` the trigger `trigger`.
     pub fn trigger(&self, node: NodeId, trigger: AnyTrigger) {
         self.send(node, Triggered::Trigger(trigger));
     }
 
-    /// Triggers an update of node `node`'s setting `setting` (by index) to `value`.
+    /// This asks for node `node`'s setting `setting` (by index) to be set to `value`.
     pub fn trigger_settings_update(&self, node: NodeId, setting: usize, value: Box<dyn Any + Send>) {
         self.send(node, Triggered::SettingsUpdate { setting, value });
     }
 
-    /// Has the app start (`on`) or stop recording, for node `node`.
+    /// This asks the app, for node `node`, to start (`on`) or stop recording.
     pub fn trigger_recording(&self, node: NodeId, on: bool) {
         self.send(node, Triggered::Recording(on));
     }
 
-    /// What's waiting, to deliver.
+    /// The app takes what's waiting, to deliver, with this.
     pub fn take(&self) -> Vec<(NodeId, Triggered)> {
         std::mem::take(&mut *self.waiting.lock().unwrap())
     }
 
-    /// The settings updates waiting: the node, which of its settings, and the value.
+    /// Tests take the settings updates waiting with this: the node, which of its settings, and the value.
     #[cfg(test)]
     pub fn take_settings_updates(&self) -> Vec<(NodeId, usize, Box<dyn Any + Send>)> {
         let updates = self.take().into_iter().filter_map(|(node, triggered)| match triggered {
@@ -132,7 +134,7 @@ impl DirectTriggers {
 }
 
 impl Drop for DirectTriggers {
-    /// Whatever's left never got to its node: the app closed first, while a thread finished up.
+    /// Whatever's left when this is dropped never got to its node: the app closed first, while a thread finished up.
     fn drop(&mut self) {
         for (node, triggered) in self.take() {
             if let Triggered::Trigger(trigger) = triggered {
@@ -143,8 +145,8 @@ impl Drop for DirectTriggers {
     }
 }
 
-/// A direct trigger of one or more nodes, of one kind of the program's `T`, to send whenever, from any thread (see
-/// `ControlTriggers`).
+/// A node keeps a handle on a trigger of one or more nodes, of one kind of the program's `T`, to send whenever, from
+/// any thread (see `ControlTriggers`).
 pub struct TriggerHandle<T: TriggersEnum> {
     triggers: Arc<DirectTriggers>,
     nodes: Vec<NodeId>,
@@ -152,7 +154,7 @@ pub struct TriggerHandle<T: TriggersEnum> {
 }
 
 impl<T: TriggersEnum> TriggerHandle<T> {
-    /// Sends `trigger` (cloned for each node), which should be of the handle's kind.
+    /// This sends `trigger` (cloned for each node), which should be of the handle's kind.
     pub fn trigger(&self, trigger: impl Into<T>) {
         let trigger = trigger.into();
         debug_assert_eq!(trigger.kind(), self.kind, "the handle's kind of trigger");
@@ -162,11 +164,11 @@ impl<T: TriggersEnum> TriggerHandle<T> {
     }
 }
 
-/// What a control connects to: each node, and the kinds of the program's triggers `T` its setting takes.
+/// A control connects to nodes, each with the kinds of the program's triggers `T` its setting takes.
 type Targets<T> = Vec<(NodeId, &'static [<T as TriggersEnum>::Kind])>;
 
-/// What a node's controls can trigger directly: for each control, the nodes it connects to, and the kinds of the
-/// program's triggers `T` the setting of theirs it connects to takes.
+/// A node's controls can trigger the nodes they connect to directly. This says, for each control, the nodes it connects
+/// to, and the kinds of the program's triggers `T` the setting of theirs it connects to takes.
 pub struct ControlTriggers<T: TriggersEnum> {
     triggers: Arc<DirectTriggers>,
     controls: Vec<Targets<T>>,
@@ -177,12 +179,13 @@ impl<T: TriggersEnum> ControlTriggers<T> {
         ControlTriggers { triggers, controls }
     }
 
-    /// None to trigger.
+    /// A node with nothing to trigger gets this.
     pub fn none() -> Self {
         ControlTriggers { triggers: Arc::default(), controls: Vec::new() }
     }
 
-    /// A handle on triggers of kind `kind` to what control `control` connects to, if that takes them.
+    /// A node gets a handle on triggers of kind `kind` to what control `control` connects to, if that takes them, with
+    /// this.
     pub fn handle(&self, control: usize, kind: T::Kind) -> Option<TriggerHandle<T>> {
         let targets = self.controls.get(control)?.iter();
         let nodes: Vec<NodeId> = targets.filter(|(_, kinds)| kinds.contains(&kind)).map(|(node, _)| *node).collect();
@@ -190,7 +193,7 @@ impl<T: TriggersEnum> ControlTriggers<T> {
     }
 }
 
-/// A program's triggers, for tests: `Go`, carrying a number, and `Level`, carrying a level, as `edge_types!` would make them.
+/// Tests use these triggers, as `edge_types!` would make them: `Go`, carrying a number, and `Level`, carrying a level.
 #[cfg(test)]
 pub(crate) mod testing {
     use super::*;

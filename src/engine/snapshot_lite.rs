@@ -1,32 +1,34 @@
-//! What node code can see of a snapshot (`SnapshotLite`): a subset of it, its version, and the run's start and recording. A pass gives
-//! a node its own (`PassContext::snapshot`), shared, so a node's thread can keep it: frozen, as it was baked. (The
-//! rest, its graph and plan, are of the program's node types, which nodes don't know.)
+//! A node can see some of the snapshot a pass runs against (`SnapshotLite`): its version, and the run's start and
+//! recording. A pass gives the node the snapshot shared (`PassContext::snapshot`), so a node's thread can keep it,
+//! frozen as it was baked. (The rest, its graph and plan, are of the program's node types, which nodes don't know.)
 
 use std::time::{Duration, Instant};
 
 use super::{NodesEnum, Recording, Snapshot};
 
-/// What node code can see of a snapshot: a subset of it.
+/// Node code can see this much of a snapshot.
 pub trait SnapshotLite: Send + Sync {
+    /// The app numbers the snapshots it bakes, in order.
     fn version(&self) -> u64;
 
-    /// When the run started (Play pressed), by the monotonic clock, while running.
+    /// While running, the run started (Play pressed) at this time, by the monotonic clock.
     fn started(&self) -> Option<Instant>;
 
-    /// The recording, while recording.
+    /// While recording, the recording.
     fn recording(&self) -> Option<&Recording>;
 
-    /// When the recording took effect (see `Recording::effective`), by the same clock as `started`, once it has.
+    /// Once the recording's taken effect (see `Recording::effective`), it did so at this time, by the same clock as
+    /// `started`.
     fn recording_started(&self) -> Option<Instant> {
         Some(self.recording()?.effective()?.at)
     }
 
-    /// How long it's been acquiring, now, while running.
+    /// While running, the graph's been acquiring for this long, as of now.
     fn acquiring_for(&self) -> Option<Duration> {
         Some(self.started()?.elapsed())
     }
 
-    /// How long it's been recording, now, while recording.
+    /// While recording, the graph's been recording for this long, as of now.
     fn recording_for(&self) -> Option<Duration> {
         Some(self.recording_started()?.elapsed())
     }
@@ -46,7 +48,7 @@ impl<N: NodesEnum> SnapshotLite for Snapshot<N> {
     }
 }
 
-/// For trying a node out (see `PassContext::new`): started now, and recording or not.
+/// Tests try nodes out against a snapshot like this (see `PassContext::new`): started now, and recording or not.
 #[cfg(test)]
 pub(super) struct Trying {
     pub started: Instant,

@@ -1,13 +1,13 @@
-//! The standard window, which a node draws by default (see `Node::on_gui_tick`): its name (to edit), its toolbar, what
-//! it is, any problems, its settings, and what its ports carry and are connected to.
+//! Unless a node draws a window of its own, it draws the standard window (see `Node::on_gui_tick`): its name (to edit),
+//! its toolbar, what it is, any problems, its settings, and what its ports carry and are connected to.
 
 use eframe::egui::{self, RichText};
 
 use super::style;
 use crate::engine::{Edges, Node, NodeState, PortRole, UiContext};
 
-/// The standard window, with `settings` (what of the node's own there is to set, if anything) in the middle: disabled
-/// while recording, as settings are locked.
+/// A node draws the standard window with this, with `settings` (what of the node's own there is to set, if anything)
+/// in the middle, disabled while recording, as settings are locked.
 pub fn standard<E: Edges, N: Node<E>>(
     node: &mut N,
     ui: &mut egui::Ui,
@@ -97,7 +97,7 @@ mod tests {
     use crate::gui::docking::{PANE_MARGIN, Ticked, node_ui};
     use crate::standard::themes::THEMES;
 
-    /// Stopped, what the last run shared is there to read, but there's no run for a trigger to go to.
+    /// Once a run's stopped, what it shared is there to read, but there's no run for auto detect to happen in.
     #[test]
     fn triggers_need_a_run_not_just_what_one_shared() {
         use egui_kittest::kittest::{NodeT as _, Queryable as _};
@@ -135,7 +135,8 @@ mod tests {
         assert!(disabled(false));
     }
 
-    /// Settings narrower than the pane, and too long for it: the bar's at the pane's edge, not theirs. See tests/snapshots/.
+    /// When a node's settings are narrower than the pane, and too long for it, the scroll bar's at the pane's edge, not
+    /// theirs. See tests/snapshots/.
     #[test]
     fn the_scroll_bar_is_at_the_edge_of_the_pane() {
         let mut graph = Graph::<Nodes>::default();

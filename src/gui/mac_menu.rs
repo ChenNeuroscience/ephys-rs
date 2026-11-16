@@ -1,5 +1,6 @@
-//! The menu bar at the top of the screen on macOS, where apps are expected to have one, in place of the
-//! window's own. Built from the same menus. Shortcuts are left to the app (as on other platforms), except Quit.
+//! On macOS, apps are expected to have their menu bar at the top of the screen, so the app puts its menus there in
+//! place of the window's own, built from the same menus. The app handles shortcuts itself (as on other platforms),
+//! except Quit.
 
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -11,15 +12,15 @@ use super::actions::{self, Action, MENUS, MenuEntry};
 use super::preferences::MOST_RECENT_FILES;
 use crate::theme::Theme;
 
-/// The menu bar, while it's shown: what's clicked comes back as `Action`s, and the checkmarks and recent files are
-/// kept in step with the app.
+/// The app keeps the menu bar here while it's shown: what's clicked comes back as `Action`s, and the app keeps the
+/// checkmarks and recent files in step.
 pub struct MacMenu {
-    /// Kept alive for as long as the menu is shown.
+    /// The menu's kept alive for as long as it's shown.
     _menu: Menu,
     actions: mpsc::Receiver<Action>,
-    /// Items with a checkmark, to keep in step with the app.
+    /// The app keeps the items with a checkmark in step with it.
     checks: Vec<(Action, CheckMenuItem)>,
-    /// The recent files' submenu, and the files in it (none shown yet, if `None`).
+    /// The recent files' submenu, and the files in it (`None` until any are shown).
     recent: Option<Submenu>,
     recent_shown: Option<Vec<PathBuf>>,
 }
@@ -28,15 +29,15 @@ fn id(action: Action) -> String {
     format!("{action:?}")
 }
 
-/// What's being built: every action in the menus, and the ones with checkmarks.
+/// While the menu's built, this collects every action in the menus, and the ones with checkmarks.
 struct Builder<'a> {
     actions: Vec<Action>,
     checks: Vec<(Action, CheckMenuItem)>,
     recent: Option<Submenu>,
     checkable: &'a dyn Fn(Action) -> bool,
-    /// The annotation types' names, for the drawing tools.
+    /// The drawing tools are named by the annotation types' names.
     annotations: Vec<&'static str>,
-    /// Annotation types hidden in Settings, by name: not among the drawing tools.
+    /// Annotation types hidden in Settings, by name, aren't among the drawing tools.
     hidden: &'a std::collections::BTreeSet<String>,
     themes: &'static [Theme],
 }
@@ -94,7 +95,8 @@ impl Builder<'_> {
 }
 
 impl MacMenu {
-    /// Installs the menu bar. Call once the app's window exists. `checkable` says which actions are on or off.
+    /// Once the app's window exists, the app installs the menu bar with this. `checkable` says which actions are on or
+    /// off.
     pub fn install(
         ctx: &egui::Context,
         checkable: &dyn Fn(Action) -> bool,
@@ -143,12 +145,12 @@ impl MacMenu {
         Some(MacMenu { _menu: menu, actions, checks: builder.checks, recent: builder.recent, recent_shown: None })
     }
 
-    /// Actions chosen from the menu since last asked.
+    /// The app takes the actions chosen from the menu since it last asked, with this.
     pub fn actions(&self) -> Vec<Action> {
         self.actions.try_iter().collect()
     }
 
-    /// Shows these recent files, if they aren't what's shown already.
+    /// The app shows these recent files with this, if they aren't what's shown already.
     pub fn show_recent(&mut self, recent: &[PathBuf]) {
         if self.recent_shown.as_deref() == Some(recent) {
             return;
@@ -165,8 +167,8 @@ impl MacMenu {
         }
     }
 
-    /// Updates the checkmarks to match the app. (The menu toggles an item's checkmark itself when it's
-    /// chosen, which isn't always right, e.g. choosing the theme already in use.)
+    /// The app updates the checkmarks to match it with this. (The menu toggles an item's checkmark itself when it's
+    /// chosen, which isn't always right: choosing the theme already in use, say.)
     pub fn sync(&self, checked: impl Fn(Action) -> bool) {
         for (action, item) in &self.checks {
             let on = checked(*action);

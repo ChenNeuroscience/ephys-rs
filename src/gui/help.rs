@@ -1,9 +1,11 @@
-//! Help, the same everywhere: text that's dimmed with a dotted underline (or an icon), saying more in a popup. It's
-//! shown while the pointer's over either, or, clicked, until something else is: the one popup, whichever.
+//! The app offers help the same way everywhere: text that's dimmed with a dotted underline (or an icon), saying more in
+//! a popup. The popup shows while the pointer's over either, or, clicked, until something else is; only one shows at a
+//! time.
 
 use eframe::egui::{self, Stroke, pos2};
 
-/// Help: `text`, dimmed with a dotted underline, showing `help` when hovered over, or clicked.
+/// A window offers help with this: `text`, dimmed with a dotted underline, showing `help` when hovered over, or
+/// clicked.
 pub fn help_link(ui: &mut egui::Ui, text: &str, help: impl Fn(&mut egui::Ui)) -> egui::Response {
     let galley = egui::WidgetText::from(text).into_galley(
         ui,
@@ -29,7 +31,8 @@ pub fn help_link(ui: &mut egui::Ui, text: &str, help: impl Fn(&mut egui::Ui)) ->
     with_help(response, help)
 }
 
-/// Help as an ⓘ icon, saying `text` when hovered over, or clicked: beside a setting, say, to say what it's for.
+/// A window can offer help as an ⓘ icon, saying `text` when hovered over, or clicked: beside a setting, say, to say
+/// what it's for.
 pub fn info_icon(ui: &mut egui::Ui, text: &str) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(egui::Vec2::splat(12.0), egui::Sense::click());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Link, ui.is_enabled(), "What's this?"));
@@ -47,13 +50,13 @@ fn popup_id(response: &egui::Response) -> egui::Id {
     response.id.with("help")
 }
 
-/// Where whether it's been clicked open is kept.
+/// Whether a popup's been clicked open is kept under this id.
 fn pinned_id(response: &egui::Response) -> egui::Id {
     popup_id(response).with("pinned")
 }
 
-/// `response`, of something showing `help` in a popup: while the pointer's over it, or the popup, or, clicked, until
-/// something else is. Where it's disabled, it can't be clicked.
+/// Anything can show `help` in a popup with this, given its `response`: while the pointer's over it, or the popup, or,
+/// clicked, until something else is. Where it's disabled, it can't be clicked.
 pub fn with_help(response: egui::Response, help: impl Fn(&mut egui::Ui)) -> egui::Response {
     let ctx = response.ctx.clone();
     let id = popup_id(&response);

@@ -1,5 +1,5 @@
-//! Drawing the layout of panes (see `crate::layout`, which says where they go): each pane's contents, its tab,
-//! and what dragging and closing tabs does.
+//! The app lays its panes out as `crate::layout` says. This module draws them: each pane's contents, its tab, and what
+//! dragging and closing tabs does.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -20,7 +20,7 @@ use crate::layout::{Layout, Mode, Pane, hide_tile};
 use crate::quick_action::QuickAction;
 use crate::theme::Colours;
 
-/// The narrowest and shortest a pane can be dragged to.
+/// A pane can't be dragged narrower or shorter than this.
 const MIN_PANE: f32 = 300.0;
 
 impl Layout {
@@ -29,33 +29,33 @@ impl Layout {
     }
 }
 
-/// What the panes need to draw themselves, for one frame.
+/// Each frame, the panes are given this to draw themselves with.
 pub struct Panes<'a, N: NodesEnum, A: AnnotationsEnum> {
-    /// The annotation types hidden in Settings: not among the drawing tools.
+    /// The annotation types hidden in Settings aren't among the drawing tools.
     pub hidden_annotations: &'a std::collections::BTreeSet<String>,
     pub graph: &'a mut Graph<N>,
     pub annotations: &'a mut Annotations<A>,
     pub resolved: &'a Resolved<N::Edges>,
     pub colours: &'static Colours,
     pub runner: Option<&'a Runner<N>>,
-    /// What the running nodes' passes share with the GUI, or what the last run's shared, once it's stopped.
+    /// What the running nodes' passes share with the GUI, or once the run's stopped, what the last run's shared.
     pub shared: Option<&'a crate::engine::SharedByNode>,
     /// Each node's state on the GUI's side (see `Node::UiState`).
     pub(crate) ui_states: &'a super::UiStates<N>,
-    /// The base directory recordings go in (see `crate::base_directory`).
+    /// Recordings go in this base directory (see `crate::base_directory`).
     pub base_directory: Option<&'a crate::base_directory::Place>,
-    /// The latest snapshot of the graph.
+    /// The app's latest snapshot of the graph.
     pub snapshot: &'a Snapshot<N>,
-    /// What the home pane shows, and the quick actions the basic view offers.
+    /// The mode says what the home pane shows.
     pub mode: Mode,
-    /// What the graph's toolbar can do.
+    /// The graph's toolbar greys out what it can't do, from this.
     pub graph_tools: toolbar::GraphTools,
     pub quick_actions: &'a [QuickAction<N>],
-    /// Which of them are offered, by index (they apply to the graph and layout as they are).
+    /// The basic view offers these quick actions, by index (they apply to the graph and layout as they are).
     pub offered: &'a [usize],
-    /// How many workers runs start with.
+    /// Runs start with this many workers.
     pub workers: usize,
-    /// Whether settings are locked (while recording).
+    /// While recording, settings are locked.
     pub locked: bool,
     pub dev_tools: &'a mut DevTools,
     pub canvas: &'a mut Canvas,
@@ -64,9 +64,9 @@ pub struct Panes<'a, N: NodesEnum, A: AnnotationsEnum> {
     /// The files last opened or saved, latest first.
     pub recent: &'a [PathBuf],
     pub events: &'a mut Vec<Event>,
-    /// The nodes whose windows have been drawn this frame (see `Node::on_gui_tick`).
+    /// The app records the nodes whose windows have been drawn this frame here (see `Node::on_gui_tick`).
     pub ticked: &'a mut Ticked,
-    /// For the dev tools' chart; and each pane's time this frame, as it's drawn.
+    /// The dev tools' chart, and each pane's time this frame, as it's drawn.
     pub frame_times: &'a FrameTimes,
     pub timings: &'a mut Vec<(String, f32)>,
 }
@@ -78,9 +78,9 @@ pub struct Ticked {
     pub nodes: HashSet<NodeId>,
 }
 
-/// Draws a node's window content, with its toolbar, by calling on the node (see `Node::on_gui_tick`), and records that
-/// in `ticked`. It finds what its passes share with it in `shared`:
-/// the run's, or the last run's, and whether the graph's `running`.
+/// A pane draws a node's window content, with its toolbar, with this, calling on the node (see `Node::on_gui_tick`),
+/// and records that in `ticked`. The node finds what its passes share with it in `shared` (the run's, or the last
+/// run's), and whether the graph's `running`.
 #[allow(clippy::too_many_arguments)]
 pub fn node_ui<N: NodesEnum>(
     ui: &mut egui::Ui,
@@ -117,15 +117,15 @@ pub fn node_ui<N: NodesEnum>(
     ticked.nodes.insert(id);
 }
 
-/// What was clicked in a floating window's header.
+/// A floating window's header says what was clicked in it.
 #[derive(Default)]
 pub struct HeaderClicks {
     pub close: bool,
     pub dock: bool,
 }
 
-/// The top of a floating window, drawn as egui_tiles draws a docked window's tab bar, holding just the one
-/// (active) tab, so floating and docked windows look alike. Dragging it moves the window.
+/// A floating window's top is drawn as egui_tiles draws a docked window's tab bar, holding just the one (active) tab,
+/// so floating and docked windows look alike. Dragging it moves the window.
 pub fn floating_header(ui: &mut egui::Ui, title: &str, colour: egui::Color32) -> HeaderClicks {
     const HEIGHT: f32 = 24.0;
     const MARGIN: f32 = 8.0;
@@ -180,7 +180,7 @@ pub fn floating_header(ui: &mut egui::Ui, title: &str, colour: egui::Color32) ->
     clicks
 }
 
-/// A node window's tab title: a block of the node's colour on the graph, then its label.
+/// A node window's tab has a block of the node's colour on the graph, then its label.
 pub fn tab_title(label: &str, colour: egui::Color32) -> egui::WidgetText {
     let font = egui::FontId::proportional(14.0);
     let mut job = egui::text::LayoutJob::default();
@@ -193,7 +193,7 @@ pub fn tab_title(label: &str, colour: egui::Color32) -> egui::WidgetText {
     egui::WidgetText::LayoutJob(std::sync::Arc::new(job))
 }
 
-/// The selected annotation's settings; for several, how many, to delete together.
+/// The annotation pane shows the selected annotation's settings; for several, how many, to delete together.
 fn annotation_ui<A: AnnotationsEnum>(
     ui: &mut egui::Ui,
     annotations: &mut Annotations<A>,
@@ -228,7 +228,7 @@ fn annotation_ui<A: AnnotationsEnum>(
     }
 }
 
-/// The margin inside a pane.
+/// A pane leaves this margin inside it.
 pub const PANE_MARGIN: i8 = 8;
 
 fn padded(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
@@ -301,8 +301,8 @@ impl<N: NodesEnum, A: AnnotationsEnum> Panes<'_, N, A> {
 }
 
 impl<N: NodesEnum, A: AnnotationsEnum> egui_tiles::Behavior<Pane> for Panes<'_, N, A> {
-    /// Where a dragged window would go: in the accent (egui_tiles uses the selection's stroke, which is the colour
-    /// on the accent, so hard to see on a light theme).
+    /// While a window's dragged, egui_tiles shows where it would go. The app shows it in the accent (egui_tiles uses
+    /// the selection's stroke, which is the colour on the accent, so hard to see on a light theme).
     fn drag_preview_stroke(&self, _visuals: &egui::Visuals) -> egui::Stroke {
         egui::Stroke::new(2.0, self.colours.accent)
     }
@@ -311,7 +311,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> egui_tiles::Behavior<Pane> for Panes<'_, 
         self.colours.accent.gamma_multiply(0.35)
     }
 
-    /// No pane (or group of them) is dragged narrower or shorter than this.
+    /// No pane (or group of them) can be dragged narrower or shorter than this.
     fn min_size(&self) -> f32 {
         MIN_PANE
     }
@@ -341,13 +341,13 @@ impl<N: NodesEnum, A: AnnotationsEnum> egui_tiles::Behavior<Pane> for Panes<'_, 
         }
     }
 
-    /// The annotation pane comes and goes with the selection, so isn't closed by hand. (The home pane can be: the
+    /// The annotation pane comes and goes with the selection, so it can't be closed by hand. (The home pane can be: the
     /// toolbar's Basic | Graph brings it back.)
     fn is_tab_closable(&self, tiles: &Tiles<Pane>, tile: TileId) -> bool {
         !matches!(tiles.get_pane(&tile), Some(Pane::Annotation))
     }
 
-    /// Hides rather than removes, so the pane comes back in the same place.
+    /// Closing a tab hides the pane rather than removing it, so it comes back in the same place.
     fn on_tab_close(&mut self, tiles: &mut Tiles<Pane>, tile: TileId) -> bool {
         hide_tile(tiles, tile);
         false

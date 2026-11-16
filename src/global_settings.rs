@@ -1,6 +1,6 @@
-//! Global settings: settings for the whole program on this machine (where a vendor's library is, say), rather than for
-//! a graph. Each type is a tab of its own in Settings…, kept between sessions, and its value now can be had from any
-//! thread (`current`).
+//! Some settings are for the whole program on this machine (where a vendor's library is, say), rather than for a graph:
+//! global settings. Each type is a tab of its own in Settings…, kept between sessions, and its value now can be had
+//! from any thread (`current`).
 //!
 //! A node names the global settings it reads (`Node::GlobalSettings`), and reads them through that
 //! (`Node::global_settings`); a build has a tab for each type its nodes name (`NodesEnum::global_settings_types`). So
@@ -17,26 +17,27 @@ use serde::de::DeserializeOwned;
 
 use crate::theme::Colours;
 
-/// A type of global settings.
+/// Each type of global settings implements this.
 pub trait GlobalSettings: Default + Clone + PartialEq + Serialize + DeserializeOwned + Send + Sync + 'static {
-    /// Its tab's name in Settings…, and what it's kept by between sessions: renaming it loses what was kept.
+    /// The type's tab is named this in Settings…, and the app keeps the settings by it between sessions, so renaming it
+    /// loses what was kept.
     const NAME: &'static str;
 
-    /// Its tab, editing it. Changes apply as they're made.
+    /// The type's tab edits the settings with this. Changes apply as they're made.
     fn ui(&mut self, ui: &mut egui::Ui, colours: &Colours);
 }
 
 type Values = HashMap<TypeId, Arc<dyn Any + Send + Sync>>;
 
-/// Each type's value now, by type: read far more than it's changed.
+/// Each type's value now, by type, which is read far more than it's changed.
 static VALUES: LazyLock<ArcSwap<Values>> = LazyLock::new(|| ArcSwap::from_pointee(HashMap::new()));
 
-/// `T`'s value now (its default, if it's never been set).
+/// Code reads `T`'s value now with this (its default, if it's never been set).
 pub fn current<T: GlobalSettings>() -> Arc<T> {
     VALUES.load().get(&TypeId::of::<T>()).and_then(|v| v.clone().downcast().ok()).unwrap_or_default()
 }
 
-/// Sets `T`'s value, from now on.
+/// The settings tab sets `T`'s value, from now on, with this.
 pub fn set<T: GlobalSettings>(value: T) {
     let value: Arc<dyn Any + Send + Sync> = Arc::new(value);
     VALUES.rcu(|values| {
@@ -46,14 +47,14 @@ pub fn set<T: GlobalSettings>(value: T) {
     });
 }
 
-/// The global settings a node reads: `()` for none, a type of them, or a pair or triple of types.
+/// A node names the global settings it reads with this: `()` for none, a type of them, or a pair or triple of types.
 pub trait GlobalSettingsSet: 'static {
-    /// Their values now: an `Arc` of each.
+    /// Reading them gives their values now: an `Arc` of each.
     type Current;
 
     fn current() -> Self::Current;
 
-    /// Adds each type to `types`, if it isn't there.
+    /// The app finds every type a build's nodes read with this, which adds each to `types`, if it isn't there.
     fn types(types: &mut Vec<GlobalSettingsType>);
 }
 
@@ -106,7 +107,7 @@ impl<A: GlobalSettings, B: GlobalSettings, C: GlobalSettings> GlobalSettingsSet 
     }
 }
 
-/// A type of global settings, for the app: its tab, and keeping it between sessions.
+/// The app handles each type of global settings through this: its tab, and keeping it between sessions.
 #[derive(Clone, Copy)]
 pub struct GlobalSettingsType {
     pub name: &'static str,
@@ -137,7 +138,7 @@ impl GlobalSettingsType {
         }
     }
 
-    /// Takes what was kept from the last session, if anything.
+    /// As it starts, the app takes what was kept from the last session, if anything, with this.
     pub fn load(&self, storage: &dyn eframe::Storage) {
         (self.load)(storage)
     }
@@ -146,7 +147,7 @@ impl GlobalSettingsType {
         (self.save)(storage)
     }
 
-    /// Its tab.
+    /// Settings… shows the type's tab with this.
     pub fn ui(&self, ui: &mut egui::Ui, colours: &Colours) {
         (self.ui)(ui, colours)
     }
@@ -189,7 +190,7 @@ mod tests {
         assert_eq!(*rate, Rate(7));
     }
 
-    /// Kept as eframe keeps them: by key, as text.
+    /// Tests keep settings as eframe does, with this: by key, as text.
     #[derive(Default)]
     struct Storage(HashMap<String, String>);
 

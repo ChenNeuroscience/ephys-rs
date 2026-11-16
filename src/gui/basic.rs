@@ -1,8 +1,8 @@
 //! The basic view, the home pane's first mode, for people who'd rather not work with the graph: the program's version
 //! as a title, with a link to the About window; while the graph's empty, the recent files, and otherwise the components
-//! shown in it (viewers, unless set otherwise: see `NodeEntry::shown_in_basic`), large, to open their windows (beside it); and the
-//! quick actions that apply to the graph, in grey (blue is for processing). Disabled components are faded, as on the
-//! graph. The graph is in advanced mode (the toolbar's graph button), a click away.
+//! shown in it (viewers, unless set otherwise: see `NodeEntry::shown_in_basic`), large, to open their windows (beside
+//! it); and the quick actions that apply to the graph, in grey (blue is for processing). Disabled components are faded,
+//! as on the graph. The graph is in advanced mode (the toolbar's graph button), a click away.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -17,9 +17,9 @@ use crate::engine::{Category, EdgeTypesEnum, Graph, NodeId, NodesEnum, Resolved}
 use crate::quick_action::QuickAction;
 use crate::theme::Colours;
 
-/// The cards' widest.
+/// The cards are at most this wide.
 const WIDTH: f32 = 560.0;
-/// How opaque a disabled component's card is: as faded as a disabled node on the graph.
+/// A disabled component's card is this opaque: as faded as a disabled node on the graph.
 const DISABLED_OPACITY: f32 = 0.35;
 
 #[allow(clippy::too_many_arguments)]
@@ -159,7 +159,8 @@ pub fn show<N: NodesEnum>(
     });
 }
 
-/// A large, clickable card: a stripe of `colour` at the left, a title and a line of detail.
+/// The basic view shows each component as a large, clickable card: a stripe of `colour` at the left, a title and a line
+/// of detail.
 fn card(
     ui: &mut egui::Ui,
     colours: &Colours,

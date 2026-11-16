@@ -1,11 +1,11 @@
-//! Colours that are the same in every theme. The rest come from the theme (see `crate::theme`).
+//! Most colours come from the theme (see `crate::theme`); these are the same in every theme.
 
 use eframe::egui::Color32;
 
 use crate::engine::Category;
 
-/// Node header colour: Open Ephys's colours for its kinds of processor (sources orange, filters sky blue,
-/// sinks green, recording red), toned down to sit behind white text in either theme.
+/// The graph colours each node's header by its category, as Open Ephys colours its kinds of processor (sources orange,
+/// filters sky blue, sinks green, recording red), toned down to sit behind white text in either theme.
 pub fn category_colour(category: Category) -> Color32 {
     match category {
         Category::Source => Color32::from_rgb(168, 82, 40),

@@ -1,10 +1,12 @@
-//! The plan of a snapshot: which nodes run (each decides, given what it's connected to), in what order, on which
-//! buffers, and where data's copied. Worked out once, when the snapshot's taken, for every pass of it (see `run`).
+//! Each snapshot has a plan: which nodes run (each node decides, given what it's connected to), in what order, on which
+//! buffers, and where data's copied. The plan's worked out once, when the snapshot's baked, for every pass of it (see
+//! `run`).
 //!
-//! Nodes don't copy their inputs: a node that would hand an input's data on (to a thread of its own, say, or its
-//! window) takes its buffer (see `BufferUsage::takes`), swapping it for one of its own. The plan decides when that needs a
-//! copy: if the node can be the last to read the data, it takes the buffer itself; otherwise the plan copies the data
-//! into a buffer of the node's own, as soon as it's made, which the node takes instead (a copy point).
+//! Nodes don't copy their inputs. A node that would hand an input's data on (to a thread of its own, say, or its
+//! window) takes the input's buffer (see `BufferUsage::takes`), swapping it for one of its own. The plan decides when
+//! that needs a copy: if the node can be the last to read the data, the node takes the buffer itself; otherwise the
+//! plan copies the data into a buffer of the node's own, as soon as it's made, which the node takes instead (a copy
+//! point).
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::OnceLock;
@@ -14,82 +16,85 @@ use super::{BufferUsage, DataStreamsEnum, Edges, Graph, NodeId, NodesEnum, Port,
 
 type DataStream<N> = <<N as NodesEnum>::Edges as Edges>::DataStream;
 
-/// A node to run in each pass, and which buffers (in the workspace's pool) it works with.
+/// The plan runs each node that runs as a step of each pass, on buffers from the workspace's pool. This is one step.
 #[derive(PartialEq)]
 pub struct Step {
     pub id: NodeId,
-    /// For each input, the buffer feeding it. `None` if it's unconnected, or an output is made from it in place.
+    /// For each input, the buffer feeding it: `None` if the input's unconnected, or an output is made from it in
+    /// place.
     pub inputs: Vec<Option<usize>>,
-    /// For each output, its buffer.
+    /// For each output, the buffer the node fills.
     pub outputs: Vec<usize>,
-    /// For each output, the input it's made from in place (taking over its buffer), if it is.
+    /// For each output the node makes in place, the input it's made from (taking over that input's buffer).
     pub in_place: Vec<Option<usize>>,
-    /// For each input, whether the node takes its buffer (see `BufferUsage::takes`): being the last to read it, or a copy.
+    /// For each input, whether the node takes its buffer (see `BufferUsage::takes`): the input's own, the node being
+    /// the last to read it, or a copy.
     pub takes: Vec<bool>,
-    /// Copies of outputs the plan makes once the node's run, for nodes taking them that can't be the last to read
+    /// Once the node's run, the plan copies some of its outputs, for nodes taking them that can't be the last to read
     /// them: from the output's buffer, into the taker's own.
     pub copies: Vec<CopyPoint>,
-    /// The node's state, if it carries any over: an index into the run's state slots. Each pass waits here for
-    /// the pass before to hand the state over.
+    /// A node that carries state over has a slot for it, among the run's state slots; this is its index. Each pass
+    /// waits at the step for the pass before to hand the state over.
     pub state: Option<usize>,
 }
 
-/// A copy of a buffer the plan makes, for a node taking it that can't be the last to read it.
+/// The plan copies a buffer for a node that takes it but can't be the last to read it. This is one such copy.
 #[derive(Clone, PartialEq, Debug)]
 pub struct CopyPoint {
     pub from: usize,
     pub to: usize,
-    /// The node it's for, and which of its inputs.
+    /// The node the copy is for, and which of its inputs.
     pub node: NodeId,
     pub input: usize,
 }
 
-/// Which nodes run, in what order, on which buffers: worked out when a snapshot is taken (see `Snapshot`), so
-/// it's ready before anything runs.
+/// The app works out, when it bakes a snapshot (see `Snapshot`), which nodes run, in what order, on which buffers, so
+/// it's ready before anything runs. This is that plan.
 ///
-/// The nodes that run are those whose outputs are all known (so can have buffers). Each output gets a buffer
-/// of its own, except where a node can make an output in place from an input (see `BufferUsage::in_place`): then
-/// the output takes over the input's buffer, as long as every other node reading that data can run before
-/// it. Within a pass everything runs on one thread, in an order of our choosing, so the plan orders the
-/// nodes to make that so: the other readers first (they only read, e.g. viewers copying what they show),
-/// then the one editing in place. Only if another reader depends on the editor's output can't it be.
+/// The nodes that run are those whose outputs are all known (so can have buffers). Each output gets a buffer of its
+/// own, except where a node can make an output in place from an input (see `BufferUsage::in_place`): then the output
+/// takes over the input's buffer, as long as every other node reading that data can run before it. Within a pass
+/// everything runs on one thread, in an order of the plan's choosing, so the plan orders the nodes to make that so: the
+/// other readers first (they only read: viewers copying what they show, say), then the one editing in place. Only if
+/// another reader depends on the editor's output can that not be done.
 ///
-/// Likewise a node taking an input's buffer (see `BufferUsage::takes`) takes it if every other reader of the data can run
-/// first, and no one's editing it in place; otherwise the plan copies it for the node into a buffer of its own, once
-/// it's made. Otherwise nodes run in the graph's order.
+/// Likewise a node taking an input's buffer (see `BufferUsage::takes`) takes it if every other reader of the data can
+/// run first, and nothing's editing it in place; otherwise the plan copies it for the node into a buffer of the node's
+/// own, once it's made. Otherwise nodes run in the graph's order.
 pub struct Plan<N: NodesEnum> {
     pub(super) steps: Vec<Step>,
-    /// The data stream each buffer in the pool holds.
+    /// Each buffer in the pool holds one data stream.
     pub(super) buffers: Vec<DataStream<N>>,
-    /// For each node with state, the data streams on its inputs (for preparing its state: see `Node::prepare_for_snapshot`).
+    /// For each node with state, the data streams on its inputs, which it prepares its state for (see
+    /// `Node::prepare_for_snapshot`).
     pub(super) state_inputs: Vec<(NodeId, Vec<Option<DataStream<N>>>)>,
-    /// For each step, the same (for what it shares with the GUI).
+    /// For each step, the data streams on the node's inputs, which what it shares with the GUI is made for.
     pub(super) step_inputs: Vec<Vec<Option<DataStream<N>>>>,
-    /// The same, for each step's outputs: with its inputs, what says whether a node's state can carry on from one
-    /// snapshot's plan to the next (see `run`).
+    /// For each step, the data streams on the node's outputs. With the inputs', these say whether a node's state can
+    /// carry on from one snapshot's plan to the next (see `run`).
     pub(super) step_outputs: Vec<Vec<Option<DataStream<N>>>>,
-    /// The memory each buffer takes, once asked (see `buffer_bytes`).
+    /// Once asked, the memory each buffer takes (see `buffer_bytes`).
     bytes: OnceLock<Vec<usize>>,
 }
 
-/// A data edge, as `settle` sees it: from an output to an input.
+/// The tree shake (`settle`) sees each data edge as a link from an output to an input.
 struct Link {
     from: super::PortRef,
     to: super::PortRef,
 }
 
-/// How many times a node's asked for its tree shake before its answer's taken as it stands (see `settle`).
+/// The tree shake asks a node this many times before taking the node's answer as it stands (see `settle`).
 const SETTLE_ASKS: usize = 8;
 
-/// Which of `nodes` (each with how many inputs and outputs it has, upstream first) run, and which inputs each needs,
-/// as each `answer`s (see `Node::evaluate_tree_shake`), given which of its inputs have something running into them,
-/// and which of its outputs have something running that needs them. Everything starts out running and needing
-/// everything, and each is asked in turn; when one's answer changes, its neighbours are asked again, if what they'd be
-/// told has changed, until nothing does.
+/// The tree shake: this works out which of `nodes` (each with how many inputs and outputs it has, upstream first) run,
+/// and which inputs each needs, as each node `answer`s (see `Node::evaluate_tree_shake`), given which of its inputs
+/// have something running into them, and which of its outputs have something running that needs them. Everything starts
+/// out running and needing everything, and each node is asked in turn; when one's answer changes, its neighbours are
+/// asked again, if what they'd be told has changed, until nothing does.
 ///
-/// A node's answer can keep changing, if more in use can make it run or need less: so after `SETTLE_ASKS`, it's asked
-/// once more, and runs, and needs each input, if either of its last two answers did, for good. Running when it needn't
-/// is better than not when it should. That's warned of, by its `label`.
+/// A node's answer can keep changing, if more in use can make it run or need less. So after `SETTLE_ASKS`, the node's
+/// asked once more, and runs, and needs each input, if either of its last two answers did, for good: running when it
+/// needn't is better than not when it should. The console warns of it, by the node's `label`.
 fn settle(
     nodes: &[(NodeId, usize, usize)],
     links: &[Link],
@@ -149,7 +154,7 @@ fn settle(
 }
 
 impl<N: NodesEnum> Plan<N> {
-    /// Plans how to run `graph`, `recording` or not (see `Node::evaluate_tree_shake`).
+    /// The app plans how to run `graph`, `recording` or not (see `Node::evaluate_tree_shake`), with this.
     pub fn new(graph: &Graph<N>, recording: bool) -> Self {
         let resolved = graph.resolve();
         let topological = graph.topological_order();
@@ -314,31 +319,32 @@ impl<N: NodesEnum> Plan<N> {
         Plan { steps, buffers, state_inputs, step_inputs, step_outputs, bytes: OnceLock::new() }
     }
 
-    /// The nodes that run, in the order they run in each pass.
+    /// Each pass runs these steps, in this order.
     pub fn steps(&self) -> &[Step] {
         &self.steps
     }
 
-    /// The data stream each buffer holds (each worker has one of each).
+    /// Each buffer holds one data stream (and each worker has one of each buffer).
     pub fn buffers(&self) -> &[DataStream<N>] {
         &self.buffers
     }
 
-    /// The memory each buffer takes, in bytes. Worked out (by making one of each) the first time it's asked.
+    /// Each buffer takes this much memory, in bytes, which the plan works out (by making one of each) the first time
+    /// it's asked.
     pub fn buffer_bytes(&self) -> &[usize] {
         self.bytes.get_or_init(|| {
             self.buffers.iter().map(|s| <DataStream<N> as DataStreamsEnum>::bytes(&s.buffer(PASS_DURATION))).collect()
         })
     }
 
-    /// Whether runs of the two plans would work the same way (the same steps on the same buffers), so a run of
-    /// one can carry on with the other's graph.
+    /// A run can carry on with another graph's plan if the two would run the same way (the same steps on the same
+    /// buffers). This says whether they would.
     pub fn same_shape(&self, other: &Self) -> bool {
         self.steps == other.steps && self.buffers == other.buffers
     }
 }
 
-/// Whether `to` must run after `from` (or is `from`), given which nodes must run before which.
+/// Some nodes must run before others. This says whether `to` must run after `from` (or is `from`).
 fn reaches(before: &HashMap<NodeId, Vec<NodeId>>, from: NodeId, to: NodeId) -> bool {
     let mut stack = vec![from];
     let mut seen = Vec::new();
@@ -354,8 +360,8 @@ fn reaches(before: &HashMap<NodeId, Vec<NodeId>>, from: NodeId, to: NodeId) -> b
     false
 }
 
-/// `nodes` ordered so each comes after those it must run after, otherwise keeping their order, but with those
-/// in `early` as soon as they can be.
+/// This orders `nodes` so each comes after those it must run after, otherwise keeping their order, but with those in
+/// `early` as soon as they can be.
 fn order(nodes: &[NodeId], before: &HashMap<NodeId, Vec<NodeId>>) -> Vec<NodeId> {
     let mut waiting: HashMap<NodeId, usize> = nodes.iter().map(|id| (*id, 0)).collect();
     for later in before.values().flatten() {
@@ -379,7 +385,7 @@ fn order(nodes: &[NodeId], before: &HashMap<NodeId, Vec<NodeId>>) -> Vec<NodeId>
     ordered
 }
 
-/// "4 steps, 6 buffers (1.2 MB a worker), 3 with state, 1 copy".
+/// The console describes a plan in a line: "4 steps, 6 buffers (1.2 MB a worker), 3 with state, 1 copy".
 pub(super) fn describe<N: NodesEnum>(plan: &Plan<N>) -> String {
     let bytes: usize = plan.buffer_bytes().iter().sum();
     let copies: usize = plan.steps.iter().map(|s| s.copies.len()).sum();
@@ -393,8 +399,8 @@ pub(super) fn describe<N: NodesEnum>(plan: &Plan<N>) -> String {
     )
 }
 
-/// Whether two graphs would process the same way: the same nodes, settings and edges, whatever their
-/// positions and labels.
+/// Two graphs process the same way if they have the same nodes, settings and edges, whatever their positions and
+/// labels. This says whether they do.
 pub fn same_processing<N: NodesEnum>(a: &Graph<N>, b: &Graph<N>) -> bool {
     a.edges() == b.edges()
         && a.edges().iter().all(|e| a.is_edge_disabled(e) == b.is_edge_disabled(e))

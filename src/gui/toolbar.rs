@@ -1,4 +1,4 @@
-//! The menu bar and toolbar along the top of the window, in the style of desktop apps before ribbons: menus
+//! Along the top of the window, the app has a menu bar and toolbar, in the style of desktop apps before ribbons: menus
 //! of every action, then a row of small flat icon buttons for the common ones. The graph has a toolbar of its own,
 //! along the top of its pane, for what's done to it (`graph_toolbar`).
 
@@ -15,7 +15,7 @@ use crate::layout::{Mode, Pane};
 
 const BUTTON: egui::Vec2 = egui::vec2(26.0, 24.0);
 
-/// `text`, with the action's shortcut, for a tooltip.
+/// A button's tooltip says `text`, with the action's shortcut.
 fn tooltip(ctx: &egui::Context, action: Action, text: &str) -> String {
     match action.shortcut() {
         Some(shortcut) => format!("{text} ({})", ctx.format_shortcut(&shortcut)),
@@ -23,7 +23,7 @@ fn tooltip(ctx: &egui::Context, action: Action, text: &str) -> String {
     }
 }
 
-/// Which of the graph's toolbar's actions can be done right now.
+/// The graph's toolbar greys out the actions that can't be done right now; this says which can.
 #[derive(Clone, Copy)]
 pub struct GraphTools {
     pub add: bool,
@@ -32,8 +32,8 @@ pub struct GraphTools {
     pub arrange: bool,
 }
 
-/// The graph's toolbar, along the top of its pane: adding nodes, and drawing annotations (those not `hidden`, by
-/// name); duplicating and deleting; arranging and framing it.
+/// The graph has a toolbar of its own, along the top of its pane, which this draws: adding nodes, and drawing
+/// annotations (those not `hidden`, by name); duplicating and deleting; arranging and framing it.
 pub fn graph_toolbar<A: AnnotationsEnum>(
     ui: &mut egui::Ui,
     tools: GraphTools,
@@ -92,7 +92,7 @@ pub fn graph_toolbar<A: AnnotationsEnum>(
 }
 
 impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
-    /// Whether an action can be done right now.
+    /// The menus and toolbars grey out an action that can't be done right now; this says whether it can.
     pub(super) fn enabled(&self, action: Action) -> bool {
         let selected = !self.selection.nodes.is_empty() || !self.selection.annotations.is_empty();
         // While recording, only annotations can change.
@@ -116,7 +116,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         tooltip(ctx, action, text)
     }
 
-    /// Which of the graph's toolbar's actions can be done right now.
+    /// The graph's toolbar greys out the actions that can't be done right now; this says which can.
     pub(super) fn graph_tools(&self) -> GraphTools {
         GraphTools {
             add: self.enabled(Action::AddNode),
@@ -126,7 +126,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         }
     }
 
-    /// For actions that are on or off (a panel showing, the theme in use), whether they're on.
+    /// Some actions are on or off (a panel showing, the theme in use); the menus tick those that are on, from this.
     pub(super) fn checked(&self, action: Action) -> Option<bool> {
         match action {
             Action::DrawTool(name) => Some(self.canvas.tool == Tool::Draw(name)),
@@ -139,7 +139,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         }
     }
 
-    /// The menus, in the window. Returns the action chosen, if any.
+    /// The app draws the menus in the window with this, which returns the action chosen, if any.
     pub(super) fn menu_bar(&mut self, ui: &mut egui::Ui) -> Option<Action> {
         let mut chosen = None;
         egui::MenuBar::new().ui(ui, |ui| {
@@ -196,7 +196,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         }
     }
 
-    /// The row of icon buttons. Returns the action chosen, if any.
+    /// The app draws the row of icon buttons with this, which returns the action chosen, if any.
     pub(super) fn toolbar(&mut self, ui: &mut egui::Ui) -> Option<Action> {
         let ctx = ui.ctx().clone();
         let mut chosen = None;
@@ -284,8 +284,8 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
 }
 
 impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
-    /// Where recordings go: the base directory in use's section (see `crate::base_directory`), then in advanced
-    /// mode, choosing which is in use. Whether there's one.
+    /// The toolbar says where recordings go: the section of the base directory in use (see `crate::base_directory`),
+    /// then in advanced mode, choosing which is in use. This draws that, and returns whether there's one.
     fn base_directory_ui(&mut self, ui: &mut egui::Ui) -> bool {
         let types = self.base_directories.types();
         if types.is_empty() {
@@ -316,7 +316,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         true
     }
 
-    /// The acquisition clock: how long the graph's been running, greyed out when it isn't.
+    /// The toolbar shows the acquisition clock: how long the graph's been running, greyed out when it isn't.
     fn play_clock(&self, ui: &mut egui::Ui) {
         let colours = self.colours();
         let clock = self.runner.as_ref().map(|r| r.clock());
@@ -331,7 +331,8 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         }
     }
 
-    /// How long it's been recording, greyed out when it isn't (and saying so while getting ready to).
+    /// The toolbar shows how long the graph's been recording, greyed out when it isn't (and saying so while getting
+    /// ready to).
     fn record_clock(&self, ui: &mut egui::Ui, recording: bool) {
         let colours = self.colours();
         let since = self.recording_since.map_or(0.0, |since| self.runner.as_ref().map_or(0.0, |r| r.clock()) - since);
@@ -345,8 +346,8 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
     }
 }
 
-/// A menu item's checkmark, as in a native menu: ticked when `on`, otherwise blank but taking the same space,
-/// so the items' names line up.
+/// Menu items have a checkmark, as in a native menu: ticked when `on`, otherwise blank but taking the same space, so
+/// the items' names line up.
 fn check(on: bool) -> egui::Atom<'static> {
     egui::Atom::paint(egui::vec2(12.0, 12.0), move |ui, args| {
         if on {
@@ -361,18 +362,19 @@ fn check(on: bool) -> egui::Atom<'static> {
     })
 }
 
-/// A flat icon button, as along the main toolbar (for sections of it drawn by components: see
-/// `crate::base_directory`).
+/// Components drawing sections of the main toolbar (see `crate::base_directory`) use flat icon buttons like its own,
+/// with this.
 pub fn toolbar_button(ui: &mut egui::Ui, icon: Icon, tooltip: &str, enabled: bool) -> egui::Response {
     tool_button(ui, icon, tooltip, enabled, false)
 }
 
-/// A flat icon button, framed only when hovered or `selected` (a tool that's in use).
+/// The toolbars' buttons are flat icons, framed only when hovered or `selected` (a tool that's in use).
 fn tool_button(ui: &mut egui::Ui, icon: Icon, tooltip: &str, enabled: bool, selected: bool) -> egui::Response {
     icon_button(ui, &|p, r, ink, on| icon.paint(p, r, ink, on), tooltip, tooltip, BUTTON, 16.0, enabled, selected)
 }
 
-/// A smaller flat icon button, for tab bars and window corners. `label` is its accessible name.
+/// Tab bars and window corners have smaller flat icon buttons, which this draws. `label` is the button's accessible
+/// name.
 pub fn small_icon_button(ui: &mut egui::Ui, icon: Icon, label: &str, tooltip: &str) -> egui::Response {
     icon_button(
         ui,
@@ -386,7 +388,7 @@ pub fn small_icon_button(ui: &mut egui::Ui, icon: Icon, label: &str, tooltip: &s
     )
 }
 
-/// A small icon button that's on or off (shown selected while on).
+/// A small icon button can be on or off (shown selected while on).
 pub fn small_toggle_button(ui: &mut egui::Ui, icon: Icon, label: &str, tooltip: &str, on: bool) -> egui::Response {
     icon_button(
         ui,
@@ -400,7 +402,7 @@ pub fn small_toggle_button(ui: &mut egui::Ui, icon: Icon, label: &str, tooltip: 
     )
 }
 
-/// Paints an icon to fill a rect, given the ink colour and whether it's enabled.
+/// A button paints its icon to fill a rect, given the ink colour and whether it's enabled.
 type PaintIcon<'a> = &'a dyn Fn(&egui::Painter, Rect, egui::Color32, bool);
 
 #[allow(clippy::too_many_arguments)]
@@ -423,7 +425,7 @@ fn icon_button(
     response.on_hover_text(tooltip)
 }
 
-/// An icon, a label and a down arrow, for a button that opens a menu.
+/// A button that opens a menu shows an icon, a label and a down arrow.
 fn dropdown_button(ui: &mut egui::Ui, icon: Icon, label: &str) -> egui::Response {
     let font = egui::TextStyle::Button.resolve(ui.style());
     let galley = ui.painter().layout_no_wrap(label.to_string(), font, ui.visuals().text_color());

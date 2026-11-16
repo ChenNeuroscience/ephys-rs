@@ -1,9 +1,9 @@
-//! The graph engine: the `Node` trait each node type implements, the `EdgeType` trait each edge type
-//! implements, and the `Graph` of node instances.
+//! The graph engine runs a graph of nodes: each node type implements the `Node` trait, each edge type the `EdgeType`
+//! trait, and the `Graph` holds the node instances and the edges between them.
 //!
-//! The engine is generic over the closed lists of node and edge types the program is compiled with,
-//! declared with `nodes_enum!` and `edge_types!`. Dispatch to a type is a plain `match` (enum dispatch), with no
-//! dynamic loading.
+//! The engine is generic over the closed lists of node and edge types a program is compiled with, which the program
+//! declares with `nodes_enum!` and `edge_types!`. The engine reaches a type through a plain `match` (enum dispatch),
+//! with no dynamic loading.
 
 mod edge;
 mod graph;

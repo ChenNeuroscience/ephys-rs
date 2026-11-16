@@ -1,6 +1,6 @@
-//! The main window: menus and a toolbar, then a dockable layout of panes (the graph canvas, node windows, and the
-//! developer tools), then a status bar. Double-clicking a node opens its window: its own view, if it has one, otherwise its
-//! settings (`node_window`). Node windows open docked, and can float.
+//! The app's main window has menus and a toolbar, then a dockable layout of panes (the graph canvas, node windows, and
+//! the developer tools), then a status bar. Double-clicking a node opens its window: its own view, if it has one,
+//! otherwise its settings (`node_window`). Node windows open docked, and can float.
 
 mod about;
 mod actions;
@@ -27,7 +27,7 @@ mod style;
 mod toolbar;
 mod user_decisions;
 
-/// Pieces of the GUI for components to draw with, so they look of a piece with it.
+/// Components draw with pieces of the GUI, gathered here, so their windows look of a piece with it.
 pub mod widgets {
     pub use super::help::{help_link, info_icon, with_help};
     pub use super::icons::Icon;
@@ -59,9 +59,9 @@ use docking::Panes;
 /// While running, the nodes have new data all the time, so the app tries to draw a frame every 20 ms (50 a second):
 /// about one a pass, and not every frame the display could show, which on a 120 Hz display is more than twice as often.
 const FRAME_INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);
-/// Runs the app built from `C`'s components, opening the file at `path` (or an empty graph).
+/// A program runs the app built from `C`'s components with this, opening the file at `path` (or an empty graph).
 ///
-/// With `--version` as the first argument, says the version and stops.
+/// With `--version` as the first argument, the program says its version and stops.
 pub fn run<C: Components>(path: Option<PathBuf>) -> eframe::Result {
     crate::set_full_version(C::version());
     if std::env::args().nth(1).as_deref() == Some("--version") {
@@ -141,34 +141,35 @@ pub fn run<C: Components>(path: Option<PathBuf>) -> eframe::Result {
     result
 }
 
-/// Where the theme (by name) is kept among the app's preferences (which eframe saves, separately from graph files).
+/// The app keeps the theme (by name) among its preferences (which eframe saves, separately from graph files) under this
+/// key.
 const THEME_KEY: &str = "theme";
-/// Where the base directories are kept with the app's preferences (see `BaseDirectories::save`).
+/// The app keeps the base directories with its preferences under this key (see `BaseDirectories::save`).
 const BASE_DIRECTORY_KEY: &str = "base directory";
-/// Where the recent files are kept with the app's preferences.
+/// The app keeps the recent files with its preferences under this key.
 const RECENT_KEY: &str = "recent files";
-/// Where it's kept which versions kept what else is kept (see `crate::config_patching`).
+/// The app keeps which versions saved the rest of its preferences under this key (see `crate::config_patching`).
 const VERSIONS_KEY: &str = "versions";
-/// Where the app's preferences (Settings…) are kept.
+/// The app keeps its preferences (Settings…) under this key.
 const PREFERENCES_KEY: &str = "preferences";
 
-/// What's in a file: its graph and annotations.
+/// A file holds a graph and its annotations.
 type Saved<N, A> = (Arc<Graph<N>>, Arc<Annotations<A>>);
 
-/// Something a pane asked for, handled once the panes are drawn.
+/// Panes ask the app for things with these events, which the app handles once the panes are drawn.
 pub enum Event {
-    /// Open the menu for adding a node, optionally connected to a port.
+    /// A pane asks to open the menu for adding a node, maybe connected to a port.
     OpenMenu {
         screen: Pos2,
         scene: Pos2,
         from: Option<Port>,
     },
-    /// Open a node's window (see `Layout::toggle`), or close it: from a pane, if it's done from one.
+    /// A pane asks to open a node's window (see `Layout::toggle`), or close it: from the pane, if it's done from one.
     ToggleWindow(NodeId, Option<Pane>),
-    /// Send a node a trigger (see `crate::triggers`).
+    /// A pane sends a node a trigger (see `crate::triggers`).
     Trigger(NodeId, crate::triggers::AnyTrigger),
-    /// Open a node's window (see `Layout::open`), or bring it to the front if it's open: from a pane, if it's done
-    /// from one.
+    /// A pane asks to open a node's window (see `Layout::open`), or bring it to the front if it's open: from the pane,
+    /// if it's done from one.
     OpenWindow(NodeId, Option<Pane>),
     FloatWindow(NodeId),
     Duplicate(NodeId),
@@ -176,25 +177,24 @@ pub enum Event {
     Delete(NodeId),
     DeleteAnnotation(AnnotationId),
     Status(String),
-    /// Do the quick action of this index.
+    /// The basic view asks to do the quick action of this index.
     QuickAction(usize),
-    /// Show the graph in the home pane.
-    /// Do an action (from the graph's toolbar), with where a menu it opens goes.
+    /// The graph's toolbar asks to do an action, with where a menu it opens goes.
     Perform(Action, Option<Pos2>),
-    /// List a node in the basic view, or not.
+    /// A pane asks to list a node in the basic view, or not.
     ShowInBasic(NodeId, bool),
-    /// Disable a node (or enable it), and the rest of the selection if it's in it.
+    /// A pane asks to disable a node (or enable it), and the rest of the selection if it's in it.
     SetDisabled(NodeId, bool),
     SetEdgeDisabled(engine::Edge, bool),
     DeleteEdge(engine::Edge),
-    /// Copy these nodes' settings.
+    /// A pane asks to copy these nodes' settings.
     CopySettings(Vec<NodeId>),
-    /// Paste settings from the clipboard: straight onto a node, if given and there's one node's settings there;
-    /// otherwise through the window, to review them.
+    /// A pane asks to paste settings from the clipboard: straight onto a node, if given and there's one node's settings
+    /// there; otherwise through the window, to review them.
     PasteSettings(Option<NodeId>),
 }
 
-/// The file: the graph, its annotations, the window layout, and the base directories.
+/// A file holds the graph, its annotations, the window layout, and the base directories, read as this.
 #[derive(Deserialize)]
 #[serde(bound = "N: NodesEnum, A: AnnotationsEnum")]
 struct SaveFile<N, A> {
@@ -207,11 +207,11 @@ struct SaveFile<N, A> {
     base_directory: Option<serde_json::Value>,
 }
 
-/// The file as it's saved: `SaveFile`, borrowed rather than copied.
+/// The app saves a file as this: `SaveFile`, borrowed rather than copied.
 #[derive(Serialize)]
 #[serde(bound = "N: NodesEnum, A: AnnotationsEnum")]
 struct SaveFileRef<'a, N, A> {
-    /// The versions that saved it (see `crate::config_patching`).
+    /// The versions that saved the file (see `crate::config_patching`).
     versions: Versions,
     graph: &'a Graph<N>,
     annotations: &'a Annotations<A>,
@@ -219,27 +219,27 @@ struct SaveFileRef<'a, N, A> {
     base_directory: &'a serde_json::Value,
 }
 
-/// Where the settings are saved beside a recording in `place` that starts at `start`: with the base directory's prefix,
-/// if it has one (beside a writer's files with it, or the folder it writes them in), otherwise named after when it
-/// started.
+/// The app saves the settings beside a recording in `place` that starts at `start`, at this path: named with the base
+/// directory's prefix, if it has one (beside a writer's files with it, or the folder it writes them in), otherwise
+/// after when the recording started.
 fn settings_path(place: &Place, start: &chrono::DateTime<chrono::Local>) -> PathBuf {
     let name = place.prefix.clone().unwrap_or_else(|| start.format("%Y-%m-%d_%H%M%S").to_string());
     place.directory.join(format!("{name}{SETTINGS_EXTENSION}"))
 }
 
-/// What the settings saved with a recording are named with.
+/// The settings saved with a recording are named with this.
 const SETTINGS_EXTENSION: &str = ".ephys-rs.json";
 
-/// A message in the status bar.
+/// The status bar can show a message.
 struct Status {
     message: String,
-    /// When to stop showing it (egui seconds).
+    /// The status bar stops showing the message at this time (egui seconds).
     until: f64,
-    /// Whether it's news of something done, rather than a problem.
+    /// A message is news of something done, or a problem; this says which.
     ok: bool,
 }
 
-/// The app: the graph being edited, its history and file, the run, if it's running, and everything on screen.
+/// The app holds the graph being edited, its history and file, the run, if it's running, and everything on screen.
 pub struct App<N: NodesEnum, A: AnnotationsEnum> {
     /// The file being edited, if it's been saved.
     path: Option<PathBuf>,
@@ -248,35 +248,36 @@ pub struct App<N: NodesEnum, A: AnnotationsEnum> {
     /// The base directories as they are in the file (they aren't part of the graph's versions), if it's been saved or
     /// opened.
     saved_base_directory: Option<serde_json::Value>,
-    /// The files last opened or saved, latest first (kept with the app's preferences).
+    /// The files last opened or saved, latest first, which the app keeps with its preferences.
     recent: Vec<PathBuf>,
-    /// The app's preferences (Settings…), kept with them.
+    /// The app's preferences (Settings…).
     preferences: preferences::Preferences,
-    /// What's been hidden since the app started (see `preferences::Hidden`): not offered, till it starts again.
+    /// What's been hidden since the app started (see `preferences::Hidden`) isn't offered, till it starts again.
     hidden: preferences::Hidden,
     /// The Settings window, while it's open.
     settings: Option<preferences::SettingsWindow>,
-    /// When there was last mouse or keyboard input, for stopping what's unattended (see `preferences`).
+    /// There was last mouse or keyboard input at this time, which says when to stop what's unattended (see
+    /// `preferences`).
     last_input: Instant,
-    /// For tests: added to how long it's been since then.
+    /// Tests add this to how long it's been since then.
     #[cfg(test)]
     idle_extra: std::time::Duration,
-    /// For tests: the run's stats as shown, rather than as they are, for screenshots that don't change; and with them,
-    /// the acquisition clock at zero.
+    /// Tests can show the run's stats as this, rather than as they are, for screenshots that don't change; and with
+    /// them, the acquisition clock at zero.
     #[cfg(test)]
     shown_stats: Option<engine::Stats>,
-    /// What's unattended, as of the last time round: drawn as a warning, while it's one.
+    /// As of the last time round, this is what's unattended; the app draws it as a warning, while it's one.
     unattended: preferences::Unattended,
-    /// Each node's state on the GUI's side (see `Node::UiState`), while the graph has the node.
+    /// The app keeps each node's state on the GUI's side (see `Node::UiState`) while the graph has the node.
     ui_states: UiStates<N>,
-    /// What's been stopped for being unattended, until that's been seen.
+    /// What's been stopped for being unattended, until someone's seen that it has.
     stopped_unattended: Vec<preferences::Stopped>,
-    /// The user has said to close despite unsaved changes.
+    /// Someone has said to close despite unsaved changes.
     closing: bool,
     /// The themes to choose from, and the one in use.
     themes: &'static [Theme],
     theme: usize,
-    /// Where the add-node menu opens from the toolbar.
+    /// The add-node menu opens here when it's opened from the toolbar.
     add_anchor: Option<Pos2>,
     #[cfg(target_os = "macos")]
     mac_menu: Option<mac_menu::MacMenu>,
@@ -288,29 +289,30 @@ pub struct App<N: NodesEnum, A: AnnotationsEnum> {
     menu: Option<CreateMenu>,
     /// The window for pasting settings, while it's open.
     paste: Option<paste_settings::PasteSettings<N>>,
-    /// Shown in the status bar until the given time (egui seconds).
+    /// A message the status bar shows, till its time's up.
     status: Option<Status>,
     history: History<N, A>,
-    /// What the passes need, baked from the current history item and the run (see `bake`): the latest.
+    /// The latest snapshot, baked from the current history item and the run (see `bake`).
     snapshot: Snapshot<N>,
-    /// Snapshots baked so far, which numbers them.
+    /// The app's baked this many snapshots so far, which numbers them.
     versions: u64,
-    /// When the run started (Play pressed), by the monotonic clock, while running.
+    /// While running, the run started (Play pressed) at this time, by the monotonic clock.
     started: Option<std::time::Instant>,
-    /// The recording taken on, while recording.
+    /// While recording, the recording.
     recording: Option<Arc<engine::Recording>>,
-    /// The graph running, while it is.
+    /// While the graph's running, the runner.
     runner: Option<Runner<N>>,
-    /// What the last run shared, once it's stopped: see `LastRun`.
+    /// Once a run's stopped, what it shared (see `LastRun`).
     last_run: Option<LastRun<N>>,
-    /// Direct triggers on their way (see `crate::triggers`): the app's, as they can come after a run.
+    /// Direct triggers on their way (see `crate::triggers`). They're the app's, not the run's, as they can come after
+    /// a run.
     direct_triggers: Arc<crate::triggers::DirectTriggers>,
-    /// The acquisition clock when the recording took effect (its first pass), once it has.
+    /// Once the recording's taken effect (its first pass), the acquisition clock then.
     recording_since: Option<f64>,
     dev_tools: dev_tools::DevTools,
-    /// Offered in the basic view.
+    /// The basic view offers these quick actions.
     quick_actions: &'static [crate::quick_action::QuickAction<N>],
-    /// How many errors and warnings there have been since the console was cleared.
+    /// The status bar counts the errors and warnings since the console was cleared.
     problems: (u64, u64),
     /// The About window, while it's open (see `Components::ABOUT`, and `SOURCE`).
     about: Option<about::About>,
@@ -318,31 +320,31 @@ pub struct App<N: NodesEnum, A: AnnotationsEnum> {
     shortcuts: Option<shortcuts::ShortcutsHelp>,
     about_text: &'static str,
     source: &'static str,
-    /// Where recordings go: the one in use, in a section of the toolbar.
+    /// Recordings go in the base directory in use, which has a section of the toolbar.
     base_directories: BaseDirectories,
-    /// The config patches of what's saved (see `crate::config_patching`).
+    /// The app patches what it reads with these (see `crate::config_patching`).
     config_patches: PatchSets,
-    /// How full the disk the base directory is on is.
+    /// The toolbar shows how full the disk the base directory is on is, from this.
     disk_space: disk_space::DiskSpace,
-    /// How many workers runs start with.
+    /// Runs start with this many workers.
     workers: usize,
-    /// How long each part of the GUI's taking, frame by frame, for the dev tools; and the last frame's CPU time.
+    /// The dev tools show how long each part of the GUI's taking, frame by frame, from this.
     frame_times: frame_times::FrameTimes,
     last_cpu: Option<f32>,
-    /// The snapshot the run last took, to mark what changes on the dev tools' chart.
+    /// The dev tools' chart marks what changes from the snapshot the run last took.
     ran: Option<engine::Snapshot<N>>,
-    /// The report of a crash the last time the program ran, until it's been said where it is.
+    /// If the program crashed the last time it ran, the app says where the report is, then forgets it.
     last_crash: Option<PathBuf>,
-    /// Whether the app has called on every node since `logic` last ran (see `tick_nodes`).
+    /// If the app has called on every node since `logic` last ran (see `tick_nodes`), this is set.
     ticked_since_logic: bool,
-    /// Asking what to do about nodes whose hardware isn't as their settings say, while the run's holding a snapshot
-    /// for it (see `notice_decisions`).
+    /// The app asks what to do about nodes whose hardware isn't as their settings say, while the run's holding a
+    /// snapshot for it (see `notice_decisions`).
     asking: Option<user_decisions::Asking<N>>,
 }
 
 impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
-    /// An empty graph. `themes` mustn't be empty. A file's opened afterwards (`open_path`), once the config patches are
-    /// set (`with_config_patches`), so it's patched.
+    /// The app starts with an empty graph. `themes` mustn't be empty. A file's opened afterwards (`open_path`), once
+    /// the config patches are set (`with_config_patches`), so it's patched.
     pub fn new(themes: &'static [Theme]) -> Self {
         let annotations = Annotations::default();
         let graph = Graph::default();
@@ -408,7 +410,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         }
     }
 
-    /// Opens the file at `path`, or if there isn't one there, makes it the file to save to.
+    /// The app opens the file at `path` with this, or if there isn't one there, makes it the file to save to.
     fn open_path(&mut self, path: PathBuf) {
         if !path.exists() {
             // A new file, once saved.
@@ -424,36 +426,38 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         &themes[self.theme].colours
     }
 
-    /// What the passes need, as last baked.
+    /// The latest snapshot the app's baked.
     pub fn snapshot(&self) -> Snapshot<N> {
         self.snapshot.clone()
     }
 
-    /// Bakes what the passes need (see `Snapshot`) from the current history item and the run, as the latest.
+    /// The app bakes a new snapshot (see `Snapshot`) from the current history item and the run with this.
     fn bake(&mut self) {
         self.versions += 1;
         let graph = self.history.current.graph.clone();
         self.snapshot = Snapshot::bake(self.versions, graph, self.started, self.recording.clone());
     }
 
-    /// Bakes again if the graph's changed: edited, undone or redone (taken into the history), or another opened.
+    /// The app bakes again if the graph's changed: edited, undone or redone (taken into the history), or another
+    /// opened.
     fn bake_edits(&mut self) {
         if !Arc::ptr_eq(&self.history.current.graph, &self.snapshot.graph) {
             self.bake();
         }
     }
 
-    /// Reports a problem in the status bar.
+    /// The app reports a problem in the status bar with this.
     fn set_status(&mut self, ctx: &egui::Context, message: impl Into<String>) {
         self.status = Some(Status { message: message.into(), until: ctx.input(|i| i.time) + 5.0, ok: false });
     }
 
-    /// Reports something done in the status bar.
+    /// The app reports something done in the status bar with this.
     fn set_done(&mut self, ctx: &egui::Context, message: impl Into<String>) {
         self.status = Some(Status { message: message.into(), until: ctx.input(|i| i.time) + 5.0, ok: true });
     }
 
-    /// Whether there's anything to lose: an empty graph has nothing, whatever's in the file (which stays as it is).
+    /// Closing or opening another file asks first if there's anything to lose. An empty graph has nothing, whatever's
+    /// in the file (which stays as it is).
     fn unsaved(&self) -> bool {
         let (graph, annotations) = (&self.history.current.graph, &self.history.current.annotations);
         if graph.iter().next().is_none() && annotations.iter().next().is_none() {
@@ -464,7 +468,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             || base_directory.is_some_and(|saved| *saved != self.base_directories.save())
     }
 
-    /// Puts `path` at the top of the recent files.
+    /// The app puts `path` at the top of the recent files with this.
     fn remember(&mut self, path: &Path) {
         let path = std::path::absolute(path).unwrap_or_else(|_| path.to_owned());
         self.recent.retain(|recent| *recent != path);
@@ -485,7 +489,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         }
     }
 
-    /// Replaces everything with the file at `path`. Undo starts afresh.
+    /// Opening a file replaces everything with the file at `path`, and undo starts afresh.
     fn load(&mut self, path: &Path) -> Result<(), String> {
         let json = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
         let mut value: serde_json::Value = serde_json::from_str(&json).map_err(|e| e.to_string())?;
@@ -518,14 +522,14 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         Ok(())
     }
 
-    /// What there is now is what's in the file.
+    /// Once saved, what there is now is what's in the file.
     fn mark_saved(&mut self) {
         let current = &self.history.current;
         self.saved = Some((current.graph.clone(), current.annotations.clone()));
         self.saved_base_directory = Some(self.base_directories.save());
     }
 
-    /// Saves to the current file, or asks where if there isn't one. Returns whether it saved.
+    /// File › Save saves to the current file, or asks where if there isn't one. This returns whether it saved.
     fn save(&mut self, ctx: &egui::Context) -> bool {
         match self.path.clone() {
             Some(path) => self.save_to(ctx, path),
@@ -541,16 +545,16 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         }
     }
 
-    /// What's written to a file.
+    /// The app writes this to a file.
     fn save_file<'a>(&'a self, base_directory: &'a serde_json::Value) -> SaveFileRef<'a, N, A> {
         let (graph, annotations, layout, versions) =
             (&self.graph, &self.annotations, &self.layout, self.config_patches.versions());
         SaveFileRef { versions, graph, annotations, layout, base_directory }
     }
 
-    /// Saves the graph (as File › Save would, but without changing which file is open) beside a recording starting in
-    /// `place` at `start` (see `settings_path`), so what recorded it is kept with it. On a thread of its own, so a slow
-    /// disk doesn't hold up the GUI.
+    /// As a recording starts, the app saves the graph (as File › Save would, but without changing which file is open)
+    /// beside it, in `place` at `start` (see `settings_path`), so what recorded it is kept with it. It does this on a
+    /// thread of its own, so a slow disk doesn't hold up the GUI.
     fn save_with_recording(&self, place: &Place, start: &chrono::DateTime<chrono::Local>) {
         let path = settings_path(place, start);
         let base_directory = self.base_directories.save();
@@ -596,7 +600,8 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         }
     }
 
-    /// If there are unsaved changes, asks whether to save them first. Returns whether to carry on.
+    /// If there are unsaved changes, the app asks whether to save them first, with this, which returns whether to carry
+    /// on.
     fn confirm_discard(&mut self, ctx: &egui::Context, before: &str) -> bool {
         self.history.commit(&self.graph, &self.annotations);
         if !self.unsaved() {
@@ -638,7 +643,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         }
     }
 
-    /// Opens one of the recent files, by index. One that can't be opened is taken off the list.
+    /// The app opens one of the recent files, by index. One that can't be opened is taken off the list.
     fn open_recent(&mut self, ctx: &egui::Context, index: usize) {
         let Some(path) = self.recent.get(index).cloned() else { return };
         if !self.confirm_discard(ctx, "opening another") {
@@ -650,23 +655,23 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         }
     }
 
-    /// Whether settings are locked: while recording, or preparing to.
+    /// Settings are locked while recording, or preparing to. This says whether they are.
     fn locked(&self) -> bool {
         self.recording.is_some()
     }
 
-    /// Whether recording's been asked for and hasn't yet taken effect: its nodes preparing for it (writers opening
-    /// their files), or the workers making buffers for its plan.
+    /// A recording asked for may not yet have taken effect: its nodes preparing for it (writers opening their files),
+    /// or the workers making buffers for its plan. This says whether it's preparing.
     fn is_preparing(&self) -> bool {
         self.recording.is_some() && self.recording_since.is_none()
     }
 
-    /// Whether recording, from its first pass.
+    /// This says whether the graph's recording, from the recording's first pass.
     fn is_recording(&self) -> bool {
         self.recording_since.is_some()
     }
 
-    /// While recording, undoes any change to how the graph processes (a setting, an edge, a node added or
+    /// While recording, the app undoes any change to how the graph processes (a setting, an edge, a node added or
     /// removed), keeping where nodes are and what they're called.
     fn lock(&mut self, ctx: &egui::Context) {
         let recorded = &self.history.current.graph;
@@ -683,7 +688,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         self.set_status(ctx, "Settings are locked while recording");
     }
 
-    /// Starts running whatever's latest, including edits not yet taken into the history.
+    /// Play starts running whatever's latest, including edits not yet taken into the history.
     fn play(&mut self) {
         self.history.commit(&self.graph, &self.annotations);
         self.last_run = None;
@@ -696,7 +701,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         self.ran = Some(self.snapshot.clone());
     }
 
-    /// Stops running, and recording, keeping what the run shared (see `LastRun`).
+    /// Stopping stops running, and recording, keeping what the run shared (see `LastRun`).
     fn stop_running(&mut self) {
         self.set_recording(None);
         self.last_run =
@@ -707,20 +712,20 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         self.bake();
     }
 
-    /// Clears the nodes' transient settings (see `EdgeType::clear_transient`), as if they'd never been set: not as an
-    /// edit.
+    /// The app clears the nodes' transient settings (see `EdgeType::clear_transient`) with this, as if they'd never
+    /// been set: not as an edit.
     fn clear_transient(&mut self) {
         self.graph.clear_transient();
         self.history.clear_transient();
     }
 
-    /// Stops recording, or preparing to.
+    /// The app stops recording, or preparing to, with this.
     fn stop_recording(&mut self) {
         self.set_recording(None);
     }
 
-    /// Stops recording, or acquisition, when no one's used the app for as long as the preferences say (whether the
-    /// window's shown or not), noting what's coming, to warn of (see `unattended_ui`).
+    /// When no one's used the app for as long as the preferences say (whether the window's shown or not), the app
+    /// stops recording, or acquisition, with this, noting what's coming, to warn of (see `unattended_ui`).
     fn stop_unattended(&mut self) {
         use preferences::{Stopping, Unattended};
         let recording = self.locked();
@@ -740,7 +745,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         }
     }
 
-    /// How long it's been since the last mouse or keyboard input.
+    /// It's been this long since the last mouse or keyboard input.
     fn idle(&self) -> std::time::Duration {
         #[cfg(test)]
         return self.last_input.elapsed() + self.idle_extra;
@@ -748,7 +753,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         self.last_input.elapsed()
     }
 
-    /// Warns of what's soon to stop for being unattended, and says what has.
+    /// The app warns of what's soon to stop for being unattended, and says what has, with this.
     fn unattended_ui(&mut self, ctx: &egui::Context) {
         let colours = self.colours();
         let mut open_settings = false;
@@ -770,7 +775,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         }
     }
 
-    /// The Settings window, while it's open.
+    /// The app shows the Settings window, while it's open, with this.
     fn settings_window(&mut self, ctx: &egui::Context) {
         let colours = self.colours();
         let Some(window) = &mut self.settings else { return };
@@ -786,10 +791,10 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         }
     }
 
-    /// Asks for a recording: bakes a snapshot recording it (planned for recording, so with its writers), whose nodes
-    /// prepare for it (see `Node::prepare_for_snapshot`: writers opening their files, say) as the run's given it. The run carries
-    /// on with the snapshot before until they're ready and the workers have buffers for the new plan; recording
-    /// takes effect with its first pass (noticed in `keep_running`).
+    /// Record asks for a recording with this: the app bakes a snapshot recording it (planned for recording, so with its
+    /// writers), whose nodes prepare for it (see `Node::prepare_for_snapshot`: writers opening their files, say) as the
+    /// run's given it. The run carries on with the snapshot before until they're ready and the workers have buffers for
+    /// the new plan; recording takes effect with its first pass (noticed in `keep_running`).
     fn prepare_to_record(&mut self, ctx: &egui::Context) {
         // Settings are locked while recording, so what the nodes were asked to do (an auto detect, say) stops.
         self.clear_transient();
@@ -805,9 +810,9 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         ctx.request_repaint();
     }
 
-    /// Asks for a recording, or stops one (or cancels it, while it's preparing): a new snapshot, which the run moves
-    /// on to once it's ready (see `Recording`). Recording isn't an edit, so it's not undone, and doesn't count as an
-    /// unsaved change.
+    /// The app asks for a recording, or stops one (or cancels it, while it's preparing), with this: a new snapshot,
+    /// which the run moves on to once it's ready (see `Recording`). Recording isn't an edit, so it's not undone, and
+    /// doesn't count as an unsaved change.
     fn set_recording(&mut self, recording: Option<Arc<engine::Recording>>) {
         let same = match (&self.recording, &recording) {
             (Some(a), Some(b)) => Arc::ptr_eq(a, b),
@@ -831,8 +836,8 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         self.bake();
     }
 
-    /// Once the recording's taken effect (its first pass has been sent): counts it from then, and saves the settings
-    /// with it.
+    /// Once the recording's taken effect (its first pass has been sent), the app counts it from then, and saves the
+    /// settings with it.
     fn notice_recording(&mut self) {
         let Some(recording) = self.recording.clone().filter(|_| self.recording_since.is_none()) else { return };
         let Some(effective) = recording.effective() else { return };
@@ -879,7 +884,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         }
     }
 
-    /// Copies the selection, and the edges between the selected nodes, a little down and to the right.
+    /// Duplicating copies the selection, and the edges between the selected nodes, a little down and to the right.
     fn duplicate_selection(&mut self) {
         let offset = |pos: [f32; 2]| [pos[0] + 30.0, pos[1] + 30.0];
         let mut copies = HashMap::new();
@@ -913,33 +918,34 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         self.selection.annotations = self.annotations.ids().collect();
     }
 
-    /// Offers `quick_actions` in the basic view.
-    /// With `types` of base directory to choose from (the first in use, until another's chosen).
+    /// A program gives the app `types` of base directory to choose from with this (the first in use, until another's
+    /// chosen).
     pub fn with_base_directories(mut self, types: &'static [BaseDirectoryType]) -> Self {
         self.base_directories = BaseDirectories::new(types, None);
         self
     }
 
-    /// Reading and writing what's saved with the config patches `sets`, in that order (see
+    /// A program has the app read what's saved through the config patches `sets` with this, in that order (see
     /// `crate::config_patching`).
     pub fn with_config_patches(mut self, sets: &'static [config_patching::PatchSet]) -> Self {
         self.config_patches = PatchSets::new(sets);
         self
     }
 
+    /// A program has the basic view offer `quick_actions` with this.
     pub fn with_quick_actions(mut self, quick_actions: &'static [crate::quick_action::QuickAction<N>]) -> Self {
         self.quick_actions = quick_actions;
         self
     }
 
-    /// What's said about the program, in markdown, and where its source is.
+    /// A program says what it is, in markdown, and where its source is, with this (see `Components::ABOUT`).
     pub fn with_about(mut self, text: &'static str, source: &'static str) -> Self {
         self.about_text = text;
         self.source = source;
         self
     }
 
-    /// `id` and the rest of the selection, if it's in it; otherwise just `id`.
+    /// Acting on a node acts on the rest of the selection too, if the node's in it. This gives those nodes.
     fn selected_or(&self, id: NodeId) -> Vec<NodeId> {
         if self.selection.nodes.contains(&id) {
             let mut ids: Vec<NodeId> = self.selection.nodes.iter().copied().collect();
@@ -950,7 +956,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         }
     }
 
-    /// Copies nodes' settings to the clipboard.
+    /// The app copies nodes' settings to the clipboard with this.
     fn copy_settings(&mut self, ctx: &egui::Context, ids: &[NodeId]) {
         if ids.is_empty() {
             return;
@@ -963,7 +969,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         self.set_done(ctx, format!("Copied the settings of {what}"));
     }
 
-    /// Where settings are pasted straight onto: the node selected, if just one is.
+    /// Settings are pasted straight onto the node selected, if just one is; this finds it.
     fn paste_target(&self) -> Option<NodeId> {
         (self.selection.nodes.len() == 1).then(|| self.selection.nodes.iter().next().copied()).flatten()
     }
@@ -981,8 +987,8 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         }
     }
 
-    /// Pastes settings from the clipboard: straight onto `target`, if given and there's just one node's settings
-    /// there; otherwise opening the window to review them.
+    /// The app pastes settings from the clipboard with this: straight onto `target`, if given and there's just one
+    /// node's settings there; otherwise it opens the window to review them.
     fn open_paste(&mut self, ctx: &egui::Context, target: Option<NodeId>) {
         let text = arboard::Clipboard::new().and_then(|mut c| c.get_text()).unwrap_or_default();
         self.paste_text(ctx, &text, target);
@@ -1004,7 +1010,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         }
     }
 
-    /// Pastes settings onto nodes, logging what changed, and what was left out.
+    /// The app pastes settings onto nodes with this, logging what changed, and what was left out.
     fn paste_settings(&mut self, ctx: &egui::Context, pasted: Vec<paste_settings::Pasted<N>>, skipped: Vec<String>) {
         let count = pasted.len();
         for paste_settings::Pasted { target, node, from } in pasted {
@@ -1021,8 +1027,9 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         self.set_done(ctx, format!("Pasted settings onto {count} node{plural}{left_out} (see the console)"));
     }
 
-    /// Delivers the direct triggers that have come (see `crate::triggers`), running or not. Settings updates are
-    /// applied as edits, unless settings are locked. Recording starts or stops as a node asks, while running.
+    /// The app delivers the direct triggers that have come (see `crate::triggers`) with this, running or not. It
+    /// applies settings updates as edits, unless settings are locked, and starts or stops recording as a node asks,
+    /// while running.
     fn deliver_triggers(&mut self, ctx: &egui::Context) {
         let locked = self.locked();
         let triggered = self.direct_triggers.take();
@@ -1086,7 +1093,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         }
     }
 
-    /// Says where the report of the last time's crash is, until it's dismissed.
+    /// After a crash, the app says where the report is, with this, until it's dismissed.
     fn crash_window(&mut self, ctx: &egui::Context) {
         let colours = self.colours();
         let Some(report) = &self.last_crash else { return };
@@ -1110,8 +1117,8 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         }
     }
 
-    /// Notices what about their hardware the nodes of the latest snapshot say someone should decide (see
-    /// `Runner::user_decisions`), to ask (see `decisions_window`), as it runs.
+    /// As the latest snapshot runs, its nodes may say something about their hardware someone should decide (see
+    /// `Runner::user_decisions`). The app notices that here, to ask (see `decisions_window`).
     fn notice_decisions(&mut self) {
         let found = self.runner.as_ref().and_then(Runner::user_decisions);
         let Some((version, found)) = found.filter(|(version, _)| *version == self.snapshot.version) else {
@@ -1124,9 +1131,9 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         }
     }
 
-    /// Asks what to do about nodes whose hardware isn't as their settings say, while it's to be decided (see
-    /// `notice_decisions`): what's decided is an edit, taken into the history at once, so it's done even while
-    /// settings are locked.
+    /// The app asks what to do about nodes whose hardware isn't as their settings say, while it's to be decided (see
+    /// `notice_decisions`). What's decided is an edit, taken into the history at once, so it's done even while settings
+    /// are locked.
     fn decisions_window(&mut self, ctx: &egui::Context) {
         let colours = self.colours();
         let Some(asking) = &mut self.asking else { return };
@@ -1146,7 +1153,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         }
     }
 
-    /// The About window, until it's dismissed.
+    /// The app shows the About window with this, until it's dismissed.
     fn about_window(&mut self, ctx: &egui::Context) {
         let (text, source, colours) = (self.about_text, self.source, self.colours());
         if self.about.as_mut().is_some_and(|about| !about.show(ctx, text, source, colours)) {
@@ -1154,7 +1161,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         }
     }
 
-    /// The window for pasting settings, while it's open; pasting them when it says to.
+    /// The app shows the window for pasting settings with this, while it's open, pasting them when it says to.
     fn paste_window(&mut self, ctx: &egui::Context) {
         let (colours, locked) = (self.colours(), self.locked());
         let Some(paste) = &mut self.paste else { return };
@@ -1168,19 +1175,21 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         }
     }
 
-    /// Shows the basic view or the graph in the home pane, bringing it to the front.
+    /// The app shows the basic view or the graph in the home pane with this, bringing it to the front.
     fn show_mode(&mut self, mode: Mode) {
         self.layout.mode = mode;
         self.layout.show(Pane::Home);
     }
 
-    /// The quick actions offered, by index: those that apply to the graph and layout as they are.
+    /// The basic view offers the quick actions that apply to the graph and layout as they are; this gives them, by
+    /// index.
     fn offered(&self) -> Vec<usize> {
         let state = crate::quick_action::QuickState { graph: &self.graph, layout: &self.layout };
         (0..self.quick_actions.len()).filter(|&i| (self.quick_actions[i].run)(&state).is_some()).collect()
     }
 
-    /// Does a quick action: changes the graph, and opens windows, as it says (unless it no longer applies).
+    /// The app does a quick action with this: it changes the graph, and opens windows, as the action says (unless it no
+    /// longer applies).
     fn quick_action(&mut self, index: usize) {
         let Some(action) = self.quick_actions.get(index) else { return };
         if self.locked() {
@@ -1344,7 +1353,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         }
     }
 
-    /// Keeps the runner on the latest snapshot (see `Runner::update`).
+    /// Each frame, the app keeps the runner on the latest snapshot with this (see `Runner::update`).
     fn keep_running(&mut self, ctx: &egui::Context) {
         self.notice_recording();
         let plan = &self.snapshot.plan;
@@ -1378,8 +1387,8 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         ctx.request_repaint_after(FRAME_INTERVAL);
     }
 
-    /// Returns whether the run's stats were clicked (to open the dev tools), and whether the count of errors and
-    /// warnings was (to open the console).
+    /// The app draws the status bar with this, which returns whether the run's stats were clicked (to open the dev
+    /// tools), and whether the count of errors and warnings was (to open the console).
     fn status_bar(&self, ui: &mut egui::Ui) -> (bool, bool) {
         let now = ui.input(|i| i.time);
         let (mut clicked, mut problems_clicked) = (false, false);
@@ -1423,7 +1432,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         (clicked, problems_clicked)
     }
 
-    /// What's just happened.
+    /// The status bar says what's just happened.
     fn status_message(&self, ui: &mut egui::Ui, now: f64) {
         if let Some(status) = self.status.as_ref().filter(|status| now < status.until) {
             let colours = self.colours();
@@ -1432,7 +1441,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         }
     }
 
-    /// How the run is going: workers, passes and their timing, and memory.
+    /// The status bar says how the run is going: workers, passes and their timing, and memory.
     fn run_stats(&self, ui: &mut egui::Ui, stats: &Stats) {
         let colours = self.colours();
         let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0;
@@ -1460,8 +1469,8 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         ));
     }
 
-    /// Floating node windows, over everything else. They're styled like docked ones: a tab bar with the one
-    /// tab, rather than a window title bar.
+    /// Node windows can float over everything else, styled like docked ones: a tab bar with the one tab, rather than a
+    /// window title bar. The app draws them with this.
     fn floating_windows(
         &mut self,
         ctx: &egui::Context,
@@ -1623,7 +1632,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         }
     }
 
-    /// Whether the menus are in the system's menu bar (on macOS), rather than in the window.
+    /// On macOS, the menus are in the system's menu bar, rather than in the window. This says whether they are.
     fn native_menu(&self) -> bool {
         #[cfg(target_os = "macos")]
         return self.mac_menu.is_some();
@@ -1631,7 +1640,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         false
     }
 
-    /// Asks before closing with unsaved changes.
+    /// The app asks before closing with unsaved changes, with this.
     fn confirm_close(&mut self, ctx: &egui::Context) {
         if ctx.input(|i| i.viewport().close_requested()) && !self.closing {
             ctx.send_viewport_cmd(ViewportCommand::CancelClose);
@@ -1773,10 +1782,10 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         self.frame_times.add("Upkeep", ms_since(started));
     }
 
-    /// The app's work that isn't drawing: before each frame, and while the window's hidden (minimised, say) whenever
-    /// something's asked for the app to be woken (see `eframe::App::logic`). What's come from runs and nodes' threads,
-    /// calling on the nodes while nothing's drawn (see `Node::on_gui_tick`), stopping what's unattended, and keeping the run up
-    /// to date.
+    /// The app does its work that isn't drawing here: before each frame, and while the window's hidden (minimised, say)
+    /// whenever something's asked for the app to be woken (see `eframe::App::logic`). It takes what's come from runs
+    /// and nodes' threads, calls on the nodes while nothing's drawn (see `Node::on_gui_tick`), stops what's unattended,
+    /// and keeps the run up to date.
     pub fn logic(&mut self, ctx: &egui::Context) {
         // Keep (and echo) what's been logged, so the log's queue doesn't fill.
         crate::console::drain();
@@ -1791,8 +1800,8 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         self.upkeep(ctx);
     }
 
-    /// Takes what's changed (in the GUI, by nodes or from triggers) into the history, unless it's locked, and keeps the
-    /// run up to date with it.
+    /// The app takes what's changed (in the GUI, by nodes or from triggers) into the history, unless it's locked, and
+    /// keeps the run up to date with it.
     fn upkeep(&mut self, ctx: &egui::Context) {
         self.lock(ctx);
         self.history.record(&self.graph, &self.annotations, ctx);
@@ -1800,9 +1809,9 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         self.keep_running(ctx);
     }
 
-    /// Calls on each node the app hasn't called on this frame to draw its window (those not in `ticked`), with nothing to
-    /// draw in (see `Node::on_gui_tick`), each with its state on the GUI's side and its triggers, as its window has (to
-    /// trigger one thing once another's done, say); and wakes the app when the first node next wants calling.
+    /// Each frame, the app calls on each node it hasn't called on to draw its window (those not in `ticked`), with
+    /// nothing to draw in (see `Node::on_gui_tick`), each with its state on the GUI's side and its triggers, as its
+    /// window has (to trigger one thing once another's done, say).
     fn tick_nodes(&mut self, ctx: &egui::Context, ticked: docking::Ticked) {
         self.ui_states.keep(&self.graph);
         let resolved = self.graph.resolve();
@@ -1838,8 +1847,8 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
     }
 }
 
-/// What changed from one snapshot to the next, as it runs: a short label, and the detail; nothing if only how it's
-/// shown changed (nodes moved, say).
+/// The dev tools' chart marks what changed from one snapshot to the next, as it runs: a short label, and the detail;
+/// nothing if only how the graph's shown changed (nodes moved, say).
 fn describe_change<N: NodesEnum>(
     before: &engine::Snapshot<N>,
     after: &engine::Snapshot<N>,
@@ -1910,7 +1919,7 @@ fn describe_change<N: NodesEnum>(
     (!changes.is_empty()).then(|| (label, format!("Version {}: {}", after.version, changes.join("; "))))
 }
 
-/// Milliseconds since `start`.
+/// The app times parts of a frame in milliseconds since `start`.
 fn ms_since(start: Instant) -> f32 {
     start.elapsed().as_secs_f32() * 1000.0
 }
@@ -1925,7 +1934,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> eframe::App for App<N, A> {
         self.show(ui);
     }
 
-    /// Behind everything, in the theme's colours (eframe's default is near black whatever the theme).
+    /// The app clears behind everything in the theme's colours (eframe's default is near black whatever the theme).
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         self.colours().surface.to_normalized_gamma_f32()
     }
@@ -1942,7 +1951,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> eframe::App for App<N, A> {
     }
 }
 
-/// "1:02:03.4", or "02:03.4" under an hour.
+/// The clocks show times as "1:02:03.4", or "02:03.4" under an hour.
 fn clock_text(seconds: f64) -> String {
     let tenths = (seconds.max(0.0) * 10.0) as u64;
     let (hours, minutes, seconds, tenths) = (tenths / 36000, tenths / 600 % 60, tenths / 10 % 60, tenths % 10);
@@ -1953,7 +1962,7 @@ fn clock_text(seconds: f64) -> String {
     }
 }
 
-/// What's to stop, as it's said: whether recording too, if acquisition.
+/// The warning names what's to stop: if acquisition, whether recording too.
 fn unattended_what(stopping: preferences::Stopping, recording: bool) -> &'static str {
     match stopping {
         preferences::Stopping::Recording => "Recording",
@@ -1962,8 +1971,8 @@ fn unattended_what(stopping: preferences::Stopping, recording: bool) -> &'static
     }
 }
 
-/// Each node's state on the GUI's side (see `Node::UiState`), by node, with the type of node it's for: a file opened can
-/// have other nodes with the same ids.
+/// The app keeps each node's state on the GUI's side (see `Node::UiState`) by node, with the type of node it's for, as
+/// a file opened can have other nodes with the same ids.
 pub(crate) struct UiStates<N: NodesEnum>(HashMap<NodeId, (N::Type, crate::engine::UiStateCell)>);
 
 impl<N: NodesEnum> Default for UiStates<N> {
@@ -1973,13 +1982,13 @@ impl<N: NodesEnum> Default for UiStates<N> {
 }
 
 impl<N: NodesEnum> UiStates<N> {
-    /// Node `id`'s, if it's kept, for a node of its type.
+    /// Node `id`'s state, if it's kept, for a node of its type.
     pub(crate) fn get(&self, graph: &Graph<N>, id: NodeId) -> Option<&crate::engine::UiStateCell> {
         let (kind, state) = self.0.get(&id)?;
         (graph.get(id)?.node.node_type() == *kind).then_some(state)
     }
 
-    /// Keeps one for each of `graph`'s nodes, as it starts for those without one, letting go of the rest.
+    /// The app keeps one for each of `graph`'s nodes, as it starts for those without one, letting go of the rest.
     fn keep(&mut self, graph: &Graph<N>) {
         let kind = |id: NodeId| graph.get(id).map(|entry| entry.node.node_type());
         self.0.retain(|id, (of, _)| kind(*id) == Some(*of));
@@ -1989,14 +1998,14 @@ impl<N: NodesEnum> UiStates<N> {
     }
 }
 
-/// What the last run shared, kept once it's stopped, for the windows to go on showing as it was, until the next run, or
-/// until the graph changes in a way that would need new buffers, and what's kept might no longer fit it.
+/// Once a run's stopped, the app keeps what it shared, for the windows to go on showing as it was, until the next run,
+/// or until the graph changes in a way that would need new buffers, and what's kept might no longer fit it.
 struct LastRun<N: NodesEnum> {
     shared: Arc<engine::SharedByNode>,
     plan: Arc<engine::Plan<N>>,
 }
 
-/// What the nodes' passes share with the GUI: the run's, or the last run's.
+/// Windows find what the nodes' passes share with the GUI here: the run's, or the last run's.
 fn shared<N: NodesEnum>(
     runner: &Option<Runner<N>>,
     last_run: &Option<LastRun<N>>,
@@ -2004,15 +2013,15 @@ fn shared<N: NodesEnum>(
     runner.as_ref().map(Runner::shared).or_else(|| last_run.as_ref().map(|last| last.shared.clone()))
 }
 
-/// An item of the undo history: the document, the graph (with its settings) and the annotations, as an edit left it.
-/// What the passes need is baked from the current one, and the run (see `App::bake`).
+/// The undo history keeps the graph (with its settings) and the annotations as each edit left them. The app bakes
+/// snapshots from the current item, and the run (see `App::bake`).
 struct HistoryItem<N: NodesEnum, A> {
     graph: Arc<Graph<N>>,
     annotations: Arc<Annotations<A>>,
 }
 
-/// Undo and redo step between items. A new one is taken whenever anything has changed (including node settings) and
-/// the user isn't mid-gesture (dragging, or typing in a field), so a whole drag or edit undoes in one step.
+/// Undo and redo step between history items. The app takes a new one whenever anything has changed (including node
+/// settings) and no one's mid-gesture (dragging, or typing in a field), so a whole drag or edit undoes in one step.
 struct History<N: NodesEnum, A> {
     current: HistoryItem<N, A>,
     undo: std::collections::VecDeque<HistoryItem<N, A>>,
@@ -2033,7 +2042,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> History<N, A> {
         }
     }
 
-    /// Takes a new item if anything has changed, even mid-gesture.
+    /// The history takes a new item with this if anything has changed, even mid-gesture.
     fn commit(&mut self, graph: &Graph<N>, annotations: &Annotations<A>) {
         let (same_graph, same_annotations) = (*graph == *self.current.graph, *annotations == *self.current.annotations);
         if same_graph && same_annotations {
@@ -2059,7 +2068,8 @@ impl<N: NodesEnum, A: AnnotationsEnum> History<N, A> {
         !self.redo.is_empty()
     }
 
-    /// Clears the current item's transient settings (see `EdgeType::clear_transient`), as if they'd never been set.
+    /// The history clears the current item's transient settings (see `EdgeType::clear_transient`) with this, as if
+    /// they'd never been set.
     fn clear_transient(&mut self) {
         let mut graph = (*self.current.graph).clone();
         graph.clear_transient();
@@ -2068,8 +2078,8 @@ impl<N: NodesEnum, A: AnnotationsEnum> History<N, A> {
         }
     }
 
-    /// The current item, to restore: without its transient settings (see `EdgeType::clear_transient`), so bringing it
-    /// back doesn't ask anything of the nodes again. The item's changed to match, so it isn't taken as an edit.
+    /// Undo and redo restore the current item, without its transient settings (see `EdgeType::clear_transient`), so
+    /// bringing it back doesn't start anything again. The item's changed to match, so it isn't taken as an edit.
     fn restored(&mut self) -> (Graph<N>, Annotations<A>) {
         self.clear_transient();
         ((*self.current.graph).clone(), (*self.current.annotations).clone())
@@ -2099,8 +2109,8 @@ mod tests {
     use egui_kittest::Harness;
     use egui_kittest::kittest::Queryable as _;
 
-    /// The app on the example graph (which the tests don't save). Run with UPDATE_SNAPSHOTS=1 to accept changes; see
-    /// tests/snapshots/.
+    /// Tests run the app on the example graph (which they don't save). Running with UPDATE_SNAPSHOTS=1 accepts changes;
+    /// see tests/snapshots/.
     type TestApp = App<Nodes, AnnotationTypes>;
 
     mod tour;
@@ -2109,7 +2119,7 @@ mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/rig.json")
     }
 
-    /// A frame of the app, as eframe runs it: its logic, then its UI.
+    /// Tests run a frame of the app as eframe does: its logic, then its UI.
     fn run_app(ui: &mut egui::Ui, app: &mut TestApp) {
         app.logic(&ui.ctx().clone());
         app.show(ui);
@@ -2135,7 +2145,7 @@ mod tests {
         harness
     }
 
-    /// Adds an annotation below the example's nodes, and frames them all.
+    /// Tests add an annotation below the example's nodes, and frame them all, with this.
     fn with_annotation(
         harness: &mut Harness<TestApp>,
         kind: AnnotationTypes,
@@ -2152,7 +2162,7 @@ mod tests {
         app.graph.iter().find(|(_, e)| e.label == label).map(|(id, _)| id).expect("node")
     }
 
-    /// Screen position of a point given relative to a node's top-left corner, in scene units.
+    /// Tests find the screen position of a point given relative to a node's top-left corner, in scene units, with this.
     fn on_node(harness: &Harness<TestApp>, label: &str, offset: [f32; 2]) -> egui::Pos2 {
         let app = harness.state();
         let pos = app.graph.get(node_named(app, label)).unwrap().pos;
@@ -2168,7 +2178,7 @@ mod tests {
         harness.run_steps(2);
     }
 
-    /// The first output row's port, on the right edge.
+    /// A node's first output port is here, on its right edge.
     const FIRST_OUTPUT: [f32; 2] = [NODE_WIDTH, HEADER + 5.0 + 11.0];
 
     #[test]
@@ -2492,8 +2502,8 @@ mod tests {
         assert_ne!(found(&harness), second);
     }
 
-    /// Points the example's board and camera somewhere there's none, wherever this runs (the example's fake ones
-    /// might be running, or not).
+    /// Tests point the example's board and camera somewhere there's none, with this, wherever they run (the example's
+    /// fake ones might be running, or not).
     fn without_hardware(harness: &mut Harness<TestApp>) {
         use crate::standard::ephys::board::Source as BoardSource;
         use crate::standard::tracking::camera::Source as CameraSource;
@@ -2508,7 +2518,8 @@ mod tests {
         harness.run_steps(2);
     }
 
-    /// Points the example's board and camera at test ones of their own, as set, so nothing's asked as it runs.
+    /// Tests point the example's board and camera at test ones of their own, as set, with this, so nothing's asked as
+    /// it runs.
     fn with_test_hardware(harness: &mut Harness<TestApp>) {
         use crate::standard::ephys::board::{Source as BoardSource, serve_test_board};
         use crate::standard::tracking::camera::{Source as CameraSource, serve_test_scene};
@@ -2526,7 +2537,7 @@ mod tests {
         harness.run_steps(2);
     }
 
-    /// Waits for the app to ask about hardware that isn't as set (see `user_decisions`).
+    /// Tests wait for the app to ask about hardware that isn't as set (see `user_decisions`) with this.
     fn until_asked(harness: &mut Harness<TestApp>) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while harness.state().asking.is_none() && std::time::Instant::now() < deadline {
@@ -3471,8 +3482,8 @@ mod tests {
         assert!(harness.query_by_label("Spike Detector").is_none());
     }
 
-    /// A set whose one patch changes a Spike Detector's waveform, as a node type's patch would, if it was saved before
-    /// version 1.
+    /// The test's patch set has one patch, which changes a Spike Detector's waveform, as a node type's patch would, if
+    /// it was saved before version 1.
     fn pre_was_8(config: &mut config_patching::IncomingConfig) {
         if config.written_before("test", "1.0.0") {
             for node in config.nodes().filter(|node| node["type"] == "SpikeDetector") {
@@ -3625,8 +3636,8 @@ mod tests {
         Some(crate::standard::auto_detect::estimated_progress(started, seconds))
     }
 
-    /// Starts auto detect for node `node`'s setting (its gains, or thresholds), as of `at`, or (`None`) stops it: as its
-    /// window does.
+    /// Starts auto detect for node `node`'s setting (its gains, or thresholds), as of `at`, or (`None`) stops it: as
+    /// its window does.
     fn set_auto_detect(app: &mut TestApp, node: NodeId, at: Option<std::time::Instant>) {
         match app.graph.get_mut(node).map(|entry| &mut entry.node) {
             Some(Nodes::ContinuousGain(gain)) => gain.gains.detect.started = at,
@@ -3742,8 +3753,9 @@ mod tests {
         harness.state_mut().perform(&ctx, Action::Play);
     }
 
-    /// Real TCP, real passes and a real recording, started and stopped by a TTL channel of the VR computer's: everything
-    /// it sends ends up in the LTX files, settings sent while recording wait for it to stop, and it's sent its state.
+    /// Real TCP, real passes and a real recording, started and stopped by a TTL channel of the VR computer's:
+    /// everything it sends ends up in the LTX files, settings sent while recording wait for it to stop, and it's sent
+    /// its state.
     #[test]
     fn a_vr_computer_is_recorded_and_its_settings_wait_for_recording_to_stop() {
         use crate::components::vr_computer::VrComputer;
@@ -3869,10 +3881,10 @@ mod tests {
         std::fs::remove_dir_all(&directory).unwrap();
     }
 
-    /// Undoing an auto detect's result brings the old gains back without asking for them to be detected again, and
-    /// redoing the asking doesn't ask again either: bringing a graph back never asks anything of its nodes.
+    /// Undoing an auto detect's result brings the old gains back without detecting them again, and redoing its start
+    /// doesn't start it again either: transient settings never come back.
     #[test]
-    fn undo_and_redo_never_ask_again() {
+    fn undo_and_redo_never_start_auto_detect_again() {
         let mut graph = Graph::<Nodes>::default();
         graph.add(Nodes::create(NodeType::named("Continuous Gain").unwrap()), [0.0, 0.0]);
         let annotations = Annotations::<AnnotationTypes>::default();

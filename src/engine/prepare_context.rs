@@ -1,52 +1,55 @@
-//! Preparing a node for a snapshot (`Node::prepare_for_snapshot`): what the node's told, including what it was in the
-//! snapshot before, and what it answers. The answer has any state it needs made ahead of time (proto-states, which
-//! become its state as the snapshot takes over: see `Node::on_snapshot_change`), and anything about its hardware
-//! someone should decide (`UserDecision`). It can answer at once, or once something it's started (opening a device,
-//! say) is done.
+//! Before passes switch to a new snapshot, the engine asks each node to get ready for it
+//! (`Node::prepare_for_snapshot`). This module has what the node is told (`PrepareContext`, including how the node was
+//! in the snapshot before) and what the node answers (`Prepared`): any state the node needs, made ahead of time as
+//! proto-states that become its state as the snapshot takes over (see `Node::on_snapshot_change`), and anything about
+//! its hardware someone should decide (`UserDecision`). A node can answer at once, or once something it's started
+//! (opening a device, say) is done (`Prepare`).
 
 use super::{Edges, NodeId, Recording};
 use crate::triggers::ControlTriggers;
 
-/// A node's answer as it prepares for a snapshot (see `Node::prepare_for_snapshot`). `S` is its state, `W` each worker's
-/// own, and `N` the node.
+/// When a node prepares for a snapshot (see `Node::prepare_for_snapshot`), it answers with this: what it made ahead of
+/// time, and what someone should decide. `S` is the node's state, `W` each worker's own, and `N` the node.
 pub struct Prepared<S, W, N> {
-    /// New state, made ahead of time, to become the node's state as the snapshot takes over (see
-    /// `Node::on_snapshot_change`). Without it, the state carries on as it is, which only fits if the node's data
-    /// streams are the same as in the snapshot before.
+    /// The node can make new state ahead of time, which becomes its state as the snapshot takes over (see
+    /// `Node::on_snapshot_change`). Without any, the node's state carries on as it is, which only fits if the node's
+    /// data streams are the same as in the snapshot before.
     pub proto_shared_state: Option<S>,
-    /// The same for each worker's own state: one per worker (`PrepareContext::workers`).
+    /// Each worker can have state of its own for the node; the node can make that ahead of time too, one per worker
+    /// (`PrepareContext::workers`).
     pub proto_worker_state: Option<Vec<W>>,
-    /// Anything about its hardware someone should decide.
+    /// The node's hardware may not be as the node's settings say; the node lists here what someone should decide.
     pub decisions: Vec<UserDecision<N>>,
 }
 
 impl<S, W, N> Prepared<S, W, N> {
-    /// Nothing new: the node's state carries on as it is.
+    /// A node with nothing new to make answers this, and its state carries on as it is.
     pub fn nothing() -> Self {
         Prepared { proto_shared_state: None, proto_worker_state: None, decisions: Vec::new() }
     }
 
-    /// New shared state, to become the node's.
+    /// A node answers this with new shared state, which becomes the node's.
     pub fn shared(proto_state: S) -> Self {
         Prepared { proto_shared_state: Some(proto_state), ..Self::nothing() }
     }
 
-    /// New state for each worker (one each: `PrepareContext::workers`).
+    /// A node answers this with new state for each worker (one each: `PrepareContext::workers`).
     pub fn worker(proto_states: Vec<W>) -> Self {
         Prepared { proto_worker_state: Some(proto_states), ..Self::nothing() }
     }
 
-    /// And new state for each worker, too.
+    /// The answer, with new state for each worker as well.
     pub fn and_worker(self, proto_states: Vec<W>) -> Self {
         Prepared { proto_worker_state: Some(proto_states), ..self }
     }
 
-    /// And `decisions`.
+    /// The answer, with `decisions` for someone to make as well.
     pub fn with_decisions(self, decisions: Vec<UserDecision<N>>) -> Self {
         Prepared { decisions, ..self }
     }
 
-    /// The same, its states and node turned into something else (as the engine keeps them, whatever the node's type).
+    /// The engine keeps every node's answer alike, whatever the node's type. This turns the states and the node in the
+    /// answer into what the engine keeps.
     pub fn map<T, X, M>(
         self,
         shared: impl FnOnce(S) -> T,
@@ -61,36 +64,40 @@ impl<S, W, N> Prepared<S, W, N> {
     }
 }
 
-/// Something about a node's hardware that isn't as its settings say, for someone to decide about: take on `fix`, if
-/// there is one, carry on without the node, or stop. The snapshot runs meanwhile, the node doing what it can (a board
-/// whose headstages aren't on the ports set acquires none of them, say). See `Runner::user_decisions`.
+/// A node may find, as it prepares, that its hardware isn't as its settings say. This is one such thing, for someone to
+/// decide about: take on `fix`, if there is one, carry on without the node, or stop. The snapshot runs meanwhile, and
+/// the node does what it can (a board whose headstages aren't on the ports set acquires none of them, say). See
+/// `Runner::user_decisions`.
 #[derive(Clone, Debug)]
 pub struct UserDecision<N> {
-    /// What isn't as set, for people: "the board's headstages are D1 32, D2 32, not the A1 32, B1 32 set", say.
+    /// The app shows people what isn't as set: "the board's headstages are D1 32, D2 32, not the A1 32, B1 32 set",
+    /// say.
     pub what: String,
-    /// The node with settings matching the hardware, if there are such settings. A node with several decisions gives
-    /// the whole fix with each.
+    /// The node can offer itself with settings matching the hardware, if there are such settings. A node with several
+    /// decisions gives the whole fix with each.
     pub fix: Option<N>,
 }
 
 impl<N> UserDecision<N> {
+    /// The engine keeps every node's decisions alike, whatever the node's type. This turns the fix into what the
+    /// engine keeps.
     pub fn map<M>(self, f: impl Fn(N) -> M) -> UserDecision<M> {
         UserDecision { what: self.what, fix: self.fix.map(f) }
     }
 }
 
-/// A node's answer as it prepares (see `Node::prepare_for_snapshot`): given now, or once something it's started is
-/// done.
+/// A node can answer as it prepares (see `Node::prepare_for_snapshot`) at once, or once something it's started (opening
+/// a device, say) is done.
 pub enum Prepare<S, W, N> {
     Now(Prepared<S, W, N>),
-    /// Run on the thread preparing the snapshot once every node's been asked, so what it waits for (a device the node's
-    /// own thread is opening, say) can take its time while the others' do too.
+    /// The engine runs this on the thread preparing the snapshot once every node has been asked, so what the node waits
+    /// for (a device the node's own thread is opening, say) can take its time while other nodes' slow parts do too.
     Wait(Box<dyn FnOnce() -> Prepared<S, W, N> + Send>),
 }
 
 impl<S: Send + 'static, W: Send + 'static, N: Send + 'static> Prepare<S, W, N> {
-    /// Runs `prepare` on a thread of its own, called `name`, and waits for it (see `Wait`): for a node without a thread
-    /// of its own to do the slow part of preparing on.
+    /// A node without a thread of its own can do the slow part of preparing on one made for it: this runs `prepare` on
+    /// a thread called `name`, and the engine waits for it (see `Wait`).
     pub fn on_thread(name: &str, prepare: impl FnOnce() -> Prepared<S, W, N> + Send + 'static) -> Self {
         let thread = std::thread::Builder::new().name(name.into()).spawn(prepare).expect("a thread to prepare on");
         Prepare::Wait(Box::new(move || match thread.join() {
@@ -99,7 +106,8 @@ impl<S: Send + 'static, W: Send + 'static, N: Send + 'static> Prepare<S, W, N> {
         }))
     }
 
-    /// The same, its states and node turned into something else (see `Prepared::map`).
+    /// This turns the states and node in the answer into what the engine keeps, as `Prepared::map` does, once the
+    /// answer's given.
     pub fn map<T: 'static, X: 'static, M: 'static>(
         self,
         shared: impl FnOnce(S) -> T + Send + 'static,
@@ -114,7 +122,7 @@ impl<S: Send + 'static, W: Send + 'static, N: Send + 'static> Prepare<S, W, N> {
 }
 
 impl<S, W, N> Prepare<S, W, N> {
-    /// The answer, waiting for it if need be.
+    /// The engine takes the answer with this, waiting for it if need be.
     pub fn wait(self) -> Prepared<S, W, N> {
         match self {
             Prepare::Now(prepared) => prepared,
@@ -129,39 +137,41 @@ impl<S, W, N> From<Prepared<S, W, N>> for Prepare<S, W, N> {
     }
 }
 
-/// How a node was in the snapshot before.
+/// A node preparing for a snapshot is told how it was in the snapshot before, if it was in it.
 pub struct Previous<'a, E: Edges, N> {
-    /// The node, with its settings then.
+    /// The node as it was, with its settings then.
     pub node: &'a N,
-    /// The data stream connected to each input then, if any.
+    /// For each input, the data stream connected to it then, if any.
     pub inputs: &'a [Option<E::DataStream>],
-    /// Whether its data streams, in and out, are the same now, so state made for them still fits.
+    /// If the node's data streams, in and out, are the same now, state made for them still fits.
     pub same_streams: bool,
 }
 
-/// What a node's told as it prepares for a snapshot (see `Node::prepare_for_snapshot`). `N` is the node.
+/// When the engine asks a node to prepare for a snapshot (see `Node::prepare_for_snapshot`), it tells the node this.
+/// `N` is the node.
 pub struct PrepareContext<'a, E: Edges, N> {
     pub node: NodeId,
-    /// The data stream connected to each input, if any.
+    /// For each input, the data stream connected to it, if any.
     pub inputs: &'a [Option<E::DataStream>],
-    /// What its controls see.
+    /// For each of the node's controls, the setting it's connected to, if it is.
     pub controls: &'a [Option<E::Setting>],
-    /// The snapshot's recording, if it's recording.
+    /// If the snapshot's recording, the recording (where it goes, and when it was asked for).
     pub recording: Option<&'a Recording>,
-    /// What its controls can trigger directly (see `crate::triggers`).
+    /// The node's controls can send triggers to the nodes they're connected to (see `crate::triggers`), through this.
     pub triggers: &'a ControlTriggers<E::Trigger>,
-    /// How it was in the snapshot before, if it was in it.
+    /// How the node was in the snapshot before, if it was in it.
     pub previous: Option<Previous<'a, E, N>>,
-    /// Whether the snapshot before was recording something else, or nothing: recording starts (or stops) with this
-    /// one. A writer doesn't carry its files on into another recording.
+    /// If the snapshot before was recording something else, or nothing, recording starts (or stops) with this one. A
+    /// writer doesn't carry its files on into another recording.
     pub recording_changed: bool,
-    /// How many workers there are, each needing its own state (see `Prepared::proto_worker_state`).
+    /// The run has this many workers, each with its own state for the node (see `Prepared::proto_worker_state`).
     pub workers: usize,
 }
 
 impl<'a, E: Edges, N> PrepareContext<'a, E, N> {
-    /// For trying a node out: with inputs `inputs`, recording `recording` if there is one, new to the run, with no
-    /// controls connected, triggering `triggers` (usually none: `ControlTriggers::none`), on one worker.
+    /// Tests try nodes out with this: the node new to the run, with inputs `inputs`, recording `recording` if there is
+    /// one, no controls connected, sending triggers through `triggers` (usually none: `ControlTriggers::none`), on one
+    /// worker.
     pub fn trying(
         inputs: &'a [Option<E::DataStream>],
         recording: Option<&'a Recording>,
@@ -179,12 +189,14 @@ impl<'a, E: Edges, N> PrepareContext<'a, E, N> {
         }
     }
 
-    /// Whether it was in the snapshot before with the same data streams, so the state it has still fits.
+    /// A node that was in the snapshot before with the same data streams can keep its state, which still fits. This
+    /// says whether the node was.
     pub fn same_streams(&self) -> bool {
         self.previous.as_ref().is_some_and(|previous| previous.same_streams)
     }
 
-    /// Whether it was in the snapshot before with the same data streams and settings (`node` being itself now).
+    /// This says whether the node was in the snapshot before with the same data streams and settings (`node` being the
+    /// node now).
     pub fn unchanged(&self, node: &N) -> bool
     where
         N: PartialEq,
@@ -192,8 +204,8 @@ impl<'a, E: Edges, N> PrepareContext<'a, E, N> {
         self.previous.as_ref().is_some_and(|previous| previous.same_streams && previous.node == node)
     }
 
-    /// The same context, for node type `T` (the engine's dispatching to it), with `previous` finding how it was before
-    /// in `N` (the program's enum of nodes).
+    /// The engine hands each node type its own context, from the program's enum of nodes (`N`). This is that context
+    /// for node type `T`, with `previous` finding the node as it was before.
     pub fn of<T>(&self, previous: impl Fn(&'a N) -> Option<&'a T>) -> PrepareContext<'a, E, T> {
         PrepareContext {
             node: self.node,
@@ -210,8 +222,8 @@ impl<'a, E: Edges, N> PrepareContext<'a, E, N> {
     }
 }
 
-/// The states `node` makes for `inputs` as if new to the run, not recording, on one worker (for trying nodes out):
-/// its shared state, and its worker's.
+/// Tests try nodes out with the state a node makes for `inputs` when it's new to the run, not recording, on one worker.
+/// This returns the node's shared state and its worker's.
 pub fn fresh_states<E: Edges, N: super::Node<E>>(
     node: &N,
     inputs: &[Option<E::DataStream>],
@@ -224,12 +236,13 @@ pub fn fresh_states<E: Edges, N: super::Node<E>>(
     (shared, worker)
 }
 
-/// The shared state `node` makes for `inputs` (see `fresh_states`).
+/// Tests mostly need only the shared state a node makes for `inputs` (see `fresh_states`).
 pub fn fresh_state<E: Edges, N: super::Node<E>>(node: &N, inputs: &[Option<E::DataStream>]) -> N::State {
     fresh_states(node, inputs).0
 }
 
-/// `value`, or if there's none and `T` is `()` (no state of the kind), that.
+/// A node with no state of a kind (`T` being `()`) needn't make any. This gives `value`, or `()` if there's none and
+/// `T` is `()`.
 pub(super) fn or_unit<T: 'static>(value: Option<T>) -> Option<T> {
     value.or_else(|| (Box::new(()) as Box<dyn std::any::Any>).downcast::<T>().ok().map(|unit| *unit))
 }

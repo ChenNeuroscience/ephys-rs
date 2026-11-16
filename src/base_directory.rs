@@ -1,15 +1,17 @@
-//! Base directories: where recordings go, chosen in a section of the main toolbar.
+//! Recordings go in a base directory, chosen in a section of the main toolbar.
 //!
 //! A program offers base directory types (see `Components::BASE_DIRECTORIES`), of which one's in use: the first,
 //! unless another's chosen (in advanced mode, from its section's settings). Each draws its own section of the main
 //! toolbar, as wide as it likes, and says where recordings go (a `Place`): for the next recording, or the one going
 //! on. That's a directory, and perhaps a prefix for what's written there (a subject's trial, say), which writers use
 //! rather than their own.
-//! When recording's asked for, the GUI asks it, and hands that to every node preparing for the recording's snapshot
-//! (`PrepareContext::recording`, see `Node::prepare_for_snapshot`, then `PassContext::base_directory`); writers decide what to do with it (write in it,
-//! say, or in a subdirectory of it). It's told when recordings start and stop. What each type keeps (the directory
-//! chosen, say), and which is in use, is saved as JSON: with the app's preferences, and in saved files (so with each
-//! recording too), and given back when it's next made or the file's opened.
+//!
+//! When recording's asked for, the GUI asks the base directory in use where, and hands that to every node preparing for
+//! the recording's snapshot (`PrepareContext::recording`, see `Node::prepare_for_snapshot`, then
+//! `PassContext::base_directory`); writers decide what to do with it (write in it, say, or in a subdirectory of it).
+//! The base directory's told when recordings start and stop. What each type keeps (the directory chosen, say), and
+//! which is in use, is saved as JSON: with the app's preferences, and in saved files (so with each recording too), and
+//! given back when it's next made or the file's opened.
 
 use std::path::{Path, PathBuf};
 
@@ -17,9 +19,10 @@ use eframe::egui;
 
 use crate::theme::Colours;
 
-/// Where a recording goes: the base directory, and a prefix, if there's one (otherwise writers name things themselves).
-/// The prefix is the whole of what's written's name but its extension, whatever a writer makes of it (its files, or a
-/// folder for them), so it should be different for each recording: nothing stops one writing over the last.
+/// A recording goes in a place: the base directory, and a prefix, if there's one (otherwise writers name things
+/// themselves). The prefix is the whole of what's written's name but its extension, whatever a writer makes of it (its
+/// files, or a folder for them), so it should be different for each recording: nothing stops one writing over the
+/// last.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Place {
     pub directory: PathBuf,
@@ -27,12 +30,12 @@ pub struct Place {
 }
 
 impl Place {
-    /// Just a directory.
+    /// A place that's just a directory.
     pub fn directory(directory: impl Into<PathBuf>) -> Self {
         Place { directory: directory.into(), prefix: None }
     }
 
-    /// The directory and prefix, as a path (the directory, if there's no prefix).
+    /// The place as a path: the directory and prefix (the directory, if there's no prefix).
     pub fn path(&self) -> PathBuf {
         match &self.prefix {
             Some(prefix) => self.directory.join(prefix),
@@ -47,53 +50,54 @@ impl std::fmt::Display for Place {
     }
 }
 
-/// A base directory type in use (see the module docs).
+/// Each base directory type implements this (see the module docs).
 pub trait BaseDirectory: Send {
-    /// Its section of the main toolbar.
+    /// The base directory draws its section of the main toolbar with this.
     fn toolbar_ui(&mut self, ui: &mut egui::Ui, context: &BaseDirectoryContext);
 
-    /// Where recordings go: the recording going on, while there is one, otherwise the next, were it to start `now`
-    /// (to name it by). `None` if there's nowhere (none chosen yet, say).
+    /// The base directory says where recordings go: the recording going on, while there is one, otherwise the next,
+    /// were it to start `now` (to name it by). `None` if there's nowhere (none chosen yet, say).
     fn place(&self, now: &chrono::DateTime<chrono::Local>) -> Option<Place>;
 
-    /// A recording's started, in `place` (what `place` said when it was asked for).
+    /// The app tells the base directory a recording's started, in `place` (what `place` said when it was asked for).
     fn recording_started(&mut self, _place: &Place) {}
 
-    /// The recording's stopped.
+    /// The app tells the base directory the recording's stopped.
     fn recording_stopped(&mut self) {}
 
-    /// What it keeps, between runs of the program and in saved files, as JSON (given back to
+    /// The base directory keeps this between runs of the program and in saved files, as JSON (given back to
     /// `BaseDirectoryType::make`). A saved file counts as changed when this does, so it should only be what's chosen.
     fn save(&self) -> serde_json::Value;
 }
 
-/// What a base directory's toolbar section gets to work with.
+/// A base directory's toolbar section gets this to work with.
 pub struct BaseDirectoryContext<'a> {
     pub theme: &'a Colours,
-    /// Whether it's recording (in `place()`): what decides where it goes shouldn't change meanwhile.
+    /// While recording (in `place()`), what decides where it goes shouldn't change; this says whether it's recording.
     pub recording: bool,
 }
 
-/// A kind of base directory a program offers.
+/// A program offers kinds of base directory, each described by this.
 pub struct BaseDirectoryType {
     pub name: &'static str,
-    /// What it is, for choosing it.
+    /// The kind's description, for choosing it.
     pub description: &'static str,
-    /// Makes one, from what one saved before (see `BaseDirectory::save`), if there's anything.
+    /// The app makes a base directory of the kind with this, from what one saved before (see `BaseDirectory::save`), if
+    /// there's anything.
     pub make: fn(saved: Option<&serde_json::Value>) -> Box<dyn BaseDirectory>,
 }
 
-/// The base directory in use, and what each type saved: kept by the GUI.
+/// The GUI keeps the base directory in use here, and what each type saved.
 pub struct BaseDirectories {
     types: &'static [BaseDirectoryType],
-    /// Which type's in use, and it.
+    /// The type in use, and its base directory.
     current: Option<(usize, Box<dyn BaseDirectory>)>,
     /// What each type saved, by name, including those not in use.
     saved: serde_json::Map<String, serde_json::Value>,
 }
 
 impl BaseDirectories {
-    /// Of `types`, from what was saved before (see `save`): the type chosen then, or the first.
+    /// The app makes this from `types`, and what was saved before (see `save`): the type chosen then, or the first.
     pub fn new(types: &'static [BaseDirectoryType], saved: Option<&serde_json::Value>) -> Self {
         let saved_types = saved.and_then(|s| s.get("types")).and_then(|t| t.as_object()).cloned().unwrap_or_default();
         let chosen = saved.and_then(|s| s.get("chosen")).and_then(|c| c.as_str());
@@ -108,12 +112,12 @@ impl BaseDirectories {
         self.types
     }
 
-    /// Which type's in use, if any's offered.
+    /// The type in use, if any's offered.
     pub fn chosen(&self) -> Option<usize> {
         self.current.as_ref().map(|(index, _)| *index)
     }
 
-    /// Uses type `index`, keeping what the one in use had (for if it's chosen again).
+    /// Choosing a type uses type `index`, keeping what the one in use had (for if it's chosen again).
     pub fn choose(&mut self, index: usize) {
         if self.chosen() == Some(index) {
             return;
@@ -130,17 +134,17 @@ impl BaseDirectories {
         Some(self.current.as_mut()?.1.as_mut())
     }
 
-    /// Where recordings go, if one started now (see `BaseDirectory::place`).
+    /// Recordings go here, if one started now (see `BaseDirectory::place`).
     pub fn place(&self) -> Option<Place> {
         self.place_at(&chrono::Local::now())
     }
 
-    /// Where recordings go, if one started at `start` (see `BaseDirectory::place`).
+    /// Recordings go here, if one started at `start` (see `BaseDirectory::place`).
     pub fn place_at(&self, start: &chrono::DateTime<chrono::Local>) -> Option<Place> {
         self.current.as_ref()?.1.place(start)
     }
 
-    /// What to keep, between runs of the program and in saved files: which is in use, and what each has.
+    /// The app keeps this between runs of the program and in saved files: which type's in use, and what each has.
     pub fn save(&self) -> serde_json::Value {
         let mut types = self.saved.clone();
         if let Some((index, current)) = &self.current {
@@ -155,7 +159,7 @@ impl BaseDirectories {
 mod tests {
     use super::*;
 
-    /// A directory named in what it saved.
+    /// The test's base directory saves the directory's name.
     struct Named(String);
 
     impl BaseDirectory for Named {

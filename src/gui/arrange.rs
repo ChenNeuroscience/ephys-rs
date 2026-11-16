@@ -1,6 +1,6 @@
-//! Arranging the graph's nodes: a layered layout (Sugiyama's method, as dagre does it, through `dugong`), left to
-//! right the way data flows. Nodes go in columns by how far along the data's flow they are, ordered within each
-//! to cross as few edges as can be, and placed to keep edges short and straight.
+//! The graph's toolbar can arrange its nodes, in a layered layout (Sugiyama's method, as dagre does it, through
+//! `dugong`), left to right the way data flows. Nodes go in columns by how far along the data's flow they are, ordered
+//! within each to cross as few edges as can be, and placed to keep edges short and straight.
 //!
 //! Sources go in the first column, and writers in the last (viewers go just after what they view). Settings edges
 //! count too, though for less than data edges, the other way round (from the node whose setting it is to the one
@@ -17,17 +17,18 @@ use dugong::{EdgeLabel, GraphLabel, NodeLabel, RankDir};
 use super::canvas::node_size;
 use crate::engine::{Dimension, Graph, NodeId, NodesEnum};
 
-/// Room between nodes in a column, and between columns.
+/// The layout leaves this much room between nodes in a column, and between columns.
 const NODE_GAP: f64 = 36.0;
 const COLUMN_GAP: f64 = 90.0;
-/// The hidden start node, and how hard it pulls.
+/// The layout has a hidden start node, which pulls the sources to the first column this hard.
 const START: &str = "start";
 const START_WEIGHT: f64 = 4.0;
-/// How hard edges pull the nodes they join together: settings edges much less than data.
+/// Edges pull the nodes they join together this hard: settings edges much less than data.
 const DATA_WEIGHT: f64 = 1.0;
 const SETTINGS_WEIGHT: f64 = 0.25;
 
-/// Where each node goes, its top-left corner, with the whole arrangement's top-left where the graph's was.
+/// Arranging the graph moves each node to where this says, its top-left corner, with the whole arrangement's top-left
+/// where the graph's was.
 pub fn arrange<N: NodesEnum>(graph: &Graph<N>) -> HashMap<NodeId, [f32; 2]> {
     let resolved = graph.resolve();
     let key = |id: NodeId| id.0.to_string();
@@ -172,8 +173,8 @@ mod tests {
         assert_eq!(arrange(&graph), placed, "disabled");
     }
 
-    /// In the example rig, Run Command goes beside the writer that triggers it, above the Alarm Viewer (which goes beside
-    /// the Alarm Processor, below the writer), so the edges don't cross.
+    /// In the example rig, Run Command goes beside the writer that triggers it, above the Alarm Viewer (which goes
+    /// beside the Alarm Processor, below the writer), so the edges don't cross.
     #[test]
     fn a_node_placed_by_a_settings_edge_stays_in_line_with_what_leads_to_it() {
         let mut graph = crate::example_graph();

@@ -1,14 +1,15 @@
-//! Dialogs: a modal window with a title bar (the program's icon and a title), a body, and a footer for its buttons.
+//! The app's dialogs all look alike: a modal window with a title bar (the program's icon and a title), a body, and a
+//! footer for its buttons.
 
 use eframe::egui::{self, Color32, CornerRadius, Frame, Margin, RichText, TextureHandle, TextureOptions, vec2};
 
 use crate::theme::Colours;
 
 const ROUNDING: u8 = 8;
-/// Between a dialog's edge and what's in it.
+/// A dialog leaves this much room between its edge and what's in it.
 const PAD: i8 = 16;
 
-/// `png` as a texture, called `name`, made the first time it's asked for.
+/// Dialogs show images as textures: this gives `png` as one, called `name`, made the first time it's asked for.
 pub fn texture(ctx: &egui::Context, name: &str, png: &[u8]) -> Option<TextureHandle> {
     let id = egui::Id::unique(("dialog texture", name));
     if let Some(texture) = ctx.data(|d| d.get_temp::<TextureHandle>(id)) {
@@ -22,7 +23,8 @@ pub fn texture(ctx: &egui::Context, name: &str, png: &[u8]) -> Option<TextureHan
     Some(texture)
 }
 
-/// Shows a dialog `width` wide. Returns whether it should close, by clicking outside it or pressing Esc.
+/// The app shows a dialog `width` wide with this, which returns whether it should close, by clicking outside it or
+/// pressing Esc.
 pub fn show(
     ctx: &egui::Context,
     title: &str,
@@ -56,7 +58,7 @@ pub fn show(
     modal.should_close()
 }
 
-/// The program's icon and `title`.
+/// A dialog's title bar has the program's icon and `title`.
 fn title_bar(ui: &mut egui::Ui, title: &str, width: f32, colours: &Colours) {
     let top = CornerRadius { nw: ROUNDING, ne: ROUNDING, sw: 0, se: 0 };
     let frame = Frame::new().fill(colours.surface_raised).corner_radius(top);
@@ -72,13 +74,13 @@ fn title_bar(ui: &mut egui::Ui, title: &str, width: f32, colours: &Colours) {
     });
 }
 
-/// `add`, at the right of a footer.
+/// A dialog puts its main button at the right of its footer, with this.
 pub fn at_right<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), add).inner
 }
 
-/// `parts` on a line of their own, centred, `size` points high: a headline. Those marked bold are drawn again a hair
-/// to the right, as there's no bold font.
+/// A dialog can show a headline: `parts` on a line of their own, centred, `size` points high. Those marked bold are
+/// drawn again a hair to the right, as there's no bold font.
 pub fn headline(ui: &mut egui::Ui, parts: &[(&str, bool)], size: f32, colour: Color32) {
     let job = |bold_only: bool| {
         let mut job = egui::text::LayoutJob::default();

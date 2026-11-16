@@ -1,4 +1,4 @@
-//! When the program crashes: a report of what happened is written to disk, and the program ends. The next time it
+//! When the program crashes, it writes a report of what happened to disk, and ends. The next time it
 //! starts, it says where the report is. Crashes aren't recovered from: a crash in the middle of an experiment
 //! likely means stopping it anyway, and the report is what's needed to fix it.
 //!
@@ -20,22 +20,22 @@ use std::sync::Mutex;
 
 use crate::console;
 
-/// Lines of the log a report ends with.
+/// A report ends with this many lines of the log.
 const LOG_LINES: usize = 300;
-/// Names the latest report, until the program next starts and says where it is.
+/// The latest report is named in this file, until the program next starts and says where it is.
 const LATEST: &str = "latest-crash.txt";
-/// What the run going on has logged.
+/// The run going on logs to this file.
 const SESSION: &str = "session.log";
 
-/// The session file, in this run, unless another copy of the program has it.
+/// This run keeps the session file, unless another copy of the program has it.
 static SESSION_FILE: Mutex<Option<File>> = Mutex::new(None);
 
-/// Where reports go: beside the app's saved preferences.
+/// Reports go in this folder, beside the app's saved preferences.
 pub fn folder() -> Option<PathBuf> {
     eframe::storage_dir("ephys-rs").map(|d| d.join("crashes"))
 }
 
-/// Catches crashes from now on, to report them.
+/// As it starts, the program catches crashes from now on, to report them, with this.
 pub fn install() {
     std::panic::set_hook(Box::new(|info| {
         let message = info.payload_as_str().unwrap_or("(no message)");
@@ -48,15 +48,15 @@ pub fn install() {
     native::install();
 }
 
-/// Catches crashes in native code again, after loading a library, which may have taken over from us. Does nothing where
-/// they're not caught.
+/// A library loaded may take over catching crashes in native code, so after loading one, a node catches them again
+/// with this. Where they're not caught, this does nothing.
 pub fn catch_native_again() {
     #[cfg(windows)]
     native::install();
 }
 
-/// Opens the session file at `path`, for this run, returning what's left in it from the last, if anything. `None` if
-/// it can't be opened, or is locked, by another copy of the program.
+/// This opens the session file at `path`, for this run, returning what's left in it from the last, if anything:
+/// `None` if it can't be opened, or is locked, by another copy of the program.
 fn open_session(path: &Path) -> Option<(File, String)> {
     let mut file = File::options().read(true).write(true).create(true).truncate(false).open(path).ok()?;
     file.try_lock().ok()?;
@@ -67,8 +67,8 @@ fn open_session(path: &Path) -> Option<(File, String)> {
     Some((file, String::from_utf8_lossy(&left).into_owned()))
 }
 
-/// Starts keeping this run's session file, and if the last run didn't end properly, reports that. Call before
-/// `take_latest`.
+/// As it starts, the program keeps this run's session file with this, and if the last run didn't end properly,
+/// reports that. This comes before `take_latest`.
 pub fn start_session() {
     let Some(folder) = folder() else { return };
     if std::fs::create_dir_all(&folder).is_err() {
@@ -82,7 +82,7 @@ pub fn start_session() {
     }
 }
 
-/// A report of a run that ended without saying so, from its session file.
+/// A run that ended without saying so is reported from its session file.
 fn ended_unexpectedly(session: &str) -> String {
     let lines: Vec<&str> = session.lines().collect();
     let last = lines[lines.len().saturating_sub(LOG_LINES)..].join("\n");
@@ -92,7 +92,7 @@ fn ended_unexpectedly(session: &str) -> String {
     )
 }
 
-/// The run's ended properly, or its crash has been reported.
+/// Once the run's ended properly, or its crash has been reported, the program says so with this.
 pub fn end_session() {
     // Not waiting: this might be a crash while it's being written to.
     if let Ok(mut session) = SESSION_FILE.try_lock()
@@ -102,8 +102,9 @@ pub fn end_session() {
     }
 }
 
-/// Writes `line` to the session file, straight away: so it's there, whatever happens next. For saying what's being
-/// tried, before calling something that might crash, as what's logged only gets there once the GUI's taken it.
+/// Before calling something that might crash, code says what's being tried with this, which writes `line` to the
+/// session file straight away, so it's there, whatever happens next. (What's logged only gets there once the GUI's
+/// taken it.)
 pub fn note(line: &str) {
     if let Ok(mut session) = SESSION_FILE.lock()
         && let Some(file) = session.as_mut()
@@ -112,8 +113,8 @@ pub fn note(line: &str) {
     }
 }
 
-/// To try the reports: with `EPHYS_RS_TEST_CRASH` set to `panic`, or (to crash in native code) `native`, crashes
-/// a couple of seconds after starting, on a thread of its own.
+/// The reports can be tried out: with `EPHYS_RS_TEST_CRASH` set to `panic`, or (to crash in native code) `native`, the
+/// program crashes a couple of seconds after starting, on a thread of its own.
 pub fn test_if_asked() {
     let Ok(kind) = std::env::var("EPHYS_RS_TEST_CRASH") else { return };
     let _ = std::thread::Builder::new().name("test crash".into()).spawn(move || {
@@ -127,7 +128,7 @@ pub fn test_if_asked() {
     });
 }
 
-/// The latest report, if the program crashed since it last started; forgetting it, so it's said once.
+/// If the program crashed since it last started, the latest report, forgotten as it's taken, so it's said once.
 pub fn take_latest() -> Option<PathBuf> {
     let marker = folder()?.join(LATEST);
     let path = std::fs::read_to_string(&marker).ok()?;
@@ -135,13 +136,13 @@ pub fn take_latest() -> Option<PathBuf> {
     Some(PathBuf::from(path.trim()))
 }
 
-/// A file's URL, to open it: e.g. file:///C:/Users/... on Windows.
+/// The app opens a file by its URL: file:///C:/Users/... on Windows, say.
 pub fn file_url(path: &std::path::Path) -> String {
     let path = path.display().to_string().replace('\\', "/").replace(' ', "%20");
     if path.starts_with('/') { format!("file://{path}") } else { format!("file:///{path}") }
 }
 
-/// Writes a report of a crash (`what` happened), and says where on stderr.
+/// When the program crashes, it writes a report (of `what` happened) with this, and says where on stderr.
 fn report(what: &str) {
     let thread = std::thread::current();
     let mut text = String::new();
@@ -170,7 +171,7 @@ fn report(what: &str) {
     end_session();
 }
 
-/// Writes `text` to a new report, for the next run to say where it is.
+/// This writes `text` to a new report, for the next run to say where it is.
 fn write_report(text: &str) {
     let Some(folder) = folder() else { return eprintln!("{text}") };
     let path = folder.join(format!("crash-{}.txt", chrono::Local::now().format("%Y-%m-%d-%H%M%S")));
@@ -183,12 +184,12 @@ fn write_report(text: &str) {
     }
 }
 
-/// Crashes in native code on Windows: access violations and the like, which aren't panics.
+/// On Windows, crashes in native code (access violations and the like, which aren't panics) are caught here.
 #[cfg(windows)]
 mod native {
     use std::ffi::c_void;
 
-    /// Windows's `EXCEPTION_RECORD`: what went wrong, and where.
+    /// Windows says what went wrong, and where, in an `EXCEPTION_RECORD`.
     #[repr(C)]
     struct ExceptionRecord {
         code: u32,
@@ -199,14 +200,14 @@ mod native {
         information: [usize; 15],
     }
 
-    /// Windows's `EXCEPTION_POINTERS`, which an exception filter's given.
+    /// Windows gives an exception filter `EXCEPTION_POINTERS`.
     #[repr(C)]
     struct ExceptionPointers {
         record: *const ExceptionRecord,
         context: *const c_void,
     }
 
-    /// An unhandled exception filter, as `SetUnhandledExceptionFilter` takes it.
+    /// `SetUnhandledExceptionFilter` takes an unhandled exception filter of this type.
     type Filter = unsafe extern "system" fn(*const ExceptionPointers) -> i32;
 
     const EXECUTE_HANDLER: i32 = 1;
@@ -225,7 +226,7 @@ mod native {
         unsafe { SetUnhandledExceptionFilter(Some(filter)) };
     }
 
-    /// The library (or program) `address` is in.
+    /// A report says which library (or program) the crash's `address` is in, from this.
     fn module(address: *const c_void) -> Option<String> {
         let mut module = std::ptr::null_mut();
         let mut name = [0u16; 1024];

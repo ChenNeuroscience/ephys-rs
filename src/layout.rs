@@ -1,4 +1,4 @@
-//! The layout of panes, like an IDE's: the home pane, the dev tools and node windows, each a tab in a group, the
+//! The app lays out its panes like an IDE: the home pane, the dev tools and node windows, each a tab in a group, the
 //! groups side by side or one above another. Panes can be dragged by their tabs to rearrange them (see
 //! `crate::gui::docking`, which draws it). The app is in basic or advanced mode (see `Mode`): the home pane
 //! shows the basic view (the viewers, and quick actions) or the graph.
@@ -16,7 +16,7 @@
 //! A window can be undocked to float, and docked again. Closing a docked window hides it but keeps its place, so it
 //! comes back where it was when reopened.
 //!
-//! Sizes are worked out from the layout itself (see `rects`): the window's size when it was last drawn, shared out as
+//! The layout works out sizes itself (see `rects`): the window's size when it was last drawn, shared out as
 //! the groups share it, so panes placed one after another (before they've been drawn) are placed as they'll be.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -27,25 +27,26 @@ use serde::{Deserialize, Serialize};
 
 use crate::engine::{Graph, NodeId, NodesEnum};
 
-/// What a pane in the layout shows.
+/// A pane in the layout shows one of these.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub enum Pane {
-    /// Home: the basic view, or the graph (see `Mode`).
+    /// The home pane shows the basic view, or the graph (see `Mode`).
     Home,
     DevTools,
-    /// The selected annotation's settings: there while an annotation's selected.
+    /// The annotation pane shows the selected annotation's settings, while an annotation's selected.
     Annotation,
-    /// A node's window: its view, or its settings.
+    /// A node's window shows its view, or its settings.
     Node(NodeId),
 }
 
-/// Basic or advanced: what the home pane shows, and what panes offer (each pane decides: see `UiContext::advanced`).
+/// The app is in basic or advanced mode, which decides what the home pane shows, and what panes offer (each pane
+/// decides: see `UiContext::advanced`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 pub enum Mode {
-    /// The viewers, large, and quick actions: for most people, most of the time.
+    /// Basic mode shows the viewers, large, and quick actions: for most people, most of the time.
     #[default]
     Basic,
-    /// The graph, to build and change it node by node, and each pane's settings.
+    /// Advanced mode shows the graph, to build and change it node by node, and each pane's settings.
     Advanced,
 }
 
@@ -58,17 +59,17 @@ impl Mode {
     }
 }
 
-/// Where a node's window is, if anywhere.
+/// A node's window is in one of these states.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum WindowState {
     Closed,
     Floating,
     Docked,
-    /// Docked, but closed: it keeps its place for when it's next opened.
+    /// A hidden window's docked, but closed: it keeps its place for when it's next opened.
     Hidden,
 }
 
-/// Which side of a group a new one goes.
+/// A new group goes on one side of another.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Side {
     Left,
@@ -77,13 +78,13 @@ pub enum Side {
     Below,
 }
 
-/// Where the panes are: docked in a tree of tabs and splits, or floating; and whether the home pane's basic or
-/// advanced. Saved with the file, but for the mode.
+/// The layout keeps where the panes are (docked in a tree of tabs and splits, or floating), and whether the home pane's
+/// basic or advanced. It's saved with the file, but for the mode.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Layout {
     pub(crate) tree: Tree<Pane>,
     floating: BTreeSet<NodeId>,
-    /// Not kept with the file: the home pane opens at home (see `App::home`).
+    /// The mode isn't kept with the file: the home pane opens at home (see `App::home`).
     #[serde(skip)]
     pub mode: Mode,
 }
@@ -97,7 +98,7 @@ impl Default for Layout {
     }
 }
 
-/// The window's size, before the layout's been drawn.
+/// Before the layout's been drawn, the layout takes the window to be this size.
 const TYPICAL: egui::Vec2 = vec2(1400.0, 800.0);
 
 impl Layout {
@@ -116,7 +117,7 @@ impl Layout {
         }
     }
 
-    /// Nodes whose windows are showing, floating or docked.
+    /// The nodes whose windows are showing, floating or docked.
     pub fn open_windows(&self) -> HashSet<NodeId> {
         let docked = self.tree.tiles.iter().filter_map(|(tile, t)| match t {
             Tile::Pane(Pane::Node(id)) if self.tree.tiles.is_visible(*tile) => Some(*id),
@@ -135,8 +136,8 @@ impl Layout {
 
     // Opening and closing.
 
-    /// Opens a node's window (where it was last, if it's been open before; otherwise see `place`, `from` being the
-    /// pane it's opened from, if any), or closes it.
+    /// The app opens a node's window with this (where it was last, if it's been open before; otherwise see `place`,
+    /// `from` being the pane it's opened from, if any), or closes it.
     pub fn toggle(&mut self, id: NodeId, from: Option<Pane>) {
         match self.window(id) {
             WindowState::Closed => self.dock(id, from),
@@ -148,8 +149,8 @@ impl Layout {
         }
     }
 
-    /// Opens a node's window (where it was last, if it's been open before; otherwise see `place`), or brings it to the
-    /// front.
+    /// The app opens a node's window with this (where it was last, if it's been open before; otherwise see `place`),
+    /// or brings it to the front.
     pub fn open(&mut self, id: NodeId, from: Option<Pane>) {
         match self.window(id) {
             WindowState::Floating => {}
@@ -158,7 +159,7 @@ impl Layout {
         }
     }
 
-    /// Closes a node's window, if it's open (keeping its place, if it's docked).
+    /// The app closes a node's window with this, if it's open (keeping its place, if it's docked).
     pub fn close(&mut self, id: NodeId) {
         match self.window(id) {
             WindowState::Floating => {
@@ -169,7 +170,7 @@ impl Layout {
         }
     }
 
-    /// Shows or hides the dev tools: the first time, as a tab in the largest group.
+    /// The app shows or hides the dev tools with this: the first time, as a tab in the largest group.
     pub fn toggle_dev_tools(&mut self) {
         let pane = Pane::DevTools;
         if self.tile(pane).is_none() {
@@ -182,8 +183,8 @@ impl Layout {
         if self.is_shown(pane) { self.hide(pane) } else { self.show(pane) }
     }
 
-    /// Shows or hides the annotation pane: the first time, as a tab in the group beside home (on its right, or
-    /// failing that its left), or failing that in a new column on its right.
+    /// The app shows or hides the annotation pane with this: the first time, as a tab in the group beside home (on its
+    /// right, or failing that its left), or failing that in a new column on its right.
     pub fn show_annotation_pane(&mut self, show: bool) {
         let pane = Pane::Annotation;
         if self.is_shown(pane) == show {
@@ -209,7 +210,7 @@ impl Layout {
         self.show(pane);
     }
 
-    /// Shows a docked pane, bringing its tab to the front.
+    /// The app shows a docked pane with this, bringing its tab to the front.
     pub fn show(&mut self, pane: Pane) {
         let Some(tile) = self.tile(pane) else { return };
         let mut child = tile;
@@ -223,14 +224,14 @@ impl Layout {
         }
     }
 
-    /// Hides a docked pane, keeping its place.
+    /// The app hides a docked pane with this, keeping its place.
     pub fn hide(&mut self, pane: Pane) {
         if let Some(tile) = self.tile(pane) {
             hide_tile(&mut self.tree.tiles, tile);
         }
     }
 
-    /// Puts a node's window in the layout (see `place`), unless it's there already (hidden), and shows it.
+    /// Docking puts a node's window in the layout (see `place`), unless it's there already (hidden), and shows it.
     pub fn dock(&mut self, id: NodeId, from: Option<Pane>) {
         self.floating.remove(&id);
         let pane = Pane::Node(id);
@@ -240,7 +241,7 @@ impl Layout {
         self.show(pane);
     }
 
-    /// Takes a docked window out of the layout, to float.
+    /// Floating takes a docked window out of the layout.
     pub fn float(&mut self, id: NodeId) {
         if let Some(tile) = self.tile(Pane::Node(id)) {
             self.tree.remove_recursively(tile);
@@ -248,7 +249,7 @@ impl Layout {
         self.floating.insert(id);
     }
 
-    /// Forgets the windows of nodes that no longer exist.
+    /// The layout forgets the windows of nodes that no longer exist, with this.
     pub fn retain_nodes<N: NodesEnum>(&mut self, graph: &Graph<N>) {
         self.floating.retain(|id| graph.contains(*id));
         let gone: Vec<TileId> = self
@@ -267,10 +268,10 @@ impl Layout {
 
     // Placing panes.
 
-    /// Puts a pane in the layout, a step towards the default layout (see `Arrangement::default_layout`): with one
-    /// group showing, in a new column on its right, taking two thirds of the width; with two, below the second (the
-    /// rightmost), taking a third of its height; after that, as a tab in the largest group, other than the one it's
-    /// opened from (`from`'s), if it's opened from a pane.
+    /// A pane opened for the first time goes in the layout here, a step towards the default layout (see
+    /// `Arrangement::default_layout`): with one group showing, in a new column on its right, taking two thirds of the
+    /// width; with two, below the second (the rightmost), taking a third of its height; after that, as a tab in the
+    /// largest group, other than the one it's opened from (`from`'s), if it's opened from a pane.
     pub fn place(&mut self, pane: Pane, from: Option<Pane>) {
         let rects = self.rects();
         let groups = self.groups_in(&rects);
@@ -344,7 +345,7 @@ impl Layout {
         side(true).or_else(|| side(false))
     }
 
-    /// Adds `pane` as a tab of `group`.
+    /// This adds `pane` as a tab of `group`.
     pub fn add_tab(&mut self, group: TileId, pane: Pane) {
         let tile = self.tree.tiles.insert_pane(pane);
         match self.tree.tiles.get_mut(group) {
@@ -353,8 +354,8 @@ impl Layout {
         }
     }
 
-    /// Puts `pane` in a new group on `side` of `target` (a tile: a group, or a row or column of them), taking `share`
-    /// of the space they then share. Returns the new group.
+    /// This puts `pane` in a new group on `side` of `target` (a tile: a group, or a row or column of them), taking
+    /// `share` of the space they then share, and returns the new group.
     pub fn split(&mut self, target: TileId, pane: Pane, side: Side, share: f32) -> TileId {
         let tiles = &mut self.tree.tiles;
         let tile = tiles.insert_pane(pane);
@@ -375,7 +376,8 @@ impl Layout {
         new
     }
 
-    /// Makes `pane` the whole layout, if there's nothing showing (else alongside what's there, on the right).
+    /// With nothing showing, this makes `pane` the whole layout (otherwise it goes alongside what's there, on the
+    /// right).
     fn as_root(&mut self, pane: Pane) {
         match self.tree.root {
             Some(root) => {
@@ -388,8 +390,8 @@ impl Layout {
         }
     }
 
-    /// Each tile's rectangle, as it's laid out: the whole layout's, as last drawn (or a typical window's, before it's
-    /// been drawn), shared out as the rows and columns share it. Only those showing.
+    /// The layout works out each tile's rectangle with this: the whole layout's, as last drawn (or a typical window's,
+    /// before it's been drawn), shared out as the rows and columns share it. Only those showing have one.
     pub fn rects(&self) -> HashMap<TileId, Rect> {
         let mut rects = HashMap::new();
         if let Some(root) = self.tree.root {
@@ -437,8 +439,8 @@ impl Layout {
 
     // Arranging it all.
 
-    /// Replaces the layout with `arrangement`, its windows docked and shown (those floating docked), and the panes
-    /// docked before that it doesn't place where it says (see `Tab::Others`).
+    /// Arranging replaces the layout with `arrangement`, its windows docked and shown (those floating docked), and the
+    /// panes docked before that it doesn't place where it says (see `Tab::Others`).
     pub fn arrange(&mut self, arrangement: &Arrangement) {
         let placed = |pane: Pane| match pane {
             Pane::Home => arrangement.places(Tab::Home),
@@ -457,8 +459,8 @@ impl Layout {
         self.floating.retain(|id| !arrangement.places(Tab::Window(*id)));
     }
 
-    /// The docked panes, in the order they're laid out (left to right, top to bottom, tab by tab), and whether each
-    /// is shown.
+    /// The docked panes, in the order they're laid out (left to right, top to bottom, tab by tab), and whether each is
+    /// shown.
     fn panes_in_order(&self) -> Vec<(Pane, bool)> {
         let tiles = &self.tree.tiles;
         let mut panes = Vec::new();
@@ -477,7 +479,7 @@ impl Layout {
         panes
     }
 
-    /// The tab group a docked pane's in, and whether it's the tab in front.
+    /// Tests find the tab group a docked pane's in, and whether it's the tab in front, with this.
     #[cfg(test)]
     pub fn tab_group(&self, pane: Pane) -> Option<(TileId, bool)> {
         let tile = self.tile(pane)?;
@@ -489,29 +491,29 @@ impl Layout {
     }
 }
 
-/// An arrangement of the panes: rows and columns of groups of tabs.
+/// Quick actions arrange the panes as rows and columns of groups of tabs.
 pub enum Arrangement {
-    /// Side by side, left to right, each with its share of the width.
+    /// A row has its parts side by side, left to right, each with its share of the width.
     Row(Vec<(f32, Arrangement)>),
-    /// One above another, top to bottom, each with its share of the height.
+    /// A column has its parts one above another, top to bottom, each with its share of the height.
     Column(Vec<(f32, Arrangement)>),
-    /// Tabs, the one at `active` in front.
+    /// A group of tabs has the one at `active` in front.
     Tabs { tabs: Vec<Tab>, active: usize },
 }
 
-/// A tab in an arrangement.
+/// An arrangement's tabs are each one of these.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tab {
     Home,
     /// A node's window.
     Window(NodeId),
-    /// The panes docked before that aren't put elsewhere, each as a tab (those hidden staying hidden). Without
+    /// The panes docked before that aren't put elsewhere go here, each as a tab (those hidden staying hidden). Without
     /// this, they're closed.
     Others,
 }
 
 impl Arrangement {
-    /// The default layout: a column the full height on the left, a third of the width; and on the right, one above
+    /// The default layout has a column the full height on the left, a third of the width; and on the right, one above
     /// another, `top` (two thirds of the height) and `bottom`. Windows opened take steps towards it (see
     /// `Layout::place`).
     pub fn default_layout(left: Arrangement, top: Arrangement, bottom: Arrangement) -> Arrangement {
@@ -521,12 +523,12 @@ impl Arrangement {
         ])
     }
 
-    /// Tabs, the first in front.
+    /// A group of tabs, the first in front.
     pub fn tabs(tabs: Vec<Tab>) -> Arrangement {
         Arrangement::Tabs { tabs, active: 0 }
     }
 
-    /// Whether it has `tab`.
+    /// This says whether the arrangement has `tab`.
     pub fn places(&self, tab: Tab) -> bool {
         match self {
             Arrangement::Row(parts) | Arrangement::Column(parts) => parts.iter().any(|(_, part)| part.places(tab)),
@@ -535,7 +537,7 @@ impl Arrangement {
     }
 }
 
-/// Puts `arrangement` in `tiles`, returning its top tile; `others` go where it says.
+/// Arranging puts `arrangement` in `tiles` with this, returning its top tile; `others` go where it says.
 fn build(tiles: &mut Tiles<Pane>, arrangement: &Arrangement, others: &[(Pane, bool)]) -> TileId {
     match arrangement {
         Arrangement::Row(parts) | Arrangement::Column(parts) => {
@@ -575,7 +577,7 @@ fn build(tiles: &mut Tiles<Pane>, arrangement: &Arrangement, others: &[(Pane, bo
     }
 }
 
-/// Hides a tile, bringing another tab to the front in its place.
+/// Hiding a tile brings another tab to the front in its place.
 pub(crate) fn hide_tile(tiles: &mut Tiles<Pane>, tile: TileId) {
     tiles.set_visible(tile, false);
     let Some(parent) = tiles.parent_of(tile) else { return };

@@ -1,12 +1,13 @@
-//! Edge types: what can flow along an edge, declared by the program like node types are.
+//! Edges connect nodes on the graph, and each carries one type of thing. A program declares its edge types as it does
+//! its node types.
 //!
 //! There are two dimensions of edge. Data edges carry data streams from outputs to inputs, and must form a DAG.
-//! Settings edges let one node edit a setting of another (a viewer adjusting a detector's threshold, say);
-//! they carry no data, so may point anywhere, including upstream.
+//! Settings edges let one node edit a setting of another (a viewer adjusting a detector's threshold, say); they carry
+//! no data, so they may point anywhere, including upstream.
 //!
-//! Each edge type is a small `Copy` struct implementing `EdgeType`: for data, a description of the data stream
-//! (e.g. channel count and sample rate); for settings, the setting's value. `edge_types!` gathers them into
-//! an enum per dimension, with a matching fieldless `Kind` enum that ports are declared with.
+//! Each edge type is a struct implementing `EdgeType`: for data, a small `Copy` description of the data stream (its
+//! channel count and sample rate, say); for settings, the setting's value. `edge_types!` gathers them into an enum per
+//! dimension, with a matching fieldless `Kind` enum that ports are declared with.
 
 use std::fmt::Debug;
 use std::hash::Hash;
@@ -14,25 +15,25 @@ use std::hash::Hash;
 use eframe::egui::Color32;
 use serde::{Deserialize, Serialize};
 
-/// Static facts about an edge type.
+/// The graph describes each edge type by these facts, which never change.
 pub struct EdgeInfo {
     pub name: &'static str,
     pub colour: Color32,
     pub description: &'static str,
 }
 
-/// An edge type: what flows along an edge of one kind, a data stream (32 channels at 30 kHz, say) or a setting (a
-/// spike detector's thresholds), and how it's described on the graph.
+/// Each edge type implements this: what flows along an edge of one kind, a data stream (32 channels at 30 kHz, say) or
+/// a setting (a spike detector's thresholds), and how the graph describes it.
 pub trait EdgeType: Clone + PartialEq + Debug + Send + Sync + 'static {
     const INFO: EdgeInfo;
 
-    /// Short description, e.g. "32 ch · 30 kHz".
+    /// The graph shows a short description of each value: "32 ch · 30 kHz", say.
     fn summary(&self) -> String;
 
     /// Part of a setting can be transient: it has the node do something over a while, with the data going by, rather
-    /// than say how the node's set up (when auto detect was started, say: `DetectGains::started`, in the standard nodes). A
-    /// transient setting is a setting like any other: a change is a new snapshot, which the node prepares for (room to
-    /// sample into, say), it's undoable, and it's locked while recording. While it's set, the node runs (see
+    /// than say how the node's set up (when auto detect was started, say: `DetectGains::started`, in the standard
+    /// nodes). A transient setting is a setting like any other: a change is a new snapshot, which the node prepares for
+    /// (room to sample into, say), it's undoable, and it's locked while recording. While it's set, the node runs (see
     /// `Node::evaluate_tree_shake`), and once the node's passes are done, they clear it themselves, along with whatever
     /// they set (`PassContext::trigger_settings_update`). Being transient, it isn't kept: it isn't saved
     /// (`#[serde(skip)]`), and the app clears it here, for each of a node's settings that other nodes can edit (see
@@ -41,12 +42,12 @@ pub trait EdgeType: Clone + PartialEq + Debug + Send + Sync + 'static {
     fn clear_transient(&mut self) {}
 }
 
-/// The closed set of edge types for one dimension: an enum with one variant per type. Implemented by
-/// `edge_types!`.
+/// A program's edge types for one dimension form a closed set: an enum with one variant per type, which `edge_types!`
+/// makes and implements this for.
 pub trait EdgeTypesEnum: Clone + PartialEq + Debug + Send + Sync + 'static {
-    /// Which type a value is, without what's in it: what ports are matched by.
+    /// Ports are matched by which type a value is, without what's in it: its kind.
     type Kind: Copy + Eq + Hash + Debug + 'static;
-    /// Indexed by `kind_index`.
+    /// Each type's facts, by `kind_index`.
     const KINDS: &'static [EdgeInfo];
 
     fn kind(&self) -> Self::Kind;
@@ -56,61 +57,63 @@ pub trait EdgeTypesEnum: Clone + PartialEq + Debug + Send + Sync + 'static {
     fn clear_transient(&mut self);
 }
 
-/// Which edge type a value of `S` is (see `EdgeTypesEnum::Kind`).
+/// A value of `S` is of one edge type, named by its kind (see `EdgeTypesEnum::Kind`).
 pub type Kind<S> = <S as EdgeTypesEnum>::Kind;
 
-/// A data edge type, which besides describing a data stream says how a pass's worth of it is held. Data streams are
-/// small descriptions, so `Copy`; settings may hold more (a list, say), so needn't be.
+/// Each data edge type implements this as well: besides describing a data stream, a data edge type says how a pass's
+/// worth of the stream is held. Data streams are small descriptions, so `Copy`; settings may hold more (a list, say),
+/// so needn't be.
 pub trait DataStreamType: EdgeType + Copy {
-    /// A pass's worth of it, made once and reused for every pass.
+    /// A pass's worth of the data stream is held in one of these, made once and reused for every pass.
     type Buffer: Send + Sync + 'static;
 
-    /// An empty buffer with room for `duration` seconds of this data stream. Buffers are made before running, and
-    /// reused for every pass.
+    /// The plan makes buffers before running, each with room for `duration` seconds of the data stream, and reuses
+    /// them for every pass. This makes one, empty.
     fn buffer(&self, duration: f64) -> Self::Buffer;
 
-    /// The memory a buffer has allocated, in bytes.
+    /// The dev tools show how much memory a buffer has allocated, in bytes, from this.
     fn bytes(buffer: &Self::Buffer) -> usize;
 
-    /// Copies `from` into `to`, a buffer of the same data stream, without allocating (for the plan, copying for a
-    /// node taking a buffer it can't be the last to read: see `BufferUsage::takes`).
+    /// The plan copies a buffer for a node that takes it but can't be the last to read it (see `BufferUsage::takes`).
+    /// This copies `from` into `to`, a buffer of the same data stream, without allocating.
     fn copy(from: &Self::Buffer, to: &mut Self::Buffer);
 
-    /// Empties it, without allocating: as it would be from a pass with nothing to say (for a node that failed to
-    /// prepare, and so doesn't run).
+    /// A node that failed to prepare doesn't run, and its outputs are emptied, as they'd be from a pass with nothing to
+    /// say. This empties a buffer, without allocating.
     fn empty(buffer: &mut Self::Buffer);
 }
 
-/// The data edge types, with their buffers. Implemented by `edge_types!`.
+/// A program's data edge types also have buffers, which `edge_types!` gathers into an enum, implementing this.
 pub trait DataStreamsEnum: EdgeTypesEnum + Copy {
-    /// A buffer of any of them: an enum, with a variant for each type's.
+    /// A buffer of any of the data edge types: an enum, with a variant for each type's.
     type Buffer: Send + Sync + 'static;
     fn buffer(&self, duration: f64) -> Self::Buffer;
     fn bytes(buffer: &Self::Buffer) -> usize;
-    /// See `DataStreamType::copy`: nothing, if they're different kinds of buffer.
+    /// See `DataStreamType::copy`. Buffers of different kinds aren't copied.
     fn copy(from: &Self::Buffer, to: &mut Self::Buffer);
     /// See `DataStreamType::empty`.
     fn empty(buffer: &mut Self::Buffer);
 }
 
-/// The edge types a program is built with, in both dimensions, and the triggers sent along settings edges.
+/// A program is built with edge types in both dimensions, and triggers sent along settings edges; `edge_types!` makes a
+/// type implementing this, naming them.
 pub trait Edges: 'static {
-    /// What flows from outputs to inputs, a pass at a time.
+    /// Data streams flow from outputs to inputs, a pass at a time.
     type DataStream: DataStreamsEnum;
-    /// Values nodes share, through settings edges from a control to a setting.
+    /// Settings are values nodes share, through settings edges from a control to a setting.
     type Setting: EdgeTypesEnum;
-    /// What can be sent to a node, through a settings edge or by itself (see `crate::triggers`).
+    /// Triggers can be sent to a node, through a settings edge or by the node itself (see `crate::triggers`).
     type Trigger: crate::triggers::TriggersEnum;
 }
 
-/// Which kind of the program's triggers one is (see `TriggersEnum::Kind`).
+/// Each of the program's triggers is of one kind (see `TriggersEnum::Kind`).
 pub type TriggerKind<E> = <<E as Edges>::Trigger as crate::triggers::TriggersEnum>::Kind;
 
-/// A pass's worth of data on a data edge.
+/// A data edge holds a pass's worth of data in one of these.
 pub type Buffer<E> = <<E as Edges>::DataStream as DataStreamsEnum>::Buffer;
 
-/// The two kinds of edge: data, flowing from an output to an input each pass; and settings, linking a control to
-/// another node's setting, so either can see and change it.
+/// An edge is of one of two dimensions: data, flowing from an output to an input each pass; or settings, linking a
+/// control to another node's setting, so either can see and change it.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default, Serialize, Deserialize)]
 pub enum Dimension {
     #[default]
@@ -118,7 +121,7 @@ pub enum Dimension {
     Settings,
 }
 
-/// Declares the edge types a program is built with:
+/// A program declares the edge types it's built with like this:
 ///
 /// ```ignore
 /// edge_types! {

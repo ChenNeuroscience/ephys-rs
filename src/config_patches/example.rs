@@ -1,7 +1,7 @@
-//! An example, of the shape a patch takes, to copy: it doesn't do anything. A patch is a script: it's given config coming in
-//! (`IncomingConfig`): the versions that wrote it, and it, as a project's JSON (see `crate::config_patching`), and changes what was
-//! written before into what's written now, if it needs to. Moving the layout under a key of its own, from the version after
-//! 0.158.0, say:
+//! An example, of the shape a patch takes, to copy: it doesn't do anything. A patch is a script: it's given config
+//! coming in (`IncomingConfig`): the versions that wrote it, and it, as a project's JSON (see
+//! `crate::config_patching`), and changes what was written before into what's written now, if it needs to. Moving the
+//! layout under a key of its own, from the version after 0.158.0, say:
 //!
 //! ```ignore
 //! if config.written_before("core", "0.159.0")

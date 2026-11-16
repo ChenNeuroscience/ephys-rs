@@ -1,35 +1,35 @@
-//! Running the graph: a small pool of worker threads, each running whole passes over a snapshot of it.
+//! While the graph runs, a small pool of worker threads runs whole passes over snapshots of it.
 //!
-//! Time is cut into passes of `PASS_DURATION`, numbered from 0. A dispatcher thread releases each pass when
-//! its time is up, to whichever ready worker is free. A worker runs the pass through every node in order, as
-//! the snapshot's plan says (worked out when the snapshot was taken), on buffers of its own made for that plan
-//! before it runs any of its passes (so nothing is allocated per pass), with each node reading its inputs
-//! from the outputs of the nodes before it.
+//! Time is cut into passes of `PASS_DURATION`, numbered from 0. A dispatcher thread releases each pass when its time
+//! is up, to whichever ready worker is free. A worker runs the pass through every node in order, as the snapshot's plan
+//! says (worked out when the snapshot was baked), on buffers of its own made for that plan before it runs any of its
+//! passes (so nothing is allocated per pass), with each node reading its inputs from the outputs of the nodes before
+//! it.
 //!
-//! Passes run at the same time on different workers, which is fine for most nodes but not for those that carry state
-//! from one pass to the next (a filter's history, say). Each node's state lives in a slot, on a cache line of its own,
-//! with a turn number: pass n waits (spinning briefly, then yielding) for the turn to reach n, uses the state, then sets
-//! it to n + 1 to hand over to the next pass. As long as each pass stays behind the one before, there's little
-//! waiting. State that's each worker's own (scratch space: see `Node::WorkerState`) needs no turns: each worker keeps
-//! its own, by node.
+//! Passes run at the same time on different workers. That's fine for most nodes, but not for those that carry state
+//! from one pass to the next (a filter's history, say). Each such node's state lives in a slot, on a cache line of its
+//! own, with a turn number: pass n waits (spinning briefly, then yielding) for the turn to reach n, uses the state,
+//! then sets the turn to n + 1 to hand over to the next pass. As long as each pass stays behind the one before, there's
+//! little waiting. State that's each worker's own (scratch space: see `Node::WorkerState`) needs no turns: each worker
+//! keeps its own, by node.
 //!
-//! If every worker is busy and passes queue up, the dispatcher drops passes (counting them) rather than
-//! falling ever further behind.
+//! If every worker is busy and passes queue up, the dispatcher drops passes (counting them) rather than falling ever
+//! further behind. Workers report each pass they run to the GUI on a queue of its own, for the stats, never waiting on
+//! it.
 //!
-//! Workers report each pass they run to the GUI on a queue of its own, for the stats, never waiting on it.
+//! Every node prepares for each snapshot the run's given, one snapshot at a time, on a thread of the run's
+//! (`Node::prepare_for_snapshot`, see `prepare_snapshots`): the node makes its state ahead of time (proto-states), or
+//! makes nothing new, so its state carries on (a node with the same data streams in and out sees its new settings on
+//! the next pass, and adjusts). The new state's made from the proto-state at the new snapshot's first pass, once the
+//! pass before has finished with the old (`Node::on_snapshot_change`), so passes see it in order across snapshots too;
+//! each worker takes its own, replacing what it had, at its first pass of the snapshot. What a node shares with the
+//! GUI is handed on likewise, or made afresh.
 //!
-//! Every node with state prepares for each snapshot the run's given, one snapshot at a time, on a thread of the run's
-//! (`Node::prepare_for_snapshot`, see `prepare_snapshots`): making its state ahead of time (proto-states), or making
-//! nothing new, so its state carries on (a node with the same data streams in and out sees its new settings on the
-//! next pass, and adjusts). The new state's made from the proto-state at the new snapshot's first pass, once the pass
-//! before has finished with the old (`Node::on_snapshot_change`), so passes see it in order across snapshots too; each
-//! worker takes its own, replacing what it had, at its first pass of the snapshot. What a node shares with the GUI is handed on likewise, or made afresh. The dispatcher attaches the
-//! snapshot to each pass it sends, so snapshots only move forward pass by pass. It switches to a new snapshot once
-//! it's ready: its nodes have prepared, and its plan has the same shape as the running one's (the same steps and
-//! buffers, as after a change of settings) or every worker has made buffers for it, as they come free; until then,
-//! passes carry on with the one before. So a worker is never handed a pass it isn't ready to run. A
+//! The dispatcher attaches the snapshot to each pass it sends, so snapshots only move forward pass by pass. It switches
+//! to a new snapshot once it's ready: its nodes have prepared, and its plan has the same shape as the running one's
+//! (the same steps and buffers, as after a change of settings) or every worker has made buffers for it, as they come
+//! free; until then, passes carry on with the one before. So a worker is never handed a pass it isn't ready to run. A
 //! recording takes effect with its snapshot's first pass (`Recording::take_effect`).
-//!
 //!
 //! What each pass is given is in `pass_context`, and how it's planned in `plan`.
 
@@ -58,16 +58,16 @@ use super::{
 
 type DataStream<N> = <<N as NodesEnum>::Edges as Edges>::DataStream;
 
-/// What the workers do with a plan: make their buffers for it, and run its passes.
+/// A worker makes buffers for a plan, then runs the plan's passes on them.
 impl<N: NodesEnum> Plan<N> {
-    /// The buffers a worker runs passes on.
+    /// A worker runs passes on buffers of its own, which this makes.
     fn workspace(&self) -> Workspace<N> {
         Workspace { buffers: self.buffers.iter().map(|s| Some(s.buffer(PASS_DURATION))).collect() }
     }
 
-    /// Runs a pass through every step of `snapshot`'s graph, on `workspace`, with the worker's own state for the nodes
-    /// with some (`worker_states`). A node without the state it needs (it failed to prepare) doesn't run, and its
-    /// outputs are left empty.
+    /// A worker runs a pass through every step of `snapshot`'s graph with this, on `workspace`, with the worker's own
+    /// state for the nodes (`worker_states`). A node without the state it needs (it failed to prepare) doesn't run, and
+    /// its outputs are left empty.
     fn run(
         &self,
         snapshot: &Arc<Snapshot<N>>,
@@ -157,50 +157,50 @@ impl<N: NodesEnum> Plan<N> {
     }
 }
 
-/// A worker's buffers, for every step. Made once per worker per plan, before the worker runs any of the plan's
-/// passes.
+/// A worker has buffers for every step of a plan, made once per worker per plan, before the worker runs any of the
+/// plan's passes.
 struct Workspace<N: NodesEnum> {
     buffers: Vec<Option<Buffer<N::Edges>>>,
 }
 
-/// What a node prepared, as the engine keeps it, whatever the node's type.
+/// The engine keeps what each node prepared alike, whatever the node's type.
 type PreparedAny<N> = Prepared<Box<dyn Any + Send>, Box<dyn Any + Send>, N>;
 
-/// What about their hardware nodes say someone should decide, by node (see `Runner::user_decisions`).
+/// Nodes say what about their hardware someone should decide; the run keeps it by node (see
+/// `Runner::user_decisions`).
 pub type UserDecisions<N> = Vec<(NodeId, UserDecision<N>)>;
 
-/// A worker's own state for each node (see `Node::WorkerState`), kept from snapshot to snapshot whatever
-/// their plans.
+/// Each worker keeps its own state for each node (see `Node::WorkerState`), from snapshot to snapshot whatever their
+/// plans.
 type WorkerStates = HashMap<NodeId, Box<dyn Any + Send>>;
 
-/// What each worker's to make its state for a node from, as it first runs a snapshot (see `Node::WorkerState`): the
-/// proto-state the node made for each worker, taken by the first of its snapshots the worker runs. Handed on from
-/// snapshot to snapshot while the node makes no new ones, so a worker that runs none of one snapshot's passes still
-/// takes its own.
+/// A node can make each worker's state for it ahead of time (see `Node::WorkerState`): one proto-state per worker,
+/// which each worker takes as it first runs one of the snapshot's passes. The run hands these on from snapshot to
+/// snapshot while the node makes no new ones, so a worker that runs none of one snapshot's passes still takes its own.
 type WorkerProtoStates = Arc<Mutex<Vec<Option<Box<dyn Any + Send>>>>>;
 
 impl<N: NodesEnum> Workspace<N> {
-    /// The memory of its data buffers.
+    /// The dev tools show how much memory the workspace's buffers take.
     fn bytes(&self) -> usize {
         self.buffers.iter().flatten().map(<<N::Edges as Edges>::DataStream as DataStreamsEnum>::bytes).sum()
     }
 }
 
-/// What the workers share running one snapshot, besides its graph: the nodes' state, what they share with the GUI, and
-/// how long each step's taking (each handed on from the snapshot before, by node: see `Scheduled::new`), and the run's
-/// triggers.
+/// Running one snapshot, the workers share more than its graph: the nodes' state, what they share with the GUI, how
+/// long each step's taking (each handed on from the snapshot before, by node: see `Scheduled::new`), and where direct
+/// triggers go.
 struct RunSlots {
-    /// By the plan's state slot (`Step::state`).
+    /// The nodes' state, by the plan's state slot (`Step::state`).
     states: Vec<Arc<StateSlot>>,
     shared: Arc<SharedByNode>,
     direct: Arc<DirectTriggers>,
-    /// By step.
+    /// How long each step's taking, by step.
     times: Vec<Arc<StepTimes>>,
 }
 
-/// How long a step's taking, on average over its last few dozen passes (in µs, as `f64` bits): working, and
-/// waiting for the pass before to hand over the node's state. Workers update them without waiting for each other,
-/// so an update's occasionally lost, which doesn't matter for an average.
+/// The dev tools show how long each step's taking, on average over its last few dozen passes (in µs, as `f64` bits):
+/// working, and waiting for the pass before to hand over the node's state. Workers update the averages without waiting
+/// for each other, so an update's occasionally lost, which doesn't matter for an average.
 #[derive(Default)]
 struct StepTimes {
     work: AtomicU64,
@@ -208,7 +208,7 @@ struct StepTimes {
 }
 
 impl StepTimes {
-    /// How much of each pass's time goes into the average.
+    /// Each pass's time goes into the average with this weight.
     const WEIGHT: f64 = 0.05;
 
     fn add(average: &AtomicU64, time: Duration) {
@@ -224,39 +224,39 @@ impl StepTimes {
     }
 }
 
-/// How long a step's taking, on average (see `StepTimes`).
+/// The dev tools read how long a step's taking, on average, as this (see `StepTimes`).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct StepTime {
     pub work_us: f64,
-    /// Waiting at its sync point, for the pass before to hand over the node's state.
+    /// The step waits this long at its sync point, for the pass before to hand over the node's state.
     pub wait_us: f64,
 }
 
-/// A node's state, handed from each pass to the next in turn (see the module docs). Each snapshot has its own slot for
-/// each node with state, empty until the node's prepared it (`fill`), maybe taking its state from the slot it had in the
-/// snapshot before as the new one takes over (see `Prepared`).
+/// Each pass hands a node's state to the next in turn, through a slot (see the module docs). Each snapshot has its own
+/// slot for each node with state, empty until the node's prepared it (`fill`), maybe taking its state from the slot it
+/// had in the snapshot before as the new one takes over (see `Prepared`).
 struct StateSlot {
-    /// The pass whose turn it is to use the state.
+    /// It's this pass's turn to use the state.
     turn: CachePadded<AtomicU64>,
-    /// Whether its turns have begun: at the first pass of its snapshot.
+    /// The slot's turns begin at the first pass of its snapshot; this says whether they have.
     begun: AtomicBool,
-    /// Whether the node's prepared it.
+    /// Once the node's prepared the slot, this is set.
     filled: AtomicBool,
-    /// While it's still to take the state from the slot before, at its first turn (`from`).
+    /// Until the slot takes the state from the slot before, at its first turn (`from`), this is set.
     pending: AtomicBool,
     from: Mutex<Option<From>>,
     state: UnsafeCell<Box<dyn Any + Send>>,
 }
 
-/// Where a slot takes its state from, as its snapshot takes over: the slot the node had in the snapshot before, and
-/// whether it takes the state as it is (the node kept it) or makes it from the proto-state the node prepared, which
-/// the slot holds till then (see `Node::on_snapshot_change`).
+/// As its snapshot takes over, a slot can take its state from the slot the node had in the snapshot before: as it is
+/// (`carry`: the node kept it), or made from the proto-state the node prepared, which the slot holds till then (see
+/// `Node::on_snapshot_change`).
 struct From {
     slot: Arc<StateSlot>,
     carry: bool,
 }
 
-/// What a slot's node does to make its state from the proto-state it prepared (`Node::on_snapshot_change`).
+/// A slot's node makes its state from the proto-state it prepared by this (`Node::on_snapshot_change`).
 type ChangeFn<'a> = &'a dyn Fn(&mut (dyn Any + Send), &mut (dyn Any + Send));
 
 // Safety: the state is only touched by the pass whose turn it is, which `with` waits for, or before its turns begin by
@@ -265,7 +265,7 @@ type ChangeFn<'a> = &'a dyn Fn(&mut (dyn Any + Send), &mut (dyn Any + Send));
 unsafe impl Sync for StateSlot {}
 
 impl StateSlot {
-    /// Holding `state`, prepared.
+    /// Tests make a slot holding `state`, prepared, with this.
     #[cfg(test)]
     fn new(state: Box<dyn Any + Send>) -> Self {
         let slot = Self::empty();
@@ -273,7 +273,7 @@ impl StateSlot {
         slot
     }
 
-    /// For the node to prepare.
+    /// A snapshot makes an empty slot for each node with state, for the node to prepare.
     fn empty() -> Self {
         StateSlot {
             turn: CachePadded::new(AtomicU64::new(0)),
@@ -285,7 +285,8 @@ impl StateSlot {
         }
     }
 
-    /// The node's prepared it: `state`, maybe to take the state from another slot at its first turn (`from`).
+    /// Once the node's prepared, the slot holds `state`, maybe to take the state from another slot at its first turn
+    /// (`from`).
     fn fill(&self, state: Box<dyn Any + Send>, from: Option<From>) {
         assert!(!self.filled.load(Ordering::Acquire), "a slot's filled once");
         // Safety: nothing else touches it until it's filled (see `Sync`).
@@ -295,8 +296,8 @@ impl StateSlot {
         self.filled.store(true, Ordering::Release);
     }
 
-    /// Whether passes can run against it: it's prepared, and so is any slot it's to take its state from (or that
-    /// slot's in use).
+    /// Passes can run against the slot once it's prepared, and so is any slot it's to take its state from (or that
+    /// slot's in use). This says whether they can.
     fn ready(&self) -> bool {
         if !self.filled.load(Ordering::Acquire) {
             return false;
@@ -305,20 +306,20 @@ impl StateSlot {
         from.as_ref().is_none_or(|from| from.slot.begun.load(Ordering::Acquire) || from.slot.ready())
     }
 
-    /// Begins its turns at pass `first`.
+    /// The slot's turns begin at pass `first`.
     fn begin(&self, first: u64) {
         if !self.begun.swap(true, Ordering::AcqRel) {
             self.turn.store(first, Ordering::Release);
         }
     }
 
-    /// Waits for pass `sequence`'s turn, takes the state from the slot before if it's still to (see `From`), runs `f`
-    /// on the state, then hands it to the next pass.
+    /// Pass `sequence` uses the state with this: it waits for its turn, takes the state from the slot before if it's
+    /// still to (see `From`), runs `f` on the state, then hands it to the next pass.
     fn with<R>(&self, sequence: u64, change: ChangeFn, f: impl FnOnce(&mut (dyn Any + Send)) -> R) -> R {
         self.with_box(sequence, change, |state| f(state.as_mut()))
     }
 
-    /// The same, giving `f` the box the state's in.
+    /// The same as `with`, giving `f` the box the state's in.
     fn with_box<R>(&self, sequence: u64, change: ChangeFn, f: impl FnOnce(&mut Box<dyn Any + Send>) -> R) -> R {
         let mut spins = 0u32;
         while self.turn.load(Ordering::Acquire) != sequence {
@@ -330,7 +331,7 @@ impl StateSlot {
             }
         }
         // Hands over even if `f` panics, so later passes don't wait forever.
-        /// Sets the turn to the next pass's when dropped.
+        /// When this is dropped, the turn's the next pass's.
         struct HandOver<'a>(&'a AtomicU64, u64);
         impl Drop for HandOver<'_> {
             fn drop(&mut self) {
@@ -343,8 +344,8 @@ impl StateSlot {
         f(unsafe { &mut *self.state.get() })
     }
 
-    /// Takes the state from the slot before, if it's still to, at pass `sequence` (its first). Only by the pass whose
-    /// turn it is, or the one taking the state from it if it never ran.
+    /// At pass `sequence` (its first), the slot takes the state from the slot before, if it's still to. Only the pass
+    /// whose turn it is does this, or the one taking the state from it if it never ran.
     fn take_from_before(&self, sequence: u64, change: ChangeFn) {
         if !self.pending.swap(false, Ordering::AcqRel) {
             return;
@@ -365,8 +366,8 @@ impl StateSlot {
         });
     }
 
-    /// Lends its state to `f`, for the slot after it, at that slot's first pass (`sequence`): once the pass before's
-    /// done with it, if it's run; otherwise at once, once it's taken its own from the slot before it.
+    /// The slot lends its state to `f`, for the slot after it, at that slot's first pass (`sequence`): once the pass
+    /// before's done with it, if it's run; otherwise at once, once it's taken its own from the slot before it.
     fn lend(&self, sequence: u64, change: ChangeFn, f: impl FnOnce(&mut Box<dyn Any + Send>)) {
         if self.begun.load(Ordering::Acquire) {
             self.with_box(sequence, change, f);
@@ -378,33 +379,33 @@ impl StateSlot {
         }
     }
 
-    /// Whether it holds nothing (its state taken, or none).
+    /// A slot holds nothing once its state's been taken, or if it never had any. This says whether it does.
     fn is_empty(&mut self) -> bool {
         self.state.get_mut().is::<()>()
     }
 }
 
-/// How the run is going, over the last second or so.
+/// The status bar shows how the run is going, over the last second or so, from this.
 #[derive(Clone, Debug, Default)]
 pub struct Stats {
     pub workers: usize,
-    /// Workers running a pass right now.
+    /// This many workers are running a pass right now.
     pub busy: usize,
     pub completed: u64,
-    /// Passes skipped because the workers couldn't keep up.
+    /// The dispatcher skipped this many passes, as the workers couldn't keep up.
     pub dropped: u64,
     pub passes_per_second: usize,
-    /// How long passes took to run.
+    /// Passes took this long to run, on average.
     pub mean_time: Duration,
     pub max_time: Duration,
-    /// The longest a pass finished after its data was due.
+    /// The latest a pass finished after its data was due.
     pub max_lag: Duration,
-    /// Memory allocated for the workers' buffers, in bytes. While workers move on to a new plan, it counts
-    /// both their old buffers and their new.
+    /// The workers' buffers take this much memory, in bytes. While workers move on to a new plan, this counts both
+    /// their old buffers and their new.
     pub memory: usize,
 }
 
-/// A pass that's run, for the stats: when it finished, how long it took, and how late.
+/// The stats keep each pass that's run: when it finished, how long it took, and how late.
 struct Record {
     sequence: u64,
     finished: Instant,
@@ -412,8 +413,8 @@ struct Record {
     lag: Duration,
 }
 
-/// What the runner, its workers and its dispatcher share, through every snapshot: counts and recent passes for the
-/// stats, the triggers, and what each worker's doing.
+/// The runner, its workers and its dispatcher share some things through every snapshot: counts and recent passes for
+/// the stats, where direct triggers go, and what each worker's doing.
 #[derive(Default)]
 struct RunCommon {
     stop: AtomicBool,
@@ -421,26 +422,26 @@ struct RunCommon {
     busy: AtomicUsize,
     completed: AtomicU64,
     dropped: AtomicU64,
-    /// Where workers report to the GUI.
+    /// Workers report to the GUI here.
     reports: Reports,
-    /// Where the passes send direct triggers: the app's.
+    /// The passes send direct triggers here: the app's.
     direct: Arc<DirectTriggers>,
-    /// What each worker is up to.
+    /// The dev tools show what each worker is up to, from these.
     workers: Vec<WorkerSlot>,
-    /// The next pass the dispatcher will send.
+    /// The dispatcher sends this pass next.
     next_pass: AtomicU64,
-    /// The newest version a pass has run against.
+    /// Passes have run against snapshots up to this version.
     newest_used: AtomicU64,
 }
 
-/// What a worker tells the GUI: a pass it's run, or that it's the first to run against a version.
+/// A worker tells the GUI of a pass it's run, or that it's the first to run against a version.
 enum Report {
     Pass(Record),
     FirstUse(FirstUse),
 }
 
-/// The queue workers report on, for the GUI to take off (see `Received`). A worker never waits on it: if the GUI
-/// hasn't taken them (it's not drawing, say), reports are dropped.
+/// Workers report on a queue, which the GUI takes from (see `Received`). A worker never waits on it: if the GUI hasn't
+/// taken them (it's not drawing, say), reports are dropped.
 struct Reports(Sender<Report>, Receiver<Report>);
 
 impl Default for Reports {
@@ -451,150 +452,156 @@ impl Default for Reports {
     }
 }
 
-/// What the GUI's taken off the reports queue: the passes run over the last `PASS_TIMES`, and the versions first
-/// run against since it last asked.
+/// The GUI keeps what it's taken off the reports queue: the passes run over the last `PASS_TIMES`, and the versions
+/// first run against since it last asked.
 #[derive(Default)]
 struct Received {
     recent: VecDeque<Record>,
     first_uses: Vec<FirstUse>,
 }
 
-/// The first pass to run against a version (a later one, if passes never ran against those before it).
+/// The dev tools' chart marks the first pass to run against each version (a later one, if passes never ran against
+/// those before it).
 #[derive(Clone, Copy, Debug)]
 pub struct FirstUse {
     pub version: u64,
     pub sequence: u64,
-    /// When the pass started.
+    /// The pass started at this time.
     pub at: Instant,
 }
 
-/// What a pass in `WorkerSlot::pass` is when the worker isn't running one.
+/// A worker that isn't running a pass shows this as its pass (`WorkerSlot::pass`).
 const IDLE: u64 = u64::MAX;
 
-/// What a worker's snapshot (`WorkerSlot::version`) is before it's run a pass.
+/// A worker that hasn't run a pass yet shows this as its snapshot's version (`WorkerSlot::version`).
 const NO_VERSION: u64 = u64::MAX;
 
-/// What a worker is up to, for the dev tools.
+/// Each worker keeps what it's up to here, for the dev tools.
 #[derive(Default)]
 struct WorkerSlot {
-    /// The version of the snapshot of the pass it's running, or last ran (`NO_VERSION` before its first).
+    /// The worker's running a pass of this version's snapshot, or last ran one (`NO_VERSION` before its first).
     version: AtomicU64,
-    /// The pass it's running, or `IDLE`.
+    /// The worker's running this pass, or none (`IDLE`).
     pass: AtomicU64,
-    /// Whether it's making buffers for a newer snapshot's plan.
+    /// While the worker makes buffers for a newer snapshot's plan, this is set.
     preparing: AtomicBool,
-    /// The memory of its buffers.
+    /// The worker's buffers take this much memory.
     memory: AtomicUsize,
     passes: AtomicU64,
 }
 
-/// What a worker is up to.
+/// The dev tools show what each worker is up to from this.
 #[derive(Clone, Debug)]
 pub struct WorkerInfo {
-    /// The version of the snapshot of the pass it's running, or last ran.
+    /// The worker's running a pass of this version's snapshot, or last ran one.
     pub version: Option<u64>,
-    /// The pass it's running, if any.
+    /// The pass the worker's running, if any.
     pub pass: Option<u64>,
-    /// Whether it's making buffers for a newer snapshot's plan.
+    /// While the worker makes buffers for a newer snapshot's plan, this is set.
     pub preparing: bool,
-    /// The memory of its buffers, in bytes.
+    /// The worker's buffers take this much memory, in bytes.
     pub memory: usize,
-    /// Passes it has run.
+    /// The worker has run this many passes.
     pub passes: u64,
 }
 
-/// A snapshot the run's been given (see `Scheduled`).
+/// The dev tools show each snapshot the run's been given (see `Scheduled`) from this.
 pub struct ScheduledInfo<N: NodesEnum> {
     pub version: u64,
     pub plan: Arc<Plan<N>>,
-    /// Workers with buffers for its plan.
+    /// This many workers have buffers for the snapshot's plan.
     pub ready: usize,
-    /// The nodes still preparing their state for it (see `Node::prepare_for_snapshot`).
+    /// These nodes are still preparing for the snapshot (see `Node::prepare_for_snapshot`).
     pub preparing: Vec<NodeId>,
-    /// What about their hardware its nodes say someone should decide (see `Runner::user_decisions`).
+    /// The snapshot's nodes say this many things about their hardware someone should decide (see
+    /// `Runner::user_decisions`).
     pub decisions: usize,
-    /// How long each of the plan's steps is taking.
+    /// Each of the plan's steps is taking this long.
     pub step_times: Vec<StepTime>,
 }
 
-/// Everything about a run, as of now, for the dev tools.
+/// The dev tools show everything about a run, as of now, from this.
 pub struct RunInfo<N: NodesEnum> {
-    /// The snapshot passes are being sent for, once there is one.
+    /// Once there is one, the dispatcher's sending passes of this snapshot.
     pub running: Option<ScheduledInfo<N>>,
-    /// A newer one, not yet ready (workers making buffers for its plan, or its recording's nodes preparing), if
-    /// there is one.
+    /// A newer snapshot may not be ready yet (workers making buffers for its plan, or its nodes preparing); this is it,
+    /// if there is one.
     pub preparing: Option<ScheduledInfo<N>>,
     pub workers: Vec<WorkerInfo>,
-    /// The next pass the dispatcher will send.
+    /// The dispatcher sends this pass next.
     pub next_pass: u64,
-    /// Passes waiting for a worker, and how many can before they're dropped.
+    /// This many passes are waiting for a worker, and so many can before they're dropped.
     pub queued: usize,
     pub queue_capacity: usize,
     pub stats: Stats,
 }
 
-/// A pass on the queue, for a worker to run, with the snapshot it runs: given it as it's sent, so passes only ever see
-/// snapshots in order.
+/// The dispatcher queues passes for the workers, each with the snapshot it runs, given as it's sent, so passes only
+/// ever see snapshots in order.
 struct Job<N: NodesEnum> {
     sequence: u64,
-    /// When the pass's data was all due: the end of the time it covers.
+    /// The pass's data was all due at the end of the time it covers: this time.
     due: Instant,
     scheduled: Arc<Scheduled<N>>,
 }
 
-/// A snapshot the run's been given, and what its passes share as they run (`RunSlots`). Each node with state prepares it
-/// for the snapshot (`Node::prepare_for_snapshot`), on a thread of its own (see `prepare`): carrying on with the state it had in the
-/// snapshot before (when it's the same node with the same data streams in and out, so its state still fits: as within
-/// a snapshot, it adapts to any change of settings that leaves them the same), or a fresh one, maybe handed the old.
-/// What it shares with the GUI, and its step's times, are handed on likewise, or made afresh. The dispatcher runs it
-/// once it's ready: every node has prepared, and its plan's laid out as the one running's, or else every worker has
-/// buffers for it (meanwhile, the one before carries on).
+/// The run keeps each snapshot it's given with what its passes share as they run (`RunSlots`). Every node prepares for
+/// the snapshot (`Node::prepare_for_snapshot`), on the thread preparing snapshots (see `prepare`): carrying on with the
+/// state it had in the snapshot before (when it's the same node with the same data streams in and out, so its state
+/// still fits: as within a snapshot, it adapts to any change of settings that leaves them the same), or making fresh
+/// state, maybe handed the old. What a node shares with the GUI, and its step's times, are handed on likewise, or made
+/// afresh. The dispatcher runs the snapshot once it's ready: every node has prepared, and its plan's laid out as the
+/// one running's, or else every worker has buffers for it (meanwhile, the one before carries on).
 struct Scheduled<N: NodesEnum> {
     snapshot: Arc<Snapshot<N>>,
     slots: RunSlots,
-    /// Workers with buffers for its plan.
+    /// This many workers have buffers for the snapshot's plan.
     ready: AtomicUsize,
-    /// Whether the snapshot before recorded something else, or nothing (see `PrepareContext::recording_changed`).
+    /// If the snapshot before recorded something else, or nothing, this is set (see
+    /// `PrepareContext::recording_changed`).
     recording_changed: bool,
-    /// How many workers the run has.
+    /// The run has this many workers.
     workers: usize,
-    /// How many of its nodes haven't prepared yet.
+    /// This many of the snapshot's nodes haven't prepared yet.
     unprepared: AtomicUsize,
-    /// What about their hardware its nodes say someone should decide (see `Runner::user_decisions`).
+    /// The snapshot's nodes say these things about their hardware someone should decide (see
+    /// `Runner::user_decisions`).
     decisions: Mutex<Vec<(NodeId, UserDecision<N>)>>,
-    /// For each node that prepared, what the workers are to make theirs from.
+    /// For each node that prepared, the proto-states the workers are to make their state from.
     worker_protos: Mutex<HashMap<NodeId, WorkerProtoStates>>,
-    /// What's left of workers' old states as they changed to this snapshot's, to let go of in the background.
+    /// As workers change to this snapshot's states, what's left of their old ones waits here, to be let go of in the
+    /// background.
     leftovers: Mutex<Vec<Box<dyn Any + Send>>>,
 }
 
-/// A node to prepare for a snapshot (see `Scheduled::prepare`): one with state, shared or each worker's.
+/// Every node in a snapshot's plan prepares for it (see `Scheduled::prepare`); this is one.
 struct ToPrepare<N: NodesEnum> {
     id: NodeId,
-    /// Its step in the plan.
+    /// The node's step in the plan.
     step: usize,
-    /// Its shared state's slot, if it has shared state.
+    /// The slot for the node's shared state, if it has shared state.
     slot: Option<usize>,
-    /// How it was in the snapshot before, if it was in it.
+    /// How the node was in the snapshot before, if it was in it.
     before: Option<Before<N>>,
 }
 
-/// How a node was in the snapshot before (see `ToPrepare`).
+/// A node preparing for a snapshot may have been in the snapshot before; this is how it was there (see `ToPrepare`).
 struct Before<N: NodesEnum> {
     snapshot: Arc<Snapshot<N>>,
-    /// Its step in that snapshot's plan.
+    /// The node's step in that snapshot's plan.
     step: usize,
     same_streams: bool,
-    /// Its shared state's slot there, if it had shared state.
+    /// The slot for the node's shared state there, if it had shared state.
     slot: Option<Arc<StateSlot>>,
-    /// What the workers were to make their states from.
+    /// The proto-states the workers were to make their state from there.
     worker_protos: Option<WorkerProtoStates>,
-    /// What it said someone should decide (kept, if it makes nothing new).
+    /// The node said these things someone should decide (which are kept, if it makes nothing new).
     decisions: Vec<UserDecision<N>>,
 }
 
 impl<N: NodesEnum> Scheduled<N> {
-    /// For `snapshot`, after `before` (if there was one), with what its nodes are to prepare (see `prepare`).
+    /// The run schedules `snapshot`, after `before` (if there was one), with this, which also returns what its nodes
+    /// are to prepare (see `prepare`).
     fn new(snapshot: Arc<Snapshot<N>>, before: Option<&Scheduled<N>>, run: &RunCommon) -> (Self, Vec<ToPrepare<N>>) {
         let (plan, graph) = (&snapshot.plan, &snapshot.graph);
         // The step before of the same node, if there is one, and whether it had the same data streams.
@@ -657,10 +664,10 @@ impl<N: NodesEnum> Scheduled<N> {
         (scheduled, to_prepare)
     }
 
-    /// Has each node in `to_prepare` prepare for it (see `Node::prepare_for_snapshot`), one after another, then waits
-    /// for what any of them started (`Prepare::Wait`), filling in what each made once it's done. Slots no node
-    /// prepares (for a node that's gone) hold nothing. On the thread preparing snapshots (see `prepare_snapshots`), or a
-    /// test's.
+    /// On the thread preparing snapshots (see `prepare_snapshots`), or a test's, this has each node in `to_prepare`
+    /// prepare for the snapshot (see `Node::prepare_for_snapshot`), one after another, then waits for what any of them
+    /// started (`Prepare::Wait`), filling in what each made once it's done. Slots no node prepares (for a node that's
+    /// gone) hold nothing.
     fn prepare(&self, to_prepare: Vec<ToPrepare<N>>) {
         let prepared: std::collections::HashSet<usize> = to_prepare.iter().filter_map(|p| p.slot).collect();
         for (slot, state) in self.slots.states.iter().enumerate() {
@@ -706,10 +713,10 @@ impl<N: NodesEnum> Scheduled<N> {
         }
     }
 
-    /// Fills in what a node prepared (`None` if it panicked): its shared state's slot, and what the workers are to make
-    /// theirs from, keeping what it says someone should decide (and what it said before, if it makes nothing new). A
-    /// node that didn't make the state it needs (new to the run, or its data streams changed) failed to prepare: it
-    /// doesn't run, and someone's to decide about it.
+    /// Once a node's prepared (`None` if it panicked), this fills in what it made: its shared state's slot, and the
+    /// proto-states the workers are to make theirs from, keeping what it says someone should decide (and what it said
+    /// before, if it makes nothing new). A node that didn't make the state it needs (new to the run, or its data
+    /// streams changed) failed to prepare: it doesn't run, and someone's to decide about it.
     fn fill(&self, node: ToPrepare<N>, prepared: Option<PreparedAny<N>>) {
         let ToPrepare { id, slot, before, .. } = node;
         let entry = self.snapshot.graph.get(id);
@@ -783,9 +790,9 @@ impl<N: NodesEnum> Scheduled<N> {
         self.unprepared.fetch_sub(1, Ordering::Release);
     }
 
-    /// Changes worker `worker`'s own states (`states`) to this snapshot's, as it first runs one of its passes: each the
-    /// proto-state its node made for the worker, if it made one, and none for nodes that no longer have any here. The
-    /// old states are let go of in the background, with this.
+    /// As worker `worker` first runs one of the snapshot's passes, its own states (`states`) change to the snapshot's:
+    /// each the proto-state its node made for the worker, if it made one, and none for nodes no longer here. The old
+    /// states are let go of in the background, with the snapshot.
     fn change_worker_states(&self, worker: usize, states: &mut WorkerStates) {
         let protos = self.worker_protos.lock().unwrap();
         let mut leftovers = Vec::new();
@@ -806,12 +813,12 @@ impl<N: NodesEnum> Scheduled<N> {
         self.leftovers.lock().unwrap().append(&mut leftovers);
     }
 
-    /// Whether every node's prepared its state for it (see `prepare`).
+    /// Passes can run against the snapshot once every node's prepared (see `prepare`). This says whether they have.
     fn prepared(&self) -> bool {
         self.unprepared.load(Ordering::Acquire) == 0 && self.slots.states.iter().all(|slot| slot.ready())
     }
 
-    /// The nodes still preparing their state for it.
+    /// The dev tools show the nodes still preparing for the snapshot, from this.
     fn preparing(&self) -> Vec<NodeId> {
         let plan = &self.snapshot.plan;
         plan.steps
@@ -821,8 +828,9 @@ impl<N: NodesEnum> Scheduled<N> {
             .collect()
     }
 
-    /// Readies it to run from pass `first`, which covers the time from `at`: the turns of the node state made for it
-    /// begin there (what's handed on carries on), and its recording, if it has one, takes effect then.
+    /// The dispatcher readies the snapshot to run from pass `first`, which covers the time from `at`: the turns of the
+    /// node state made for it begin there (what's handed on carries on), and its recording, if it has one, takes effect
+    /// then.
     fn begin(&self, first: u64, at: Instant) {
         for slot in &self.slots.states {
             slot.begin(first);
@@ -834,8 +842,8 @@ impl<N: NodesEnum> Scheduled<N> {
 }
 
 impl<N: NodesEnum> Drop for Scheduled<N> {
-    /// The nodes' state it had that isn't handed on (to a newer snapshot) is let go of in the background (see
-    /// `let_go_of`).
+    /// When the snapshot's dropped, the nodes' state it had that isn't handed on (to a newer snapshot) is let go of in
+    /// the background (see `let_go_of`).
     fn drop(&mut self) {
         let states = std::mem::take(&mut self.slots.states);
         let_go_of(
@@ -861,9 +869,9 @@ impl<N: NodesEnum> Drop for Scheduled<N> {
     }
 }
 
-/// Lets go of nodes' state in the background, each on a thread of its own: it can take a while (a capture thread
-/// stopping, waiting on its device, say), and this may be on a worker, whose passes mustn't wait, or the GUI. Each its
-/// own, so one slow to stop doesn't keep another node's device going.
+/// Letting go of a node's state can take a while (a capture thread stopping, waiting on its device, say), and the
+/// snapshot may be dropped on a worker, whose passes mustn't wait, or the GUI. So this lets go of nodes' state in the
+/// background, each on a thread of its own, so one slow to stop doesn't keep another node's device going.
 fn let_go_of(states: Vec<StateSlot>) {
     for state in states {
         let dropping = std::thread::Builder::new().name("dropping node state".into()).spawn(move || drop(state));
@@ -873,26 +881,27 @@ fn let_go_of(states: Vec<StateSlot>) {
     }
 }
 
-/// What the runner, its workers and its dispatcher share about the snapshots: the newest given to the run (ready or
-/// not), the one passes are being sent for, and the pass queue.
+/// The runner, its workers and its dispatcher share what they know of the snapshots here: the newest given to the run
+/// (ready or not), the one passes are being sent for, and the pass queue.
 struct Schedule<N: NodesEnum> {
     latest: ArcSwap<Scheduled<N>>,
     running: ArcSwapOption<Scheduled<N>>,
-    /// Taken by the dispatcher; dropping it, when it stops, lets the workers know there'll be no more.
+    /// The dispatcher takes the queue's sender; dropping it, when the dispatcher stops, lets the workers know there'll
+    /// be no more passes.
     sender: Mutex<Option<Sender<Job<N>>>>,
     receiver: Receiver<Job<N>>,
 }
 
-/// The snapshot waiting its turn to be prepared, if there is one (see `prepare_snapshots`).
+/// A snapshot can wait its turn to be prepared, while another is (see `prepare_snapshots`).
 struct Waiting<N: NodesEnum> {
     snapshot: Mutex<Option<Snapshot<N>>>,
     given: Condvar,
 }
 
-/// Prepares the snapshots the run's given, one at a time: `first`'s nodes, for the first, then each that comes, after
-/// the latest (see `Scheduled::prepare`). One waits its turn while another's prepared, and a newer one given the run
-/// meanwhile replaces it, so a burst of changes (a slider dragged) has the latest prepared next, not each in turn. Ends
-/// once the run stops.
+/// The run prepares the snapshots it's given one at a time, on a thread running this: `first`'s nodes, for the first,
+/// then each snapshot that comes, after the latest (see `Scheduled::prepare`). One waits its turn while another's
+/// prepared, and a newer one given the run meanwhile replaces it, so a burst of changes (a slider dragged) has the
+/// latest prepared next, not each in turn. The thread ends once the run stops.
 fn prepare_snapshots<N: NodesEnum>(
     schedule: &std::sync::Weak<Schedule<N>>,
     shared: &RunCommon,
@@ -932,26 +941,27 @@ fn prepare_snapshots<N: NodesEnum>(
     }
 }
 
-/// The graph running: a dispatcher and a pool of workers, until dropped.
+/// While the graph runs, the app holds a runner: a dispatcher and a pool of workers, until it's dropped.
 pub struct Runner<N: NodesEnum> {
     schedule: Arc<Schedule<N>>,
     shared: Arc<RunCommon>,
-    /// The snapshot waiting its turn to be prepared (see `prepare_snapshots`).
+    /// A snapshot may be waiting its turn to be prepared (see `prepare_snapshots`).
     waiting: Arc<Waiting<N>>,
     threads: Vec<JoinHandle<()>>,
     workers: usize,
-    /// The version of the latest snapshot given to the run.
+    /// The latest snapshot given to the run has this version.
     version: AtomicU64,
-    /// The GUI's, from the workers' reports.
+    /// The GUI keeps what the workers have reported here.
     received: RefCell<Received>,
 }
 
 impl<N: NodesEnum> Runner<N> {
+    /// Pressing Play starts a run of `snapshot` with this, on `workers` workers.
     pub fn start(snapshot: &Snapshot<N>, workers: usize) -> Self {
         Self::start_with(snapshot, workers, Arc::default())
     }
 
-    /// The same, with its direct triggers going to `direct`.
+    /// The same as `start`, with the passes' direct triggers going to `direct`.
     pub fn start_with(snapshot: &Snapshot<N>, workers: usize, direct: Arc<DirectTriggers>) -> Self {
         let workers = workers.max(1);
         assert!(snapshot.started.is_some(), "a run's snapshots say when it started");
@@ -998,33 +1008,34 @@ impl<N: NodesEnum> Runner<N> {
         Runner { schedule, shared, waiting, threads, workers, version, received }
     }
 
-    /// The graph of the latest snapshot given to the run.
+    /// Tests read the graph of the latest snapshot given to the run with this.
     #[cfg(test)]
     pub fn graph(&self) -> Arc<super::Graph<N>> {
         self.schedule.latest.load().snapshot.graph.clone()
     }
 
-    /// Where the passes send direct triggers.
+    /// The passes send direct triggers here.
     pub fn direct_triggers(&self) -> &DirectTriggers {
         &self.shared.direct
     }
 
-    /// What the nodes running share with the GUI: the snapshot being run's, or, until one is, the one being got ready.
+    /// The GUI finds what the running nodes share with it here: the snapshot being run's, or, until one is, the one
+    /// being got ready.
     pub fn shared(&self) -> Arc<SharedByNode> {
         let scheduled = self.schedule.running.load_full().unwrap_or_else(|| self.schedule.latest.load_full());
         scheduled.slots.shared.clone()
     }
 
-    /// The acquisition clock: seconds of passes sent so far.
+    /// The acquisition clock counts the seconds of passes sent so far.
     pub fn clock(&self) -> f64 {
         self.shared.next_pass.load(Ordering::Relaxed) as f64 * PASS_DURATION
     }
 
-    /// Moves the run on to a newer snapshot, once its nodes have prepared their state for it, carrying on with what
-    /// they had or not (see `Scheduled`): it waits its turn to be prepared, replacing any that's waiting already (see
-    /// `prepare_snapshots`). Returns whether its plan's laid out as the latest's given the run before (as after a change
-    /// of settings), so it needs no new buffers; otherwise it also waits for the workers to make them. Meanwhile, the
-    /// one before carries on.
+    /// The app moves the run on to a newer snapshot with this, once the snapshot's nodes have prepared for it, carrying
+    /// on with what they had or not (see `Scheduled`). The snapshot waits its turn to be prepared, replacing any that's
+    /// waiting already (see `prepare_snapshots`). This returns whether its plan's laid out as the latest's given the
+    /// run before (as after a change of settings), so it needs no new buffers; otherwise it also waits for the workers
+    /// to make them. Meanwhile, the one before carries on.
     pub fn update(&self, snapshot: &Snapshot<N>) -> bool {
         if self.version.swap(snapshot.version, Ordering::Relaxed) == snapshot.version {
             return true;
@@ -1041,9 +1052,10 @@ impl<N: NodesEnum> Runner<N> {
         same_buffers
     }
 
-    /// What about their hardware the nodes of the latest snapshot given to the run say someone should decide, once they
-    /// have all prepared, with its version. It runs meanwhile; the app deals with them by giving the run another (with
-    /// the nodes' settings fixed, or the nodes disabled), or stopping.
+    /// Once the nodes of the latest snapshot given to the run have all prepared, they may say things about their
+    /// hardware someone should decide; this gives those, with the snapshot's version. The snapshot runs meanwhile; the
+    /// app deals with them by giving the run another (with the nodes' settings fixed, or the nodes disabled), or
+    /// stopping.
     pub fn user_decisions(&self) -> Option<(u64, UserDecisions<N>)> {
         let latest = self.schedule.latest.load();
         if !latest.prepared() {
@@ -1053,13 +1065,13 @@ impl<N: NodesEnum> Runner<N> {
         (!decisions.is_empty()).then(|| (latest.snapshot.version, decisions.clone()))
     }
 
-    /// The versions passes have started running against since this was last asked.
+    /// The dev tools' chart marks the versions passes have started running against since this was last asked.
     pub fn first_uses(&self) -> Vec<FirstUse> {
         std::mem::take(&mut self.received().first_uses)
     }
 
-    /// What the workers have reported, taking what's waiting off the queue, and forgetting passes older than
-    /// `PASS_TIMES`.
+    /// The GUI reads what the workers have reported through this, which takes what's waiting off the queue, and
+    /// forgets passes older than `PASS_TIMES`.
     fn received(&self) -> std::cell::RefMut<'_, Received> {
         let mut received = self.received.borrow_mut();
         for report in self.shared.reports.1.try_iter() {
@@ -1075,7 +1087,8 @@ impl<N: NodesEnum> Runner<N> {
         received
     }
 
-    /// Everything about the run as of now: the snapshots, the workers and dispatcher, and the stats.
+    /// The dev tools show everything about the run as of now from this: the snapshots, the workers and dispatcher, and
+    /// the stats.
     pub fn inspect(&self) -> RunInfo<N> {
         let info = |scheduled: &Scheduled<N>| ScheduledInfo {
             version: scheduled.snapshot.version,
@@ -1114,8 +1127,8 @@ impl<N: NodesEnum> Runner<N> {
         }
     }
 
-    /// Each pass run over the last few seconds: when its data was due (seconds on the acquisition clock), and how
-    /// long it took to run (in seconds), in order.
+    /// The dev tools chart each pass run over the last few seconds, from this: when its data was due (seconds on the
+    /// acquisition clock), and how long it took to run (in seconds), in order.
     pub fn pass_times(&self) -> Vec<[f64; 2]> {
         let mut times: Vec<[f64; 2]> = self
             .received()
@@ -1162,15 +1175,16 @@ impl<N: NodesEnum> Drop for Runner<N> {
     }
 }
 
-/// How long passes' times are kept (see `Runner::pass_times`).
+/// The GUI keeps passes' times this long (see `Runner::pass_times`).
 const PASS_TIMES: Duration = Duration::from_secs(10);
 
-/// How long an idle worker waits for a pass before checking for a newer snapshot to get ready for.
+/// An idle worker waits this long for a pass before checking for a newer snapshot to get ready for.
 const IDLE_CHECK: Duration = Duration::from_millis(2);
 
-/// A worker: runs the passes it's sent, each on buffers for its snapshot's plan; and makes buffers for the newest
-/// snapshot's plan, if it hasn't any laid out like it, so it's ready for its passes before they come (keeping those it
-/// has until no pass needs them). Ends when the run stops, once every pass sent to it is done.
+/// Each worker thread runs this: it runs the passes it's sent, each on buffers for its snapshot's plan, and makes
+/// buffers for the newest snapshot's plan, if it hasn't any laid out like it, so it's ready for its passes before they
+/// come (keeping those it has until no pass needs them). It ends when the run stops, once every pass sent to it is
+/// done.
 fn work<N: NodesEnum>(schedule: &Schedule<N>, shared: &RunCommon, index: usize) {
     let slot = &shared.workers[index];
     slot.pass.store(IDLE, Ordering::Relaxed);
@@ -1255,10 +1269,10 @@ fn work<N: NodesEnum>(schedule: &Schedule<N>, shared: &RunCommon, index: usize) 
     shared.memory.fetch_sub(memory(&workspaces), Ordering::Relaxed);
 }
 
-/// The dispatcher: releases each pass when its time is up, with the snapshot it's to run: the one running, until a
-/// newer one's ready (see `Scheduled`), which it then begins (its fresh node state's turns, and its recording's
-/// effective instant) at that pass. The clock starts once the first snapshot's ready, so making buffers doesn't count
-/// against the run.
+/// The dispatcher thread runs this: it releases each pass when its time is up, with the snapshot it's to run: the one
+/// running, until a newer one's ready (see `Scheduled`), which it then begins (its fresh node state's turns, and its
+/// recording's effective instant) at that pass. The clock starts once the first snapshot's ready, so making buffers
+/// doesn't count against the run.
 fn dispatch<N: NodesEnum>(schedule: &Schedule<N>, shared: &RunCommon) {
     let Some(sender) = schedule.sender.lock().unwrap().take() else { return };
     let duration = Duration::from_secs_f64(PASS_DURATION);
@@ -1312,12 +1326,12 @@ fn dispatch<N: NodesEnum>(schedule: &Schedule<N>, shared: &RunCommon) {
     // Dropping the sender lets the workers finish what's queued, then stop.
 }
 
-/// How many passes can queue for the workers before they're dropped.
+/// Passes can queue for the workers up to this many, then they're dropped.
 fn queue_capacity(workers: usize) -> usize {
     2 * workers
 }
 
-/// How many workers to use by default: half the cores (leaving the rest for the GUI, nodes' own threads and
+/// Runs use this many workers by default: half the cores (leaving the rest for the GUI, nodes' own threads and
 /// everything else), up to 4.
 pub fn default_workers() -> usize {
     std::thread::available_parallelism().map_or(2, |n| n.get() / 2).clamp(1, 4)
@@ -1339,7 +1353,7 @@ pub mod tests {
         graph.add(Nodes::create(node_type), [0.0, 0.0])
     }
 
-    /// An Acquisition Board, acquiring from a test board of its own (see `serve_test_board`).
+    /// Tests add an Acquisition Board acquiring from a test board of its own (see `serve_test_board`) with this.
     fn add_board(graph: &mut Graph<Nodes>) -> NodeId {
         use crate::standard::ephys::board::{Source, serve_test_board};
         let board = add(graph, "Acquisition Board");

@@ -1,6 +1,6 @@
-//! How full the disk recordings go to is, for the main toolbar: the disk the base directory's on (a writer could write
-//! elsewhere, but it's what's chosen for them all). It's looked at once a minute, and when the directory changes,
-//! each time on a thread of its own, as a disk that's asleep, or on the network, can take a while to answer.
+//! The main toolbar shows how full the disk recordings go to is: the disk the base directory's on (a writer could write
+//! elsewhere, but it's what's chosen for them all). The app looks once a minute, and when the directory changes, each
+//! time on a thread of its own, as a disk that's asleep, or on the network, can take a while to answer.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -11,14 +11,14 @@ use eframe::egui::{self, RichText, Sense};
 
 use crate::theme::Colours;
 
-/// How often it's looked at.
+/// The app looks at the disk this often.
 const EVERY: Duration = Duration::from_secs(60);
-/// How full counts as nearly full, then as all but full.
+/// A disk this full counts as nearly full, then as all but full.
 const NEARLY_FULL: f32 = 0.9;
 const FULL: f32 = 0.97;
 const BAR: egui::Vec2 = egui::vec2(36.0, 8.0);
 
-/// A disk's size and what's free on it (for this user), in bytes.
+/// The app learns a disk's size and what's free on it (for this user), in bytes.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Space {
     pub free: u64,
@@ -26,20 +26,20 @@ pub struct Space {
 }
 
 impl Space {
-    /// How much of it's used, from 0 to 1.
+    /// This much of the disk's used, from 0 to 1.
     fn used(self) -> f32 {
         if self.total == 0 { 0.0 } else { 1.0 - self.free.min(self.total) as f32 / self.total as f32 }
     }
 }
 
-/// The space on the disk `directory` is on, or will be on: it may not be there yet.
+/// This measures the space on the disk `directory` is on, or will be on: it may not be there yet.
 fn measure(directory: &Path) -> io::Result<Space> {
     let there = directory.ancestors().find(|path| path.exists()).unwrap_or(directory);
     let stats = fs4::statvfs(there)?;
     Ok(Space { free: stats.available_space(), total: stats.total_space() })
 }
 
-/// `bytes`, as disks are sold: "512 GB", "1.2 TB".
+/// The toolbar shows `bytes` as disks are sold: "512 GB", "1.2 TB".
 fn size_text(bytes: u64) -> String {
     let units = ["B", "KB", "MB", "GB", "TB", "PB"];
     let mut size = bytes as f64;
@@ -51,19 +51,19 @@ fn size_text(bytes: u64) -> String {
     if size < 10.0 && unit > 0 { format!("{size:.1} {}", units[unit]) } else { format!("{size:.0} {}", units[unit]) }
 }
 
-/// What's known of the disk, kept by the GUI.
+/// The GUI keeps what it knows of the disk here.
 #[derive(Default)]
 pub struct DiskSpace {
-    /// The directory last asked about, and when.
+    /// The app last asked about this directory, at this time.
     asked: Option<(PathBuf, Instant)>,
-    /// The answer to that, while it's on its way. (If a disk never answers, it isn't asked again.)
+    /// While the answer's on its way, it comes here. (If a disk never answers, it isn't asked again.)
     answer: Option<Receiver<io::Result<Space>>>,
-    /// The last answer.
+    /// The disk last answered this.
     space: Option<Result<Space, String>>,
 }
 
 impl DiskSpace {
-    /// Asks about `directory`, on a thread of its own, repainting when there's an answer.
+    /// The app asks about `directory` with this, on a thread of its own, repainting when there's an answer.
     fn ask(&mut self, ctx: &egui::Context, directory: &Path) {
         self.asked = Some((directory.to_owned(), Instant::now()));
         let (sender, receiver) = mpsc::channel();
@@ -78,7 +78,7 @@ impl DiskSpace {
         }
     }
 
-    /// Takes the answer, if it's come.
+    /// Once the answer's come, the app takes it with this.
     fn receive(&mut self) {
         let Some(answer) = &self.answer else { return };
         match answer.try_recv() {
@@ -91,7 +91,7 @@ impl DiskSpace {
         }
     }
 
-    /// Asks again if it's time to, or `directory`'s another, and has a frame drawn when it's next time to.
+    /// The app asks again if it's time to, or `directory`'s another, and has a frame drawn when it's next time to.
     fn keep_up(&mut self, ctx: &egui::Context, directory: &Path) {
         self.receive();
         let same = self.asked.as_ref().filter(|(asked, _)| asked == directory);
@@ -110,7 +110,7 @@ impl DiskSpace {
         }
     }
 
-    /// How full the disk `directory` is on is: a bar, and what's free.
+    /// The toolbar shows how full the disk `directory` is on is with this: a bar, and what's free.
     pub fn ui(&mut self, ui: &mut egui::Ui, directory: &Path, theme: &Colours) {
         self.keep_up(ui.ctx(), directory);
         match &self.space {

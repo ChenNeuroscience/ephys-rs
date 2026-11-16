@@ -1,11 +1,12 @@
-//! Text styled with ANSI escape codes, as a terminal shows it: `cansi` parses them, and this maps its 16 colours,
-//! bold, faint, italic, underline and reverse onto egui's text formats, in colours toned for the theme.
+//! The console shows text styled with ANSI escape codes as a terminal would: `cansi` parses the codes, and this module
+//! maps their 16 colours, bold, faint, italic, underline and reverse onto egui's text formats, in colours toned for the
+//! theme.
 
 use cansi::v3::{Color, Intensity, categorise_text};
 use eframe::egui::{Color32, FontId, Stroke, TextFormat, text::LayoutJob};
 
-/// The 16 terminal colours (black, red, green, yellow, blue, magenta, cyan, white, then their bright forms), toned
-/// to read on a dark background or a light one.
+/// A terminal has 16 colours (black, red, green, yellow, blue, magenta, cyan, white, then their bright forms). These
+/// are them, toned to read on a dark background or a light one.
 fn palette(dark: bool) -> [Color32; 16] {
     let rgb = Color32::from_rgb;
     if dark {
@@ -49,7 +50,8 @@ fn palette(dark: bool) -> [Color32; 16] {
     }
 }
 
-/// Adds `text` to `job`, styled by its escape codes. `colour` is the text's colour where it doesn't set one.
+/// The console adds `text` to `job` with this, styled by its escape codes. `colour` is the text's colour where the
+/// codes don't set one.
 pub fn append(job: &mut LayoutJob, text: &str, font: &FontId, colour: Color32, dark: bool) {
     let palette = palette(dark);
     let lookup = |c: Color| palette[c as usize];

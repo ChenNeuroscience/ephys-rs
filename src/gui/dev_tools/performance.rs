@@ -1,4 +1,4 @@
-//! The dev tools' performance section: how long the workers' passes take, and how long the GUI takes over each
+//! The dev tools' performance section shows how long the workers' passes take, and how long the GUI takes over each
 //! frame, part by part (see `frame_times`), on one time axis. Each frame is a bar, split into its parts in shades of
 //! one colour; the key below says which is which, and hovering (or clicking, to keep it) one of its parts picks it
 //! out in every frame.
@@ -11,23 +11,23 @@ use crate::gui::frame_times::{FrameTimes, Mark, MarkKind, PAINTING};
 use crate::theme::Colours;
 use crate::time_axis;
 
-/// Seconds shown.
+/// The section shows this many seconds.
 const SPAN: f64 = 10.0;
-/// A frame's time to keep up 60 frames a second.
+/// Keeping up 60 frames a second leaves each frame this long (ms).
 const FRAME_BUDGET: f64 = 1000.0 / 60.0;
-/// Frames are shown in bins this long (seconds), each as its slowest frame, so there aren't more bars than can be
-/// seen (or drawn quickly).
+/// The section shows frames in bins this long (seconds), each as its slowest frame, so there aren't more bars than can
+/// be seen (or drawn quickly).
 const BIN: f64 = SPAN / 200.0;
-/// Passes averaged over: half a second's.
+/// The section averages passes' times over this many passes: half a second's.
 const SMOOTHING: usize = 25;
 
-/// What the section remembers between frames: the part picked out, if it's been clicked.
+/// The section remembers the part picked out between frames, if it's been clicked.
 #[derive(Default)]
 pub struct Performance {
     pinned: Option<String>,
 }
 
-/// The height the section takes, given room; and the least it takes, to make room for the console.
+/// The section takes this much height, given room; and at least so much, to make room for the console.
 pub const HEIGHT: f32 = 300.0;
 pub const MIN_HEIGHT: f32 = 180.0;
 
@@ -210,10 +210,10 @@ pub fn show(
     });
 }
 
-/// The changes to the run in view, as lines down a plot (labelled, if `labelled`, at its `top`), at how long before `now`
-/// they were: red for recording
-/// starting or stopping, amber for one needing new buffers, grey for other versions; dashed when it was asked for, solid at the
-/// first pass to use it. Returns what changed at the one under the pointer, if any.
+/// The plots mark the changes to the run in view as lines down them (labelled, if `labelled`, at the plot's `top`), at
+/// how long before `now` they were: red for recording starting or stopping, amber for a change needing new buffers,
+/// grey for other versions; dashed when it was asked for, solid at the first pass to use it. This draws them, and
+/// returns what changed at the one under the pointer, if any.
 fn show_marks(
     plot: &mut PlotUi,
     marks: &[&Mark],

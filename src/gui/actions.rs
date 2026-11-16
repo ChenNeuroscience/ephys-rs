@@ -1,5 +1,5 @@
-//! The app's commands, with their names, shortcuts and place in the menus. The menu bar (in the window, or
-//! on macOS the system's), the toolbar and the keyboard shortcuts all work from these.
+//! The menu bar (in the window, or on macOS the system's), the toolbar and the keyboard shortcuts all work from the
+//! app's commands, listed here with their names, shortcuts and place in the menus.
 
 use std::path::Path;
 
@@ -7,12 +7,12 @@ use eframe::egui::{Key, KeyboardShortcut, Modifiers};
 
 use crate::theme::Theme;
 
-/// Something the user can do from a menu, a toolbar or a shortcut: each is done the same way, whichever.
+/// People can do each of these from a menu, a toolbar or a shortcut, and each is done the same way, whichever.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Action {
     New,
     Open,
-    /// Opens one of the recent files, by index.
+    /// The action opens one of the recent files, by index.
     OpenRecent(usize),
     Save,
     SaveAs,
@@ -22,60 +22,61 @@ pub enum Action {
     Duplicate,
     Delete,
     SelectAll,
-    /// Lays the nodes out in columns, left to right the way data flows.
+    /// The action lays the nodes out in columns, left to right the way data flows.
     Arrange,
-    /// Copies the selected nodes' settings to the clipboard.
+    /// The action copies the selected nodes' settings to the clipboard.
     CopySettings,
-    /// Opens the window to paste settings from the clipboard onto nodes.
+    /// The action opens the window to paste settings from the clipboard onto nodes.
     PasteSettings,
-    /// Disables the selected nodes (or edge), or enables them if they're all disabled.
+    /// The action disables the selected nodes (or edge), or enables them if they're all disabled.
     ToggleDisabled,
-    /// Opens the menu of node types.
+    /// The action opens the menu of node types.
     AddNode,
-    /// Picks the tool for drawing annotations of a type (by its name: see `AnnotationTypeEnum::named`) on the graph.
+    /// The action picks the tool for drawing annotations of a type (by its name: see `AnnotationTypeEnum::named`) on
+    /// the graph.
     DrawTool(&'static str),
-    /// Shows the home pane: the basic view, or in advanced mode the graph.
+    /// The action shows the home pane: the basic view, or in advanced mode the graph.
     Home,
-    /// Turns advanced mode on or off: the graph in the home pane, and panes' settings (see `Mode`).
+    /// The action turns advanced mode on or off: the graph in the home pane, and panes' settings (see `Mode`).
     Advanced,
-    /// Closes the home pane (Home brings it back).
+    /// The action closes the home pane (Home brings it back).
     CloseHome,
     FrameAll,
     ActualSize,
     ResetLayout,
     ToggleDevTools,
-    /// Chooses a theme, by index.
+    /// The action chooses a theme, by index.
     Theme(usize),
-    /// Starts or stops running the graph.
+    /// The action starts or stops running the graph.
     Play,
-    /// Starts or stops recording (starting the graph running, if it isn't).
+    /// The action starts or stops recording (starting the graph running, if it isn't).
     Record,
-    /// Opens the Settings window: the app's preferences.
+    /// The action opens the Settings window: the app's preferences.
     Settings,
-    /// Lists the keyboard shortcuts: the app's, the graph's, and those of node types' windows.
+    /// The action lists the keyboard shortcuts: the app's, the graph's, and those of node types' windows.
     Shortcuts,
-    /// Says what the program is: its version, and what its build says about itself.
+    /// The action says what the program is: its version, and what its build says about itself.
     About,
-    /// Opens where the program's source is, in the browser.
+    /// The action opens where the program's source is, in the browser.
     Source,
 }
 
-/// An entry in a menu: the menus are described once, for egui's menu bar and macOS's alike.
+/// The menus are described once, for egui's menu bar and macOS's alike, as a list of these entries.
 pub enum MenuEntry {
     Action(Action),
     Separator,
     Submenu(&'static str, &'static [MenuEntry]),
-    /// A tool for each annotation type the program has.
+    /// The entry lists a tool for each annotation type the program has.
     DrawTools,
-    /// Each theme the program has.
+    /// The entry lists each theme the program has.
     Themes,
-    /// The files last opened or saved.
+    /// The entry lists the files last opened or saved.
     RecentFiles,
 }
 
 use MenuEntry::{Action as Item, DrawTools, RecentFiles, Separator, Submenu, Themes};
 
-/// A recent file, as the menu has it: its name, then where it is.
+/// The menu names a recent file by its name, then where it is.
 pub fn recent_name(path: &Path) -> String {
     let name = path.file_name().unwrap_or(path.as_os_str()).to_string_lossy();
     match path.parent() {
@@ -84,10 +85,10 @@ pub fn recent_name(path: &Path) -> String {
     }
 }
 
-/// What the recent files' menu says when there aren't any.
+/// The recent files' menu says this when there aren't any.
 pub const NO_RECENT_FILES: &str = "No recent files";
 
-/// The menus, in order.
+/// The app's menus, in order.
 pub const MENUS: &[(&str, &[MenuEntry])] = &[
     (
         "File",
@@ -142,7 +143,7 @@ pub const MENUS: &[(&str, &[MenuEntry])] = &[
     ("Help", &[Item(Action::Shortcuts), Separator, Item(Action::About), Item(Action::Source)]),
 ];
 
-/// Checked in this order, so that e.g. shift-ctrl-Z (redo) is seen before ctrl-Z (undo).
+/// The app checks the shortcuts in this order, so that shift-ctrl-Z (redo), say, is seen before ctrl-Z (undo).
 const SHORTCUT_ORDER: [Action; 20] = [
     Action::Redo,
     Action::Undo,
@@ -167,7 +168,7 @@ const SHORTCUT_ORDER: [Action; 20] = [
 ];
 
 impl Action {
-    /// Its name in menus. Themes are named from the program's `themes`.
+    /// The action's name in menus. Themes are named from the program's `themes`.
     pub fn name(self, themes: &[Theme]) -> &str {
         match self {
             Action::New => "New",
@@ -240,7 +241,7 @@ impl Action {
         }
     }
 
-    /// Another shortcut that does the same, if there is one.
+    /// Some actions have another shortcut that does the same.
     pub fn alternative(self) -> Option<KeyboardShortcut> {
         match self {
             Action::Redo => Some(KeyboardShortcut::new(Modifiers::COMMAND, Key::Y)),
@@ -249,12 +250,13 @@ impl Action {
         }
     }
 
-    /// Shortcuts that would get in the way of typing, so only apply when no text field has focus.
+    /// Some shortcuts would get in the way of typing, so they only apply when no text field has focus. This says
+    /// whether the action's does.
     pub fn only_when_not_typing(self) -> bool {
         matches!(self, Action::Duplicate | Action::Delete | Action::SelectAll | Action::FrameAll | Action::Play)
     }
 
-    /// The actions whose shortcuts were pressed this frame.
+    /// The app finds the actions whose shortcuts were pressed this frame with this.
     pub fn pressed(ctx: &eframe::egui::Context, typing: bool) -> Vec<Action> {
         let mut pressed = Vec::new();
         for action in SHORTCUT_ORDER {

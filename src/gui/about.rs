@@ -7,14 +7,14 @@ use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 use super::dialog;
 use crate::theme::Colours;
 
-/// The window, while it's open.
+/// The app keeps the About window here while it's open.
 #[derive(Default)]
 pub struct About {
     markdown: CommonMarkCache,
 }
 
 impl About {
-    /// Returns whether it's still open.
+    /// The app shows the window with this, which returns whether it's still open.
     pub fn show(&mut self, ctx: &egui::Context, text: &str, source: &str, colours: &Colours) -> bool {
         let mut close = false;
         let title = crate::full_version();

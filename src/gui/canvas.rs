@@ -1,11 +1,11 @@
-//! The graph editor: nodes, their ports and the edges between them, plus annotations, on a canvas that pans
-//! and zooms.
+//! People edit the graph on a canvas that pans and zooms: nodes, their ports and the edges between them, plus
+//! annotations.
 //!
 //! Everything is laid out and painted in screen coordinates, with sizes scaled by the zoom, so text is
 //! rasterised at the size it's shown and stays sharp. (Scaling already-drawn shapes, as `egui::Scene` does,
 //! blurs text when zoomed in.) Positions are stored in scene coordinates.
 //!
-//! Each frame registers interactions in stacking order (annotations, then nodes, then ports), applying any
+//! Each frame, the canvas registers interactions in stacking order (annotations, then nodes, then ports), applying any
 //! moves straight away, then paints the edges, any wire being dragged out, and the nodes.
 //!
 //! Data ports sit with outputs on the right of a node and inputs on the left, so data flows left to right.
@@ -37,15 +37,15 @@ pub const NODE_WIDTH: f32 = 190.0;
 pub const HEADER: f32 = 26.0;
 const ROW: f32 = 22.0;
 const PAD: f32 = 5.0;
-/// Extra space between the data ports and the settings ports.
+/// A node leaves this much extra space between its data ports and its settings ports.
 const DIVIDER: f32 = 8.0;
 const PORT_RADIUS: f32 = 4.5;
-/// Screen points within which the pointer counts as on a port or edge.
+/// The pointer counts as on a port or edge within this many screen points.
 const HIT_DISTANCE: f32 = 8.0;
 const MIN_ZOOM: f32 = 0.2;
 const MAX_ZOOM: f32 = 2.5;
 
-/// What's selected on the canvas: nodes and annotations, or an edge.
+/// Someone can select nodes and annotations on the canvas, or an edge.
 #[derive(Default)]
 pub struct Selection {
     pub nodes: BTreeSet<NodeId>,
@@ -75,7 +75,7 @@ impl Selection {
         if self.nodes.len() == 1 && self.annotations.is_empty() { self.nodes.first().copied() } else { None }
     }
 
-    /// Drops anything no longer there (after an undo, say).
+    /// After an undo, say, the selection drops anything no longer there, with this.
     pub fn retain_existing<N: NodesEnum, A: AnnotationsEnum>(
         &mut self,
         graph: &Graph<N>,
@@ -87,28 +87,29 @@ impl Selection {
     }
 }
 
-/// What dragging on the canvas does.
+/// Dragging on the canvas does one of these, as the toolbar says.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Tool {
-    /// Select and move things, and connect ports.
+    /// Dragging selects and moves things, and connects ports.
     #[default]
     Select,
-    /// Draw out an annotation of a type (by its name: see `AnnotationTypeEnum::named`), then go back to selecting.
+    /// Dragging draws out an annotation of a type (by its name: see `AnnotationTypeEnum::named`), then goes back to
+    /// selecting.
     Draw(&'static str),
 }
 
-/// Where a node and its parts are, on screen.
+/// Each frame, the canvas lays each node and its parts out on screen.
 struct Layout {
     rect: Rect,
     header: Rect,
     zoom: f32,
     /// Where each port is, and whether it's on the right.
     ports: HashMap<(PortRole, usize), (Pos2, bool)>,
-    /// Between the data and settings ports, if it has both.
+    /// If the node has both data and settings ports, the divider between them.
     divider: Option<f32>,
-    /// Where the settings ports start (shaded from there down), if they're showing.
+    /// If they're showing, the settings ports start here (shaded from there down).
     settings_top: Option<f32>,
-    /// Where a warning's shown, in the header's right corner.
+    /// A warning's shown here, in the header's right corner.
     badge: Rect,
 }
 
@@ -117,18 +118,19 @@ pub fn node_size<E: Edges>(state: &NodeState<E>) -> egui::Vec2 {
     size_with(state, true)
 }
 
-/// How many rows of settings and controls a node has, if `settings` are showing.
+/// A node has a row for each setting and control, if `settings` are showing. This counts them.
 fn settings_rows<E: Edges>(state: &NodeState<E>, settings: bool) -> usize {
     if settings { state.count(PortRole::Setting) + state.count(PortRole::Control) } else { 0 }
 }
 
-/// Whether a node has no ports at all (an Arduino's, say): it has a row saying so, rather than none.
+/// A node with no ports at all (an Arduino's, say) has a row saying so, rather than none. This says whether it has
+/// none.
 fn has_no_ports<E: Edges>(state: &NodeState<E>) -> bool {
     [PortRole::Output, PortRole::Input, PortRole::Setting, PortRole::Control].into_iter().all(|r| state.count(r) == 0)
 }
 
-/// A node's size on the graph (unzoomed): its header and a row per port (or one saying it has none), with a divider
-/// between the data and settings ports, if it has both.
+/// A node takes this much room on the graph (unzoomed): its header and a row per port (or one saying it has none),
+/// with a divider between the data and settings ports, if it has both.
 fn size_with<E: Edges>(state: &NodeState<E>, settings: bool) -> egui::Vec2 {
     let data_rows = state.count(PortRole::Output) + state.count(PortRole::Input);
     let settings_rows = settings_rows(state, settings);
@@ -138,7 +140,8 @@ fn size_with<E: Edges>(state: &NodeState<E>, settings: bool) -> egui::Vec2 {
 }
 
 impl Layout {
-    /// One row per port: outputs, inputs, then settings and controls, if they're showing.
+    /// The canvas lays a node out with a row per port: outputs, inputs, then settings and controls, if they're
+    /// showing.
     fn new<E: Edges>(pos: [f32; 2], state: &NodeState<E>, to_screen: &TSTransform, settings: bool) -> Self {
         let zoom = to_screen.scaling;
         let count = |role| state.count(role);
@@ -192,7 +195,7 @@ impl Layout {
     }
 }
 
-/// A wire from `a` to `b`, leaving each in the direction its port faces.
+/// A wire runs from `a` to `b`, leaving each in the direction its port faces.
 fn bezier(a: Pos2, a_right: bool, b: Pos2, b_right: bool, zoom: f32) -> [Pos2; 4] {
     let dx = ((b.x - a.x).abs() * 0.5).max(40.0 * zoom);
     let out = |right: bool| egui::vec2(if right { dx } else { -dx }, 0.0);
@@ -213,11 +216,11 @@ fn bezier_points([a, b, c, d]: [Pos2; 4]) -> Vec<Pos2> {
         .collect()
 }
 
-/// Data edges are solid, in their type's colour, with an arrowhead halfway along showing which way the data
-/// flows. Settings edges are grey (`wire_colour`) and dashed, with arrowheads both ways (the setting's node and
-/// the control's can both change it): their ports show their type. A read-only one (to a control that only reads
-/// the setting) is dotted, with an arrowhead pointing to the reader. Where nodes (`covers`) hide much of a wire, each
-/// stretch of it that shows gets arrowheads of its own (see `arrow_places`).
+/// The canvas paints edges with this. Data edges are solid, in their type's colour, with an arrowhead halfway along
+/// showing which way the data flows. Settings edges are grey (`wire_colour`) and dashed, with arrowheads both ways (the
+/// setting's node and the control's can both change it): their ports show their type. A read-only one (to a control
+/// that only reads the setting) is dotted, with an arrowhead pointing to the reader. Where nodes (`covers`) hide much
+/// of a wire, each stretch of it that shows gets arrowheads of its own (see `arrow_places`).
 fn paint_wire(
     painter: &Painter,
     points: [Pos2; 4],
@@ -257,11 +260,11 @@ fn paint_wire(
     }
 }
 
-/// Where along a wire (`path`) its arrowheads go, and which way each points: just `middle`, unless nodes (`covers`)
-/// hide a good part of the wire, or its middle; then halfway along each stretch that shows, if it's long enough for
-/// one (or still just `middle`, if none is).
+/// A wire's arrowheads go along it (`path`), each pointing one way: just at `middle`, unless nodes (`covers`) hide a
+/// good part of the wire, or its middle; then halfway along each stretch that shows, if it's long enough for one (or
+/// still just at `middle`, if none is).
 fn arrow_places(path: &[Pos2], covers: &[Rect], middle: (Pos2, Vec2), size: f32) -> Vec<(Pos2, Vec2)> {
-    /// The part of a wire hidden for it to get an arrowhead on each stretch that shows.
+    /// A wire this much hidden gets an arrowhead on each stretch that shows.
     const HIDDEN: f32 = 0.15;
     let hidden = |p: Pos2| covers.iter().any(|r| r.contains(p));
     let segments = path.windows(2).map(|w| (w[0], w[1], w[0].distance(w[1])));
@@ -302,7 +305,7 @@ fn arrow_places(path: &[Pos2], covers: &[Rect], middle: (Pos2, Vec2), size: f32)
     if places.is_empty() { vec![middle] } else { places }
 }
 
-/// A pair of arrowheads back to back at `at`, pointing either way along `direction`.
+/// Settings edges have a pair of arrowheads back to back at `at`, pointing either way along `direction`.
 fn both_ways(painter: &Painter, at: Pos2, direction: Vec2, size: f32, colour: Color32) {
     let offset = direction.normalized() * size * 0.55;
     if offset.is_finite() {
@@ -311,14 +314,14 @@ fn both_ways(painter: &Painter, at: Pos2, direction: Vec2, size: f32, colour: Co
     }
 }
 
-/// Whether a control only reads the setting it's linked to.
+/// Some controls only read the setting they're linked to. This says whether a control does.
 fn read_only<E: Edges>(resolved: &Resolved<E>, port: Port) -> bool {
     port.role == PortRole::Control
         && resolved.get(&port.node).and_then(|s| s.controls.get(port.index)).is_some_and(|c| c.read_only)
 }
 
-/// The colour to draw an edge of a type with colour `colour`: settings edges are all the same grey, so they
-/// stay in the background of the data flowing through the graph.
+/// An edge of a type with colour `colour` is drawn in this colour: settings edges are all the same grey, so they stay
+/// in the background of the data flowing through the graph.
 fn wire_colour(dimension: Dimension, colour: Color32, colours: &Colours) -> Color32 {
     match dimension {
         Dimension::Data => colour,
@@ -326,12 +329,12 @@ fn wire_colour(dimension: Dimension, colour: Color32, colours: &Colours) -> Colo
     }
 }
 
-/// A diamond centred on `at`, `d` from its centre to each corner.
+/// Settings ports are diamonds centred on `at`, `d` from the centre to each corner.
 fn diamond(at: Pos2, d: f32) -> Vec<Pos2> {
     vec![at - egui::vec2(0.0, d), at + egui::vec2(d, 0.0), at + egui::vec2(0.0, d), at - egui::vec2(d, 0.0)]
 }
 
-/// A filled arrowhead centred on `at`, pointing along `direction`.
+/// The canvas paints a filled arrowhead centred on `at`, pointing along `direction`, with this.
 fn arrowhead(painter: &Painter, at: Pos2, direction: Vec2, size: f32, colour: Color32) {
     let forward = direction.normalized();
     if !forward.is_finite() {
@@ -343,33 +346,32 @@ fn arrowhead(painter: &Painter, at: Pos2, direction: Vec2, size: f32, colour: Co
     painter.add(Shape::convex_polygon(vec![tip, back + side, back - side], colour, Stroke::NONE));
 }
 
-/// The graph's canvas: how it's panned and zoomed, and what's going on with the pointer (a wire being dragged, a
+/// The graph's canvas keeps how it's panned and zoomed, and what's going on with the pointer (a wire being dragged, a
 /// selection rectangle, an annotation being drawn), from frame to frame.
 pub struct Canvas {
-    /// Scene to canvas coordinates, relative to the canvas's top-left corner.
+    /// The canvas maps scene coordinates to its own, relative to its top-left corner, by this.
     view: TSTransform,
-    /// Scene to screen, as of the latest frame.
+    /// As of the latest frame, the canvas maps scene coordinates to screen by this.
     to_screen: TSTransform,
-    /// Where the canvas is on screen.
+    /// The canvas is here on screen.
     screen_rect: Rect,
     frame_requested: bool,
-    /// The port a wire is being dragged from.
+    /// A wire may be being dragged from this port.
     wire: Option<Port>,
-    /// Where a selection rectangle started, in scene coordinates.
+    /// A selection rectangle started here, in scene coordinates.
     marquee: Option<Pos2>,
     hovered_edge: Option<Edge>,
-    /// The edge whose menu is open (from right-clicking it).
+    /// Right-clicking an edge opens its menu; this is the edge.
     menu_edge: Option<Edge>,
-    /// The annotation whose text is being edited.
+    /// This annotation's text is being edited.
     editing: Option<AnnotationId>,
     pub colours: &'static Colours,
     pub tool: Tool,
-    /// Where an annotation being drawn out started, in scene coordinates.
+    /// An annotation being drawn out started here, in scene coordinates.
     drawing: Option<Pos2>,
-    /// Whether the legend is expanded (rather than just its title).
+    /// The legend can be expanded, or just its title.
     pub legend_open: bool,
-    /// Whether settings are shown, on the nodes and as edges, from the eye in the legend: without them there's less
-    /// clutter.
+    /// The eye in the legend shows or hides settings, on the nodes and as edges: without them there's less clutter.
     pub settings_shown: bool,
 }
 
@@ -395,7 +397,7 @@ impl Canvas {
 }
 
 impl Canvas {
-    /// Fits everything in view on the next frame.
+    /// The toolbar's frame button fits everything in view on the next frame, with this.
     pub fn frame_all(&mut self) {
         self.frame_requested = true;
     }
@@ -416,7 +418,7 @@ impl Canvas {
         self.to_screen * scene
     }
 
-    /// The pointer's position on screen and in the scene, if it's over the canvas.
+    /// If the pointer's over the canvas, this gives its position on screen and in the scene.
     pub fn pointer(&self, ctx: &egui::Context) -> Option<(Pos2, Pos2)> {
         let screen = ctx.input(|i| i.pointer.latest_pos()).filter(|p| self.screen_rect.contains(*p))?;
         Some((screen, self.to_screen.inverse() * screen))
@@ -445,7 +447,8 @@ impl Canvas {
         TSTransform::new(size / 2.0 - bounds.center().to_vec2() * zoom, zoom)
     }
 
-    /// Middle- or right-drag, or scroll, to pan; pinch or ctrl-scroll to zoom about the pointer.
+    /// Someone pans the canvas by dragging with the middle or right button, or scrolling, and zooms about the pointer
+    /// by pinching or ctrl-scrolling.
     fn pan_and_zoom(&mut self, ui: &egui::Ui, background: &Response) {
         if background.dragged_by(PointerButton::Middle) || background.dragged_by(PointerButton::Secondary) {
             self.view.translation += background.drag_delta();
@@ -636,8 +639,8 @@ impl Canvas {
         }
     }
 
-    /// With a drawing tool picked, the whole canvas is for drawing: drag out the annotation (or click for the
-    /// default size). Returns the outline so far, on screen, while dragging.
+    /// With a drawing tool picked, the whole canvas is for drawing: someone drags out the annotation (or clicks for the
+    /// default size). This returns the outline so far, on screen, while dragging.
     fn draw_annotation<A: AnnotationsEnum>(
         &mut self,
         ui: &mut egui::Ui,
@@ -688,8 +691,9 @@ impl Canvas {
         outline.filter(|_| self.drawing.is_some())
     }
 
-    /// A key to the edge types on the graph (on an edge or a port), in the bottom-right corner of the canvas
-    /// (not of the scene, so it stays put as the graph pans and zooms). Click its title to collapse or expand it.
+    /// The legend is a key to the edge types on the graph (on an edge or a port), in the bottom-right corner of the
+    /// canvas (not of the scene, so it stays put as the graph pans and zooms). Clicking its title collapses or expands
+    /// it.
     fn legend<N: NodesEnum>(
         &mut self,
         ui: &mut egui::Ui,
@@ -826,7 +830,8 @@ impl Canvas {
         }
     }
 
-    /// The eye that shows and hides settings, on the nodes and as edges. Nothing hidden stays selected, for Delete to remove unseen.
+    /// The legend's eye shows and hides settings, on the nodes and as edges. Nothing hidden stays selected, for Delete
+    /// to remove unseen.
     fn settings_eye(&mut self, ui: &egui::Ui, painter: &Painter, rect: Rect, selection: &mut Selection) {
         let tip = if self.settings_shown { "Hide settings" } else { "Show settings" };
         let eye_button = ui.interact(rect, Id::unique("legend-settings"), Sense::click());
@@ -845,12 +850,12 @@ impl Canvas {
         eye(painter, rect.shrink(1.0), colour, colours.surface, self.settings_shown);
     }
 
-    /// Whether `edge` is on show: settings edges can be hidden.
+    /// Settings edges can be hidden. This says whether `edge` is on show.
     fn shows(&self, edge: &Edge) -> bool {
         edge.dimension != Dimension::Settings || self.settings_shown
     }
 
-    /// Clicks and drags on empty canvas (middle and right drags pan, in `pan_and_zoom`).
+    /// The canvas handles clicks and drags on empty canvas with this (middle and right drags pan, in `pan_and_zoom`).
     fn background(&mut self, ui: &egui::Ui, response: &Response, selection: &mut Selection, events: &mut Vec<Event>) {
         let pointer = ui.input(|i| i.pointer.latest_pos());
         // (Right-clicking an edge opens its own menu.)
@@ -868,8 +873,8 @@ impl Canvas {
         }
     }
 
-    /// What's pasted over the canvas (an image, or text; while nothing's being typed in) becomes an annotation
-    /// there, of the type that suits it best (see `AnnotationType::pasted`), if any can show it.
+    /// What's pasted over the canvas (an image, or text, while nothing's being typed in) becomes an annotation there,
+    /// of the type that suits it best (see `AnnotationType::pasted`), if any can show it.
     fn paste<A: AnnotationsEnum>(
         &mut self,
         ui: &egui::Ui,
@@ -893,7 +898,7 @@ impl Canvas {
         self.place(annotations, selection, kind, size, centre);
     }
 
-    /// Makes an annotation of a type that's chosen rather than drawn (an image from a file, say), in the middle of
+    /// Some annotation types are chosen rather than drawn (an image from a file, say); this puts one in the middle of
     /// the view.
     pub fn insert_chosen<A: AnnotationsEnum>(
         &mut self,
@@ -907,8 +912,8 @@ impl Canvas {
         }
     }
 
-    /// Adds an annotation centred on `centre`, scaled down (keeping its shape) to take no more than a quarter of
-    /// the view across or down, and selects it.
+    /// The canvas adds an annotation centred on `centre` with this, scaled down (keeping its shape) to take no more
+    /// than a quarter of the view across or down, and selects it.
     fn place<A: AnnotationsEnum>(
         &mut self,
         annotations: &mut Annotations<A>,
@@ -925,8 +930,9 @@ impl Canvas {
         selection.only_annotation(id);
     }
 
-    /// Annotations sit above the graph, or beneath it (those that go there: boxes, see `above_graph`): drag to
-    /// move (along with anything else selected), drag the corner to resize, double-click to edit.
+    /// Annotations sit above the graph, or beneath it (those that go there: boxes, see `above_graph`). Someone drags
+    /// one to move it (along with anything else selected), drags its corner to resize it, and double-clicks to edit
+    /// it.
     #[allow(clippy::too_many_arguments)]
     fn annotations<N: NodesEnum, A: AnnotationsEnum>(
         &mut self,
@@ -1010,7 +1016,8 @@ impl Canvas {
         }
     }
 
-    /// Registers the interactions for a node and its ports. Returns whether any nodes moved.
+    /// The canvas registers the interactions for a node and its ports with this, which returns whether any nodes
+    /// moved.
     #[allow(clippy::too_many_arguments)]
     fn interact_node<N: NodesEnum, A: AnnotationsEnum>(
         &mut self,
@@ -1258,8 +1265,8 @@ impl Canvas {
     }
 }
 
-/// The legend's sections (data, then settings) with the edge types to list in each: those on some port of
-/// the graph (which covers the edges, as each connects two ports). Sections with none are left out.
+/// The legend lists the edge types on some port of the graph (which covers the edges, as each connects two ports), in
+/// sections (data, then settings). Sections with none are left out.
 pub fn legend_entries<N: NodesEnum>(
     resolved: &Resolved<N::Edges>,
 ) -> Vec<(&'static str, Dimension, Vec<&'static EdgeInfo>)> {
@@ -1281,7 +1288,7 @@ pub fn legend_entries<N: NodesEnum>(
     .collect()
 }
 
-/// Moves every selected node and annotation by `delta`, in scene coordinates.
+/// Dragging moves every selected node and annotation by `delta`, in scene coordinates.
 fn move_selection<N: NodesEnum, A: AnnotationsEnum>(
     graph: &mut Graph<N>,
     annotations: &mut Annotations<A>,
@@ -1326,7 +1333,8 @@ fn edge_points(edge: &Edge, layouts: &HashMap<NodeId, Layout>, zoom: f32) -> Opt
     Some(bezier(a, port_on_right(layouts, source), b, port_on_right(layouts, target), zoom))
 }
 
-/// The target port under the pointer: the nearest within reach, or failing that the first on a node it's over.
+/// A wire dropped connects to the target port under the pointer: the nearest within reach, or failing that the first
+/// on a node it's over.
 fn target_at(pointer: Pos2, layouts: &HashMap<NodeId, Layout>, targets: &[Port]) -> Option<Port> {
     let nearest = targets
         .iter()
@@ -1340,8 +1348,8 @@ fn target_at(pointer: Pos2, layouts: &HashMap<NodeId, Layout>, targets: &[Port])
     })
 }
 
-/// What painting a node's ports needs to know besides the node: which are connected, and where a wire being dragged
-/// could go.
+/// Painting a node's ports needs to know more than the node: which are connected, and where a wire being dragged could
+/// go.
 struct PortPaint<'a> {
     connected: &'a HashSet<Port>,
     targets: &'a [Port],
@@ -1350,8 +1358,8 @@ struct PortPaint<'a> {
     colours: &'a Colours,
 }
 
-/// A small, simple gear (six teeth round a ring), on a disc of `back`, if it's given, so a line it's on stops either
-/// side of it.
+/// Settings rows are marked with a small, simple gear (six teeth round a ring), on a disc of `back`, if it's given, so
+/// a line it's on stops either side of it.
 fn small_gear(painter: &Painter, centre: Pos2, zoom: f32, ink: Color32, back: Option<Color32>) {
     if let Some(back) = back {
         painter.circle_filled(centre, 7.0 * zoom, back);
@@ -1512,7 +1520,7 @@ fn paint_port(
 mod tests {
     use super::*;
 
-    /// Which side of its node a port's drawn on.
+    /// Tests check which side of its node a port's drawn on, with this.
     fn drawn_on_right(name: &str, role: PortRole, index: usize) -> bool {
         use crate::engine::NodeTypeEnum;
         use crate::{NodeType, Nodes};

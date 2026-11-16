@@ -1,13 +1,13 @@
-//! Annotations: things on the canvas that aren't part of the graph, like sticky notes. They're saved and undone
-//! along with the graph, but take no part in processing.
+//! The canvas can have annotations on it, things that aren't part of the graph, like sticky notes. They're saved and
+//! undone along with the graph, but take no part in processing.
 //!
 //! Like node types, annotation types are declared by the program (with `annotations_enum!`): each is a struct
-//! implementing `AnnotationType`. The canvas does what's the same for them all: selecting them, moving them,
-//! editing and deleting them, which goes in front of which, and making them (drawn out, chosen, or pasted). Each draws
-//! itself, and takes what interaction of its own it likes (resizing, dragging an arrow's ends), in `canvas_ui`, with
-//! the helpers in `AnnotationUi` for what they share: a card's background, a resizing corner, ends to drag, content
-//! scaled to the zoom. What's pasted onto the canvas (an image, or text) becomes an annotation of whichever type
-//! suits it best (see `AnnotationType::pasted`).
+//! implementing `AnnotationType`. The canvas does what's the same for them all: selecting them, moving them, editing
+//! and deleting them, which goes in front of which, and making them (drawn out, chosen, or pasted). Each type draws its
+//! annotations itself, and takes what interaction of its own it likes (resizing, dragging an arrow's ends), in
+//! `canvas_ui`, with the helpers in `AnnotationUi` for what they share: a card's background, a resizing corner, ends to
+//! drag, content scaled to the zoom. What's pasted onto the canvas (an image, or text) becomes an annotation of
+//! whichever type suits it best (see `AnnotationType::pasted`).
 
 use std::collections::BTreeMap;
 
@@ -18,52 +18,53 @@ use serde::{Deserialize, Serialize};
 
 use super::theme::Colours;
 
-/// The smallest an annotation can be made, in canvas units, unless its type says otherwise.
+/// An annotation can be made no smaller than this, in canvas units, unless its type says otherwise.
 pub const MIN_SIZE: [f32; 2] = [80.0, 50.0];
 
-/// Something pasted onto the canvas.
+/// Someone can paste an image or text onto the canvas.
 #[derive(Clone, Copy, Debug)]
 pub enum PastedContent<'a> {
     Image(&'a ColorImage),
-    /// Text, trimmed (and not empty).
+    /// Text pasted, trimmed (and not empty).
     Text(&'a str),
 }
 
-/// How well an annotation type suits something pasted (see `AnnotationType::pasted`), worst first.
+/// An annotation type suits something pasted this well (see `AnnotationType::pasted`), worst first.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Fit {
-    /// It can show it, if nothing's better.
+    /// The type can show it, if nothing's better.
     Possible,
-    /// It shows it well.
+    /// The type shows it well.
     Good,
-    /// It's what it's for.
+    /// The type's for showing it.
     Best,
 }
 
-/// Static facts about an annotation type.
+/// The toolbar describes each annotation type by these facts, which never change.
 pub struct AnnotationInfo {
     pub name: &'static str,
     pub description: &'static str,
-    /// Its size when added without being drawn out.
+    /// An annotation of the type added without being drawn out is this size.
     pub default_size: [f32; 2],
 }
 
-/// An annotation type.
+/// Each annotation type implements this.
 pub trait AnnotationType: Default + Clone + PartialEq + Serialize + DeserializeOwned + 'static {
     const INFO: AnnotationInfo;
 
-    /// The smallest it can be made, in canvas units.
+    /// An annotation of the type can be made no smaller than this, in canvas units.
     const MIN_SIZE: [f32; 2] = MIN_SIZE;
 
-    /// One just drawn out on the canvas, which goes straight into editing. `flipped` says whether it was drawn
-    /// leftwards and upwards (an arrow drawn that way points that way, say). By default the same as `default`.
+    /// An annotation just drawn out on the canvas goes straight into editing; this makes it. `flipped` says whether it
+    /// was drawn leftwards and upwards (an arrow drawn that way points that way, say). By default, it's `default`'s.
     fn drawn(_flipped: [bool; 2]) -> Self {
         Self::default()
     }
 
-    /// Draws it on the canvas, and takes what interaction of its own it likes, with `cx`'s helpers (see
-    /// `AnnotationUi`). Returns whether editing (if it is: `cx.editing`) should carry on. By default, a card: resized
-    /// by its corner, its background (`fill`), what's drawn over it (`paint`), and its content (`content_ui`).
+    /// The canvas has the annotation draw itself with this, taking what interaction of its own it likes, with `cx`'s
+    /// helpers (see `AnnotationUi`). This returns whether editing (if it is: `cx.editing`) should carry on. By default,
+    /// the annotation's a card: resized by its corner, its background (`fill`), what's drawn over it (`paint`), and its
+    /// content (`content_ui`).
     fn canvas_ui(&mut self, cx: &mut AnnotationUi) -> bool {
         cx.resize_corner(None);
         cx.card(self.fill(cx.theme));
@@ -72,86 +73,92 @@ pub trait AnnotationType: Default + Clone + PartialEq + Serialize + DeserializeO
         cx.content(|ui| self.content_ui(ui, editing))
     }
 
-    /// Its background on the canvas, in the theme's colours if it wants (for the default `canvas_ui`, and the outline
-    /// while one's drawn out). An opaque one has a shadow.
+    /// The annotation's background on the canvas, in the theme's colours if it wants (for the default `canvas_ui`, and
+    /// the outline while one's drawn out). An opaque one has a shadow.
     fn fill(&self, theme: &Colours) -> Color32;
 
-    /// For the default `canvas_ui`: what it draws besides its content, over its background (a border, say), filling
-    /// `rect` (on screen).
+    /// The default `canvas_ui` has the annotation draw what it likes besides its content, over its background (a
+    /// border, say), filling `rect` (on screen), with this.
     fn paint(&self, _painter: &Painter, _rect: Rect, _zoom: f32, _theme: &Colours) {}
 
-    /// Whether it can be grabbed (to move, select or edit) at `at`, on screen, within `rect` (grown by
-    /// `AnnotationUi::REACH` all round, for one that's thin, like a line): by default anywhere in `rect` itself; a box,
-    /// say, only by its edge, so what's inside it can still be grabbed.
+    /// The canvas asks whether the annotation can be grabbed (to move, select or edit) at `at`, on screen, within
+    /// `rect` (grown by `AnnotationUi::REACH` all round, for one that's thin, like a line): by default anywhere in
+    /// `rect` itself; a box, say, only by its edge, so what's inside it can still be grabbed.
     fn hit(&self, rect: Rect, at: Pos2, _zoom: f32) -> bool {
         rect.contains(at)
     }
 
-    /// Whether it goes behind other annotations (a box grouping them, say).
+    /// Some annotations go behind others (a box grouping them, say). This says whether this one does.
     fn behind(&self) -> bool {
         false
     }
 
-    /// Whether it goes above the graph (as most do), rather than beneath it (a box grouping nodes, say).
+    /// Most annotations go above the graph, but some go beneath it (a box grouping nodes, say). This says whether this
+    /// one goes above.
     fn above_graph(&self) -> bool {
         true
     }
 
-    /// One showing what's been pasted onto the canvas, if this type can: how well it suits it, the annotation, and
-    /// its natural size (which the canvas scales down to fit the view). Of the types that can, the one that suits it
-    /// best makes it (of two as good, the first in `annotations_enum!`).
+    /// When something's pasted onto the canvas, each type that can show it makes an annotation here: how well it suits
+    /// it, the annotation, and its natural size (which the canvas scales down to fit the view). Of the types that can,
+    /// the one that suits it best is used (of two as good, the first in `annotations_enum!`).
     fn pasted(_pasted: &PastedContent) -> Option<(Fit, Self, [f32; 2])> {
         None
     }
 
-    /// Whether it's drawn out on the canvas (with its toolbar tool). If not, it's made with `choose` instead.
+    /// Annotations of most types are drawn out on the canvas (with the type's toolbar tool); others are made with
+    /// `choose` instead. This says whether this type's are drawn.
     const DRAWN: bool = true;
 
-    /// One made by choosing something (an image file, say), and its natural size; `None` if nothing was chosen.
+    /// A type that isn't drawn makes an annotation by having someone choose something (an image file, say); this gives
+    /// it, and its natural size, or `None` if nothing was chosen.
     fn choose() -> Option<(Self, [f32; 2])> {
         None
     }
 
-    /// For the default `canvas_ui`: shows its content in `ui` (sized and scaled to fit it on the canvas: see
-    /// `AnnotationUi::content`), as it looks, or for editing while `editing`. Returns whether editing should carry on.
+    /// The default `canvas_ui` has the annotation show its content in `ui` (sized and scaled to fit it on the canvas:
+    /// see `AnnotationUi::content`), as it looks, or for editing while `editing`. This returns whether editing should
+    /// carry on.
     fn content_ui(&mut self, _ui: &mut egui::Ui, _editing: bool) -> bool {
         false
     }
 
-    /// Its settings, for the annotation pane (shown while it's selected).
+    /// The annotation pane shows the annotation's settings while it's selected, with this.
     fn settings_ui(&mut self, ui: &mut egui::Ui);
 
-    /// Buttons of its own in the annotation pane's toolbar, beside its delete button (laid out right to left).
+    /// The annotation can put buttons of its own in the annotation pane's toolbar, beside its delete button (laid out
+    /// right to left).
     fn toolbar_ui(&mut self, _ui: &mut egui::Ui) {}
 
-    /// Paints its icon (for the toolbar's tool to draw one) to fill `rect`.
+    /// The toolbar's tool for drawing one shows the type's icon, painted with this to fill `rect`.
     fn paint_icon(painter: &Painter, rect: Rect);
 }
 
-/// The annotation types a program is built with, as a fieldless enum, one variant each (`AnnotationsEnum::Type`): the
-/// toolbar's tools, say. Made by `annotations_enum!`, in the same order. What a type is, rather than an annotation of it.
+/// The app sometimes needs an annotation's type without the annotation: the toolbar's tools, say. `annotations_enum!`
+/// makes a fieldless enum of the program's annotation types for that, one variant each, in the same order
+/// (`AnnotationsEnum::Type`), and implements this for it.
 pub trait AnnotationTypeEnum: Copy + Eq + std::hash::Hash + std::fmt::Debug + 'static {
-    /// Every type, in the order they're declared.
+    /// Every type, in the order the program declares them.
     const ALL: &'static [Self];
 
     fn info(self) -> &'static AnnotationInfo;
-    /// The smallest an annotation of the type can be made (its `AnnotationType::MIN_SIZE`).
+    /// An annotation of the type can be made no smaller than this (its `AnnotationType::MIN_SIZE`).
     fn min_size(self) -> [f32; 2];
-    /// Whether annotations of the type are drawn out, or made with `AnnotationsEnum::choose`.
+    /// Annotations of the type are drawn out, or made with `AnnotationsEnum::choose`; this says which.
     fn is_drawn(self) -> bool;
-    /// Paints the type's icon (for the toolbar's tool to draw one) to fill `rect`.
+    /// The toolbar's tool shows the type's icon, painted with this to fill `rect`.
     fn paint_icon(self, painter: &Painter, rect: Rect);
 
-    /// The type called `name` (its `AnnotationInfo::name`), if there is one.
+    /// The type called `name` (by its `AnnotationInfo::name`), if there is one.
     fn named(name: &str) -> Option<Self> {
         Self::ALL.iter().copied().find(|t| t.info().name == name)
     }
 }
 
-/// The closed set of annotation types a program is built with, as an enum with one variant per type.
-/// Implemented by `annotations_enum!`, and forwards each `AnnotationType` method to the variant's type.
+/// The app holds a program's annotations as an enum with one variant per annotation type, which `annotations_enum!`
+/// makes and implements this for. Each method hands on to the variant's type's `AnnotationType` method.
 pub trait AnnotationsEnum: Clone + PartialEq + Serialize + DeserializeOwned + 'static {
-    /// Its annotation types, without their content.
+    /// The program's annotation types, without their content (see `AnnotationTypeEnum`).
     type Type: AnnotationTypeEnum;
 
     fn create(annotation_type: Self::Type) -> Self;
@@ -163,7 +170,8 @@ pub trait AnnotationsEnum: Clone + PartialEq + Serialize + DeserializeOwned + 's
     fn above_graph(&self) -> bool;
     fn annotation_type(&self) -> Self::Type;
     fn fill(&self, theme: &Colours) -> Color32;
-    /// An annotation of the type that best suits what's pasted (see `AnnotationType::pasted`), and its size.
+    /// When something's pasted, this makes an annotation of the type that best suits it (see `AnnotationType::pasted`),
+    /// and gives its size.
     fn pasted(pasted: &PastedContent) -> Option<(Self, [f32; 2])>;
     fn settings_ui(&mut self, ui: &mut egui::Ui);
     fn toolbar_ui(&mut self, ui: &mut egui::Ui);
@@ -173,8 +181,9 @@ pub trait AnnotationsEnum: Clone + PartialEq + Serialize + DeserializeOwned + 's
     }
 }
 
-/// Declares the enum of annotation types a program is built with, and implements `AnnotationsEnum` for it, and the enum
-/// of just their types, named after it, with the same variants holding nothing, implementing `AnnotationTypeEnum`:
+/// A program declares the annotation types it's built with like this, which makes the enum of them, implementing
+/// `AnnotationsEnum`, and the enum of just their types, named as the program says, with the same variants holding
+/// nothing, implementing `AnnotationTypeEnum`:
 ///
 /// ```ignore
 /// annotations_enum! {
@@ -185,7 +194,8 @@ pub trait AnnotationsEnum: Clone + PartialEq + Serialize + DeserializeOwned + 's
 /// }
 /// ```
 ///
-/// Saved files name each annotation by its variant, so renaming a variant breaks existing files.
+/// Saved files name each annotation by its variant, so renaming a variant breaks existing files (unless a config patch
+/// renames it: see `crate::config_patching`).
 #[macro_export]
 macro_rules! annotations_enum {
     (
@@ -291,16 +301,16 @@ macro_rules! annotations_enum {
     };
 }
 
-/// An annotation on the canvas, unique within it and never reused, as `NodeId` is for nodes.
+/// The canvas names each annotation with an id, unique within it and never reused, as `NodeId` is for nodes.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct AnnotationId(pub u64);
 
-/// An annotation on the canvas.
+/// The canvas holds each annotation with where it is.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(bound = "A: AnnotationsEnum")]
 pub struct Annotation<A> {
-    /// Top-left corner on the canvas.
+    /// The annotation's top-left corner on the canvas.
     pub pos: [f32; 2],
     pub size: [f32; 2],
     pub kind: A,
@@ -312,7 +322,7 @@ impl<A: AnnotationsEnum> Annotation<A> {
     }
 }
 
-/// The annotations on the canvas, by id: saved and undone with the graph, but no part of how it runs.
+/// The canvas keeps its annotations by id, saved and undone with the graph, but no part of how it runs.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(bound = "A: AnnotationsEnum")]
 pub struct Annotations<A> {
@@ -359,43 +369,44 @@ impl<A: AnnotationsEnum> Annotations<A> {
     }
 }
 
-/// What an annotation draws itself with on the canvas (see `AnnotationType::canvas_ui`): where it is, how it's being
+/// An annotation draws itself on the canvas with this (see `AnnotationType::canvas_ui`): where it is, how it's being
 /// shown, and helpers for what annotations share.
 pub struct AnnotationUi<'a> {
     pub ui: &'a mut egui::Ui,
     pub painter: &'a Painter,
     pub theme: &'a Colours,
     pub id: AnnotationId,
-    /// Where it is on the canvas (its top-left corner), and its size, in canvas units: to change, to resize it, say.
+    /// Where the annotation is on the canvas (its top-left corner), and its size, in canvas units, which it changes to
+    /// resize itself, say.
     pub pos: &'a mut [f32; 2],
     pub size: &'a mut [f32; 2],
-    /// The smallest it can be made (its type's `MIN_SIZE`).
+    /// The annotation can be made no smaller than this (its type's `MIN_SIZE`).
     pub min_size: [f32; 2],
     pub selected: bool,
-    /// Whether the pointer's over where it's grabbed.
+    /// While the pointer's over where it's grabbed, this is set.
     pub hovered: bool,
-    /// Whether it's being edited (after a double-click, say).
+    /// While it's being edited (after a double-click, say), this is set.
     pub editing: bool,
-    /// From the canvas to the screen.
+    /// The canvas maps its coordinates to the screen's by this.
     pub to_screen: TSTransform,
 }
 
 impl AnnotationUi<'_> {
-    /// How far round its rect an annotation can be grabbed, on screen: so a thin one (a line) can be, and the handles
+    /// An annotation can be grabbed this far round its rect, on screen, so a thin one (a line) can be, and the handles
     /// at its ends (see `drag_ends`).
     pub const REACH: f32 = 8.0;
 
-    /// Where it is, on screen.
+    /// Where the annotation is, on screen.
     pub fn rect(&self) -> Rect {
         self.to_screen * self.canvas_rect()
     }
 
-    /// Where it is, on the canvas.
+    /// Where the annotation is, on the canvas.
     pub fn canvas_rect(&self) -> Rect {
         Rect::from_min_size((*self.pos).into(), (*self.size).into())
     }
 
-    /// Moves or resizes it, to `rect` on the canvas.
+    /// The annotation moves or resizes itself to `rect` on the canvas with this.
     pub fn set_canvas_rect(&mut self, rect: Rect) {
         (*self.pos, *self.size) = (rect.min.into(), rect.size().into());
     }
@@ -404,8 +415,8 @@ impl AnnotationUi<'_> {
         self.to_screen.scaling
     }
 
-    /// A handle in its bottom-right corner to resize it by, no smaller than `min_size`; keeping `aspect` (its width
-    /// over its height), if it's given, by whichever side's dragged further.
+    /// An annotation can have a handle in its bottom-right corner to resize it by, no smaller than `min_size`, keeping
+    /// `aspect` (its width over its height), if it's given, by whichever side's dragged further.
     pub fn resize_corner(&mut self, aspect: Option<f32>) {
         let rect = self.rect();
         let handle = Rect::from_min_max(rect.max - Vec2::splat(12.0 * self.zoom()), rect.max);
@@ -425,8 +436,9 @@ impl AnnotationUi<'_> {
         resize.on_hover_cursor(egui::CursorIcon::ResizeNwSe);
     }
 
-    /// A card: its background in `fill` (with a shadow, if it's opaque), outlined while it's selected, with grip lines
-    /// in the resizing corner (for one that's see-through, only while it's selected).
+    /// An annotation can draw itself as a card: its background in `fill` (with a shadow, if it's opaque), outlined
+    /// while it's selected, with grip lines in the resizing corner (for one that's see-through, only while it's
+    /// selected).
     pub fn card(&self, fill: Color32) {
         let (rect, zoom, painter) = (self.rect(), self.zoom(), self.painter);
         let opaque = fill.a() == 255;
@@ -445,8 +457,8 @@ impl AnnotationUi<'_> {
         }
     }
 
-    /// Handles at `ends` (points on the canvas: an arrow's, say), each of which can be dragged. Returns where they
-    /// are now. (Draw them with `mark_ends`, once it's drawn.)
+    /// An annotation can have handles at `ends` (points on the canvas: an arrow's, say), each of which can be dragged.
+    /// This returns where they are now. (They're drawn with `mark_ends`, once the annotation's drawn.)
     pub fn drag_ends<const N: usize>(&mut self, mut ends: [Pos2; N]) -> [Pos2; N] {
         for (index, end) in ends.iter_mut().enumerate() {
             let handle = Rect::from_center_size(self.to_screen * *end, Vec2::splat(2.0 * Self::REACH));
@@ -459,7 +471,7 @@ impl AnnotationUi<'_> {
         ends
     }
 
-    /// Marks `ends` (points on the canvas) as handles to drag, while it's selected or hovered.
+    /// While the annotation's selected or hovered, this marks `ends` (points on the canvas) as handles to drag.
     pub fn mark_ends(&self, ends: &[Pos2]) {
         if self.selected || self.hovered {
             for end in ends {
@@ -469,9 +481,9 @@ impl AnnotationUi<'_> {
         }
     }
 
-    /// Its content, in `add`'s `ui`: within it (inset a little), scaled to the zoom so its text is laid out at the
-    /// size it's shown (so stays sharp). Not shown when it's zoomed so far out it couldn't be read, unless it's being
-    /// edited. Returns what `add` does (whether editing should carry on), or false.
+    /// An annotation shows its content in `add`'s `ui` with this: within it (inset a little), scaled to the zoom so its
+    /// text is laid out at the size it's shown (so stays sharp). It isn't shown when it's zoomed so far out it couldn't
+    /// be read, unless it's being edited. This returns what `add` does (whether editing should carry on), or false.
     pub fn content(&mut self, add: impl FnOnce(&mut egui::Ui) -> bool) -> bool {
         let zoom = self.zoom();
         if zoom <= 0.35 && !self.editing {

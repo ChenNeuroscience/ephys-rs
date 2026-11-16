@@ -1,6 +1,6 @@
-//! The dev tools' console: the log (see `crate::console`), as a terminal shows output, a line per row with
-//! its time, level, thread and pass (and node), the messages styled by their escape codes. Filtered to a level
-//! and above, and by text.
+//! The dev tools' console shows the log (see `crate::console`) as a terminal shows output: a line per row with its
+//! time, level, thread and pass (and node), the messages styled by their escape codes. It filters to a level and above,
+//! and by text.
 
 use eframe::egui::{self, Color32, FontId, RichText, text::LayoutJob};
 use log::{Level, LevelFilter};
@@ -10,9 +10,9 @@ use crate::console::{self, Line};
 use crate::engine::{Graph, NodesEnum};
 use crate::theme::Colours;
 
-/// What the console shows.
+/// The console keeps what it's showing here.
 pub struct ConsoleView {
-    /// The lowest level shown.
+    /// The console shows lines at this level and above.
     pub level: LevelFilter,
     pub filter: String,
 }
@@ -101,7 +101,8 @@ fn matches(line: &Line, filter: &str) -> bool {
         || line.thread.name().is_some_and(|n| n.contains(filter))
 }
 
-/// The line as a row: its time, level, thread and pass (or blanks, for a continuation), then the text.
+/// The console shows each line as a row: its time, level, thread and pass (or blanks, for a continuation), then the
+/// text.
 fn layout<N: NodesEnum>(line: &Line, graph: &Graph<N>, colours: &Colours, font: &FontId) -> LayoutJob {
     let mut job = LayoutJob::default();
     let format = |colour| egui::TextFormat { font_id: font.clone(), color: colour, ..Default::default() };
@@ -140,8 +141,8 @@ mod tests {
     use crate::Nodes;
     use crate::standard::themes::THEMES;
 
-    /// With more lines than fit, the view's filled to its bottom: the rows are where the scroll area thinks they are,
-    /// rather than nearer together, which left the bottom empty, and lines vanishing whole as it scrolled.
+    /// With more lines than fit, the console's filled to its bottom: the rows are where the scroll area thinks they
+    /// are, rather than nearer together, which left the bottom empty, and lines vanishing whole as it scrolled.
     #[test]
     fn more_lines_than_fit_fill_the_view() {
         crate::console::init(true);

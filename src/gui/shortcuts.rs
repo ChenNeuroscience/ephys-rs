@@ -1,6 +1,6 @@
-//! The keyboard shortcuts' help (Help › Keyboard Shortcuts): the app's, from its actions (see `actions`), so it says
-//! what the keys do as the program has it; the graph's; and those of node types' windows (`Node::SHORTCUTS`): the
-//! types in the graph, or all of them.
+//! Help › Keyboard Shortcuts lists the keys: the app's, from its actions (see `actions`), so it says what the keys do
+//! as the program has it; the graph's; and those of node types' windows (`Node::SHORTCUTS`): the types in the graph, or
+//! all of them.
 
 use std::collections::HashSet;
 
@@ -11,24 +11,24 @@ use super::dialog;
 use crate::engine::{NodeTypeEnum, Shortcut};
 use crate::theme::Colours;
 
-/// The graph's keys, over it.
+/// Over the graph, these keys do these things.
 const GRAPH: &[Shortcut] = &[
     Shortcut { keys: "Tab", does: "Add a node, where the pointer is" },
     Shortcut { keys: "Enter", does: "Open the selected node's window, or edit the selected annotation" },
     Shortcut { keys: "Esc", does: "Select nothing, and go back to the select tool" },
 ];
 
-/// A section: its title, and its keys and what they do.
+/// The help lists keys in sections, each with a title, and its keys and what they do.
 type Section = (String, Vec<(String, String)>);
 
-/// The help, while it's open.
+/// The app keeps the help here while it's open.
 #[derive(Default)]
 pub struct ShortcutsHelp {
-    /// Whether it lists every node type's keys, not just those of the types in the graph.
+    /// The help can list every node type's keys, not just those of the types in the graph; this says whether it does.
     all_types: bool,
 }
 
-/// The app's sections, in its menus' order, then the graph's.
+/// The help lists the app's keys first, in its menus' order, then the graph's.
 fn app_sections(ctx: &egui::Context) -> Vec<Section> {
     // As they're written on the keys.
     let format = |shortcut| ctx.format_shortcut(&shortcut).replace("Slash", "/").replace("Comma", ",");
@@ -62,14 +62,15 @@ fn rows(shortcuts: &[Shortcut]) -> Vec<(String, String)> {
     shortcuts.iter().map(|s| (s.keys.to_string(), s.does.to_string())).collect()
 }
 
-/// Each node type's section, that has keys of its own: of those in `in_graph`, or all.
+/// After those, the help lists each node type that has keys of its own: of those in `in_graph`, or all.
 fn node_sections<T: NodeTypeEnum>(in_graph: &HashSet<T>, all: bool) -> Vec<Section> {
     let shown = T::ALL.iter().filter(|t| !t.shortcuts().is_empty() && (all || in_graph.contains(t)));
     shown.map(|t| (format!("{}'s window", t.info().name), rows(t.shortcuts()))).collect()
 }
 
 impl ShortcutsHelp {
-    /// Shows the help, for a graph with nodes of the types `in_graph`; returns whether it's still open.
+    /// The app shows the help with this, for a graph with nodes of the types `in_graph`, which returns whether the
+    /// help's still open.
     pub fn show<T: NodeTypeEnum>(&mut self, ctx: &egui::Context, colours: &Colours, in_graph: &HashSet<T>) -> bool {
         let mut close = false;
         let all_types = &mut self.all_types;

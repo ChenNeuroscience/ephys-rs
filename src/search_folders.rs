@@ -1,5 +1,5 @@
-//! Folders to look in for files a component needs from elsewhere (a vendor's library, an FPGA's bitfile), as global
-//! settings keep them (see `crate::global_settings`): the folders chosen first, then where the files usually are.
+//! Some components need files from elsewhere (a vendor's library, an FPGA's bitfile). Their global settings (see
+//! `crate::global_settings`) keep folders to look in: the folders chosen first, then where the files usually are.
 
 use std::path::PathBuf;
 
@@ -8,24 +8,24 @@ use serde::{Deserialize, Serialize};
 
 use crate::theme::Colours;
 
-/// Folders to look in first, in order.
+/// A component looks in these folders first, in order.
 #[derive(Clone, Default, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct SearchFolders(pub Vec<PathBuf>);
 
 impl SearchFolders {
-    /// Where to look for a file of any of `names`: in each of these folders, then in each of `then`.
+    /// A component looks for a file of any of `names` in these places: each of these folders, then each of `then`.
     pub fn candidates(&self, names: &[&str], then: &[PathBuf]) -> Vec<PathBuf> {
         let folders = self.0.iter().chain(then);
         folders.flat_map(|folder| names.iter().map(move |name| folder.join(name))).collect()
     }
 
-    /// The first of `candidates` that's there.
+    /// A component finds a file by taking the first of `candidates` that's there.
     pub fn find(&self, names: &[&str], then: &[PathBuf]) -> Option<PathBuf> {
         self.candidates(names, then).into_iter().find(|p| p.is_file())
     }
 
-    /// The folders, each to remove, and a button to add one.
+    /// The settings tab lists the folders, each to remove, and a button to add one, with this.
     pub fn ui(&mut self, ui: &mut egui::Ui, colours: &Colours) {
         let mut remove = None;
         for (i, folder) in self.0.iter().enumerate() {
@@ -56,7 +56,7 @@ impl SearchFolders {
     }
 }
 
-/// Where to get the files, if they're missing: a link to each place, with what's there.
+/// If the files are missing, the settings tab says where to get them: a link to each place, with what's there.
 pub fn get_them_ui(ui: &mut egui::Ui, colours: &Colours, links: &[(&str, &str)]) {
     ui.label(RichText::new("Where to get them").small().color(colours.text_secondary));
     for (what, url) in links {
@@ -64,17 +64,17 @@ pub fn get_them_ui(ui: &mut egui::Ui, colours: &Colours, links: &[(&str, &str)])
     }
 }
 
-/// Said under the files found, by a library's settings.
+/// A library's settings say this under the files found.
 pub const LOADED_ONCE: &str =
     "A library's kept once it's been loaded: a change to where it's found applies when ephys-rs next starts.";
 
-/// Explains a setting, small and secondary.
+/// A settings tab explains a setting with this, small and secondary.
 pub fn note(ui: &mut egui::Ui, colours: &Colours, text: &str) {
     ui.label(RichText::new(text).small().color(colours.text_secondary));
     ui.add_space(4.0);
 }
 
-/// A line for each file (what it is, and where it'd be found), as a grid.
+/// A settings tab lists the files a component needs as a grid, a line for each (what it is, and where it'd be found).
 pub fn found_ui(ui: &mut egui::Ui, colours: &Colours, files: &[(&str, Option<PathBuf>)]) {
     egui::Grid::new("found").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
         for (what, found) in files {

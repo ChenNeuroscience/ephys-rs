@@ -1,4 +1,4 @@
-//! The pop-up for adding a node where the user clicked. Opened from a port, it lists only the
+//! People add a node with a pop-up menu, where they clicked on the graph. Opened from a port, the menu lists only the
 //! node types that could connect there, plus the ports already in the graph that could. Node types hidden in Settings
 //! aren't listed.
 
@@ -6,14 +6,14 @@ use eframe::egui::{self, Id, Key, Order, Pos2, RichText};
 
 use crate::engine::{Category, Graph, NodeId, NodeState, NodeTypeEnum, NodesEnum, Port, Resolved};
 
-/// What's chosen in the menu: a new node, of a type (`NodesEnum::Type`), or a port already in the graph.
+/// Someone chooses either a new node from the menu, of a type (`NodesEnum::Type`), or a port already in the graph.
 pub enum Choice<T> {
     New(T),
     Existing(Port),
 }
 
-/// The menu, open: where it was opened (on screen, and in the scene, for the new node), the port it was opened
-/// from, if any, and what's being searched for.
+/// The app keeps the menu here while it's open: where it was opened (on screen, and in the scene, for the new node),
+/// the port it was opened from, if any, and what's being searched for.
 pub struct CreateMenu {
     pub screen: Pos2,
     pub scene: Pos2,
@@ -22,8 +22,8 @@ pub struct CreateMenu {
     focused: bool,
 }
 
-/// The port on a new node of type `node_type` that `from` would connect to, if any. The port's node is a
-/// placeholder.
+/// Opened from port `from`, the menu offers a node type only if a new node of that type has a port `from` would
+/// connect to. This finds that port, if any; the port's node is a placeholder.
 pub fn port_on_new<N: NodesEnum>(from: Port, resolved: &Resolved<N::Edges>, node_type: N::Type) -> Option<Port> {
     let from_state = resolved.get(&from.node)?;
     NodeState::unconnected(&N::create(node_type)).find(NodeId(0), from_state, (from.role, from.index))
@@ -34,7 +34,7 @@ impl CreateMenu {
         CreateMenu { screen, scene, from, search: String::new(), focused: false }
     }
 
-    /// Returns what was chosen, if anything, and whether the menu stays open.
+    /// The app shows the menu with this, which returns what was chosen, if anything, and whether the menu stays open.
     pub fn show<N: NodesEnum>(
         &mut self,
         ctx: &egui::Context,

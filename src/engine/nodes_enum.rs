@@ -1,4 +1,5 @@
-//! `NodesEnum`, the closed list of node types a program is built with, and `nodes_enum!`, which declares it.
+//! A program is built with a closed list of node types, which it declares with `nodes_enum!`. The engine reaches each
+//! node through `NodesEnum`, which that macro implements.
 
 use std::any::{Any, TypeId};
 
@@ -11,40 +12,44 @@ use super::{
     SettingPort, Shared, ThreadContext, TreeShake, UiContext,
 };
 
-/// The node types a program is built with, as a fieldless enum, one variant each (`NodesEnum::Type`): what the add-node
-/// menu offers, say, or a node's type. Made by `nodes_enum!`, in the same order.
+/// The app sometimes needs a node's type without the node: what the add-node menu offers, say. `nodes_enum!` makes a
+/// fieldless enum of the program's node types for that, one variant each, in the same order (`NodesEnum::Type`), and
+/// implements this for it.
 pub trait NodeTypeEnum: Copy + Eq + std::hash::Hash + std::fmt::Debug + Send + Sync + 'static {
-    /// Every type, in the order they're declared (the add-node menu's).
+    /// Every type, in the order the program declares them (which the add-node menu keeps).
     const ALL: &'static [Self];
 
+    /// The type's name, category and description (its `Node::INFO`).
     fn info(self) -> &'static NodeInfo;
 
-    /// The keys its window answers to (its `Node::SHORTCUTS`).
+    /// The keys the type's windows answer to (its `Node::SHORTCUTS`).
     fn shortcuts(self) -> &'static [super::Shortcut];
 
-    /// The type called `name` (its `NodeInfo::name`), if there is one.
+    /// The type called `name` (by its `NodeInfo::name`), if there is one.
     fn named(name: &str) -> Option<Self> {
         Self::ALL.iter().copied().find(|t| t.info().name == name)
     }
 }
 
-/// The closed set of node types a program is built with, as an enum with one variant per type. Implemented
-/// by `nodes_enum!`, and forwards each `Node` method to the variant's type: enum dispatch, as the `enum_dispatch` crate
-/// does it, by hand, as `Node` (with its associated types and consts) can't be a trait object.
+/// The engine holds a program's nodes as an enum with one variant per node type, which `nodes_enum!` makes and
+/// implements this for. Each method hands on to the variant's type's `Node` method: enum dispatch, as the
+/// `enum_dispatch` crate does it, by hand, as `Node` (with its associated types and consts) can't be a trait object.
+/// Where a method has no comment of its own, see `Node`'s.
 #[allow(clippy::type_complexity)]
 pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + Sync + 'static {
-    /// The edge types its node types use.
+    /// The program's node types all use these edge types.
     type Edges: Edges;
 
-    /// Its node types, without their settings.
+    /// The program's node types, without their settings (see `NodeTypeEnum`).
     type Type: NodeTypeEnum;
 
-    /// A node of type `node_type`, with default settings.
+    /// The add-node menu makes a node of type `node_type`, with default settings, with this.
     fn create(node_type: Self::Type) -> Self;
     fn node_type(&self) -> Self::Type;
     fn window_size(&self) -> [f32; 2];
     fn show_in_basic_default(&self) -> bool;
-    /// The global settings its node types read, each type once, in the order of the node types that first name them.
+    /// Settings… has a tab for each type of global settings the program's node types read: each type once, in the order
+    /// of the node types that first name them.
     fn global_settings_types() -> Vec<crate::global_settings::GlobalSettingsType>;
     fn inputs(&self) -> Vec<Input<Self::Edges>>;
     fn outputs(&self, inputs: &[Option<<Self::Edges as Edges>::DataStream>]) -> Vec<Output<Self::Edges>>;
@@ -53,7 +58,7 @@ pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + S
     fn set_setting(&mut self, index: usize, value: <Self::Edges as Edges>::Setting);
     fn controls(&self) -> Vec<Control<Self::Edges>>;
     fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Self::Edges>);
-    /// Its `UiState` as it starts.
+    /// The app keeps the node's `UiState`, starting from this.
     fn new_ui_state(&self) -> Box<dyn Any>;
     fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool], recording: bool) -> TreeShake;
     fn evaluate_buffer_usage(&self, inputs: usize, outputs: usize) -> BufferUsage;
@@ -65,22 +70,23 @@ pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + S
         context: &mut UiContext<Self::Edges>,
         triggers: &crate::triggers::ControlTriggers<<Self::Edges as Edges>::Trigger>,
     );
-    /// Whether the node carries state from one pass to the next.
+    /// A node with state (other than `()`) carries it from one pass to the next, and passes wait for each other there.
+    /// This says whether the node has state.
     fn has_state(&self) -> bool;
-    /// Why it does (see `PassState::WHY`).
+    /// The dev tools say why the node has state (see `PassState::WHY`).
     fn state_reason(&self) -> &'static str;
-    /// The node's `WorkerState` as each worker starts with it, unless the node made one (see
-    /// `Node::prepare_for_snapshot`).
+    /// Each worker starts with this as its state for the node (the `WorkerState`'s `Default`), unless the node made one
+    /// (see `Node::prepare_for_snapshot`).
     fn new_worker_state(&self) -> Box<dyn Any + Send>;
     fn prepare_for_snapshot(
         &self,
         context: &PrepareContext<Self::Edges, Self>,
     ) -> Prepare<Box<dyn Any + Send>, Box<dyn Any + Send>, Self>;
-    /// `state` and `proto_state` are its state (see `Node::on_snapshot_change`).
+    /// `state` and `proto_state` are the node's state, as its own type (see `Node::on_snapshot_change`).
     fn on_snapshot_change(&self, state: &mut (dyn Any + Send), proto_state: &mut (dyn Any + Send));
     fn shared(&self, inputs: &[Option<<Self::Edges as Edges>::DataStream>]) -> Box<dyn Shared>;
-    /// Runs a pass with the node's state and the worker's, as `prepare_for_snapshot` made them (`None` for none).
-    /// Returns false, having done nothing, if it hasn't the state it needs (it failed to prepare).
+    /// The pass runs the node with its state and the worker's, as `prepare_for_snapshot` made them (`None` for none).
+    /// If the node hasn't the state it needs (it failed to prepare), it does nothing, and this returns false.
     fn process(
         &self,
         pass: &mut PassContext<Self::Edges>,
@@ -96,13 +102,13 @@ pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + S
     }
 }
 
-/// Whether `S` is real state, rather than `()` for none.
+/// A node type with no state of a kind says so with `()`. This says whether `S` is real state.
 pub fn is_state<S: 'static>() -> bool {
     TypeId::of::<S>() != TypeId::of::<()>()
 }
 
-/// Declares the enum of node types a program is built with, and implements `NodesEnum` for it, and the enum of just
-/// their types, named after it, implementing `NodeTypeEnum`:
+/// A program declares the node types it's built with like this, which makes the enum of them, implementing
+/// `NodesEnum`, and the enum of just their types, named as the program says, implementing `NodeTypeEnum`:
 ///
 /// ```ignore
 /// nodes_enum! {
@@ -115,11 +121,11 @@ pub fn is_state<S: 'static>() -> bool {
 /// }
 /// ```
 ///
-/// where `Edges` was declared with `edge_types!`. Saved graphs name each node by its variant, so renaming a
-/// variant breaks existing files.
+/// Here `Edges` was declared with `edge_types!`. Saved graphs name each node by its variant, so renaming a variant
+/// breaks existing files (unless a config patch renames it: see `crate::config_patching`).
 ///
-/// That makes the enum, a variant holding a node of each type, and `NodesEnum` for it, each of whose methods is a
-/// `match` with an arm for each variant, handing on to that type's `Node`; and the enum of types, with the same
+/// The macro makes the enum, with a variant holding a node of each type, and `NodesEnum` for it, each of whose methods
+/// is a `match` with an arm for each variant, handing on to that type's `Node`; and the enum of types, with the same
 /// variants, holding nothing:
 ///
 /// ```ignore
@@ -150,8 +156,8 @@ pub fn is_state<S: 'static>() -> bool {
 /// }
 /// ```
 ///
-/// So there's no dynamic dispatch: each call is a branch on which variant it is, then a call to the type's own method
-/// (see `NodesEnum`).
+/// So there's no dynamic dispatch: each call is a branch on the variant, then a call to the type's own method (see
+/// `NodesEnum`).
 #[macro_export]
 macro_rules! nodes_enum {
     (

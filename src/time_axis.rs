@@ -1,16 +1,17 @@
-//! How every plot of data over time lays out its time axis, so they all read the same way: time runs left to right, and
-//! the axis stays put, showing how long ago things were, with now just short of the right edge, leaving a small gap
+//! Every plot of data over time lays out its time axis the same way, so they all read alike: time runs left to right,
+//! and the axis stays put, showing how long ago things were, with now just short of the right edge, leaving a small gap
 //! there for the future, which has no data yet. The data comes in there and moves left.
 
-/// The gap left at the right for the future, as a fraction of the span shown.
+/// A plot leaves this gap at the right for the future, as a fraction of the span shown.
 pub const FUTURE: f64 = 0.03;
 
-/// The times at the left and right edges of a plot showing `span` seconds up to `now`.
+/// A plot showing `span` seconds up to `now` has these times at its left and right edges.
 pub fn window(now: f64, span: f64) -> (f64, f64) {
     (now - span, now + span * FUTURE)
 }
 
-/// How a time on such an axis reads, wherever it's drawn: now, or `seconds` ago as a negative, to the millisecond.
+/// A plot labels a time on its axis as this, wherever it's drawn: now, or `seconds` ago as a negative, to the
+/// millisecond.
 pub fn label(seconds: f64) -> String {
     let rounded = (seconds * 1000.0).round() / 1000.0;
     if rounded == 0.0 { "now".into() } else { format!("{rounded} s").replace('-', "−") }

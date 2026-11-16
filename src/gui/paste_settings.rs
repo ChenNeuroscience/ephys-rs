@@ -1,8 +1,8 @@
-//! Copying nodes' settings, and pasting them onto nodes of the same types. On the clipboard, they're JSON: the versions that
-//! copied them (see `crate::config_patching`), then each node's label, and its type and settings as the graph's file has
-//! them, a line for each node, so one node's fits on a line of notes. Pasting opens a window to review where
-//! each goes (the node of the same type and label, to begin with, or the only one of its type), what it changes,
-//! and whether to paste it at all, before pasting.
+//! People can copy nodes' settings, and paste them onto nodes of the same types. On the clipboard, the settings are
+//! JSON: the versions that copied them (see `crate::config_patching`), then each node's label, and its type and
+//! settings as the graph's file has them, a line for each node, so one node's fits on a line of notes. Pasting opens a
+//! window to review where each goes (the node of the same type and label, to begin with, or the only one of its type),
+//! what it changes, and whether to paste it at all, before pasting.
 
 use eframe::egui::{self, RichText};
 use serde::{Deserialize, Serialize};
@@ -11,23 +11,24 @@ use crate::config_patching::{PatchSets, Versions};
 use crate::engine::{Graph, NodeId, NodesEnum};
 use crate::theme::Colours;
 
-/// What's on the clipboard.
+/// The clipboard holds copied settings as this.
 #[derive(Serialize, Deserialize)]
 struct Clip {
-    /// Saying it's settings, and the versions that copied them.
+    /// The clip says it's settings, and the versions that copied them.
     #[serde(rename = "ephys-rs settings")]
     versions: Versions,
     nodes: Vec<ClipNode>,
 }
 
-/// A node's settings on the clipboard: its label, to match it to a node, and the node as the graph's file has it.
+/// The clip holds each node's label, to match it to a node, and the node as the graph's file has it.
 #[derive(Serialize, Deserialize)]
 struct ClipNode {
     label: String,
     node: serde_json::Value,
 }
 
-/// The settings of `ids`, for the clipboard, saying the versions of `patches`: as `Clip`, with a line for each node.
+/// Copying puts the settings of `ids` on the clipboard as this gives them, saying the versions of `patches`: as `Clip`,
+/// with a line for each node.
 pub fn copy<N: NodesEnum>(graph: &Graph<N>, ids: &[NodeId], patches: &PatchSets) -> String {
     let nodes: Vec<String> = ids
         .iter()
@@ -41,12 +42,12 @@ pub fn copy<N: NodesEnum>(graph: &Graph<N>, ids: &[NodeId], patches: &PatchSets)
     format!("{{\"ephys-rs settings\":{versions},\"nodes\":[{}]}}", nodes.join(",\n"))
 }
 
-/// Whether `text` is settings copied from nodes (see `copy`), rather than just any text, or other JSON.
+/// Pasting checks whether `text` is settings copied from nodes (see `copy`), rather than just any text, or other JSON.
 pub fn is_settings(text: &str) -> bool {
     serde_json::from_str::<Clip>(text).is_ok()
 }
 
-/// A node's settings from the clipboard: where it goes, and whether to paste it.
+/// The paste window lists each node's settings from the clipboard: where they go, and whether to paste them.
 struct Row<N> {
     label: String,
     node: Result<N, String>,
@@ -54,20 +55,20 @@ struct Row<N> {
     paste: bool,
 }
 
-/// The paste window's state.
+/// The app keeps the paste window here while it's open.
 pub struct PasteSettings<N> {
     rows: Vec<Row<N>>,
 }
 
-/// What came of the window this frame.
+/// Each frame, showing the window says what came of it.
 pub enum Outcome<N> {
     Open,
     Cancelled,
-    /// The settings to paste, and what's left out (and why), to log.
+    /// The settings to paste, and what's left out (and why), which the app logs.
     Paste(Vec<Pasted<N>>, Vec<String>),
 }
 
-/// Settings to paste: onto which node, from which copied node.
+/// Pasting puts settings onto a node, from a copied node.
 pub struct Pasted<N> {
     pub target: NodeId,
     pub node: N,
@@ -75,7 +76,8 @@ pub struct Pasted<N> {
 }
 
 impl<N: NodesEnum> PasteSettings<N> {
-    /// From the clipboard's text, matching each node to one of the same type: of the same label, or the only one.
+    /// Pasting opens the window with this, from the clipboard's text, matching each node to one of the same type: of
+    /// the same label, or the only one.
     pub fn new(text: &str, graph: &Graph<N>, patches: &PatchSets) -> Result<Self, String> {
         let mut clip: Clip =
             serde_json::from_str(text).map_err(|_| "There are no copied settings to paste".to_owned())?;
@@ -205,8 +207,8 @@ impl<N: NodesEnum> PasteSettings<N> {
         outcome
     }
 
-    /// What would be pasted, as the rows are now, and what left out, and why. Two going to the same node, the
-    /// later is what it gets.
+    /// The window shows what would be pasted, as the rows are now, and what's left out, and why. If two go to the same
+    /// node, the node gets the later.
     fn plan(&self, graph: &Graph<N>) -> (Vec<Pasted<N>>, Vec<String>) {
         let mut pasting: Vec<Pasted<N>> = Vec::new();
         let mut skipped = Vec::new();
@@ -235,8 +237,8 @@ impl<N: NodesEnum> PasteSettings<N> {
         (pasting, skipped)
     }
 
-    /// Pasting straight onto `target`, without asking, if there's just one node's settings: them, if they're of its
-    /// type, or why not. Nothing if there are several (to review).
+    /// With just one node's settings, pasting goes straight onto `target`, without asking: this gives them, if they're
+    /// of its type, or why not. With several (to review), it gives nothing.
     pub fn onto(&self, target: NodeId, graph: &Graph<N>) -> Option<Result<Pasted<N>, String>> {
         let [row] = self.rows.as_slice() else { return None };
         let entry = graph.get(target)?;
@@ -256,7 +258,7 @@ impl<N: NodesEnum> PasteSettings<N> {
     }
 }
 
-/// Which of a node's settings `new` would change, by name.
+/// The paste window says which of a node's settings `new` would change, by name.
 pub fn changed_settings<N: NodesEnum>(old: &N, new: &N) -> String {
     let settings = |n: &N| serde_json::to_value(n).ok().and_then(|v| v.get("settings").cloned()).unwrap_or_default();
     let (old, new) = (settings(old), settings(new));

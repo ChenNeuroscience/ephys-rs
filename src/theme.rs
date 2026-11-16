@@ -1,18 +1,18 @@
-//! Themes: a set of colours named by what they're for (surfaces, text, controls...), which everything draws
-//! with. The themes themselves are supplied by the program. egui's own widgets get them as its `Visuals`; the
+//! Everything draws with a theme's colours, each named by what it's for (surfaces, text, controls...). The program
+//! supplies the themes. egui's own widgets get them as its `Visuals`; the
 //! graph and node windows use them directly (nodes get them in `engine::UiContext`), and can derive further
 //! colours of their own from them.
 
 use eframe::egui::{self, Color32, Shadow, Stroke};
 
-/// A theme the user can choose: its name, and its colours. The program supplies its themes (see `Components`).
+/// People choose a theme by its name, and it gives its colours. The program supplies its themes (see `Components`).
 pub struct Theme {
     pub name: &'static str,
     pub colours: Colours,
 }
 
 impl Theme {
-    /// Makes this the theme for all of egui (panels, widgets, menus, windows).
+    /// The app makes this the theme for all of egui (panels, widgets, menus, windows) with this.
     pub fn apply(&self, ctx: &egui::Context) {
         let base = if self.colours.dark { egui::Theme::Dark } else { egui::Theme::Light };
         ctx.set_visuals_of(base, self.colours.visuals());
@@ -20,29 +20,29 @@ impl Theme {
     }
 }
 
-/// A theme's colours, by role.
+/// A theme gives a colour for each role.
 pub struct Colours {
-    /// Whether this is a dark theme (light text on dark surfaces).
+    /// A dark theme has light text on dark surfaces; this says whether it's one.
     pub dark: bool,
 
     // Surfaces, from the furthest back to the closest.
-    /// Behind everything: the graph canvas.
+    /// Behind everything is the background: the graph canvas.
     pub background: Color32,
-    /// Set into the surface: text fields, plots and other views of data, the tab bar.
+    /// Set into the surface are text fields, plots and other views of data, and the tab bar.
     pub surface_sunken: Color32,
-    /// Panels, windows and menus.
+    /// Panels, windows and menus are on this surface.
     pub surface: Color32,
-    /// On top of a surface: nodes, cards.
+    /// Raised on top of a surface are nodes and cards.
     pub surface_raised: Color32,
-    /// Lines over the background, e.g. the graph's grid.
+    /// Lines over the background (the graph's grid, say) are in this.
     pub grid: Color32,
 
     pub border: Color32,
-    /// Lines within a surface, between its parts.
+    /// Lines within a surface, between its parts, are in this.
     pub divider: Color32,
 
     pub text_primary: Color32,
-    /// Less important text: hints, details, labels on data.
+    /// Less important text (hints, details, labels on data) is in this.
     pub text_secondary: Color32,
     pub text_disabled: Color32,
 
@@ -51,9 +51,9 @@ pub struct Colours {
     pub control_hovered: Color32,
     pub control_pressed: Color32,
 
-    /// Selection, focus, and anything that should stand out.
+    /// Selection, focus, and anything that should stand out, are in the accent.
     pub accent: Color32,
-    /// Text and marks on top of the accent colour.
+    /// Text and marks on top of the accent colour are in this.
     pub on_accent: Color32,
 
     pub warning: Color32,
@@ -63,7 +63,7 @@ pub struct Colours {
 }
 
 impl Colours {
-    /// egui's visuals in these colours.
+    /// egui's widgets draw with its visuals, which this gives in the theme's colours.
     pub fn visuals(&self) -> egui::Visuals {
         let mut visuals = if self.dark { egui::Visuals::dark() } else { egui::Visuals::light() };
         visuals.panel_fill = self.surface;
