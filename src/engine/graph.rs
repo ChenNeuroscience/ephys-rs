@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     CommandContext, CommandSource, CommandsEnum, Dimension, EdgeInfo, EdgeTypesEnum, Edges, Node, NodesEnum, Plan,
-    Port, UiContext,
+    Port, PortAddress, PortRole, UiContext,
 };
 use crate::commands::{Address, Commands};
 use crate::theme::Colours;
@@ -20,69 +20,6 @@ use crate::theme::Colours;
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct NodeId(pub u64);
-
-/// A node has ports of four roles, each named for what flows through it, which way. Data edges run from a
-/// `DataStreamOut` to a `DataStreamIn`, carrying a pass's data. Value edges run from a `ValInCmdOut` to a
-/// `ValOutCmdIn`: the node at the `ValOutCmdIn` end publishes a value, which the node at the other end reads, and which
-/// that node can send commands back to.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum PortRole {
-    DataStreamIn,
-    DataStreamOut,
-    /// The node publishes a value here, and takes commands through the edges into it.
-    ValOutCmdIn,
-    /// The node reads another node's published value here, and sends it commands.
-    ValInCmdOut,
-    /// Val-only: the node only reads another node's published value here (the GUI calls it read-only). A node declares
-    /// such ports (see `Port`), but the graph numbers them with its `ValInCmdOut` ports, and finds them as those: an
-    /// edge from either starts at a `ValInCmdOut` (see `Edge::source`).
-    ValIn,
-}
-
-impl PortRole {
-    /// `DataStreamIn` and `DataStreamOut` ports are data ports; the others, value ports.
-    pub fn dimension(self) -> Dimension {
-        match self {
-            PortRole::DataStreamIn | PortRole::DataStreamOut => Dimension::Data,
-            PortRole::ValOutCmdIn | PortRole::ValInCmdOut | PortRole::ValIn => Dimension::Values,
-        }
-    }
-
-    /// An edge from a port of this role ends at a port of this one.
-    pub fn partner(self) -> PortRole {
-        match self {
-            PortRole::DataStreamIn => PortRole::DataStreamOut,
-            PortRole::DataStreamOut => PortRole::DataStreamIn,
-            PortRole::ValOutCmdIn => PortRole::ValInCmdOut,
-            PortRole::ValInCmdOut | PortRole::ValIn => PortRole::ValOutCmdIn,
-        }
-    }
-
-    /// Edges start at a `DataStreamOut` or `ValInCmdOut`, and end at a `DataStreamIn` or `ValOutCmdIn`. This says
-    /// whether they start here.
-    pub fn is_source(self) -> bool {
-        matches!(self, PortRole::DataStreamOut | PortRole::ValInCmdOut | PortRole::ValIn)
-    }
-
-    /// The role's name, for people.
-    pub fn name(self) -> &'static str {
-        match self {
-            PortRole::DataStreamIn => "input",
-            PortRole::DataStreamOut => "output",
-            PortRole::ValOutCmdIn => "setting",
-            PortRole::ValInCmdOut => "control",
-            PortRole::ValIn => "read-only control",
-        }
-    }
-}
-
-/// The graph finds a port by its node, role and index among the node's ports of that role.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct PortAddress {
-    pub node: NodeId,
-    pub role: PortRole,
-    pub port_idx: usize,
-}
 
 /// The graph stores each end of an edge as a node and a port index (the role following from the edge's dimension).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]

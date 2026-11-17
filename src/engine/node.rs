@@ -1,16 +1,13 @@
 //! Each node type implements the `Node` trait below, which says what the node is, what its ports and settings are, how
-//! the node gets ready for a snapshot, and what the node does in a pass. The context a node's window gets is in
-//! `ui_context`, the description of a node's own threads in `node_threads`, and the list of node types a program is
-//! built with in `nodes_enum`.
+//! the node gets ready for a snapshot, and what the node does in a pass. Its ports are described in `port`, the context
+//! a node's window gets in `ui_context`, the description of a node's own threads in `node_threads`, and the list of
+//! node types a program is built with in `nodes_enum`.
 
 use eframe::egui;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use super::{
-    CommandContext, CommandKind, Edges, Kind, NodeThread, PassContext, PoolStatus, PortRole, Shared, ThreadContext,
-    UiContext,
-};
+use super::{CommandContext, Edges, NodeThread, PassContext, PoolStatus, Port, Shared, ThreadContext, UiContext};
 use crate::global_settings::GlobalSettingsSet;
 
 /// The graph colours each node by its type's category, and the add-node menu groups node types by category. Nothing
@@ -53,185 +50,6 @@ pub struct NodeInfo {
 pub struct Shortcut {
     pub keys: &'static str,
     pub does: &'static str,
-}
-
-/// Edges connect nodes at their ports, each named for what flows through it, which way (see `PortRole`, which names
-/// a port's role without what's in it). A node declares its ports as these: its data ports (`Node::data_stream_inputs`
-/// and `Node::data_stream_outputs`) and its value ports (`Node::val_cmd_ports`). Ports of each role are numbered
-/// separately, in the order they're declared (`ValInCmdOut` and `ValIn` ports together).
-pub enum Port<E: Edges> {
-    /// Data reaches the node here, each pass, from another node's `DataStreamOut`.
-    DataStreamIn {
-        /// What the graph and the node's window call the port.
-        name: &'static str,
-        /// The kind of data stream the port takes.
-        data_stream_kind: Kind<E::DataStream>,
-    },
-    /// The node sends data on from here, each pass.
-    DataStreamOut {
-        /// What the graph and the node's window call the port.
-        name: &'static str,
-        /// The kind of data stream the port sends.
-        data_stream_kind: Kind<E::DataStream>,
-        /// The stream itself, which the graph can't always know (while the node's input isn't connected, say), and
-        /// then this is `None`.
-        stream: Option<E::DataStream>,
-    },
-    /// The node publishes a value here (usually a copy of one of its settings: see `Node::val_out`), and accepts
-    /// commands through the edges into it, from other nodes' `ValInCmdOut` ports.
-    ValOutCmdIn {
-        /// What the graph and the node's window call the port.
-        name: &'static str,
-        /// The kind of value the port has.
-        value_kind: Kind<E::PublishedValue>,
-        /// The commands the port accepts.
-        commands: &'static [CommandKind<E>],
-        /// Whether it's drawn on the left of the node, rather than the right (see `Port::flipped`).
-        flipped: bool,
-    },
-    /// The node reads the value at the `ValOutCmdIn` this connects to, and sends that node commands (usually the one
-    /// setting the value, `SetGains`, say; sometimes others, such as auto detect's `Detect`).
-    ValInCmdOut {
-        /// What the graph and the node's window call the port.
-        name: &'static str,
-        /// The kind of value the port reads.
-        value_kind: Kind<E::PublishedValue>,
-        /// The commands the port sends.
-        commands: &'static [CommandKind<E>],
-        /// Whether it's drawn on the right of the node, rather than the left (see `Port::flipped`).
-        flipped: bool,
-    },
-    /// Val-only: the node only reads the value at the `ValOutCmdIn` this connects to (a writer recording the gains).
-    /// The GUI calls it read-only.
-    ValIn {
-        /// What the graph and the node's window call the port.
-        name: &'static str,
-        /// The kind of value the port reads.
-        value_kind: Kind<E::PublishedValue>,
-        /// Whether it's drawn on the right of the node, rather than the left (see `Port::flipped`).
-        flipped: bool,
-    },
-}
-
-impl<E: Edges> Port<E> {
-    /// A `DataStreamIn` port taking `data_stream_kind`.
-    pub fn data_stream_in(name: &'static str, data_stream_kind: Kind<E::DataStream>) -> Self {
-        Port::DataStreamIn { name, data_stream_kind }
-    }
-
-    /// A `DataStreamOut` port sending `data_stream_kind`: `stream`, once that's known.
-    pub fn data_stream_out(
-        name: &'static str,
-        data_stream_kind: Kind<E::DataStream>,
-        stream: Option<E::DataStream>,
-    ) -> Self {
-        Port::DataStreamOut { name, data_stream_kind, stream }
-    }
-
-    /// A `ValOutCmdIn` port, with a value of kind `value_kind`, accepting `commands`.
-    pub fn val_out_cmd_in(
-        name: &'static str,
-        value_kind: Kind<E::PublishedValue>,
-        commands: &'static [CommandKind<E>],
-    ) -> Self {
-        Port::ValOutCmdIn { name, value_kind, commands, flipped: false }
-    }
-
-    /// A `ValInCmdOut` port, reading a value of kind `value_kind`, sending `commands`.
-    pub fn val_in_cmd_out(
-        name: &'static str,
-        value_kind: Kind<E::PublishedValue>,
-        commands: &'static [CommandKind<E>],
-    ) -> Self {
-        Port::ValInCmdOut { name, value_kind, commands, flipped: false }
-    }
-
-    /// A `ValIn` port (val-only), reading a value of kind `value_kind`.
-    pub fn val_in(name: &'static str, value_kind: Kind<E::PublishedValue>) -> Self {
-        Port::ValIn { name, value_kind, flipped: false }
-    }
-
-    /// The graph draws `DataStreamOut` and `ValOutCmdIn` ports on the right of the node, and the others on the left,
-    /// unless a value port's flipped (a writer's "after recording" is on the right, as what it sets off comes after
-    /// it). This is the same port, flipped (data ports aren't).
-    pub fn flipped(self) -> Self {
-        match self {
-            Port::ValOutCmdIn { name, value_kind, commands, .. } => {
-                Port::ValOutCmdIn { name, value_kind, commands, flipped: true }
-            }
-            Port::ValInCmdOut { name, value_kind, commands, .. } => {
-                Port::ValInCmdOut { name, value_kind, commands, flipped: true }
-            }
-            Port::ValIn { name, value_kind, .. } => Port::ValIn { name, value_kind, flipped: true },
-            data => data,
-        }
-    }
-
-    pub fn role(&self) -> PortRole {
-        match self {
-            Port::DataStreamIn { .. } => PortRole::DataStreamIn,
-            Port::DataStreamOut { .. } => PortRole::DataStreamOut,
-            Port::ValOutCmdIn { .. } => PortRole::ValOutCmdIn,
-            Port::ValInCmdOut { .. } => PortRole::ValInCmdOut,
-            Port::ValIn { .. } => PortRole::ValIn,
-        }
-    }
-
-    pub fn name(&self) -> &'static str {
-        match self {
-            Port::DataStreamIn { name, .. }
-            | Port::DataStreamOut { name, .. }
-            | Port::ValOutCmdIn { name, .. }
-            | Port::ValInCmdOut { name, .. }
-            | Port::ValIn { name, .. } => name,
-        }
-    }
-
-    /// Whether a value port's flipped (see `flipped`); data ports never are.
-    pub fn is_flipped(&self) -> bool {
-        match self {
-            Port::ValOutCmdIn { flipped, .. } | Port::ValInCmdOut { flipped, .. } | Port::ValIn { flipped, .. } => {
-                *flipped
-            }
-            Port::DataStreamIn { .. } | Port::DataStreamOut { .. } => false,
-        }
-    }
-
-    /// A data port's kind of data stream.
-    pub fn data_stream_kind(&self) -> Option<Kind<E::DataStream>> {
-        match self {
-            Port::DataStreamIn { data_stream_kind, .. } | Port::DataStreamOut { data_stream_kind, .. } => {
-                Some(*data_stream_kind)
-            }
-            _ => None,
-        }
-    }
-
-    /// A `DataStreamOut`'s stream, once it's known.
-    pub fn stream(&self) -> Option<E::DataStream> {
-        match self {
-            Port::DataStreamOut { stream, .. } => *stream,
-            _ => None,
-        }
-    }
-
-    /// A value port's kind of value.
-    pub fn value_kind(&self) -> Option<Kind<E::PublishedValue>> {
-        match self {
-            Port::ValOutCmdIn { value_kind, .. }
-            | Port::ValInCmdOut { value_kind, .. }
-            | Port::ValIn { value_kind, .. } => Some(*value_kind),
-            _ => None,
-        }
-    }
-
-    /// The commands a `ValOutCmdIn` accepts, or a `ValInCmdOut` sends; none for the others.
-    pub fn commands(&self) -> &'static [CommandKind<E>] {
-        match self {
-            Port::ValOutCmdIn { commands, .. } | Port::ValInCmdOut { commands, .. } => commands,
-            _ => &[],
-        }
-    }
 }
 
 /// A command reaches a node from one of three places, which the node's told (see `Node::on_command`).
