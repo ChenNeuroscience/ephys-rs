@@ -111,9 +111,9 @@ fn settle(
         if asked > SETTLE_ASKS {
             continue;
         }
-        let port = |port| super::PortRef { node: id, port };
+        let port = |port_idx| super::PortRef { node: id, port_idx };
         let runs = |node: NodeId| shakes.get(&node).is_some_and(|s| s.runs);
-        let needs = |to: super::PortRef| shakes.get(&to.node).is_some_and(|s| s.runs && s.needs[to.port]);
+        let needs = |to: super::PortRef| shakes.get(&to.node).is_some_and(|s| s.runs && s.needs[to.port_idx]);
         let inputs: Vec<bool> =
             (0..input_count).map(|i| links.iter().any(|l| l.to == port(i) && runs(l.from.node))).collect();
         let outputs: Vec<bool> =
@@ -190,7 +190,7 @@ impl<N: NodesEnum> Plan<N> {
             })
             .collect();
         let data_edges: Vec<&super::Edge> =
-            data.iter().copied().filter(|e| runs.contains(&e.from.node) && needed(e.to.node, e.to.port)).collect();
+            data.iter().copied().filter(|e| runs.contains(&e.from.node) && needed(e.to.node, e.to.port_idx)).collect();
         // Which nodes must run before which: those feeding them, and those reading data another edits in place.
         let mut before: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
         for edge in &data_edges {
@@ -204,14 +204,16 @@ impl<N: NodesEnum> Plan<N> {
             let Some(usage) = usage.get(&id) else { continue };
             for (output, &input) in usage.in_place.iter().enumerate() {
                 let Some(input) = input else { continue };
-                let Some(edge) = data_edges.iter().find(|e| e.to.node == id && e.to.port == input) else { continue };
-                let source = (edge.from.node, edge.from.port);
+                let Some(edge) = data_edges.iter().find(|e| e.to.node == id && e.to.port_idx == input) else {
+                    continue;
+                };
+                let source = (edge.from.node, edge.from.port_idx);
                 if claimed.contains(&source) {
                     continue; // another node is already editing this data in place
                 }
                 let others: Vec<NodeId> = data_edges
                     .iter()
-                    .filter(|e| (e.from.node, e.from.port) == source && e.to.node != id)
+                    .filter(|e| (e.from.node, e.from.port_idx) == source && e.to.node != id)
                     .map(|e| e.to.node)
                     .collect();
                 // The other readers must run first, which they can't if they depend on this node.
@@ -231,14 +233,16 @@ impl<N: NodesEnum> Plan<N> {
         for &id in &runs {
             let Some(usage) = usage.get(&id) else { continue };
             for input in (0..usage.takes.len()).filter(|&i| usage.takes[i]) {
-                let Some(edge) = data_edges.iter().find(|e| e.to.node == id && e.to.port == input) else { continue };
-                let source = (edge.from.node, edge.from.port);
+                let Some(edge) = data_edges.iter().find(|e| e.to.node == id && e.to.port_idx == input) else {
+                    continue;
+                };
+                let source = (edge.from.node, edge.from.port_idx);
                 if claimed.contains(&source) {
                     continue;
                 }
                 let others: Vec<NodeId> = data_edges
                     .iter()
-                    .filter(|e| (e.from.node, e.from.port) == source && e.to.node != id)
+                    .filter(|e| (e.from.node, e.from.port_idx) == source && e.to.node != id)
                     .map(|e| e.to.node)
                     .collect();
                 if others.iter().any(|&other| reaches(&before, id, other)) {
@@ -261,7 +265,7 @@ impl<N: NodesEnum> Plan<N> {
             let mut inputs: Vec<Option<usize>> = (0..state.inputs.len())
                 .map(|index| {
                     let edge = graph.live_edge_into(Port { node: id, role: PortRole::DataStreamIn, index })?;
-                    buffer_of.get(&(edge.from.node, edge.from.port)).copied()
+                    buffer_of.get(&(edge.from.node, edge.from.port_idx)).copied()
                 })
                 .collect();
             let (mut outputs, mut made_in_place) = (Vec::new(), Vec::new());
@@ -421,9 +425,11 @@ mod tests {
         graph.add(Nodes::create(node_type), [0.0, 0.0])
     }
 
-    fn link(graph: &mut Graph<Nodes>, from: NodeId, output: usize, to: NodeId, input: usize) {
+    fn link(graph: &mut Graph<Nodes>, from: NodeId, output_idx: usize, to: NodeId, input_idx: usize) {
         let port = |node, role, index| Port { node, role, index };
-        graph.connect(port(from, PortRole::DataStreamOut, output), port(to, PortRole::DataStreamIn, input)).unwrap();
+        graph
+            .connect(port(from, PortRole::DataStreamOut, output_idx), port(to, PortRole::DataStreamIn, input_idx))
+            .unwrap();
     }
 
     fn position(plan: &Plan<Nodes>, id: NodeId) -> usize {
@@ -541,8 +547,10 @@ mod tests {
     fn a_node_that_keeps_changing_its_mind_ends_up_running() {
         use std::cell::Cell;
         let (a, b) = (NodeId(1), NodeId(2));
-        let links =
-            [Link { from: super::super::PortRef { node: a, port: 0 }, to: super::super::PortRef { node: b, port: 0 } }];
+        let links = [Link {
+            from: super::super::PortRef { node: a, port_idx: 0 },
+            to: super::super::PortRef { node: b, port_idx: 0 },
+        }];
         let asked = Cell::new(0);
         // a runs only while nothing uses what it makes, and b only while it's given something: round they'd go.
         let answer = |id, inputs: &[bool], outputs: &[bool]| {

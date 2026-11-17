@@ -32,8 +32,8 @@ use crate::standard::pool::Pool;
 use crate::standard::widgets::require_input;
 use crate::{Buffer, CommandKind, DataStream, Edges, Kind, ValueKind};
 use ephys_rs::engine::{
-    Category, DataStreamType, EdgeTypesEnum, Flow, Input, Node, NodeInfo, NodeThread, Output, PASS_DURATION,
-    PassContext, PoolStatus, ThreadContext, UiContext, ValPort,
+    Category, DataStreamInput, DataStreamOutput, DataStreamType, EdgeTypesEnum, Flow, Node, NodeInfo, NodeThread,
+    PASS_DURATION, PassContext, PoolStatus, ThreadContext, UiContext, ValCmdPort,
 };
 
 /// Its port sending what it recorded to what's to process it, once it's finished (see `after_recording`).
@@ -113,17 +113,22 @@ impl Node<Edges> for WriteRaw {
         TreeShake::needing_all(recording && inputs.contains(&true), inputs.len())
     }
 
-    fn inputs(&self) -> Vec<Input<Edges>> {
-        vec![Input { name: "continuous", kind: Kind::Continuous }, Input { name: "events", kind: Kind::Events }]
+    fn data_stream_inputs(&self) -> Vec<DataStreamInput<Edges>> {
+        vec![
+            DataStreamInput { name: "continuous", kind: Kind::Continuous },
+            DataStreamInput { name: "events", kind: Kind::Events },
+        ]
     }
 
     /// On the right, as what it sets off comes after it: where it sends what it's recorded, once it's finished (see
     /// `after_recording`).
-    fn ports(&self) -> Vec<ValPort<Edges>> {
-        vec![ValPort::val_in_cmd_out("after recording", ValueKind::FileInput, &[CommandKind::ProcessFiles]).flipped()]
+    fn val_cmd_ports(&self) -> Vec<ValCmdPort<Edges>> {
+        vec![
+            ValCmdPort::val_in_cmd_out("after recording", ValueKind::FileInput, &[CommandKind::ProcessFiles]).flipped(),
+        ]
     }
 
-    fn outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {
+    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<DataStreamOutput<Edges>> {
         Vec::new()
     }
 
@@ -147,11 +152,11 @@ impl Node<Edges> for WriteRaw {
         BufferUsage { takes: vec![true; inputs], ..BufferUsage::none(inputs, outputs) }
     }
 
-    fn thread_pool(&self, _thread: usize, context: &ThreadContext) -> Option<PoolStatus> {
+    fn thread_pool(&self, _thread_idx: usize, context: &ThreadContext) -> Option<PoolStatus> {
         context.shared::<Pool<Status>>().and_then(|l| l.newest().map(|s| s.pool))
     }
 
-    fn thread_ui(&self, _thread: usize, ui: &mut egui::Ui, context: &ThreadContext) {
+    fn thread_ui(&self, _thread_idx: usize, ui: &mut egui::Ui, context: &ThreadContext) {
         let pool = context.shared::<Pool<Status>>();
         status_ui(ui, pool.and_then(Pool::newest).as_deref(), true, context.theme);
     }
@@ -211,7 +216,7 @@ impl Node<Edges> for WriteRaw {
             location_summary(ui, context.base_directory, "a folder");
             ui.add_space(4.0);
             let recording: Vec<String> = node
-                .inputs()
+                .data_stream_inputs()
                 .iter()
                 .zip(context.inputs)
                 .filter_map(|(input, stream)| stream.map(|s| format!("{}: {}", input.name, s.summary())))

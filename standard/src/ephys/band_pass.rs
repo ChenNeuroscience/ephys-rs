@@ -12,7 +12,7 @@ use crate::standard::ephys::ContinuousBuffer;
 use crate::standard::widgets::format_rate;
 use crate::standard::widgets::{input_summary, require_input, setting, settings_grid};
 use crate::{DataStream, Edges, Kind};
-use ephys_rs::engine::{Category, Input, Node, NodeInfo, Output, PassContext, UiContext};
+use ephys_rs::engine::{Category, DataStreamInput, DataStreamOutput, Node, NodeInfo, PassContext, UiContext};
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -83,12 +83,12 @@ impl Node<Edges> for BandPassFilter {
         filters.run(output, input);
     }
 
-    fn inputs(&self) -> Vec<Input<Edges>> {
-        vec![Input { name: "continuous", kind: Kind::Continuous }]
+    fn data_stream_inputs(&self) -> Vec<DataStreamInput<Edges>> {
+        vec![DataStreamInput { name: "continuous", kind: Kind::Continuous }]
     }
 
-    fn outputs(&self, inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {
-        vec![Output { name: "filtered", kind: Kind::Continuous, stream: inputs[0] }]
+    fn data_stream_outputs(&self, inputs: &[Option<DataStream>]) -> Vec<DataStreamOutput<Edges>> {
+        vec![DataStreamOutput { name: "filtered", kind: Kind::Continuous, stream: inputs[0] }]
     }
 
     fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {

@@ -35,8 +35,8 @@ use crate::standard::spikes::{Channels, GainScope, Gains, gain_field};
 use crate::standard::widgets::{TIME_AXIS_HEIGHT, inline_block, open_settings_button, require_input, time_axis_ui};
 use crate::{Buffer, Command, CommandKind, DataStream, Edges, Kind, ValueKind};
 use ephys_rs::engine::{
-    Category, EdgeType, Input, Node, NodeInfo, Output, PassContext, Prepare, PrepareContext, Prepared, UiContext,
-    ValPort,
+    Category, DataStreamInput, DataStreamOutput, EdgeType, Node, NodeInfo, PassContext, Prepare, PrepareContext,
+    Prepared, UiContext, ValCmdPort,
 };
 use ephys_rs::gui::widgets::{Icon, small_toggle_button};
 
@@ -292,11 +292,11 @@ impl Node<Edges> for LfpViewer {
     const WINDOW_SIZE: [f32; 2] = [820.0, 520.0];
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
-    fn inputs(&self) -> Vec<Input<Edges>> {
+    fn data_stream_inputs(&self) -> Vec<DataStreamInput<Edges>> {
         vec![
-            Input { name: "continuous", kind: Kind::Continuous },
-            Input { name: "spectra", kind: Kind::Spectra },
-            Input { name: "reference", kind: Kind::Continuous },
+            DataStreamInput { name: "continuous", kind: Kind::Continuous },
+            DataStreamInput { name: "spectra", kind: Kind::Spectra },
+            DataStreamInput { name: "reference", kind: Kind::Continuous },
         ]
     }
 
@@ -308,7 +308,7 @@ impl Node<Edges> for LfpViewer {
         TreeShake { runs: given, needs }
     }
 
-    fn outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {
+    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<DataStreamOutput<Edges>> {
         Vec::new()
     }
 
@@ -365,11 +365,11 @@ impl Node<Edges> for LfpViewer {
         }
     }
 
-    fn ports(&self) -> Vec<ValPort<Edges>> {
+    fn val_cmd_ports(&self) -> Vec<ValCmdPort<Edges>> {
         vec![
-            ValPort::val_in_cmd_out("gains", ValueKind::Gains, &[CommandKind::SetGains, CommandKind::Detect]),
-            ValPort::val_in_cmd_out("selection", ValueKind::ChannelSelection, &[CommandKind::SetChannelSelection]),
-            ValPort::val_in_cmd_out("reference", ValueKind::Reference, &[CommandKind::SetReference]),
+            ValCmdPort::val_in_cmd_out("gains", ValueKind::Gains, &[CommandKind::SetGains, CommandKind::Detect]),
+            ValCmdPort::val_in_cmd_out("selection", ValueKind::ChannelSelection, &[CommandKind::SetChannelSelection]),
+            ValCmdPort::val_in_cmd_out("reference", ValueKind::Reference, &[CommandKind::SetReference]),
         ]
     }
 

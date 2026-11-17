@@ -22,7 +22,8 @@ use crate::standard::widgets::{combo, setting, settings_grid};
 use crate::{Command, CommandKind, DataStream, Edges, PublishedValue, ValueKind};
 use ephys_rs::commands::CmdSender;
 use ephys_rs::engine::{
-    Category, CommandContext, CommandSource, EdgeInfo, EdgeType, Node, NodeInfo, Output, UiContext, ValPort,
+    Category, CommandContext, CommandSource, DataStreamOutput, EdgeInfo, EdgeType, Node, NodeInfo, UiContext,
+    ValCmdPort,
 };
 use ephys_rs::gui::widgets::{Icon, help_link, small_icon_button};
 use ephys_rs::theme::Colours;
@@ -615,20 +616,20 @@ impl Node<Edges> for RunCommand {
     const WINDOW_SIZE: [f32; 2] = [820.0, 520.0];
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
-    fn outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {
+    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<DataStreamOutput<Edges>> {
         Vec::new()
     }
 
     /// Where it's sent files to run on, on the left, as what sends them comes before it; and where it sends them on,
     /// once it's done (see `Then`), on the right, as what runs then comes after it.
-    fn ports(&self) -> Vec<ValPort<Edges>> {
+    fn val_cmd_ports(&self) -> Vec<ValCmdPort<Edges>> {
         vec![
-            ValPort::val_out_cmd_in("files", ValueKind::FileInput, &[CommandKind::ProcessFiles]).flipped(),
-            ValPort::val_in_cmd_out("after running", ValueKind::FileInput, &[CommandKind::ProcessFiles]).flipped(),
+            ValCmdPort::val_out_cmd_in("files", ValueKind::FileInput, &[CommandKind::ProcessFiles]).flipped(),
+            ValCmdPort::val_in_cmd_out("after running", ValueKind::FileInput, &[CommandKind::ProcessFiles]).flipped(),
         ]
     }
 
-    fn val_out(&self, _port: usize) -> PublishedValue {
+    fn val_out(&self, _port_idx: usize) -> PublishedValue {
         FileInput.into()
     }
 
@@ -822,7 +823,7 @@ mod tests {
         assert!(commands.take().is_empty(), "not till it's done");
         wait_for_job(&job);
         let sent = commands.take_commands::<crate::Command>();
-        let [(Address::Port { port: AFTER_RUNNING, .. }, crate::Command::ProcessFiles(Files(files)))] = &sent[..]
+        let [(Address::Port { port_idx: AFTER_RUNNING, .. }, crate::Command::ProcessFiles(Files(files)))] = &sent[..]
         else {
             panic!("sent once, to what's after it: {sent:?}")
         };
@@ -1424,7 +1425,7 @@ mod chain_tests {
     /// files on to what's connected after it.
     fn sends(then: Then, runs: &[Option<Option<i64>>]) -> bool {
         let commands = Arc::new(Commands::default());
-        let address = Address::Port { from: NodeId(1), port: AFTER_RUNNING };
+        let address = Address::Port { from: NodeId(1), port_idx: AFTER_RUNNING };
         let sender = CmdSender::new(commands.clone(), address);
         let progress = runs.iter().map(|run| Progress {
             shown: String::new(),

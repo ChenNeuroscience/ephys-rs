@@ -50,8 +50,8 @@ use crate::standard::tracking::{Crop, Detection, Positions};
 use crate::standard::widgets::{require_input, setting, settings_grid};
 use crate::{Buffer, CommandKind, DataStream, Edges, Kind, PublishedValue, ValueKind};
 use ephys_rs::engine::{
-    Category, EdgeTypesEnum, Flow, Input, Node, NodeInfo, NodeThread, Output, PASS_DURATION, PassContext, PoolStatus,
-    ThreadContext, UiContext, ValPort,
+    Category, DataStreamInput, DataStreamOutput, EdgeTypesEnum, Flow, Node, NodeInfo, NodeThread, PASS_DURATION,
+    PassContext, PoolStatus, ThreadContext, UiContext, ValCmdPort,
 };
 
 /// Ticks a second, for timestamps.
@@ -176,30 +176,30 @@ impl Node<Edges> for WriteLtx {
         TreeShake::needing_all(recording && inputs.contains(&true), inputs.len())
     }
 
-    fn inputs(&self) -> Vec<Input<Edges>> {
+    fn data_stream_inputs(&self) -> Vec<DataStreamInput<Edges>> {
         vec![
-            Input { name: "spikes", kind: Kind::Spikes },
-            Input { name: "eeg", kind: Kind::Continuous },
-            Input { name: "positions", kind: Kind::Positions },
-            Input { name: "events", kind: Kind::Events },
-            Input { name: "pos ttl", kind: Kind::Events },
-            Input { name: "log", kind: Kind::LogLines },
+            DataStreamInput { name: "spikes", kind: Kind::Spikes },
+            DataStreamInput { name: "eeg", kind: Kind::Continuous },
+            DataStreamInput { name: "positions", kind: Kind::Positions },
+            DataStreamInput { name: "events", kind: Kind::Events },
+            DataStreamInput { name: "pos ttl", kind: Kind::Events },
+            DataStreamInput { name: "log", kind: Kind::LogLines },
         ]
     }
 
-    fn outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {
+    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<DataStreamOutput<Edges>> {
         Vec::new()
     }
 
     /// The settings it records with the data, which it only reads; and, on the right, as what it sets off comes after
     /// it, where it sends what it's recorded, once it's finished (see `after_recording`).
-    fn ports(&self) -> Vec<ValPort<Edges>> {
+    fn val_cmd_ports(&self) -> Vec<ValCmdPort<Edges>> {
         vec![
-            ValPort::val_in("detection", ValueKind::Detection),
-            ValPort::val_in("gains", ValueKind::Gains),
-            ValPort::val_in("eeg selection", ValueKind::ChannelSelection),
-            ValPort::val_in("eeg gains", ValueKind::Gains),
-            ValPort::val_in_cmd_out("after recording", ValueKind::FileInput, &[CommandKind::ProcessFiles]).flipped(),
+            ValCmdPort::val_in("detection", ValueKind::Detection),
+            ValCmdPort::val_in("gains", ValueKind::Gains),
+            ValCmdPort::val_in("eeg selection", ValueKind::ChannelSelection),
+            ValCmdPort::val_in("eeg gains", ValueKind::Gains),
+            ValCmdPort::val_in_cmd_out("after recording", ValueKind::FileInput, &[CommandKind::ProcessFiles]).flipped(),
         ]
     }
 
@@ -237,11 +237,11 @@ impl Node<Edges> for WriteLtx {
         BufferUsage { takes: vec![true; inputs], ..BufferUsage::none(inputs, outputs) }
     }
 
-    fn thread_pool(&self, _thread: usize, context: &ThreadContext) -> Option<PoolStatus> {
+    fn thread_pool(&self, _thread_idx: usize, context: &ThreadContext) -> Option<PoolStatus> {
         context.shared::<Pool<Status>>().and_then(|l| l.newest().map(|s| s.pool))
     }
 
-    fn thread_ui(&self, _thread: usize, ui: &mut egui::Ui, context: &ThreadContext) {
+    fn thread_ui(&self, _thread_idx: usize, ui: &mut egui::Ui, context: &ThreadContext) {
         let pool = context.shared::<Pool<Status>>();
         status_ui(ui, pool.and_then(Pool::newest).as_deref(), true, context.theme);
     }
@@ -301,7 +301,7 @@ impl Node<Edges> for WriteLtx {
             location_summary(ui, context.base_directory, "files");
             ui.add_space(4.0);
             let recording: Vec<String> = node
-                .inputs()
+                .data_stream_inputs()
                 .iter()
                 .zip(context.inputs)
                 .filter_map(|(input, stream)| stream.map(|s| format!("{}: {}", input.name, s.summary())))
@@ -1063,7 +1063,7 @@ mod tests {
         use ephys_rs::engine::{Graph, NodesEnum};
         let mut graph = Graph::<Nodes>::default();
         let id = graph.add(Nodes::create(NodeType::WriteLtx), [0.0, 0.0]);
-        let inputs: Vec<Option<DataStream>> = vec![None; WriteLtx::default().inputs().len()];
+        let inputs: Vec<Option<DataStream>> = vec![None; WriteLtx::default().data_stream_inputs().len()];
         let mut harness = egui_kittest::Harness::builder().with_size([460.0, 300.0]).wgpu().build_ui_state(
             |ui, graph: &mut Graph<Nodes>| {
                 graph.edit(id, &inputs, &THEMES[0].colours, None, None, None, false, false, None, |node, context| {

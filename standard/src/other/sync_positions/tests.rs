@@ -214,7 +214,7 @@ fn once_synced_the_files_are_sent_on_with_the_positions_and_their_original() {
     wait_for(&send_then(vec![set.clone(), egf.clone()], Some(&commands))).unwrap();
     let sent = commands.take_commands::<Command>();
     let files = vec![set.clone(), egf, dir.join("session.pos"), dir.join("session.pos.original")];
-    let after = Address::Port { from: ephys_rs::engine::NodeId(1), port: AFTER_SYNCING };
+    let after = Address::Port { from: ephys_rs::engine::NodeId(1), port_idx: AFTER_SYNCING };
     assert!(matches!(&sent[..], [(to, Command::ProcessFiles(Files(sent)))] if *to == after && *sent == files), "once");
     // Not if it couldn't sync.
     std::fs::remove_file(dir.join("session.ttl")).unwrap();

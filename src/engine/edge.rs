@@ -83,7 +83,7 @@ pub trait DataStreamsEnum: EdgeTypesEnum + Copy {
     fn empty(buffer: &mut Self::Buffer);
 }
 
-/// A node reading a published value (see `Node::ports`) finds it as its own type, rather than the program's enum of
+/// A node reading a published value (see `Node::val_cmd_ports`) finds it as its own type, rather than the program's enum of
 /// them, through this, which `edge_types!` implements for each type of value `V` holds.
 pub trait ValueType<V>: Sized {
     /// `value` as this type, if that's the type it is.

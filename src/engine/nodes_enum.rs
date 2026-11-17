@@ -8,8 +8,8 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use super::{
-    BufferUsage, CommandContext, CommandSource, Edges, Input, NodeInfo, NodeThread, Output, PassContext, PoolStatus,
-    Prepare, PrepareContext, Shared, ThreadContext, TreeShake, UiContext, ValPort,
+    BufferUsage, CommandContext, CommandSource, DataStreamInput, DataStreamOutput, Edges, NodeInfo, NodeThread,
+    PassContext, PoolStatus, Prepare, PrepareContext, Shared, ThreadContext, TreeShake, UiContext, ValCmdPort,
 };
 
 /// The app sometimes needs a node's type without the node: what the add-node menu offers, say. `nodes_enum!` makes a
@@ -51,11 +51,14 @@ pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + S
     /// Settings… has a tab for each type of global settings the program's node types read: each type once, in the order
     /// of the node types that first name them.
     fn global_settings_types() -> Vec<crate::global_settings::GlobalSettingsType>;
-    fn inputs(&self) -> Vec<Input<Self::Edges>>;
-    fn outputs(&self, inputs: &[Option<<Self::Edges as Edges>::DataStream>]) -> Vec<Output<Self::Edges>>;
+    fn data_stream_inputs(&self) -> Vec<DataStreamInput<Self::Edges>>;
+    fn data_stream_outputs(
+        &self,
+        inputs: &[Option<<Self::Edges as Edges>::DataStream>],
+    ) -> Vec<DataStreamOutput<Self::Edges>>;
     fn warnings(&self, inputs: &[Option<<Self::Edges as Edges>::DataStream>]) -> Vec<String>;
-    fn ports(&self) -> Vec<ValPort<Self::Edges>>;
-    fn val_out(&self, port: usize) -> <Self::Edges as Edges>::PublishedValue;
+    fn val_cmd_ports(&self) -> Vec<ValCmdPort<Self::Edges>>;
+    fn val_out(&self, port_idx: usize) -> <Self::Edges as Edges>::PublishedValue;
     fn on_command(
         &mut self,
         from: CommandSource,
@@ -91,8 +94,8 @@ pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + S
         worker_state: Option<&mut (dyn Any + Send)>,
     ) -> bool;
     fn threads(&self) -> Vec<NodeThread>;
-    fn thread_ui(&self, thread: usize, ui: &mut egui::Ui, context: &ThreadContext);
-    fn thread_pool(&self, thread: usize, context: &ThreadContext) -> Option<PoolStatus>;
+    fn thread_ui(&self, thread_idx: usize, ui: &mut egui::Ui, context: &ThreadContext);
+    fn thread_pool(&self, thread_idx: usize, context: &ThreadContext) -> Option<PoolStatus>;
 
     fn info(&self) -> &'static NodeInfo {
         self.node_type().info()
@@ -216,27 +219,27 @@ macro_rules! nodes_enum {
                 types
             }
 
-            fn inputs(&self) -> Vec<$crate::engine::Input<$edges>> {
-                match self { $($name::$variant(n) => $crate::engine::Node::inputs(n)),+ }
+            fn data_stream_inputs(&self) -> Vec<$crate::engine::DataStreamInput<$edges>> {
+                match self { $($name::$variant(n) => $crate::engine::Node::data_stream_inputs(n)),+ }
             }
 
-            fn outputs(
+            fn data_stream_outputs(
                 &self,
                 inputs: &[Option<<$edges as $crate::engine::Edges>::DataStream>],
-            ) -> Vec<$crate::engine::Output<$edges>> {
-                match self { $($name::$variant(n) => $crate::engine::Node::outputs(n, inputs)),+ }
+            ) -> Vec<$crate::engine::DataStreamOutput<$edges>> {
+                match self { $($name::$variant(n) => $crate::engine::Node::data_stream_outputs(n, inputs)),+ }
             }
 
             fn warnings(&self, inputs: &[Option<<$edges as $crate::engine::Edges>::DataStream>]) -> Vec<String> {
                 match self { $($name::$variant(n) => $crate::engine::Node::warnings(n, inputs)),+ }
             }
 
-            fn ports(&self) -> Vec<$crate::engine::ValPort<$edges>> {
-                match self { $($name::$variant(n) => $crate::engine::Node::ports(n)),+ }
+            fn val_cmd_ports(&self) -> Vec<$crate::engine::ValCmdPort<$edges>> {
+                match self { $($name::$variant(n) => $crate::engine::Node::val_cmd_ports(n)),+ }
             }
 
-            fn val_out(&self, port: usize) -> <$edges as $crate::engine::Edges>::PublishedValue {
-                match self { $($name::$variant(n) => $crate::engine::Node::val_out(n, port)),+ }
+            fn val_out(&self, port_idx: usize) -> <$edges as $crate::engine::Edges>::PublishedValue {
+                match self { $($name::$variant(n) => $crate::engine::Node::val_out(n, port_idx)),+ }
             }
 
             fn on_command(
@@ -375,19 +378,19 @@ macro_rules! nodes_enum {
 
             fn thread_ui(
                 &self,
-                thread: usize,
+                thread_idx: usize,
                 ui: &mut eframe::egui::Ui,
                 context: &$crate::engine::ThreadContext,
             ) {
-                match self { $($name::$variant(n) => $crate::engine::Node::<$edges>::thread_ui(n, thread, ui, context)),+ }
+                match self { $($name::$variant(n) => $crate::engine::Node::<$edges>::thread_ui(n, thread_idx, ui, context)),+ }
             }
 
             fn thread_pool(
                 &self,
-                thread: usize,
+                thread_idx: usize,
                 context: &$crate::engine::ThreadContext,
             ) -> Option<$crate::engine::PoolStatus> {
-                match self { $($name::$variant(n) => $crate::engine::Node::<$edges>::thread_pool(n, thread, context)),+ }
+                match self { $($name::$variant(n) => $crate::engine::Node::<$edges>::thread_pool(n, thread_idx, context)),+ }
             }
         }
     };

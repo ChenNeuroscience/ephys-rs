@@ -533,7 +533,7 @@ mod tests {
         // The LFP Viewer sets the EEG's gains, the selection and the spikes' reference.
         let lfp_viewer = named("LFP Viewer");
         let controls = |port| {
-            let from = ephys_rs::engine::PortRef { node: lfp_viewer, port };
+            let from = ephys_rs::engine::PortRef { node: lfp_viewer, port_idx: port };
             let settings = graph.edges().iter().filter(|e| e.dimension == ephys_rs::engine::Dimension::Values);
             settings.into_iter().find(|e| e.from == from).map(|e| e.to.node)
         };
@@ -541,13 +541,16 @@ mod tests {
         assert_eq!(controls(1), Some(selector));
         assert_eq!(controls(2), Some(named("Reference")));
         let reference_shown = Port { node: lfp_viewer, role: DataStreamIn, index: 2 };
-        assert_eq!(graph.edge_into(reference_shown).map(|e| (e.from.node, e.from.port)), Some((named("Reference"), 1)));
+        assert_eq!(
+            graph.edge_into(reference_shown).map(|e| (e.from.node, e.from.port_idx)),
+            Some((named("Reference"), 1))
+        );
         let ltx = graph.iter().find(|(_, e)| e.node.info().name == "Write LTX").unwrap().0;
         let into = |i| graph.edges().iter().any(|e| e.target() == Port { node: ltx, role: DataStreamIn, index: i });
         assert!((0..4).all(into), "Write LTX records spikes, EEG, positions and digital inputs");
         // With the EEG's selection and gains.
         let ltx_controls = |port| {
-            let from = ephys_rs::engine::PortRef { node: ltx, port };
+            let from = ephys_rs::engine::PortRef { node: ltx, port_idx: port };
             graph.edges().iter().find(|e| e.dimension == ephys_rs::engine::Dimension::Values && e.from == from)
         };
         assert_eq!(ltx_controls(2).map(|e| e.to.node), Some(selector));

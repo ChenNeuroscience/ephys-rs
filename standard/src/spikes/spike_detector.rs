@@ -19,8 +19,8 @@ use crate::standard::widgets::{combo, input_summary, named_settings_grid, requir
 use crate::{Buffer, Command, CommandKind, DataStream, Edges, Kind, PublishedValue, ValueKind};
 use ephys_rs::engine::EdgeType;
 use ephys_rs::engine::{
-    Category, CommandContext, CommandSource, Input, Node, NodeInfo, Output, PASS_DURATION, PassContext, Prepare,
-    PrepareContext, Prepared, UiContext, ValPort,
+    Category, CommandContext, CommandSource, DataStreamInput, DataStreamOutput, Node, NodeInfo, PASS_DURATION,
+    PassContext, Prepare, PrepareContext, Prepared, UiContext, ValCmdPort,
 };
 use ephys_rs::gui::widgets::info_icon;
 
@@ -278,16 +278,16 @@ impl Node<Edges> for SpikeDetector {
         self.choose_thresholds(pass, sampling);
     }
 
-    fn inputs(&self) -> Vec<Input<Edges>> {
-        vec![Input { name: "continuous", kind: Kind::Continuous }]
+    fn data_stream_inputs(&self) -> Vec<DataStreamInput<Edges>> {
+        vec![DataStreamInput { name: "continuous", kind: Kind::Continuous }]
     }
 
-    fn outputs(&self, inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {
+    fn data_stream_outputs(&self, inputs: &[Option<DataStream>]) -> Vec<DataStreamOutput<Edges>> {
         let stream = match inputs[0] {
             Some(DataStream::Continuous(c)) => Some(DataStream::Spikes(self.stream(c.channels, c.sample_rate))),
             _ => None,
         };
-        vec![Output { name: "spikes", kind: Kind::Spikes, stream }]
+        vec![DataStreamOutput { name: "spikes", kind: Kind::Spikes, stream }]
     }
 
     fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
@@ -305,15 +305,15 @@ impl Node<Edges> for SpikeDetector {
         warnings
     }
 
-    fn ports(&self) -> Vec<ValPort<Edges>> {
-        vec![ValPort::val_out_cmd_in(
+    fn val_cmd_ports(&self) -> Vec<ValCmdPort<Edges>> {
+        vec![ValCmdPort::val_out_cmd_in(
             "thresholds",
             ValueKind::Thresholds,
             &[CommandKind::SetThresholds, CommandKind::Detect],
         )]
     }
 
-    fn val_out(&self, _port: usize) -> PublishedValue {
+    fn val_out(&self, _port_idx: usize) -> PublishedValue {
         self.thresholds.clone().into()
     }
 

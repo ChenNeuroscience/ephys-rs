@@ -20,7 +20,8 @@ use crate::standard::spikes::{
 use crate::standard::widgets::{input_summary, named_settings_grid, require_input, setting};
 use crate::{Buffer, Command, CommandKind, DataStream, Edges, Kind, PublishedValue, ValueKind};
 use ephys_rs::engine::{
-    Category, CommandContext, CommandSource, Input, Node, NodeInfo, Output, PassContext, UiContext, ValPort,
+    Category, CommandContext, CommandSource, DataStreamInput, DataStreamOutput, Node, NodeInfo, PassContext, UiContext,
+    ValCmdPort,
 };
 use ephys_rs::gui::widgets::info_icon;
 
@@ -198,12 +199,12 @@ impl Node<Edges> for SpikeGain {
         TreeShake::needing_all(inputs.contains(&true) && wanted, inputs.len())
     }
 
-    fn inputs(&self) -> Vec<Input<Edges>> {
-        vec![Input { name: "spikes", kind: Kind::Spikes }]
+    fn data_stream_inputs(&self) -> Vec<DataStreamInput<Edges>> {
+        vec![DataStreamInput { name: "spikes", kind: Kind::Spikes }]
     }
 
-    fn outputs(&self, inputs: &[Option<DataStream>]) -> Vec<ephys_rs::engine::Output<Edges>> {
-        vec![Output { name: "spikes", kind: Kind::Spikes, stream: inputs[0] }]
+    fn data_stream_outputs(&self, inputs: &[Option<DataStream>]) -> Vec<ephys_rs::engine::DataStreamOutput<Edges>> {
+        vec![DataStreamOutput { name: "spikes", kind: Kind::Spikes, stream: inputs[0] }]
     }
 
     fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
@@ -215,11 +216,11 @@ impl Node<Edges> for SpikeGain {
         BufferUsage { in_place: vec![Some(0); outputs], ..BufferUsage::none(inputs, outputs) }
     }
 
-    fn ports(&self) -> Vec<ValPort<Edges>> {
-        vec![ValPort::val_out_cmd_in("gains", ValueKind::Gains, &[CommandKind::SetGains, CommandKind::Detect])]
+    fn val_cmd_ports(&self) -> Vec<ValCmdPort<Edges>> {
+        vec![ValCmdPort::val_out_cmd_in("gains", ValueKind::Gains, &[CommandKind::SetGains, CommandKind::Detect])]
     }
 
-    fn val_out(&self, _port: usize) -> PublishedValue {
+    fn val_out(&self, _port_idx: usize) -> PublishedValue {
         self.gains.clone().into()
     }
 

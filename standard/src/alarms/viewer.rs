@@ -29,8 +29,8 @@ use crate::standard::widgets::{mark_mixed, open_settings_button, require_input};
 use crate::standard::widgets::{power, small_toggle};
 use crate::{Buffer, Command, CommandKind, DataStream, Edges, Kind, ValueKind};
 use ephys_rs::engine::{
-    Category, Flow, Input, Node, NodeInfo, NodeThread, Output, PassContext, PassState, PoolStatus, Prepare,
-    PrepareContext, Prepared, Shared, UiContext, ValPort,
+    Category, DataStreamInput, DataStreamOutput, Flow, Node, NodeInfo, NodeThread, PassContext, PassState, PoolStatus,
+    Prepare, PrepareContext, Prepared, Shared, UiContext, ValCmdPort,
 };
 use ephys_rs::gui::widgets::Icon;
 use ephys_rs::theme::Colours;
@@ -184,16 +184,16 @@ impl Node<Edges> for AlarmViewer {
     const WINDOW_SIZE: [f32; 2] = [820.0, 520.0];
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
-    fn inputs(&self) -> Vec<Input<Edges>> {
-        vec![Input { name: "alarms", kind: Kind::AlarmStates }]
+    fn data_stream_inputs(&self) -> Vec<DataStreamInput<Edges>> {
+        vec![DataStreamInput { name: "alarms", kind: Kind::AlarmStates }]
     }
 
-    fn outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {
+    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<DataStreamOutput<Edges>> {
         Vec::new()
     }
 
-    fn ports(&self) -> Vec<ValPort<Edges>> {
-        vec![ValPort::val_in_cmd_out("alarms", ValueKind::Alarms, &[CommandKind::SetAlarms])]
+    fn val_cmd_ports(&self) -> Vec<ValCmdPort<Edges>> {
+        vec![ValCmdPort::val_in_cmd_out("alarms", ValueKind::Alarms, &[CommandKind::SetAlarms])]
     }
 
     fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {

@@ -25,8 +25,8 @@ use crate::standard::pool::Pool;
 use crate::standard::widgets::{combo, named_settings_grid, setting};
 use crate::{DataStream, Edges};
 use ephys_rs::engine::{
-    Category, Flow, Node, NodeInfo, NodeThread, Output, PassContext, PassState, Prepare, PrepareContext, Prepared,
-    ThreadContext, UiContext,
+    Category, DataStreamOutput, Flow, Node, NodeInfo, NodeThread, PassContext, PassState, Prepare, PrepareContext,
+    Prepared, ThreadContext, UiContext,
 };
 use ephys_rs::gui::widgets::{Icon, small_icon_button};
 
@@ -356,7 +356,7 @@ impl Node<Edges> for Arduino {
     type UiState = ();
     type GlobalSettings = ();
 
-    fn outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {
+    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<DataStreamOutput<Edges>> {
         Vec::new()
     }
 
@@ -374,7 +374,7 @@ impl Node<Edges> for Arduino {
         }]
     }
 
-    fn thread_ui(&self, _thread: usize, ui: &mut egui::Ui, context: &ThreadContext) {
+    fn thread_ui(&self, _thread_idx: usize, ui: &mut egui::Ui, context: &ThreadContext) {
         let pool = context.shared::<Pool<Status>>();
         match pool.and_then(Pool::newest) {
             Some(status) => status_ui(ui, &status, self.baud, context.theme.warning),

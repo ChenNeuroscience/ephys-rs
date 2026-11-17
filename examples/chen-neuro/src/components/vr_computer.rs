@@ -51,8 +51,8 @@ use crate::standard::widgets::{named_settings_grid, setting};
 use crate::standard::{Buffer, Command, CommandKind, DataStream, Edges, Kind, PublishedValue, ValueKind};
 use eframe::egui::{self, RichText};
 use ephys_rs::engine::{
-    Category, CommandContext, CommandSource, Flow, Node, NodeInfo, NodeThread, Output, PassContext, SnapshotLite,
-    ThreadContext, UiContext, ValPort,
+    Category, CommandContext, CommandSource, DataStreamOutput, Flow, Node, NodeInfo, NodeThread, PassContext,
+    SnapshotLite, ThreadContext, UiContext, ValCmdPort,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -541,15 +541,19 @@ impl Node<Edges> for VrComputer {
     type UiState = ();
     type GlobalSettings = ();
 
-    fn outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {
+    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<DataStreamOutput<Edges>> {
         let [_, _, width, height] = window(&self.custom).and_then(|crop| crop.bounds()).unwrap_or([0.0; 4]);
         let frame = |size: f32| if size > 0.0 { size.ceil() as u32 } else { FRAME_SIZE };
         let positions = Positions { fps: self.fps, width: frame(width), height: frame(height), source: SOURCE };
         let ttl = Events { lines: ttl_channels(&self.custom).unwrap_or(0), sample_rate: TTL_RATE as f32 };
         vec![
-            Output { name: "positions", kind: Kind::Positions, stream: Some(DataStream::Positions(positions)) },
-            Output { name: "pos ttl", kind: Kind::Events, stream: Some(DataStream::Events(ttl)) },
-            Output {
+            DataStreamOutput {
+                name: "positions",
+                kind: Kind::Positions,
+                stream: Some(DataStream::Positions(positions)),
+            },
+            DataStreamOutput { name: "pos ttl", kind: Kind::Events, stream: Some(DataStream::Events(ttl)) },
+            DataStreamOutput {
                 name: "log",
                 kind: Kind::LogLines,
                 stream: Some(DataStream::LogLines(LogLines { width: self.log_width })),
@@ -564,11 +568,11 @@ impl Node<Edges> for VrComputer {
         vec!["No settings from the VR computer yet: positions can't be recorded properly without them".into()]
     }
 
-    fn ports(&self) -> Vec<ValPort<Edges>> {
-        vec![ValPort::val_out_cmd_in("settings", ValueKind::Detection, &[CommandKind::SetDetection])]
+    fn val_cmd_ports(&self) -> Vec<ValCmdPort<Edges>> {
+        vec![ValCmdPort::val_out_cmd_in("settings", ValueKind::Detection, &[CommandKind::SetDetection])]
     }
 
-    fn val_out(&self, _port: usize) -> PublishedValue {
+    fn val_out(&self, _port_idx: usize) -> PublishedValue {
         let crop = window(&self.custom).unwrap_or_default();
         // A metre's worth of pixels, as a ruler laid over the video would say.
         let ruler = |ppm| Ruler { a: [0.0, 0.0], b: [ppm, 0.0], length_cm: 100.0 };
@@ -600,7 +604,7 @@ impl Node<Edges> for VrComputer {
         }]
     }
 
-    fn thread_ui(&self, _thread: usize, ui: &mut egui::Ui, context: &ThreadContext) {
+    fn thread_ui(&self, _thread_idx: usize, ui: &mut egui::Ui, context: &ThreadContext) {
         let pool = context.shared::<Pool<Status>>();
         match pool.and_then(Pool::newest) {
             Some(status) => status_ui(ui, &status, context.theme.warning),
@@ -748,7 +752,7 @@ mod tests {
 
     /// A pass's buffers.
     fn buffers(node: &VrComputer) -> (PositionsBuffer, EventsBuffer, LogLinesBuffer) {
-        let outputs = node.outputs(&[]);
+        let outputs = node.data_stream_outputs(&[]);
         let (Some(DataStream::Positions(p)), Some(DataStream::Events(e)), Some(DataStream::LogLines(l))) =
             (outputs[0].stream, outputs[1].stream, outputs[2].stream)
         else {
@@ -842,7 +846,7 @@ mod tests {
         assert!(complete(&custom));
         let node = VrComputer { custom, ..node };
         assert!(node.warnings(&[]).is_empty());
-        let Some(DataStream::Events(ttl)) = node.outputs(&[])[1].stream else { panic!() };
+        let Some(DataStream::Events(ttl)) = node.data_stream_outputs(&[])[1].stream else { panic!() };
         assert_eq!(ttl.lines, 3, "a line a channel");
         let PublishedValue::Detection(detection) = &node.val_out(0) else { panic!() };
         assert_eq!(detection.crop, crop, "for Write LTX");

@@ -184,7 +184,7 @@ pub struct PrepareContext<'a, E: Edges, N> {
 
 impl<'a, E: Edges, N> PrepareContext<'a, E, N> {
     /// Tests try nodes out with this: the node new to the run, with inputs `inputs`, recording `recording` if there is
-    /// one, no ports reading values connected, and no queue of commands, on one worker.
+    /// one, no `ValInCmdOut` or `ValIn` ports connected, and no queue of commands, on one worker.
     pub fn trying(inputs: &'a [Option<E::DataStream>], recording: Option<&'a Recording>) -> Self {
         PrepareContext {
             node: NodeId(0),
@@ -198,17 +198,17 @@ impl<'a, E: Edges, N> PrepareContext<'a, E, N> {
         }
     }
 
-    /// The node reads what its `ValInCmdOut` (or `ValIn`) port `port` sees with this (see `UiContext::val_in`).
-    pub fn val_in<T: ValueType<E::PublishedValue> + 'a>(&self, port: usize) -> Option<&'a T> {
-        T::from_value(self.val_ins.get(port)?.as_ref()?)
+    /// The node reads what its `ValInCmdOut` (or `ValIn`) port `port_idx` sees with this (see `UiContext::val_in`).
+    pub fn val_in<T: ValueType<E::PublishedValue> + 'a>(&self, port_idx: usize) -> Option<&'a T> {
+        T::from_value(self.val_ins.get(port_idx)?.as_ref()?)
     }
 
     /// A node keeps one of these to command, later, from any thread (a writer's, once its files are finished, say), the
-    /// node its `ValInCmdOut` port `port` connects to then (see `CmdSender`). There's none if the port isn't connected
+    /// node its `ValInCmdOut` port `port_idx` connects to then (see `CmdSender`). There's none if the port isn't connected
     /// now, or there's no queue.
-    pub fn cmd_sender(&self, port: usize) -> Option<CmdSender<E::Command>> {
-        self.val_ins.get(port)?.as_ref()?;
-        Some(CmdSender::new(self.commands?.clone(), Address::Port { from: self.node, port }))
+    pub fn cmd_sender(&self, port_idx: usize) -> Option<CmdSender<E::Command>> {
+        self.val_ins.get(port_idx)?.as_ref()?;
+        Some(CmdSender::new(self.commands?.clone(), Address::Port { from: self.node, port_idx }))
     }
 
     /// A node that was in the snapshot before with the same data streams can keep its state, which still fits. This

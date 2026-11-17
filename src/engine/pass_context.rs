@@ -38,7 +38,7 @@ pub struct PassContext<'a, E: Edges> {
 }
 
 impl<'a, E: Edges> PassContext<'a, E> {
-    /// Tests try nodes out on a pass like this: not recording, with no ports reading values connected.
+    /// Tests try nodes out on a pass like this: not recording, with no `ValInCmdOut` or `ValIn` ports connected.
     #[cfg(test)]
     pub fn new(
         sequence: u64,
@@ -89,10 +89,10 @@ impl<'a, E: Edges> PassContext<'a, E> {
         self.shared.downcast_ref().expect("the node's own Node::Shared")
     }
 
-    /// The node reads what its `ValInCmdOut` (or `ValIn`) port `port` saw as the snapshot was made with this, as the
+    /// The node reads what its `ValInCmdOut` (or `ValIn`) port `port_idx` saw as the snapshot was made with this, as the
     /// type it expects, if the port's connected.
-    pub fn val_in<T: ValueType<E::PublishedValue> + 'a>(&self, port: usize) -> Option<&'a T> {
-        T::from_value(self.val_ins.get(port)?.as_ref()?)
+    pub fn val_in<T: ValueType<E::PublishedValue> + 'a>(&self, port_idx: usize) -> Option<&'a T> {
+        T::from_value(self.val_ins.get(port_idx)?.as_ref()?)
     }
 
     /// Passes can't change the graph themselves, so a node sends itself `command` here (to set one of its settings from
@@ -109,18 +109,18 @@ impl<'a, E: Edges> PassContext<'a, E> {
     }
 
     /// The node reads an input's data with this, whether the node takes the input (see `take_input`) or not.
-    pub fn input(&self, index: usize) -> Option<&Buffer<E>> {
-        match self.taken.get(index) {
+    pub fn input(&self, input_idx: usize) -> Option<&Buffer<E>> {
+        match self.taken.get(input_idx) {
             Some(Some(buffer)) => Some(buffer),
-            _ => self.inputs.get(index).copied().flatten(),
+            _ => self.inputs.get(input_idx).copied().flatten(),
         }
     }
 
     /// A node that takes an input (see `BufferUsage::takes`) gets the input's buffer here, if it's connected, to swap
     /// for another just as big (of the same data stream), which the pass carries on with. The data's the node's to do
     /// as it likes with.
-    pub fn take_input(&mut self, index: usize) -> Option<&mut Buffer<E>> {
-        self.taken.get_mut(index)?.as_mut()
+    pub fn take_input(&mut self, input_idx: usize) -> Option<&mut Buffer<E>> {
+        self.taken.get_mut(input_idx)?.as_mut()
     }
 
     /// While recording, a writer finds here the base directory the recording goes in (see `crate::base_directory`), if

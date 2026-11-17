@@ -12,8 +12,8 @@ use crate::standard::pool::Pool;
 use crate::standard::widgets::{named_settings_grid, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind};
 use ephys_rs::engine::{
-    Category, Flow, Node, NodeInfo, NodeThread, Output, PassContext, PoolStatus, Prepare, PrepareContext, Prepared,
-    Suggestion, ThreadContext, UiContext, UserDecision,
+    Category, DataStreamOutput, Flow, Node, NodeInfo, NodeThread, PassContext, PoolStatus, Prepare, PrepareContext,
+    Prepared, Suggestion, ThreadContext, UiContext, UserDecision,
 };
 use ephys_rs::gui::widgets::{Icon, small_icon_button};
 
@@ -134,16 +134,16 @@ impl Node<Edges> for AcquisitionBoard {
     type UiState = ();
     type GlobalSettings = super::OpenEphysSettings;
 
-    fn outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {
+    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<DataStreamOutput<Edges>> {
         let rate = self.sample_rate as f32;
         let continuous = |channels| Some(DataStream::Continuous(Continuous { channels, sample_rate: rate }));
         let mut outputs = vec![
-            Output {
+            DataStreamOutput {
                 name: "headstages",
                 kind: Kind::Continuous,
                 stream: continuous(Headstage::total(&self.headstages)),
             },
-            Output {
+            DataStreamOutput {
                 name: "digital",
                 kind: Kind::Events,
                 stream: Some(DataStream::Events(Events { lines: self.source.ttl_lines(), sample_rate: rate })),
@@ -151,10 +151,14 @@ impl Node<Edges> for AcquisitionBoard {
         ];
         if self.aux {
             let channels = AUX_PER_HEADSTAGE * self.headstages.len() as u32;
-            outputs.push(Output { name: "auxiliary", kind: Kind::Continuous, stream: continuous(channels) });
+            outputs.push(DataStreamOutput { name: "auxiliary", kind: Kind::Continuous, stream: continuous(channels) });
         }
         if self.adc {
-            outputs.push(Output { name: "analogue", kind: Kind::Continuous, stream: continuous(ADC_CHANNELS) });
+            outputs.push(DataStreamOutput {
+                name: "analogue",
+                kind: Kind::Continuous,
+                stream: continuous(ADC_CHANNELS),
+            });
         }
         outputs
     }
@@ -174,11 +178,11 @@ impl Node<Edges> for AcquisitionBoard {
             flow: Flow::ToPasses,
             why: "On a thread of its own so samples are taken from the board as they come (before its buffer \
                   overflows), whatever the passes are doing.",
-            swapped_outputs: (0..self.outputs(&[]).len()).collect(),
+            swapped_outputs: (0..self.data_stream_outputs(&[]).len()).collect(),
         }]
     }
 
-    fn thread_ui(&self, _thread: usize, ui: &mut egui::Ui, context: &ThreadContext) {
+    fn thread_ui(&self, _thread_idx: usize, ui: &mut egui::Ui, context: &ThreadContext) {
         let small = |text: String| RichText::new(text).size(11.0);
         let pool = context.shared::<Pool<BoardDisplay>>();
         let Some(display) = pool.and_then(Pool::newest) else {
@@ -198,7 +202,7 @@ impl Node<Edges> for AcquisitionBoard {
         }
     }
 
-    fn thread_pool(&self, _thread: usize, context: &ThreadContext) -> Option<PoolStatus> {
+    fn thread_pool(&self, _thread_idx: usize, context: &ThreadContext) -> Option<PoolStatus> {
         context.shared::<Pool<BoardDisplay>>().and_then(|l| l.newest().map(|d| d.pool))
     }
 

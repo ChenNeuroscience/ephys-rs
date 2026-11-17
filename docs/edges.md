@@ -68,7 +68,7 @@ A viewer setting a detector's thresholds reads them and sends `SetThresholds`; a
 them. Value edges carry no data, so can point anywhere, upstream included; a `ValOutCmdIn` can have several edges into
 it, a `ValInCmdOut` one out of it. A value's type (a list of thresholds, say) implements `EdgeType`; it needn't be
 `Copy`. A command's type needn't implement anything but `Debug`. Settings stay a node's own: what it saves and loads, and
-what's copied and pasted; what it publishes and what it's commanded to do are up to it.
+what's copied and pasted; what values it gives its `ValOutCmdIn` ports and what it does with commands are up to it.
 
 A command sent through a port goes through the app's queue (see [`commands.rs`](../src/commands.rs)), addressed to the
 port, not the node at the far end: the app follows the edge as it delivers it, on the GUI's thread. So a sender kept

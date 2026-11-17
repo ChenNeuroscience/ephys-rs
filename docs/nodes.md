@@ -20,8 +20,8 @@ else.
 
 The parts of the API are there for three different reasons, and it helps to know which is which:
 
-- **The data model: what the node is and does.** These have to be right for the node to work: its ports (`inputs`,
-  `outputs`), its value ports (`ports`: the values it publishes, `val_out`, and those of others it reads),
+- **The data model: what the node is and does.** These have to be right for the node to work: its data ports (`data_stream_inputs`,
+  `data_stream_outputs`), its value ports (`val_cmd_ports`: the values it publishes, `val_out`, and those of others it reads),
   the commands it takes (`on_command`), `process` and its state (prepared for each snapshot: `prepare_for_snapshot`).
 - **Optimisation: how cheaply it runs.** Leaving these at their defaults is always correct, only slower or using more
   memory: `evaluate_buffer_usage`, `evaluate_tree_shake` (one exception: a writer says it only runs while recording,
@@ -36,13 +36,13 @@ The parts of the API are there for three different reasons, and it helps to know
 
 - `INFO`: its name, category (source, processing, visualisation, recording or other) and description. The category
   is only a label (see above).
-- `inputs()` and `outputs(inputs)`: its data ports. An output says what data stream it produces, given what's on the
+- `data_stream_inputs()` and `data_stream_outputs(inputs)`: its data ports. An output says what data stream it produces, given what's on the
   inputs (or `None` while that can't be known), so a graph's streams are worked out before anything runs.
 - `warnings(inputs)`: what's wrong (an input not connected, say), shown on the graph and in its window.
-- `ports()`: its value ports (see [Edges](edges.md#values-and-commands)), each a `ValPort`: where it publishes a value
+- `val_cmd_ports()`: its value ports (see [Edges](edges.md#values-and-commands)), each a `ValCmdPort`: where it publishes a value
   (`ValOutCmdIn`, with `val_out` saying what it is now), and where it reads another node's, sending it commands
   (`ValInCmdOut`) or not (`ValIn`, val-only). Each says the commands it accepts or sends (`&[CommandKind::SetGains]`,
-  say). Those it publishes and those it reads are numbered separately, in the order listed.
+  say). Its `ValOutCmdIn` ports are numbered separately from its `ValInCmdOut` and `ValIn` ports, in the order listed.
 - `on_command(from, command, context)`: what it does with a command sent to it (see [Commands](#commands)).
 
 ## Running
@@ -138,7 +138,7 @@ convention, nodes with a view are. Keys its window answers to (G over a Spike Vi
 `SHORTCUTS`, which the keyboard shortcuts' help lists. It gets a [`UiContext`](../src/engine/ui_context.rs):
 
 - `inputs`: the streams on its inputs; `val_in::<T>(port)`: the values its ports read; `cmd_out(port, command)`: a
-  command, through a port, to the node publishing the value (to edit a value, send the edited copy back, with
+  command, through a port, to the node at its `ValOutCmdIn` (to edit a value, send the edited copy back, with
   `cmd_out_if_changed`).
 - `shared::<T>()`: what its passes share with it (its `Shared`, which is `T`), or what they did in the last run once
   it's stopped, so what it shows stays (see below). Say nothing's going on when it isn't, by `running`.
@@ -149,7 +149,7 @@ convention, nodes with a view are. Keys its window answers to (G over a Spike Vi
   settings menu, enabling and deleting it), for a view to put where it likes, with options of its own added to the
   settings menu.
 - `node_toolbar_buttons`: the same, with buttons of the pane's own beside them, at the right of the toolbar.
-- `controlled_by`: for each value it publishes, the names of the nodes reading it.
+- `controlled_by`: for each of its `ValOutCmdIn` ports, the names of the nodes with an edge into it.
 - `cmd_sender`, `self_sender`, `open_control_target`: see below.
 
 Help that's more than a tooltip (examples, a cheat sheet) goes behind `widgets::help_link`: dimmed text with a dotted
@@ -216,7 +216,7 @@ its window closed too.
 Anything a node tells another to do is a command: setting a value it publishes (`SetGains`), starting auto detect
 (`Detect`), processing files (`ProcessFiles`). The program lists them in `edge_types!` (`commands:`), which makes its
 `Command` enum, with `CommandKind` naming them; every set is a command like any other, so the core knows nothing of
-settings. A command goes through a value edge, from the node's `ValInCmdOut` port to the node publishing at the other
+settings. A command goes through a value edge, from the node's `ValInCmdOut` port to the node at the `ValOutCmdIn`
 end, which says which commands each of its ports accepts; or from a node to itself (`CommandSource::Itself`), from
 its passes (`PassContext::cmd_self`) or threads (`UiContext::self_sender`). It needs no pass, or even a run: the app
 delivers it on the GUI's thread, whatever's going on, to `Node::on_command(from, command, context)`, saying where it

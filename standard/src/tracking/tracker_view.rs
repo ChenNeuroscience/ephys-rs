@@ -27,8 +27,8 @@ use crate::standard::tracking::{Crop, Detection, Positions};
 use crate::standard::widgets::{named_settings_grid, section};
 use crate::{Buffer, Command, CommandKind, DataStream, Edges, Kind, ValueKind};
 use ephys_rs::engine::{
-    Category, EdgeType, Input, Node, NodeInfo, Output, PassContext, PoolStatus, Prepare, PrepareContext, Prepared,
-    Shared, UiContext, ValPort,
+    Category, DataStreamInput, DataStreamOutput, EdgeType, Node, NodeInfo, PassContext, PoolStatus, Prepare,
+    PrepareContext, Prepared, Shared, UiContext, ValCmdPort,
 };
 use ephys_rs::theme::Colours;
 
@@ -154,15 +154,15 @@ impl Node<Edges> for TrackerView {
     type UiState = TrackerUi;
     type GlobalSettings = ();
 
-    fn inputs(&self) -> Vec<Input<Edges>> {
+    fn data_stream_inputs(&self) -> Vec<DataStreamInput<Edges>> {
         vec![
-            Input { name: "video", kind: Kind::Video },
-            Input { name: "positions", kind: Kind::Positions },
-            Input { name: "stats", kind: Kind::CameraStats },
+            DataStreamInput { name: "video", kind: Kind::Video },
+            DataStreamInput { name: "positions", kind: Kind::Positions },
+            DataStreamInput { name: "stats", kind: Kind::CameraStats },
         ]
     }
 
-    fn outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {
+    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<DataStreamOutput<Edges>> {
         Vec::new()
     }
 
@@ -170,10 +170,10 @@ impl Node<Edges> for TrackerView {
         if inputs[0].is_none() && inputs[1].is_none() { vec!["Connect video or positions".into()] } else { Vec::new() }
     }
 
-    fn ports(&self) -> Vec<ValPort<Edges>> {
+    fn val_cmd_ports(&self) -> Vec<ValCmdPort<Edges>> {
         vec![
-            ValPort::val_in_cmd_out("camera", ValueKind::Camera, &[CommandKind::SetCamera]),
-            ValPort::val_in_cmd_out("detection", ValueKind::Detection, &[CommandKind::SetDetection]),
+            ValCmdPort::val_in_cmd_out("camera", ValueKind::Camera, &[CommandKind::SetCamera]),
+            ValCmdPort::val_in_cmd_out("detection", ValueKind::Detection, &[CommandKind::SetDetection]),
         ]
     }
 

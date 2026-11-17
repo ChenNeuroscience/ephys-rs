@@ -80,7 +80,7 @@ pub fn arrange<N: NodesEnum>(graph: &Graph<N>) -> HashMap<NodeId, [f32; 2]> {
     let mut ids: Vec<NodeId> = sizes.keys().copied().collect();
     ids.sort_by_key(|id| id.0);
     for id in ids {
-        if graph.get(id).is_some_and(|e| e.node.inputs().is_empty()) && !led_to.contains(&id) {
+        if graph.get(id).is_some_and(|e| e.node.data_stream_inputs().is_empty()) && !led_to.contains(&id) {
             layered.set_edge_with_label(START, key(id), edge(START_WEIGHT));
         }
     }

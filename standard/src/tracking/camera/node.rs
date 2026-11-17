@@ -11,8 +11,8 @@ use crate::standard::tracking::Video;
 use crate::standard::widgets::{setting, settings_grid};
 use crate::{Buffer, Command, CommandKind, DataStream, Edges, Kind, PublishedValue, ValueKind};
 use ephys_rs::engine::{
-    Category, CommandContext, CommandSource, Flow, Node, NodeInfo, NodeThread, Output, PassContext, PoolStatus,
-    Prepare, PrepareContext, Prepared, Suggestion, ThreadContext, UiContext, UserDecision, ValPort,
+    Category, CommandContext, CommandSource, DataStreamOutput, Flow, Node, NodeInfo, NodeThread, PassContext,
+    PoolStatus, Prepare, PrepareContext, Prepared, Suggestion, ThreadContext, UiContext, UserDecision, ValCmdPort,
 };
 
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -79,20 +79,24 @@ impl Node<Edges> for Camera {
     type UiState = ();
     type GlobalSettings = super::SpinnakerSettings;
 
-    fn outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {
+    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<DataStreamOutput<Edges>> {
         let [width, height] = self.settings.frame_size;
         let stream = Video { width, height, fps: self.settings.frame_rate as f32 };
         vec![
-            Output { name: "video", kind: Kind::Video, stream: Some(DataStream::Video(stream)) },
-            Output { name: "stats", kind: Kind::CameraStats, stream: Some(DataStream::CameraStats(CameraStats)) },
+            DataStreamOutput { name: "video", kind: Kind::Video, stream: Some(DataStream::Video(stream)) },
+            DataStreamOutput {
+                name: "stats",
+                kind: Kind::CameraStats,
+                stream: Some(DataStream::CameraStats(CameraStats)),
+            },
         ]
     }
 
-    fn ports(&self) -> Vec<ValPort<Edges>> {
-        vec![ValPort::val_out_cmd_in("camera", ValueKind::Camera, &[CommandKind::SetCamera])]
+    fn val_cmd_ports(&self) -> Vec<ValCmdPort<Edges>> {
+        vec![ValCmdPort::val_out_cmd_in("camera", ValueKind::Camera, &[CommandKind::SetCamera])]
     }
 
-    fn val_out(&self, _port: usize) -> PublishedValue {
+    fn val_out(&self, _port_idx: usize) -> PublishedValue {
         PublishedValue::Camera(self.settings)
     }
 
@@ -114,7 +118,7 @@ impl Node<Edges> for Camera {
         }]
     }
 
-    fn thread_ui(&self, _thread: usize, ui: &mut egui::Ui, context: &ThreadContext) {
+    fn thread_ui(&self, _thread_idx: usize, ui: &mut egui::Ui, context: &ThreadContext) {
         let small = |text: String| RichText::new(text).size(11.0);
         let pool = context.shared::<Pool<CaptureStats>>();
         let Some(stats) = pool.and_then(Pool::newest) else {
@@ -135,7 +139,7 @@ impl Node<Edges> for Camera {
         }
     }
 
-    fn thread_pool(&self, _thread: usize, context: &ThreadContext) -> Option<PoolStatus> {
+    fn thread_pool(&self, _thread_idx: usize, context: &ThreadContext) -> Option<PoolStatus> {
         context.shared::<Pool<CaptureStats>>().and_then(|l| l.newest().map(|s| s.pool))
     }
 

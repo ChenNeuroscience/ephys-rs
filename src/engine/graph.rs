@@ -9,8 +9,8 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    CommandContext, CommandSource, CommandsEnum, Dimension, EdgeInfo, EdgeTypesEnum, Edges, Input, Node, NodesEnum,
-    Output, Plan, UiContext, ValPort,
+    CommandContext, CommandSource, CommandsEnum, DataStreamInput, DataStreamOutput, Dimension, EdgeInfo, EdgeTypesEnum,
+    Edges, Node, NodesEnum, Plan, UiContext, ValCmdPort,
 };
 use crate::commands::{Address, Commands};
 use crate::theme::Colours;
@@ -34,7 +34,7 @@ pub enum PortRole {
     /// The node reads another node's published value here, and sends it commands.
     ValInCmdOut,
     /// Val-only: the node only reads another node's published value here (the GUI calls it read-only). A node declares
-    /// such ports (see `ValPort`), but the graph numbers them with its `ValInCmdOut` ports, and finds them as those: an
+    /// such ports (see `ValCmdPort`), but the graph numbers them with its `ValInCmdOut` ports, and finds them as those: an
     /// edge from either starts at a `ValInCmdOut` (see `Edge::source`).
     ValIn,
 }
@@ -88,7 +88,9 @@ pub struct Port {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub struct PortRef {
     pub node: NodeId,
-    pub port: usize,
+    /// Saved as `port`.
+    #[serde(rename = "port")]
+    pub port_idx: usize,
 }
 
 /// An edge connects a `DataStreamOut` to a `DataStreamIn`, or a `ValInCmdOut` to a `ValOutCmdIn`. A `DataStreamIn`
@@ -107,13 +109,13 @@ impl Edge {
     /// this one.
     pub fn source(&self) -> Port {
         let role = if self.dimension == Dimension::Data { PortRole::DataStreamOut } else { PortRole::ValInCmdOut };
-        Port { node: self.from.node, role, index: self.from.port }
+        Port { node: self.from.node, role, index: self.from.port_idx }
     }
 
     /// The edge goes into a `DataStreamIn` or `ValOutCmdIn`: this one.
     pub fn target(&self) -> Port {
         let role = if self.dimension == Dimension::Data { PortRole::DataStreamIn } else { PortRole::ValOutCmdIn };
-        Port { node: self.to.node, role, index: self.to.port }
+        Port { node: self.to.node, role, index: self.to.port_idx }
     }
 }
 
@@ -178,15 +180,15 @@ impl fmt::Display for ConnectError {
 /// The graph works out each node's ports and data streams from the node's settings and what's upstream of it (see
 /// `Graph::resolve`). This is one node's.
 pub struct NodeState<E: Edges> {
-    pub inputs: Vec<Input<E>>,
+    pub inputs: Vec<DataStreamInput<E>>,
     /// For each input, the data stream connected to it, if any.
     pub input_streams: Vec<Option<E::DataStream>>,
-    pub outputs: Vec<Output<E>>,
+    pub outputs: Vec<DataStreamOutput<E>>,
     /// The node's `ValOutCmdIn` ports, in order, and what it publishes at each (see `Node::val_out`).
-    pub val_outs: Vec<ValPort<E>>,
+    pub val_outs: Vec<ValCmdPort<E>>,
     pub values: Vec<E::PublishedValue>,
     /// The node's `ValInCmdOut` and `ValIn` ports, in order, numbered together.
-    pub val_ins: Vec<ValPort<E>>,
+    pub val_ins: Vec<ValCmdPort<E>>,
     pub warnings: Vec<String>,
 }
 
@@ -196,10 +198,11 @@ pub type KindKey = (Dimension, usize);
 impl<E: Edges> NodeState<E> {
     /// The state of `node`, given the data streams on its inputs.
     pub fn of<N: Node<E>>(node: &N, input_streams: Vec<Option<E::DataStream>>) -> Self {
-        let (val_outs, val_ins): (Vec<_>, Vec<_>) = node.ports().into_iter().partition(ValPort::publishes);
+        let (val_outs, val_ins): (Vec<_>, Vec<_>) =
+            node.val_cmd_ports().into_iter().partition(|p| p.role == PortRole::ValOutCmdIn);
         NodeState {
-            inputs: node.inputs(),
-            outputs: node.outputs(&input_streams),
+            inputs: node.data_stream_inputs(),
+            outputs: node.data_stream_outputs(&input_streams),
             warnings: node.warnings(&input_streams),
             input_streams,
             values: (0..val_outs.len()).map(|port| node.val_out(port)).collect(),
@@ -209,10 +212,11 @@ impl<E: Edges> NodeState<E> {
     }
 
     pub fn new<N: NodesEnum<Edges = E>>(node: &N, input_streams: Vec<Option<E::DataStream>>) -> Self {
-        let (val_outs, val_ins): (Vec<_>, Vec<_>) = node.ports().into_iter().partition(ValPort::publishes);
+        let (val_outs, val_ins): (Vec<_>, Vec<_>) =
+            node.val_cmd_ports().into_iter().partition(|p| p.role == PortRole::ValOutCmdIn);
         NodeState {
-            inputs: node.inputs(),
-            outputs: node.outputs(&input_streams),
+            inputs: node.data_stream_inputs(),
+            outputs: node.data_stream_outputs(&input_streams),
             warnings: node.warnings(&input_streams),
             input_streams,
             values: (0..val_outs.len()).map(|port| node.val_out(port)).collect(),
@@ -234,7 +238,7 @@ impl<E: Edges> NodeState<E> {
 
     /// The state of `node` with nothing connected.
     pub fn unconnected<N: NodesEnum<Edges = E>>(node: &N) -> Self {
-        Self::new(node, vec![None; node.inputs().len()])
+        Self::new(node, vec![None; node.data_stream_inputs().len()])
     }
 
     /// How many ports of `role` the node has (`ValIn` ports being counted as `ValInCmdOut`).
@@ -249,7 +253,7 @@ impl<E: Edges> NodeState<E> {
     }
 
     /// The value port at `(role, index)`, if it's one.
-    pub fn val_port(&self, role: PortRole, index: usize) -> Option<&ValPort<E>> {
+    pub fn val_port(&self, role: PortRole, index: usize) -> Option<&ValCmdPort<E>> {
         match role {
             PortRole::ValOutCmdIn => self.val_outs.get(index),
             PortRole::ValInCmdOut | PortRole::ValIn => self.val_ins.get(index),
@@ -257,9 +261,9 @@ impl<E: Edges> NodeState<E> {
         }
     }
 
-    /// A `ValIn` port is val-only (read-only, to people): this says whether the `ValInCmdOut` port `index` is one.
-    pub fn val_only(&self, index: usize) -> bool {
-        self.val_ins.get(index).is_some_and(|p| p.role == PortRole::ValIn)
+    /// A `ValIn` port is val-only (read-only, to people): this says whether the `ValInCmdOut` port `port_idx` is one.
+    pub fn val_only(&self, port_idx: usize) -> bool {
+        self.val_ins.get(port_idx).is_some_and(|p| p.role == PortRole::ValIn)
     }
 
     pub fn name(&self, role: PortRole, index: usize) -> Option<&'static str> {
@@ -309,7 +313,7 @@ impl<E: Edges> NodeState<E> {
     }
 
     /// When a wire's dropped on a node, it connects to the first of the node's ports that fits (see `fits`). This finds
-    /// it, for `from`'s port `port`.
+    /// it, for `from`'s port `port_idx`.
     pub fn find(&self, node: NodeId, from: &Self, port: (PortRole, usize)) -> Option<Port> {
         let role = port.0.partner();
         (0..self.count(role)).find(|&i| from.fits(port, self, (role, i))).map(|index| Port { node, role, index })
@@ -452,7 +456,10 @@ impl<N: NodesEnum> Graph<N> {
     /// A node's window says which nodes read and command what it publishes: for each of its `ValOutCmdIn` ports, the
     /// labels of the nodes with a live edge to it.
     fn controlled_by(&self, id: NodeId) -> Vec<Vec<String>> {
-        let count = self.nodes.get(&id).map_or(0, |entry| entry.node.ports().iter().filter(|p| p.publishes()).count());
+        let count = self
+            .nodes
+            .get(&id)
+            .map_or(0, |entry| entry.node.val_cmd_ports().iter().filter(|p| p.role == PortRole::ValOutCmdIn).count());
         let labels = |index| {
             let port = Port { node: id, role: PortRole::ValOutCmdIn, index };
             let edges = self.edges.iter().filter(|e| e.target() == port && self.is_live(e));
@@ -490,14 +497,14 @@ impl<N: NodesEnum> Graph<N> {
         }
         Ok(Edge {
             dimension,
-            from: PortRef { node: from.node, port: from.index },
-            to: PortRef { node: to.node, port: to.index },
+            from: PortRef { node: from.node, port_idx: from.index },
+            to: PortRef { node: to.node, port_idx: to.index },
         })
     }
 
     /// The canvas connects `a` and `b` (in either order) with this, replacing anything already going into the
     /// `DataStreamIn`, or what the `ValInCmdOut` was connected to. (A `DataStreamIn` has one source, but a
-    /// `ValOutCmdIn` can have many nodes reading it: one commanding it, say, and others only reading. A `ValInCmdOut`
+    /// `ValOutCmdIn` can have many edges into it: one from a `ValInCmdOut`, say, and others from `ValIn`s. A `ValInCmdOut`
     /// reads just the one.)
     pub fn connect(&mut self, a: Port, b: Port) -> Result<Edge, ConnectError> {
         let edge = self.check(a, b)?;
@@ -594,11 +601,11 @@ impl<N: NodesEnum> Graph<N> {
         for id in self.topological_order() {
             let entry = &self.nodes[&id];
             let node = &entry.node;
-            let inputs = node.inputs();
+            let inputs = node.data_stream_inputs();
             let input_streams: Vec<Option<DataStream<N>>> = (0..inputs.len())
                 .map(|index| {
                     let edge = self.live_edge_into(Port { node: id, role: PortRole::DataStreamIn, index })?;
-                    let stream = resolved.get(&edge.from.node)?.outputs.get(edge.from.port)?.stream?;
+                    let stream = resolved.get(&edge.from.node)?.outputs.get(edge.from.port_idx)?.stream?;
                     (stream.kind() == inputs[index].kind).then_some(stream)
                 })
                 .collect();
@@ -626,10 +633,18 @@ impl<N: NodesEnum> Graph<N> {
     pub fn command_loops(&self) -> std::collections::HashSet<NodeId> {
         let mut next: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
         for edge in self.edges.iter().filter(|e| e.dimension == Dimension::Values && self.is_live(e)) {
-            let ports = |id: NodeId| self.nodes.get(&id).map(|n| n.node.ports()).unwrap_or_default();
+            let ports = |id: NodeId| self.nodes.get(&id).map(|n| n.node.val_cmd_ports()).unwrap_or_default();
             let (from, to) = (ports(edge.from.node), ports(edge.to.node));
-            let sends = from.iter().filter(|p| !p.publishes()).nth(edge.from.port).map_or(&[][..], |p| p.commands);
-            let accepts = to.iter().filter(|p| p.publishes()).nth(edge.to.port).map_or(&[][..], |p| p.commands);
+            let sends = from
+                .iter()
+                .filter(|p| p.role != PortRole::ValOutCmdIn)
+                .nth(edge.from.port_idx)
+                .map_or(&[][..], |p| p.commands);
+            let accepts = to
+                .iter()
+                .filter(|p| p.role == PortRole::ValOutCmdIn)
+                .nth(edge.to.port_idx)
+                .map_or(&[][..], |p| p.commands);
             if sends.iter().any(|kind| accepts.contains(kind)) {
                 next.entry(edge.from.node).or_default().push(edge.to.node);
             }
@@ -655,30 +670,30 @@ impl<N: NodesEnum> Graph<N> {
     /// node at the other end publishes there now, if the port's connected (by a live edge).
     pub fn val_ins(&self, id: NodeId) -> Vec<Option<PublishedValue<N>>> {
         let Some(entry) = self.nodes.get(&id) else { return Vec::new() };
-        let count = entry.node.ports().iter().filter(|p| !p.publishes()).count();
+        let count = entry.node.val_cmd_ports().iter().filter(|p| p.role != PortRole::ValOutCmdIn).count();
         (0..count)
-            .map(|port| {
-                let to = self.val_in_target(id, port)?;
+            .map(|port_idx| {
+                let to = self.val_in_target(id, port_idx)?;
                 let target = &self.nodes.get(&to.node)?.node;
-                let publishes = target.ports().iter().filter(|p| p.publishes()).count();
-                (to.port < publishes).then(|| target.val_out(to.port))
+                let val_outs = target.val_cmd_ports().iter().filter(|p| p.role == PortRole::ValOutCmdIn).count();
+                (to.port_idx < val_outs).then(|| target.val_out(to.port_idx))
             })
             .collect()
     }
 
-    /// Node `from`'s `ValInCmdOut` port `port` (by index among those and its `ValIn` ports) connects to at most one
+    /// Node `from`'s `ValInCmdOut` port `port_idx` (by index among those and its `ValIn` ports) connects to at most one
     /// `ValOutCmdIn`: this finds it, if the edge is live.
-    pub fn val_in_target(&self, from: NodeId, port: usize) -> Option<PortRef> {
-        self.live_edges_from(Port { node: from, role: PortRole::ValInCmdOut, index: port }).next().map(|e| e.to)
+    pub fn val_in_target(&self, from: NodeId, port_idx: usize) -> Option<PortRef> {
+        self.live_edges_from(Port { node: from, role: PortRole::ValInCmdOut, index: port_idx }).next().map(|e| e.to)
     }
 
     /// A command's delivered to a node, from where it came (see `CommandSource`): this finds them, for one sent to
     /// `address`, following the edge now. A command sent through a port that's no longer connected goes nowhere.
     pub fn command_target(&self, address: Address) -> Option<(NodeId, CommandSource)> {
         match address {
-            Address::Port { from, port } => {
-                let to = self.val_in_target(from, port)?;
-                Some((to.node, CommandSource::Port(to.port)))
+            Address::Port { from, port_idx } => {
+                let to = self.val_in_target(from, port_idx)?;
+                Some((to.node, CommandSource::Port(to.port_idx)))
             }
             Address::Itself(node) => self.nodes.contains_key(&node).then_some((node, CommandSource::Itself)),
         }
@@ -704,12 +719,15 @@ impl<N: NodesEnum> Graph<N> {
             log::info!("{} is disabled: {:?} not delivered", entry.label, command.kind());
             return false;
         }
-        if let CommandSource::Port(port) = from {
-            let ports = entry.node.ports();
-            let accepts =
-                ports.iter().filter(|p| p.publishes()).nth(port).is_some_and(|p| p.commands.contains(&command.kind()));
+        if let CommandSource::Port(port_idx) = from {
+            let ports = entry.node.val_cmd_ports();
+            let accepts = ports
+                .iter()
+                .filter(|p| p.role == PortRole::ValOutCmdIn)
+                .nth(port_idx)
+                .is_some_and(|p| p.commands.contains(&command.kind()));
             if !accepts {
-                log::warn!("{}'s port {port} doesn't accept {:?}: not delivered", entry.label, command.kind());
+                log::warn!("{}'s port_idx {port_idx} doesn't accept {:?}: not delivered", entry.label, command.kind());
                 return false;
             }
         }
@@ -788,23 +806,24 @@ impl<N: NodesEnum> Graph<N> {
             },
         };
         let result = f(&mut entry.node, context);
-        for (port, command) in sent {
+        for (port_idx, command) in sent {
             if let Some(commands) = commands {
-                commands.send(Address::Port { from: id, port }, command);
+                commands.send(Address::Port { from: id, port_idx }, command);
                 continue;
             }
-            match self.command_target(Address::Port { from: id, port }) {
+            match self.command_target(Address::Port { from: id, port_idx }) {
                 Some((to, from)) => {
                     self.command(to, from, command, None, None, running);
                 }
-                None => log::info!("Port {port} isn't connected: {:?} not sent", command.kind()),
+                None => log::info!("Port {port_idx} isn't connected: {:?} not sent", command.kind()),
             }
         }
         Some(result)
     }
 }
 
-/// A snapshot keeps, for each node with ports reading values, what each reads, if it's connected.
+/// A snapshot keeps, for each node with `ValInCmdOut` or `ValIn` ports, the value at the other end of each, if it's
+/// connected.
 pub type ValIns<N> = HashMap<NodeId, Vec<Option<PublishedValue<N>>>>;
 
 /// When Record's pressed (or a node asks), the app makes a recording: its base directory (see
@@ -906,7 +925,7 @@ impl<N: NodesEnum> Snapshot<N> {
     ) -> Self {
         let val_ins = graph
             .iter()
-            .filter(|(_, entry)| entry.node.ports().iter().any(|p| !p.publishes()))
+            .filter(|(_, entry)| entry.node.val_cmd_ports().iter().any(|p| p.role != PortRole::ValOutCmdIn))
             .map(|(id, _)| (id, graph.val_ins(id)))
             .collect();
         let plan = Arc::new(Plan::new(&graph, recording.is_some()));
@@ -1079,7 +1098,7 @@ mod tests {
             graph.add(create("Spike Detector"), [0.0, 0.0]),
             graph.add(create("Spike Detector"), [0.0, 0.0]),
         );
-        let address = Address::Port { from: viewer, port: 0 };
+        let address = Address::Port { from: viewer, port_idx: 0 };
         assert_eq!(graph.command_target(address), None, "not connected: nowhere");
         graph.connect(port(viewer, PortRole::ValInCmdOut, 0), port(first, PortRole::ValOutCmdIn, 0)).unwrap();
         assert_eq!(graph.command_target(address), Some((first, CommandSource::Port(0))));

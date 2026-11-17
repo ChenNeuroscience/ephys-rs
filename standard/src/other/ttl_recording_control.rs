@@ -10,7 +10,8 @@ use crate::standard::pool::Pool;
 use crate::standard::widgets::{named_settings_grid, require_input, setting};
 use crate::{Buffer, DataStream, Edges, Kind};
 use ephys_rs::engine::{
-    Category, Input, Node, NodeInfo, Output, PassContext, PassState, Prepare, PrepareContext, Prepared, UiContext,
+    Category, DataStreamInput, DataStreamOutput, Node, NodeInfo, PassContext, PassState, Prepare, PrepareContext,
+    Prepared, UiContext,
 };
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -72,11 +73,11 @@ impl Node<Edges> for TtlRecordingControl {
     type UiState = ();
     type GlobalSettings = ();
 
-    fn inputs(&self) -> Vec<Input<Edges>> {
-        vec![Input { name: "events", kind: Kind::Events }]
+    fn data_stream_inputs(&self) -> Vec<DataStreamInput<Edges>> {
+        vec![DataStreamInput { name: "events", kind: Kind::Events }]
     }
 
-    fn outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {
+    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<DataStreamOutput<Edges>> {
         Vec::new()
     }
 

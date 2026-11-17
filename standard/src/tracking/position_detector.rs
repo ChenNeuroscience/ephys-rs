@@ -13,8 +13,8 @@ use crate::standard::tracking::{Crop, Detection, Ruler, TimingLed};
 use crate::standard::widgets::{named_settings_grid, require_input, setting};
 use crate::{Buffer, Command, CommandKind, DataStream, Edges, Kind, PublishedValue, ValueKind};
 use ephys_rs::engine::{
-    Category, CommandContext, CommandSource, Input, Node, NodeInfo, Output, PassContext, Prepare, PrepareContext,
-    Prepared, UiContext, ValPort,
+    Category, CommandContext, CommandSource, DataStreamInput, DataStreamOutput, Node, NodeInfo, PassContext, Prepare,
+    PrepareContext, Prepared, UiContext, ValCmdPort,
 };
 use ephys_rs::gui::widgets::{Icon, small_icon_button};
 
@@ -59,11 +59,11 @@ impl Node<Edges> for PositionDetector {
     type UiState = ();
     type GlobalSettings = ();
 
-    fn inputs(&self) -> Vec<Input<Edges>> {
-        vec![Input { name: "video", kind: Kind::Video }]
+    fn data_stream_inputs(&self) -> Vec<DataStreamInput<Edges>> {
+        vec![DataStreamInput { name: "video", kind: Kind::Video }]
     }
 
-    fn outputs(&self, inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {
+    fn data_stream_outputs(&self, inputs: &[Option<DataStream>]) -> Vec<DataStreamOutput<Edges>> {
         let (positions, ttl) = match inputs[0] {
             Some(DataStream::Video(video)) => (
                 Some(DataStream::Positions(Positions {
@@ -77,8 +77,8 @@ impl Node<Edges> for PositionDetector {
             _ => (None, None),
         };
         vec![
-            Output { name: "positions", kind: Kind::Positions, stream: positions },
-            Output { name: "pos ttl", kind: Kind::Events, stream: ttl },
+            DataStreamOutput { name: "positions", kind: Kind::Positions, stream: positions },
+            DataStreamOutput { name: "pos ttl", kind: Kind::Events, stream: ttl },
         ]
     }
 
@@ -86,11 +86,11 @@ impl Node<Edges> for PositionDetector {
         require_input(inputs, "video")
     }
 
-    fn ports(&self) -> Vec<ValPort<Edges>> {
-        vec![ValPort::val_out_cmd_in("detection", ValueKind::Detection, &[CommandKind::SetDetection])]
+    fn val_cmd_ports(&self) -> Vec<ValCmdPort<Edges>> {
+        vec![ValCmdPort::val_out_cmd_in("detection", ValueKind::Detection, &[CommandKind::SetDetection])]
     }
 
-    fn val_out(&self, _port: usize) -> PublishedValue {
+    fn val_out(&self, _port_idx: usize) -> PublishedValue {
         PublishedValue::Detection(self.detection.clone())
     }
 
@@ -387,7 +387,7 @@ mod tests {
     #[test]
     fn says_what_it_outputs() {
         let video = crate::standard::tracking::Video { width: 640, height: 480, fps: 50.0 };
-        let outputs = PositionDetector::default().outputs(&[Some(DataStream::Video(video))]);
+        let outputs = PositionDetector::default().data_stream_outputs(&[Some(DataStream::Video(video))]);
         assert_eq!(outputs[1].name, "pos ttl");
         assert!(matches!(outputs[1].stream, Some(DataStream::Events(Events { lines: 1, .. }))), "a single line");
     }

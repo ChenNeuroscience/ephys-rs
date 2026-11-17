@@ -789,7 +789,7 @@ impl<N: NodesEnum> Scheduled<N> {
     /// As worker `worker` first runs one of the snapshot's passes, its own states (`states`) change to the snapshot's:
     /// each the proto-state its node made for the worker, if it made one, and none for nodes no longer here. The old
     /// states are let go of in the background, with the snapshot.
-    fn change_worker_states(&self, worker: usize, states: &mut WorkerStates) {
+    fn change_worker_states(&self, worker_idx: usize, states: &mut WorkerStates) {
         let protos = self.worker_protos.lock().unwrap();
         let mut leftovers = Vec::new();
         states.retain(|id, state| {
@@ -800,7 +800,7 @@ impl<N: NodesEnum> Scheduled<N> {
             kept
         });
         for (id, node_protos) in protos.iter() {
-            let Some(proto) = node_protos.lock().unwrap().get_mut(worker).and_then(Option::take) else { continue };
+            let Some(proto) = node_protos.lock().unwrap().get_mut(worker_idx).and_then(Option::take) else { continue };
             if let Some(old) = states.insert(*id, proto) {
                 leftovers.push(old);
             }
@@ -1358,9 +1358,11 @@ pub mod tests {
         board
     }
 
-    fn link(graph: &mut Graph<Nodes>, from: NodeId, output: usize, to: NodeId, input: usize) {
+    fn link(graph: &mut Graph<Nodes>, from: NodeId, output_idx: usize, to: NodeId, input_idx: usize) {
         let port = |node, role, index| Port { node, role, index };
-        graph.connect(port(from, PortRole::DataStreamOut, output), port(to, PortRole::DataStreamIn, input)).unwrap();
+        graph
+            .connect(port(from, PortRole::DataStreamOut, output_idx), port(to, PortRole::DataStreamIn, input_idx))
+            .unwrap();
     }
 
     #[test]

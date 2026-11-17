@@ -11,7 +11,8 @@ use crate::standard::ephys::{ChannelSelection, Continuous};
 use crate::standard::widgets::{inline_block, input_summary, power, require_input};
 use crate::{Buffer, Command, CommandKind, DataStream, Edges, Kind, PublishedValue, ValueKind};
 use ephys_rs::engine::{
-    Category, CommandContext, CommandSource, Input, Node, NodeInfo, Output, PassContext, UiContext, ValPort,
+    Category, CommandContext, CommandSource, DataStreamInput, DataStreamOutput, Node, NodeInfo, PassContext, UiContext,
+    ValCmdPort,
 };
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -65,11 +66,11 @@ impl Node<Edges> for ChannelSelector {
     type UiState = ();
     type GlobalSettings = ();
 
-    fn inputs(&self) -> Vec<Input<Edges>> {
-        vec![Input { name: "continuous", kind: Kind::Continuous }]
+    fn data_stream_inputs(&self) -> Vec<DataStreamInput<Edges>> {
+        vec![DataStreamInput { name: "continuous", kind: Kind::Continuous }]
     }
 
-    fn outputs(&self, inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {
+    fn data_stream_outputs(&self, inputs: &[Option<DataStream>]) -> Vec<DataStreamOutput<Edges>> {
         let stream = match inputs[0] {
             Some(DataStream::Continuous(c)) => {
                 let channels = self.passed(c.channels).len() as u32;
@@ -77,7 +78,7 @@ impl Node<Edges> for ChannelSelector {
             }
             _ => None,
         };
-        vec![Output { name: "selected", kind: Kind::Continuous, stream }]
+        vec![DataStreamOutput { name: "selected", kind: Kind::Continuous, stream }]
     }
 
     fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
@@ -105,11 +106,11 @@ impl Node<Edges> for ChannelSelector {
         }
     }
 
-    fn ports(&self) -> Vec<ValPort<Edges>> {
-        vec![ValPort::val_out_cmd_in("selection", ValueKind::ChannelSelection, &[CommandKind::SetChannelSelection])]
+    fn val_cmd_ports(&self) -> Vec<ValCmdPort<Edges>> {
+        vec![ValCmdPort::val_out_cmd_in("selection", ValueKind::ChannelSelection, &[CommandKind::SetChannelSelection])]
     }
 
-    fn val_out(&self, _port: usize) -> PublishedValue {
+    fn val_out(&self, _port_idx: usize) -> PublishedValue {
         ChannelSelection { apply: self.apply, channels: self.channels.clone() }.into()
     }
 
@@ -155,7 +156,8 @@ mod tests {
         let stream = Continuous { channels: 4, sample_rate: 1000.0 };
         let mut selector = ChannelSelector { apply: false, channels: "2, 4".into() };
         let run = |selector: &ChannelSelector| {
-            let Some(DataStream::Continuous(out)) = selector.outputs(&[Some(DataStream::Continuous(stream))])[0].stream
+            let Some(DataStream::Continuous(out)) =
+                selector.data_stream_outputs(&[Some(DataStream::Continuous(stream))])[0].stream
             else {
                 unreachable!()
             };
@@ -210,7 +212,7 @@ mod tests {
             let mut added = Vec::new();
             for &node_type in <crate::NodeType as ephys_rs::engine::NodeTypeEnum>::ALL {
                 let node = Nodes::create(node_type);
-                let inputs: Vec<_> = (node.inputs().iter().enumerate())
+                let inputs: Vec<_> = (node.data_stream_inputs().iter().enumerate())
                     .filter_map(|(input, i)| from.iter().find(|(kind, _)| *kind == i.kind).map(|f| (input, f.1)))
                     .collect();
                 if !inputs.is_empty() {

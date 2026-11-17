@@ -57,14 +57,14 @@ pub struct Shortcut {
 
 /// Data reaches a node through its inputs, each of which an edge can connect to another node's output. This describes
 /// one input: its name, and the kind of data stream the input takes.
-pub struct Input<E: Edges> {
+pub struct DataStreamInput<E: Edges> {
     pub name: &'static str,
     pub kind: Kind<E::DataStream>,
 }
 
 /// A node sends data on through its outputs. This describes one output: its name, the kind of data stream the output
 /// carries, and the stream itself, once that's known.
-pub struct Output<E: Edges> {
+pub struct DataStreamOutput<E: Edges> {
     pub name: &'static str,
     pub kind: Kind<E::DataStream>,
     /// The graph can't always know an output's stream (while the node's input isn't connected, say), and then this is
@@ -74,13 +74,13 @@ pub struct Output<E: Edges> {
 
 /// Nodes share values through value edges. At one end, a `ValOutCmdIn` port: the node publishes a value there (usually
 /// a copy of one of its settings: see `Node::val_out`), and takes commands through the edges into it. At the other, a
-/// `ValInCmdOut` port: the node reads the value there, and sends the node publishing it commands (usually the one that
+/// `ValInCmdOut` port: the node reads the value there, and sends commands to the node at the `ValOutCmdIn` (usually the one that
 /// sets the value, `SetGains`, say; sometimes others, such as auto detect's `Detect`). A `ValIn` port is val-only: the
 /// node only reads the value (a writer recording the gains). The GUI calls those read-only. This describes one of a
 /// node's value ports.
-pub struct ValPort<E: Edges> {
+pub struct ValCmdPort<E: Edges> {
     pub name: &'static str,
-    /// `ValOutCmdIn`, `ValInCmdOut` or `ValIn`. (Data ports are declared by `Node::inputs` and `Node::outputs`.)
+    /// `ValOutCmdIn`, `ValInCmdOut` or `ValIn`. (Data ports are declared by `Node::data_stream_inputs` and `Node::data_stream_outputs`.)
     pub role: PortRole,
     pub value_kind: Kind<E::PublishedValue>,
     /// The commands a `ValOutCmdIn` port accepts, or a `ValInCmdOut` port sends. None for `ValIn`.
@@ -90,38 +90,33 @@ pub struct ValPort<E: Edges> {
     pub flipped: bool,
 }
 
-impl<E: Edges> ValPort<E> {
-    /// A port where the node publishes a value of kind `value_kind`, accepting `commands`.
+impl<E: Edges> ValCmdPort<E> {
+    /// A `ValOutCmdIn` port, with a value of kind `value_kind`, accepting `commands`.
     pub fn val_out_cmd_in(
         name: &'static str,
         value_kind: Kind<E::PublishedValue>,
         commands: &'static [CommandKind<E>],
     ) -> Self {
-        ValPort { name, role: PortRole::ValOutCmdIn, value_kind, commands, flipped: false }
+        ValCmdPort { name, role: PortRole::ValOutCmdIn, value_kind, commands, flipped: false }
     }
 
-    /// A port where the node reads a value of kind `value_kind`, sending `commands`.
+    /// A `ValInCmdOut` port, reading a value of kind `value_kind`, sending `commands`.
     pub fn val_in_cmd_out(
         name: &'static str,
         value_kind: Kind<E::PublishedValue>,
         commands: &'static [CommandKind<E>],
     ) -> Self {
-        ValPort { name, role: PortRole::ValInCmdOut, value_kind, commands, flipped: false }
+        ValCmdPort { name, role: PortRole::ValInCmdOut, value_kind, commands, flipped: false }
     }
 
-    /// A val-only port, where the node only reads a value of kind `value_kind`.
+    /// A `ValIn` port (val-only), reading a value of kind `value_kind`.
     pub fn val_in(name: &'static str, value_kind: Kind<E::PublishedValue>) -> Self {
-        ValPort { name, role: PortRole::ValIn, value_kind, commands: &[], flipped: false }
+        ValCmdPort { name, role: PortRole::ValIn, value_kind, commands: &[], flipped: false }
     }
 
     /// The same port, drawn on the other side (see `flipped`).
     pub fn flipped(self) -> Self {
-        ValPort { flipped: true, ..self }
-    }
-
-    /// The port publishes a value, where the others read one.
-    pub fn publishes(&self) -> bool {
-        self.role == PortRole::ValOutCmdIn
+        ValCmdPort { flipped: true, ..self }
     }
 }
 
@@ -245,14 +240,14 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     /// `NodeEntry::basic`), this decides. By convention, nodes with a view are listed, but each node type decides.
     const SHOW_IN_BASIC_DEFAULT: bool = false;
 
-    /// A node's inputs (see `Input`) can depend on its settings. By default, a node has none.
-    fn inputs(&self) -> Vec<Input<E>> {
+    /// A node's inputs (see `DataStreamInput`) can depend on its settings. By default, a node has none.
+    fn data_stream_inputs(&self) -> Vec<DataStreamInput<E>> {
         Vec::new()
     }
 
-    /// A node's outputs (see `Output`) can depend on its settings and on what's connected to its inputs. `inputs` has
-    /// an entry for each of `self.inputs()`: the data stream connected to that input, if any.
-    fn outputs(&self, inputs: &[Option<E::DataStream>]) -> Vec<Output<E>>;
+    /// A node's outputs (see `DataStreamOutput`) can depend on its settings and on what's connected to its inputs. `inputs` has
+    /// an entry for each of `self.data_stream_inputs()`: the data stream connected to that input, if any.
+    fn data_stream_outputs(&self, inputs: &[Option<E::DataStream>]) -> Vec<DataStreamOutput<E>>;
 
     /// The graph and the node's window show any problems with how the node's set up, which the node lists here, given
     /// what's connected to its inputs.
@@ -260,17 +255,17 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
         Vec::new()
     }
 
-    /// A node's value ports (see `ValPort`): where it publishes values, and where it reads others' values and commands
-    /// them. Those it publishes and those it reads are numbered separately, each in the order they're listed here.
-    fn ports(&self) -> Vec<ValPort<E>> {
+    /// A node's value ports (see `ValCmdPort`). Its `ValOutCmdIn` ports are numbered separately from its `ValInCmdOut`
+    /// and `ValIn` ports (which are numbered together), each in the order they're listed here.
+    fn val_cmd_ports(&self) -> Vec<ValCmdPort<E>> {
         Vec::new()
     }
 
-    /// Other nodes read what a node publishes at its `ValOutCmdIn` port `port` (by index among them) from this: usually
+    /// Other nodes read the value at a node's `ValOutCmdIn` port `port_idx` (by index among them) from this: usually
     /// a copy of one of its settings, as it is now. The app reads it each frame, for the nodes' windows, and each
     /// snapshot keeps it, for passes.
-    fn val_out(&self, _port: usize) -> E::PublishedValue {
-        unreachable!("a node publishing values says what they are (Node::val_out)")
+    fn val_out(&self, _port_idx: usize) -> E::PublishedValue {
+        unreachable!("a node with `ValOutCmdIn` ports says what their values are (Node::val_out)")
     }
 
     /// The app delivers each command sent to the node here, on the GUI's thread, running or not, in the order they were
@@ -384,13 +379,13 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     }
 
     /// The dev tools show, briefly, what each of a node's `threads()` is up to. The node draws that here, for one
-    /// thread (by index).
-    fn thread_ui(&self, _thread: usize, _ui: &mut egui::Ui, _context: &ThreadContext) {}
+    /// thread (`thread_idx`).
+    fn thread_ui(&self, _thread_idx: usize, _ui: &mut egui::Ui, _context: &ThreadContext) {}
 
     /// Some of a node's `threads()` swap buffers with the passes, and the dev tools show those buffers between the
-    /// thread and the passes. For one thread (by index), the node says here where the buffers are, if the thread has
+    /// thread and the passes. For one thread (`thread_idx`), the node says here where the buffers are, if the thread has
     /// any.
-    fn thread_pool(&self, _thread: usize, _context: &ThreadContext) -> Option<PoolStatus> {
+    fn thread_pool(&self, _thread_idx: usize, _context: &ThreadContext) -> Option<PoolStatus> {
         None
     }
 }

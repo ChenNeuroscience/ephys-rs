@@ -15,8 +15,8 @@ use super::{Alarm, AlarmKind, AlarmState, AlarmStates, Alarms, Phase, Source};
 use crate::standard::widgets::require_input;
 use crate::{Buffer, Command, CommandKind, DataStream, Edges, Kind, PublishedValue, ValueKind};
 use ephys_rs::engine::{
-    Category, CommandContext, CommandSource, Input, Node, NodeInfo, Output, PassContext, PassState, Prepare,
-    PrepareContext, Prepared, UiContext, ValPort,
+    Category, CommandContext, CommandSource, DataStreamInput, DataStreamOutput, Node, NodeInfo, PassContext, PassState,
+    Prepare, PrepareContext, Prepared, UiContext, ValCmdPort,
 };
 
 /// How many bins a period's cut into. At the shortest period, that's a bin a pass.
@@ -268,29 +268,29 @@ impl Node<Edges> for AlarmProcessor {
         TreeShake { runs: given && outputs.contains(&true), needs }
     }
 
-    fn inputs(&self) -> Vec<Input<Edges>> {
+    fn data_stream_inputs(&self) -> Vec<DataStreamInput<Edges>> {
         vec![
-            Input { name: "spikes", kind: Kind::Spikes },
-            Input { name: "lfp", kind: Kind::Continuous },
-            Input { name: "positions", kind: Kind::Positions },
-            Input { name: "ttl", kind: Kind::Events },
+            DataStreamInput { name: "spikes", kind: Kind::Spikes },
+            DataStreamInput { name: "lfp", kind: Kind::Continuous },
+            DataStreamInput { name: "positions", kind: Kind::Positions },
+            DataStreamInput { name: "ttl", kind: Kind::Events },
         ]
     }
 
-    fn outputs(&self, inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {
+    fn data_stream_outputs(&self, inputs: &[Option<DataStream>]) -> Vec<DataStreamOutput<Edges>> {
         let stream = Some(DataStream::AlarmStates(streams(inputs)));
-        vec![Output { name: "alarms", kind: Kind::AlarmStates, stream }]
+        vec![DataStreamOutput { name: "alarms", kind: Kind::AlarmStates, stream }]
     }
 
     fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
         require_input(inputs, "something to watch")
     }
 
-    fn ports(&self) -> Vec<ValPort<Edges>> {
-        vec![ValPort::val_out_cmd_in("alarms", ValueKind::Alarms, &[CommandKind::SetAlarms])]
+    fn val_cmd_ports(&self) -> Vec<ValCmdPort<Edges>> {
+        vec![ValCmdPort::val_out_cmd_in("alarms", ValueKind::Alarms, &[CommandKind::SetAlarms])]
     }
 
-    fn val_out(&self, _port: usize) -> PublishedValue {
+    fn val_out(&self, _port_idx: usize) -> PublishedValue {
         PublishedValue::Alarms(self.alarms.clone())
     }
 
