@@ -1,15 +1,16 @@
 //! A node's window, and its work on the GUI's thread (see `Node::on_gui_tick`), is given a context (`UiContext`): the
-//! node's inputs, the settings its controls see, what its passes share, and the buttons every node has
-//! (`NodeToolbar`).
+//! node's inputs, the values its ports read, what its passes share, where it sends commands, and the buttons every node
+//! has (`NodeToolbar`). A node handling a command (see `Node::on_command`) is given a smaller one (`CommandContext`).
 
 use std::any::Any;
 use std::cell::{RefCell, RefMut};
+use std::sync::Arc;
 
 use eframe::egui;
 
-use super::{Edges, NodeId, Shared, SharedByNode};
+use super::{Edges, NodeId, Shared, SharedByNode, ValueType};
+use crate::commands::{Address, CmdSender, Commands};
 use crate::theme::Colours;
-use crate::triggers::{AnyTrigger, TriggerKey};
 
 /// The app keeps each node's state on the GUI's side (its `Node::UiState`) in one of these, whatever its type.
 pub type UiStateCell = RefCell<Box<dyn Any>>;
@@ -18,10 +19,10 @@ pub type UiStateCell = RefCell<Box<dyn Any>>;
 pub struct UiContext<'a, E: Edges> {
     /// For each input, the data stream connected to it, if any.
     pub inputs: &'a [Option<E::DataStream>],
-    /// For each control, the current value of the setting it's connected to, if any. The window edits that setting by
-    /// changing the value.
-    pub controls: &'a mut [Option<E::PublishedValue>],
-    /// For each setting, the names of the nodes with a control connected to it, while the edge is live.
+    /// For each of the node's `ValInCmdOut` and `ValIn` ports, what the node at the other end publishes, if the port's
+    /// connected (see `val_in`).
+    pub val_ins: &'a [Option<E::PublishedValue>],
+    /// For each of the node's `ValOutCmdIn` ports, the names of the nodes reading it, while the edge is live.
     pub controlled_by: &'a [Vec<String>],
     /// The theme's colours to draw with, by role. A node can derive more of its own from these.
     pub theme: &'a Colours,
@@ -45,6 +46,11 @@ pub struct UiContext<'a, E: Edges> {
     /// deleting it), which a view puts where it likes: all together (`node_toolbar`), or one by one. There are none
     /// where there's no GUI to act on them (tests, say).
     pub tools: Option<&'a mut dyn NodeToolbar>,
+    /// The app's queue of commands, which senders kept for later send to (see `cmd_sender`), if there is one (there
+    /// isn't in tests, say).
+    pub commands: Option<&'a Arc<Commands>>,
+    /// The commands the window sends through its ports (see `cmd_out`), which the app delivers once it's drawn.
+    pub sent: &'a mut Vec<(usize, E::Command)>,
 }
 
 impl<'a, E: Edges> UiContext<'a, E> {
@@ -85,30 +91,52 @@ impl<'a, E: Edges> UiContext<'a, E> {
         }
     }
 
-    /// A window sends `trigger` (see `Node::triggers`) with this, to the setting that control `control` connects to, or
-    /// (with `None`) to the node's own. If it can't be sent (see `can_trigger`), nothing happens.
-    pub fn trigger(&mut self, control: Option<usize>, trigger: impl Into<E::Trigger>) {
-        if let Some(tools) = &mut self.tools {
-            tools.trigger(control, AnyTrigger::new(trigger.into()));
+    /// The window reads what its `ValInCmdOut` (or `ValIn`) port `port` sees with this, as the type the window expects,
+    /// if the port's connected (to a node publishing that type).
+    pub fn val_in<T: ValueType<E::PublishedValue> + 'a>(&self, port: usize) -> Option<&'a T> {
+        T::from_value(self.val_ins.get(port)?.as_ref()?)
+    }
+
+    /// The window sends `command` with this, through its `ValInCmdOut` port `port`, to the node at the other end. The
+    /// app delivers it once the window's drawn, so the window shows what changes the next frame.
+    pub fn cmd_out(&mut self, port: usize, command: E::Command) {
+        self.sent.push((port, command));
+    }
+
+    /// A window editing what its port `port` reads (a copy of it: `value`) sends it back, through the port, with this,
+    /// as the command `set` makes of it, if it's changed. (The node at the other end sets the value it's a copy of.)
+    pub fn cmd_out_if_changed<T>(&mut self, port: usize, value: T, set: impl FnOnce(T) -> E::Command)
+    where
+        T: ValueType<E::PublishedValue> + PartialEq + 'a,
+    {
+        if self.val_in::<T>(port).is_some_and(|read| *read != value) {
+            self.cmd_out(port, set(value));
         }
     }
 
-    /// A trigger of kind `kind` can only be sent to a setting that takes it (for a control, the one it's connected to).
-    /// This says whether there's one.
-    pub fn can_trigger(&self, control: Option<usize>, kind: super::TriggerKind<E>) -> bool {
-        self.tools.as_ref().is_some_and(|t| t.can_trigger(control, kind.into()))
+    /// A node keeps one of these to command, later, from any thread, the node its `ValInCmdOut` port `port` connects to
+    /// then (see `CmdSender`). There's none if the port isn't connected now, or there's no queue (in tests).
+    pub fn cmd_sender(&self, port: usize) -> Option<CmdSender<E::Command>> {
+        self.val_ins.get(port)?.as_ref()?;
+        Some(CmdSender::new(self.commands?.clone(), Address::Port { from: self.node, port }))
     }
 
-    /// A view can open the window of the node control `control` connects to (to change its settings there, say).
+    /// A node keeps one of these to command itself, later, from a thread of its own (see `CmdSender`). There's none if
+    /// there's no queue (in tests).
+    pub fn self_sender(&self) -> Option<CmdSender<E::Command>> {
+        Some(CmdSender::new(self.commands?.clone(), Address::Itself(self.node)))
+    }
+
+    /// A view can open the window of the node its port `control` connects to (to change its settings there, say).
     pub fn open_control_target(&mut self, control: usize) {
         if let Some(tools) = &mut self.tools {
             tools.open_control_target(control);
         }
     }
 
-    /// This says whether control `control` is connected.
-    pub fn control_connected(&self, control: usize) -> bool {
-        self.controls.get(control).is_some_and(Option::is_some)
+    /// This says whether the node's `ValInCmdOut` (or `ValIn`) port `port` is connected.
+    pub fn control_connected(&self, port: usize) -> bool {
+        self.val_ins.get(port).is_some_and(Option::is_some)
     }
 
     /// The app is in advanced mode or basic (see `crate::layout::Mode`). What a pane shows in each is up to the pane,
@@ -121,13 +149,8 @@ impl<'a, E: Edges> UiContext<'a, E> {
 
 /// The GUI does some things for every node's window: it has the buttons every node has, each on its own or all together
 /// (those that change the graph, its settings, enabling and deleting it, only in advanced mode, giving `None`
-/// otherwise), it sends triggers (see `Node::triggers`), and it opens other nodes' windows. A view uses these through
-/// its `UiContext`.
+/// otherwise), and it opens other nodes' windows. A view uses these through its `UiContext`.
 pub trait NodeToolbar {
-    /// See `UiContext::trigger`.
-    fn trigger(&mut self, control: Option<usize>, trigger: AnyTrigger);
-    /// See `UiContext::can_trigger`.
-    fn can_trigger(&self, control: Option<usize>, kind: TriggerKey) -> bool;
     /// See `UiContext::open_control_target`.
     fn open_control_target(&mut self, control: usize);
 
@@ -183,5 +206,58 @@ pub trait NodeToolbar {
             let width = ui.min_rect().width();
             ui.data_mut(|d| d.insert_temp(width_id, width));
         });
+    }
+}
+
+/// A node handling a command (see `Node::on_command`) gets this to work with: less than its window's `UiContext`, as the
+/// app delivers commands whether the node's window is shown or not.
+pub struct CommandContext<'a, E: Edges> {
+    /// The node, and its name.
+    pub node: NodeId,
+    pub label: &'a str,
+    /// For each of the node's `ValInCmdOut` and `ValIn` ports, what the node at the other end publishes, if it's
+    /// connected.
+    pub val_ins: &'a [Option<E::PublishedValue>],
+    /// The node's state on the GUI's side (its `Node::UiState`), where it keeps work it starts, if the app has it (it
+    /// always does for a command a node sent: see `ui_state`).
+    pub ui_state: Option<&'a UiStateCell>,
+    /// The app's queue of commands, for the node's own commands in turn (see `cmd_sender`), if there is one.
+    pub commands: Option<&'a Arc<Commands>>,
+    /// If the graph is running, this is set.
+    pub running: bool,
+}
+
+impl<'a, E: Edges> CommandContext<'a, E> {
+    pub fn new(
+        node: NodeId,
+        label: &'a str,
+        val_ins: &'a [Option<E::PublishedValue>],
+        ui_state: Option<&'a UiStateCell>,
+        commands: Option<&'a Arc<Commands>>,
+        running: bool,
+    ) -> Self {
+        CommandContext { node, label, val_ins, ui_state, commands, running }
+    }
+
+    /// The node finds its state on the GUI's side (its `Node::UiState`, which is `T`) here, if the app has it.
+    pub fn ui_state<T: 'static>(&self) -> Option<RefMut<'a, T>> {
+        let state = self.ui_state?.borrow_mut();
+        Some(RefMut::map(state, |state| state.downcast_mut().expect("the node's own Node::UiState")))
+    }
+
+    /// The node reads what its `ValInCmdOut` (or `ValIn`) port `port` sees with this (see `UiContext::val_in`).
+    pub fn val_in<T: ValueType<E::PublishedValue> + 'a>(&self, port: usize) -> Option<&'a T> {
+        T::from_value(self.val_ins.get(port)?.as_ref()?)
+    }
+
+    /// See `UiContext::cmd_sender`.
+    pub fn cmd_sender(&self, port: usize) -> Option<CmdSender<E::Command>> {
+        self.val_ins.get(port)?.as_ref()?;
+        Some(CmdSender::new(self.commands?.clone(), Address::Port { from: self.node, port }))
+    }
+
+    /// See `UiContext::self_sender`.
+    pub fn self_sender(&self) -> Option<CmdSender<E::Command>> {
+        Some(CmdSender::new(self.commands?.clone(), Address::Itself(self.node)))
     }
 }

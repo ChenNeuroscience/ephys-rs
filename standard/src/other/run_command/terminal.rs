@@ -7,9 +7,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use super::{Mode, Run, RunOnFiles, ScriptConfig, Then};
-use crate::Trigger;
-use ephys_rs::triggers::TriggerHandle;
+use super::{Files, Mode, Run, ScriptConfig, Then};
+use ephys_rs::commands::CmdSender;
 
 /// `text`, as a single word to a shell.
 #[cfg(any(unix, test))]
@@ -403,7 +402,7 @@ pub(super) struct JobState {
 
 /// What's sent on once a batch has run (see `Then`): the files it ran on, to what's connected after it, and when.
 pub(super) struct Chain {
-    pub(super) handle: TriggerHandle<Trigger>,
+    pub(super) sender: CmdSender<crate::Command>,
     pub(super) then: Then,
     pub(super) files: Vec<PathBuf>,
 }
@@ -420,7 +419,7 @@ impl Chain {
                 Then::Always => true,
             };
         if send {
-            self.handle.trigger(RunOnFiles(self.files));
+            self.sender.send(crate::Command::ProcessFiles(Files(self.files)));
         }
     }
 }

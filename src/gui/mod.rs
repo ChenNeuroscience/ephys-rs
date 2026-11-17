@@ -46,11 +46,13 @@ use serde::{Deserialize, Serialize};
 use crate::Components;
 use crate::annotation::{Annotation, AnnotationId, AnnotationTypeEnum, Annotations, AnnotationsEnum};
 use crate::base_directory::{BaseDirectories, BaseDirectoryType, Place};
+use crate::commands::{Commands, Sent};
 use crate::config_patching::{self, PatchSets, Versions};
-use crate::engine::{self, Graph, NodeId, NodeTypeEnum, NodesEnum, Port, PortRef, Resolved, Runner, Snapshot, Stats};
+use crate::engine::{
+    self, CommandsEnum, Graph, NodeId, NodeTypeEnum, NodesEnum, Port, PortRef, Resolved, Runner, Snapshot, Stats,
+};
 use crate::layout::{Layout, Mode, Pane};
 use crate::theme::{Colours, Theme};
-use crate::triggers::Triggered;
 use actions::Action;
 use canvas::{Canvas, HEADER, NODE_WIDTH, Selection, Tool};
 use create_menu::{Choice, CreateMenu};
@@ -166,8 +168,6 @@ pub enum Event {
     },
     /// A pane asks to open a node's window (see `Layout::toggle`), or close it: from the pane, if it's done from one.
     ToggleWindow(NodeId, Option<Pane>),
-    /// A pane sends a node a trigger (see `crate::triggers`).
-    Trigger(NodeId, crate::triggers::AnyTrigger),
     /// A pane asks to open a node's window (see `Layout::open`), or bring it to the front if it's open: from the pane,
     /// if it's done from one.
     OpenWindow(NodeId, Option<Pane>),
@@ -304,9 +304,8 @@ pub struct App<N: NodesEnum, A: AnnotationsEnum> {
     runner: Option<Runner<N>>,
     /// Once a run's stopped, what it shared (see `LastRun`).
     last_run: Option<LastRun<N>>,
-    /// Triggers on their way (see `crate::triggers`). They're the app's, not the run's, as they can come after
-    /// a run.
-    triggers: Arc<crate::triggers::Triggers>,
+    /// Commands on their way (see `crate::commands`). They're the app's, not the run's, as they can come after a run.
+    commands: Arc<Commands>,
     /// Once the recording's taken effect (its first pass), the acquisition clock then.
     recording_since: Option<f64>,
     dev_tools: dev_tools::DevTools,
@@ -391,7 +390,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             status: None,
             runner: None,
             last_run: None,
-            triggers: Arc::default(),
+            commands: Arc::default(),
             recording_since: None,
             dev_tools: dev_tools::DevTools::default(),
             workers: engine::default_workers(),
@@ -698,8 +697,8 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         self.last_run = None;
         self.started = Some(std::time::Instant::now());
         self.bake();
-        let triggers = self.triggers.clone();
-        self.runner = Some(Runner::start_with(&self.snapshot, self.workers, triggers));
+        let commands = self.commands.clone();
+        self.runner = Some(Runner::start_with(&self.snapshot, self.workers, commands));
         self.frame_times.run_started = Some(self.frame_times.now());
         self.frame_times.run_restarted();
         self.ran = Some(self.snapshot.clone());
@@ -718,10 +717,10 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         self.bake();
     }
 
-    /// The app clears the nodes' transient settings (see `EdgeType::clear_transient`) with this, as if they'd never
-    /// been set: not as an edit.
+    /// The app has the nodes drop what they were asked to do only for now (see `CommandsEnum::clear_transient_state`)
+    /// with this, as if they'd never been asked: not as an edit.
     fn clear_transient(&mut self) {
-        self.graph.clear_transient();
+        self.graph.clear_transient_state();
         self.history.clear_transient();
     }
 
@@ -896,10 +895,13 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         let mut copies = HashMap::new();
         for id in &self.selection.nodes {
             let Some(entry) = self.graph.get(*id) else { continue };
-            let (mut node, pos) = (entry.node.clone(), offset(entry.pos));
+            let (node, pos) = (entry.node.clone(), offset(entry.pos));
+            let copy = self.graph.add(node, pos);
             // A copy isn't asked to do what the original was.
-            crate::engine::clear_transient(&mut node);
-            copies.insert(*id, self.graph.add(node, pos));
+            if let Some(entry) = self.graph.get_mut(copy) {
+                crate::engine::clear_transient_state(copy, entry);
+            }
+            copies.insert(*id, copy);
         }
         for edge in self.graph.edges().to_vec() {
             if let (Some(from), Some(to)) = (copies.get(&edge.from.node), copies.get(&edge.to.node)) {
@@ -1033,23 +1035,21 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         self.set_done(ctx, format!("Pasted settings onto {count} node{plural}{left_out} (see the console)"));
     }
 
-    /// The app delivers the triggers that have come (see `crate::triggers`) with this, running or not. It
-    /// applies settings updates as edits, unless settings are locked, and starts or stops recording as a node asks,
-    /// while running.
-    fn deliver_triggers(&mut self, ctx: &egui::Context) {
-        let locked = self.locked();
-        let triggered = self.triggers.take();
-        if !triggered.is_empty() {
-            // For a node that's just been added.
-            self.ui_states.keep(&self.graph);
+    /// The app delivers the commands that have come (see `crate::commands`) with this, running or not, to each
+    /// node's `Node::on_command`, and starts or stops recording as a node asks, while running. (Changes a command makes
+    /// to how the graph processes are undone while recording, as any edit is: see `lock`.)
+    fn deliver_commands(&mut self, ctx: &egui::Context) {
+        let sent = self.commands.take();
+        if sent.is_empty() {
+            return;
         }
-        for (id, triggered) in triggered {
-            // What it can trigger in turn, through its controls.
-            let triggers = self.graph.control_triggers(id, &self.triggers);
-            let Some(entry) = self.graph.get_mut(id) else { continue };
-            match triggered {
-                Triggered::Recording(_) if entry.disabled => {}
-                Triggered::Recording(on) => {
+        // For a node that's just been added.
+        self.ui_states.keep(&self.graph);
+        let running = self.runner.is_some();
+        for sent in sent {
+            match sent {
+                Sent::Recording(id, on) => {
+                    let Some(entry) = self.graph.get(id).filter(|entry| !entry.disabled) else { continue };
                     let label = entry.label.clone();
                     if on == self.locked() || self.runner.is_none() {
                         continue;
@@ -1061,39 +1061,14 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                         false => self.stop_recording(),
                     }
                 }
-                Triggered::SettingsUpdate { setting, value } => {
-                    let Ok(value) = value.downcast::<<N::Edges as engine::Edges>::PublishedValue>() else { continue };
-                    let name = entry.node.settings().get(setting).map_or("a setting", |s| s.name);
-                    if locked {
-                        log::warn!("{}'s {name} weren't changed: settings are locked while recording", entry.label);
-                        continue;
-                    }
-                    entry.node.set_setting(setting, *value);
-                    log::info!("{}'s {name} set from its data", entry.label);
-                }
-                Triggered::Trigger(_) if entry.disabled => {}
-                Triggered::Trigger(trigger) => {
-                    let Some(trigger) = trigger.take::<<N::Edges as engine::Edges>::Trigger>() else { continue };
-                    // The same context as its window's (see `background`), resolved now: it's rare.
-                    let resolved = self.graph.resolve();
-                    let (Some(state), Some(ui_state)) = (resolved.get(&id), self.ui_states.get(&self.graph, id)) else {
+                Sent::Command(address, command) => {
+                    let Ok(command) = command.downcast::<<N::Edges as engine::Edges>::Command>() else { continue };
+                    let Some((to, from)) = self.graph.command_target(address) else {
+                        log::info!("{address:?} isn't connected: {:?} not delivered", command.kind());
                         continue;
                     };
-                    let shared = shared(&self.runner, &self.last_run);
-                    let (colours, base, running) =
-                        (self.colours(), self.base_directories.place(), self.runner.is_some());
-                    self.graph.edit(
-                        id,
-                        &state.input_streams,
-                        colours,
-                        shared.as_deref(),
-                        Some(ui_state),
-                        base.as_ref(),
-                        running,
-                        locked,
-                        None,
-                        |node, context| node.on_trigger(trigger, context, &triggers),
-                    );
+                    let ui_state = self.ui_states.get(&self.graph, to);
+                    self.graph.command(to, from, *command, ui_state, Some(&self.commands), running);
                 }
             }
         }
@@ -1532,6 +1507,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                             id,
                             events,
                             ticked,
+                            Some(&self.commands),
                         );
                     });
                 });
@@ -1555,7 +1531,6 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         match event {
             Event::OpenMenu { screen, scene, from } => self.menu = Some(CreateMenu::new(screen, scene, from)),
             Event::ToggleWindow(id, from) => self.layout.toggle(id, from),
-            Event::Trigger(id, trigger) => self.triggers.trigger(id, trigger),
             Event::OpenWindow(id, from) => self.layout.open(id, from),
             Event::FloatWindow(id) => self.layout.float(id),
             Event::Duplicate(id) => {
@@ -1749,6 +1724,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                 runner: self.runner.as_ref(),
                 shared: shared.as_deref(),
                 ui_states: &self.ui_states,
+                commands: &self.commands,
                 base_directory: base.as_ref(),
                 snapshot: &self.snapshot,
                 mode: self.layout.mode,
@@ -1804,8 +1780,8 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
     pub fn logic(&mut self, ctx: &egui::Context) {
         // Keep (and echo) what's been logged, so the log's queue doesn't fill.
         crate::console::drain();
-        self.triggers.wake(ctx);
-        self.deliver_triggers(ctx);
+        self.commands.wake(ctx);
+        self.deliver_commands(ctx);
         self.notice_decisions();
         // Drawing a frame calls on every node; while the window's hidden, nothing's drawn, so the app calls on them here.
         if !std::mem::replace(&mut self.ticked_since_logic, false) {
@@ -1815,9 +1791,10 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         self.upkeep(ctx);
     }
 
-    /// The app takes what's changed (in the GUI, by nodes or from triggers) into the history, unless it's locked, and
-    /// keeps the run up to date with it.
+    /// The app takes what's changed (in the GUI, by nodes or from commands, which it delivers first) into the history,
+    /// unless it's locked, and keeps the run up to date with it.
     fn upkeep(&mut self, ctx: &egui::Context) {
+        self.deliver_commands(ctx);
         self.lock(ctx);
         self.history.record(&self.graph, &self.annotations, ctx);
         self.bake_edits();
@@ -1825,8 +1802,8 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
     }
 
     /// Each frame, the app calls on each node it hasn't called on to draw its window (those not in `ticked`), with
-    /// nothing to draw in (see `Node::on_gui_tick`), each with its state on the GUI's side and its triggers, as its
-    /// window has (to trigger one thing once another's done, say).
+    /// nothing to draw in (see `Node::on_gui_tick`), each with its state on the GUI's side and where it sends commands,
+    /// as its window has (to set one thing off once another's done, say).
     fn tick_nodes(&mut self, ctx: &egui::Context, ticked: docking::Ticked) {
         self.ui_states.keep(&self.graph);
         let resolved = self.graph.resolve();
@@ -1843,7 +1820,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                 continue;
             };
             let inputs = &state.input_streams;
-            self.graph.edit(
+            self.graph.edit_sending(
                 id,
                 inputs,
                 colours,
@@ -1853,6 +1830,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                 running,
                 locked,
                 Some(&mut tools),
+                Some(&self.commands),
                 |node, context| node.on_gui_tick(None, context),
             );
         }
@@ -2083,18 +2061,18 @@ impl<N: NodesEnum, A: AnnotationsEnum> History<N, A> {
         !self.redo.is_empty()
     }
 
-    /// The history clears the current item's transient settings (see `EdgeType::clear_transient`) with this, as if
-    /// they'd never been set.
+    /// The history has the current item's nodes drop what they were asked to do only for now (see
+    /// `CommandsEnum::clear_transient_state`) with this, as if they'd never been asked.
     fn clear_transient(&mut self) {
         let mut graph = (*self.current.graph).clone();
-        graph.clear_transient();
+        graph.clear_transient_state();
         if graph != *self.current.graph {
             self.current.graph = Arc::new(graph);
         }
     }
 
-    /// Undo and redo restore the current item, without its transient settings (see `EdgeType::clear_transient`), so
-    /// bringing it back doesn't start anything again. The item's changed to match, so it isn't taken as an edit.
+    /// Undo and redo restore the current item, without what its nodes were asked to do only for now (see
+    /// `CommandsEnum::clear_transient_state`), so bringing it back doesn't start anything again. The item's changed to match, so it isn't taken as an edit.
     fn restored(&mut self) -> (Graph<N>, Annotations<A>) {
         self.clear_transient();
         ((*self.current.graph).clone(), (*self.current.annotations).clone())
@@ -2387,31 +2365,29 @@ mod tests {
     /// A recording's files reach what's connected to the writer with nothing running, unless it's disabled.
     #[cfg(unix)]
     #[test]
-    fn a_named_direct_trigger_reaches_its_node_with_nothing_running() {
+    fn files_sent_reach_their_node_with_nothing_running() {
+        use crate::commands::{Address, CmdSender};
         use crate::components::Nodes;
-        use crate::standard::other::run_command::RunOnFiles;
-        use crate::triggers::ControlTriggers;
+        use crate::standard::other::run_command::Files;
         let mut harness = harness();
         let node_type = NodeType::RunCommand;
         let id = harness.state_mut().graph.add(Nodes::create(node_type), [0.0, 0.0]);
-        let ran = std::env::temp_dir().join(format!("ephys-rs-direct-trigger-{}", std::process::id()));
+        let ran = std::env::temp_dir().join(format!("ephys-rs-files-sent-{}", std::process::id()));
         if let Some(Nodes::RunCommand(node)) = harness.state_mut().graph.get_mut(id).map(|e| &mut e.node) {
             node.settings.program = "/usr/bin/touch".into();
             node.settings.arguments = ran.display().to_string();
             node.settings.mode = crate::standard::other::run_command::Mode::Once;
         }
-        let triggers = harness.state().triggers.clone();
-        let kinds: &'static [crate::TriggerKind] = &[crate::TriggerKind::RunOnFiles];
-        let controls = ControlTriggers::<crate::Trigger>::new(triggers, vec![vec![(id, kinds)]]);
+        let sender = CmdSender::new(harness.state().commands.clone(), Address::Itself(id));
 
         harness.state_mut().graph.get_mut(id).unwrap().disabled = true;
-        controls.handle(0, crate::TriggerKind::RunOnFiles).unwrap().trigger(RunOnFiles(Vec::new()));
+        sender.send(crate::Command::ProcessFiles(Files(Vec::new())));
         harness.run_steps(1);
         std::thread::sleep(std::time::Duration::from_millis(100));
         assert!(!ran.exists(), "disabled, it's not for it");
 
         harness.state_mut().graph.get_mut(id).unwrap().disabled = false;
-        controls.handle(0, crate::TriggerKind::RunOnFiles).unwrap().trigger(RunOnFiles(Vec::new()));
+        sender.send(crate::Command::ProcessFiles(Files(Vec::new())));
         assert!(harness.state().runner.is_none());
         harness.run_steps(1);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -2422,40 +2398,35 @@ mod tests {
         std::fs::remove_file(ran).unwrap();
     }
 
-    /// A trigger doesn't need a run, so one sent as it stops isn't lost.
+    /// A command doesn't need a run, so one sent as it stops isn't lost.
     #[test]
-    fn a_settings_update_sent_just_as_the_run_stops_still_arrives() {
+    fn a_command_sent_just_as_the_run_stops_still_arrives() {
         let mut harness = harness();
         let ctx = harness.ctx.clone();
         harness.state_mut().perform(&ctx, Action::Play);
         harness.run_steps(2);
         let detector = node_named(harness.state(), "Spike Detector");
-        let thresholds = crate::PublishedValue::Thresholds(crate::standard::spikes::Thresholds {
-            values: vec![60.0],
-            ..Default::default()
-        });
-        let value = Box::new(thresholds.clone());
-        harness.state().triggers.trigger_settings_update(detector, 0, value);
+        let thresholds = crate::standard::spikes::Thresholds { values: vec![60.0], ..Default::default() };
+        let address = crate::commands::Address::Itself(detector);
+        harness.state().commands.send(address, crate::Command::SetThresholds(thresholds.clone()));
         harness.state_mut().perform(&ctx, Action::Play);
         assert!(harness.state().runner.is_none());
         harness.run_steps(2);
-        assert_eq!(harness.state().graph.get(detector).unwrap().node.settings()[0].value, thresholds);
+        assert_eq!(harness.state().graph.get(detector).unwrap().node.val_out(0), thresholds.into());
     }
 
-    /// While recording, a settings update isn't applied, like any other change to settings.
+    /// While recording, a command changing settings is undone, like any other change to settings.
     #[test]
-    fn a_settings_update_is_refused_while_recording() {
+    fn a_command_changing_settings_is_undone_while_recording() {
         let mut harness = harness();
         let detector = node_named(harness.state(), "Spike Detector");
-        let before = harness.state().graph.get(detector).unwrap().node.settings()[0].value.clone();
+        let before = harness.state().graph.get(detector).unwrap().node.val_out(0);
         harness.state_mut().set_recording(Some(Arc::new(engine::Recording::default())));
-        let thresholds = crate::PublishedValue::Thresholds(crate::standard::spikes::Thresholds {
-            values: vec![60.0],
-            ..Default::default()
-        });
-        harness.state().triggers.trigger_settings_update(detector, 0, Box::new(thresholds));
+        let thresholds = crate::standard::spikes::Thresholds { values: vec![60.0], ..Default::default() };
+        let address = crate::commands::Address::Itself(detector);
+        harness.state().commands.send(address, crate::Command::SetThresholds(thresholds));
         harness.run_steps(2);
-        assert_eq!(harness.state().graph.get(detector).unwrap().node.settings()[0].value, before);
+        assert_eq!(harness.state().graph.get(detector).unwrap().node.val_out(0), before);
     }
 
     /// Once stopped, what the run shared stays, until the graph changes shape, or it runs again.
@@ -2484,12 +2455,17 @@ mod tests {
         harness.state_mut().graph.get_mut(detector).unwrap().pos = [1234.0, 567.0];
         harness.run_steps(2);
         assert_eq!(found(&harness), run, "a node moved");
-        if let Some(entry) = harness.state_mut().graph.get_mut(detector) {
-            entry.node.set_setting(
-                0,
-                crate::standard::spikes::Thresholds { values: vec![60.0], ..Default::default() }.into(),
-            );
-        }
+        harness.state_mut().graph.command(
+            detector,
+            engine::CommandSource::Itself,
+            crate::Command::SetThresholds(crate::standard::spikes::Thresholds {
+                values: vec![60.0],
+                ..Default::default()
+            }),
+            None,
+            None,
+            false,
+        );
         harness.run_steps(2);
         assert_eq!(found(&harness), run, "a value changed");
 
@@ -2662,12 +2638,17 @@ mod tests {
         // Editing a setting carries the run on with the new snapshot.
         let first = harness.state().runner.as_ref().unwrap().graph().clone();
         let gain_free = node_named(harness.state(), "Spike Detector");
-        if let Some(entry) = harness.state_mut().graph.get_mut(gain_free) {
-            entry.node.set_setting(
-                0,
-                crate::standard::spikes::Thresholds { values: vec![60.0], ..Default::default() }.into(),
-            );
-        }
+        harness.state_mut().graph.command(
+            gain_free,
+            engine::CommandSource::Itself,
+            crate::Command::SetThresholds(crate::standard::spikes::Thresholds {
+                values: vec![60.0],
+                ..Default::default()
+            }),
+            None,
+            None,
+            false,
+        );
         // The app hands the run the new snapshot once the one before's prepared, which can take a while on a slow machine.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let carried_on =
@@ -3126,12 +3107,17 @@ mod tests {
         let copied = {
             let app = harness.state_mut();
             let before = app.graph.get(detector).unwrap().node.clone();
-            if let Some(entry) = app.graph.get_mut(detector) {
-                entry.node.set_setting(
-                    0,
-                    crate::standard::spikes::Thresholds { values: vec![77.0], ..Default::default() }.into(),
-                );
-            }
+            app.graph.command(
+                detector,
+                engine::CommandSource::Itself,
+                crate::Command::SetThresholds(crate::standard::spikes::Thresholds {
+                    values: vec![77.0],
+                    ..Default::default()
+                }),
+                None,
+                None,
+                false,
+            );
             let copied = paste_settings::copy(&app.graph, &[detector], &app.config_patches);
             app.graph.get_mut(detector).unwrap().node = before;
             copied
@@ -3660,7 +3646,7 @@ mod tests {
 
     /// When auto detect was started for node `node`'s setting (its gains, or thresholds), if it's going.
     fn auto_detect_started(app: &TestApp, node: NodeId) -> Option<std::time::Instant> {
-        match &app.graph.get(node)?.node.settings().first()?.value {
+        match &app.graph.get(node)?.node.val_out(0) {
             crate::PublishedValue::Gains(gains) => gains.detect.started,
             crate::PublishedValue::Thresholds(thresholds) => thresholds.detect.started,
             _ => None,
@@ -3670,7 +3656,7 @@ mod tests {
     /// How far along node `node`'s auto detect is, as its window sees it, while it's going.
     fn auto_detect_progress(app: &TestApp, node: NodeId) -> Option<f32> {
         let started = auto_detect_started(app, node)?;
-        let seconds = match &app.graph.get(node)?.node.settings().first()?.value {
+        let seconds = match &app.graph.get(node)?.node.val_out(0) {
             crate::PublishedValue::Gains(gains) => gains.detect.seconds,
             crate::PublishedValue::Thresholds(thresholds) => thresholds.detect.seconds,
             _ => return None,
@@ -3744,16 +3730,12 @@ mod tests {
         harness.get_by_label("Stop").click();
         harness.run_steps(2);
         assert_eq!(progress(&harness), None, "stopped");
-        // A settings update from the passes is applied, as an edit.
+        // Gains its passes send it are applied, as an edit.
         let gains = crate::standard::spikes::Gains { gains: vec![0.25], ..Default::default() };
-        harness.state().triggers.trigger_settings_update(
-            gain,
-            0,
-            Box::new(crate::PublishedValue::Gains(gains.clone())),
-        );
+        let address = crate::commands::Address::Itself(gain);
+        harness.state().commands.send(address, crate::Command::SetGains(gains.clone()));
         harness.run_steps(2);
-        let settings = harness.state().graph.get(gain).unwrap().node.settings();
-        assert_eq!(settings[0].value, crate::PublishedValue::Gains(gains), "applied");
+        assert_eq!(harness.state().graph.get(gain).unwrap().node.val_out(0), gains.into(), "applied");
         harness.state_mut().perform(&ctx, Action::Play);
     }
 
@@ -3924,7 +3906,7 @@ mod tests {
     }
 
     /// Undoing an auto detect's result brings the old gains back without detecting them again, and redoing its start
-    /// doesn't start it again either: transient settings never come back.
+    /// doesn't start it again either: what a node's asked to do only for now never comes back.
     #[test]
     fn undo_and_redo_never_start_auto_detect_again() {
         let mut graph = Graph::<Nodes>::default();

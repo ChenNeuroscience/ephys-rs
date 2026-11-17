@@ -8,8 +8,8 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use super::{
-    BufferUsage, Control, Edges, Input, NodeInfo, NodeThread, Output, PassContext, PoolStatus, Prepare, PrepareContext,
-    SettingPort, Shared, ThreadContext, TreeShake, UiContext,
+    BufferUsage, CommandContext, CommandSource, Edges, Input, NodeInfo, NodeThread, Output, PassContext, PoolStatus,
+    Prepare, PrepareContext, Shared, ThreadContext, TreeShake, UiContext, ValPort,
 };
 
 /// The app sometimes needs a node's type without the node: what the add-node menu offers, say. `nodes_enum!` makes a
@@ -54,22 +54,19 @@ pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + S
     fn inputs(&self) -> Vec<Input<Self::Edges>>;
     fn outputs(&self, inputs: &[Option<<Self::Edges as Edges>::DataStream>]) -> Vec<Output<Self::Edges>>;
     fn warnings(&self, inputs: &[Option<<Self::Edges as Edges>::DataStream>]) -> Vec<String>;
-    fn settings(&self) -> Vec<SettingPort<Self::Edges>>;
-    fn set_setting(&mut self, index: usize, value: <Self::Edges as Edges>::PublishedValue);
-    fn controls(&self) -> Vec<Control<Self::Edges>>;
+    fn ports(&self) -> Vec<ValPort<Self::Edges>>;
+    fn val_out(&self, port: usize) -> <Self::Edges as Edges>::PublishedValue;
+    fn on_command(
+        &mut self,
+        from: CommandSource,
+        command: <Self::Edges as Edges>::Command,
+        context: &mut CommandContext<Self::Edges>,
+    );
     fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Self::Edges>);
     /// The app keeps the node's `UiState`, starting from this.
     fn new_ui_state(&self) -> Box<dyn Any>;
     fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool], recording: bool) -> TreeShake;
     fn evaluate_buffer_usage(&self, inputs: usize, outputs: usize) -> BufferUsage;
-    fn triggers(&self, setting: usize) -> &'static [super::TriggerKind<Self::Edges>];
-    fn sends(&self, control: usize) -> &'static [super::TriggerKind<Self::Edges>];
-    fn on_trigger(
-        &mut self,
-        trigger: <Self::Edges as Edges>::Trigger,
-        context: &mut UiContext<Self::Edges>,
-        triggers: &crate::triggers::ControlTriggers<<Self::Edges as Edges>::Trigger>,
-    );
     /// A node with state (other than `()`) carries it from one pass to the next, and passes wait for each other there.
     /// This says whether the node has state.
     fn has_state(&self) -> bool;
@@ -234,16 +231,21 @@ macro_rules! nodes_enum {
                 match self { $($name::$variant(n) => $crate::engine::Node::warnings(n, inputs)),+ }
             }
 
-            fn settings(&self) -> Vec<$crate::engine::SettingPort<$edges>> {
-                match self { $($name::$variant(n) => $crate::engine::Node::settings(n)),+ }
+            fn ports(&self) -> Vec<$crate::engine::ValPort<$edges>> {
+                match self { $($name::$variant(n) => $crate::engine::Node::ports(n)),+ }
             }
 
-            fn set_setting(&mut self, index: usize, value: <$edges as $crate::engine::Edges>::PublishedValue) {
-                match self { $($name::$variant(n) => $crate::engine::Node::set_setting(n, index, value)),+ }
+            fn val_out(&self, port: usize) -> <$edges as $crate::engine::Edges>::PublishedValue {
+                match self { $($name::$variant(n) => $crate::engine::Node::val_out(n, port)),+ }
             }
 
-            fn controls(&self) -> Vec<$crate::engine::Control<$edges>> {
-                match self { $($name::$variant(n) => $crate::engine::Node::controls(n)),+ }
+            fn on_command(
+                &mut self,
+                from: $crate::engine::CommandSource,
+                command: <$edges as $crate::engine::Edges>::Command,
+                context: &mut $crate::engine::CommandContext<$edges>,
+            ) {
+                match self { $($name::$variant(n) => $crate::engine::Node::on_command(n, from, command, context)),+ }
             }
 
             fn on_gui_tick(
@@ -271,26 +273,6 @@ macro_rules! nodes_enum {
             fn evaluate_buffer_usage(&self, inputs: usize, outputs: usize) -> $crate::engine::BufferUsage {
                 match self {
                     $($name::$variant(n) => $crate::engine::Node::evaluate_buffer_usage(n, inputs, outputs)),+
-                }
-            }
-
-            fn triggers(&self, setting: usize) -> &'static [$crate::engine::TriggerKind<$edges>] {
-                match self { $($name::$variant(n) => $crate::engine::Node::triggers(n, setting)),+ }
-            }
-
-            fn sends(&self, control: usize) -> &'static [$crate::engine::TriggerKind<$edges>] {
-                match self { $($name::$variant(n) => $crate::engine::Node::sends(n, control)),+ }
-            }
-
-
-            fn on_trigger(
-                &mut self,
-                trigger: <$edges as $crate::engine::Edges>::Trigger,
-                context: &mut $crate::engine::UiContext<$edges>,
-                triggers: &$crate::triggers::ControlTriggers<<$edges as $crate::engine::Edges>::Trigger>,
-            ) {
-                match self {
-                    $($name::$variant(n) => $crate::engine::Node::on_trigger(n, trigger, context, triggers)),+
                 }
             }
 

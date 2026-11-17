@@ -48,14 +48,14 @@ use crate::standard::pool::Pool;
 use crate::standard::spikes::{Gains, RECORDED_FULL_SCALE_UV, Spikes, trimmed};
 use crate::standard::tracking::{Crop, Detection, Positions};
 use crate::standard::widgets::{require_input, setting, settings_grid};
-use crate::{Buffer, DataStream, Edges, Kind, PublishedValue, ValueKind};
+use crate::{Buffer, CommandKind, DataStream, Edges, Kind, PublishedValue, ValueKind};
 use ephys_rs::engine::{
-    Category, Control, EdgeTypesEnum, Flow, Input, Node, NodeInfo, NodeThread, Output, PASS_DURATION, PassContext,
-    PoolStatus, ThreadContext, UiContext,
+    Category, EdgeTypesEnum, Flow, Input, Node, NodeInfo, NodeThread, Output, PASS_DURATION, PassContext, PoolStatus,
+    ThreadContext, UiContext, ValPort,
 };
 
 /// Ticks a second, for timestamps.
-/// Its control for what runs after a recording.
+/// Its port sending what it recorded to what's to process it, once it's finished (see `after_recording`).
 const AFTER_RECORDING: usize = 4;
 
 const TIMEBASE: f64 = 96000.0;
@@ -191,19 +191,16 @@ impl Node<Edges> for WriteLtx {
         Vec::new()
     }
 
-    fn controls(&self) -> Vec<Control<Edges>> {
+    /// The settings it records with the data, which it only reads; and, on the right, as what it sets off comes after
+    /// it, where it sends what it's recorded, once it's finished (see `after_recording`).
+    fn ports(&self) -> Vec<ValPort<Edges>> {
         vec![
-            Control { name: "detection", kind: ValueKind::Detection, read_only: true, on_right: false },
-            Control { name: "gains", kind: ValueKind::Gains, read_only: true, on_right: false },
-            Control { name: "eeg selection", kind: ValueKind::ChannelSelection, read_only: true, on_right: false },
-            Control { name: "eeg gains", kind: ValueKind::Gains, read_only: true, on_right: false },
-            Control { name: "after recording", kind: ValueKind::Script, read_only: true, on_right: true },
+            ValPort::val_in("detection", ValueKind::Detection),
+            ValPort::val_in("gains", ValueKind::Gains),
+            ValPort::val_in("eeg selection", ValueKind::ChannelSelection),
+            ValPort::val_in("eeg gains", ValueKind::Gains),
+            ValPort::val_in_cmd_out("after recording", ValueKind::FileInput, &[CommandKind::ProcessFiles]).flipped(),
         ]
-    }
-
-    /// What it recorded, once it's finished (see `after_recording`).
-    fn sends(&self, control: usize) -> &'static [crate::TriggerKind] {
-        if control == AFTER_RECORDING { &[crate::TriggerKind::RunOnFiles] } else { &[] }
     }
 
     fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
@@ -258,9 +255,9 @@ impl Node<Edges> for WriteLtx {
         let writing = context.recording.map(|recording| {
             let date = recording.start_requested_date();
             let base = recording_path(recording.base_directory(), date);
-            let (streams, recorded) = (Streams::of(context.inputs), Recorded::of(context.controls, self.scales));
+            let (streams, recorded) = (Streams::of(context.inputs), Recorded::of(context.val_ins, self.scales));
             let files = LtxFiles::open(&base, *date, streams, recorded);
-            Chunk::writing(&base, streams, files, after_recording(context.triggers, AFTER_RECORDING))
+            Chunk::writing(&base, streams, files, after_recording(context.cmd_sender(AFTER_RECORDING)))
         });
         Prepared::shared(Recorder { writing }).into()
     }
@@ -314,13 +311,13 @@ impl Node<Edges> for WriteLtx {
             } else {
                 ui.label(format!("Records {}.", recording.join(", ")));
             }
-            if context.controls[0].is_none() && context.inputs[2].is_some() {
+            if context.val_ins[0].is_none() && context.inputs[2].is_some() {
                 ui.weak("Connect the detection to record the crop and calibration with the positions.");
             }
-            if context.controls[1].is_none() && context.inputs[0].is_some() {
+            if context.val_ins[1].is_none() && context.inputs[0].is_some() {
                 ui.weak("Connect the Spike Gain's gains, to record them with the spikes.");
             }
-            if (context.controls[2].is_none() || context.controls[3].is_none()) && context.inputs[1].is_some() {
+            if (context.val_ins[2].is_none() || context.val_ins[3].is_none()) && context.inputs[1].is_some() {
                 ui.weak("Connect the Channel Selector's selection and the Continuous Gain's gains, to record them with the EEG.");
             }
             ui.separator();

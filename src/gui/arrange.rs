@@ -5,7 +5,7 @@
 //! Sources go in the first column, and writers in the last (viewers go just after what they view). Settings edges
 //! count too, though for less than data edges, the other way round (from the node whose setting it is to the one
 //! editing or reading it), as a viewer editing a detector's settings is usually after it anyway. But a settings edge
-//! to or from a node without data edges (Run Command, say, which a writer triggers) is all there is to place that node
+//! to or from a node without data edges (Run Command, say, which a writer sends files to) is all there is to place that node
 //! by, so it counts just as a data edge would. Whether an edge is enabled doesn't matter: the layout's the same either
 //! way.
 
@@ -148,7 +148,7 @@ mod tests {
         assert!(d[1] + height(detector) <= l[1] || l[1] + height(lfp) <= d[1], "{d:?} {l:?}");
     }
 
-    /// Run Command has only a settings edge, from the writer that triggers it: it goes after the writer, not first as
+    /// Run Command has only a value edge, from the writer that sends it files: it goes after the writer, not first as
     /// if it were a source, and the same whether the edge is enabled or not.
     #[test]
     fn a_node_with_only_settings_edges_is_placed_by_them() {
@@ -173,7 +173,7 @@ mod tests {
         assert_eq!(arrange(&graph), placed, "disabled");
     }
 
-    /// In the example rig, Run Command goes beside the writer that triggers it, above the Alarm Viewer (which goes
+    /// In the example rig, Run Command goes beside the writer that sends it files, above the Alarm Viewer (which goes
     /// beside the Alarm Processor, below the writer), so the edges don't cross.
     #[test]
     fn a_node_placed_by_a_settings_edge_stays_in_line_with_what_leads_to_it() {

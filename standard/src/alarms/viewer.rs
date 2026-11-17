@@ -27,10 +27,10 @@ use crate::standard::plots;
 use crate::standard::pool::Pool;
 use crate::standard::widgets::{mark_mixed, open_settings_button, require_input};
 use crate::standard::widgets::{power, small_toggle};
-use crate::{Buffer, DataStream, Edges, Kind, PublishedValue, ValueKind};
+use crate::{Buffer, Command, CommandKind, DataStream, Edges, Kind, ValueKind};
 use ephys_rs::engine::{
-    Category, Control, Flow, Input, Node, NodeInfo, NodeThread, Output, PassContext, PassState, PoolStatus, Prepare,
-    PrepareContext, Prepared, Shared, UiContext,
+    Category, Flow, Input, Node, NodeInfo, NodeThread, Output, PassContext, PassState, PoolStatus, Prepare,
+    PrepareContext, Prepared, Shared, UiContext, ValPort,
 };
 use ephys_rs::gui::widgets::Icon;
 use ephys_rs::theme::Colours;
@@ -192,8 +192,8 @@ impl Node<Edges> for AlarmViewer {
         Vec::new()
     }
 
-    fn controls(&self) -> Vec<Control<Edges>> {
-        vec![Control { name: "alarms", kind: ValueKind::Alarms, read_only: false, on_right: false }]
+    fn ports(&self) -> Vec<ValPort<Edges>> {
+        vec![ValPort::val_in_cmd_out("alarms", ValueKind::Alarms, &[CommandKind::SetAlarms])]
     }
 
     fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
@@ -238,8 +238,8 @@ impl Node<Edges> for AlarmViewer {
     fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
         self.take_updates(context);
         let Some(ui) = ui else { return };
-        let (Some(DataStream::AlarmStates(stream)), Some(PublishedValue::Alarms(alarms))) =
-            (context.inputs[0], context.controls[ALARMS].as_ref())
+        let (Some(DataStream::AlarmStates(stream)), Some(alarms)) =
+            (context.inputs[0], context.val_in::<Alarms>(ALARMS))
         else {
             ui.horizontal(|ui| context.node_toolbar(ui));
             plots::unconnected(ui, context.theme, "Connect an Alarm Processor's alarms and its setting");
@@ -270,7 +270,7 @@ impl Node<Edges> for AlarmViewer {
                 ui.add_space(4.0);
             }
         });
-        context.controls[ALARMS] = Some(PublishedValue::Alarms(alarms));
+        context.cmd_out_if_changed(ALARMS, alarms, Command::SetAlarms);
     }
 }
 
@@ -281,11 +281,11 @@ impl AlarmViewer {
         let mut ui = context.ui_state::<AlarmsUi>();
         let AlarmsUi { shown, going_off, recording, overrides, tone } = &mut *ui;
         if !context.locked && (!overrides.ignored.is_empty() || !overrides.sounds.is_empty()) {
-            let alarms = match &mut context.controls[ALARMS] {
-                Some(PublishedValue::Alarms(alarms)) => Some(alarms),
-                _ => None,
-            };
-            overrides.save(alarms, &mut self.sounding);
+            let mut alarms = context.val_in::<Alarms>(ALARMS).cloned();
+            overrides.save(alarms.as_mut(), &mut self.sounding);
+            if let Some(alarms) = alarms {
+                context.cmd_out_if_changed(ALARMS, alarms, Command::SetAlarms);
+            }
         }
         let Some(sent) = context.shared::<SentStates>() else { return };
         // A pass's states, once they've all come.

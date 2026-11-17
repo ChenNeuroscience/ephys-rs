@@ -46,8 +46,8 @@ use arc_swap::{ArcSwap, ArcSwapOption};
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError};
 use crossbeam_utils::CachePadded;
 
+use crate::commands::Commands;
 use crate::console::{self, PassId};
-use crate::triggers::Triggers;
 
 use super::pass_context::*;
 use super::plan::*;
@@ -83,7 +83,7 @@ impl<N: NodesEnum> Plan<N> {
         for (step, times) in self.steps.iter().zip(&run.times) {
             let Some(node) = snapshot.graph.get(step.id).map(|e| &e.node) else { continue };
             let pass = PassId { node: Some(step.id), node_type: Some(node.info().name), ..pass };
-            let controls = snapshot.controls.get(&step.id).map_or(&[][..], Vec::as_slice);
+            let val_ins = snapshot.val_ins.get(&step.id).map_or(&[][..], Vec::as_slice);
             // Take the outputs out of the pool, so the rest of it can be read as inputs.
             let mut outputs: Vec<Buffer<N::Edges>> =
                 step.outputs.iter().map(|&b| workspace[b].take().expect("buffer in pool")).collect();
@@ -105,10 +105,10 @@ impl<N: NodesEnum> Plan<N> {
                     inputs: &inputs,
                     taken: &mut taken,
                     outputs: &mut outputs,
-                    controls,
+                    val_ins,
                     snapshot: &baked,
                     shared: run.shared.any(step.id).unwrap_or(&()),
-                    triggers: &run.triggers,
+                    commands: &run.commands,
                 };
                 let start = Instant::now();
                 // When the node's state is handed over, after waiting for it, if it has any.
@@ -186,13 +186,13 @@ impl<N: NodesEnum> Workspace<N> {
 }
 
 /// Running one snapshot, the workers share more than its graph: the nodes' state, what they share with the GUI, how
-/// long each step's taking (each handed on from the snapshot before, by node: see `Scheduled::new`), and where triggers
-/// triggers go.
+/// long each step's taking (each handed on from the snapshot before, by node: see `Scheduled::new`), and where commands
+/// go.
 struct RunSlots {
     /// The nodes' state, by the plan's state slot (`Step::state`).
     states: Vec<Arc<StateSlot>>,
     shared: Arc<SharedByNode>,
-    triggers: Arc<Triggers>,
+    commands: Arc<Commands>,
     /// How long each step's taking, by step.
     times: Vec<Arc<StepTimes>>,
 }
@@ -413,7 +413,7 @@ struct Record {
 }
 
 /// The runner, its workers and its dispatcher share some things through every snapshot: counts and recent passes for
-/// the stats, where triggers go, and what each worker's doing.
+/// the stats, where commands go, and what each worker's doing.
 #[derive(Default)]
 struct RunCommon {
     stop: AtomicBool,
@@ -423,8 +423,8 @@ struct RunCommon {
     dropped: AtomicU64,
     /// Workers report to the GUI here.
     reports: Reports,
-    /// The passes send triggers here: the app's.
-    triggers: Arc<Triggers>,
+    /// The passes send commands here: the app's.
+    commands: Arc<Commands>,
     /// The dev tools show what each worker is up to, from these.
     workers: Vec<WorkerSlot>,
     /// The dispatcher sends this pass next.
@@ -640,7 +640,7 @@ impl<N: NodesEnum> Scheduled<N> {
         let slots = RunSlots {
             states: (0..plan.state_inputs.len()).map(|_| Arc::new(StateSlot::empty())).collect(),
             shared: Arc::new(SharedByNode(shared)),
-            triggers: run.triggers.clone(),
+            commands: run.commands.clone(),
             times,
         };
         let recording_changed = match (before.and_then(|b| b.snapshot.recording.as_ref()), &snapshot.recording) {
@@ -680,7 +680,6 @@ impl<N: NodesEnum> Scheduled<N> {
                 self.fill(node, None);
                 continue;
             };
-            let triggers = snapshot.graph.control_triggers(node.id, &self.slots.triggers);
             let previous = node.before.as_ref().and_then(|before| {
                 Some(Previous {
                     node: &before.snapshot.graph.get(node.id)?.node,
@@ -691,9 +690,9 @@ impl<N: NodesEnum> Scheduled<N> {
             let context = PrepareContext {
                 node: node.id,
                 inputs: &snapshot.plan.step_inputs[node.step],
-                controls: snapshot.controls.get(&node.id).map_or(&[][..], Vec::as_slice),
+                val_ins: snapshot.val_ins.get(&node.id).map_or(&[][..], Vec::as_slice),
                 recording: snapshot.recording.as_deref(),
-                triggers: &triggers,
+                commands: Some(&self.slots.commands),
                 previous,
                 recording_changed: self.recording_changed,
                 workers,
@@ -958,15 +957,15 @@ impl<N: NodesEnum> Runner<N> {
         Self::start_with(snapshot, workers, Arc::default())
     }
 
-    /// The same as `start`, with the passes' triggers going to `triggers`.
-    pub fn start_with(snapshot: &Snapshot<N>, workers: usize, triggers: Arc<Triggers>) -> Self {
+    /// The same as `start`, with the passes' commands going to `commands`.
+    pub fn start_with(snapshot: &Snapshot<N>, workers: usize, commands: Arc<Commands>) -> Self {
         let workers = workers.max(1);
         assert!(snapshot.started.is_some(), "a run's snapshots say when it started");
         let shared = Arc::new(RunCommon {
             workers: (0..workers)
                 .map(|_| WorkerSlot { version: AtomicU64::new(NO_VERSION), ..Default::default() })
                 .collect(),
-            triggers,
+            commands,
             ..Default::default()
         });
         let (first, to_prepare) = Scheduled::new(Arc::new(snapshot.clone()), None, &shared);
@@ -1011,9 +1010,9 @@ impl<N: NodesEnum> Runner<N> {
         self.schedule.latest.load().snapshot.graph.clone()
     }
 
-    /// The passes send triggers here.
-    pub fn triggers(&self) -> &Triggers {
-        &self.shared.triggers
+    /// The passes send commands here.
+    pub fn commands(&self) -> &Commands {
+        &self.shared.commands
     }
 
     /// The GUI finds what the running nodes share with it here: the snapshot being run's, or, until one is, the one

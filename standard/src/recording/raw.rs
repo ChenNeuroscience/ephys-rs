@@ -30,13 +30,13 @@ use crate::standard::ephys::board::EPHYS_MICROVOLTS_PER_BIT;
 use crate::standard::ephys::{Continuous, ContinuousBuffer, Event, Events, EventsBuffer};
 use crate::standard::pool::Pool;
 use crate::standard::widgets::require_input;
-use crate::{Buffer, DataStream, Edges, Kind};
+use crate::{Buffer, CommandKind, DataStream, Edges, Kind, ValueKind};
 use ephys_rs::engine::{
-    Category, Control, DataStreamType, EdgeTypesEnum, Flow, Input, Node, NodeInfo, NodeThread, Output, PASS_DURATION,
-    PassContext, PoolStatus, ThreadContext, UiContext,
+    Category, DataStreamType, EdgeTypesEnum, Flow, Input, Node, NodeInfo, NodeThread, Output, PASS_DURATION,
+    PassContext, PoolStatus, ThreadContext, UiContext, ValPort,
 };
 
-/// Its control for what runs after a recording.
+/// Its port sending what it recorded to what's to process it, once it's finished (see `after_recording`).
 const AFTER_RECORDING: usize = 0;
 
 const CONTINUOUS_FOLDER: &str = "ephys-rs-100.continuous";
@@ -117,13 +117,10 @@ impl Node<Edges> for WriteRaw {
         vec![Input { name: "continuous", kind: Kind::Continuous }, Input { name: "events", kind: Kind::Events }]
     }
 
-    fn controls(&self) -> Vec<Control<Edges>> {
-        vec![Control { name: "after recording", kind: crate::ValueKind::Script, read_only: true, on_right: true }]
-    }
-
-    /// What it recorded, once it's finished (see `after_recording`).
-    fn sends(&self, _control: usize) -> &'static [crate::TriggerKind] {
-        &[crate::TriggerKind::RunOnFiles]
+    /// On the right, as what it sets off comes after it: where it sends what it's recorded, once it's finished (see
+    /// `after_recording`).
+    fn ports(&self) -> Vec<ValPort<Edges>> {
+        vec![ValPort::val_in_cmd_out("after recording", ValueKind::FileInput, &[CommandKind::ProcessFiles]).flipped()]
     }
 
     fn outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Output<Edges>> {
@@ -176,7 +173,7 @@ impl Node<Edges> for WriteRaw {
         let writing = context.recording.map(|recording| {
             let folder = recording_path(recording.base_directory(), recording.start_requested_date());
             let files = RawFiles::open(&folder, continuous, events);
-            let after = after_recording(context.triggers, AFTER_RECORDING);
+            let after = after_recording(context.cmd_sender(AFTER_RECORDING));
             Chunk::writing(&folder, continuous, events, files, after)
         });
         Prepared::shared(Recorder { writing }).into()

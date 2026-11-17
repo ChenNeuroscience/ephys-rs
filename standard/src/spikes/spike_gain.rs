@@ -18,8 +18,10 @@ use crate::standard::spikes::{
     Channels, DEFAULT_RANGE_UV, GainScope, Gains, RANGES_UV, SpikesBuffer, fill_field, gain_field,
 };
 use crate::standard::widgets::{input_summary, named_settings_grid, require_input, setting};
-use crate::{Buffer, DataStream, Edges, Kind, PublishedValue};
-use ephys_rs::engine::{Category, Input, Node, NodeInfo, Output, PassContext, SettingPort, UiContext};
+use crate::{Buffer, Command, CommandKind, DataStream, Edges, Kind, PublishedValue, ValueKind};
+use ephys_rs::engine::{
+    Category, CommandContext, CommandSource, Input, Node, NodeInfo, Output, PassContext, UiContext, ValPort,
+};
 use ephys_rs::gui::widgets::info_icon;
 
 #[derive(Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -213,13 +215,28 @@ impl Node<Edges> for SpikeGain {
         BufferUsage { in_place: vec![Some(0); outputs], ..BufferUsage::none(inputs, outputs) }
     }
 
-    fn settings(&self) -> Vec<SettingPort<Edges>> {
-        vec![SettingPort { name: "gains", value: self.gains.clone().into(), on_right: true }]
+    fn ports(&self) -> Vec<ValPort<Edges>> {
+        vec![ValPort::val_out_cmd_in("gains", ValueKind::Gains, &[CommandKind::SetGains, CommandKind::Detect])]
     }
 
-    fn set_setting(&mut self, _index: usize, value: PublishedValue) {
-        if let PublishedValue::Gains(gains) = value {
-            self.gains = gains;
+    fn val_out(&self, _port: usize) -> PublishedValue {
+        self.gains.clone().into()
+    }
+
+    /// New gains: from its passes, those auto detect chose, with it done; from a viewer, an edit, leaving auto detect
+    /// as it is.
+    fn on_command(&mut self, from: CommandSource, command: Command, _context: &mut CommandContext<Edges>) {
+        match command {
+            Command::SetGains(gains) => {
+                let started = self.gains.detect.started;
+                self.gains = gains;
+                if from != CommandSource::Itself {
+                    self.gains.detect.started = started;
+                }
+            }
+            Command::Detect(request) => request.apply(&mut self.gains.detect.started),
+            Command::ClearTransientState => self.gains.detect.started = None,
+            _ => {}
         }
     }
 
@@ -239,7 +256,7 @@ impl Node<Edges> for SpikeGain {
     }
 
     /// Multiplies each channel's waveforms by its gain (saying so on the spikes); and, while the gains are being
-    /// detected, samples the spikes (in µV, before that) for a while, then triggers an update to gains from them, with
+    /// detected, samples the spikes (in µV, before that) for a while, then sends itself gains chosen from them, with
     /// `detect` cleared.
     fn process(&self, pass: &mut PassContext<Edges>, gaining: &mut Gaining, _: &mut ()) {
         if let Some(Some(Buffer::Spikes(input))) = pass.inputs.first()
@@ -264,7 +281,7 @@ impl Node<Edges> for SpikeGain {
                 if self.fit.auto_invert {
                     sampling.turn_down(&mut gains, layout);
                 }
-                pass.trigger_settings_update(0, PublishedValue::Gains(gains));
+                pass.cmd_self(Command::SetGains(gains));
                 *sampling = Sampling { done: true, ..Sampling::new(sampling.seconds, 0) };
             }
         }
@@ -428,13 +445,16 @@ impl Node<Edges> for SpikeGain {
                     });
                 })
             });
-            auto_detect_ui(
+            let detect = auto_detect_ui(
                 ui,
                 context,
-                &mut node.gains.detect.started,
+                node.gains.detect.started,
                 node.gains.detect.seconds,
                 "Sample each channel's spikes, then set its gain",
             );
+            if let Some(request) = detect {
+                request.apply(&mut node.gains.detect.started);
+            }
             ui.add_space(4.0);
             input_summary(ui, context.inputs);
         });
@@ -549,7 +569,7 @@ mod tests {
         buffer.thresholds = vec![DEFAULT_THRESHOLD_UV, DEFAULT_THRESHOLD_UV, 80.0, DEFAULT_THRESHOLD_UV];
         let passes = (4.0 / PASS_DURATION).round() as u64;
         let mut outputs = [Buffer::Spikes(buffer)];
-        let triggers = ephys_rs::triggers::Triggers::default();
+        let commands = ephys_rs::commands::Commands::default();
         for sequence in 0..passes {
             let Buffer::Spikes(spikes) = &mut outputs[0] else { unreachable!() };
             spikes.clear();
@@ -560,13 +580,13 @@ mod tests {
                 waveform[40 + 8] = if sequence % 4 == 0 { 300.0 } else { 50.0 };
             }
             let mut pass = PassContext::new(sequence, PASS_DURATION, &[], &mut outputs);
-            pass.triggers = &triggers;
+            pass.commands = &commands;
             gain.process(&mut pass, &mut state, &mut ());
             let sampling = state.sampling.as_ref().is_some_and(|s| !s.done);
             assert_eq!(sampling, sequence + 1 < passes, "samples for 4 s, at pass {sequence}");
         }
-        let updates = triggers.take_settings_updates();
-        let Some(PublishedValue::Gains(gains)) = updates[0].2.downcast_ref::<PublishedValue>() else { panic!() };
+        let updates = commands.take_commands::<Command>();
+        let [(_, Command::SetGains(gains))] = &updates[..] else { panic!("{updates:?}") };
         assert_eq!(gains.detect.started, None, "with auto detect cleared");
         // To within a bin of the peaks' distribution: about 1.5%.
         let close = |a: f32, b: f32| (a - b).abs() < 0.02 * b;
@@ -606,11 +626,11 @@ mod tests {
         let mut buffer = stream.buffer(PASS_DURATION);
         buffer.thresholds = vec![DEFAULT_THRESHOLD_UV; 4];
         let mut outputs = [Buffer::Spikes(buffer)];
-        let triggers = ephys_rs::triggers::Triggers::default();
+        let commands = ephys_rs::commands::Commands::default();
         let passes = (4.0 / PASS_DURATION).round() as u64;
         let mut run = |sequence, outputs: &mut [Buffer]| {
             let mut pass = PassContext::new(sequence, PASS_DURATION, &[], outputs);
-            pass.triggers = &triggers;
+            pass.commands = &commands;
             gain.process(&mut pass, &mut state, &mut ());
         };
         for sequence in 0..passes / 2 {
@@ -623,11 +643,11 @@ mod tests {
         let done = passes / 2 + passes - 1;
         for sequence in passes / 2..done {
             run(sequence, &mut outputs);
-            assert!(triggers.take_settings_updates().is_empty(), "sampling again, at pass {sequence}");
+            assert!(commands.take_commands::<Command>().is_empty(), "sampling again, at pass {sequence}");
         }
         run(done, &mut outputs);
-        let updates = triggers.take_settings_updates();
-        let Some(PublishedValue::Gains(gains)) = updates[0].2.downcast_ref::<PublishedValue>() else { panic!() };
+        let updates = commands.take_commands::<Command>();
+        let [(_, Command::SetGains(gains))] = &updates[..] else { panic!("{updates:?}") };
         // No spikes: each by its new threshold, times the factor.
         let factor = Fit::default().threshold_factor;
         let expected: Vec<f32> = [30.0, 40.0, 60.0, 70.0].iter().map(|t| (t * factor).round()).collect();
@@ -645,28 +665,27 @@ mod tests {
         gain.gains.detect.started = Some(started);
         let mut state = ephys_rs::engine::fresh_state(&gain, &inputs);
         let mut outputs = [Buffer::Spikes(stream.buffer(PASS_DURATION))];
-        let triggers = ephys_rs::triggers::Triggers::default();
+        let commands = ephys_rs::commands::Commands::default();
         for sequence in 0..2 {
             let mut pass = PassContext::new(sequence, PASS_DURATION, &[], &mut outputs);
-            pass.triggers = &triggers;
+            pass.commands = &commands;
             gain.process(&mut pass, &mut state, &mut ());
         }
         assert!(state.sampling.as_ref().is_some_and(|s| s.elapsed > 0.0), "sampling");
         // Stopped: auto detect cleared, the node makes its state without the sampling.
         let was = gain.clone();
         gain.gains.detect.started = None;
-        let controls = ephys_rs::triggers::ControlTriggers::none();
         let previous = Previous { node: &was, inputs: &inputs, same_streams: true };
-        let context = PrepareContext { previous: Some(previous), ..PrepareContext::trying(&inputs, None, &controls) };
+        let context = PrepareContext { previous: Some(previous), ..PrepareContext::trying(&inputs, None) };
         let mut proto = gain.prepare_for_snapshot(&context).wait().proto_shared_state.expect("made afresh");
         gain.on_snapshot_change(&mut state, &mut proto);
         assert!(state.sampling.is_none(), "let go of");
         for sequence in 2..600 {
             let mut pass = PassContext::new(sequence, PASS_DURATION, &[], &mut outputs);
-            pass.triggers = &triggers;
+            pass.commands = &commands;
             gain.process(&mut pass, &mut state, &mut ());
         }
-        assert!(triggers.take_settings_updates().is_empty(), "nothing chosen");
+        assert!(commands.take_commands::<Command>().is_empty(), "nothing chosen");
     }
 
     /// Its window, a gain for each tetrode. See tests/snapshots/.

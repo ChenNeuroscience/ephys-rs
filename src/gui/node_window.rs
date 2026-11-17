@@ -71,8 +71,8 @@ pub fn standard<E: Edges, N: Node<E>>(
                         state.summary(role, index).unwrap_or_else(|| "not connected".into())
                     }
                     PortRole::ValOutCmdIn => state.summary(role, index).unwrap_or_default(),
-                    PortRole::ValInCmdOut if context.control_connected(index) => "connected".into(),
-                    PortRole::ValInCmdOut => "not connected".into(),
+                    PortRole::ValInCmdOut | PortRole::ValIn if context.control_connected(index) => "connected".into(),
+                    PortRole::ValInCmdOut | PortRole::ValIn => "not connected".into(),
                 };
                 ui.horizontal(|ui| {
                     let (dot, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
@@ -99,7 +99,7 @@ mod tests {
 
     /// Once a run's stopped, what it shared is there to read, but there's no run for auto detect to happen in.
     #[test]
-    fn triggers_need_a_run_not_just_what_one_shared() {
+    fn auto_detect_needs_a_run_not_just_what_one_shared() {
         use egui_kittest::kittest::{NodeT as _, Queryable as _};
         let disabled = |running: bool| {
             let mut graph = Graph::<Nodes>::default();
@@ -124,6 +124,7 @@ mod tests {
                         id,
                         &mut events,
                         &mut Ticked::default(),
+                        None,
                     );
                 },
                 graph,
@@ -162,6 +163,7 @@ mod tests {
                         id,
                         &mut events,
                         &mut Ticked::default(),
+                        None,
                     );
                 });
             },

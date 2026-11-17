@@ -11,9 +11,10 @@ use crate::standard::tracking::pipeline::{Pipeline, timing_led_on};
 use crate::standard::tracking::{CAMERA_TRACKER, PositionSample, Positions};
 use crate::standard::tracking::{Crop, Detection, Ruler, TimingLed};
 use crate::standard::widgets::{named_settings_grid, require_input, setting};
-use crate::{Buffer, DataStream, Edges, Kind, PublishedValue};
+use crate::{Buffer, Command, CommandKind, DataStream, Edges, Kind, PublishedValue, ValueKind};
 use ephys_rs::engine::{
-    Category, Input, Node, NodeInfo, Output, PassContext, Prepare, PrepareContext, Prepared, SettingPort, UiContext,
+    Category, CommandContext, CommandSource, Input, Node, NodeInfo, Output, PassContext, Prepare, PrepareContext,
+    Prepared, UiContext, ValPort,
 };
 use ephys_rs::gui::widgets::{Icon, small_icon_button};
 
@@ -85,16 +86,16 @@ impl Node<Edges> for PositionDetector {
         require_input(inputs, "video")
     }
 
-    fn settings(&self) -> Vec<SettingPort<Edges>> {
-        vec![SettingPort {
-            name: "detection",
-            value: PublishedValue::Detection(self.detection.clone()),
-            on_right: true,
-        }]
+    fn ports(&self) -> Vec<ValPort<Edges>> {
+        vec![ValPort::val_out_cmd_in("detection", ValueKind::Detection, &[CommandKind::SetDetection])]
     }
 
-    fn set_setting(&mut self, _index: usize, value: PublishedValue) {
-        if let PublishedValue::Detection(detection) = value {
+    fn val_out(&self, _port: usize) -> PublishedValue {
+        PublishedValue::Detection(self.detection.clone())
+    }
+
+    fn on_command(&mut self, _from: CommandSource, command: Command, _context: &mut CommandContext<Edges>) {
+        if let Command::SetDetection(detection) = command {
             self.detection = detection;
         }
     }

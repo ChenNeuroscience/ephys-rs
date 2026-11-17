@@ -8,16 +8,14 @@
 //! referenced data, it outputs the references themselves: a channel each.
 
 use eframe::egui::{self, Color32, RichText};
-use ephys_rs::engine::{BufferUsage, TreeShake};
+use ephys_rs::engine::{BufferUsage, CommandContext, CommandSource, TreeShake, ValPort};
 use serde::{Deserialize, Serialize};
 
 use crate::standard::ephys::{Continuous, ContinuousBuffer};
 use crate::standard::medians::Medians;
 use crate::standard::widgets::{all_checkbox, input_summary, require_input, setting, settings_grid};
-use crate::{Buffer, DataStream, Edges, Kind, PublishedValue};
-use ephys_rs::engine::{
-    Category, EdgeInfo, EdgeType, Input, Node, NodeInfo, Output, PassContext, SettingPort, UiContext,
-};
+use crate::{Buffer, Command, CommandKind, DataStream, Edges, Kind, PublishedValue, ValueKind};
+use ephys_rs::engine::{Category, EdgeInfo, EdgeType, Input, Node, NodeInfo, Output, PassContext, UiContext};
 use ephys_rs::gui::widgets::{Icon, small_toggle_button};
 
 /// How a reference is made from its channels.
@@ -381,12 +379,16 @@ impl Node<Edges> for Reference {
         BufferUsage { in_place: vec![Some(0); outputs], ..BufferUsage::none(inputs, outputs) }
     }
 
-    fn settings(&self) -> Vec<SettingPort<Edges>> {
-        vec![SettingPort { name: "reference", value: self.clone().into(), on_right: true }]
+    fn ports(&self) -> Vec<ValPort<Edges>> {
+        vec![ValPort::val_out_cmd_in("reference", ValueKind::Reference, &[CommandKind::SetReference])]
     }
 
-    fn set_setting(&mut self, _index: usize, value: PublishedValue) {
-        if let PublishedValue::Reference(reference) = value {
+    fn val_out(&self, _port: usize) -> PublishedValue {
+        self.clone().into()
+    }
+
+    fn on_command(&mut self, _from: CommandSource, command: Command, _context: &mut CommandContext<Edges>) {
+        if let Command::SetReference(reference) = command {
             *self = reference;
         }
     }

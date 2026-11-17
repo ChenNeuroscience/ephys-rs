@@ -5,8 +5,10 @@
 //! should decide (`UserDecision`: hardware not as the node's settings say, say). A node can answer at once, or once
 //! something it's started (opening a device, say) is done (`Prepare`).
 
-use super::{Edges, NodeId, Recording};
-use crate::triggers::ControlTriggers;
+use std::sync::Arc;
+
+use super::{Edges, NodeId, Recording, ValueType};
+use crate::commands::{Address, CmdSender, Commands};
 
 /// When a node prepares for a snapshot (see `Node::prepare_for_snapshot`), it answers with this: what it made ahead of
 /// time, and what someone should decide. `S` is the node's state, `W` each worker's own, and `N` the node.
@@ -163,12 +165,14 @@ pub struct PrepareContext<'a, E: Edges, N> {
     pub node: NodeId,
     /// For each input, the data stream connected to it, if any.
     pub inputs: &'a [Option<E::DataStream>],
-    /// For each of the node's controls, the setting it's connected to, if it is.
-    pub controls: &'a [Option<E::PublishedValue>],
+    /// For each of the node's `ValInCmdOut` and `ValIn` ports, what the node at the other end publishes, if it's
+    /// connected (see `val_in`).
+    pub val_ins: &'a [Option<E::PublishedValue>],
     /// If the snapshot's recording, the recording (where it goes, and when it was asked for).
     pub recording: Option<&'a Recording>,
-    /// The node's controls can send triggers to the nodes they're connected to (see `crate::triggers`), through this.
-    pub triggers: &'a ControlTriggers<E::Trigger>,
+    /// The app's queue of commands, which the node's senders send to (see `cmd_sender`), if there is one (there isn't
+    /// in tests, say).
+    pub commands: Option<&'a Arc<Commands>>,
     /// How the node was in the snapshot before, if it was in it.
     pub previous: Option<Previous<'a, E, N>>,
     /// If the snapshot before was recording something else, or nothing, recording starts (or stops) with this one. A
@@ -180,23 +184,31 @@ pub struct PrepareContext<'a, E: Edges, N> {
 
 impl<'a, E: Edges, N> PrepareContext<'a, E, N> {
     /// Tests try nodes out with this: the node new to the run, with inputs `inputs`, recording `recording` if there is
-    /// one, no controls connected, sending triggers through `triggers` (usually none: `ControlTriggers::none`), on one
-    /// worker.
-    pub fn trying(
-        inputs: &'a [Option<E::DataStream>],
-        recording: Option<&'a Recording>,
-        triggers: &'a ControlTriggers<E::Trigger>,
-    ) -> Self {
+    /// one, no ports reading values connected, and no queue of commands, on one worker.
+    pub fn trying(inputs: &'a [Option<E::DataStream>], recording: Option<&'a Recording>) -> Self {
         PrepareContext {
             node: NodeId(0),
             inputs,
-            controls: &[],
+            val_ins: &[],
             recording,
-            triggers,
+            commands: None,
             previous: None,
             recording_changed: recording.is_some(),
             workers: 1,
         }
+    }
+
+    /// The node reads what its `ValInCmdOut` (or `ValIn`) port `port` sees with this (see `UiContext::val_in`).
+    pub fn val_in<T: ValueType<E::PublishedValue> + 'a>(&self, port: usize) -> Option<&'a T> {
+        T::from_value(self.val_ins.get(port)?.as_ref()?)
+    }
+
+    /// A node keeps one of these to command, later, from any thread (a writer's, once its files are finished, say), the
+    /// node its `ValInCmdOut` port `port` connects to then (see `CmdSender`). There's none if the port isn't connected
+    /// now, or there's no queue.
+    pub fn cmd_sender(&self, port: usize) -> Option<CmdSender<E::Command>> {
+        self.val_ins.get(port)?.as_ref()?;
+        Some(CmdSender::new(self.commands?.clone(), Address::Port { from: self.node, port }))
     }
 
     /// A node that was in the snapshot before with the same data streams can keep its state, which still fits. This
@@ -220,9 +232,9 @@ impl<'a, E: Edges, N> PrepareContext<'a, E, N> {
         PrepareContext {
             node: self.node,
             inputs: self.inputs,
-            controls: self.controls,
+            val_ins: self.val_ins,
             recording: self.recording,
-            triggers: self.triggers,
+            commands: self.commands,
             previous: self.previous.as_ref().and_then(|p| {
                 Some(Previous { node: previous(p.node)?, inputs: p.inputs, same_streams: p.same_streams })
             }),
@@ -238,8 +250,7 @@ pub fn fresh_states<E: Edges, N: super::Node<E>>(
     node: &N,
     inputs: &[Option<E::DataStream>],
 ) -> (N::State, N::WorkerState) {
-    let triggers = ControlTriggers::none();
-    let context = PrepareContext::trying(inputs, None, &triggers);
+    let context = PrepareContext::trying(inputs, None);
     let prepared = node.prepare_for_snapshot(&context).wait();
     let shared = or_unit(prepared.proto_shared_state).expect("a node with state makes it when it's new");
     let worker = prepared.proto_worker_state.and_then(|mut states| states.pop()).unwrap_or_default();

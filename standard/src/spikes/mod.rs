@@ -234,7 +234,7 @@ pub struct Thresholds {
 pub struct DetectThresholds {
     /// How many seconds it samples the data for.
     pub seconds: f32,
-    /// When it was started, while it's going: a transient setting, not saved (see `EdgeType::clear_transient`).
+    /// When it was started, while it's going: the node's transient state, not saved (see `crate::standard::auto_detect`).
     #[serde(skip)]
     pub started: Option<std::time::Instant>,
 }
@@ -267,10 +267,6 @@ impl EdgeType for Thresholds {
 
     fn summary(&self) -> String {
         spread(&self.values, DEFAULT_THRESHOLD_UV, |t| format!("{t:.0} µV"))
-    }
-
-    fn clear_transient(&mut self) {
-        self.detect.started = None;
     }
 }
 
@@ -331,7 +327,7 @@ impl Default for Gains {
 pub struct DetectGains {
     /// How many seconds it samples the data for.
     pub seconds: f32,
-    /// When it was started, while it's going: a transient setting, not saved (see `EdgeType::clear_transient`).
+    /// When it was started, while it's going: the node's transient state, not saved (see `crate::standard::auto_detect`).
     #[serde(skip)]
     pub started: Option<std::time::Instant>,
 }
@@ -461,10 +457,6 @@ impl EdgeType for Gains {
     fn summary(&self) -> String {
         let ranges: Vec<f32> = (0..self.gains.len()).map(|c| self.range_uv(c)).collect();
         spread(&ranges, DEFAULT_RANGE_UV, |r| format!("±{r:.0} µV"))
-    }
-
-    fn clear_transient(&mut self) {
-        self.detect.started = None;
     }
 }
 

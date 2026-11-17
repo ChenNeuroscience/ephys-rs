@@ -37,7 +37,7 @@ Help › About shows the version, with `Components::ABOUT` under it: markdown sa
 Source Code, and a link in About, go to `Components::SOURCE`, which is this repository unless a fork changes it.
 
 So a build can add nodes, annotations, themes, quick actions and base directories of its own. The kinds of data stream,
-setting and trigger are the exception: they're declared once, with `edge_types!` in the standard components'
+published value and command are the exception: they're declared once, with `edge_types!` in the standard components'
 [`lib.rs`](../standard/src/lib.rs), as they're written against them, and adding one means adding it there. There's no loading of code at run time, and
 no stable interface between versions.
 
@@ -142,17 +142,18 @@ The passes never wait on the GUI, nor it on them.
   the window reads the newest, giving the rest back. A window that needs everything sent, not only the newest (a log's
   lines, the tracker's path), takes every buffer, in order, and keeps what it likes on its own side; until it does,
   what's new waits in the node's state. The dev tools show each such pool on the GUI's thread.
-- **Triggers** ([`triggers.rs`](../src/triggers.rs)) don't wait for a pass: the app delivers them on the GUI's
-  thread, running or not, so they belong to it rather than a run. A setting's update from a pass is one.
+- **Commands** ([`commands.rs`](../src/commands.rs)) don't wait for a pass: the app delivers them on the GUI's
+  thread, running or not, so they belong to it rather than a run. A setting a pass found (an auto detect's) is one.
 - Once a run's stopped, the app keeps what its last snapshot shared, so everything goes on showing what it last had,
   until the next run, or until the graph changes so it would need new buffers (`Plan::same_shape`).
-- The GUI can **trigger** a node (`Node::triggers`), from another node's window through a settings edge, or from the
-  node's own: a one-off event, delivered on the GUI's thread, as above. Having a node do something with the data
-  over a while (an auto detect) is a **transient setting** instead (`EdgeType::clear_transient`): the node prepares for
-  it, runs while it's set, and its passes clear it with what they found.
-- Passes can't change the graph, but can **trigger an update** of a setting (`PassContext::trigger_settings_update`),
-  which the GUI applies as an edit, unless settings are locked.
-- They can have the app start or stop recording (`PassContext::trigger_recording`), as the toolbar's Record does: TTL
+- A node can **command** another (`Node::on_command`), through a value edge from its `ValInCmdOut` port: set the value
+  the other publishes, start its auto detect, process files. Having a node do something with the data over a while (an
+  auto detect) is kept as its **transient state**: the node prepares for it, runs while it's set, and its passes clear
+  it with what they found; the app has every node clear it (`Command::ClearTransientState`) on undo and redo, and as
+  recording starts or running stops.
+- Passes can't change the graph, but can **command their node** (`PassContext::cmd_self`), which the GUI applies as an
+  edit (undone while recording, if it changes how the graph processes).
+- They can have the app start or stop recording (`PassContext::request_recording`), as the toolbar's Record does: TTL
   Recording Control does, by a TTL line. A pass's snapshot, as much of it as nodes can see (`PassContext::snapshot`, a
   `SnapshotLite`), says when acquisition and recording started, by the monotonic clock (`started`, and
   `Recorded::started`, when the app took the recording on), the latter as opposed to when it was asked for, which names

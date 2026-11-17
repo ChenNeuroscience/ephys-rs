@@ -13,10 +13,10 @@ use serde::{Deserialize, Serialize};
 use super::settings::alarms_ui;
 use super::{Alarm, AlarmKind, AlarmState, AlarmStates, Alarms, Phase, Source};
 use crate::standard::widgets::require_input;
-use crate::{Buffer, DataStream, Edges, Kind, PublishedValue};
+use crate::{Buffer, Command, CommandKind, DataStream, Edges, Kind, PublishedValue, ValueKind};
 use ephys_rs::engine::{
-    Category, Input, Node, NodeInfo, Output, PassContext, PassState, Prepare, PrepareContext, Prepared, SettingPort,
-    UiContext,
+    Category, CommandContext, CommandSource, Input, Node, NodeInfo, Output, PassContext, PassState, Prepare,
+    PrepareContext, Prepared, UiContext, ValPort,
 };
 
 /// How many bins a period's cut into. At the shortest period, that's a bin a pass.
@@ -286,12 +286,16 @@ impl Node<Edges> for AlarmProcessor {
         require_input(inputs, "something to watch")
     }
 
-    fn settings(&self) -> Vec<SettingPort<Edges>> {
-        vec![SettingPort { name: "alarms", value: PublishedValue::Alarms(self.alarms.clone()), on_right: true }]
+    fn ports(&self) -> Vec<ValPort<Edges>> {
+        vec![ValPort::val_out_cmd_in("alarms", ValueKind::Alarms, &[CommandKind::SetAlarms])]
     }
 
-    fn set_setting(&mut self, _index: usize, value: PublishedValue) {
-        if let PublishedValue::Alarms(alarms) = value {
+    fn val_out(&self, _port: usize) -> PublishedValue {
+        PublishedValue::Alarms(self.alarms.clone())
+    }
+
+    fn on_command(&mut self, _from: CommandSource, command: Command, _context: &mut CommandContext<Edges>) {
+        if let Command::SetAlarms(alarms) = command {
             self.alarms = alarms;
         }
     }

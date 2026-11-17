@@ -14,15 +14,15 @@ another node can edit).
 graph (each has a colour of its own) and are grouped apart in the Add Node menu, and that's all the category does.
 Nothing in the engine, the plan or the GUI behaves differently because of it. Every node is a type implementing the one
 `Node` trait, and what it does follows from which parts of it the node implements. Any node can implement any of
-them: a "visualisation" can have outputs, a "source" can take inputs or triggers, a "processing" node can have a window
+them: a "visualisation" can have outputs, a "source" can take inputs or commands, a "processing" node can have a window
 of its own, threads, or write files. Pick the category for how the node should look to the people using it, nothing
 else.
 
 The parts of the API are there for three different reasons, and it helps to know which is which:
 
 - **The data model: what the node is and does.** These have to be right for the node to work: its ports (`inputs`,
-  `outputs`), its settings (`settings`, `set_setting`) and the settings of others it can see (`controls`), `process`
-  and its state (prepared for each snapshot: `prepare_for_snapshot`), and the triggers it takes.
+  `outputs`), its value ports (`ports`: the values it publishes, `val_out`, and those of others it reads),
+  the commands it takes (`on_command`), `process` and its state (prepared for each snapshot: `prepare_for_snapshot`).
 - **Optimisation: how cheaply it runs.** Leaving these at their defaults is always correct, only slower or using more
   memory: `evaluate_buffer_usage`, `evaluate_tree_shake` (one exception: a writer says it only runs while recording,
   with something to record, or it would write empty files), worker state instead of shared state where nothing's carried over (`WorkerState`), and pools for buffers its threads
@@ -39,16 +39,18 @@ The parts of the API are there for three different reasons, and it helps to know
 - `inputs()` and `outputs(inputs)`: its data ports. An output says what data stream it produces, given what's on the
   inputs (or `None` while that can't be known), so a graph's streams are worked out before anything runs.
 - `warnings(inputs)`: what's wrong (an input not connected, say), shown on the graph and in its window.
-- `settings()` and `set_setting`: the settings other nodes can edit through settings edges (see [Edges](edges.md)).
-- `controls()`: the other side, settings of other nodes this one can see and edit (or only read, `read_only`), in its
-  `UiContext::controls`.
+- `ports()`: its value ports (see [Edges](edges.md#values-and-commands)), each a `ValPort`: where it publishes a value
+  (`ValOutCmdIn`, with `val_out` saying what it is now), and where it reads another node's, sending it commands
+  (`ValInCmdOut`) or not (`ValIn`, val-only). Each says the commands it accepts or sends (`&[CommandKind::SetGains]`,
+  say). Those it publishes and those it reads are numbered separately, in the order listed.
+- `on_command(from, command, context)`: what it does with a command sent to it (see [Commands](#commands)).
 
 ## Running
 
 `process(pass, state, worker_state)` is called once a pass, on a worker thread, with the pass's buffers (see
 [`PassContext`](../src/engine/pass_context.rs)): `inputs` to read, `outputs` to fill (already sized: nothing should be
-allocated per pass), the settings its `controls` see, whether it's recording, what it shares with the GUI, and its
-triggers. `self` is the snapshot's settings: the latest, as of the pass.
+allocated per pass), the values its ports read (`val_in::<T>(port)`), whether it's recording, what it shares with the
+GUI, and where to send itself commands (`cmd_self`). `self` is the snapshot's settings: the latest, as of the pass.
 
 - **State.** A node has two kinds, each `()` for none:
   - `type State` is carried from pass to pass (a filter's history). Passes hand it on in order, so they wait for each
@@ -58,8 +60,8 @@ triggers. `self` is the snapshot's settings: the latest, as of the pass.
     makes its own as it prepares. The Reference and Channel Selector have it.
 - **Preparing for a snapshot.** This is where state is made. Every node prepares for each snapshot the run's
   given (`prepare_for_snapshot`), one after another on a thread of the run's, before any pass runs against it (the
-  snapshot before carries on meanwhile). It's told its input data streams, what its controls see, the snapshot's
-  recording if it's recording, what its controls can trigger, how many workers there are, and how it was in the
+  snapshot before carries on meanwhile). It's told its input data streams, the values its ports read, the snapshot's
+  recording if it's recording, where to send commands later (`cmd_sender(port)`), how many workers there are, and how it was in the
   snapshot before (`previous`: its settings and data streams then, and whether they're the same now). It answers with
   a `Prepared`:
   - `proto_shared_state` and `proto_worker_state` (one per worker): state made ahead of time, to become its state as
@@ -111,7 +113,7 @@ triggers. `self` is the snapshot's settings: the latest, as of the pass.
   answers did, with a warning in the console. By default, a node runs, needing every input, whatever's in use: the
   path without the optimisation, so leaving it is always correct. A node that only makes data for others runs only
   while they're in use, as the processing nodes do. A writer runs only while recording, and given something to record,
-  as what it does matters beyond the graph; so what only feeds writers runs only while recording, except while a transient setting has it do something with
+  as what it does matters beyond the graph; so what only feeds writers runs only while recording, except while it's been asked to do something with
   the data (an auto detect: see below), which it has to run to get done; so a Continuous Gain feeding only a writer can have its
   gains detected before recording. Run Command never runs in a pass: it's only ever sent things to do. A node with an output that can't be known doesn't run. Settings change the plan, so what a
   node needs is for what's switched on and off, not what changes pass to pass.
@@ -135,7 +137,9 @@ A view of its own (a viewer's, say) draws whatever it likes instead, and says ho
 convention, nodes with a view are. Keys its window answers to (G over a Spike Viewer's channel, say) go in
 `SHORTCUTS`, which the keyboard shortcuts' help lists. It gets a [`UiContext`](../src/engine/ui_context.rs):
 
-- `inputs`: the streams on its inputs; `controls`: the values of the settings its controls see, to edit.
+- `inputs`: the streams on its inputs; `val_in::<T>(port)`: the values its ports read; `cmd_out(port, command)`: a
+  command, through a port, to the node publishing the value (to edit a value, send the edited copy back, with
+  `cmd_out_if_changed`).
 - `shared::<T>()`: what its passes share with it (its `Shared`, which is `T`), or what they did in the last run once
   it's stopped, so what it shows stays (see below). Say nothing's going on when it isn't, by `running`.
 - `running` and `locked` (while recording, settings changes are undone, so show them disabled).
@@ -145,8 +149,8 @@ convention, nodes with a view are. Keys its window answers to (G over a Spike Vi
   settings menu, enabling and deleting it), for a view to put where it likes, with options of its own added to the
   settings menu.
 - `node_toolbar_buttons`: the same, with buttons of the pane's own beside them, at the right of the toolbar.
-- `controlled_by`: for each setting, the names of the nodes with a control connected to it.
-- `trigger`, `can_trigger`, `open_control_target`: see below.
+- `controlled_by`: for each value it publishes, the names of the nodes reading it.
+- `cmd_sender`, `self_sender`, `open_control_target`: see below.
 
 Help that's more than a tooltip (examples, a cheat sheet) goes behind `widgets::help_link`: dimmed text with a dotted
 underline, its help in a popup while the pointer's over it, or, clicked, until something else is. `widgets::with_help`
@@ -192,7 +196,7 @@ nothing's copied: the [Video Viewer](../standard/src/tracking/video_viewer.rs) d
 A node can keep state on the GUI's side, as `type UiState` (and `()` for none): the app keeps one for each node while
 the graph has it, whether its window's shown or not, and doesn't save it. Its window gets it with
 `UiContext::ui_state::<T>()`, borrowed from the app rather than the context, so the context can still be used. A
-trigger gets the same context (`on_trigger`), so it too. It's the place for anything that isn't a setting, such as a job the node has
+command gets it too (`CommandContext::ui_state`). It's the place for anything that isn't a setting, such as a job the node has
 started (as [Run Command](../standard/src/other/run_command/mod.rs) does): the node itself is cloned for undo's
 history and when it's duplicated, and compared every frame, so it should hold only its settings.
 
@@ -200,62 +204,60 @@ Work that isn't drawing, but has to happen whether the window's shown or not, go
 there's a `ui`. The app calls it for every node once a frame: while drawing a shown window, and for every other node
 once the frame's drawn; and, while the app's window is hidden (minimised, say), whenever the app's woken (see
 `App::logic`). The node gets the same `UiContext` either way, so it can take what the passes share, keep it in its
-`UiState`, and edit settings as a window would. While running, the app tries to draw 50 frames a second; while stopped,
+`UiState`, and send commands as a window would. While running, the app tries to draw 50 frames a second; while stopped,
 only when something changes (input, say). When everything the passes send matters, not only the newest, they send it all, in order (`Pool::send_pending`),
 and the node takes it (`Pool::receive_all`; the standard nodes do it in a method of their own, `take_updates`): the
 [Log Viewer](../standard/src/logs/log_viewer.rs) keeps lines this way, the Tracker View its path, and the
 [Alarm Viewer](../standard/src/alarms/viewer.rs) keeps track of alarms going off, pipping as they do, with
 its window closed too.
 
-## Triggers
+## Commands
 
-Anything sent to a node is a trigger: a one-off event, carrying whatever it needs to (`RunOnFiles` its files). Each
-trigger type implements [`TriggerType`](../src/triggers.rs), with a name to show. The program lists them with its edge
-types, in `edge_types!` (`triggers:`), which makes its `Trigger` enum, with a variant for each, and `TriggerKind`,
-naming them, as it does for data streams and settings: they're sent along settings edges, after all. A node lists the
-kinds each setting takes in `triggers(setting)` (`&[TriggerKind::RunOnFiles]`). A control connected to the setting
-sends one (`UiContext::trigger(Some(control), trigger)`), as can the node's own window (`None`), and
-`UiContext::can_trigger` says whether it can be. It needs no pass, or even a run: the app delivers it on the GUI's
-thread, whatever's going on, to `Node::on_trigger`, as the `Trigger` (`let Trigger::RunOnFiles(files) = trigger`),
-with the same `UiContext` as its window's. As well as from a window, a node can send one through a control with a
-`TriggerHandle`, from the `ControlTriggers` it's given as it prepares (`PrepareContext::triggers`,
-`handle(control, TriggerKind::RunOnFiles)`), which it can keep and use from any thread. On their way to the app,
-triggers are carried as `AnyTrigger`s (boxed), so its queues needn't know the program's enum; what's sent and what's
-taken is always the enum.
+Anything a node tells another to do is a command: setting a value it publishes (`SetGains`), starting auto detect
+(`Detect`), processing files (`ProcessFiles`). The program lists them in `edge_types!` (`commands:`), which makes its
+`Command` enum, with `CommandKind` naming them; every set is a command like any other, so the core knows nothing of
+settings. A command goes through a value edge, from the node's `ValInCmdOut` port to the node publishing at the other
+end, which says which commands each of its ports accepts; or from a node to itself (`CommandSource::Itself`), from
+its passes (`PassContext::cmd_self`) or threads (`UiContext::self_sender`). It needs no pass, or even a run: the app
+delivers it on the GUI's thread, whatever's going on, to `Node::on_command(from, command, context)`, saying where it
+came from (`CommandSource::Port(n)`, `Itself`, or `App`). Most nodes match on the command alone:
 
-## Transient settings
+```rust
+fn on_command(&mut self, from: CommandSource, command: Command, _context: &mut CommandContext<Edges>) {
+    match command {
+        Command::SetGains(gains) => self.gains = gains,
+        Command::Detect(request) => request.apply(&mut self.gains.detect.started),
+        Command::ClearTransientState => self.gains.detect.started = None,
+        _ => {}
+    }
+}
+```
 
-Having a node do something over a while, with the data going by, isn't a trigger: it's a **transient setting**, as
-the gains and thresholds have for auto detect (`detect.started`: when it was started). It's a
-setting like any other: a window, or a viewer through a control, sets it, a change is a new snapshot, it's undoable,
-and it's locked while recording. The node prepares for it (an auto detect makes room to sample into, comparing with
-the setting in `context.previous`, and lets go of it once it's clear), and runs while it's set (in its tree shake).
-Once the node's passes are done, they set what they found, with the transient setting cleared, in one settings update
-(`PassContext::trigger_settings_update(setting, value)`), which the GUI applies as an edit; until that takes over, the
-node's state says it's done. Stopping it is clearing it. Anything that can see the setting can tell how far along it
-is: an auto detect's setting also says how long it samples for (`detect.seconds`), so a window, or a viewer through a
-control, estimates it from when it was started (`auto_detect::estimated_progress`). Being transient, it isn't kept:
-transient settings aren't saved (`#[serde(skip)]`), and the app clears them (`EdgeType::clear_transient`) when it
-restores a graph from its history (undo or redo), duplicates a node, starts recording, or stops running. The
+A window sends one through a port with `UiContext::cmd_out(port, command)`; the app delivers it once the window's
+drawn, so the next frame shows what changed. A node can keep a `CmdSender` for later, from any thread
+(`UiContext::cmd_sender(port)`, `PrepareContext::cmd_sender(port)`): a writer keeps one for its "after recording"
+port, to send its files once they're finished. A sender's addressed to the port, not the node at the other end: the
+app follows the edge as it delivers each command (see [`commands.rs`](../src/commands.rs)), so it goes where the edge
+points then. On their way, commands are carried boxed, so the queue (and the run, which holds it) needn't know the
+program's enum; what's sent and what's taken is always the enum.
+
+While recording, what a command changes is undone if it changes how the graph processes, as any edit is.
+
+## Transient state
+
+Having a node do something over a while, with the data going by, is a command too, kept by the node as its
+**transient state**: the gains and thresholds have it for auto detect (`detect.started`: when it was started). The
+node's window starts it, or a viewer sends `Detect` through the port reading the value. It's a field of the node's,
+so a change is a new snapshot: the node prepares for it (an auto detect makes room to sample into, comparing with
+`context.previous`, and lets go of it once it's clear), and runs while it's set (in its tree shake). Once the node's
+passes are done, they send the node what they found (`PassContext::cmd_self(Command::SetGains(gains))`), which clears
+it; until that takes over, the node's state says it's done. Anything that can see the value can tell how far along it
+is: an auto detect's value also says how long it samples for (`detect.seconds`), so a window, or a viewer reading it,
+estimates it from when it was started (`auto_detect::estimated_progress`). Being transient, it isn't kept: it isn't
+saved (`#[serde(skip)]`), and the app sends every node `Command::ClearTransientState` (the core's own command) when it
+restores a graph from its history (undo or redo), starts recording, or stops running, and a node it duplicates. The
 [Continuous Gain](../standard/src/ephys/continuous_gain.rs), [Spike Gain](../standard/src/spikes/spike_gain.rs) and
-[Spike Detector](../standard/src/spikes/spike_detector.rs) work this way, started from their windows or a viewer's.
-
-Every setting also takes a direct update of its value without saying so, the settings update above, which isn't
-applied while settings are locked.
-
-## Threads of its own
-
-A node can run threads (started as it prepares its state, stopped when its state's dropped). It lists them in `threads()`,
-with which way data goes and why it's a thread, draws what each is up to in `thread_ui`, and reports any pool of
-buffers it swaps with the passes in `thread_pool`, all for the dev tools. A source's thread fills buffers shaped like
-the node's outputs from a [`Pool`](../standard/src/pool.rs), which `process` swaps into the pass; see the
-[board's capture](../standard/src/ephys/board/capture.rs). A writer's passes swap their data into chunks
-from a pool, for its thread to write; see [`recording`](../standard/src/recording/mod.rs).
-
-New state (when a node's data streams change) is made before the old is dropped. So a thread holding something
-that opening again would disturb can carry on from one state to the next: taken across in `on_snapshot_change`, or
-held as an `Arc`, found by what it's open to in a list of `Weak`s, and closed once the last state using it is done. The VR Computer keeps its connection like
-this, and the [Arduino](../standard/src/other/arduino.rs) its serial port, as opening it resets the Arduino.
+[Spike Detector](../standard/src/spikes/spike_detector.rs) work this way.
 
 ## Recording
 
@@ -269,26 +271,26 @@ thread can find how long, as of whenever it asks, from a pass's snapshot: shared
 say, as the VR Computer's thread does). The run carries on with the snapshot before until every node's prepared and the workers have buffers for the
 recording's plan, and the graph can't change while recording, so everything that records has prepared. The recording
 takes effect with its first pass, and its durations count from then (`Recording::effective`).
-A pass can start or stop recording itself (`PassContext::trigger_recording`), as the toolbar's Record does: see
+A pass can start or stop recording itself (`PassContext::request_recording`), as the toolbar's Record does: see
 [TTL Recording Control](../standard/src/other/ttl_recording_control.rs).
 
-A writer has an "after recording" control. Connected to a setting that takes the `run_command::RunOnFiles` trigger,
-it sends the paths of the files once they're finished (not when recording stops, which is sooner), and only if
-something was recorded. The [Run Command](../standard/src/other/run_command/mod.rs) node takes it, as does
-[Post-Process Positions LTX](../standard/src/other/sync_positions/mod.rs), and neither end knows what's at the other: anything can
-send files to run on. A control says what it sends (`Node::sends`), and connects to any setting that takes it, whatever
-the setting's kind, as well as to its own kind: what's sent is all that passes between them.
+A writer has an "after recording" port. Connected to a "files" port (`FileInput`), it sends the paths of the files
+once they're finished, with `ProcessFiles` (not when recording stops, which is sooner: the writer's thread finishes the
+files once the writer's state is dropped, as the snapshot without it takes over), and only if something was
+recorded. The [Run Command](../standard/src/other/run_command/mod.rs) node takes them, as does
+[Post-Process Positions LTX](../standard/src/other/sync_positions/mod.rs), and neither end knows what's at the other:
+anything can send files to process. A "files" port publishes nothing: it's there to send `ProcessFiles` to.
 
-Run Command has an "after running" control of its own: once what it ran is done, it sends the same files on to what's
+Run Command has an "after running" port of its own: once what it ran is done, it sends the same files on to what's
 connected there (another Run Command, say), if every command succeeded, if any failed, or either way, as its "Then"
-setting says (only shown while something's connected), but never if it was stopped. Run by hand, it sends itself the
-files, so it's the same either way. A loop of settings edges into settings that take triggers (one Run Command after
-another, round to the first) could go on for ever: the graph warns of it on each node in the loop (see
-`Graph::trigger_loops`), and Stop ends it.
+setting says (only shown while something's connected), but never if it was stopped. Run by hand, it does as it would
+with files sent, so it's the same either way. A loop of value edges carrying commands (one Run Command after another,
+round to the first) could go on for ever: the graph warns of it on each node in the loop (see
+`Graph::command_loops`), and Stop ends it.
 
-Settings sit on the right of a node on the graph and controls on the left, unless a port's `on_right` says otherwise: the
-"after recording" control's on the right, and Run Command's setting on the left, as what passes between them flows
-onward, like data.
+`ValOutCmdIn` ports sit on the right of a node on the graph and the others on the left, unless a port's `flipped`: the
+"after recording" port's on the right, and Run Command's "files" on the left, as what passes between them flows onward,
+like data.
 
 ## Global settings
 
@@ -307,12 +309,12 @@ found and where to get it.
 Not everything a node does belongs to a pass. The nodes in the Other category aren't about data as it's acquired: [Run
 Command](../standard/src/other/run_command/mod.rs) runs a program in a terminal of its own, with or without a run.
 The terminal's a separate process, which can be stopped from the node, and which carries on if the app quits.
-A node's UI can see what's connected to its settings (`UiContext::controlled_by`): while a writer's connected, it's all Run
+A node's UI can see what's connected to its value ports (`UiContext::controlled_by`): while a writer's connected, it's all Run
 Command runs on, so it says so and doesn't offer files of its own.
 
 ## Testing
 
 A node's `process` can be run on its own: make buffers from a stream (`stream.buffer(PASS_DURATION)`), and a pass
-with `PassContext::new`. Most node files have tests doing just that; for triggers, trigger one on the pass's `triggers`
-(see the Spike Gain's tests), and give it what it shares with `pass.shared`. Views are tested headless with
+with `PassContext::new`. Most node files have tests doing just that; for commands a pass sends, give it a queue of its own
+(`pass.commands`) and take them from it (see the Spike Gain's tests), and give it what it shares with `pass.shared`. Views are tested headless with
 `egui_kittest`, against images in `tests/snapshots` (see [Development](development.md)).

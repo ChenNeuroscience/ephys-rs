@@ -1,10 +1,13 @@
 //! Choosing settings from the data ("auto detect"). The setting to choose (gains, or thresholds) has its auto detect's
-//! own settings in `detect`: how long it samples the data for (`seconds`), and when it was started (`started`), a
-//! transient setting (see `EdgeType::clear_transient`). While it's started, the node runs, with room to sample into that
-//! it made as it prepared, which its passes sample the data into for that long, then set the setting from what they
-//! found, with `started` cleared (`PassContext::trigger_settings_update`). Whatever can see the setting (the node's window, or a viewer's
-//! through a control) can tell how far along it is from those two (`estimated_progress`). The Spike Gain, Continuous
-//! Gain and Spike Detector have one; these are the pieces they share.
+//! own settings in `detect`: how long it samples the data for (`seconds`), and when it was started (`started`), while
+//! it's going. `started` is the node's transient state, not saved: the node starts it from its window, or when it's
+//! sent `Detect` (`DetectRequest`, from a viewer, through a value edge), and clears it when it's stopped, or sent
+//! `ClearTransientState` (see `ephys_rs::engine::CommandsEnum`). While it's started, the node runs, with room to
+//! sample into that it made as it prepared, which its passes sample the data into for that long, then send the node
+//! the setting they found (`PassContext::cmd_self`), which clears `started`. Whatever can see the setting (the node's
+//! window, or a viewer's, through the value the node publishes) can tell how far along it is from those two
+//! (`estimated_progress`). The Spike Gain, Continuous Gain and Spike Detector have one; these are the pieces they
+//! share.
 
 use std::time::Instant;
 
@@ -13,6 +16,24 @@ use serde::{Deserialize, Serialize};
 
 use crate::Edges;
 use ephys_rs::engine::UiContext;
+
+/// A viewer has a node choose a setting from the data (see the module's doc), or stop, by sending it this, as the
+/// `Detect` command.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DetectRequest {
+    Start,
+    Stop,
+}
+
+impl DetectRequest {
+    /// What the request does to an auto detect started at `started`, if it is.
+    pub fn apply(self, started: &mut Option<Instant>) {
+        *started = match self {
+            DetectRequest::Start => Some(Instant::now()),
+            DetectRequest::Stop => None,
+        };
+    }
+}
 
 /// Whether a setting's auto detect (`started`, when it was started) is another than in the snapshot before (`before`,
 /// if the node was in it): started, started again, or cleared (it's done, or stopped). If not, what the node made for
@@ -159,35 +180,33 @@ pub fn estimated_progress(started: Instant, seconds: f32) -> f32 {
 }
 
 /// Auto detect, for a setting that samples for `seconds`, started at `started`, if it is (the node's own, or one a
-/// control connects to): a button to start it, while acquiring (it needs data) and not recording, and while it's
-/// going, how far along it is, and a button to stop it. For the node's window, and a viewer's.
+/// viewer reads): a button to start it, while acquiring (it needs data) and not recording, and while it's going, how
+/// far along it is, and a button to stop it. For the node's window, and a viewer's. This returns what was clicked: the
+/// node's window applies it (`DetectRequest::apply`), and a viewer sends it, as the `Detect` command.
 pub fn auto_detect_ui(
     ui: &mut egui::Ui,
     context: &UiContext<Edges>,
-    started: &mut Option<Instant>,
+    started: Option<Instant>,
     seconds: f32,
     tip: &str,
-) {
+) -> Option<DetectRequest> {
     ui.horizontal(|ui| {
-        if let Some(at) = *started {
-            if ui.button("Stop").on_hover_text("Stop detecting, leaving things as they were").clicked() {
-                *started = None;
-            }
+        if let Some(at) = started {
+            let stop = ui.button("Stop").on_hover_text("Stop detecting, leaving things as they were").clicked();
             let progress = estimated_progress(at, seconds);
             ui.add(egui::ProgressBar::new(progress).desired_width(80.0).show_percentage());
-            return;
+            return stop.then_some(DetectRequest::Stop);
         }
         let can = context.running && !context.locked;
         let why = if context.locked { "Not while recording" } else { "Only while acquiring: it needs data" };
-        if ui
+        let start = ui
             .add_enabled(can, egui::Button::new("Auto detect"))
             .on_hover_text(tip)
             .on_disabled_hover_text(why)
-            .clicked()
-        {
-            *started = Some(Instant::now());
-        }
-    });
+            .clicked();
+        start.then_some(DetectRequest::Start)
+    })
+    .inner
 }
 
 #[cfg(test)]

@@ -2,12 +2,13 @@
 //! its node types.
 //!
 //! There are two dimensions of edge. Data edges carry data streams from outputs to inputs, and must form a DAG.
-//! Settings edges let one node edit a setting of another (a viewer adjusting a detector's threshold, say); they carry
-//! no data, so they may point anywhere, including upstream.
+//! Value edges let one node read a value another publishes, and send that node commands (a viewer reading a
+//! detector's thresholds, and setting them, say); they carry no data, so they may point anywhere, including upstream.
 //!
 //! Each edge type is a struct implementing `EdgeType`: for data, a small `Copy` description of the data stream (its
-//! channel count and sample rate, say); for settings, the setting's value. `edge_types!` gathers them into an enum per
-//! dimension, with a matching fieldless `Kind` enum that ports are declared with.
+//! channel count and sample rate, say); for values, the value itself. `edge_types!` gathers them into an enum per
+//! dimension, with a matching fieldless `Kind` enum that ports are declared with. It gathers the program's commands into
+//! an enum as well (see `CommandsEnum`).
 
 use std::fmt::Debug;
 use std::hash::Hash;
@@ -23,23 +24,12 @@ pub struct EdgeInfo {
 }
 
 /// Each edge type implements this: what flows along an edge of one kind, a data stream (32 channels at 30 kHz, say) or
-/// a setting (a spike detector's thresholds), and how the graph describes it.
+/// a published value (a spike detector's thresholds), and how the graph describes it.
 pub trait EdgeType: Clone + PartialEq + Debug + Send + Sync + 'static {
     const INFO: EdgeInfo;
 
     /// The graph shows a short description of each value: "32 ch · 30 kHz", say.
     fn summary(&self) -> String;
-
-    /// Part of a setting can be transient: it has the node do something over a while, with the data going by, rather
-    /// than say how the node's set up (when auto detect was started, say: `DetectGains::started`, in the standard
-    /// nodes). A transient setting is a setting like any other: a change is a new snapshot, which the node prepares for
-    /// (room to sample into, say), it's undoable, and it's locked while recording. While it's set, the node runs (see
-    /// `Node::evaluate_tree_shake`), and once the node's passes are done, they clear it themselves, along with whatever
-    /// they set (`PassContext::trigger_settings_update`). Being transient, it isn't kept: it isn't saved
-    /// (`#[serde(skip)]`), and the app clears it here, for each of a node's settings that other nodes can edit (see
-    /// `Node::settings`), whenever it restores a graph from its history (undo or redo), duplicates a node, starts
-    /// recording, or stops running (see `Graph::clear_transient`). By default, a setting has none.
-    fn clear_transient(&mut self) {}
 }
 
 /// A program's edge types for one dimension form a closed set: an enum with one variant per type, which `edge_types!`
@@ -53,8 +43,6 @@ pub trait EdgeTypesEnum: Clone + PartialEq + Debug + Send + Sync + 'static {
     fn kind(&self) -> Self::Kind;
     fn kind_index(kind: Self::Kind) -> usize;
     fn summary(&self) -> String;
-    /// See `EdgeType::clear_transient`.
-    fn clear_transient(&mut self);
 }
 
 /// A value of `S` is of one edge type, named by its kind (see `EdgeTypesEnum::Kind`).
@@ -95,25 +83,51 @@ pub trait DataStreamsEnum: EdgeTypesEnum + Copy {
     fn empty(buffer: &mut Self::Buffer);
 }
 
-/// A program is built with edge types in both dimensions, and triggers sent along settings edges; `edge_types!` makes a
-/// type implementing this, naming them.
+/// A node reading a published value (see `Node::ports`) finds it as its own type, rather than the program's enum of
+/// them, through this, which `edge_types!` implements for each type of value `V` holds.
+pub trait ValueType<V>: Sized {
+    /// `value` as this type, if that's the type it is.
+    fn from_value(value: &V) -> Option<&Self>;
+}
+
+/// A node can command another through a value edge (or itself, from its passes or threads; see `Node::on_command`).
+/// The program declares its commands with `edge_types!`, which makes an enum of them, implementing this. The core adds
+/// one command of its own, `ClearTransientState`, which the app sends nodes itself.
+pub trait CommandsEnum: Debug + Send + 'static {
+    /// Ports say which commands they take or send by their kinds: which command, without what it carries.
+    type Kind: Copy + Eq + Hash + Debug + Send + Sync + 'static;
+
+    fn kind(&self) -> Self::Kind;
+
+    /// Some of what a node has been asked to do is only for now (an auto detect that's started, say): the node keeps it
+    /// in fields of its own, not saved (`#[serde(skip)]`), and drops it when it's sent this. The app sends it, straight
+    /// away, to every node whenever it restores the graph from its history (undo or redo), and starts recording or
+    /// stops running; and to a node it duplicates.
+    fn clear_transient_state() -> Self;
+
+    /// Whether this is the core's `ClearTransientState`.
+    fn is_clear_transient_state(&self) -> bool;
+}
+
+/// A program is built with edge types in both dimensions, and the commands sent along value edges; `edge_types!` makes
+/// a type implementing this, naming them.
 pub trait Edges: 'static {
     /// Data streams flow from outputs to inputs, a pass at a time.
     type DataStream: DataStreamsEnum;
-    /// Settings are values nodes share, through settings edges from a control to a setting.
+    /// Nodes publish values, which other nodes read through value edges.
     type PublishedValue: EdgeTypesEnum;
-    /// Triggers can be sent to a node, through a settings edge or by the node itself (see `crate::triggers`).
-    type Trigger: crate::triggers::TriggersEnum;
+    /// Nodes command each other through value edges (see `CommandsEnum`).
+    type Command: CommandsEnum;
 }
 
-/// Each of the program's triggers is of one kind (see `TriggersEnum::Kind`).
-pub type TriggerKind<E> = <<E as Edges>::Trigger as crate::triggers::TriggersEnum>::Kind;
+/// Each of the program's commands is of one kind (see `CommandsEnum::Kind`).
+pub type CommandKind<E> = <<E as Edges>::Command as CommandsEnum>::Kind;
 
 /// A data edge holds a pass's worth of data in one of these.
 pub type Buffer<E> = <<E as Edges>::DataStream as DataStreamsEnum>::Buffer;
 
-/// An edge is of one of two dimensions: data, flowing from an output to an input each pass; or settings, linking a
-/// control to another node's setting, so either can see and change it.
+/// An edge is of one of two dimensions: data, flowing from an output to an input each pass; or values, from a node
+/// reading a value another publishes, and commanding it (see `PortRole`).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default, Serialize, Deserialize)]
 pub enum Dimension {
     #[default]
@@ -123,7 +137,7 @@ pub enum Dimension {
     Values,
 }
 
-/// A program declares the edge types it's built with like this:
+/// A program declares the edge types it's built with, and its commands, like this:
 ///
 /// ```ignore
 /// edge_types! {
@@ -134,66 +148,77 @@ pub enum Dimension {
 ///     values: pub enum PublishedValue, ValueKind {
 ///         Thresholds(spikes::Thresholds),
 ///     }
-///     triggers: pub enum Trigger, TriggerKind {
-///         RunOnFiles(run_command::RunOnFiles),
+///     commands: pub enum Command, CommandKind {
+///         SetThresholds(spikes::Thresholds),
 ///     }
 /// }
 /// ```
 ///
-/// This makes `Edges` (implementing `engine::Edges`), the `DataStream`, `PublishedValue` and `Trigger` enums of values, the
-/// `Kind`, `ValueKind` and `TriggerKind` enums naming their variants, and the `Buffer` enum of the data streams'
-/// buffers.
+/// This makes `Edges` (implementing `engine::Edges`), the `DataStream`, `PublishedValue` and `Command` enums, the
+/// `Kind`, `ValueKind` and `CommandKind` enums naming their variants, and the `Buffer` enum of the data streams'
+/// buffers. `Command` and `CommandKind` have one more variant, the core's `ClearTransientState` (see `CommandsEnum`).
 #[macro_export]
 macro_rules! edge_types {
     (
         $vis:vis struct $edges:ident;
         data_streams: $svis:vis enum $data_stream:ident, $kind:ident, $buffer:ident { $($sv:ident($st:ty)),+ $(,)? }
-        values: $cvis:vis enum $setting:ident, $ckind:ident { $($cv:ident($ct:ty)),+ $(,)? }
-        triggers: $tvis:vis enum $trigger:ident, $tkind:ident { $($tv:ident($tt:ty)),+ $(,)? }
+        values: $cvis:vis enum $value:ident, $ckind:ident { $($cv:ident($ct:ty)),+ $(,)? }
+        commands: $mvis:vis enum $command:ident, $mkind:ident { $($mv:ident($mt:ty)),+ $(,)? }
     ) => {
         $vis struct $edges;
 
         impl $crate::engine::Edges for $edges {
             type DataStream = $data_stream;
-            type PublishedValue = $setting;
-            type Trigger = $trigger;
+            type PublishedValue = $value;
+            type Command = $command;
         }
 
-        #[derive(Clone, Debug)]
-        $tvis enum $trigger {
-            $($tv($tt)),+
+        #[derive(Debug)]
+        $mvis enum $command {
+            $($mv($mt),)+
+            /// The core's own (see `CommandsEnum::clear_transient_state`).
+            ClearTransientState,
         }
 
         #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-        $tvis enum $tkind {
-            $($tv),+
+        $mvis enum $mkind {
+            $($mv,)+
+            ClearTransientState,
         }
 
-        impl $crate::triggers::TriggersEnum for $trigger {
-            type Kind = $tkind;
+        impl $crate::engine::CommandsEnum for $command {
+            type Kind = $mkind;
 
-            fn kind(&self) -> $tkind {
-                match self { $($trigger::$tv(_) => $tkind::$tv),+ }
+            fn kind(&self) -> $mkind {
+                match self {
+                    $($command::$mv(_) => $mkind::$mv,)+
+                    $command::ClearTransientState => $mkind::ClearTransientState,
+                }
             }
-        }
 
-        impl From<$tkind> for $crate::triggers::TriggerKey {
-            fn from(kind: $tkind) -> Self {
-                const NAMES: &[&str] = &[$(<$tt as $crate::triggers::TriggerType>::NAME),+];
-                $crate::triggers::TriggerKey { index: kind as usize, name: NAMES[kind as usize] }
+            fn clear_transient_state() -> Self {
+                $command::ClearTransientState
+            }
+
+            fn is_clear_transient_state(&self) -> bool {
+                matches!(self, $command::ClearTransientState)
             }
         }
 
         $(
-            impl From<$tt> for $trigger {
-                fn from(t: $tt) -> Self {
-                    $trigger::$tv(t)
+            impl $crate::engine::ValueType<$value> for $ct {
+                fn from_value(value: &$value) -> Option<&Self> {
+                    #[allow(unreachable_patterns)]
+                    match value {
+                        $value::$cv(v) => Some(v),
+                        _ => None,
+                    }
                 }
             }
         )+
 
         $crate::edge_types!(@set $svis $data_stream $kind $($sv($st)),+);
-        $crate::edge_types!(@set $cvis $setting $ckind $($cv($ct)),+);
+        $crate::edge_types!(@set $cvis $value $ckind $($cv($ct)),+);
 
         // Data streams are all `Copy` (see `DataStreamType`), so their enum can be too.
         impl Copy for $data_stream {}
@@ -252,10 +277,6 @@ macro_rules! edge_types {
 
             fn summary(&self) -> String {
                 match self { $($value::$variant(v) => $crate::engine::EdgeType::summary(v)),+ }
-            }
-
-            fn clear_transient(&mut self) {
-                match self { $($value::$variant(v) => $crate::engine::EdgeType::clear_transient(v)),+ }
             }
         }
 

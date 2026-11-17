@@ -9,8 +9,10 @@ use serde::{Deserialize, Serialize};
 use crate::standard::ephys::reference::{channels_ui, parse_channels};
 use crate::standard::ephys::{ChannelSelection, Continuous};
 use crate::standard::widgets::{inline_block, input_summary, power, require_input};
-use crate::{Buffer, DataStream, Edges, Kind, PublishedValue};
-use ephys_rs::engine::{Category, Input, Node, NodeInfo, Output, PassContext, SettingPort, UiContext};
+use crate::{Buffer, Command, CommandKind, DataStream, Edges, Kind, PublishedValue, ValueKind};
+use ephys_rs::engine::{
+    Category, CommandContext, CommandSource, Input, Node, NodeInfo, Output, PassContext, UiContext, ValPort,
+};
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -103,13 +105,16 @@ impl Node<Edges> for ChannelSelector {
         }
     }
 
-    fn settings(&self) -> Vec<SettingPort<Edges>> {
-        let selection = ChannelSelection { apply: self.apply, channels: self.channels.clone() };
-        vec![SettingPort { name: "selection", value: selection.into(), on_right: true }]
+    fn ports(&self) -> Vec<ValPort<Edges>> {
+        vec![ValPort::val_out_cmd_in("selection", ValueKind::ChannelSelection, &[CommandKind::SetChannelSelection])]
     }
 
-    fn set_setting(&mut self, _index: usize, value: PublishedValue) {
-        if let PublishedValue::ChannelSelection(selection) = value {
+    fn val_out(&self, _port: usize) -> PublishedValue {
+        ChannelSelection { apply: self.apply, channels: self.channels.clone() }.into()
+    }
+
+    fn on_command(&mut self, _from: CommandSource, command: Command, _context: &mut CommandContext<Edges>) {
+        if let Command::SetChannelSelection(selection) = command {
             (self.apply, self.channels) = (selection.apply, selection.channels);
         }
     }

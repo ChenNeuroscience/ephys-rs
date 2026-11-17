@@ -1,13 +1,13 @@
 //! The engine runs the graph in passes, each covering `PASS_DURATION` of time, which a worker runs through every node
 //! in the plan's order (see `run`). As a pass reaches a node, the node's `process` is given its context in the pass
-//! (`PassContext`): its inputs, buffers for its outputs, what its controls see, the snapshot the pass runs against (as
-//! nodes see it: whether it's recording, say), what it shares with the GUI, and where it sends triggers.
+//! (`PassContext`): its inputs, buffers for its outputs, the values its ports read, the snapshot the pass runs against
+//! (as nodes see it: whether it's recording, say), what it shares with the GUI, and where it sends commands.
 
 use std::any::Any;
 use std::sync::Arc;
 
-use super::{Buffer, Edges, NodeId, SnapshotLite};
-use crate::triggers::Triggers;
+use super::{Buffer, Edges, NodeId, SnapshotLite, ValueType};
+use crate::commands::{Address, Commands};
 
 /// Each pass covers this many seconds of data.
 pub const PASS_DURATION: f64 = 0.02;
@@ -26,19 +26,19 @@ pub struct PassContext<'a, E: Edges> {
     pub(super) taken: &'a mut [Option<Buffer<E>>],
     /// For each output, a buffer for the node to fill.
     pub outputs: &'a mut [Buffer<E>],
-    /// For each of the node's controls, the value of the setting it's connected to, if it is (which a writer records,
-    /// say).
-    pub controls: &'a [Option<E::PublishedValue>],
+    /// For each of the node's `ValInCmdOut` and `ValIn` ports, what the node at the other end published as the snapshot
+    /// was made, if it's connected (which a writer records, say: see `val_in`).
+    pub val_ins: &'a [Option<E::PublishedValue>],
     /// The pass runs against a snapshot, which nodes can see some of (see `snapshot`).
     pub(super) snapshot: &'a Arc<dyn SnapshotLite>,
     /// The node shares this with the GUI (its `Node::Shared`: see `shared`).
     pub shared: &'a dyn Any,
-    /// The app takes triggers from passes here (see `trigger_settings_update`).
-    pub triggers: &'a Triggers,
+    /// The app takes commands from passes here (see `cmd_self`).
+    pub commands: &'a Commands,
 }
 
 impl<'a, E: Edges> PassContext<'a, E> {
-    /// Tests try nodes out on a pass like this: not recording, with no controls connected.
+    /// Tests try nodes out on a pass like this: not recording, with no ports reading values connected.
     #[cfg(test)]
     pub fn new(
         sequence: u64,
@@ -47,10 +47,10 @@ impl<'a, E: Edges> PassContext<'a, E> {
         outputs: &'a mut [Buffer<E>],
     ) -> Self {
         let taken: &'a mut [Option<Buffer<E>>] = Box::leak(Box::new([]));
-        let triggers = Box::leak(Box::default());
-        let (node, controls, shared) = (NodeId(0), &[], &());
+        let commands = Box::leak(Box::default());
+        let (node, val_ins, shared) = (NodeId(0), &[], &());
         let snapshot = Self::trying(false);
-        PassContext { sequence, duration, node, inputs, taken, outputs, controls, snapshot, shared, triggers }
+        PassContext { sequence, duration, node, inputs, taken, outputs, val_ins, snapshot, shared, commands }
     }
 
     /// Tests try nodes out against a snapshot like this: running as of now, and recording or not.
@@ -89,16 +89,23 @@ impl<'a, E: Edges> PassContext<'a, E> {
         self.shared.downcast_ref().expect("the node's own Node::Shared")
     }
 
-    /// Passes can't change the graph themselves, so a node asks the app here to set its setting `setting` (by index) to
-    /// `value`. The app applies it as an edit, unless settings are locked (while recording). See `crate::triggers`.
-    pub fn trigger_settings_update(&self, setting: usize, value: E::PublishedValue) {
-        self.triggers.trigger_settings_update(self.node, setting, Box::new(value));
+    /// The node reads what its `ValInCmdOut` (or `ValIn`) port `port` saw as the snapshot was made with this, as the
+    /// type it expects, if the port's connected.
+    pub fn val_in<T: ValueType<E::PublishedValue> + 'a>(&self, port: usize) -> Option<&'a T> {
+        T::from_value(self.val_ins.get(port)?.as_ref()?)
+    }
+
+    /// Passes can't change the graph themselves, so a node sends itself `command` here (to set one of its settings from
+    /// what its passes found, say), which the app delivers to the node's `Node::on_command` on the GUI's thread (see
+    /// `crate::commands`).
+    pub fn cmd_self(&self, command: E::Command) {
+        self.commands.send(Address::Itself(self.node), command);
     }
 
     /// A node can have the app start (`on`) or stop recording, as the toolbar's Record does, if it isn't already.
-    /// Whatever any node asks last is what happens. See `crate::triggers`.
-    pub fn trigger_recording(&self, on: bool) {
-        self.triggers.trigger_recording(self.node, on);
+    /// Whatever any node asks last is what happens. See `crate::commands`.
+    pub fn request_recording(&self, on: bool) {
+        self.commands.request_recording(self.node, on);
     }
 
     /// The node reads an input's data with this, whether the node takes the input (see `take_input`) or not.

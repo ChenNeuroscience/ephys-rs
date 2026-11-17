@@ -11,15 +11,14 @@ the size of the first frame. Connecting's tried twice a second, so each of those
 incomplete, or stop coming, or aren't the size set.
 
 The video stream's size has to be known before running, for its buffers, so it's a setting: the Camera node's Frame
-size, one of its camera settings. Frames of any other size are skipped. When they come, the camera triggers an update to the size
-they are (`PassContext::trigger_settings_update`, like other auto-detected settings), which changes the video stream, so the node starts afresh.
+size, one of its camera settings. Frames of any other size are skipped. If the camera's frames are another size as it
+prepares, the app asks whether to use the hardware's settings (the node's suggestion: see `UserDecision`), which changes
+the video stream, so the node starts afresh.
 
 Starting afresh doesn't open the camera again, as that takes a couple of seconds: it carries on with the one capturing, only
 changing the buffers if the frame size has, and setting the frame rate on it if that has (a triggered camera goes by its
 trigger, so there it only changes the rate declared for the video). Stopping closes it, so other programs can use it, and
 changing its source opens another. See [`capture.rs`](../standard/src/tracking/camera/capture.rs).
-
-While recording, settings are locked, so it logs an error instead, and triggers the update once recording stops.
 
 ## The timing LED
 
@@ -50,7 +49,7 @@ alarms by it. The stream
 pass (`AlarmStatesBuffer`), a few numbers for each alarm.
 
 The processor sits with the data. The [Alarm Viewer](../standard/src/alarms/viewer.rs) shows how the alarms
-stand, and has their on and off switches, which edit the processor's settings through a control, so nothing bulky goes to
+stand, and has their on and off switches, which set the processor's alarms through a value edge (`SetAlarms`), so nothing bulky goes to
 the window. Each alarm counts in bins, a fiftieth of its period each, and doesn't go off until it's
 seen a whole period, so a new period, or fresh state (its streams changing), starts it waiting again. Time is counted in passes, not samples, so a
 source that stops looks like a low rate.

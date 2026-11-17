@@ -15,18 +15,17 @@
 //! snapshots. It only runs while recording, so always prepares for it; if that's ever not so, it has a problem to
 //! report (`Writing::failed`). Stopping lets the thread write what's queued and finish the files in the background
 //! (see `ephys_rs::background`), which a writer can ask to hear about (`OnFinished`). The writers do, to tell what's
-//! connected to their "after recording" control what they recorded (`after_recording`), once it's all finished.
+//! connected to their "after recording" port what they recorded (`after_recording`), once it's all finished.
 
 pub mod ltx;
 mod npy;
 pub mod raw;
 
-use crate::standard::other::run_command::RunOnFiles;
 use std::io;
 use std::path::PathBuf;
 
 use ephys_rs::base_directory::Place;
-use ephys_rs::triggers::ControlTriggers;
+use ephys_rs::commands::CmdSender;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -66,13 +65,13 @@ pub trait Files<C>: Send {
     fn finish(self: Box<Self>) -> io::Result<Vec<PathBuf>>;
 }
 
-/// Sends what's been recorded to what control `control` is connected to, as `RunOnFiles`, if it takes that trigger,
-/// once the files are finished. Not if it failed.
-pub fn after_recording(triggers: &ControlTriggers<crate::Trigger>, control: usize) -> Option<OnFinished> {
-    let handle = triggers.handle(control, crate::TriggerKind::RunOnFiles)?;
+/// A writer sends what it's recorded, once the files are finished, through `sender` (its "after recording" port's,
+/// if that's connected), as the `ProcessFiles` command. Not if it failed.
+pub fn after_recording(sender: Option<CmdSender<crate::Command>>) -> Option<OnFinished> {
+    let sender = sender?;
     Some(Box::new(move |result| {
         if let Ok(paths) = result {
-            handle.trigger(RunOnFiles(paths));
+            sender.send(crate::Command::ProcessFiles(crate::standard::other::run_command::Files(paths)));
         }
     }))
 }

@@ -9,7 +9,6 @@ use egui_plot::{Corner, Legend, Line, Plot, Points};
 use super::files::{Plan, Recording};
 use super::{AFTER_SYNCING, Job, Report, Status, SyncPositions, Synced, file_name};
 use crate::Edges;
-use crate::standard::other::run_command::RunOnFiles;
 use crate::standard::widgets::{setting, settings_grid};
 use ephys_rs::engine::UiContext;
 use ephys_rs::gui::widgets::help_link;
@@ -70,7 +69,8 @@ impl SyncPositions {
         let (status, locked) = (job.status(), context.locked);
         let running = matches!(status, Status::Running { .. });
         // What's connected supplies the recordings, while it is.
-        let senders = context.controlled_by.first().cloned().unwrap_or_default();
+        let senders =
+            context.controlled_by.get(crate::standard::other::run_command::FILES).cloned().unwrap_or_default();
         let connected = !senders.is_empty();
         let settings = &mut self.settings;
         ui.add_enabled_ui(!locked && !running, |ui| {
@@ -155,7 +155,8 @@ impl SyncPositions {
             };
             // As if it were sent it: so it's the same either way.
             if run.clicked() {
-                context.trigger(None, RunOnFiles(vec![self.settings.set_file.clone()]));
+                let job = context.ui_state::<super::SyncState>().job.clone();
+                self.sync(&job, vec![self.settings.set_file.clone()], context.cmd_sender(AFTER_SYNCING));
             }
             if connected {
                 ui.weak(format!("Run triggered by {}", any_of(&senders)));

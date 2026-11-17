@@ -20,17 +20,21 @@ use super::position_detector::{calibration_ui, crop_ui, detection_ui, timing_led
 use crate::standard::plots;
 use crate::standard::pool::Pool;
 use crate::standard::tracking::VideoBuffer;
+use crate::standard::tracking::camera::CameraConfig;
 use crate::standard::tracking::overlay::{self, Drag, Overlay, Overlays, Xform};
 use crate::standard::tracking::pipeline::{Blob, RowSpans, row_spans};
 use crate::standard::tracking::{Crop, Detection, Positions};
 use crate::standard::widgets::{named_settings_grid, section};
-use crate::{Buffer, DataStream, Edges, Kind, PublishedValue, ValueKind};
+use crate::{Buffer, Command, CommandKind, DataStream, Edges, Kind, ValueKind};
 use ephys_rs::engine::{
-    Category, Control, EdgeType, Input, Node, NodeInfo, Output, PassContext, PoolStatus, Prepare, PrepareContext,
-    Prepared, Shared, UiContext,
+    Category, EdgeType, Input, Node, NodeInfo, Output, PassContext, PoolStatus, Prepare, PrepareContext, Prepared,
+    Shared, UiContext, ValPort,
 };
 use ephys_rs::theme::Colours;
 
+/// Its ports: the camera's settings (a Camera's) and the detector's (a Position Detector's), which it adjusts.
+const CAMERA: usize = 0;
+const DETECTION: usize = 1;
 /// Above-threshold pixels, when detection's shown.
 const HIGHLIGHT: Color32 = Color32::from_rgb(255, 70, 70);
 
@@ -166,10 +170,10 @@ impl Node<Edges> for TrackerView {
         if inputs[0].is_none() && inputs[1].is_none() { vec!["Connect video or positions".into()] } else { Vec::new() }
     }
 
-    fn controls(&self) -> Vec<Control<Edges>> {
+    fn ports(&self) -> Vec<ValPort<Edges>> {
         vec![
-            Control { name: "camera", kind: ValueKind::Camera, read_only: false, on_right: false },
-            Control { name: "detection", kind: ValueKind::Detection, read_only: false, on_right: false },
+            ValPort::val_in_cmd_out("camera", ValueKind::Camera, &[CommandKind::SetCamera]),
+            ValPort::val_in_cmd_out("detection", ValueKind::Detection, &[CommandKind::SetDetection]),
         ]
     }
 
@@ -356,10 +360,7 @@ impl TrackerView {
             };
             return plots::unconnected(ui, context.theme, &message);
         };
-        let detection = match &context.controls[1] {
-            Some(PublishedValue::Detection(detection)) => Some(detection.clone()),
-            _ => None,
-        };
+        let detection = context.val_in::<Detection>(DETECTION).cloned();
         let (rect, response) = show_frame(ui, display.frame.view(), detection.as_ref(), &self.overlays, context.theme);
         let xf = Xform { origin: rect.min, scale: rect.width() / display.frame.width as f32 };
 
@@ -368,7 +369,7 @@ impl TrackerView {
             let drag_id = ui.scope_id().with("tracker drag");
             let mut drag = ui.data(|d| d.get_temp::<Option<Drag>>(drag_id)).flatten();
             if overlay::interact(ui, &response, xf, &mut detection, &self.overlays, &mut drag) {
-                context.controls[1] = Some(PublishedValue::Detection(detection.clone()));
+                context.cmd_out_if_changed(DETECTION, detection.clone(), Command::SetDetection);
             }
             ui.data_mut(|d| d.insert_temp(drag_id, drag));
             let timing_on = display.timing_led == Some(true);
@@ -376,10 +377,7 @@ impl TrackerView {
         } else {
             overlay::draw(&ui.painter_at(rect), xf, &Detection::default(), &self.overlays, &display.leds, false);
         }
-        let calibration = match &context.controls[1] {
-            Some(PublishedValue::Detection(detection)) => detection.pixels_per_metre(),
-            _ => None,
-        };
+        let calibration = context.val_in::<Detection>(DETECTION).and_then(Detection::pixels_per_metre);
         let length = |length: f32| match calibration {
             Some(ppm) => format!("{:.2} m", length / ppm),
             None => format!("{length:.0} px"),
@@ -410,25 +408,24 @@ impl TrackerView {
         // What the camera supports, once it's running.
         let supports = stats.filter(|s| s.status.state == State::Running).map(|s| &s.status.controls);
         let mut camera_locked = self.camera_locked;
-        section(ui, "Camera", None, (&mut camera_locked, "Lock the camera settings"), |ui, locked| match &mut context
-            .controls[0]
-        {
-            Some(PublishedValue::Camera(settings)) => {
+        let mut camera = context.val_in::<CameraConfig>(CAMERA).copied();
+        section(ui, "Camera", None, (&mut camera_locked, "Lock the camera settings"), |ui, locked| match &mut camera {
+            Some(settings) => {
                 if locked {
                     ui.disable();
                 }
                 camera_settings_ui(ui, settings, supports);
             }
-            _ => {
+            None => {
                 ui.weak("Connect the camera control to a Camera to adjust it here.");
             }
         });
         self.camera_locked = camera_locked;
+        if let Some(camera) = camera {
+            context.cmd_out_if_changed(CAMERA, camera, Command::SetCamera);
+        }
 
-        let mut detection = match &context.controls[1] {
-            Some(PublishedValue::Detection(detection)) => Some(detection.clone()),
-            _ => None,
-        };
+        let mut detection = context.val_in::<Detection>(DETECTION).cloned();
         let unconnected = |ui: &mut egui::Ui| {
             ui.weak("Connect the detection control to a Position Detector to adjust it here.");
         };
@@ -520,7 +517,7 @@ impl TrackerView {
         }
 
         if let Some(detection) = detection {
-            context.controls[1] = Some(PublishedValue::Detection(detection));
+            context.cmd_out_if_changed(DETECTION, detection, Command::SetDetection);
         }
     }
 }
@@ -532,10 +529,7 @@ fn positions_only(context: &UiContext<Edges>) -> bool {
 
 /// The window the positions range over: the crop's, if there's one, otherwise a frame's. Sized so it's never empty.
 fn positions_window(context: &UiContext<Edges>) -> [f32; 4] {
-    let crop = match &context.controls[1] {
-        Some(PublishedValue::Detection(detection)) => detection.crop.bounds(),
-        _ => None,
-    };
+    let crop = context.val_in::<Detection>(DETECTION).and_then(|detection| detection.crop.bounds());
     let size = match context.inputs[1] {
         Some(DataStream::Positions(positions)) => [positions.width as f32, positions.height as f32],
         _ => [1.0, 1.0],
@@ -556,10 +550,7 @@ fn positions_ui(ui: &mut egui::Ui, context: &UiContext<Edges>, display: Option<&
     let painter = ui.painter_at(rect.expand(2.0));
     painter.rect_filled(rect, 0.0, Color32::BLACK);
     let xf = Xform { origin: rect.min - egui::vec2(min_x, min_y) * scale, scale };
-    let detection = match &context.controls[1] {
-        Some(PublishedValue::Detection(detection)) => detection.clone(),
-        _ => Detection::default(),
-    };
+    let detection = context.val_in::<Detection>(DETECTION).cloned().unwrap_or_default();
     // The calibration has rulers, but nobody laid them over anything.
     let shown = Overlay { visible: true, locked: true };
     let hidden = Overlay { visible: false, locked: true };
@@ -589,7 +580,7 @@ fn positions_settings_ui(ui: &mut egui::Ui, context: &UiContext<Edges>) {
     };
     ui.label(RichText::new("Positions").strong());
     ui.weak(format!("From {}, without video: there's nothing to adjust here.", source.replace('_', " ")));
-    let Some(PublishedValue::Detection(detection)) = &context.controls[1] else { return };
+    let Some(detection) = context.val_in::<Detection>(DETECTION) else { return };
     if detection.custom.is_empty() {
         return;
     }

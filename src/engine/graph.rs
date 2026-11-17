@@ -9,9 +9,10 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    Control, Dimension, EdgeInfo, EdgeTypesEnum, Edges, Input, Node, NodesEnum, Output, Plan, SettingPort, TriggerKind,
-    UiContext,
+    CommandContext, CommandSource, CommandsEnum, Dimension, EdgeInfo, EdgeTypesEnum, Edges, Input, Node, NodesEnum,
+    Output, Plan, UiContext, ValPort,
 };
+use crate::commands::{Address, Commands};
 use crate::theme::Colours;
 
 /// The graph names each node with an id, unique within the graph and never reused, so it's the same node through undo,
@@ -32,6 +33,10 @@ pub enum PortRole {
     ValOutCmdIn,
     /// The node reads another node's published value here, and sends it commands.
     ValInCmdOut,
+    /// Val-only: the node only reads another node's published value here (the GUI calls it read-only). A node declares
+    /// such ports (see `ValPort`), but the graph numbers them with its `ValInCmdOut` ports, and finds them as those: an
+    /// edge from either starts at a `ValInCmdOut` (see `Edge::source`).
+    ValIn,
 }
 
 impl PortRole {
@@ -39,7 +44,7 @@ impl PortRole {
     pub fn dimension(self) -> Dimension {
         match self {
             PortRole::DataStreamIn | PortRole::DataStreamOut => Dimension::Data,
-            PortRole::ValOutCmdIn | PortRole::ValInCmdOut => Dimension::Values,
+            PortRole::ValOutCmdIn | PortRole::ValInCmdOut | PortRole::ValIn => Dimension::Values,
         }
     }
 
@@ -49,14 +54,14 @@ impl PortRole {
             PortRole::DataStreamIn => PortRole::DataStreamOut,
             PortRole::DataStreamOut => PortRole::DataStreamIn,
             PortRole::ValOutCmdIn => PortRole::ValInCmdOut,
-            PortRole::ValInCmdOut => PortRole::ValOutCmdIn,
+            PortRole::ValInCmdOut | PortRole::ValIn => PortRole::ValOutCmdIn,
         }
     }
 
     /// Edges start at a `DataStreamOut` or `ValInCmdOut`, and end at a `DataStreamIn` or `ValOutCmdIn`. This says
     /// whether they start here.
     pub fn is_source(self) -> bool {
-        matches!(self, PortRole::DataStreamOut | PortRole::ValInCmdOut)
+        matches!(self, PortRole::DataStreamOut | PortRole::ValInCmdOut | PortRole::ValIn)
     }
 
     /// The role's name, for people.
@@ -66,6 +71,7 @@ impl PortRole {
             PortRole::DataStreamOut => "output",
             PortRole::ValOutCmdIn => "setting",
             PortRole::ValInCmdOut => "control",
+            PortRole::ValIn => "read-only control",
         }
     }
 }
@@ -85,8 +91,9 @@ pub struct PortRef {
     pub port: usize,
 }
 
-/// An edge connects an output to an input, or a control to a setting. Each input or setting has at most one edge into
-/// it; an output or control can have any number out of it.
+/// An edge connects a `DataStreamOut` to a `DataStreamIn`, or a `ValInCmdOut` to a `ValOutCmdIn`. A `DataStreamIn`
+/// has at most one edge into it, and a `DataStreamOut` any number out of it; a `ValInCmdOut` has at most one edge out
+/// of it, and a `ValOutCmdIn` any number into it.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub struct Edge {
     #[serde(default)]
@@ -96,13 +103,14 @@ pub struct Edge {
 }
 
 impl Edge {
-    /// The edge starts from an output or control: this one.
+    /// The edge starts from a `DataStreamOut` or `ValInCmdOut` (or a `ValIn`, numbered and found as a `ValInCmdOut`):
+    /// this one.
     pub fn source(&self) -> Port {
         let role = if self.dimension == Dimension::Data { PortRole::DataStreamOut } else { PortRole::ValInCmdOut };
         Port { node: self.from.node, role, index: self.from.port }
     }
 
-    /// The edge goes into an input or setting: this one.
+    /// The edge goes into a `DataStreamIn` or `ValOutCmdIn`: this one.
     pub fn target(&self) -> Port {
         let role = if self.dimension == Dimension::Data { PortRole::DataStreamIn } else { PortRole::ValOutCmdIn };
         Port { node: self.to.node, role, index: self.to.port }
@@ -140,7 +148,7 @@ impl<N: NodesEnum> NodeEntry<N> {
 pub enum ConnectError {
     NoSuchPort,
     SameNode,
-    /// Only an output and an input, or a control and a setting, can be connected.
+    /// Only a `DataStreamOut` and a `DataStreamIn`, or a `ValInCmdOut` and a `ValOutCmdIn`, can be connected.
     RoleMismatch,
     KindMismatch {
         dimension: Dimension,
@@ -174,13 +182,12 @@ pub struct NodeState<E: Edges> {
     /// For each input, the data stream connected to it, if any.
     pub input_streams: Vec<Option<E::DataStream>>,
     pub outputs: Vec<Output<E>>,
-    pub settings: Vec<SettingPort<E>>,
-    pub controls: Vec<Control<E>>,
+    /// The node's `ValOutCmdIn` ports, in order, and what it publishes at each (see `Node::val_out`).
+    pub val_outs: Vec<ValPort<E>>,
+    pub values: Vec<E::PublishedValue>,
+    /// The node's `ValInCmdOut` and `ValIn` ports, in order, numbered together.
+    pub val_ins: Vec<ValPort<E>>,
     pub warnings: Vec<String>,
-    /// For each setting, the triggers it takes (`Node::triggers`), and for each control, those it sends
-    /// (`Node::sends`).
-    pub takes: Vec<&'static [TriggerKind<E>]>,
-    pub sends: Vec<&'static [TriggerKind<E>]>,
 }
 
 /// The graph names an edge type by its dimension and its index in that dimension's `EdgeTypesEnum::KINDS`.
@@ -189,28 +196,28 @@ pub type KindKey = (Dimension, usize);
 impl<E: Edges> NodeState<E> {
     /// The state of `node`, given the data streams on its inputs.
     pub fn of<N: Node<E>>(node: &N, input_streams: Vec<Option<E::DataStream>>) -> Self {
+        let (val_outs, val_ins): (Vec<_>, Vec<_>) = node.ports().into_iter().partition(ValPort::publishes);
         NodeState {
             inputs: node.inputs(),
             outputs: node.outputs(&input_streams),
             warnings: node.warnings(&input_streams),
             input_streams,
-            settings: node.settings(),
-            controls: node.controls(),
-            takes: (0..node.settings().len()).map(|s| node.triggers(s)).collect(),
-            sends: (0..node.controls().len()).map(|c| node.sends(c)).collect(),
+            values: (0..val_outs.len()).map(|port| node.val_out(port)).collect(),
+            val_outs,
+            val_ins,
         }
     }
 
     pub fn new<N: NodesEnum<Edges = E>>(node: &N, input_streams: Vec<Option<E::DataStream>>) -> Self {
+        let (val_outs, val_ins): (Vec<_>, Vec<_>) = node.ports().into_iter().partition(ValPort::publishes);
         NodeState {
             inputs: node.inputs(),
             outputs: node.outputs(&input_streams),
             warnings: node.warnings(&input_streams),
             input_streams,
-            settings: node.settings(),
-            controls: node.controls(),
-            takes: (0..node.settings().len()).map(|s| node.triggers(s)).collect(),
-            sends: (0..node.controls().len()).map(|c| node.sends(c)).collect(),
+            values: (0..val_outs.len()).map(|port| node.val_out(port)).collect(),
+            val_outs,
+            val_ins,
         }
     }
 
@@ -220,8 +227,8 @@ impl<E: Edges> NodeState<E> {
         match role {
             PortRole::DataStreamOut => true,
             PortRole::DataStreamIn => false,
-            PortRole::ValOutCmdIn => self.settings.get(index).is_some_and(|p| p.on_right),
-            PortRole::ValInCmdOut => self.controls.get(index).is_some_and(|p| p.on_right),
+            PortRole::ValOutCmdIn => self.val_outs.get(index).is_some_and(|p| !p.flipped),
+            PortRole::ValInCmdOut | PortRole::ValIn => self.val_ins.get(index).is_some_and(|p| p.flipped),
         }
     }
 
@@ -230,32 +237,46 @@ impl<E: Edges> NodeState<E> {
         Self::new(node, vec![None; node.inputs().len()])
     }
 
+    /// How many ports of `role` the node has (`ValIn` ports being counted as `ValInCmdOut`).
     pub fn count(&self, role: PortRole) -> usize {
         match role {
             PortRole::DataStreamIn => self.inputs.len(),
             PortRole::DataStreamOut => self.outputs.len(),
-            PortRole::ValOutCmdIn => self.settings.len(),
-            PortRole::ValInCmdOut => self.controls.len(),
+            PortRole::ValOutCmdIn => self.val_outs.len(),
+            PortRole::ValInCmdOut => self.val_ins.len(),
+            PortRole::ValIn => 0,
         }
+    }
+
+    /// The value port at `(role, index)`, if it's one.
+    pub fn val_port(&self, role: PortRole, index: usize) -> Option<&ValPort<E>> {
+        match role {
+            PortRole::ValOutCmdIn => self.val_outs.get(index),
+            PortRole::ValInCmdOut | PortRole::ValIn => self.val_ins.get(index),
+            PortRole::DataStreamIn | PortRole::DataStreamOut => None,
+        }
+    }
+
+    /// A `ValIn` port is val-only (read-only, to people): this says whether the `ValInCmdOut` port `index` is one.
+    pub fn val_only(&self, index: usize) -> bool {
+        self.val_ins.get(index).is_some_and(|p| p.role == PortRole::ValIn)
     }
 
     pub fn name(&self, role: PortRole, index: usize) -> Option<&'static str> {
         match role {
             PortRole::DataStreamIn => self.inputs.get(index).map(|p| p.name),
             PortRole::DataStreamOut => self.outputs.get(index).map(|p| p.name),
-            PortRole::ValOutCmdIn => self.settings.get(index).map(|p| p.name),
-            PortRole::ValInCmdOut => self.controls.get(index).map(|p| p.name),
+            _ => self.val_port(role, index).map(|p| p.name),
         }
     }
 
     pub fn kind(&self, role: PortRole, index: usize) -> Option<KindKey> {
         let stream = |kind| (Dimension::Data, E::DataStream::kind_index(kind));
-        let setting = |kind| (Dimension::Values, E::PublishedValue::kind_index(kind));
+        let value = |kind| (Dimension::Values, E::PublishedValue::kind_index(kind));
         match role {
             PortRole::DataStreamIn => self.inputs.get(index).map(|p| stream(p.kind)),
             PortRole::DataStreamOut => self.outputs.get(index).map(|p| stream(p.kind)),
-            PortRole::ValOutCmdIn => self.settings.get(index).map(|p| setting(p.value.kind())),
-            PortRole::ValInCmdOut => self.controls.get(index).map(|p| setting(p.kind)),
+            _ => self.val_port(role, index).map(|p| value(p.value_kind)),
         }
     }
 
@@ -263,14 +284,14 @@ impl<E: Edges> NodeState<E> {
         self.kind(role, index).map(edge_info::<E>)
     }
 
-    /// The graph and the node's window show what's on a port: the data stream on an input or output, or the value of a
-    /// setting.
+    /// The graph and the node's window show what's on a port: the data stream on an input or output, or the value the
+    /// node publishes.
     pub fn summary(&self, role: PortRole, index: usize) -> Option<String> {
         match role {
             PortRole::DataStreamIn => self.input_streams.get(index).copied().flatten().map(|s| s.summary()),
             PortRole::DataStreamOut => self.outputs.get(index)?.stream.map(|s| s.summary()),
-            PortRole::ValOutCmdIn => self.settings.get(index).map(|s| s.value.summary()),
-            PortRole::ValInCmdOut => None,
+            PortRole::ValOutCmdIn => self.values.get(index).map(|v| v.summary()),
+            PortRole::ValInCmdOut | PortRole::ValIn => None,
         }
     }
 
@@ -280,25 +301,11 @@ impl<E: Edges> NodeState<E> {
             .flat_map(move |role| (0..self.count(role)).map(move |index| Port { node, role, index }))
     }
 
-    /// Two ports fit if they're partners of the same kind, or a control and a setting, either way round, with a trigger
-    /// the control sends that the setting takes (see `Node::sends`). This says whether this node's port `(role, index)`
-    /// fits `other`'s port `to`.
+    /// Two ports fit if they're partners of the same kind. This says whether this node's port `(role, index)` fits
+    /// `other`'s port `to`.
     pub fn fits(&self, (role, index): (PortRole, usize), other: &Self, to: (PortRole, usize)) -> bool {
-        if role.partner() != to.0 {
-            return false;
-        }
         let kind = self.kind(role, index);
-        if kind.is_some() && kind == other.kind(to.0, to.1) {
-            return true;
-        }
-        let (control, setting) = match role {
-            PortRole::ValInCmdOut => ((self, index), (other, to.1)),
-            PortRole::ValOutCmdIn => ((other, to.1), (self, index)),
-            _ => return false,
-        };
-        let sends = control.0.sends.get(control.1).copied().unwrap_or_default();
-        let takes = setting.0.takes.get(setting.1).copied().unwrap_or_default();
-        sends.iter().any(|kind| takes.contains(kind))
+        role.partner() == to.0 && kind.is_some() && kind == other.kind(to.0, to.1)
     }
 
     /// When a wire's dropped on a node, it connects to the first of the node's ports that fits (see `fits`). This finds
@@ -370,9 +377,10 @@ impl<N: NodesEnum> Graph<N> {
         self.nodes.get(&id)
     }
 
-    /// Clears the transient part of every node's settings that other nodes can edit (see `EdgeType::clear_transient`).
-    pub fn clear_transient(&mut self) {
-        self.nodes.values_mut().for_each(|entry| clear_transient(&mut entry.node));
+    /// The app has every node drop what it was asked to do only for now (see `CommandsEnum::clear_transient_state`)
+    /// with this.
+    pub fn clear_transient_state(&mut self) {
+        self.nodes.iter_mut().for_each(|(id, entry)| clear_transient_state(*id, entry));
     }
 
     pub fn get_mut(&mut self, id: NodeId) -> Option<&mut NodeEntry<N>> {
@@ -399,12 +407,14 @@ impl<N: NodesEnum> Graph<N> {
         self.edges.iter().filter(|e| e.dimension == Dimension::Data)
     }
 
-    /// An input or setting has at most one edge into it. This finds it, enabled or not.
+    /// A `DataStreamIn` has at most one edge into it. This finds it, enabled or not (or, for a `ValOutCmdIn`, the
+    /// first).
     pub fn edge_into(&self, port: Port) -> Option<Edge> {
         self.edges.iter().find(|e| e.target() == port).copied()
     }
 
-    /// An output or control can have any number of edges out of it. This finds them, enabled or not.
+    /// A `DataStreamOut` can have any number of edges out of it, and a `ValInCmdOut` one. This finds them, enabled or
+    /// not.
     pub fn edges_from(&self, port: Port) -> impl Iterator<Item = Edge> + '_ {
         self.edges.iter().filter(move |e| e.source() == port).copied()
     }
@@ -429,20 +439,20 @@ impl<N: NodesEnum> Graph<N> {
         }
     }
 
-    /// The edge into an input or setting, if there's one and it counts (see `is_live`).
+    /// The edge into a `DataStreamIn`, if there's one and it counts (see `is_live`).
     pub fn live_edge_into(&self, port: Port) -> Option<Edge> {
         self.edges.iter().find(|e| e.target() == port && self.is_live(e)).copied()
     }
 
-    /// The edges out of an output or control that count (see `is_live`).
+    /// The edges out of a `DataStreamOut` or `ValInCmdOut` that count (see `is_live`).
     pub fn live_edges_from(&self, port: Port) -> impl Iterator<Item = Edge> + '_ {
         self.edges.iter().filter(move |e| e.source() == port && self.is_live(e)).copied()
     }
 
-    /// A node's window says which nodes control each of its settings: for each setting, the labels of the nodes with a
-    /// live edge from a control to it.
+    /// A node's window says which nodes read and command what it publishes: for each of its `ValOutCmdIn` ports, the
+    /// labels of the nodes with a live edge to it.
     fn controlled_by(&self, id: NodeId) -> Vec<Vec<String>> {
-        let count = self.nodes.get(&id).map_or(0, |entry| entry.node.settings().len());
+        let count = self.nodes.get(&id).map_or(0, |entry| entry.node.ports().iter().filter(|p| p.publishes()).count());
         let labels = |index| {
             let port = Port { node: id, role: PortRole::ValOutCmdIn, index };
             let edges = self.edges.iter().filter(|e| e.target() == port && self.is_live(e));
@@ -474,7 +484,7 @@ impl<N: NodesEnum> Graph<N> {
             let name = |kind| edge_info::<N::Edges>(kind).name;
             return Err(ConnectError::KindMismatch { dimension, from: name(from_kind), to: name(to_kind) });
         }
-        // Settings edges carry no data, so may point anywhere; only data edges must not loop.
+        // Value edges carry no data, so may point anywhere; only data edges must not loop.
         if dimension == Dimension::Data && self.reaches(to.node, from.node) {
             return Err(ConnectError::Cycle);
         }
@@ -485,9 +495,10 @@ impl<N: NodesEnum> Graph<N> {
         })
     }
 
-    /// The canvas connects `a` and `b` (in either order) with this, replacing anything already going into the input,
-    /// or the setting the control was linked to. (An input has one source, but a setting can have many controls: one
-    /// editing it, say, and others reading it. A control has just the one setting.)
+    /// The canvas connects `a` and `b` (in either order) with this, replacing anything already going into the
+    /// `DataStreamIn`, or what the `ValInCmdOut` was connected to. (A `DataStreamIn` has one source, but a
+    /// `ValOutCmdIn` can have many nodes reading it: one commanding it, say, and others only reading. A `ValInCmdOut`
+    /// reads just the one.)
     pub fn connect(&mut self, a: Port, b: Port) -> Result<Edge, ConnectError> {
         let edge = self.check(a, b)?;
         self.edges.retain(|e| match edge.dimension {
@@ -579,7 +590,7 @@ impl<N: NodesEnum> Graph<N> {
     /// works out every node's, from the sources down.
     pub fn resolve(&self) -> Resolved<N::Edges> {
         let mut resolved: Resolved<N::Edges> = Resolved::new();
-        let in_loops = self.trigger_loops();
+        let in_loops = self.command_loops();
         for id in self.topological_order() {
             let entry = &self.nodes[&id];
             let node = &entry.node;
@@ -594,7 +605,7 @@ impl<N: NodesEnum> Graph<N> {
             let mut state = NodeState::new(node, input_streams);
             if in_loops.contains(&id) {
                 state.warnings.push(
-                    "In a loop of triggers: what it sets off can set it off again, over and over (Stop ends it)".into(),
+                    "In a loop of commands: what it sets off can set it off again, over and over (Stop ends it)".into(),
                 );
             }
             // A disabled node makes nothing, and has nothing to warn about.
@@ -609,13 +620,17 @@ impl<N: NodesEnum> Graph<N> {
         resolved
     }
 
-    /// Live settings edges into settings that take a trigger (see `Node::triggers`) can make a loop, so what a node
-    /// sets off can, in the end, set it off again. The canvas warns of the nodes in such a loop, which this finds.
-    pub fn trigger_loops(&self) -> std::collections::HashSet<NodeId> {
+    /// Live value edges carrying commands (a command the near end sends that the far end accepts) can make a loop, so
+    /// what a node sets off can, in the end, set it off again (Run Commands running each other, say). The canvas warns
+    /// of the nodes in such a loop, which this finds.
+    pub fn command_loops(&self) -> std::collections::HashSet<NodeId> {
         let mut next: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
         for edge in self.edges.iter().filter(|e| e.dimension == Dimension::Values && self.is_live(e)) {
-            let takes = self.nodes.get(&edge.to.node).is_some_and(|n| !n.node.triggers(edge.to.port).is_empty());
-            if takes {
+            let ports = |id: NodeId| self.nodes.get(&id).map(|n| n.node.ports()).unwrap_or_default();
+            let (from, to) = (ports(edge.from.node), ports(edge.to.node));
+            let sends = from.iter().filter(|p| !p.publishes()).nth(edge.from.port).map_or(&[][..], |p| p.commands);
+            let accepts = to.iter().filter(|p| p.publishes()).nth(edge.to.port).map_or(&[][..], |p| p.commands);
+            if sends.iter().any(|kind| accepts.contains(kind)) {
                 next.entry(edge.from.node).or_default().push(edge.to.node);
             }
         }
@@ -636,35 +651,76 @@ impl<N: NodesEnum> Graph<N> {
         next.keys().copied().filter(|&id| reaches_itself(id)).collect()
     }
 
-    /// A node's controls see the settings they're connected to. This gives, for each of node `id`'s controls, the
-    /// current value of that setting, if there is one.
-    pub fn control_values(&self, id: NodeId) -> Vec<Option<PublishedValue<N>>> {
+    /// A node reads values through its `ValInCmdOut` and `ValIn` ports. This gives, for each of node `id`'s, what the
+    /// node at the other end publishes there now, if the port's connected (by a live edge).
+    pub fn val_ins(&self, id: NodeId) -> Vec<Option<PublishedValue<N>>> {
         let Some(entry) = self.nodes.get(&id) else { return Vec::new() };
-        (0..entry.node.controls().len())
-            .map(|index| {
-                let edge = self.live_edges_from(Port { node: id, role: PortRole::ValInCmdOut, index }).next()?;
-                self.nodes.get(&edge.to.node)?.node.settings().into_iter().nth(edge.to.port).map(|s| s.value)
+        let count = entry.node.ports().iter().filter(|p| !p.publishes()).count();
+        (0..count)
+            .map(|port| {
+                let to = self.val_in_target(id, port)?;
+                let target = &self.nodes.get(&to.node)?.node;
+                let publishes = target.ports().iter().filter(|p| p.publishes()).count();
+                (to.port < publishes).then(|| target.val_out(to.port))
             })
             .collect()
     }
 
-    /// Node `id`'s controls can send triggers to the nodes they're connected to. This gives what they can
-    /// send, sent on to `triggers`.
-    pub fn control_triggers(
-        &self,
-        id: NodeId,
-        triggers: &Arc<crate::triggers::Triggers>,
-    ) -> crate::triggers::ControlTriggers<<N::Edges as super::Edges>::Trigger> {
-        let count = self.get(id).map_or(0, |entry| entry.node.controls().len());
-        let control = |index| {
-            let edges = self.live_edges_from(Port { node: id, role: PortRole::ValInCmdOut, index });
-            edges.filter_map(|e| Some((e.to.node, self.get(e.to.node)?.node.triggers(e.to.port)))).collect()
-        };
-        crate::triggers::ControlTriggers::new(triggers.clone(), (0..count).map(control).collect())
+    /// Node `from`'s `ValInCmdOut` port `port` (by index among those and its `ValIn` ports) connects to at most one
+    /// `ValOutCmdIn`: this finds it, if the edge is live.
+    pub fn val_in_target(&self, from: NodeId, port: usize) -> Option<PortRef> {
+        self.live_edges_from(Port { node: from, role: PortRole::ValInCmdOut, index: port }).next().map(|e| e.to)
     }
 
-    /// The app runs `f` (a node's window, say) on a node with this, then applies any changes it made through its
-    /// controls to the settings they're connected to.
+    /// A command's delivered to a node, from where it came (see `CommandSource`): this finds them, for one sent to
+    /// `address`, following the edge now. A command sent through a port that's no longer connected goes nowhere.
+    pub fn command_target(&self, address: Address) -> Option<(NodeId, CommandSource)> {
+        match address {
+            Address::Port { from, port } => {
+                let to = self.val_in_target(from, port)?;
+                Some((to.node, CommandSource::Port(to.port)))
+            }
+            Address::Itself(node) => self.nodes.contains_key(&node).then_some((node, CommandSource::Itself)),
+        }
+    }
+
+    /// The app delivers `command` to node `to`, from `from`, with this. The node's `ui_state` is where it keeps work it
+    /// starts, `commands` where it sends commands in turn, and `running` whether the graph's running. A command
+    /// through a port that doesn't accept it, or to a disabled node, isn't delivered (the app logs it), and this
+    /// returns false.
+    #[allow(clippy::too_many_arguments)]
+    pub fn command(
+        &mut self,
+        to: NodeId,
+        from: CommandSource,
+        command: <N::Edges as Edges>::Command,
+        ui_state: Option<&crate::engine::UiStateCell>,
+        commands: Option<&Arc<Commands>>,
+        running: bool,
+    ) -> bool {
+        let val_ins = self.val_ins(to);
+        let Some(entry) = self.nodes.get_mut(&to) else { return false };
+        if entry.disabled && !command.is_clear_transient_state() {
+            log::info!("{} is disabled: {:?} not delivered", entry.label, command.kind());
+            return false;
+        }
+        if let CommandSource::Port(port) = from {
+            let ports = entry.node.ports();
+            let accepts =
+                ports.iter().filter(|p| p.publishes()).nth(port).is_some_and(|p| p.commands.contains(&command.kind()));
+            if !accepts {
+                log::warn!("{}'s port {port} doesn't accept {:?}: not delivered", entry.label, command.kind());
+                return false;
+            }
+        }
+        let context = &mut CommandContext::new(to, &entry.label, &val_ins, ui_state, commands, running);
+        entry.node.on_command(from, command, context);
+        true
+    }
+
+    /// The app runs `f` (a node's window, say) on a node with this. The commands the window sends through its ports
+    /// go to `commands`, for the app to deliver, or, where there's no `commands` (a test, say), straight to the nodes
+    /// the ports connect to, as `f` returns.
     #[allow(clippy::too_many_arguments)]
     pub fn edit<R>(
         &mut self,
@@ -679,11 +735,28 @@ impl<N: NodesEnum> Graph<N> {
         tools: Option<&mut dyn super::NodeToolbar>,
         f: impl FnOnce(&mut N, &mut UiContext<N::Edges>) -> R,
     ) -> Option<R> {
-        let before = self.control_values(id);
-        let mut controls = before.clone();
+        self.edit_sending(id, inputs, theme, shared_by_node, ui_state, base_directory, running, locked, tools, None, f)
+    }
+
+    /// The same as `edit`, sending the window's commands to `commands`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn edit_sending<R>(
+        &mut self,
+        id: NodeId,
+        inputs: &[Option<DataStream<N>>],
+        theme: &Colours,
+        shared_by_node: Option<&super::SharedByNode>,
+        ui_state: Option<&crate::engine::UiStateCell>,
+        base_directory: Option<&crate::base_directory::Place>,
+        running: bool,
+        locked: bool,
+        tools: Option<&mut dyn super::NodeToolbar>,
+        commands: Option<&Arc<Commands>>,
+        f: impl FnOnce(&mut N, &mut UiContext<N::Edges>) -> R,
+    ) -> Option<R> {
+        let val_ins = self.val_ins(id);
         let controlled_by = self.controlled_by(id);
         let entry = self.nodes.get_mut(&id)?;
-        let read_only: Vec<bool> = entry.node.controls().iter().map(|c| c.read_only).collect();
         // A fresh one, if the caller doesn't keep it (a test, say).
         let fresh;
         let ui_state = match ui_state {
@@ -693,9 +766,10 @@ impl<N: NodesEnum> Graph<N> {
                 &fresh
             }
         };
+        let mut sent = Vec::new();
         let context = &mut UiContext {
             inputs,
-            controls: &mut controls,
+            val_ins: &val_ins,
             controlled_by: &controlled_by,
             theme,
             node: id,
@@ -705,6 +779,8 @@ impl<N: NodesEnum> Graph<N> {
             base_directory,
             running,
             locked,
+            commands,
+            sent: &mut sent,
             // Reborrowed, to live as long as the context.
             tools: match tools {
                 Some(tools) => Some(&mut *tools),
@@ -712,26 +788,24 @@ impl<N: NodesEnum> Graph<N> {
             },
         };
         let result = f(&mut entry.node, context);
-        for (index, (old, new)) in before.into_iter().zip(controls).enumerate() {
-            if read_only.get(index) == Some(&true) {
+        for (port, command) in sent {
+            if let Some(commands) = commands {
+                commands.send(Address::Port { from: id, port }, command);
                 continue;
             }
-            let Some(new) = new.filter(|new| Some(new) != old.as_ref()) else { continue };
-            let targets: Vec<PortRef> =
-                self.live_edges_from(Port { node: id, role: PortRole::ValInCmdOut, index }).map(|e| e.to).collect();
-            for target in targets {
-                let Some(entry) = self.nodes.get_mut(&target.node) else { continue };
-                if entry.node.settings().get(target.port).is_some_and(|s| s.value.kind() == new.kind()) {
-                    entry.node.set_setting(target.port, new.clone());
+            match self.command_target(Address::Port { from: id, port }) {
+                Some((to, from)) => {
+                    self.command(to, from, command, None, None, running);
                 }
+                None => log::info!("Port {port} isn't connected: {:?} not sent", command.kind()),
             }
         }
         Some(result)
     }
 }
 
-/// A snapshot keeps, for each node with controls, the value of the setting each is connected to, if it is.
-pub type ControlValues<N> = HashMap<NodeId, Vec<Option<PublishedValue<N>>>>;
+/// A snapshot keeps, for each node with ports reading values, what each reads, if it's connected.
+pub type ValIns<N> = HashMap<NodeId, Vec<Option<PublishedValue<N>>>>;
 
 /// When Record's pressed (or a node asks), the app makes a recording: its base directory (see
 /// `crate::base_directory`), when it was asked for, and once it has, when it took effect. Its nodes prepare for it as
@@ -796,19 +870,15 @@ impl Recording {
     }
 }
 
-/// The app clears the transient part of `node`'s settings that other nodes can edit (see `EdgeType::clear_transient`)
-/// with this, setting only those it changes.
-pub fn clear_transient<N: NodesEnum>(node: &mut N) {
-    for (index, setting) in node.settings().into_iter().enumerate() {
-        let mut value = setting.value.clone();
-        value.clear_transient();
-        if value != setting.value {
-            node.set_setting(index, value);
-        }
-    }
+/// The app has node `id` drop what it was asked to do only for now (see `CommandsEnum::clear_transient_state`) with
+/// this: when it duplicates the node, say. The node isn't edited otherwise.
+pub fn clear_transient_state<N: NodesEnum>(id: NodeId, entry: &mut NodeEntry<N>) {
+    let context = &mut CommandContext::new(id, &entry.label, &[], None, None, false);
+    let command = <<N::Edges as Edges>::Command as CommandsEnum>::clear_transient_state();
+    entry.node.on_command(CommandSource::App, command, context);
 }
 
-/// The passes need to know the graph, with all its settings, what its nodes' controls see, the plan for running it, and
+/// The passes need to know the graph, with all its settings, the values its nodes read, the plan for running it, and
 /// the run's times and recording. The app bakes all that into a snapshot (see `bake`), and bakes a new one whenever any
 /// of it changes. Each pass runs against one, and gives node code what it can see of it (`SnapshotLite`, see
 /// `PassContext::snapshot`). A snapshot's frozen, so it's cheap to clone and to share between threads.
@@ -817,8 +887,8 @@ pub struct Snapshot<N: NodesEnum> {
     pub version: u64,
     pub graph: Arc<Graph<N>>,
     pub plan: Arc<Plan<N>>,
-    /// What each node's controls see, for the passes (see `PassContext::controls`).
-    pub controls: Arc<ControlValues<N>>,
+    /// The values each node reads, for the passes (see `PassContext::val_in`).
+    pub val_ins: Arc<ValIns<N>>,
     /// While running, the run started (Play pressed) at this time, by the monotonic clock.
     pub started: Option<Instant>,
     /// While recording, the recording.
@@ -834,13 +904,13 @@ impl<N: NodesEnum> Snapshot<N> {
         started: Option<Instant>,
         recording: Option<Arc<Recording>>,
     ) -> Self {
-        let controls = graph
+        let val_ins = graph
             .iter()
-            .filter(|(_, entry)| !entry.node.controls().is_empty())
-            .map(|(id, _)| (id, graph.control_values(id)))
+            .filter(|(_, entry)| entry.node.ports().iter().any(|p| !p.publishes()))
+            .map(|(id, _)| (id, graph.val_ins(id)))
             .collect();
         let plan = Arc::new(Plan::new(&graph, recording.is_some()));
-        Snapshot { version, graph, plan, controls: Arc::new(controls), started, recording }
+        Snapshot { version, graph, plan, val_ins: Arc::new(val_ins), started, recording }
     }
 
     /// Tests try graphs out with a snapshot of `graph` as a run started just now would have it, not recording. (The
@@ -856,7 +926,7 @@ impl<N: NodesEnum> Clone for Snapshot<N> {
             version: self.version,
             graph: self.graph.clone(),
             plan: self.plan.clone(),
-            controls: self.controls.clone(),
+            val_ins: self.val_ins.clone(),
             started: self.started,
             recording: self.recording.clone(),
         }
@@ -979,15 +1049,15 @@ mod tests {
 
         let thresholds =
             |uv: Vec<f32>| PublishedValue::Thresholds(spikes::Thresholds { values: uv, ..Default::default() });
-        assert_eq!(graph.control_values(viewer), vec![Some(thresholds(vec![])), None]);
+        assert_eq!(graph.val_ins(viewer), vec![Some(thresholds(vec![])), None]);
         let theme = &crate::standard::themes::THEMES[0].colours;
         graph.edit(viewer, &[], theme, None, None, None, false, false, None, |_, context| {
-            context.controls[0] = Some(thresholds(vec![55.0]))
+            let thresholds = spikes::Thresholds { values: vec![55.0], ..Default::default() };
+            context.cmd_out(0, crate::Command::SetThresholds(thresholds))
         });
-        assert_eq!(graph.get(detector).unwrap().node.settings()[0].value, thresholds(vec![55.0]));
+        assert_eq!(graph.get(detector).unwrap().node.val_out(0), thresholds(vec![55.0]));
 
-        // A setting can have several controls (an LTX writer reading the gains the viewer sets); a control, one
-        // setting.
+        // A value can be read by several nodes (an LTX writer reading the gains the viewer sets); a port reads one.
         let writer = graph.add(create("Write LTX"), [0.0, 0.0]);
         let gain = graph.add(create("Spike Gain"), [0.0, 0.0]);
         graph.connect(port(viewer, PortRole::ValInCmdOut, 1), port(gain, PortRole::ValOutCmdIn, 0)).unwrap();
@@ -996,6 +1066,65 @@ mod tests {
             graph.edges().iter().filter(|e| e.target() == port(gain, PortRole::ValOutCmdIn, 0)).count()
         };
         assert_eq!(into_gains(&graph), 2);
+    }
+
+    /// A command through a port goes where the edge points as it's delivered, if the port there accepts it; one a
+    /// node sends itself needn't be accepted by any port.
+    #[test]
+    fn a_command_goes_where_the_edge_points_when_its_delivered() {
+        use crate::commands::Address;
+        let mut graph = Graph::default();
+        let (viewer, first, second) = (
+            graph.add(create("Spike Viewer"), [0.0, 0.0]),
+            graph.add(create("Spike Detector"), [0.0, 0.0]),
+            graph.add(create("Spike Detector"), [0.0, 0.0]),
+        );
+        let address = Address::Port { from: viewer, port: 0 };
+        assert_eq!(graph.command_target(address), None, "not connected: nowhere");
+        graph.connect(port(viewer, PortRole::ValInCmdOut, 0), port(first, PortRole::ValOutCmdIn, 0)).unwrap();
+        assert_eq!(graph.command_target(address), Some((first, CommandSource::Port(0))));
+        graph.connect(port(viewer, PortRole::ValInCmdOut, 0), port(second, PortRole::ValOutCmdIn, 0)).unwrap();
+        assert_eq!(graph.command_target(address), Some((second, CommandSource::Port(0))), "reconnected: the new one");
+
+        let thresholds = |uv: f32| spikes::Thresholds { values: vec![uv], ..Default::default() };
+        let set = |uv| crate::Command::SetThresholds(thresholds(uv));
+        assert!(graph.command(second, CommandSource::Port(0), set(55.0), None, None, false));
+        assert_eq!(graph.get(second).unwrap().node.val_out(0), thresholds(55.0).into());
+        let files = crate::Command::ProcessFiles(crate::standard::other::run_command::Files(Vec::new()));
+        assert!(!graph.command(second, CommandSource::Port(0), files, None, None, false), "not what its port accepts");
+        graph.get_mut(second).unwrap().disabled = true;
+        assert!(!graph.command(second, CommandSource::Itself, set(60.0), None, None, false), "disabled");
+        assert_eq!(graph.get(second).unwrap().node.val_out(0), thresholds(55.0).into());
+    }
+
+    /// An auto detect a viewer started carries on through its edits; it's done when the node's passes send what they
+    /// found, and forgotten on `ClearTransientState`.
+    #[test]
+    fn auto_detect_is_started_by_a_command_and_ended_by_the_nodes_own() {
+        use crate::standard::auto_detect::DetectRequest;
+        let mut graph = Graph::default();
+        let detector = graph.add(create("Spike Detector"), [0.0, 0.0]);
+        let started = |graph: &Graph<Nodes>| match graph.get(detector).unwrap().node.val_out(0) {
+            PublishedValue::Thresholds(thresholds) => thresholds.detect.started.is_some(),
+            _ => unreachable!(),
+        };
+        let mut send = |from, command| graph.command(detector, from, command, None, None, false);
+        assert!(send(CommandSource::Port(0), crate::Command::Detect(DetectRequest::Start)));
+        let edited = spikes::Thresholds { values: vec![70.0], ..Default::default() };
+        send(CommandSource::Port(0), crate::Command::SetThresholds(edited.clone()));
+        assert!(started(&graph), "an edit leaves it going");
+        graph.command(detector, CommandSource::Itself, crate::Command::SetThresholds(edited), None, None, false);
+        assert!(!started(&graph), "what its passes found ends it");
+        graph.command(
+            detector,
+            CommandSource::Port(0),
+            crate::Command::Detect(DetectRequest::Start),
+            None,
+            None,
+            false,
+        );
+        graph.clear_transient_state();
+        assert!(!started(&graph), "forgotten");
     }
 
     #[test]
@@ -1018,7 +1147,7 @@ mod tests {
         graph.get_mut(detector).unwrap().disabled = true;
         assert!(!streams(&graph, viewer), "nothing downstream of it");
         assert!(!planned(&graph, detector));
-        assert_eq!(graph.control_values(viewer)[0], None, "its settings can't be edited through it");
+        assert_eq!(graph.val_ins(viewer)[0], None, "its settings can't be edited through it");
         graph.get_mut(detector).unwrap().disabled = false;
 
         // A disabled edge is as if it weren't connected, but is kept.
@@ -1028,7 +1157,7 @@ mod tests {
         graph.set_edge_disabled(feed, false);
         assert!(streams(&graph, viewer));
         graph.set_edge_disabled(control, true);
-        assert_eq!(graph.control_values(viewer)[0], None);
+        assert_eq!(graph.val_ins(viewer)[0], None);
         // And it changes how the graph runs.
         let before = graph.clone();
         graph.set_edge_disabled(control, false);

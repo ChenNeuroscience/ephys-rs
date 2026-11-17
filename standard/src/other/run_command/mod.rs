@@ -1,6 +1,6 @@
 //! Runs a program on files, in a terminal of its own, whatever the graph's doing: by hand, on files picked here, or by
-//! itself, on files sent to it with `RunOnFiles` (by a writer, once it's finished recording them, say). It's nothing
-//! to do with passes: the files come as a trigger (see `ephys_rs::triggers`).
+//! itself, on files sent to it (by a writer, once it's finished recording them, say: the `ProcessFiles` command, at
+//! its "files" port). It's nothing to do with passes: the files come as a command (see `ephys_rs::commands`).
 //!
 //! The terminal's a process apart, running a script written here, so its output's there, not here, and it carries on if
 //! the app quits. To be stopped it has to be findable, and what's started here often isn't what's running (macOS's `open`
@@ -19,24 +19,42 @@ use serde::{Deserialize, Serialize};
 
 use crate::standard::recording::expand;
 use crate::standard::widgets::{combo, setting, settings_grid};
-use crate::{DataStream, Edges, PublishedValue, Trigger, TriggerKind, ValueKind};
-use ephys_rs::engine::{Category, Control, EdgeInfo, EdgeType, Node, NodeInfo, Output, SettingPort, UiContext};
+use crate::{Command, CommandKind, DataStream, Edges, PublishedValue, ValueKind};
+use ephys_rs::commands::CmdSender;
+use ephys_rs::engine::{
+    Category, CommandContext, CommandSource, EdgeInfo, EdgeType, Node, NodeInfo, Output, UiContext, ValPort,
+};
 use ephys_rs::gui::widgets::{Icon, help_link, small_icon_button};
 use ephys_rs::theme::Colours;
-use ephys_rs::triggers::{ControlTriggers, TriggerHandle, TriggerType};
 
 mod terminal;
 
 use terminal::{Chain, Job, Outcome, Progress};
 
-/// The trigger of a command setting (see `ephys_rs::triggers`): run it on these files. Whatever sends them,
-/// and whenever: a writer's are what it's just finished recording.
+/// Files to process, sent with the `ProcessFiles` command (to Run Command, say, which runs its program on them).
+/// Whatever sends them, and whenever: a writer's are what it's just finished recording.
 #[derive(Clone, Debug, PartialEq)]
-pub struct RunOnFiles(pub Vec<PathBuf>);
+pub struct Files(pub Vec<PathBuf>);
 
-impl TriggerType for RunOnFiles {
-    const NAME: &'static str = "run on files";
+/// Run Command and Sync Positions take files to process (`ProcessFiles`) at a port of their own, which publishes
+/// nothing: this. Writers, and they themselves, send files on through ports reading it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FileInput;
+
+impl EdgeType for FileInput {
+    const INFO: EdgeInfo = EdgeInfo {
+        name: "files",
+        colour: Color32::from_rgb(190, 150, 220),
+        description: "Files sent on to be processed: what a writer's recorded, once it's finished, say.",
+    };
+
+    fn summary(&self) -> String {
+        String::new()
+    }
 }
+
+/// Run Command's and Sync Positions' port taking files (see `FileInput`).
+pub const FILES: usize = 0;
 
 /// In the arguments: replaced by a file, running the program once for each.
 const EACH_FILE: &str = "{file}";
@@ -68,7 +86,7 @@ pub enum Then {
     Always,
 }
 
-/// Its control, sending the files it ran on to what's connected, once it's done (see `Then`).
+/// Its port sending the files it ran on to what's connected, once it's done (see `Then`).
 const AFTER_RUNNING: usize = 0;
 
 /// What to run, and on what.
@@ -108,18 +126,6 @@ impl Default for ScriptConfig {
             close_on_success: true,
             then: Then::default(),
         }
-    }
-}
-
-impl EdgeType for ScriptConfig {
-    const INFO: EdgeInfo = EdgeInfo {
-        name: "command",
-        colour: Color32::from_rgb(190, 150, 220),
-        description: "A program to run on files: what's connected to one can send it files to run on.",
-    };
-
-    fn summary(&self) -> String {
-        if self.program.is_empty() { "no program".into() } else { self.program.clone() }
     }
 }
 
@@ -289,11 +295,11 @@ pub struct RunCommand {
 impl RunCommand {
     /// Runs the program on `files` as `job`, or says why it can't; then sends them on through `after`, if that's
     /// connected, as the settings say (see `Then`).
-    fn run_on(&self, job: &Job, files: Result<Vec<PathBuf>, String>, after: Option<TriggerHandle<Trigger>>) {
+    fn run_on(&self, job: &Job, files: Result<Vec<PathBuf>, String>, after: Option<CmdSender<Command>>) {
         let runs = files.and_then(|files| Ok((self.settings.runs(&files)?, files)));
         match runs {
             Ok((runs, files)) => {
-                let chain = after.map(|handle| Chain { handle, then: self.settings.then, files });
+                let chain = after.map(|sender| Chain { sender, then: self.settings.then, files });
                 job.start(&self.settings, &runs, chain)
             }
             Err(problem) => job.fail(problem),
@@ -613,40 +619,31 @@ impl Node<Edges> for RunCommand {
         Vec::new()
     }
 
-    fn settings(&self) -> Vec<SettingPort<Edges>> {
-        vec![SettingPort { name: "command", value: self.settings.clone().into(), on_right: false }]
+    /// Where it's sent files to run on, on the left, as what sends them comes before it; and where it sends them on,
+    /// once it's done (see `Then`), on the right, as what runs then comes after it.
+    fn ports(&self) -> Vec<ValPort<Edges>> {
+        vec![
+            ValPort::val_out_cmd_in("files", ValueKind::FileInput, &[CommandKind::ProcessFiles]).flipped(),
+            ValPort::val_in_cmd_out("after running", ValueKind::FileInput, &[CommandKind::ProcessFiles]).flipped(),
+        ]
     }
 
-    /// What's connected after it, run on the same files once it's done (see `Then`).
-    fn controls(&self) -> Vec<Control<Edges>> {
-        vec![Control { name: "after running", kind: ValueKind::Script, read_only: true, on_right: true }]
+    fn val_out(&self, _port: usize) -> PublishedValue {
+        FileInput.into()
     }
 
-    /// The files it ran on, once it's done (see `Then`).
-    fn sends(&self, _control: usize) -> &'static [TriggerKind] {
-        &[TriggerKind::RunOnFiles]
+    /// Runs the program on the files sent, and then, as it says, what's connected after it.
+    fn on_command(&mut self, _from: CommandSource, command: Command, context: &mut CommandContext<Edges>) {
+        let Command::ProcessFiles(Files(paths)) = command else { return };
+        let Some(state) = context.ui_state::<CommandState>() else {
+            return log::warn!("{}: sent files to run on, without its state to keep the run in", context.label);
+        };
+        self.run_on(&state.job, self.settings.matching(paths), context.cmd_sender(AFTER_RUNNING));
     }
 
-    fn set_setting(&mut self, _index: usize, value: PublishedValue) {
-        if let PublishedValue::Script(settings) = value {
-            self.settings = settings;
-        }
-    }
-
-    /// Never in a pass: it's sent what to do (see `on_trigger`), and has nothing to do with the data going by.
+    /// Never in a pass: it's sent what to do (see `on_command`), and has nothing to do with the data going by.
     fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool], _recording: bool) -> ephys_rs::engine::TreeShake {
         ephys_rs::engine::TreeShake::needing_all(false, inputs.len())
-    }
-
-    fn triggers(&self, _setting: usize) -> &'static [crate::TriggerKind] {
-        &[crate::TriggerKind::RunOnFiles]
-    }
-
-    /// Runs the program on the files sent (by hand, too), and then, as it says, what's connected after it.
-    fn on_trigger(&mut self, trigger: Trigger, context: &mut UiContext<Edges>, triggers: &ControlTriggers<Trigger>) {
-        let Trigger::RunOnFiles(RunOnFiles(paths)) = trigger;
-        let (files, after) = (self.settings.matching(paths), triggers.handle(AFTER_RUNNING, TriggerKind::RunOnFiles));
-        self.run_on(&context.ui_state::<CommandState>().job, files, after);
     }
 
     fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
@@ -663,7 +660,7 @@ impl Node<Edges> for RunCommand {
         let job = context.ui_state::<CommandState>().job.clone();
         let (locked, running) = (context.locked, job.running());
         // What's connected supplies all the files, while it is.
-        let senders = context.controlled_by.first().map_or(&[][..], Vec::as_slice);
+        let senders = context.controlled_by.get(FILES).map_or(&[][..], Vec::as_slice);
         let connected = !senders.is_empty();
         let preview = context.ui_state::<CommandState>().preview.of(&self.settings, connected);
         // Nothing changes while it's running, to what it shows as running.
@@ -706,7 +703,7 @@ impl Node<Edges> for RunCommand {
                 if run.clicked()
                     && let Ok(files) = picked
                 {
-                    context.trigger(None, RunOnFiles(files.clone()));
+                    self.run_on(&job, self.settings.matching(files.clone()), context.cmd_sender(AFTER_RUNNING));
                 }
                 if connected {
                     ui.weak(format!("Run triggered by {}", any_of(senders)));
@@ -767,9 +764,9 @@ mod tests {
     use crate::Nodes;
     use crate::standard::ephys::board::{Source, serve_test_board};
     use crate::standard::themes::THEMES;
+    use ephys_rs::commands::{Address, Commands};
     use ephys_rs::engine::NodeTypeEnum;
-    use ephys_rs::engine::{Graph, NodeId, NodesEnum, Port, PortRole, Recording, Runner, Snapshot};
-    use ephys_rs::triggers::{Triggered, Triggers};
+    use ephys_rs::engine::{CommandSource, Graph, NodesEnum, Port, PortRole, Recording, Runner, Snapshot};
 
     /// One per file, in turn, if the arguments have a file in them, otherwise just one.
     fn settings(program: &str, arguments: &str) -> ScriptConfig {
@@ -794,16 +791,23 @@ mod tests {
         assert!(done(), "{what}");
     }
 
-    /// Sends `node` `trigger`, as the app does, with a context and a `UiState` of its own; what it ran.
-    fn send(node: RunCommand, trigger: Trigger, triggers: &ControlTriggers<Trigger>) -> Job {
+    /// Sends `node` `files`, as the app does, with a `UiState` of its own, where what's after it is another Run
+    /// Command; what it ran, and where it sends commands.
+    fn send(node: RunCommand, files: Vec<PathBuf>) -> (Job, Arc<Commands>) {
         let mut graph = Graph::<Nodes>::default();
         let id = graph.add(Nodes::RunCommand(node), [0.0, 0.0]);
+        let after = graph.add(Nodes::RunCommand(RunCommand::default()), [0.0, 0.0]);
+        let (from, to) = (
+            Port { node: id, role: PortRole::ValInCmdOut, index: AFTER_RUNNING },
+            Port { node: after, role: PortRole::ValOutCmdIn, index: FILES },
+        );
+        graph.connect(from, to).unwrap();
         let state: ephys_rs::engine::UiStateCell = std::cell::RefCell::new(Box::new(CommandState::default()));
-        let colours = &THEMES[0].colours;
-        graph.edit(id, &[], colours, None, Some(&state), None, false, false, None, |node, context| {
-            node.on_trigger(trigger, context, triggers)
-        });
-        state.borrow().downcast_ref::<CommandState>().unwrap().job.clone()
+        let commands = Arc::new(Commands::default());
+        let command = crate::Command::ProcessFiles(Files(files));
+        assert!(graph.command(id, CommandSource::Port(FILES), command, Some(&state), Some(&commands), false));
+        let job = state.borrow().downcast_ref::<CommandState>().unwrap().job.clone();
+        (job, commands)
     }
 
     fn wait_for_job(job: &Job) {
@@ -813,16 +817,16 @@ mod tests {
     /// Run (by hand, or sent files), what's connected after it is sent the files once it's done.
     #[test]
     fn what_runs_after_is_sent_the_files_it_ran_on_once_its_done() {
-        let triggers = Arc::new(Triggers::default());
-        let kinds: &'static [TriggerKind] = &[TriggerKind::RunOnFiles];
-        let controls = ControlTriggers::<Trigger>::new(triggers.clone(), vec![vec![(NodeId(9), kinds)]]);
         let node = RunCommand { settings: settings("/bin/sleep", "0.2") };
-        let job = send(node, Trigger::RunOnFiles(RunOnFiles(paths(&["a.dat"]))), &controls);
-        assert!(triggers.take().is_empty(), "not till it's done");
+        let (job, commands) = send(node, paths(&["a.dat"]));
+        assert!(commands.take().is_empty(), "not till it's done");
         wait_for_job(&job);
-        let sent = triggers.take();
-        let [(NodeId(9), Triggered::Trigger(trigger))] = &sent[..] else { panic!("sent once, to what's after it") };
-        assert_eq!(trigger.key(), TriggerKind::RunOnFiles.into());
+        let sent = commands.take_commands::<crate::Command>();
+        let [(Address::Port { port: AFTER_RUNNING, .. }, crate::Command::ProcessFiles(Files(files)))] = &sent[..]
+        else {
+            panic!("sent once, to what's after it: {sent:?}")
+        };
+        assert_eq!(files, &paths(&["a.dat"]));
     }
 
     /// A path to have a program leave something at.
@@ -1190,9 +1194,9 @@ mod tests {
         graph.connect(port(board, PortRole::DataStreamOut, 0), port(writer, PortRole::DataStreamIn, 0)).unwrap();
         graph.connect(port(writer, PortRole::ValInCmdOut, 0), port(command, PortRole::ValOutCmdIn, 0)).unwrap();
 
-        let triggers = Arc::new(Triggers::default());
+        let commands = Arc::new(Commands::default());
         let snapshot = Snapshot::new(0, graph.clone());
-        let runner = Runner::start_with(&snapshot, 2, triggers.clone());
+        let runner = Runner::start_with(&snapshot, 2, commands.clone());
         // In a base directory of the test's own (writers write in it).
         let place = ephys_rs::base_directory::Place::directory(&dir);
         let asked = Arc::new(Recording::new(Some(place), chrono::Local::now()));
@@ -1210,17 +1214,18 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(runner.stats().completed >= recorded_from + 25, "recording: {:?}", runner.stats());
-        assert!(triggers.take().is_empty(), "still recording");
+        assert!(commands.take().is_empty(), "still recording");
         // Stopped by stopping the run, as Play does: there may be no more passes.
         drop(runner);
         ephys_rs::background::wait();
 
-        let waiting = triggers.take();
-        assert_eq!(waiting.len(), 1, "once the files are finished");
-        let (to, Triggered::Trigger(trigger)) = waiting.into_iter().next().unwrap() else { panic!() };
-        assert_eq!((to, trigger.key()), (command, crate::TriggerKind::RunOnFiles.into()));
+        let waiting = commands.take_commands::<crate::Command>();
+        let [(address, crate::Command::ProcessFiles(Files(files)))] = &waiting[..] else {
+            panic!("once the files are finished: {waiting:?}")
+        };
+        assert_eq!(graph.command_target(*address).map(|(to, _)| to), Some(command));
         let Some(Nodes::RunCommand(node)) = graph.get_mut(command).map(|e| &mut e.node) else { panic!() };
-        let job = send(node.clone(), trigger.take::<crate::Trigger>().unwrap(), &ControlTriggers::none());
+        let (job, _) = send(node.clone(), files.clone());
         wait_for_job(&job);
         assert_eq!(job.problem(), None);
         let said_text = std::fs::read_to_string(&said).unwrap();
@@ -1412,16 +1417,15 @@ mod chain_tests {
     use super::*;
     use crate::NodeType;
     use crate::Nodes;
+    use ephys_rs::commands::{Address, CmdSender, Commands};
     use ephys_rs::engine::{Graph, NodeId, NodesEnum, Port, PortRole};
-    use ephys_rs::triggers::{Triggered, Triggers};
 
     /// Whether `then`, after runs that ended with these codes (`None` if stopped; not there if not run), sends the
     /// files on to what's connected after it.
     fn sends(then: Then, runs: &[Option<Option<i64>>]) -> bool {
-        let triggers = Arc::new(Triggers::default());
-        let kinds: &'static [TriggerKind] = &[TriggerKind::RunOnFiles];
-        let controls = ControlTriggers::<Trigger>::new(triggers.clone(), vec![vec![(NodeId(2), kinds)]]);
-        let handle = controls.handle(AFTER_RUNNING, TriggerKind::RunOnFiles).unwrap();
+        let commands = Arc::new(Commands::default());
+        let address = Address::Port { from: NodeId(1), port: AFTER_RUNNING };
+        let sender = CmdSender::new(commands.clone(), address);
         let progress = runs.iter().map(|run| Progress {
             shown: String::new(),
             outcome: match run {
@@ -1429,18 +1433,11 @@ mod chain_tests {
                 None => Outcome::NotRun,
             },
         });
-        Chain { handle, then, files: vec![PathBuf::from("a.dat")] }.send_after(&progress.collect::<Vec<_>>());
-        let sent: Vec<(NodeId, Option<Trigger>)> = triggers
-            .take()
-            .into_iter()
-            .map(|(node, triggered)| match triggered {
-                Triggered::Trigger(trigger) => (node, trigger.take::<Trigger>()),
-                _ => panic!("a trigger"),
-            })
-            .collect();
+        Chain { sender, then, files: vec![PathBuf::from("a.dat")] }.send_after(&progress.collect::<Vec<_>>());
+        let sent = commands.take_commands::<Command>();
         match &sent[..] {
             [] => false,
-            [(NodeId(2), Some(Trigger::RunOnFiles(RunOnFiles(files))))] => {
+            [(to, Command::ProcessFiles(Files(files)))] if *to == address => {
                 assert_eq!(files, &[PathBuf::from("a.dat")], "the files it ran on");
                 true
             }
@@ -1470,7 +1467,7 @@ mod chain_tests {
         };
         let looped = |graph: &Graph<Nodes>| {
             let resolved = graph.resolve();
-            [a, b, c].map(|id| resolved[&id].warnings.iter().any(|w| w.contains("loop of triggers")))
+            [a, b, c].map(|id| resolved[&id].warnings.iter().any(|w| w.contains("loop of commands")))
         };
         for (from, to) in [after(a, b), after(b, c)] {
             graph.connect(from, to).unwrap();

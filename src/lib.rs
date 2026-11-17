@@ -1,7 +1,7 @@
 //! ephys-rs: electrophysiology acquisition, processing and recording, built around a node graph.
 //!
 //! The crate's own modules are the framework: the graph engine (`engine`), annotations (`annotation`), themes
-//! (`theme`), the log (`console`), triggers (`triggers`), threads finishing in the background (`background`), how
+//! (`theme`), the log (`console`), commands between nodes (`commands`), threads finishing in the background (`background`), how
 //! plots over time lay out time (`time_axis`), quick actions (`quick_action`), and the GUI (`gui`). None of it knows
 //! about particular node, edge or annotation types, or themes: those are in the ephys-rs-standard crate (the standard
 //! components, in standard/), and a program's own. A program lists the parts it's made of and runs them: see
@@ -10,6 +10,7 @@
 pub mod annotation;
 pub mod background;
 pub mod base_directory;
+pub mod commands;
 pub mod config_patches;
 pub mod config_patching;
 pub mod console;
@@ -22,7 +23,6 @@ pub mod quick_action;
 pub mod search_folders;
 pub mod theme;
 pub mod time_axis;
-pub mod triggers;
 
 /// The app shows a version ("0.12.0", as Cargo has it) as "v0.12".
 fn shown_version(version: &str) -> String {
@@ -116,7 +116,7 @@ extern crate self as ephys_rs;
 #[allow(dead_code, reason = "what's public is for builds, not all of which the tests use")]
 mod standard;
 #[cfg(test)]
-use standard::{Buffer, DataStream, Edges, Kind, PublishedValue, Trigger, TriggerKind, ValueKind};
+use standard::{Buffer, Command, CommandKind, DataStream, Edges, Kind, PublishedValue, ValueKind};
 #[cfg(test)]
 #[path = "../examples/chen-neuro/src/components/mod.rs"]
 mod components;

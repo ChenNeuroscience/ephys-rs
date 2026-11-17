@@ -316,10 +316,10 @@ fn both_ways(painter: &Painter, at: Pos2, direction: Vec2, size: f32, colour: Co
     }
 }
 
-/// Some controls only read the setting they're linked to. This says whether a control does.
+/// Some ports only read the value they're connected to (`PortRole::ValIn`, val-only), which people see as read-only.
+/// This says whether a port does.
 fn read_only<E: Edges>(resolved: &Resolved<E>, port: Port) -> bool {
-    port.role == PortRole::ValInCmdOut
-        && resolved.get(&port.node).and_then(|s| s.controls.get(port.index)).is_some_and(|c| c.read_only)
+    port.role == PortRole::ValInCmdOut && resolved.get(&port.node).is_some_and(|s| s.val_only(port.index))
 }
 
 /// An edge of a type with colour `colour` is drawn in this colour: settings edges are all the same grey, so they stay
@@ -713,7 +713,7 @@ impl Canvas {
         }
         // Whether to explain read-only settings edges too.
         let shown = self.settings_shown;
-        let read_only = shown && resolved.values().any(|s| s.controls.iter().any(|c| c.read_only));
+        let read_only = shown && resolved.values().any(|s| (0..s.val_ins.len()).any(|i| s.val_only(i)));
         // Data's types are listed; settings are all edged alike, so there's just the one row for them, if they're showing.
         let rows_of =
             |dimension: Dimension, kinds: usize| if dimension == Dimension::Data { kinds } else { shown as usize };
@@ -1138,10 +1138,12 @@ impl Canvas {
                     "Drag to connect; click to add or pick a node to connect"
                 }
                 PortRole::ValOutCmdIn => "Other nodes can edit this. Drag to a control to link them",
-                PortRole::ValInCmdOut if state.controls.get(port.index).is_some_and(|c| c.read_only) => {
+                PortRole::ValInCmdOut | PortRole::ValIn if state.val_only(port.index) => {
                     "Reads a setting of another node, without changing it. Drag to a setting to link them"
                 }
-                PortRole::ValInCmdOut => "Edits a setting of another node. Drag to a setting to link them",
+                PortRole::ValInCmdOut | PortRole::ValIn => {
+                    "Edits a setting of another node. Drag to a setting to link them"
+                }
             };
             response.on_hover_text(format!("{name} ({kind} {}): {summary}\n{description}\n\n{help}", port.role.name()));
         }
@@ -1470,8 +1472,7 @@ fn paint_node<N: NodesEnum>(
             };
             painter.text(at, align, summary, font(11.0), fade(colour));
         }
-        let read_only =
-            port.role == PortRole::ValInCmdOut && state.controls.get(port.index).is_some_and(|c| c.read_only);
+        let read_only = port.role == PortRole::ValInCmdOut && state.val_only(port.index);
         paint_port(painter, port, pos, colour, connected, read_only, ports, z, fade);
     }
 }

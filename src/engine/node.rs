@@ -7,7 +7,10 @@ use eframe::egui;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use super::{Edges, Kind, NodeThread, PassContext, PoolStatus, Shared, ThreadContext, UiContext};
+use super::{
+    CommandContext, CommandKind, Edges, Kind, NodeThread, PassContext, PoolStatus, PortRole, Shared, ThreadContext,
+    UiContext,
+};
 use crate::global_settings::GlobalSettingsSet;
 
 /// The graph colours each node by its type's category, and the add-node menu groups node types by category. Nothing
@@ -69,25 +72,69 @@ pub struct Output<E: Edges> {
     pub stream: Option<E::DataStream>,
 }
 
-/// Other nodes can edit some of a node's settings, through settings edges. This describes one such setting, with its
-/// current value.
-pub struct SettingPort<E: Edges> {
+/// Nodes share values through value edges. At one end, a `ValOutCmdIn` port: the node publishes a value there (usually
+/// a copy of one of its settings: see `Node::val_out`), and takes commands through the edges into it. At the other, a
+/// `ValInCmdOut` port: the node reads the value there, and sends the node publishing it commands (usually the one that
+/// sets the value, `SetGains`, say; sometimes others, such as auto detect's `Detect`). A `ValIn` port is val-only: the
+/// node only reads the value (a writer recording the gains). The GUI calls those read-only. This describes one of a
+/// node's value ports.
+pub struct ValPort<E: Edges> {
     pub name: &'static str,
-    pub value: E::PublishedValue,
-    /// The graph draws the setting's port on the right of the node if this is set, as it usually is for settings.
-    pub on_right: bool,
+    /// `ValOutCmdIn`, `ValInCmdOut` or `ValIn`. (Data ports are declared by `Node::inputs` and `Node::outputs`.)
+    pub role: PortRole,
+    pub value_kind: Kind<E::PublishedValue>,
+    /// The commands a `ValOutCmdIn` port accepts, or a `ValInCmdOut` port sends. None for `ValIn`.
+    pub commands: &'static [CommandKind<E>],
+    /// The graph draws `ValOutCmdIn` ports on the right of the node and the others on the left, unless this is set (a
+    /// writer's "after recording" is on the right, as what it sets off comes after it).
+    pub flipped: bool,
 }
 
-/// A node can see other nodes' settings, and edit them, through its controls, each connected to a setting by a settings
-/// edge. This describes one control.
-pub struct Control<E: Edges> {
-    pub name: &'static str,
-    pub kind: Kind<E::PublishedValue>,
-    /// Some controls only read the setting they're connected to (a writer recording a setting, say). If this is set,
-    /// the engine ignores any change the node makes to the setting.
-    pub read_only: bool,
-    /// The graph draws the control's port on the right of the node if this is set; controls are usually on the left.
-    pub on_right: bool,
+impl<E: Edges> ValPort<E> {
+    /// A port where the node publishes a value of kind `value_kind`, accepting `commands`.
+    pub fn val_out_cmd_in(
+        name: &'static str,
+        value_kind: Kind<E::PublishedValue>,
+        commands: &'static [CommandKind<E>],
+    ) -> Self {
+        ValPort { name, role: PortRole::ValOutCmdIn, value_kind, commands, flipped: false }
+    }
+
+    /// A port where the node reads a value of kind `value_kind`, sending `commands`.
+    pub fn val_in_cmd_out(
+        name: &'static str,
+        value_kind: Kind<E::PublishedValue>,
+        commands: &'static [CommandKind<E>],
+    ) -> Self {
+        ValPort { name, role: PortRole::ValInCmdOut, value_kind, commands, flipped: false }
+    }
+
+    /// A val-only port, where the node only reads a value of kind `value_kind`.
+    pub fn val_in(name: &'static str, value_kind: Kind<E::PublishedValue>) -> Self {
+        ValPort { name, role: PortRole::ValIn, value_kind, commands: &[], flipped: false }
+    }
+
+    /// The same port, drawn on the other side (see `flipped`).
+    pub fn flipped(self) -> Self {
+        ValPort { flipped: true, ..self }
+    }
+
+    /// The port publishes a value, where the others read one.
+    pub fn publishes(&self) -> bool {
+        self.role == PortRole::ValOutCmdIn
+    }
+}
+
+/// A command reaches a node from one of three places, which the node's told (see `Node::on_command`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CommandSource {
+    /// Through an edge into the node's `ValOutCmdIn` port `n` (by index among them).
+    Port(usize),
+    /// From the node itself: its passes (auto detect's result, say) or a thread of its own. The node's own window has
+    /// `&mut self`, so it calls the node's methods directly rather than commanding itself.
+    Itself,
+    /// From the app (`ClearTransientState`).
+    App,
 }
 
 /// A node can carry state from one pass to the next (see `Node::State`). Passes hand the state on in order, so passes
@@ -213,26 +260,31 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
         Vec::new()
     }
 
-    /// Other nodes can edit some of a node's settings, through settings edges (see `SettingPort`). The node lists those
-    /// settings here, with their current values.
-    fn settings(&self) -> Vec<SettingPort<E>> {
+    /// A node's value ports (see `ValPort`): where it publishes values, and where it reads others' values and commands
+    /// them. Those it publishes and those it reads are numbered separately, each in the order they're listed here.
+    fn ports(&self) -> Vec<ValPort<E>> {
         Vec::new()
     }
 
-    /// When another node edits one of the node's settings (one of `self.settings()`, by index), the app sets the new
-    /// value here, which is always of the setting's own kind.
-    fn set_setting(&mut self, _index: usize, _value: E::PublishedValue) {}
-
-    /// A node can see and edit other nodes' settings through its controls (see `Control`), which the node lists here.
-    fn controls(&self) -> Vec<Control<E>> {
-        Vec::new()
+    /// Other nodes read what a node publishes at its `ValOutCmdIn` port `port` (by index among them) from this: usually
+    /// a copy of one of its settings, as it is now. The app reads it each frame, for the nodes' windows, and each
+    /// snapshot keeps it, for passes.
+    fn val_out(&self, _port: usize) -> E::PublishedValue {
+        unreachable!("a node publishing values says what they are (Node::val_out)")
     }
+
+    /// The app delivers each command sent to the node here, on the GUI's thread, running or not, in the order they were
+    /// sent, saying where each came from (most nodes needn't know). A command setting a value (`SetGains`, say) usually
+    /// just replaces the setting the value's a copy of; another usually starts something (a job kept in the node's
+    /// `UiState`), or, if the node's busy, is queued or reported as missed. Every node is sent `ClearTransientState`
+    /// (see `CommandsEnum::clear_transient_state`), which most can ignore.
+    fn on_command(&mut self, _from: CommandSource, _command: E::Command, _context: &mut CommandContext<E>) {}
 
     /// While running, the app tries to draw a frame 50 times a second; while stopped, it draws only when something
     /// changes (input, say). The app calls this for every node once a frame. If the node's window is shown, `ui` is
     /// there to draw the window in; if not, `ui` is `None`, and the app still calls this so the node can do work that
     /// carries on regardless (taking what its passes send, say). With or without a `ui`, the node can edit its
-    /// settings and what its controls see, and send triggers (one thing once another's done, say).
+    /// settings, read the values its ports see, and send commands (one thing once another's done, say).
     ///
     /// By default, the node draws the standard window, with nothing of its own to set: its name, what it is, any
     /// problems, and its ports (see `crate::gui::node_window::standard`). A node with settings shows them in the
@@ -301,8 +353,8 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     /// By default the node runs, needing every input, whatever's in use: that's always correct, only maybe slower.
     /// Nodes that only make data for others run only while something needs it, as the processing nodes do. A node whose
     /// running matters beyond the graph says when it runs: a writer only while recording, and given something to
-    /// record. A node asked to do something with the data (by a transient setting: see `EdgeType::clear_transient`) can
-    /// only do it by running, so it should run while it's asked, even if nothing needs what it makes yet: a gain
+    /// record. A node asked to do something with the data (an auto detect, kept as its transient state: see
+    /// `CommandsEnum::clear_transient_state`) can only do it by running, so it should run while it's asked, even if nothing needs what it makes yet: a gain
     /// feeding only a writer, say, has its gains detected before recording. A node needn't need an input (a viewer with
     /// part of its view hidden, say), and then the plan doesn't count that input as using what feeds it. A change of
     /// settings means a new plan (new buffers for it), so tree shaking is for what's switched on and off, not what
@@ -317,36 +369,6 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     /// its inputs, and makes its outputs in buffers of their own.
     fn evaluate_buffer_usage(&self, inputs: usize, outputs: usize) -> BufferUsage {
         BufferUsage::none(inputs, outputs)
-    }
-
-    /// Besides a new value, a setting can take triggers: one-off events sent through the setting, carrying what they
-    /// need to (files to run on, say: see `crate::triggers`). The node lists here the triggers one of its settings (by
-    /// index) takes. A control connected to the setting can send one (`UiContext::trigger`, or a `TriggerHandle`), as
-    /// can the node's own window, and the app delivers it to `on_trigger`, whether or not anything's running. (Asking a
-    /// node to do something with the data going by isn't a trigger, but a transient setting: see
-    /// `EdgeType::clear_transient`.)
-    fn triggers(&self, _setting: usize) -> &'static [super::TriggerKind<E>] {
-        &[]
-    }
-
-    /// Besides values, a control can send triggers. The node lists here the triggers one of its controls (by index)
-    /// sends. The control can connect to a setting taking any of them, whatever the setting's kind, as well as to a
-    /// setting of the control's own kind, since what the control sends is all that passes between them (a writer's
-    /// "after recording" control sends files to whatever takes them, say).
-    fn sends(&self, _control: usize) -> &'static [super::TriggerKind<E>] {
-        &[]
-    }
-
-    /// The app delivers the triggers sent to the node (see `triggers`) on the GUI's thread, and the node handles them
-    /// here, with the same context as the node's window (so the node's `UiState` can keep work the
-    /// node starts that isn't a setting), and with what the node's own controls can trigger in turn (from
-    /// any thread, at any time: see `ControlTriggers::handle`).
-    fn on_trigger(
-        &mut self,
-        _trigger: E::Trigger,
-        _context: &mut UiContext<E>,
-        _triggers: &crate::triggers::ControlTriggers<E::Trigger>,
-    ) {
     }
 
     /// The engine runs the graph in passes, each taking in a short stretch of data and sending it through every node

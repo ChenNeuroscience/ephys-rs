@@ -1,5 +1,5 @@
 //! TTL Recording Control: starts recording when a line of its events goes up, as the toolbar's Record does, and, if
-//! it's to, stops it when the line goes down (see `PassContext::trigger_recording`). Lines are numbered from 1, as the
+//! it's to, stops it when the line goes down (see `PassContext::request_recording`). Lines are numbered from 1, as the
 //! LTX files number them.
 
 use eframe::egui::{self, RichText};
@@ -101,7 +101,7 @@ impl Node<Edges> for TtlRecordingControl {
     fn process(&self, pass: &mut PassContext<Edges>, seen: &mut Seen, _: &mut ()) {
         let Some(Some(Buffer::Events(events))) = pass.inputs.first() else { return };
         if let Some(on) = self.wanted(&events.events, seen).filter(|on| *on != pass.recording()) {
-            pass.trigger_recording(on);
+            pass.request_recording(on);
             *if on { &mut seen.starts } else { &mut seen.stops } += 1;
         }
         let seen = *seen;
@@ -152,7 +152,7 @@ impl Node<Edges> for TtlRecordingControl {
 mod tests {
     use super::*;
     use crate::standard::ephys::{Events, EventsBuffer};
-    use ephys_rs::triggers::Triggered;
+    use ephys_rs::commands::Sent;
 
     fn event(line: u8, high: bool) -> Event {
         Event { sample: 0, line, high, time: None }
@@ -167,8 +167,8 @@ mod tests {
         pass.shared = &shared;
         pass.set_recording(recording);
         node.process(&mut pass, seen, &mut ());
-        let asked = pass.triggers.take().into_iter().map(|(_, triggered)| match triggered {
-            Triggered::Recording(on) => on,
+        let asked = pass.commands.take().into_iter().map(|sent| match sent {
+            Sent::Recording(_, on) => on,
             _ => panic!("recording"),
         });
         asked.collect()

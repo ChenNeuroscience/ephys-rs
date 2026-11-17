@@ -5,7 +5,8 @@ use super::files::{POS_RECORD, POST_PROCESSING_INFO, SYNCED_FROM};
 use super::*;
 use crate::standard::themes::THEMES;
 use crate::{NodeType, Nodes};
-use ephys_rs::engine::{Graph, NodesEnum};
+use ephys_rs::commands::{Address, Commands};
+use ephys_rs::engine::{CommandSource, Graph, NodesEnum, Port, PortRole};
 
 /// A folder of its own, for a test's recording.
 fn scratch(name: &str) -> PathBuf {
@@ -126,18 +127,19 @@ fn wait_for(job: &Job) -> Result<Report, String> {
 
 /// Sends a Post-Process Positions LTX `paths`, as Write LTX does once it's finished, or its Run button does; what it ran.
 fn send(paths: Vec<PathBuf>) -> Job {
-    send_then(paths, &ControlTriggers::none())
+    send_then(paths, None)
 }
 
-/// As `send`, with `triggers` to send on through.
-fn send_then(paths: Vec<PathBuf>, triggers: &ControlTriggers<Trigger>) -> Job {
+/// As `send`, with what's after it connected (another), and the files sent on through `commands`, if there are any.
+fn send_then(paths: Vec<PathBuf>, commands: Option<&std::sync::Arc<Commands>>) -> Job {
     let mut graph = Graph::<Nodes>::default();
     let id = graph.add(Nodes::create(NodeType::SyncPositions), [0.0, 0.0]);
+    let after = graph.add(Nodes::create(NodeType::SyncPositions), [0.0, 0.0]);
+    let from = Port { node: id, role: PortRole::ValInCmdOut, index: AFTER_SYNCING };
+    graph.connect(from, Port { node: after, role: PortRole::ValOutCmdIn, index: 0 }).unwrap();
     let state: ephys_rs::engine::UiStateCell = std::cell::RefCell::new(Box::new(SyncState::default()));
-    let trigger = Trigger::RunOnFiles(RunOnFiles(paths));
-    graph.edit(id, &[], &THEMES[0].colours, None, Some(&state), None, false, false, None, |node, context| {
-        node.on_trigger(trigger, context, triggers)
-    });
+    let command = Command::ProcessFiles(Files(paths));
+    assert!(graph.command(id, CommandSource::Port(0), command, Some(&state), commands, false));
     state.borrow().downcast_ref::<SyncState>().unwrap().job.clone()
 }
 
@@ -205,29 +207,19 @@ fn it_says_what_it_cant_sync() {
 
 #[test]
 fn once_synced_the_files_are_sent_on_with_the_positions_and_their_original() {
-    use ephys_rs::engine::NodeId;
-    use ephys_rs::triggers::Triggers;
     let dir = scratch("chained");
     let set = recording(&dir, 3);
-    let triggers = std::sync::Arc::new(Triggers::default());
-    let kinds: &'static [crate::TriggerKind] = &[crate::TriggerKind::RunOnFiles];
-    let controls = ControlTriggers::<Trigger>::new(triggers.clone(), vec![vec![(NodeId(9), kinds)]]);
+    let commands = std::sync::Arc::new(Commands::default());
     let egf = dir.join("session.egf");
-    wait_for(&send_then(vec![set.clone(), egf.clone()], &controls)).unwrap();
-    let sent: Vec<_> = triggers
-        .take()
-        .into_iter()
-        .map(|(to, triggered)| match triggered {
-            ephys_rs::triggers::Triggered::Trigger(trigger) => (to, trigger.take::<Trigger>()),
-            _ => panic!("a trigger"),
-        })
-        .collect();
+    wait_for(&send_then(vec![set.clone(), egf.clone()], Some(&commands))).unwrap();
+    let sent = commands.take_commands::<Command>();
     let files = vec![set.clone(), egf, dir.join("session.pos"), dir.join("session.pos.original")];
-    assert!(matches!(&sent[..], [(NodeId(9), Some(Trigger::RunOnFiles(RunOnFiles(sent))))] if *sent == files), "once");
+    let after = Address::Port { from: ephys_rs::engine::NodeId(1), port: AFTER_SYNCING };
+    assert!(matches!(&sent[..], [(to, Command::ProcessFiles(Files(sent)))] if *to == after && *sent == files), "once");
     // Not if it couldn't sync.
     std::fs::remove_file(dir.join("session.ttl")).unwrap();
-    wait_for(&send_then(vec![set], &controls)).unwrap_err();
-    assert!(triggers.take().is_empty());
+    wait_for(&send_then(vec![set], Some(&commands))).unwrap_err();
+    assert!(commands.take().is_empty());
     std::fs::remove_dir_all(dir).unwrap();
 }
 

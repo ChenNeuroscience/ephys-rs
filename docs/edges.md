@@ -16,16 +16,19 @@ edge_types! {
         Thresholds(spikes::Thresholds),
         // ...
     }
-    triggers: pub enum Trigger, TriggerKind {
-        RunOnFiles(run_command::RunOnFiles),
+    commands: pub enum Command, CommandKind {
+        SetThresholds(spikes::Thresholds),
+        ProcessFiles(run_command::Files),
         // ...
     }
 }
 ```
 
 That makes the `DataStream` and `PublishedValue` enums of values, the `Kind` and `ValueKind` enums that ports are declared
-with, and the `Buffer` enum of the data streams' buffers; and the `Trigger` enum of what can be sent along settings
-edges (or by a node itself), with `TriggerKind` naming them (see [Nodes](nodes.md#triggers)).
+with, and the `Buffer` enum of the data streams' buffers; and the `Command` enum of what nodes can tell each other to
+do, through value edges (or themselves, from their passes and threads), with `CommandKind` naming them (see
+[Nodes](nodes.md#commands)). `Command` has one more variant than the program declares, the core's own
+`ClearTransientState`.
 
 ## Data streams
 
@@ -46,20 +49,31 @@ The standard data streams are continuous data, digital events, spikes, video, po
 states and log lines; each is defined beside the nodes that make it (`ephys`, `spikes`, `tracking`, `alarms`), and log
 lines in `logs`.
 
-## Settings
+## Values and commands
 
-Settings edges can be hidden, to clear up the graph, with the eye by Settings in the legend. Their ports stay, and they're
+Value edges can be hidden, to clear up the graph, with the eye by Settings in the legend. Their ports stay, and they're
 only hidden: nothing changes, and they come back while a new one's being dragged out. Hiding them deselects any that was
 selected, so Delete can't remove something out of sight.
 
-A settings edge runs from a node's **control** to another node's **setting**, letting it edit (or, if the control's
-read-only, just see) the setting: a viewer setting a detector's thresholds, a writer reading the gains to record them.
-They carry no data, so can point anywhere, upstream included; a setting can have several controls, a control one
-setting. A setting's type is its value (a list of thresholds, say), implementing `EdgeType`; it needn't be `Copy`.
+A value edge runs from a node's `ValInCmdOut` port to another node's `ValOutCmdIn` port of the same kind. Each port is
+named for what flows through it, which way (as data ports are `DataStreamIn` and `DataStreamOut`):
 
-When a node's window edits a control's value (`UiContext::controls`), the graph sets it on the setting's node
-(`Node::set_setting`), as an edit. A setting can also offer triggers (see [Nodes](nodes.md#triggers)).
+- At the `ValOutCmdIn` end, the node **publishes a value** (`Node::val_out`), usually a copy of one of its settings,
+  and takes **commands** through the edge (`Node::on_command`).
+- At the `ValInCmdOut` end, the node reads the value (`UiContext::val_in`), and sends commands (`UiContext::cmd_out`):
+  usually the one setting the value (`SetThresholds`, say), sometimes others (auto detect's `Detect`).
+- A `ValIn` port is val-only: the node only reads the value (a writer recording the gains). The GUI calls it read-only.
 
-Settings edges are drawn dashed, with arrows both ways (dotted when read-only); the legend has one row for each, not a
-row per setting. Disabled edges are broken in the
+A viewer setting a detector's thresholds reads them and sends `SetThresholds`; a writer recording the gains only reads
+them. Value edges carry no data, so can point anywhere, upstream included; a `ValOutCmdIn` can have several edges into
+it, a `ValInCmdOut` one out of it. A value's type (a list of thresholds, say) implements `EdgeType`; it needn't be
+`Copy`. A command's type needn't implement anything but `Debug`. Settings stay a node's own: what it saves and loads, and
+what's copied and pasted; what it publishes and what it's commanded to do are up to it.
+
+A command sent through a port goes through the app's queue (see [`commands.rs`](../src/commands.rs)), addressed to the
+port, not the node at the far end: the app follows the edge as it delivers it, on the GUI's thread. So a sender kept
+for later (`CmdSender`) sends to where the edge points then.
+
+Value edges are drawn dashed, with arrows both ways (dotted when read-only); the legend has one row for each, not a
+row per kind of value. Disabled edges are broken in the
 middle.

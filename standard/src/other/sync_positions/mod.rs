@@ -1,6 +1,6 @@
 //! Post-Process Positions LTX: puts a recording's positions on the board's clock, after it's recorded, using the timing LED's
 //! pulses, which both the camera (`name.pos.ttl`) and one of the board's digital inputs (`name.ttl`) saw. It's given the
-//! recording's `.set` file (picked here, or sent with `RunOnFiles`, by Write LTX once it's finished, say), and finds the
+//! recording's `.set` file (picked here, or sent with `ProcessFiles`, by Write LTX once it's finished, say), and finds the
 //! rest beside it (see `files`). It runs here, on a thread of its own, not in a terminal, and it's nothing to do with
 //! passes.
 //!
@@ -16,13 +16,13 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use eframe::egui::{self, Color32};
+use eframe::egui;
 use serde::{Deserialize, Serialize};
 
-use crate::standard::other::run_command::RunOnFiles;
-use crate::{DataStream, Edges, PublishedValue, Trigger, TriggerKind, ValueKind};
-use ephys_rs::engine::{Category, Control, EdgeInfo, EdgeType, Node, NodeInfo, Output, SettingPort, UiContext};
-use ephys_rs::triggers::{ControlTriggers, TriggerHandle};
+use crate::standard::other::run_command::{FileInput, Files};
+use crate::{Command, CommandKind, DataStream, Edges, PublishedValue, ValueKind};
+use ephys_rs::commands::CmdSender;
+use ephys_rs::engine::{Category, CommandContext, CommandSource, Node, NodeInfo, Output, UiContext, ValPort};
 
 mod checks;
 pub mod files;
@@ -37,7 +37,7 @@ use pairs::Pairing;
 use resample::Edits;
 pub use window::SyncState;
 
-/// Its control, sending the recording's files on to what's connected, once it's synced them.
+/// Its port sending the recording's files on to what's connected, once it's synced them.
 const AFTER_SYNCING: usize = 0;
 
 /// How it syncs, and the recording to sync by hand. Times are in seconds.
@@ -86,18 +86,6 @@ impl SyncConfig {
              where two were, and empty slots filled with positions not found",
             self.pos_line, self.board_line, self.within, self.alone, self.around, self.step
         )
-    }
-}
-
-impl EdgeType for SyncConfig {
-    const INFO: EdgeInfo = EdgeInfo {
-        name: "sync",
-        colour: Color32::from_rgb(150, 200, 170),
-        description: "How positions are put on the board's clock: what's connected to one can send it recordings to sync.",
-    };
-
-    fn summary(&self) -> String {
-        format!("board line {}", self.board_line)
     }
 }
 
@@ -262,7 +250,7 @@ pub struct Job(Arc<Mutex<Status>>);
 impl Job {
     /// Syncs `set`'s recording, unless it's syncing one already; then, if it did, sends `sent` on through `after`, with
     /// the positions it wrote and the original kept, if they weren't among them.
-    fn start(&self, set: PathBuf, sent: Vec<PathBuf>, settings: SyncConfig, after: Option<TriggerHandle<Trigger>>) {
+    fn start(&self, set: PathBuf, sent: Vec<PathBuf>, settings: SyncConfig, after: Option<CmdSender<Command>>) {
         let mut status = self.0.lock().unwrap();
         if matches!(*status, Status::Running { .. }) {
             return;
@@ -282,7 +270,7 @@ impl Job {
             }
             // Before it's done, so whatever waits for that sees what was sent.
             if let (Ok(report), Some(after)) = (&result, after) {
-                after.trigger(RunOnFiles(files_on(sent, report)));
+                after.send(Command::ProcessFiles(Files(files_on(sent, report))));
             }
             *job.0.lock().unwrap() = Status::Done { set, result };
         });
@@ -335,50 +323,47 @@ impl Node<Edges> for SyncPositions {
         Vec::new()
     }
 
-    fn settings(&self) -> Vec<SettingPort<Edges>> {
-        vec![SettingPort { name: "sync", value: self.settings.clone().into(), on_right: false }]
+    /// Where it's sent recordings' files to sync, on the left, as what sends them comes before it; and where it sends
+    /// them on, once it's synced them, on the right, as what's sent them then comes after it.
+    fn ports(&self) -> Vec<ValPort<Edges>> {
+        vec![
+            ValPort::val_out_cmd_in("files", ValueKind::FileInput, &[CommandKind::ProcessFiles]).flipped(),
+            ValPort::val_in_cmd_out("after syncing", ValueKind::FileInput, &[CommandKind::ProcessFiles]).flipped(),
+        ]
     }
 
-    /// What's connected after it, sent the recording's files once it's synced them.
-    fn controls(&self) -> Vec<Control<Edges>> {
-        vec![Control { name: "after syncing", kind: ValueKind::Script, read_only: true, on_right: true }]
+    fn val_out(&self, _port: usize) -> PublishedValue {
+        FileInput.into()
     }
 
-    /// The recording's files, once it's synced them.
-    fn sends(&self, _control: usize) -> &'static [TriggerKind] {
-        &[TriggerKind::RunOnFiles]
+    /// Syncs the recording whose `.set` file's among the files sent, then sends them on to what's connected after it.
+    fn on_command(&mut self, _from: CommandSource, command: Command, context: &mut CommandContext<Edges>) {
+        let Command::ProcessFiles(Files(paths)) = command else { return };
+        let Some(state) = context.ui_state::<SyncState>() else {
+            return log::warn!("{}: sent files to sync, without its state to keep the sync in", context.label);
+        };
+        self.sync(&state.job, paths, context.cmd_sender(AFTER_SYNCING));
     }
 
-    fn set_setting(&mut self, _index: usize, value: PublishedValue) {
-        if let PublishedValue::Sync(settings) = value {
-            self.settings = settings;
-        }
-    }
-
-    /// Never in a pass: it's sent what to do (see `on_trigger`), and has nothing to do with the data going by.
+    /// Never in a pass: it's sent what to do (see `on_command`), and has nothing to do with the data going by.
     fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool], _recording: bool) -> ephys_rs::engine::TreeShake {
         ephys_rs::engine::TreeShake::needing_all(false, inputs.len())
-    }
-
-    fn triggers(&self, _setting: usize) -> &'static [crate::TriggerKind] {
-        &[crate::TriggerKind::RunOnFiles]
-    }
-
-    /// Syncs the recording whose `.set` file's among the files sent (by hand, too), then sends them on to what's
-    /// connected after it.
-    fn on_trigger(&mut self, trigger: Trigger, context: &mut UiContext<Edges>, triggers: &ControlTriggers<Trigger>) {
-        let Trigger::RunOnFiles(RunOnFiles(paths)) = trigger;
-        let job = &context.ui_state::<SyncState>().job;
-        let after = triggers.handle(AFTER_SYNCING, TriggerKind::RunOnFiles);
-        match paths.iter().find(|path| path.extension().is_some_and(|e| e == "set")) {
-            Some(set) => job.start(set.clone(), paths.clone(), self.settings.clone(), after),
-            None => job.fail("There's no .set file among the files sent".into()),
-        }
     }
 
     fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
         if let Some(ui) = ui {
             self.draw_window(ui, context);
+        }
+    }
+}
+
+impl SyncPositions {
+    /// Syncs, as `job`, the recording whose `.set` file's among `paths` (sent, or picked by hand), then sends them on
+    /// through `after`, if that's connected.
+    fn sync(&self, job: &Job, paths: Vec<PathBuf>, after: Option<CmdSender<Command>>) {
+        match paths.iter().find(|path| path.extension().is_some_and(|e| e == "set")) {
+            Some(set) => job.start(set.clone(), paths.clone(), self.settings.clone(), after),
+            None => job.fail("There's no .set file among the files sent".into()),
         }
     }
 }

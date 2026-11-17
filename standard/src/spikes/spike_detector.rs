@@ -16,11 +16,11 @@ use serde::{Deserialize, Serialize};
 use crate::standard::auto_detect::{Distribution, PercentMultiple, SAMPLING, auto_detect_ui, detect_changed};
 use crate::standard::spikes::{Spike, Spikes, Thresholds};
 use crate::standard::widgets::{combo, input_summary, named_settings_grid, require_input, setting, settings_grid};
-use crate::{Buffer, DataStream, Edges, Kind, PublishedValue};
+use crate::{Buffer, Command, CommandKind, DataStream, Edges, Kind, PublishedValue, ValueKind};
 use ephys_rs::engine::EdgeType;
 use ephys_rs::engine::{
-    Category, Input, Node, NodeInfo, Output, PASS_DURATION, PassContext, Prepare, PrepareContext, Prepared,
-    SettingPort, UiContext,
+    Category, CommandContext, CommandSource, Input, Node, NodeInfo, Output, PASS_DURATION, PassContext, Prepare,
+    PrepareContext, Prepared, UiContext, ValPort,
 };
 use ephys_rs::gui::widgets::info_icon;
 
@@ -305,13 +305,32 @@ impl Node<Edges> for SpikeDetector {
         warnings
     }
 
-    fn settings(&self) -> Vec<SettingPort<Edges>> {
-        vec![SettingPort { name: "thresholds", value: self.thresholds.clone().into(), on_right: true }]
+    fn ports(&self) -> Vec<ValPort<Edges>> {
+        vec![ValPort::val_out_cmd_in(
+            "thresholds",
+            ValueKind::Thresholds,
+            &[CommandKind::SetThresholds, CommandKind::Detect],
+        )]
     }
 
-    fn set_setting(&mut self, _index: usize, value: PublishedValue) {
-        if let PublishedValue::Thresholds(t) = value {
-            self.thresholds = t;
+    fn val_out(&self, _port: usize) -> PublishedValue {
+        self.thresholds.clone().into()
+    }
+
+    /// New thresholds: from its passes, those auto detect chose, with it done; from a viewer, an edit, leaving auto
+    /// detect as it is.
+    fn on_command(&mut self, from: CommandSource, command: Command, _context: &mut CommandContext<Edges>) {
+        match command {
+            Command::SetThresholds(thresholds) => {
+                let started = self.thresholds.detect.started;
+                self.thresholds = thresholds;
+                if from != CommandSource::Itself {
+                    self.thresholds.detect.started = started;
+                }
+            }
+            Command::Detect(request) => request.apply(&mut self.thresholds.detect.started),
+            Command::ClearTransientState => self.thresholds.detect.started = None,
+            _ => {}
         }
     }
 
@@ -367,13 +386,16 @@ impl Node<Edges> for SpikeDetector {
                     });
                 });
             });
-            auto_detect_ui(
+            let detect = auto_detect_ui(
                 ui,
                 context,
-                &mut node.thresholds.detect.started,
+                node.thresholds.detect.started,
                 node.thresholds.detect.seconds,
                 "Sample each channel, then set its threshold",
             );
+            if let Some(request) = detect {
+                request.apply(&mut node.thresholds.detect.started);
+            }
             if channels > 0 {
                 node.channels_ui(ui, channels);
             }
@@ -383,8 +405,8 @@ impl Node<Edges> for SpikeDetector {
 }
 
 impl SpikeDetector {
-    /// While the thresholds are being detected, samples each channel for a while, then triggers an update to
-    /// thresholds from it, with `detect` cleared.
+    /// While the thresholds are being detected, samples each channel for a while, then sends the node
+    /// thresholds chosen from it, with `detect` cleared.
     fn choose_thresholds(&self, pass: &PassContext<Edges>, sampling: &mut Option<Sampling>) {
         if let Some(sampling) = sampling.as_mut().filter(|s| !s.done) {
             if let Some(Some(Buffer::Continuous(input))) = pass.inputs.first() {
@@ -403,7 +425,7 @@ impl SpikeDetector {
                         thresholds.set(channel, level.max(0.5));
                     }
                 }
-                pass.trigger_settings_update(0, PublishedValue::Thresholds(thresholds));
+                pass.cmd_self(Command::SetThresholds(thresholds));
                 *sampling = Sampling { done: true, ..Sampling::new(sampling.seconds, 0) };
             }
         }
@@ -553,7 +575,7 @@ mod tests {
         detector.thresholds.detect.started = Some(started);
         let mut state = ephys_rs::engine::fresh_state(&detector, &inputs);
         let spikes = detector.stream(4, 30000.0);
-        let triggers = ephys_rs::triggers::Triggers::default();
+        let commands = ephys_rs::commands::Commands::default();
         let passes = (4.0 / PASS_DURATION).round() as u64;
         for sequence in 0..passes {
             let mut input = stream.buffer(PASS_DURATION);
@@ -568,13 +590,11 @@ mod tests {
             let mut outputs = [Buffer::Spikes(spikes.buffer(PASS_DURATION))];
             let inputs = [Some(&input)];
             let mut pass = PassContext::new(sequence, PASS_DURATION, &inputs, &mut outputs);
-            pass.triggers = &triggers;
+            pass.commands = &commands;
             detector.process(&mut pass, &mut state, &mut ());
         }
-        let updates = triggers.take_settings_updates();
-        let Some(PublishedValue::Thresholds(thresholds)) = updates[0].2.downcast_ref::<PublishedValue>() else {
-            panic!()
-        };
+        let updates = commands.take_commands::<Command>();
+        let [(_, Command::SetThresholds(thresholds))] = &updates[..] else { panic!("{updates:?}") };
         for channel in 0..4 {
             let threshold = thresholds.get(channel);
             assert!((threshold - 60.0).abs() < 1.0, "the 98th percentile, 30, doubled, from zero: {threshold}");

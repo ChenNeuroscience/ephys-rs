@@ -14,8 +14,10 @@ use crate::standard::spikes::{
 };
 
 use crate::standard::widgets::{input_summary, named_settings_grid, require_input, setting};
-use crate::{Buffer, DataStream, Edges, Kind, PublishedValue};
-use ephys_rs::engine::{Category, Input, Node, NodeInfo, Output, PassContext, SettingPort, UiContext};
+use crate::{Buffer, Command, CommandKind, DataStream, Edges, Kind, PublishedValue, ValueKind};
+use ephys_rs::engine::{
+    Category, CommandContext, CommandSource, Input, Node, NodeInfo, Output, PassContext, UiContext, ValPort,
+};
 use ephys_rs::gui::widgets::info_icon;
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -116,13 +118,28 @@ impl Node<Edges> for ContinuousGain {
         BufferUsage { in_place: vec![Some(0); outputs], ..BufferUsage::none(inputs, outputs) }
     }
 
-    fn settings(&self) -> Vec<SettingPort<Edges>> {
-        vec![SettingPort { name: "gains", value: self.gains.clone().into(), on_right: true }]
+    fn ports(&self) -> Vec<ValPort<Edges>> {
+        vec![ValPort::val_out_cmd_in("gains", ValueKind::Gains, &[CommandKind::SetGains, CommandKind::Detect])]
     }
 
-    fn set_setting(&mut self, _index: usize, value: PublishedValue) {
-        if let PublishedValue::Gains(gains) = value {
-            self.gains = gains;
+    fn val_out(&self, _port: usize) -> PublishedValue {
+        self.gains.clone().into()
+    }
+
+    /// New gains: from its passes, those auto detect chose, with it done; from a viewer, an edit, leaving auto
+    /// detect as it is.
+    fn on_command(&mut self, from: CommandSource, command: Command, _context: &mut CommandContext<Edges>) {
+        match command {
+            Command::SetGains(gains) => {
+                let started = self.gains.detect.started;
+                self.gains = gains;
+                if from != CommandSource::Itself {
+                    self.gains.detect.started = started;
+                }
+            }
+            Command::Detect(request) => request.apply(&mut self.gains.detect.started),
+            Command::ClearTransientState => self.gains.detect.started = None,
+            _ => {}
         }
     }
 
@@ -141,8 +158,8 @@ impl Node<Edges> for ContinuousGain {
         Prepared::shared(Gaining { sampling }).into()
     }
 
-    /// While the gains are being detected, samples each channel (in µV) for a while, then triggers an update to
-    /// gains from it, with `detect` cleared; and multiplies each channel by its gain.
+    /// While the gains are being detected, samples each channel (in µV) for a while, then sends the node gains
+    /// chosen from it, with `detect` cleared; and multiplies each channel by its gain.
     fn process(&self, pass: &mut PassContext<Edges>, gaining: &mut Gaining, _: &mut ()) {
         let input = match pass.inputs[0] {
             Some(Buffer::Continuous(input)) => Some(input),
@@ -166,7 +183,7 @@ impl Node<Edges> for ContinuousGain {
                 gains
             });
             if let Some(gains) = chosen {
-                pass.trigger_settings_update(0, PublishedValue::Gains(gains));
+                pass.cmd_self(Command::SetGains(gains));
                 *sampling = Sampling { done: true, ..Sampling::new(sampling.seconds, 0) };
             }
         }
@@ -264,13 +281,16 @@ impl Node<Edges> for ContinuousGain {
                     });
                 });
             });
-            auto_detect_ui(
+            let detect = auto_detect_ui(
                 ui,
                 context,
-                &mut node.gains.detect.started,
+                node.gains.detect.started,
                 node.gains.detect.seconds,
                 "Sample each channel, then set its gain",
             );
+            if let Some(request) = detect {
+                request.apply(&mut node.gains.detect.started);
+            }
             ui.add_space(4.0);
             input_summary(ui, context.inputs);
         });
@@ -293,7 +313,7 @@ mod tests {
         let inputs = [Some(DataStream::Continuous(stream))];
         gain.gains.detect.started = Some(started);
         let mut state = ephys_rs::engine::fresh_state(&gain, &inputs);
-        let triggers = ephys_rs::triggers::Triggers::default();
+        let commands = ephys_rs::commands::Commands::default();
         let passes = (4.0 / PASS_DURATION).round() as u64;
         for sequence in 0..passes {
             // 100 µV either side of zero on the first channel, 300 on the second.
@@ -308,14 +328,14 @@ mod tests {
             let inputs = [Some(&input)];
             let mut outputs = [Buffer::Continuous(stream.buffer(PASS_DURATION))];
             let mut pass = PassContext::new(sequence, PASS_DURATION, &inputs, &mut outputs);
-            pass.triggers = &triggers;
+            pass.commands = &commands;
             gain.process(&mut pass, &mut state, &mut ());
             let Buffer::Continuous(out) = &outputs[0] else { unreachable!() };
             let expected = -100.0 * gain.gains.get(0);
             assert_eq!(out.channel(0)[10], expected, "multiplied by the gain");
         }
-        let updates = triggers.take_settings_updates();
-        let Some(PublishedValue::Gains(gains)) = updates[0].2.downcast_ref::<PublishedValue>() else { panic!() };
+        let updates = commands.take_commands::<Command>();
+        let [(_, Command::SetGains(gains))] = &updates[..] else { panic!("{updates:?}") };
         // One for all, to begin with: the widest of theirs, so neither clips.
         assert!((gains.range_uv(0) - 900.0).abs() < 20.0 && (gains.range_uv(1) - 900.0).abs() < 20.0);
         // Wider than a quarter of a gain fits, it's the widest it can be.

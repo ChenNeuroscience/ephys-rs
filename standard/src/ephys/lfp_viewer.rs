@@ -33,10 +33,10 @@ use crate::standard::plots::axis_ui;
 use crate::standard::pool::Pool;
 use crate::standard::spikes::{Channels, GainScope, Gains, gain_field};
 use crate::standard::widgets::{TIME_AXIS_HEIGHT, inline_block, open_settings_button, require_input, time_axis_ui};
-use crate::{Buffer, DataStream, Edges, Kind, PublishedValue, ValueKind};
+use crate::{Buffer, Command, CommandKind, DataStream, Edges, Kind, ValueKind};
 use ephys_rs::engine::{
-    Category, Control, EdgeType, Input, Node, NodeInfo, Output, PassContext, Prepare, PrepareContext, Prepared,
-    UiContext,
+    Category, EdgeType, Input, Node, NodeInfo, Output, PassContext, Prepare, PrepareContext, Prepared, UiContext,
+    ValPort,
 };
 use ephys_rs::gui::widgets::{Icon, small_toggle_button};
 
@@ -365,11 +365,11 @@ impl Node<Edges> for LfpViewer {
         }
     }
 
-    fn controls(&self) -> Vec<Control<Edges>> {
+    fn ports(&self) -> Vec<ValPort<Edges>> {
         vec![
-            Control { name: "gains", kind: ValueKind::Gains, read_only: false, on_right: false },
-            Control { name: "selection", kind: ValueKind::ChannelSelection, read_only: false, on_right: false },
-            Control { name: "reference", kind: ValueKind::Reference, read_only: false, on_right: false },
+            ValPort::val_in_cmd_out("gains", ValueKind::Gains, &[CommandKind::SetGains, CommandKind::Detect]),
+            ValPort::val_in_cmd_out("selection", ValueKind::ChannelSelection, &[CommandKind::SetChannelSelection]),
+            ValPort::val_in_cmd_out("reference", ValueKind::Reference, &[CommandKind::SetReference]),
         ]
     }
 
@@ -382,18 +382,9 @@ impl Node<Edges> for LfpViewer {
             plots::unconnected(ui, context.theme, "Connect a continuous data stream to view it");
             return;
         };
-        let mut selection = match &context.controls[SELECTION] {
-            Some(PublishedValue::ChannelSelection(s)) => Some(s.clone()),
-            _ => None,
-        };
-        let mut reference = match &context.controls[REFERENCE] {
-            Some(PublishedValue::Reference(r)) => Some(r.clone()),
-            _ => None,
-        };
-        let mut gains = match &context.controls[GAINS] {
-            Some(PublishedValue::Gains(g)) => Some(g.clone()),
-            _ => None,
-        };
+        let mut selection = context.val_in::<ChannelSelection>(SELECTION).cloned();
+        let mut reference = context.val_in::<Reference>(REFERENCE).cloned();
+        let mut gains = context.val_in::<Gains>(GAINS).cloned();
         let kept = context.ui_state::<TracesDisplay>();
         let display = kept.received.then_some(&*kept);
         // The references are edited on the rows (an R for each), so only once there are rows, with data to show.
@@ -427,13 +418,13 @@ impl Node<Edges> for LfpViewer {
             edit.apply(reference, stream.channels);
         }
         if let Some(selection) = selection {
-            context.controls[SELECTION] = Some(PublishedValue::ChannelSelection(selection));
+            context.cmd_out_if_changed(SELECTION, selection, Command::SetChannelSelection);
         }
         if let Some(reference) = reference {
-            context.controls[REFERENCE] = Some(PublishedValue::Reference(reference));
+            context.cmd_out_if_changed(REFERENCE, reference, Command::SetReference);
         }
         if let Some(gains) = gains {
-            context.controls[GAINS] = Some(PublishedValue::Gains(gains));
+            context.cmd_out_if_changed(GAINS, gains, Command::SetGains);
         }
     }
 }
@@ -878,13 +869,16 @@ fn gains_ui(ui: &mut egui::Ui, context: &mut UiContext<Edges>, gains: &mut Gains
     } else {
         ui.label("each channel's");
     }
-    auto_detect_ui(
+    let detect = auto_detect_ui(
         ui,
         context,
-        &mut gains.detect.started,
+        gains.detect.started,
         gains.detect.seconds,
         "Sample each channel, then set its gain",
     );
+    if let Some(request) = detect {
+        context.cmd_out(GAINS, Command::Detect(request));
+    }
 }
 
 /// Whether a selection's channels are "all".

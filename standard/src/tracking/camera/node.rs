@@ -9,10 +9,10 @@ use super::{CameraConfig, CameraControls, CameraStats, CaptureStats, Control, Ra
 use crate::standard::pool::Pool;
 use crate::standard::tracking::Video;
 use crate::standard::widgets::{setting, settings_grid};
-use crate::{Buffer, DataStream, Edges, Kind, PublishedValue};
+use crate::{Buffer, Command, CommandKind, DataStream, Edges, Kind, PublishedValue, ValueKind};
 use ephys_rs::engine::{
-    Category, Flow, Node, NodeInfo, NodeThread, Output, PassContext, PoolStatus, Prepare, PrepareContext, Prepared,
-    SettingPort, Suggestion, ThreadContext, UiContext, UserDecision,
+    Category, CommandContext, CommandSource, Flow, Node, NodeInfo, NodeThread, Output, PassContext, PoolStatus,
+    Prepare, PrepareContext, Prepared, Suggestion, ThreadContext, UiContext, UserDecision, ValPort,
 };
 
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -88,12 +88,16 @@ impl Node<Edges> for Camera {
         ]
     }
 
-    fn settings(&self) -> Vec<SettingPort<Edges>> {
-        vec![SettingPort { name: "camera", value: PublishedValue::Camera(self.settings), on_right: true }]
+    fn ports(&self) -> Vec<ValPort<Edges>> {
+        vec![ValPort::val_out_cmd_in("camera", ValueKind::Camera, &[CommandKind::SetCamera])]
     }
 
-    fn set_setting(&mut self, _index: usize, value: PublishedValue) {
-        if let PublishedValue::Camera(settings) = value {
+    fn val_out(&self, _port: usize) -> PublishedValue {
+        PublishedValue::Camera(self.settings)
+    }
+
+    fn on_command(&mut self, _from: CommandSource, command: Command, _context: &mut CommandContext<Edges>) {
+        if let Command::SetCamera(settings) = command {
             self.settings = settings;
         }
     }

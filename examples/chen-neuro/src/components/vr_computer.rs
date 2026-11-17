@@ -48,11 +48,11 @@ use crate::standard::pool::Pool;
 use crate::standard::tracking::pipeline::Blob;
 use crate::standard::tracking::{Crop, Detection, PositionSample, Positions, PositionsBuffer, Ruler, TimingLed};
 use crate::standard::widgets::{named_settings_grid, setting};
-use crate::standard::{Buffer, DataStream, Edges, Kind, PublishedValue};
+use crate::standard::{Buffer, Command, CommandKind, DataStream, Edges, Kind, PublishedValue, ValueKind};
 use eframe::egui::{self, RichText};
 use ephys_rs::engine::{
-    Category, Flow, Node, NodeInfo, NodeThread, Output, PassContext, SettingPort, SnapshotLite, ThreadContext,
-    UiContext,
+    Category, CommandContext, CommandSource, Flow, Node, NodeInfo, NodeThread, Output, PassContext, SnapshotLite,
+    ThreadContext, UiContext, ValPort,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -77,7 +77,7 @@ const TTL_RATE: f64 = 1000.0;
 const QUEUE: usize = 4096;
 /// The longest message: longer than this, and it isn't one.
 const MAX_MESSAGE: usize = 1 << 20;
-/// How long to give the GUI to apply settings, before triggering an update to them again (it won't as recording starts).
+/// How long to give the GUI to apply settings, before sending them again (it won't as recording starts).
 const TRIGGER_AGAIN: Duration = Duration::from_secs(1);
 /// The longest what's arrived waits for new settings to be applied, for passes that have them (see `Inbox::waiting`).
 const WAIT_FOR_SETTINGS: Duration = Duration::from_secs(3);
@@ -174,7 +174,7 @@ struct Inbox {
     logs: VecDeque<(f64, String)>,
     /// The latest settings, until the node has them.
     settings: Option<Custom>,
-    /// When an update to them was last triggered, and whether it's been said they're waiting for recording to stop.
+    /// When they were last sent, and whether it's been said they're waiting for recording to stop.
     triggered: Option<Instant>,
     held: bool,
     frames: u64,
@@ -564,7 +564,11 @@ impl Node<Edges> for VrComputer {
         vec!["No settings from the VR computer yet: positions can't be recorded properly without them".into()]
     }
 
-    fn settings(&self) -> Vec<SettingPort<Edges>> {
+    fn ports(&self) -> Vec<ValPort<Edges>> {
+        vec![ValPort::val_out_cmd_in("settings", ValueKind::Detection, &[CommandKind::SetDetection])]
+    }
+
+    fn val_out(&self, _port: usize) -> PublishedValue {
         let crop = window(&self.custom).unwrap_or_default();
         // A metre's worth of pixels, as a ruler laid over the video would say.
         let ruler = |ppm| Ruler { a: [0.0, 0.0], b: [ppm, 0.0], length_cm: 100.0 };
@@ -577,12 +581,11 @@ impl Node<Edges> for VrComputer {
         // it as it is.
         let enabled = ttl_channels(&self.custom).is_some_and(|n| n > 0);
         let timing_led = TimingLed { enabled, radius: 0.0, ..Default::default() };
-        let detection = Detection { crop, rulers, timing_led, custom, ..Default::default() };
-        vec![SettingPort { name: "settings", value: PublishedValue::Detection(detection), on_right: true }]
+        PublishedValue::Detection(Detection { crop, rulers, timing_led, custom, ..Default::default() })
     }
 
-    fn set_setting(&mut self, _index: usize, value: PublishedValue) {
-        if let PublishedValue::Detection(detection) = value {
+    fn on_command(&mut self, _from: CommandSource, command: Command, _context: &mut CommandContext<Edges>) {
+        if let Command::SetDetection(detection) = command {
             self.custom = detection.custom;
         }
     }
@@ -656,7 +659,7 @@ impl Node<Edges> for VrComputer {
             sample.pixels_per_metre = pixels_per_metre;
         }
         if let Some(custom) = settings {
-            pass.trigger_settings_update(0, PublishedValue::Detection(Detection { custom, ..Default::default() }));
+            pass.cmd_self(Command::SetDetection(Detection { custom, ..Default::default() }));
         }
         // Not if the thread's updating the status just then: the next pass shows it.
         if let Ok(status) = shared.status.try_lock() {
@@ -833,7 +836,7 @@ mod tests {
         custom.insert(TTL_CHANNELS_KEY.into(), "0".into());
         assert!(complete(&custom), "none");
         let node = VrComputer { custom: custom.clone(), ..VrComputer::default() };
-        let [SettingPort { value: PublishedValue::Detection(detection), .. }] = &node.settings()[..] else { panic!() };
+        let PublishedValue::Detection(detection) = &node.val_out(0) else { panic!() };
         assert!(!detection.timing_led.enabled, "no TTLs");
         custom.insert(TTL_CHANNELS_KEY.into(), "3".into());
         assert!(complete(&custom));
@@ -841,7 +844,7 @@ mod tests {
         assert!(node.warnings(&[]).is_empty());
         let Some(DataStream::Events(ttl)) = node.outputs(&[])[1].stream else { panic!() };
         assert_eq!(ttl.lines, 3, "a line a channel");
-        let [SettingPort { value: PublishedValue::Detection(detection), .. }] = &node.settings()[..] else { panic!() };
+        let PublishedValue::Detection(detection) = &node.val_out(0) else { panic!() };
         assert_eq!(detection.crop, crop, "for Write LTX");
         assert_eq!(detection.pixels_per_metre(), Some(250.0));
         assert!(detection.timing_led.enabled, "there'll be TTLs");

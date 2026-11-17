@@ -31,7 +31,7 @@ pub mod tracking;
 pub mod widgets;
 
 use ephys::{reference, spectrum};
-use other::{run_command, sync_positions};
+use other::run_command;
 use tracking::camera;
 
 ephys_rs::edge_types! {
@@ -55,11 +55,18 @@ ephys_rs::edge_types! {
         Camera(camera::CameraConfig),
         Detection(tracking::Detection),
         Alarms(alarms::Alarms),
-        Script(run_command::ScriptConfig),
-        Sync(sync_positions::SyncConfig),
+        FileInput(run_command::FileInput),
     }
-    triggers: pub enum Trigger, TriggerKind {
-        RunOnFiles(run_command::RunOnFiles),
+    commands: pub enum Command, CommandKind {
+        SetThresholds(spikes::Thresholds),
+        SetGains(spikes::Gains),
+        SetChannelSelection(ephys::ChannelSelection),
+        SetReference(reference::Reference),
+        SetCamera(camera::CameraConfig),
+        SetDetection(tracking::Detection),
+        SetAlarms(alarms::Alarms),
+        Detect(auto_detect::DetectRequest),
+        ProcessFiles(run_command::Files),
     }
 }
 

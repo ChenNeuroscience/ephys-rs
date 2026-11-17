@@ -42,6 +42,8 @@ pub struct Panes<'a, N: NodesEnum, A: AnnotationsEnum> {
     pub shared: Option<&'a crate::engine::SharedByNode>,
     /// Each node's state on the GUI's side (see `Node::UiState`).
     pub(crate) ui_states: &'a super::UiStates<N>,
+    /// The app's queue of commands, where the nodes' windows send theirs (see `crate::commands`).
+    pub commands: &'a std::sync::Arc<crate::commands::Commands>,
     /// Recordings go in this base directory (see `crate::base_directory`).
     pub base_directory: Option<&'a crate::base_directory::Place>,
     /// The app's latest snapshot of the graph.
@@ -96,13 +98,14 @@ pub fn node_ui<N: NodesEnum>(
     id: NodeId,
     events: &mut Vec<Event>,
     ticked: &mut Ticked,
+    commands: Option<&std::sync::Arc<crate::commands::Commands>>,
 ) {
     let Some(state) = resolved.get(&id) else { return };
     let Some(mut tools) = NodeTools::new(graph, id, advanced, events) else { return };
     let tools = Some(&mut tools as &mut dyn crate::engine::NodeToolbar);
     let streams = &state.input_streams;
     // A view stays live while recording (changes it makes to settings are undone: see `App::lock`).
-    graph.edit(
+    graph.edit_sending(
         id,
         streams,
         colours,
@@ -112,6 +115,7 @@ pub fn node_ui<N: NodesEnum>(
         running,
         locked,
         tools,
+        commands,
         |node: &mut N, context| node.on_gui_tick(Some(ui), context),
     );
     ticked.nodes.insert(id);
@@ -291,8 +295,20 @@ impl<N: NodesEnum, A: AnnotationsEnum> Panes<'_, N, A> {
                 padded(ui, |ui| {
                     let (events, ticked) = (&mut *self.events, &mut *self.ticked);
                     node_ui(
-                        ui, graph, resolved, colours, running, shared, ui_state, base, locked, advanced, id, events,
+                        ui,
+                        graph,
+                        resolved,
+                        colours,
+                        running,
+                        shared,
+                        ui_state,
+                        base,
+                        locked,
+                        advanced,
+                        id,
+                        events,
                         ticked,
+                        Some(self.commands),
                     )
                 })
             }
