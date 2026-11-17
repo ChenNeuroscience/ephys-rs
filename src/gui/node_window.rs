@@ -54,31 +54,37 @@ pub fn standard<E: Edges, N: Node<E>>(
     scrolling.show(&mut area, |ui| {
         ui.add_enabled_ui(!locked, |ui| settings(node, ui, context));
         ui.add_space(8.0);
-        for (role, title) in [
-            (PortRole::DataStreamIn, "Inputs"),
-            (PortRole::DataStreamOut, "Outputs"),
-            (PortRole::ValOutCmdIn, "Settings"),
-            (PortRole::ValInCmdOut, "Controls"),
-        ] {
-            if state.count(role) == 0 {
+        // Each section's ports: a node's controls (`ValInCmdOut` and `ValIn`) in the order it declares them.
+        let of = |role| (0..state.count(role)).map(move |port_idx| (role, port_idx)).collect::<Vec<_>>();
+        let controls = (0..state.val_ins.len()).filter_map(|val_in_idx| state.val_in_address(val_in_idx));
+        let sections = [
+            ("Inputs", of(PortRole::DataStreamIn)),
+            ("Outputs", of(PortRole::DataStreamOut)),
+            ("Settings", of(PortRole::ValOutCmdIn)),
+            ("Controls", controls.collect()),
+        ];
+        for (title, ports) in sections {
+            if ports.is_empty() {
                 continue;
             }
             ui.label(RichText::new(title).small().weak());
-            for index in 0..state.count(role) {
+            for (val_in_idx, (role, port_idx)) in ports.into_iter().enumerate() {
                 // What it carries (or a setting's value); a control, whether it's connected.
                 let detail = match role {
                     PortRole::DataStreamIn | PortRole::DataStreamOut => {
-                        state.summary(role, index).unwrap_or_else(|| "not connected".into())
+                        state.summary(role, port_idx).unwrap_or_else(|| "not connected".into())
                     }
-                    PortRole::ValOutCmdIn => state.summary(role, index).unwrap_or_default(),
-                    PortRole::ValInCmdOut | PortRole::ValIn if context.control_connected(index) => "connected".into(),
+                    PortRole::ValOutCmdIn => state.summary(role, port_idx).unwrap_or_default(),
+                    PortRole::ValInCmdOut | PortRole::ValIn if context.control_connected(val_in_idx) => {
+                        "connected".into()
+                    }
                     PortRole::ValInCmdOut | PortRole::ValIn => "not connected".into(),
                 };
                 ui.horizontal(|ui| {
                     let (dot, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-                    let colour = state.info(role, index).map_or(egui::Color32::GRAY, |i| i.colour);
+                    let colour = state.info(role, port_idx).map_or(egui::Color32::GRAY, |i| i.colour);
                     ui.painter().circle_filled(dot.center(), 4.0, colour);
-                    ui.label(state.name(role, index).unwrap_or("?"));
+                    ui.label(state.name(role, port_idx).unwrap_or("?"));
                     ui.weak(detail);
                 });
             }

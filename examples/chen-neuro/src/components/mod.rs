@@ -104,9 +104,11 @@ impl Components for ChenNeuro {
 pub const CONFIG_PATCHES: &[PatchSet] =
     &[ephys_rs::config_patches::PATCHES, crate::standard::config_patches::PATCHES, config_patches::PATCHES];
 
-/// The graph in tests/rig.json, for tests.
+/// The graph in tests/rig.json, for tests: saved before there were versions, so patched up to date, as the app does.
 #[cfg(test)]
 pub fn example_graph() -> ephys_rs::engine::Graph<Nodes> {
-    let file: serde_json::Value = serde_json::from_str(include_str!("../../../../tests/rig.json")).unwrap();
+    let mut file: serde_json::Value = serde_json::from_str(include_str!("../../../../tests/rig.json")).unwrap();
+    let patches = ephys_rs::config_patching::PatchSets::new(CONFIG_PATCHES);
+    patches.apply_to_project(&ephys_rs::config_patching::Versions::new(), &mut file);
     serde_json::from_value(file["graph"].clone()).unwrap()
 }

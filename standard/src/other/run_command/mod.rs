@@ -820,7 +820,7 @@ mod tests {
         assert!(commands.take().is_empty(), "not till it's done");
         wait_for_job(&job);
         let sent = commands.take_commands::<crate::Command>();
-        let [(Address::Port { port_idx: AFTER_RUNNING, .. }, crate::Command::ProcessFiles(Files(files)))] = &sent[..]
+        let [(Address::Port { val_in_idx: AFTER_RUNNING, .. }, crate::Command::ProcessFiles(Files(files)))] = &sent[..]
         else {
             panic!("sent once, to what's after it: {sent:?}")
         };
@@ -1422,7 +1422,7 @@ mod chain_tests {
     /// files on to what's connected after it.
     fn sends(then: Then, runs: &[Option<Option<i64>>]) -> bool {
         let commands = Arc::new(Commands::default());
-        let address = Address::Port { from: NodeId(1), port_idx: AFTER_RUNNING };
+        let address = Address::Port { from: NodeId(1), val_in_idx: AFTER_RUNNING };
         let sender = CmdSender::new(commands.clone(), address);
         let progress = runs.iter().map(|run| Progress {
             shown: String::new(),

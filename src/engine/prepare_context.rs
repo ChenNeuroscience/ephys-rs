@@ -198,17 +198,17 @@ impl<'a, E: Edges, N> PrepareContext<'a, E, N> {
         }
     }
 
-    /// The node reads what its `ValInCmdOut` (or `ValIn`) port `port_idx` sees with this (see `UiContext::val_in`).
-    pub fn val_in<T: ValueType<E::PublishedValue> + 'a>(&self, port_idx: usize) -> Option<&'a T> {
-        T::from_value(self.val_ins.get(port_idx)?.as_ref()?)
+    /// The node reads what its `ValInCmdOut` (or `ValIn`) port `val_in_idx` sees with this (see `UiContext::val_in`).
+    pub fn val_in<T: ValueType<E::PublishedValue> + 'a>(&self, val_in_idx: usize) -> Option<&'a T> {
+        T::from_value(self.val_ins.get(val_in_idx)?.as_ref()?)
     }
 
     /// A node keeps one of these to command, later, from any thread (a writer's, once its files are finished, say), the
-    /// node its `ValInCmdOut` port `port_idx` connects to then (see `CmdSender`). There's none if the port isn't connected
-    /// now, or there's no queue.
-    pub fn cmd_sender(&self, port_idx: usize) -> Option<CmdSender<E::Command>> {
-        self.val_ins.get(port_idx)?.as_ref()?;
-        Some(CmdSender::new(self.commands?.clone(), Address::Port { from: self.node, port_idx }))
+    /// node its `ValInCmdOut` port `val_in_idx` connects to then (see `CmdSender`). There's none if the port isn't
+    /// connected now, or there's no queue.
+    pub fn cmd_sender(&self, val_in_idx: usize) -> Option<CmdSender<E::Command>> {
+        self.val_ins.get(val_in_idx)?.as_ref()?;
+        Some(CmdSender::new(self.commands?.clone(), Address::Port { from: self.node, val_in_idx }))
     }
 
     /// A node that was in the snapshot before with the same data streams can keep its state, which still fits. This

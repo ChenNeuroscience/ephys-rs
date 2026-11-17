@@ -35,8 +35,8 @@ impl<'e> NodeTools<'e> {
 }
 
 impl NodeToolbar for NodeTools<'_> {
-    fn open_control_target(&mut self, port_idx: usize) {
-        if let Some(Some(node)) = self.controls.get(port_idx) {
+    fn open_control_target(&mut self, val_in_idx: usize) {
+        if let Some(Some(node)) = self.controls.get(val_in_idx) {
             let node = *node;
             self.events.push(Event::OpenWindow(node, Some(crate::layout::Pane::Node(self.id))));
         }

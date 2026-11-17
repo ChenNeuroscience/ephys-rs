@@ -4,9 +4,9 @@
 //! outlived the run that started it, say.
 //!
 //! A command sent through a value edge is addressed to the edge, not the node at its far end: to whatever node `from`'s
-//! `ValInCmdOut` port `port_idx` connects to (`Address::Port`). The app follows the edge as it delivers the command, so a
-//! sender kept for a while (a writer's, for when its files are finished: see `CmdSender`) sends to where the edge points
-//! then, or nowhere, if it's been disconnected.
+//! `ValInCmdOut` port `val_in_idx` connects to (`Address::Port`). The app follows the edge as it delivers the command,
+//! so a sender kept for a while (a writer's, for when its files are finished: see `CmdSender`) sends to where the edge
+//! points then, or nowhere, if it's been disconnected.
 //!
 //! A pass can also ask the app to start or stop recording (`PassContext::request_recording`), as the toolbar's Record
 //! does. That goes through the queue too, though it isn't a command to a node.
@@ -25,8 +25,9 @@ use crate::engine::NodeId;
 /// A command goes to a node through one of the node's value edges, or from the node to itself.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Address {
-    /// Whatever node `from`'s `ValInCmdOut` port `port_idx` (by index among them) connects to, when the command's delivered.
-    Port { from: NodeId, port_idx: usize },
+    /// Whatever node `from`'s `ValInCmdOut` port `val_in_idx` (as the node numbers its `ValInCmdOut` and `ValIn` ports:
+    /// see `crate::engine::val_in_address`) connects to, when the command's delivered.
+    Port { from: NodeId, val_in_idx: usize },
     /// The node itself, from its passes or a thread of its own.
     Itself(NodeId),
 }
@@ -134,7 +135,7 @@ mod tests {
     #[test]
     fn a_sender_sends_through_the_queue_to_its_address() {
         let commands = Arc::new(Commands::default());
-        let address = Address::Port { from: NodeId(1), port_idx: 2 };
+        let address = Address::Port { from: NodeId(1), val_in_idx: 2 };
         let sender = CmdSender::<u32>::new(commands.clone(), address);
         sender.send(7);
         sender.clone().send(8);

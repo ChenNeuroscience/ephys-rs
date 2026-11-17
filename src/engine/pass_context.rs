@@ -89,10 +89,10 @@ impl<'a, E: Edges> PassContext<'a, E> {
         self.shared.downcast_ref().expect("the node's own Node::Shared")
     }
 
-    /// The node reads what its `ValInCmdOut` (or `ValIn`) port `port_idx` saw as the snapshot was made with this, as the
-    /// type it expects, if the port's connected.
-    pub fn val_in<T: ValueType<E::PublishedValue> + 'a>(&self, port_idx: usize) -> Option<&'a T> {
-        T::from_value(self.val_ins.get(port_idx)?.as_ref()?)
+    /// The node reads what its `ValInCmdOut` (or `ValIn`) port `val_in_idx` saw as the snapshot was made with this, as
+    /// the type it expects, if the port's connected.
+    pub fn val_in<T: ValueType<E::PublishedValue> + 'a>(&self, val_in_idx: usize) -> Option<&'a T> {
+        T::from_value(self.val_ins.get(val_in_idx)?.as_ref()?)
     }
 
     /// Passes can't change the graph themselves, so a node sends itself `command` here (to set one of its settings from

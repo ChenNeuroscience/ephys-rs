@@ -51,11 +51,11 @@ pub fn arrange<N: NodesEnum>(graph: &Graph<N>) -> HashMap<NodeId, [f32; 2]> {
     let has_data: std::collections::HashSet<NodeId> = graph
         .edges()
         .iter()
-        .filter(|e| e.dimension == Dimension::DataStream)
+        .filter(|e| e.dimension() == Dimension::DataStream)
         .flat_map(|e| [e.from.node, e.to.node])
         .collect();
     let as_data = |edge: &crate::engine::Edge| {
-        edge.dimension == Dimension::DataStream
+        edge.dimension() == Dimension::DataStream
             || !has_data.contains(&edge.from.node)
             || !has_data.contains(&edge.to.node)
     };
@@ -166,7 +166,7 @@ mod tests {
         let port = |node, role, index| PortAddress { node, role, port_idx: index };
         graph.connect(port(board, PortRole::DataStreamOut, 0), port(detector, PortRole::DataStreamIn, 0)).unwrap();
         graph.connect(port(detector, PortRole::DataStreamOut, 0), port(writer, PortRole::DataStreamIn, 0)).unwrap();
-        graph.connect(port(writer, PortRole::ValInCmdOut, 4), port(command, PortRole::ValOutCmdIn, 0)).unwrap();
+        graph.connect(port(writer, PortRole::ValInCmdOut, 0), port(command, PortRole::ValOutCmdIn, 0)).unwrap();
         let placed = arrange(&graph);
         let x = |id| placed[&id][0];
         assert!(x(board) < x(detector) && x(detector) < x(writer) && x(writer) < x(command), "{placed:?}");
@@ -185,7 +185,7 @@ mod tests {
         let command = graph.add(Nodes::create(node_type), [0.0, 0.0]);
         let writer = find(&graph, "Write LTX");
         let port = |node, role, index| PortAddress { node, role, port_idx: index };
-        graph.connect(port(writer, PortRole::ValInCmdOut, 4), port(command, PortRole::ValOutCmdIn, 0)).unwrap();
+        graph.connect(port(writer, PortRole::ValInCmdOut, 0), port(command, PortRole::ValOutCmdIn, 0)).unwrap();
         let placed = arrange(&graph);
         let (alarms, processor) = (find(&graph, "Alarm Viewer"), find(&graph, "Alarm Processor"));
         assert!(placed[&writer][1] < placed[&processor][1], "as the rig is: {placed:?}");

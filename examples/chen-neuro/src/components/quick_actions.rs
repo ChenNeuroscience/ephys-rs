@@ -114,7 +114,7 @@ impl Change {
 
     /// Whether a port has an edge.
     fn linked(&self, port: PortAddress) -> bool {
-        self.graph.edges().iter().any(|e| e.source() == port || e.target() == port)
+        self.graph.edges().iter().any(|e| e.from == port || e.to == port)
     }
 
     /// Connects an output to an input (or a control to a setting), if the input (or control) is free.
@@ -154,7 +154,7 @@ fn port((node, role, index): (NodeId, PortRole, usize)) -> PortAddress {
     PortAddress { node, role, port_idx: index }
 }
 
-use PortRole::{DataStreamIn, DataStreamOut, ValInCmdOut, ValOutCmdIn};
+use PortRole::{DataStreamIn, DataStreamOut, ValIn, ValInCmdOut, ValOutCmdIn};
 
 /// A real board: the Open Ephys acquisition board, generation 1 or 2.
 fn real_board() -> board::Source {
@@ -258,13 +258,13 @@ fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
     change.link((positions, DataStreamOut, 0), (ltx, DataStreamIn, 2));
     change.link((board, DataStreamOut, 1), (ltx, DataStreamIn, 3));
     change.link((positions, DataStreamOut, 1), (ltx, DataStreamIn, 4));
-    change.link((ltx, ValInCmdOut, 0), (positions, ValOutCmdIn, 0));
-    change.link((ltx, ValInCmdOut, 1), (gain, ValOutCmdIn, 0));
-    change.link((ltx, ValInCmdOut, 2), (selector, ValOutCmdIn, 0));
-    change.link((ltx, ValInCmdOut, 3), (continuous_gain, ValOutCmdIn, 0));
+    change.link((ltx, ValIn, 0), (positions, ValOutCmdIn, 0));
+    change.link((ltx, ValIn, 1), (gain, ValOutCmdIn, 0));
+    change.link((ltx, ValIn, 2), (selector, ValOutCmdIn, 0));
+    change.link((ltx, ValIn, 3), (continuous_gain, ValOutCmdIn, 0));
     // Once it's recorded, the positions put on the board's clock.
     let sync = change.upsert(NodeType::SyncPositions, Some(ltx));
-    change.link((ltx, ValInCmdOut, 4), (sync, ValOutCmdIn, 0));
+    change.link((ltx, ValInCmdOut, 0), (sync, ValOutCmdIn, 0));
 
     // The Arduino: the rig's sketch pulses pin 6, for syncing, while pin 8's high.
     if change.find(|n| matches!(n, Nodes::Arduino(_))).is_none() {
@@ -326,15 +326,13 @@ fn position_nodes(graph: &Graph<Nodes>) -> Vec<NodeId> {
 /// the VR Computer and the position detector.)
 fn move_positions(graph: &mut Graph<Nodes>, from: NodeId, to: NodeId) {
     for index in 0..2 {
-        let targets: Vec<PortAddress> =
-            graph.edges_from(port((from, DataStreamOut, index))).map(|e| e.target()).collect();
+        let targets: Vec<PortAddress> = graph.edges_from(port((from, DataStreamOut, index))).map(|e| e.to).collect();
         for target in targets {
             let _ = graph.connect(port((to, DataStreamOut, index)), target);
         }
     }
     let setting = port((from, ValOutCmdIn, 0));
-    let controls: Vec<PortAddress> =
-        graph.edges().iter().filter(|e| e.target() == setting).map(|e| e.source()).collect();
+    let controls: Vec<PortAddress> = graph.edges().iter().filter(|e| e.to == setting).map(|e| e.from).collect();
     for control in controls {
         let _ = graph.connect(control, port((to, ValOutCmdIn, 0)));
     }
@@ -502,7 +500,7 @@ mod tests {
             graph
                 .edges()
                 .iter()
-                .find(|e| e.target() == PortAddress { node: id, role: DataStreamIn, port_idx: 0 })
+                .find(|e| e.to == PortAddress { node: id, role: DataStreamIn, port_idx: 0 })
                 .unwrap()
                 .from
                 .node
@@ -512,7 +510,7 @@ mod tests {
         let fed: Vec<NodeId> = graph
             .edges()
             .iter()
-            .filter(|e| e.from.node == selector && e.dimension == ephys_rs::engine::Dimension::DataStream)
+            .filter(|e| e.from.node == selector && e.dimension() == ephys_rs::engine::Dimension::DataStream)
             .map(|e| e.to.node)
             .collect();
         let lfp =
@@ -526,7 +524,7 @@ mod tests {
         let inputs = &resolved[&alarm_processor].input_streams;
         assert!(inputs.iter().all(Option::is_some), "all connected");
         let into = PortAddress { node: alarm_processor, role: DataStreamIn, port_idx: 1 };
-        assert!(graph.edges().iter().any(|e| e.target() == into && e.from.node == lfp), "the LFP, filtered");
+        assert!(graph.edges().iter().any(|e| e.to == into && e.from.node == lfp), "the LFP, filtered");
         assert!(graph.get(alarm_processor).unwrap().shown_in_basic(), "for its settings");
         let Nodes::AlarmProcessor(alarms) = &graph.get(named("Alarm Processor")).unwrap().node else { panic!() };
         let sources: Vec<_> = alarms.alarms.list.iter().map(|a| a.kind.source()).collect();
@@ -534,10 +532,15 @@ mod tests {
         assert!(alarms.alarms.all_on(), "none added just to be off");
         // The LFP Viewer sets the EEG's gains, the selection and the spikes' reference.
         let lfp_viewer = named("LFP Viewer");
-        let controls = |port| {
-            let from = ephys_rs::engine::EdgeEnd { node: lfp_viewer, port_idx: port };
-            let settings = graph.edges().iter().filter(|e| e.dimension == ephys_rs::engine::Dimension::ValCmd);
-            settings.into_iter().find(|e| e.from == from).map(|e| e.to.node)
+        // A node's port it reads a value through, by the node's own numbering (see `val_in_address`).
+        let reading = |node: NodeId, val_in_idx| {
+            let ports = graph.get(node).unwrap().node.val_cmd_ports();
+            let (role, port_idx) = ephys_rs::engine::val_in_address(&ports, val_in_idx).unwrap();
+            PortAddress { node, role, port_idx }
+        };
+        let controls = |val_in_idx| {
+            let from = reading(lfp_viewer, val_in_idx);
+            graph.edges().iter().find(|e| e.from == from).map(|e| e.to.node)
         };
         assert_eq!(controls(0), Some(named("Continuous Gain")));
         assert_eq!(controls(1), Some(selector));
@@ -548,13 +551,12 @@ mod tests {
             Some((named("Reference"), 1))
         );
         let ltx = graph.iter().find(|(_, e)| e.node.info().name == "Write LTX").unwrap().0;
-        let into =
-            |i| graph.edges().iter().any(|e| e.target() == PortAddress { node: ltx, role: DataStreamIn, port_idx: i });
+        let into = |i| graph.edges().iter().any(|e| e.to == PortAddress { node: ltx, role: DataStreamIn, port_idx: i });
         assert!((0..4).all(into), "Write LTX records spikes, EEG, positions and digital inputs");
         // With the EEG's selection and gains.
-        let ltx_controls = |port| {
-            let from = ephys_rs::engine::EdgeEnd { node: ltx, port_idx: port };
-            graph.edges().iter().find(|e| e.dimension == ephys_rs::engine::Dimension::ValCmd && e.from == from)
+        let ltx_controls = |val_in_idx| {
+            let from = reading(ltx, val_in_idx);
+            graph.edges().iter().find(|e| e.from == from)
         };
         assert_eq!(ltx_controls(2).map(|e| e.to.node), Some(selector));
         assert_eq!(ltx_controls(3).map(|e| e.to.node), Some(named("Continuous Gain")));
@@ -599,7 +601,7 @@ mod tests {
         let log_viewer = named(&vr, "Log Viewer");
         assert_eq!(feeding(&vr, log_viewer, DataStreamIn, 0).as_deref(), Some("VR Computer"));
         assert!(change.layout.open_windows().contains(&log_viewer), "its window's opened");
-        let settings = vr.edges_from(port((ltx, ValInCmdOut, 0))).next().unwrap();
+        let settings = vr.edges_from(port((ltx, ValIn, 0))).next().unwrap();
         assert_eq!(settings.to.node, computer, "the custom settings are recorded");
         let resolved = vr.resolve();
         let warned = |id| vr.get(id).unwrap().node.warnings(&resolved[&id].input_streams);
@@ -631,7 +633,7 @@ mod tests {
         assert_eq!(feeding(&back, tracker, DataStreamIn, 1).as_deref(), Some("Position Detector"));
         assert_eq!(feeding(&back, tracker, DataStreamIn, 0).as_deref(), Some("Camera"), "and the video again");
         let detector = named(&back, "Position Detector");
-        assert_eq!(back.edges_from(port((ltx, ValInCmdOut, 0))).next().unwrap().to.node, detector);
+        assert_eq!(back.edges_from(port((ltx, ValIn, 0))).next().unwrap().to.node, detector);
         // The same again uses the one there is.
         let again = run("Use VR computer", &back).unwrap().graph;
         assert_eq!(again.iter().filter(|(_, e)| matches!(e.node, Nodes::VrComputer(_))).count(), 1);

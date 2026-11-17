@@ -120,15 +120,13 @@ pub fn node_size<E: Edges>(state: &NodeState<E>) -> egui::Vec2 {
 
 /// A node has a row for each setting and control, if `settings` are showing. This counts them.
 fn settings_rows<E: Edges>(state: &NodeState<E>, settings: bool) -> usize {
-    if settings { state.count(PortRole::ValOutCmdIn) + state.count(PortRole::ValInCmdOut) } else { 0 }
+    if settings { state.val_outs.len() + state.val_ins.len() } else { 0 }
 }
 
 /// A node with no ports at all (an Arduino's, say) has a row saying so, rather than none. This says whether it has
 /// none.
 fn has_no_ports<E: Edges>(state: &NodeState<E>) -> bool {
-    [PortRole::DataStreamOut, PortRole::DataStreamIn, PortRole::ValOutCmdIn, PortRole::ValInCmdOut]
-        .into_iter()
-        .all(|r| state.count(r) == 0)
+    state.inputs.is_empty() && state.outputs.is_empty() && state.val_outs.is_empty() && state.val_ins.is_empty()
 }
 
 /// A node takes this much room on the graph (unzoomed): its header and a row per port (or one saying it has none),
@@ -157,18 +155,16 @@ impl Layout {
         let row_y = |row: usize, extra: f32| header.bottom() + (PAD + ROW * (row as f32 + 0.5) + extra) * zoom;
 
         let mut ports = HashMap::new();
-        let mut row = 0;
-        for role in [PortRole::DataStreamOut, PortRole::DataStreamIn, PortRole::ValOutCmdIn, PortRole::ValInCmdOut] {
+        // In the order the graph draws them (see `NodeState::ports`), any node's id doing for the order.
+        for (row, port) in state.ports(NodeId(0)).enumerate() {
+            let (role, port_idx) = (port.role, port.port_idx);
             if role.dimension() == Dimension::ValCmd && !settings {
-                continue;
+                break;
             }
             let extra = if role.dimension() == Dimension::ValCmd { divider } else { 0.0 };
-            for index in 0..count(role) {
-                let on_right = state.on_right(role, index);
-                let x = if on_right { rect.right() } else { rect.left() };
-                ports.insert((role, index), (egui::pos2(x, row_y(row, extra)), on_right));
-                row += 1;
-            }
+            let on_right = state.on_right(role, port_idx);
+            let x = if on_right { rect.right() } else { rect.left() };
+            ports.insert((role, port_idx), (egui::pos2(x, row_y(row, extra)), on_right));
         }
         let badge = Rect::from_center_size(
             egui::pos2(header.right() - 15.0 * zoom, header.center().y),
@@ -318,8 +314,8 @@ fn both_ways(painter: &Painter, at: Pos2, direction: Vec2, size: f32, colour: Co
 
 /// Some ports only read the value they're connected to (`PortRole::ValIn`, val-only), which people see as read-only.
 /// This says whether a port does.
-fn read_only<E: Edges>(resolved: &Resolved<E>, port: PortAddress) -> bool {
-    port.role == PortRole::ValInCmdOut && resolved.get(&port.node).is_some_and(|s| s.val_only(port.port_idx))
+fn read_only(port: PortAddress) -> bool {
+    port.role == PortRole::ValIn
 }
 
 /// An edge of a type with colour `colour` is drawn in this colour: settings edges are all the same grey, so they stay
@@ -604,12 +600,12 @@ impl Canvas {
             };
             let dimension = port.role.dimension();
             let colour = wire_colour(dimension, info.colour, self.colours);
-            let read_only = read_only(resolved, port) || target.is_some_and(|t| read_only(resolved, t));
+            let read_only = read_only(port) || target.is_some_and(read_only);
             let stroke = Stroke::new(2.0 * zoom.sqrt(), colour);
             paint_wire(&painter, points, dimension, read_only, stroke, zoom, &[]);
         }
 
-        let connected: HashSet<PortAddress> = graph.edges().iter().flat_map(|e| [e.source(), e.target()]).collect();
+        let connected: HashSet<PortAddress> = graph.edges().iter().flat_map(|e| [e.from, e.to]).collect();
         for &id in &order {
             let (Some(layout), Some(entry), Some(state)) = (layouts.get(&id), graph.get(id), resolved.get(&id)) else {
                 continue;
@@ -713,7 +709,7 @@ impl Canvas {
         }
         // Whether to explain read-only settings edges too.
         let shown = self.settings_shown;
-        let read_only = shown && resolved.values().any(|s| (0..s.val_ins.len()).any(|i| s.val_only(i)));
+        let read_only = shown && resolved.values().any(|s| s.count(PortRole::ValIn) > 0);
         // Data's types are listed; settings are all edged alike, so there's just the one row for them, if they're showing.
         let rows_of = |dimension: Dimension, kinds: usize| {
             if dimension == Dimension::DataStream { kinds } else { shown as usize }
@@ -843,8 +839,8 @@ impl Canvas {
         if eye_button.on_hover_text(tip).clicked() {
             self.settings_shown = !self.settings_shown;
             if !self.settings_shown {
-                selection.edge = selection.edge.filter(|e| e.dimension != Dimension::ValCmd);
-                self.menu_edge = self.menu_edge.filter(|e| e.dimension != Dimension::ValCmd);
+                selection.edge = selection.edge.filter(|e| e.dimension() != Dimension::ValCmd);
+                self.menu_edge = self.menu_edge.filter(|e| e.dimension() != Dimension::ValCmd);
             }
             ui.ctx().request_repaint();
         }
@@ -855,7 +851,7 @@ impl Canvas {
 
     /// Settings edges can be hidden. This says whether `edge` is on show.
     fn shows(&self, edge: &Edge) -> bool {
-        edge.dimension != Dimension::ValCmd || self.settings_shown
+        edge.dimension() != Dimension::ValCmd || self.settings_shown
     }
 
     /// The canvas handles clicks and drags on empty canvas with this (middle and right drags pan, in `pan_and_zoom`).
@@ -1123,7 +1119,7 @@ impl Canvas {
                 self.wire = Some(match graph.edge_into(port) {
                     Some(edge) => {
                         graph.disconnect(edge);
-                        edge.source()
+                        edge.from
                     }
                     None => port,
                 });
@@ -1140,12 +1136,10 @@ impl Canvas {
                     "Drag to connect; click to add or pick a node to connect"
                 }
                 PortRole::ValOutCmdIn => "Other nodes can edit this. Drag to a control to link them",
-                PortRole::ValInCmdOut | PortRole::ValIn if state.val_only(port.port_idx) => {
+                PortRole::ValIn => {
                     "Reads a setting of another node, without changing it. Drag to a setting to link them"
                 }
-                PortRole::ValInCmdOut | PortRole::ValIn => {
-                    "Edits a setting of another node. Drag to a setting to link them"
-                }
+                PortRole::ValInCmdOut => "Edits a setting of another node. Drag to a setting to link them",
             };
             response.on_hover_text(format!("{name} ({kind} {}): {summary}\n{description}\n\n{help}", port.role.name()));
         }
@@ -1187,7 +1181,7 @@ impl Canvas {
         let reason = reason.map(|e| e.to_string()).unwrap_or_else(|| {
             let label = graph.get(node).map_or("", |e| e.label.as_str());
             let kind = crate::engine::edge_info::<N::Edges>(kind).name;
-            format!("{label} has no {kind} {}", port.role.partner().name())
+            format!("{label} has no {kind} {}", port.role.partners()[0].name())
         });
         events.push(Event::Status(format!("Can't connect: {reason}")));
     }
@@ -1228,12 +1222,12 @@ impl Canvas {
         let covers: Vec<Rect> = layouts.values().map(|l| l.rect).collect();
         for edge in graph.edges().iter().filter(|e| self.shows(e)) {
             let Some(points) = edge_points(edge, layouts, zoom) else { continue };
-            let source = edge.source();
+            let source = edge.from;
             let Some(state) = resolved.get(&source.node) else { continue };
             let Some(info) = state.info(source.role, source.port_idx) else { continue };
-            let mut colour = wire_colour(edge.dimension, info.colour, self.colours);
+            let mut colour = wire_colour(edge.dimension(), info.colour, self.colours);
             let unknown =
-                edge.dimension == Dimension::DataStream && state.summary(source.role, source.port_idx).is_none();
+                edge.dimension() == Dimension::DataStream && state.summary(source.role, source.port_idx).is_none();
             if unknown || self.wire.is_some() {
                 colour = colour.gamma_multiply(0.4);
             }
@@ -1254,8 +1248,8 @@ impl Canvas {
                 let halo = Stroke::new(w + 3.0, self.colours.text_primary.gamma_multiply(0.12));
                 paint_wire(painter, points, Dimension::DataStream, false, halo, zoom, &covers);
             }
-            let read_only = read_only(resolved, source);
-            paint_wire(painter, points, edge.dimension, read_only, Stroke::new(w, colour), zoom, &covers);
+            let read_only = read_only(source);
+            paint_wire(painter, points, edge.dimension(), read_only, Stroke::new(w, colour), zoom, &covers);
             // A disabled edge is broken in the middle.
             if graph.is_edge_disabled(edge) {
                 let [a, b, c, d] = points.map(|p| p.to_vec2());
@@ -1343,7 +1337,7 @@ fn port_on_right(layouts: &HashMap<NodeId, Layout>, port: PortAddress) -> bool {
 }
 
 fn edge_points(edge: &Edge, layouts: &HashMap<NodeId, Layout>, zoom: f32) -> Option<[Pos2; 4]> {
-    let (source, target) = (edge.source(), edge.target());
+    let (source, target) = (edge.from, edge.to);
     let (a, b) = (port_pos(layouts, source)?, port_pos(layouts, target)?);
     Some(bezier(a, port_on_right(layouts, source), b, port_on_right(layouts, target), zoom))
 }
@@ -1481,7 +1475,7 @@ fn paint_node<N: NodesEnum>(
             };
             painter.text(at, align, summary, font(11.0), fade(colour));
         }
-        let read_only = port.role == PortRole::ValInCmdOut && state.val_only(port.port_idx);
+        let read_only = port.role == PortRole::ValIn;
         paint_port(painter, port, pos, colour, connected, read_only, ports, z, fade);
     }
 }
@@ -1558,8 +1552,8 @@ mod tests {
     #[test]
     fn a_port_can_be_on_the_other_side_from_others_like_it() {
         assert!(drawn_on_right("Spike Gain", PortRole::ValOutCmdIn, 0), "settings are on the right");
-        assert!(!drawn_on_right("Write LTX", PortRole::ValInCmdOut, 0), "controls on the left");
-        assert!(drawn_on_right("Write LTX", PortRole::ValInCmdOut, 4), "but what comes after recording flows onward");
+        assert!(!drawn_on_right("Write LTX", PortRole::ValIn, 0), "controls on the left");
+        assert!(drawn_on_right("Write LTX", PortRole::ValInCmdOut, 0), "but what comes after recording flows onward");
         assert!(!drawn_on_right("Run Command", PortRole::ValOutCmdIn, 0), "into what it connects to");
     }
 

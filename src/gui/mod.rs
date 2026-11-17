@@ -49,7 +49,7 @@ use crate::base_directory::{BaseDirectories, BaseDirectoryType, Place};
 use crate::commands::{Commands, Sent};
 use crate::config_patching::{self, PatchSets, Versions};
 use crate::engine::{
-    self, CommandsEnum, EdgeEnd, Graph, NodeId, NodeTypeEnum, NodesEnum, PortAddress, Resolved, Runner, Snapshot, Stats,
+    self, CommandsEnum, Graph, NodeId, NodeTypeEnum, NodesEnum, PortAddress, Resolved, Runner, Snapshot, Stats,
 };
 use crate::layout::{Layout, Mode, Pane};
 use crate::theme::{Colours, Theme};
@@ -906,9 +906,9 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         for edge in self.graph.edges().to_vec() {
             if let (Some(from), Some(to)) = (copies.get(&edge.from.node), copies.get(&edge.to.node)) {
                 let mut copy = edge;
-                copy.from = EdgeEnd { node: *from, ..edge.from };
-                copy.to = EdgeEnd { node: *to, ..edge.to };
-                let _ = self.graph.connect(copy.source(), copy.target());
+                copy.from = PortAddress { node: *from, ..edge.from };
+                copy.to = PortAddress { node: *to, ..edge.to };
+                let _ = self.graph.connect(copy.from, copy.to);
             }
         }
         let notes: Vec<Annotation<A>> =
@@ -2216,7 +2216,7 @@ mod tests {
         use crate::engine::Dimension;
         let mut harness = harness();
         let edge = |h: &Harness<TestApp>, dimension: Dimension| {
-            *h.state().graph.edges().iter().find(|e| e.dimension == dimension).unwrap()
+            *h.state().graph.edges().iter().find(|e| e.dimension() == dimension).unwrap()
         };
         let (settings, data) = (edge(&harness, Dimension::ValCmd), edge(&harness, Dimension::DataStream));
         harness.state_mut().selection.edge = Some(settings);
@@ -3520,8 +3520,12 @@ mod tests {
             }
         }
     }
-    static WITH_A_PATCH: [config_patching::PatchSet; 1] =
-        [config_patching::PatchSet { name: "test", version: "1.0.0", patches: &[pre_was_8] }];
+    /// The core's and the standard components' patches (so the example loads), and one of the test's own.
+    static WITH_A_PATCH: [config_patching::PatchSet; 3] = [
+        crate::config_patches::PATCHES,
+        crate::standard::config_patches::PATCHES,
+        config_patching::PatchSet { name: "test", version: "1.0.0", patches: &[pre_was_8] },
+    ];
 
     fn pre(graph: &Graph<Nodes>) -> u32 {
         let detector = graph.iter().find_map(|(_, e)| match &e.node {
@@ -3564,7 +3568,8 @@ mod tests {
         let viewer = node_named(&app, "Spike Viewer");
         let one = paste_settings::copy(&app.graph, &[detector], &app.config_patches);
         assert_eq!(one.lines().count(), 1, "to go in a line of notes: {one}");
-        assert!(one.starts_with(r#"{"ephys-rs settings":{"test":"1.0.0"},"nodes":[{"#), "{one}");
+        assert!(one.starts_with(r#"{"ephys-rs settings":{"core":"#), "{one}");
+        assert!(one.contains(r#","test":"1.0.0"},"nodes":[{"#), "every set's version: {one}");
         assert_eq!(paste_settings::copy(&app.graph, &[detector, viewer], &app.config_patches).lines().count(), 2);
 
         // Patched as they'd be in a project.
@@ -3800,7 +3805,7 @@ mod tests {
         for (output, input) in [(0, 2), (1, 4), (2, 5)] {
             link(&mut graph, port_of(vr, PortRole::DataStreamOut, output), port_of(ltx, PortRole::DataStreamIn, input));
         }
-        link(&mut graph, port_of(ltx, PortRole::ValInCmdOut, 0), port_of(vr, PortRole::ValOutCmdIn, 0));
+        link(&mut graph, port_of(ltx, PortRole::ValIn, 0), port_of(vr, PortRole::ValOutCmdIn, 0));
         let viewer = graph.add(Nodes::LogViewer(Default::default()), [300.0, 300.0]);
         link(&mut graph, port_of(vr, PortRole::DataStreamOut, 2), port_of(viewer, PortRole::DataStreamIn, 0));
         let control = TtlRecordingControl { line: 2, stop_on_down: true };

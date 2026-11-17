@@ -70,6 +70,11 @@ it, a `ValInCmdOut` one out of it. A value's type (a list of thresholds, say) im
 `Copy`. A command's type needn't implement anything but `Debug`. Settings stay a node's own: what it saves and loads, and
 what's copied and pasted; what values it gives its `ValOutCmdIn` ports and what it does with commands are up to it.
 
+Each end of an edge is a port's address (`PortAddress`: its node, role and index among the node's ports of that role),
+and that's how edges are saved; whether an edge carries data or a value (`Edge::dimension`) follows from the roles. A
+node itself numbers the ports it reads values through (`ValInCmdOut` and `ValIn`) together, in the order it declares
+them: that's the number its `val_in`, `cmd_out` and the like take (see `val_in_address`).
+
 A command sent through a port goes through the app's queue (see [`commands.rs`](../src/commands.rs)), addressed to the
 port, not the node at the far end: the app follows the edge as it delivers it, on the GUI's thread. So a sender kept
 for later (`CmdSender`) sends to where the edge points then.

@@ -236,14 +236,14 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     ///
     /// A node makes its state here, ahead of time, as proto-states: a shared one, and one per worker
     /// (`context.workers`). These become the node's state and each worker's as the snapshot takes over (see
-    /// `on_snapshot_change`; a worker's proto-state simply replaces the worker's old state). The node also says anything
-    /// someone should decide (`UserDecision`: its hardware not as its settings say, say). To go by, the node has its data streams
-    /// (`context.inputs`), its settings (`self`: an auto detect started needs room to sample into, say), its
-    /// controls, whether the snapshot's recording (a writer opens its files, say), and how the node was in the
-    /// snapshot before (`context.previous`, with its settings then). A node that makes no proto-state carries its state
-    /// on as it is, which only fits if the node's data streams are the same (`context.same_streams()`): so a node new
-    /// to the run, or whose data streams have changed, must make its shared state (each worker's gets `Default`'s if
-    /// the node makes none). By default, the node makes nothing.
+    /// `on_snapshot_change`; a worker's proto-state simply replaces the worker's old state). The node also says
+    /// anything someone should decide (`UserDecision`: its hardware not as its settings say, say). To go by, the node
+    /// has its data streams (`context.inputs`), its settings (`self`: an auto detect started needs room to sample into,
+    /// say), its controls, whether the snapshot's recording (a writer opens its files, say), and how the node was in
+    /// the snapshot before (`context.previous`, with its settings then). A node that makes no proto-state carries its
+    /// state on as it is, which only fits if the node's data streams are the same (`context.same_streams()`): so a node
+    /// new to the run, or whose data streams have changed, must make its shared state (each worker's gets `Default`'s
+    /// if the node makes none). By default, the node makes nothing.
     ///
     /// The engine asks the nodes one after another, on the thread preparing the snapshot, while passes carry on with
     /// the snapshot before. A node is best to start anything slow (opening a device) on a thread of the node's own, or
@@ -281,11 +281,11 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     /// Nodes that only make data for others run only while something needs it, as the processing nodes do. A node whose
     /// running matters beyond the graph says when it runs: a writer only while recording, and given something to
     /// record. A node asked to do something with the data (an auto detect, kept as its transient state: see
-    /// `CommandsEnum::clear_transient_state`) can only do it by running, so it should run while it's asked, even if nothing needs what it makes yet: a gain
-    /// feeding only a writer, say, has its gains detected before recording. A node needn't need an input (a viewer with
-    /// part of its view hidden, say), and then the plan doesn't count that input as using what feeds it. A change of
-    /// settings means a new plan (new buffers for it), so tree shaking is for what's switched on and off, not what
-    /// changes from pass to pass.
+    /// `CommandsEnum::clear_transient_state`) can only do it by running, so it should run while it's asked, even if
+    /// nothing needs what it makes yet: a gain feeding only a writer, say, has its gains detected before recording. A
+    /// node needn't need an input (a viewer with part of its view hidden, say), and then the plan doesn't count that
+    /// input as using what feeds it. A change of settings means a new plan (new buffers for it), so tree shaking is for
+    /// what's switched on and off, not what changes from pass to pass.
     fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool], _recording: bool) -> TreeShake {
         TreeShake::needing_all(true, inputs.len())
     }
@@ -315,8 +315,8 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     fn thread_ui(&self, _thread_idx: usize, _ui: &mut egui::Ui, _context: &ThreadContext) {}
 
     /// Some of a node's `threads()` swap buffers with the passes, and the dev tools show those buffers between the
-    /// thread and the passes. For one thread (`thread_idx`), the node says here where the buffers are, if the thread has
-    /// any.
+    /// thread and the passes. For one thread (`thread_idx`), the node says here where the buffers are, if the thread
+    /// has any.
     fn thread_pool(&self, _thread_idx: usize, _context: &ThreadContext) -> Option<PoolStatus> {
         None
     }

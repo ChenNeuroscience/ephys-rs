@@ -79,8 +79,8 @@ pub struct Plan<N: NodesEnum> {
 
 /// The tree shake (`settle`) sees each data edge as a link from an output to an input.
 struct Link {
-    from: super::EdgeEnd,
-    to: super::EdgeEnd,
+    from: super::PortAddress,
+    to: super::PortAddress,
 }
 
 /// The tree shake asks a node this many times before taking the node's answer as it stands (see `settle`).
@@ -111,13 +111,14 @@ fn settle(
         if asked > SETTLE_ASKS {
             continue;
         }
-        let port = |port_idx| super::EdgeEnd { node: id, port_idx };
+        let port = |role, port_idx| super::PortAddress { node: id, role, port_idx };
+        let (input, output) = (super::PortRole::DataStreamIn, super::PortRole::DataStreamOut);
         let runs = |node: NodeId| shakes.get(&node).is_some_and(|s| s.runs);
-        let needs = |to: super::EdgeEnd| shakes.get(&to.node).is_some_and(|s| s.runs && s.needs[to.port_idx]);
+        let needs = |to: super::PortAddress| shakes.get(&to.node).is_some_and(|s| s.runs && s.needs[to.port_idx]);
         let inputs: Vec<bool> =
-            (0..input_count).map(|i| links.iter().any(|l| l.to == port(i) && runs(l.from.node))).collect();
+            (0..input_count).map(|i| links.iter().any(|l| l.to == port(input, i) && runs(l.from.node))).collect();
         let outputs: Vec<bool> =
-            (0..output_count).map(|o| links.iter().any(|l| l.from == port(o) && needs(l.to))).collect();
+            (0..output_count).map(|o| links.iter().any(|l| l.from == port(output, o) && needs(l.to))).collect();
         if told.get(&id) == Some(&(inputs.clone(), outputs.clone())) {
             continue;
         }
@@ -159,8 +160,11 @@ impl<N: NodesEnum> Plan<N> {
         let resolved = graph.resolve();
         let topological = graph.topological_order();
         // Which nodes run is up to them (see `settle`): of those that can, not disabled, with every output known.
-        let data: Vec<&super::Edge> =
-            graph.edges().iter().filter(|e| e.dimension == super::Dimension::DataStream && graph.is_live(e)).collect();
+        let data: Vec<&super::Edge> = graph
+            .edges()
+            .iter()
+            .filter(|e| e.dimension() == super::Dimension::DataStream && graph.is_live(e))
+            .collect();
         let can_run: Vec<(NodeId, usize, usize)> = topological
             .iter()
             .filter(|id| graph.get(**id).is_some_and(|e| !e.disabled))
@@ -552,9 +556,10 @@ mod tests {
     fn a_node_that_keeps_changing_its_mind_ends_up_running() {
         use std::cell::Cell;
         let (a, b) = (NodeId(1), NodeId(2));
+        let address = |node, role| super::super::PortAddress { node, role, port_idx: 0 };
         let links = [Link {
-            from: super::super::EdgeEnd { node: a, port_idx: 0 },
-            to: super::super::EdgeEnd { node: b, port_idx: 0 },
+            from: address(a, super::super::PortRole::DataStreamOut),
+            to: address(b, super::super::PortRole::DataStreamIn),
         }];
         let asked = Cell::new(0);
         // a runs only while nothing uses what it makes, and b only while it's given something: round they'd go.

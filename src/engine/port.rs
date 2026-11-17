@@ -1,12 +1,16 @@
 //! Edges connect nodes at their ports. A node declares its ports (`Port`), each in one of five roles (`PortRole`), and
 //! the graph finds a port by its node, role and index (`PortAddress`).
 
+use serde::{Deserialize, Serialize};
+
 use super::{CommandKind, Dimension, Edges, Kind, NodeId};
 
 /// Edges connect nodes at their ports, each named for what flows through it, which way (see `PortRole`, which names
 /// a port's role without what's in it). A node declares its ports as these: its data ports (`Node::data_stream_inputs`
-/// and `Node::data_stream_outputs`) and its value ports (`Node::val_cmd_ports`). Ports of each role are numbered
-/// separately, in the order they're declared (`ValInCmdOut` and `ValIn` ports together).
+/// and `Node::data_stream_outputs`) and its value ports (`Node::val_cmd_ports`). The graph numbers the ports of each
+/// role separately, in the order they're declared (see `PortAddress`). The node itself numbers its `ValInCmdOut` and
+/// `ValIn` ports together, in the order they're declared, as the ports it reads values through: `UiContext::val_in`
+/// and the like take that number.
 pub enum Port<E: Edges> {
     /// Data reaches the node here, each pass, from another node's `DataStreamOut`.
     DataStreamIn {
@@ -186,7 +190,7 @@ impl<E: Edges> Port<E> {
 /// `DataStreamOut` to a `DataStreamIn`, carrying a pass's data. Value edges run from a `ValInCmdOut` to a
 /// `ValOutCmdIn`: the node at the `ValOutCmdIn` end publishes a value, which the node at the other end reads, and which
 /// that node can send commands back to.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub enum PortRole {
     DataStreamIn,
     DataStreamOut,
@@ -194,9 +198,7 @@ pub enum PortRole {
     ValOutCmdIn,
     /// The node reads another node's published value here, and sends it commands.
     ValInCmdOut,
-    /// Val-only: the node only reads another node's published value here (the GUI calls it read-only). A node declares
-    /// such ports (see `Port`), but the graph numbers them with its `ValInCmdOut` ports, and finds them as those: an
-    /// edge from either starts at a `ValInCmdOut` (see `Edge::source`).
+    /// Val-only: the node only reads another node's published value here (the GUI calls it read-only).
     ValIn,
 }
 
@@ -209,18 +211,23 @@ impl PortRole {
         }
     }
 
-    /// An edge from a port of this role ends at a port of this one.
-    pub fn partner(self) -> PortRole {
+    /// An edge from a port of this role ends at a port of one of these.
+    pub fn partners(self) -> &'static [PortRole] {
         match self {
-            PortRole::DataStreamIn => PortRole::DataStreamOut,
-            PortRole::DataStreamOut => PortRole::DataStreamIn,
-            PortRole::ValOutCmdIn => PortRole::ValInCmdOut,
-            PortRole::ValInCmdOut | PortRole::ValIn => PortRole::ValOutCmdIn,
+            PortRole::DataStreamIn => &[PortRole::DataStreamOut],
+            PortRole::DataStreamOut => &[PortRole::DataStreamIn],
+            PortRole::ValOutCmdIn => &[PortRole::ValInCmdOut, PortRole::ValIn],
+            PortRole::ValInCmdOut | PortRole::ValIn => &[PortRole::ValOutCmdIn],
         }
     }
 
-    /// Edges start at a `DataStreamOut` or `ValInCmdOut`, and end at a `DataStreamIn` or `ValOutCmdIn`. This says
-    /// whether they start here.
+    /// Whether an edge can join a port of this role and one of `other`.
+    pub fn pairs_with(self, other: PortRole) -> bool {
+        self.partners().contains(&other)
+    }
+
+    /// Edges start at a `DataStreamOut`, `ValInCmdOut` or `ValIn`, and end at a `DataStreamIn` or `ValOutCmdIn`. This
+    /// says whether they start here.
     pub fn is_source(self) -> bool {
         matches!(self, PortRole::DataStreamOut | PortRole::ValInCmdOut | PortRole::ValIn)
     }
@@ -237,8 +244,9 @@ impl PortRole {
     }
 }
 
-/// The graph finds a port by its node, role and index among the node's ports of that role.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+/// The graph finds a port by its node, role and index among the node's ports of that role. Each end of an edge is one,
+/// as it's saved, too.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub struct PortAddress {
     pub node: NodeId,
     pub role: PortRole,
