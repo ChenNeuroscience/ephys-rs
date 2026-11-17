@@ -2218,7 +2218,7 @@ mod tests {
         let edge = |h: &Harness<TestApp>, dimension: Dimension| {
             *h.state().graph.edges().iter().find(|e| e.dimension == dimension).unwrap()
         };
-        let (settings, data) = (edge(&harness, Dimension::Values), edge(&harness, Dimension::Data));
+        let (settings, data) = (edge(&harness, Dimension::ValCmd), edge(&harness, Dimension::DataStream));
         harness.state_mut().selection.edge = Some(settings);
         harness.get_by_label("Hide settings").click();
         harness.run_steps(2);

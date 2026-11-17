@@ -51,11 +51,13 @@ pub fn arrange<N: NodesEnum>(graph: &Graph<N>) -> HashMap<NodeId, [f32; 2]> {
     let has_data: std::collections::HashSet<NodeId> = graph
         .edges()
         .iter()
-        .filter(|e| e.dimension == Dimension::Data)
+        .filter(|e| e.dimension == Dimension::DataStream)
         .flat_map(|e| [e.from.node, e.to.node])
         .collect();
     let as_data = |edge: &crate::engine::Edge| {
-        edge.dimension == Dimension::Data || !has_data.contains(&edge.from.node) || !has_data.contains(&edge.to.node)
+        edge.dimension == Dimension::DataStream
+            || !has_data.contains(&edge.from.node)
+            || !has_data.contains(&edge.to.node)
     };
     // One edge each way between a pair of nodes, weighted by how many there are (settings counting for less).
     let mut weights: HashMap<(NodeId, NodeId), f64> = HashMap::new();

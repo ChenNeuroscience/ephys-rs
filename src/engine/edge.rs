@@ -126,15 +126,15 @@ pub type CommandKind<E> = <<E as Edges>::Command as CommandsEnum>::Kind;
 /// A data edge holds a pass's worth of data in one of these.
 pub type Buffer<E> = <<E as Edges>::DataStream as DataStreamsEnum>::Buffer;
 
-/// An edge is of one of two dimensions: data, flowing from an output to an input each pass; or values, from a node
-/// reading a value another publishes, and commanding it (see `PortRole`).
+/// An edge is of one of two dimensions, by the roles of the ports it joins (see `PortRole`): a data stream, from a
+/// `DataStreamOut` to a `DataStreamIn`, each pass; or a value and commands, between a `ValInCmdOut` (or `ValIn`) and a
+/// `ValOutCmdIn`. An edge saves each end as a node and the index of a port among the node's ports of its role, so the
+/// dimension says which roles those are.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default, Serialize, Deserialize)]
 pub enum Dimension {
     #[default]
-    Data,
-    /// Saved graphs from before it was renamed call it `Settings`.
-    #[serde(alias = "Settings")]
-    Values,
+    DataStream,
+    ValCmd,
 }
 
 /// A program declares the edge types it's built with, and its commands, like this:

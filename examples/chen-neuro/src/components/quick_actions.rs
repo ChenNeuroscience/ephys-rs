@@ -512,7 +512,7 @@ mod tests {
         let fed: Vec<NodeId> = graph
             .edges()
             .iter()
-            .filter(|e| e.from.node == selector && e.dimension == ephys_rs::engine::Dimension::Data)
+            .filter(|e| e.from.node == selector && e.dimension == ephys_rs::engine::Dimension::DataStream)
             .map(|e| e.to.node)
             .collect();
         let lfp =
@@ -536,7 +536,7 @@ mod tests {
         let lfp_viewer = named("LFP Viewer");
         let controls = |port| {
             let from = ephys_rs::engine::EdgeEnd { node: lfp_viewer, port_idx: port };
-            let settings = graph.edges().iter().filter(|e| e.dimension == ephys_rs::engine::Dimension::Values);
+            let settings = graph.edges().iter().filter(|e| e.dimension == ephys_rs::engine::Dimension::ValCmd);
             settings.into_iter().find(|e| e.from == from).map(|e| e.to.node)
         };
         assert_eq!(controls(0), Some(named("Continuous Gain")));
@@ -554,7 +554,7 @@ mod tests {
         // With the EEG's selection and gains.
         let ltx_controls = |port| {
             let from = ephys_rs::engine::EdgeEnd { node: ltx, port_idx: port };
-            graph.edges().iter().find(|e| e.dimension == ephys_rs::engine::Dimension::Values && e.from == from)
+            graph.edges().iter().find(|e| e.dimension == ephys_rs::engine::Dimension::ValCmd && e.from == from)
         };
         assert_eq!(ltx_controls(2).map(|e| e.to.node), Some(selector));
         assert_eq!(ltx_controls(3).map(|e| e.to.node), Some(named("Continuous Gain")));

@@ -204,8 +204,8 @@ impl PortRole {
     /// `DataStreamIn` and `DataStreamOut` ports are data ports; the others, value ports.
     pub fn dimension(self) -> Dimension {
         match self {
-            PortRole::DataStreamIn | PortRole::DataStreamOut => Dimension::Data,
-            PortRole::ValOutCmdIn | PortRole::ValInCmdOut | PortRole::ValIn => Dimension::Values,
+            PortRole::DataStreamIn | PortRole::DataStreamOut => Dimension::DataStream,
+            PortRole::ValOutCmdIn | PortRole::ValInCmdOut | PortRole::ValIn => Dimension::ValCmd,
         }
     }
 

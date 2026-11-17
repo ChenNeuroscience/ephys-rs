@@ -4,6 +4,8 @@
 
 use crate::config_patching::PatchSet;
 
+mod edge_dimensions;
 mod example;
 
-pub const PATCHES: PatchSet = PatchSet { name: "core", version: env!("CARGO_PKG_VERSION"), patches: &[example::patch] };
+pub const PATCHES: PatchSet =
+    PatchSet { name: "core", version: env!("CARGO_PKG_VERSION"), patches: &[example::patch, edge_dimensions::patch] };

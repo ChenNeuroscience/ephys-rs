@@ -160,7 +160,7 @@ impl<N: NodesEnum> Plan<N> {
         let topological = graph.topological_order();
         // Which nodes run is up to them (see `settle`): of those that can, not disabled, with every output known.
         let data: Vec<&super::Edge> =
-            graph.edges().iter().filter(|e| e.dimension == super::Dimension::Data && graph.is_live(e)).collect();
+            graph.edges().iter().filter(|e| e.dimension == super::Dimension::DataStream && graph.is_live(e)).collect();
         let can_run: Vec<(NodeId, usize, usize)> = topological
             .iter()
             .filter(|id| graph.get(**id).is_some_and(|e| !e.disabled))
