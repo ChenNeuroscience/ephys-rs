@@ -48,7 +48,7 @@ use crate::standard::pool::Pool;
 use crate::standard::tracking::pipeline::Blob;
 use crate::standard::tracking::{Crop, Detection, PositionSample, Positions, PositionsBuffer, Ruler, TimingLed};
 use crate::standard::widgets::{named_settings_grid, setting};
-use crate::standard::{Buffer, DataStream, Edges, Kind, Setting};
+use crate::standard::{Buffer, DataStream, Edges, Kind, PublishedValue};
 use eframe::egui::{self, RichText};
 use ephys_rs::engine::{
     Category, Flow, Node, NodeInfo, NodeThread, Output, PassContext, SettingPort, SnapshotLite, ThreadContext,
@@ -578,11 +578,11 @@ impl Node<Edges> for VrComputer {
         let enabled = ttl_channels(&self.custom).is_some_and(|n| n > 0);
         let timing_led = TimingLed { enabled, radius: 0.0, ..Default::default() };
         let detection = Detection { crop, rulers, timing_led, custom, ..Default::default() };
-        vec![SettingPort { name: "settings", value: Setting::Detection(detection), on_right: true }]
+        vec![SettingPort { name: "settings", value: PublishedValue::Detection(detection), on_right: true }]
     }
 
-    fn set_setting(&mut self, _index: usize, value: Setting) {
-        if let Setting::Detection(detection) = value {
+    fn set_setting(&mut self, _index: usize, value: PublishedValue) {
+        if let PublishedValue::Detection(detection) = value {
             self.custom = detection.custom;
         }
     }
@@ -656,7 +656,7 @@ impl Node<Edges> for VrComputer {
             sample.pixels_per_metre = pixels_per_metre;
         }
         if let Some(custom) = settings {
-            pass.trigger_settings_update(0, Setting::Detection(Detection { custom, ..Default::default() }));
+            pass.trigger_settings_update(0, PublishedValue::Detection(Detection { custom, ..Default::default() }));
         }
         // Not if the thread's updating the status just then: the next pass shows it.
         if let Ok(status) = shared.status.try_lock() {
@@ -833,7 +833,7 @@ mod tests {
         custom.insert(TTL_CHANNELS_KEY.into(), "0".into());
         assert!(complete(&custom), "none");
         let node = VrComputer { custom: custom.clone(), ..VrComputer::default() };
-        let [SettingPort { value: Setting::Detection(detection), .. }] = &node.settings()[..] else { panic!() };
+        let [SettingPort { value: PublishedValue::Detection(detection), .. }] = &node.settings()[..] else { panic!() };
         assert!(!detection.timing_led.enabled, "no TTLs");
         custom.insert(TTL_CHANNELS_KEY.into(), "3".into());
         assert!(complete(&custom));
@@ -841,7 +841,7 @@ mod tests {
         assert!(node.warnings(&[]).is_empty());
         let Some(DataStream::Events(ttl)) = node.outputs(&[])[1].stream else { panic!() };
         assert_eq!(ttl.lines, 3, "a line a channel");
-        let [SettingPort { value: Setting::Detection(detection), .. }] = &node.settings()[..] else { panic!() };
+        let [SettingPort { value: PublishedValue::Detection(detection), .. }] = &node.settings()[..] else { panic!() };
         assert_eq!(detection.crop, crop, "for Write LTX");
         assert_eq!(detection.pixels_per_metre(), Some(250.0));
         assert!(detection.timing_led.enabled, "there'll be TTLs");

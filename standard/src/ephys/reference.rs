@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::standard::ephys::{Continuous, ContinuousBuffer};
 use crate::standard::medians::Medians;
 use crate::standard::widgets::{all_checkbox, input_summary, require_input, setting, settings_grid};
-use crate::{Buffer, DataStream, Edges, Kind, Setting};
+use crate::{Buffer, DataStream, Edges, Kind, PublishedValue};
 use ephys_rs::engine::{
     Category, EdgeInfo, EdgeType, Input, Node, NodeInfo, Output, PassContext, SettingPort, UiContext,
 };
@@ -385,8 +385,8 @@ impl Node<Edges> for Reference {
         vec![SettingPort { name: "reference", value: self.clone().into(), on_right: true }]
     }
 
-    fn set_setting(&mut self, _index: usize, value: Setting) {
-        if let Setting::Reference(reference) = value {
+    fn set_setting(&mut self, _index: usize, value: PublishedValue) {
+        if let PublishedValue::Reference(reference) = value {
             *self = reference;
         }
     }

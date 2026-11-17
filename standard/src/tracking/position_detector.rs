@@ -11,7 +11,7 @@ use crate::standard::tracking::pipeline::{Pipeline, timing_led_on};
 use crate::standard::tracking::{CAMERA_TRACKER, PositionSample, Positions};
 use crate::standard::tracking::{Crop, Detection, Ruler, TimingLed};
 use crate::standard::widgets::{named_settings_grid, require_input, setting};
-use crate::{Buffer, DataStream, Edges, Kind, Setting};
+use crate::{Buffer, DataStream, Edges, Kind, PublishedValue};
 use ephys_rs::engine::{
     Category, Input, Node, NodeInfo, Output, PassContext, Prepare, PrepareContext, Prepared, SettingPort, UiContext,
 };
@@ -86,11 +86,15 @@ impl Node<Edges> for PositionDetector {
     }
 
     fn settings(&self) -> Vec<SettingPort<Edges>> {
-        vec![SettingPort { name: "detection", value: Setting::Detection(self.detection.clone()), on_right: true }]
+        vec![SettingPort {
+            name: "detection",
+            value: PublishedValue::Detection(self.detection.clone()),
+            on_right: true,
+        }]
     }
 
-    fn set_setting(&mut self, _index: usize, value: Setting) {
-        if let Setting::Detection(detection) = value {
+    fn set_setting(&mut self, _index: usize, value: PublishedValue) {
+        if let PublishedValue::Detection(detection) = value {
             self.detection = detection;
         }
     }

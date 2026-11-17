@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use super::{CommandSettings, Mode, Run, RunOnFiles, Then};
+use super::{Mode, Run, RunOnFiles, ScriptConfig, Then};
 use crate::Trigger;
 use ephys_rs::triggers::TriggerHandle;
 
@@ -394,7 +394,7 @@ pub(super) struct JobState {
     terminal: Option<Terminal>,
     /// The runs of that batch, or the last, and the settings they were of: they're shown until those change.
     pub(super) runs: Vec<Progress>,
-    pub(super) settings: Option<CommandSettings>,
+    pub(super) settings: Option<ScriptConfig>,
     /// What went wrong the last time it tried to run.
     problem: Option<String>,
     /// What to send on, once it's done, if anything's connected after it.
@@ -446,14 +446,14 @@ impl Job {
     }
 
     /// The runs of the batch going, or of the last, if that was with `settings`.
-    pub(super) fn runs_with(&self, settings: &CommandSettings) -> Option<Vec<Progress>> {
+    pub(super) fn runs_with(&self, settings: &ScriptConfig) -> Option<Vec<Progress>> {
         let state = self.0.lock().unwrap();
         (state.terminal.is_some() || state.settings.as_ref() == Some(settings)).then(|| state.runs.clone())
     }
 
     /// Runs `runs`, made with `settings`, in turn in a new terminal, unless it's running already; then, as `chain`
     /// says, sends on what they ran on.
-    pub(super) fn start(&self, settings: &CommandSettings, runs: &[Run], chain: Option<Chain>) {
+    pub(super) fn start(&self, settings: &ScriptConfig, runs: &[Run], chain: Option<Chain>) {
         {
             let mut state = self.0.lock().unwrap();
             if state.terminal.is_some() {
@@ -672,7 +672,7 @@ mod windows_tests {
     fn a_terminal_can_be_stopped() {
         let job = Job::default();
         let ping = ["-n", "60", "127.0.0.1"].map(String::from).to_vec();
-        job.start(&CommandSettings::default(), &[Run { program: "ping".into(), arguments: ping }], None);
+        job.start(&ScriptConfig::default(), &[Run { program: "ping".into(), arguments: ping }], None);
         assert_eq!(job.problem(), None);
         std::thread::sleep(Duration::from_secs(1));
         assert!(job.running());

@@ -20,7 +20,7 @@ use eframe::egui::{self, Color32};
 use serde::{Deserialize, Serialize};
 
 use crate::standard::other::run_command::RunOnFiles;
-use crate::{DataStream, Edges, Setting, SettingKind, Trigger, TriggerKind};
+use crate::{DataStream, Edges, PublishedValue, Trigger, TriggerKind, ValueKind};
 use ephys_rs::engine::{Category, Control, EdgeInfo, EdgeType, Node, NodeInfo, Output, SettingPort, UiContext};
 use ephys_rs::triggers::{ControlTriggers, TriggerHandle};
 
@@ -43,7 +43,7 @@ const AFTER_SYNCING: usize = 0;
 /// How it syncs, and the recording to sync by hand. Times are in seconds.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(default)]
-pub struct SyncSettings {
+pub struct SyncConfig {
     /// The recording's `.set` file, to sync by hand: empty for none.
     pub set_file: PathBuf,
     /// Which of the board's digital inputs (from 1) the timing LED's pulses go to.
@@ -61,9 +61,9 @@ pub struct SyncSettings {
     pub around: f64,
 }
 
-impl Default for SyncSettings {
+impl Default for SyncConfig {
     fn default() -> Self {
-        SyncSettings {
+        SyncConfig {
             set_file: PathBuf::new(),
             board_line: 1,
             pos_line: 1,
@@ -75,7 +75,7 @@ impl Default for SyncSettings {
     }
 }
 
-impl SyncSettings {
+impl SyncConfig {
     /// How it syncs, in words, on one line, in ASCII, as old readers expect: for the synced positions' header.
     pub fn info(&self) -> String {
         format!(
@@ -89,7 +89,7 @@ impl SyncSettings {
     }
 }
 
-impl EdgeType for SyncSettings {
+impl EdgeType for SyncConfig {
     const INFO: EdgeInfo = EdgeInfo {
         name: "sync",
         colour: Color32::from_rgb(150, 200, 170),
@@ -110,7 +110,7 @@ pub struct Report {
 }
 
 /// Syncs the recording `set` is the `.set` file of. Nothing's written unless it syncs.
-fn run(set: &Path, settings: &SyncSettings) -> Result<Report, String> {
+fn run(set: &Path, settings: &SyncConfig) -> Result<Report, String> {
     let recording = Recording::of(set).ok_or_else(|| format!("Not a .set file: {}", set.display()))?;
     for path in [&recording.pos, &recording.ttl, &recording.pos_ttl] {
         if !path.exists() {
@@ -163,7 +163,7 @@ pub struct Synced {
 /// `pos`, put on the board's clock by `board`'s changes (all its lines) and the timing LED's, `led`: step by step, the
 /// changes paired (`pairs`), the offset between the clocks through the recording (`offsets`), and the positions
 /// resampled on the board's clock (`resample`), then what's worth a warning (`checks`).
-fn sync(pos: &LtxFile, board: &[Change], led: &[Change], settings: &SyncSettings) -> Result<(LtxFile, Synced), String> {
+fn sync(pos: &LtxFile, board: &[Change], led: &[Change], settings: &SyncConfig) -> Result<(LtxFile, Synced), String> {
     if !pos.data.len().is_multiple_of(POS_RECORD) {
         return Err(format!("The positions aren't whole records of {POS_RECORD} bytes"));
     }
@@ -262,7 +262,7 @@ pub struct Job(Arc<Mutex<Status>>);
 impl Job {
     /// Syncs `set`'s recording, unless it's syncing one already; then, if it did, sends `sent` on through `after`, with
     /// the positions it wrote and the original kept, if they weren't among them.
-    fn start(&self, set: PathBuf, sent: Vec<PathBuf>, settings: SyncSettings, after: Option<TriggerHandle<Trigger>>) {
+    fn start(&self, set: PathBuf, sent: Vec<PathBuf>, settings: SyncConfig, after: Option<TriggerHandle<Trigger>>) {
         let mut status = self.0.lock().unwrap();
         if matches!(*status, Status::Running { .. }) {
             return;
@@ -311,7 +311,7 @@ impl Job {
 #[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SyncPositions {
-    pub settings: SyncSettings,
+    pub settings: SyncConfig,
 }
 
 impl Node<Edges> for SyncPositions {
@@ -341,7 +341,7 @@ impl Node<Edges> for SyncPositions {
 
     /// What's connected after it, sent the recording's files once it's synced them.
     fn controls(&self) -> Vec<Control<Edges>> {
-        vec![Control { name: "after syncing", kind: SettingKind::Command, read_only: true, on_right: true }]
+        vec![Control { name: "after syncing", kind: ValueKind::Script, read_only: true, on_right: true }]
     }
 
     /// The recording's files, once it's synced them.
@@ -349,8 +349,8 @@ impl Node<Edges> for SyncPositions {
         &[TriggerKind::RunOnFiles]
     }
 
-    fn set_setting(&mut self, _index: usize, value: Setting) {
-        if let Setting::Sync(settings) = value {
+    fn set_setting(&mut self, _index: usize, value: PublishedValue) {
+        if let PublishedValue::Sync(settings) = value {
             self.settings = settings;
         }
     }

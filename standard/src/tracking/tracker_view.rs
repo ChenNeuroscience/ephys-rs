@@ -24,7 +24,7 @@ use crate::standard::tracking::overlay::{self, Drag, Overlay, Overlays, Xform};
 use crate::standard::tracking::pipeline::{Blob, RowSpans, row_spans};
 use crate::standard::tracking::{Crop, Detection, Positions};
 use crate::standard::widgets::{named_settings_grid, section};
-use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
+use crate::{Buffer, DataStream, Edges, Kind, PublishedValue, ValueKind};
 use ephys_rs::engine::{
     Category, Control, EdgeType, Input, Node, NodeInfo, Output, PassContext, PoolStatus, Prepare, PrepareContext,
     Prepared, Shared, UiContext,
@@ -168,8 +168,8 @@ impl Node<Edges> for TrackerView {
 
     fn controls(&self) -> Vec<Control<Edges>> {
         vec![
-            Control { name: "camera", kind: SettingKind::Camera, read_only: false, on_right: false },
-            Control { name: "detection", kind: SettingKind::Detection, read_only: false, on_right: false },
+            Control { name: "camera", kind: ValueKind::Camera, read_only: false, on_right: false },
+            Control { name: "detection", kind: ValueKind::Detection, read_only: false, on_right: false },
         ]
     }
 
@@ -357,7 +357,7 @@ impl TrackerView {
             return plots::unconnected(ui, context.theme, &message);
         };
         let detection = match &context.controls[1] {
-            Some(Setting::Detection(detection)) => Some(detection.clone()),
+            Some(PublishedValue::Detection(detection)) => Some(detection.clone()),
             _ => None,
         };
         let (rect, response) = show_frame(ui, display.frame.view(), detection.as_ref(), &self.overlays, context.theme);
@@ -368,7 +368,7 @@ impl TrackerView {
             let drag_id = ui.scope_id().with("tracker drag");
             let mut drag = ui.data(|d| d.get_temp::<Option<Drag>>(drag_id)).flatten();
             if overlay::interact(ui, &response, xf, &mut detection, &self.overlays, &mut drag) {
-                context.controls[1] = Some(Setting::Detection(detection.clone()));
+                context.controls[1] = Some(PublishedValue::Detection(detection.clone()));
             }
             ui.data_mut(|d| d.insert_temp(drag_id, drag));
             let timing_on = display.timing_led == Some(true);
@@ -377,7 +377,7 @@ impl TrackerView {
             overlay::draw(&ui.painter_at(rect), xf, &Detection::default(), &self.overlays, &display.leds, false);
         }
         let calibration = match &context.controls[1] {
-            Some(Setting::Detection(detection)) => detection.pixels_per_metre(),
+            Some(PublishedValue::Detection(detection)) => detection.pixels_per_metre(),
             _ => None,
         };
         let length = |length: f32| match calibration {
@@ -413,7 +413,7 @@ impl TrackerView {
         section(ui, "Camera", None, (&mut camera_locked, "Lock the camera settings"), |ui, locked| match &mut context
             .controls[0]
         {
-            Some(Setting::Camera(settings)) => {
+            Some(PublishedValue::Camera(settings)) => {
                 if locked {
                     ui.disable();
                 }
@@ -426,7 +426,7 @@ impl TrackerView {
         self.camera_locked = camera_locked;
 
         let mut detection = match &context.controls[1] {
-            Some(Setting::Detection(detection)) => Some(detection.clone()),
+            Some(PublishedValue::Detection(detection)) => Some(detection.clone()),
             _ => None,
         };
         let unconnected = |ui: &mut egui::Ui| {
@@ -520,7 +520,7 @@ impl TrackerView {
         }
 
         if let Some(detection) = detection {
-            context.controls[1] = Some(Setting::Detection(detection));
+            context.controls[1] = Some(PublishedValue::Detection(detection));
         }
     }
 }
@@ -533,7 +533,7 @@ fn positions_only(context: &UiContext<Edges>) -> bool {
 /// The window the positions range over: the crop's, if there's one, otherwise a frame's. Sized so it's never empty.
 fn positions_window(context: &UiContext<Edges>) -> [f32; 4] {
     let crop = match &context.controls[1] {
-        Some(Setting::Detection(detection)) => detection.crop.bounds(),
+        Some(PublishedValue::Detection(detection)) => detection.crop.bounds(),
         _ => None,
     };
     let size = match context.inputs[1] {
@@ -557,7 +557,7 @@ fn positions_ui(ui: &mut egui::Ui, context: &UiContext<Edges>, display: Option<&
     painter.rect_filled(rect, 0.0, Color32::BLACK);
     let xf = Xform { origin: rect.min - egui::vec2(min_x, min_y) * scale, scale };
     let detection = match &context.controls[1] {
-        Some(Setting::Detection(detection)) => detection.clone(),
+        Some(PublishedValue::Detection(detection)) => detection.clone(),
         _ => Detection::default(),
     };
     // The calibration has rulers, but nobody laid them over anything.
@@ -589,7 +589,7 @@ fn positions_settings_ui(ui: &mut egui::Ui, context: &UiContext<Edges>) {
     };
     ui.label(RichText::new("Positions").strong());
     ui.weak(format!("From {}, without video: there's nothing to adjust here.", source.replace('_', " ")));
-    let Some(Setting::Detection(detection)) = &context.controls[1] else { return };
+    let Some(PublishedValue::Detection(detection)) = &context.controls[1] else { return };
     if detection.custom.is_empty() {
         return;
     }
@@ -1015,9 +1015,9 @@ mod tests {
         let detector = add(&mut graph, "Position Detector");
         let view = add(&mut graph, "Tracker View");
         let port = |node, role, index| Port { node, role, index };
-        graph.connect(port(camera, PortRole::Output, 0), port(detector, PortRole::Input, 0)).unwrap();
-        graph.connect(port(camera, PortRole::Output, 0), port(view, PortRole::Input, 0)).unwrap();
-        graph.connect(port(detector, PortRole::Output, 0), port(view, PortRole::Input, 1)).unwrap();
+        graph.connect(port(camera, PortRole::DataStreamOut, 0), port(detector, PortRole::DataStreamIn, 0)).unwrap();
+        graph.connect(port(camera, PortRole::DataStreamOut, 0), port(view, PortRole::DataStreamIn, 0)).unwrap();
+        graph.connect(port(detector, PortRole::DataStreamOut, 0), port(view, PortRole::DataStreamIn, 1)).unwrap();
         let first = Snapshot::new(0, graph.clone());
         let runner = Runner::start(&first, 2);
 
@@ -1043,9 +1043,9 @@ mod tests {
         let detector = add(&mut graph, "Position Detector");
         let view = add(&mut graph, "Tracker View");
         let port = |node, role, index| Port { node, role, index };
-        graph.connect(port(camera, PortRole::Output, 0), port(detector, PortRole::Input, 0)).unwrap();
-        graph.connect(port(camera, PortRole::Output, 0), port(view, PortRole::Input, 0)).unwrap();
-        graph.connect(port(detector, PortRole::Output, 0), port(view, PortRole::Input, 1)).unwrap();
+        graph.connect(port(camera, PortRole::DataStreamOut, 0), port(detector, PortRole::DataStreamIn, 0)).unwrap();
+        graph.connect(port(camera, PortRole::DataStreamOut, 0), port(view, PortRole::DataStreamIn, 0)).unwrap();
+        graph.connect(port(detector, PortRole::DataStreamOut, 0), port(view, PortRole::DataStreamIn, 1)).unwrap();
         // Over the test scene's big LED, in the middle of the frame.
         if let Some(Nodes::PositionDetector(d)) = graph.get_mut(detector).map(|e| &mut e.node) {
             let center = [320.5, 240.5];
@@ -1074,9 +1074,9 @@ mod tests {
         let detector = add(&mut graph, "Position Detector");
         let view = add(&mut graph, "Tracker View");
         let port = |node, role, index| Port { node, role, index };
-        graph.connect(port(camera, PortRole::Output, 0), port(detector, PortRole::Input, 0)).unwrap();
-        graph.connect(port(camera, PortRole::Output, 0), port(view, PortRole::Input, 0)).unwrap();
-        graph.connect(port(detector, PortRole::Output, 0), port(view, PortRole::Input, 1)).unwrap();
+        graph.connect(port(camera, PortRole::DataStreamOut, 0), port(detector, PortRole::DataStreamIn, 0)).unwrap();
+        graph.connect(port(camera, PortRole::DataStreamOut, 0), port(view, PortRole::DataStreamIn, 0)).unwrap();
+        graph.connect(port(detector, PortRole::DataStreamOut, 0), port(view, PortRole::DataStreamIn, 1)).unwrap();
         let first = Snapshot::new(0, graph.clone());
         let runner = Runner::start(&first, 2);
 
@@ -1108,12 +1108,12 @@ mod tests {
         let detector = add(&mut graph, "Position Detector");
         let view = add(&mut graph, "Tracker View");
         let port = |node, role, index| Port { node, role, index };
-        graph.connect(port(camera, PortRole::Output, 0), port(detector, PortRole::Input, 0)).unwrap();
-        graph.connect(port(camera, PortRole::Output, 0), port(view, PortRole::Input, 0)).unwrap();
-        graph.connect(port(detector, PortRole::Output, 0), port(view, PortRole::Input, 1)).unwrap();
-        graph.connect(port(camera, PortRole::Output, 1), port(view, PortRole::Input, 2)).unwrap();
-        graph.connect(port(view, PortRole::Control, 0), port(camera, PortRole::Setting, 0)).unwrap();
-        graph.connect(port(view, PortRole::Control, 1), port(detector, PortRole::Setting, 0)).unwrap();
+        graph.connect(port(camera, PortRole::DataStreamOut, 0), port(detector, PortRole::DataStreamIn, 0)).unwrap();
+        graph.connect(port(camera, PortRole::DataStreamOut, 0), port(view, PortRole::DataStreamIn, 0)).unwrap();
+        graph.connect(port(detector, PortRole::DataStreamOut, 0), port(view, PortRole::DataStreamIn, 1)).unwrap();
+        graph.connect(port(camera, PortRole::DataStreamOut, 1), port(view, PortRole::DataStreamIn, 2)).unwrap();
+        graph.connect(port(view, PortRole::ValInCmdOut, 0), port(camera, PortRole::ValOutCmdIn, 0)).unwrap();
+        graph.connect(port(view, PortRole::ValInCmdOut, 1), port(detector, PortRole::ValOutCmdIn, 0)).unwrap();
         if let Some(Nodes::PositionDetector(d)) = graph.get_mut(detector).map(|e| &mut e.node) {
             d.detection.crop = Crop::Rectangle { center: [320.0, 240.0], width: 420.0, height: 300.0, angle: 0.3 };
             d.detection.rulers.push(Ruler { a: [110.0, 420.0], b: [470.0, 420.0], length_cm: 100.0 });
@@ -1214,8 +1214,8 @@ mod tests {
         let vr = add(&mut graph, "VR Computer");
         let view = add(&mut graph, "Tracker View");
         let port = |node, role, index| Port { node, role, index };
-        graph.connect(port(vr, PortRole::Output, 0), port(view, PortRole::Input, 1)).unwrap();
-        graph.connect(port(view, PortRole::Control, 1), port(vr, PortRole::Setting, 0)).unwrap();
+        graph.connect(port(vr, PortRole::DataStreamOut, 0), port(view, PortRole::DataStreamIn, 1)).unwrap();
+        graph.connect(port(view, PortRole::ValInCmdOut, 1), port(vr, PortRole::ValOutCmdIn, 0)).unwrap();
         let window = [
             ("window_min_x", "0"),
             ("window_max_x", "800"),

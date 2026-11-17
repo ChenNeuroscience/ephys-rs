@@ -337,22 +337,25 @@ fn what_sends_files_connects_to_it() {
         [NodeType::SyncPositions, NodeType::WriteLtx, NodeType::WriteRaw, NodeType::RunCommand]
             .map(|node_type| graph.add(Nodes::create(node_type), [0.0, 0.0]));
     let port = |node, role, index| Port { node, role, index };
-    let setting = port(sync, PortRole::Setting, 0);
-    assert!(graph.check(port(writer, PortRole::Control, 4), setting).is_ok(), "Write LTX, after recording");
-    assert!(graph.check(setting, port(raw, PortRole::Control, 0)).is_ok(), "Write Raw, either way round");
-    assert!(graph.check(port(command, PortRole::Control, 0), setting).is_ok(), "Run Command, after running");
-    assert!(graph.check(port(writer, PortRole::Control, 0), setting).is_err(), "not what's recorded with positions");
-    let command_setting = port(command, PortRole::Setting, 0);
-    assert!(graph.check(port(writer, PortRole::Control, 4), command_setting).is_ok(), "and a command, still");
-    assert!(graph.check(port(writer, PortRole::Control, 0), command_setting).is_err());
-    assert!(graph.check(port(sync, PortRole::Control, 0), command_setting).is_ok(), "and it sends them on");
-    let edge = graph.connect(port(writer, PortRole::Control, 4), setting).unwrap();
+    let setting = port(sync, PortRole::ValOutCmdIn, 0);
+    assert!(graph.check(port(writer, PortRole::ValInCmdOut, 4), setting).is_ok(), "Write LTX, after recording");
+    assert!(graph.check(setting, port(raw, PortRole::ValInCmdOut, 0)).is_ok(), "Write Raw, either way round");
+    assert!(graph.check(port(command, PortRole::ValInCmdOut, 0), setting).is_ok(), "Run Command, after running");
+    assert!(
+        graph.check(port(writer, PortRole::ValInCmdOut, 0), setting).is_err(),
+        "not what's recorded with positions"
+    );
+    let command_setting = port(command, PortRole::ValOutCmdIn, 0);
+    assert!(graph.check(port(writer, PortRole::ValInCmdOut, 4), command_setting).is_ok(), "and a command, still");
+    assert!(graph.check(port(writer, PortRole::ValInCmdOut, 0), command_setting).is_err());
+    assert!(graph.check(port(sync, PortRole::ValInCmdOut, 0), command_setting).is_ok(), "and it sends them on");
+    let edge = graph.connect(port(writer, PortRole::ValInCmdOut, 4), setting).unwrap();
     graph.prune_edges();
     assert!(graph.edges().contains(&edge), "kept, as it fits");
     let ltx = ephys_rs::engine::NodeState::unconnected(&Nodes::create(NodeType::WriteLtx));
     let new = ephys_rs::engine::NodeState::unconnected(&Nodes::create(NodeType::SyncPositions));
-    assert_eq!(new.find(sync, &ltx, (PortRole::Control, 4)), Some(setting), "offered, to add from it");
+    assert_eq!(new.find(sync, &ltx, (PortRole::ValInCmdOut, 4)), Some(setting), "offered, to add from it");
     let raw_state = ephys_rs::engine::NodeState::unconnected(&Nodes::create(NodeType::WriteRaw));
-    let from_setting = raw_state.find(raw, &new, (PortRole::Setting, 0));
-    assert_eq!(from_setting, Some(port(raw, PortRole::Control, 0)), "and from it, to what can send it files");
+    let from_setting = raw_state.find(raw, &new, (PortRole::ValOutCmdIn, 0));
+    assert_eq!(from_setting, Some(port(raw, PortRole::ValInCmdOut, 0)), "and from it, to what can send it files");
 }

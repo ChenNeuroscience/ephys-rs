@@ -14,7 +14,7 @@ use crate::standard::spikes::{
 };
 
 use crate::standard::widgets::{input_summary, named_settings_grid, require_input, setting};
-use crate::{Buffer, DataStream, Edges, Kind, Setting};
+use crate::{Buffer, DataStream, Edges, Kind, PublishedValue};
 use ephys_rs::engine::{Category, Input, Node, NodeInfo, Output, PassContext, SettingPort, UiContext};
 use ephys_rs::gui::widgets::info_icon;
 
@@ -120,8 +120,8 @@ impl Node<Edges> for ContinuousGain {
         vec![SettingPort { name: "gains", value: self.gains.clone().into(), on_right: true }]
     }
 
-    fn set_setting(&mut self, _index: usize, value: Setting) {
-        if let Setting::Gains(gains) = value {
+    fn set_setting(&mut self, _index: usize, value: PublishedValue) {
+        if let PublishedValue::Gains(gains) = value {
             self.gains = gains;
         }
     }
@@ -166,7 +166,7 @@ impl Node<Edges> for ContinuousGain {
                 gains
             });
             if let Some(gains) = chosen {
-                pass.trigger_settings_update(0, Setting::Gains(gains));
+                pass.trigger_settings_update(0, PublishedValue::Gains(gains));
                 *sampling = Sampling { done: true, ..Sampling::new(sampling.seconds, 0) };
             }
         }
@@ -315,7 +315,7 @@ mod tests {
             assert_eq!(out.channel(0)[10], expected, "multiplied by the gain");
         }
         let updates = triggers.take_settings_updates();
-        let Some(Setting::Gains(gains)) = updates[0].2.downcast_ref::<Setting>() else { panic!() };
+        let Some(PublishedValue::Gains(gains)) = updates[0].2.downcast_ref::<PublishedValue>() else { panic!() };
         // One for all, to begin with: the widest of theirs, so neither clips.
         assert!((gains.range_uv(0) - 900.0).abs() < 20.0 && (gains.range_uv(1) - 900.0).abs() < 20.0);
         // Wider than a quarter of a gain fits, it's the widest it can be.

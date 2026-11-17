@@ -28,7 +28,7 @@ pub struct PassContext<'a, E: Edges> {
     pub outputs: &'a mut [Buffer<E>],
     /// For each of the node's controls, the value of the setting it's connected to, if it is (which a writer records,
     /// say).
-    pub controls: &'a [Option<E::Setting>],
+    pub controls: &'a [Option<E::PublishedValue>],
     /// The pass runs against a snapshot, which nodes can see some of (see `snapshot`).
     pub(super) snapshot: &'a Arc<dyn SnapshotLite>,
     /// The node shares this with the GUI (its `Node::Shared`: see `shared`).
@@ -91,7 +91,7 @@ impl<'a, E: Edges> PassContext<'a, E> {
 
     /// Passes can't change the graph themselves, so a node asks the app here to set its setting `setting` (by index) to
     /// `value`. The app applies it as an edit, unless settings are locked (while recording). See `crate::triggers`.
-    pub fn trigger_settings_update(&self, setting: usize, value: E::Setting) {
+    pub fn trigger_settings_update(&self, setting: usize, value: E::PublishedValue) {
         self.triggers.trigger_settings_update(self.node, setting, Box::new(value));
     }
 

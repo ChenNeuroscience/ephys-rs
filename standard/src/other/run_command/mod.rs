@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::standard::recording::expand;
 use crate::standard::widgets::{combo, setting, settings_grid};
-use crate::{DataStream, Edges, Setting, SettingKind, Trigger, TriggerKind};
+use crate::{DataStream, Edges, PublishedValue, Trigger, TriggerKind, ValueKind};
 use ephys_rs::engine::{Category, Control, EdgeInfo, EdgeType, Node, NodeInfo, Output, SettingPort, UiContext};
 use ephys_rs::gui::widgets::{Icon, help_link, small_icon_button};
 use ephys_rs::theme::Colours;
@@ -74,7 +74,7 @@ const AFTER_RUNNING: usize = 0;
 /// What to run, and on what.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(default)]
-pub struct CommandSettings {
+pub struct ScriptConfig {
     /// Files, and folders standing for the files in them, to run it on by hand.
     pub files: Vec<PathBuf>,
     /// A regular expression: only files with a match for it in their names, of those here or from a writer. Empty's all
@@ -94,11 +94,11 @@ pub struct CommandSettings {
     pub then: Then,
 }
 
-impl Default for CommandSettings {
+impl Default for ScriptConfig {
     fn default() -> Self {
         let arguments = EACH_FILE.into();
         let (files, pattern, program) = (Vec::new(), String::new(), String::new());
-        CommandSettings {
+        ScriptConfig {
             files,
             pattern,
             regex: false,
@@ -111,7 +111,7 @@ impl Default for CommandSettings {
     }
 }
 
-impl EdgeType for CommandSettings {
+impl EdgeType for ScriptConfig {
     const INFO: EdgeInfo = EdgeInfo {
         name: "command",
         colour: Color32::from_rgb(190, 150, 220),
@@ -123,7 +123,7 @@ impl EdgeType for CommandSettings {
     }
 }
 
-impl CommandSettings {
+impl ScriptConfig {
     /// `paths` that match the pattern.
     fn matching(&self, paths: impl IntoIterator<Item = PathBuf>) -> Result<Vec<PathBuf>, String> {
         let pattern = self.pattern.trim();
@@ -230,7 +230,7 @@ impl Run {
 
 /// What the settings come to: the files picked, and the commands, as they'd be shown.
 struct Preview {
-    settings: CommandSettings,
+    settings: ScriptConfig,
     connected: bool,
     made: Instant,
     /// How many files were picked, before any were left out by name, if they were, rather than sent.
@@ -248,7 +248,7 @@ struct PreviewCache(Option<Arc<Preview>>);
 impl PreviewCache {
     /// What `settings` come to, with an example file in place of those sent, if something that sends them is
     /// `connected`.
-    fn of(&mut self, settings: &CommandSettings, connected: bool) -> Arc<Preview> {
+    fn of(&mut self, settings: &ScriptConfig, connected: bool) -> Arc<Preview> {
         if let Some(preview) = self.0.as_ref()
             && preview.settings == *settings
             && preview.connected == connected
@@ -283,7 +283,7 @@ pub struct CommandState {
 #[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RunCommand {
-    pub settings: CommandSettings,
+    pub settings: ScriptConfig,
 }
 
 impl RunCommand {
@@ -563,7 +563,7 @@ fn regex_cheat_sheet(ui: &mut egui::Ui) {
         ("^", "start"),
         ("$", "end"),
     ];
-    // Which kind, so it can be looked up: the regex crate's, as `CommandSettings::matching` uses.
+    // Which kind, so it can be looked up: the regex crate's, as `ScriptConfig::matching` uses.
     ui.set_max_width(260.0);
     ui.label("Rust regex syntax: like Perl's or Python's, without look-around or backreferences.");
     ui.add_space(4.0);
@@ -619,7 +619,7 @@ impl Node<Edges> for RunCommand {
 
     /// What's connected after it, run on the same files once it's done (see `Then`).
     fn controls(&self) -> Vec<Control<Edges>> {
-        vec![Control { name: "after running", kind: SettingKind::Command, read_only: true, on_right: true }]
+        vec![Control { name: "after running", kind: ValueKind::Script, read_only: true, on_right: true }]
     }
 
     /// The files it ran on, once it's done (see `Then`).
@@ -627,8 +627,8 @@ impl Node<Edges> for RunCommand {
         &[TriggerKind::RunOnFiles]
     }
 
-    fn set_setting(&mut self, _index: usize, value: Setting) {
-        if let Setting::Command(settings) = value {
+    fn set_setting(&mut self, _index: usize, value: PublishedValue) {
+        if let PublishedValue::Script(settings) = value {
             self.settings = settings;
         }
     }
@@ -772,13 +772,13 @@ mod tests {
     use ephys_rs::triggers::{Triggered, Triggers};
 
     /// One per file, in turn, if the arguments have a file in them, otherwise just one.
-    fn settings(program: &str, arguments: &str) -> CommandSettings {
+    fn settings(program: &str, arguments: &str) -> ScriptConfig {
         let mode = if arguments.contains(EACH_FILE) { Mode::EachInTurn } else { Mode::Once };
         let (program, arguments) = (program.into(), arguments.into());
-        CommandSettings { program, arguments, mode, ..Default::default() }
+        ScriptConfig { program, arguments, mode, ..Default::default() }
     }
 
-    fn outcomes(job: &Job, settings: &CommandSettings) -> Vec<Outcome> {
+    fn outcomes(job: &Job, settings: &ScriptConfig) -> Vec<Outcome> {
         job.runs_with(settings).unwrap().iter().map(|progress| progress.outcome).collect()
     }
 
@@ -876,7 +876,7 @@ mod tests {
         assert_eq!(each.len(), 2);
         assert_eq!(each[0].arguments, ["a b.set", "--out", "xa b.set"], "a path with a space in it stays whole");
         assert_eq!(each[1].arguments, ["c.set", "--out", "xc.set"]);
-        let together = CommandSettings { mode: Mode::EachTogether, ..settings("klusta", "{file}") };
+        let together = ScriptConfig { mode: Mode::EachTogether, ..settings("klusta", "{file}") };
         assert_eq!(together.runs(&files).unwrap().len(), 2);
         let once = settings("klusta", "-v {files}").runs(&files).unwrap();
         assert_eq!(once.len(), 1);
@@ -885,7 +885,7 @@ mod tests {
         let alone = settings("klusta", "-v {files}").runs(&[]).unwrap();
         assert_eq!(alone[0].arguments, ["-v"], "or have any");
         assert!(settings("klusta", "{file}").runs(&[]).is_err(), "nothing to run each on");
-        assert!(CommandSettings { mode: Mode::Once, ..settings("klusta", "{file}") }.runs(&files).is_err(), "which?");
+        assert!(ScriptConfig { mode: Mode::Once, ..settings("klusta", "{file}") }.runs(&files).is_err(), "which?");
         assert!(settings(" ", "{file}").runs(&files).is_err(), "no program");
         let matlab = settings("matlab", "-sd /path/to/scripts -batch \"my_function('{file}')\"").runs(&files).unwrap();
         let expected = ["-sd", "/path/to/scripts", "-batch", "my_function('a b.set')"];
@@ -1001,7 +1001,7 @@ mod tests {
         let mut runs = settings("/bin/sh", script).runs(std::slice::from_ref(&first)).unwrap();
         runs.extend(settings("/usr/bin/touch", "{file}").runs(std::slice::from_ref(&second)).unwrap());
         let job = Job::default();
-        job.start(&CommandSettings::default(), &runs, None);
+        job.start(&ScriptConfig::default(), &runs, None);
         let started = first.with_file_name(format!("{}.started", first.file_name().unwrap().to_str().unwrap()));
         wait_until("it should have started", || started.exists());
         std::fs::remove_file(started).unwrap();
@@ -1029,7 +1029,7 @@ mod tests {
         assert!(alive(pid));
         job.stop();
         wait_for_job(&job);
-        let outcomes = outcomes(&job, &CommandSettings::default());
+        let outcomes = outcomes(&job, &ScriptConfig::default());
         assert!(matches!(outcomes[..], [Outcome::Ended { code: None, .. }, Outcome::NotRun]), "{outcomes:?}");
         wait_until("the program itself should have stopped, not just the script", || !alive(pid));
         std::thread::sleep(Duration::from_millis(50));
@@ -1044,7 +1044,7 @@ mod tests {
         wait_for_job(&job);
         let after = scratch("after");
         job.start(
-            &CommandSettings::default(),
+            &ScriptConfig::default(),
             &settings("/usr/bin/touch", "{file}").runs(std::slice::from_ref(&after)).unwrap(),
             None,
         );
@@ -1059,12 +1059,12 @@ mod tests {
         let (job, first, _) = going();
         let other = scratch("other");
         job.start(
-            &CommandSettings::default(),
+            &ScriptConfig::default(),
             &settings("/usr/bin/touch", "{file}").runs(std::slice::from_ref(&other)).unwrap(),
             None,
         );
         assert!(job.problem().unwrap().contains("still running"));
-        assert_eq!(job.runs_with(&CommandSettings::default()).unwrap().len(), 2, "what's running is shown");
+        assert_eq!(job.runs_with(&ScriptConfig::default()).unwrap().len(), 2, "what's running is shown");
         std::thread::sleep(Duration::from_millis(200));
         assert!(!other.exists());
         job.stop();
@@ -1099,7 +1099,7 @@ mod tests {
         let mut runs = settings("/bin/sh", &wait).runs(&[]).unwrap();
         runs.extend(settings("/usr/bin/touch", "{files}").runs(std::slice::from_ref(&waits_for)).unwrap());
         runs.extend(settings("/usr/bin/touch", "{files}").runs(std::slice::from_ref(&arrives)).unwrap());
-        let command = CommandSettings { mode: Mode::EachTogether, ..CommandSettings::default() };
+        let command = ScriptConfig { mode: Mode::EachTogether, ..ScriptConfig::default() };
         let job = Job::default();
         job.start(&command, &runs, None);
         wait_for_job(&job);
@@ -1187,8 +1187,8 @@ mod tests {
             c.settings.regex = true;
         }
         let port = |node, role, index| Port { node, role, index };
-        graph.connect(port(board, PortRole::Output, 0), port(writer, PortRole::Input, 0)).unwrap();
-        graph.connect(port(writer, PortRole::Control, 0), port(command, PortRole::Setting, 0)).unwrap();
+        graph.connect(port(board, PortRole::DataStreamOut, 0), port(writer, PortRole::DataStreamIn, 0)).unwrap();
+        graph.connect(port(writer, PortRole::ValInCmdOut, 0), port(command, PortRole::ValOutCmdIn, 0)).unwrap();
 
         let triggers = Arc::new(Triggers::default());
         let snapshot = Snapshot::new(0, graph.clone());
@@ -1273,8 +1273,8 @@ mod tests {
         }
         if writer {
             let writer = add(&mut graph, "Write Raw");
-            let from = Port { node: writer, role: PortRole::Control, index: 0 };
-            graph.connect(from, Port { node: id, role: PortRole::Setting, index: 0 }).unwrap();
+            let from = Port { node: writer, role: PortRole::ValInCmdOut, index: 0 };
+            graph.connect(from, Port { node: id, role: PortRole::ValOutCmdIn, index: 0 }).unwrap();
         }
         let inputs: [Option<DataStream>; 0] = [];
         // Kept, as the app keeps it.
@@ -1350,8 +1350,8 @@ mod tests {
                 node.settings.files = paths(&["/recordings/trial a.set"]);
             }
             if chained {
-                let from = Port { node: id, role: PortRole::Control, index: AFTER_RUNNING };
-                graph.connect(from, Port { node: after, role: PortRole::Setting, index: 0 }).unwrap();
+                let from = Port { node: id, role: PortRole::ValInCmdOut, index: AFTER_RUNNING };
+                graph.connect(from, Port { node: after, role: PortRole::ValOutCmdIn, index: 0 }).unwrap();
             }
             let inputs: [Option<DataStream>; 0] = [];
             let mut harness = egui_kittest::Harness::builder().with_size([560.0, 560.0]).wgpu().build_ui_state(
@@ -1465,8 +1465,8 @@ mod chain_tests {
         let node_type = NodeType::RunCommand;
         let [a, b, c] = [0, 1, 2].map(|_| graph.add(Nodes::create(node_type), [0.0, 0.0]));
         let after = |from, to| {
-            let control = Port { node: from, role: PortRole::Control, index: AFTER_RUNNING };
-            (control, Port { node: to, role: PortRole::Setting, index: 0 })
+            let control = Port { node: from, role: PortRole::ValInCmdOut, index: AFTER_RUNNING };
+            (control, Port { node: to, role: PortRole::ValOutCmdIn, index: 0 })
         };
         let looped = |graph: &Graph<Nodes>| {
             let resolved = graph.resolve();

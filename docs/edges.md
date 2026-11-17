@@ -12,7 +12,7 @@ edge_types! {
         Continuous(ephys::Continuous),
         // ...
     }
-    settings: pub enum Setting, SettingKind {
+    values: pub enum PublishedValue, ValueKind {
         Thresholds(spikes::Thresholds),
         // ...
     }
@@ -23,7 +23,7 @@ edge_types! {
 }
 ```
 
-That makes the `DataStream` and `Setting` enums of values, the `Kind` and `SettingKind` enums that ports are declared
+That makes the `DataStream` and `PublishedValue` enums of values, the `Kind` and `ValueKind` enums that ports are declared
 with, and the `Buffer` enum of the data streams' buffers; and the `Trigger` enum of what can be sent along settings
 edges (or by a node itself), with `TriggerKind` naming them (see [Nodes](nodes.md#triggers)).
 

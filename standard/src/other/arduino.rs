@@ -222,7 +222,7 @@ impl Shared {
                 asked = true;
             } else if !ready && opened.elapsed() >= VERSION_WAIT {
                 log::warn!(
-                    "Arduino: no reply from {name}: is it running a Firmata sketch, at {baud} baud? Setting its pins \
+                    "Arduino: no reply from {name}: is it running a Firmata sketch, at {baud} baud? PublishedValue its pins \
                      anyway"
                 );
                 self.status.lock().unwrap().no_reply = true;

@@ -55,7 +55,7 @@ pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + S
     fn outputs(&self, inputs: &[Option<<Self::Edges as Edges>::DataStream>]) -> Vec<Output<Self::Edges>>;
     fn warnings(&self, inputs: &[Option<<Self::Edges as Edges>::DataStream>]) -> Vec<String>;
     fn settings(&self) -> Vec<SettingPort<Self::Edges>>;
-    fn set_setting(&mut self, index: usize, value: <Self::Edges as Edges>::Setting);
+    fn set_setting(&mut self, index: usize, value: <Self::Edges as Edges>::PublishedValue);
     fn controls(&self) -> Vec<Control<Self::Edges>>;
     fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Self::Edges>);
     /// The app keeps the node's `UiState`, starting from this.
@@ -238,7 +238,7 @@ macro_rules! nodes_enum {
                 match self { $($name::$variant(n) => $crate::engine::Node::settings(n)),+ }
             }
 
-            fn set_setting(&mut self, index: usize, value: <$edges as $crate::engine::Edges>::Setting) {
+            fn set_setting(&mut self, index: usize, value: <$edges as $crate::engine::Edges>::PublishedValue) {
                 match self { $($name::$variant(n) => $crate::engine::Node::set_setting(n, index, value)),+ }
             }
 

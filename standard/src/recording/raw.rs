@@ -118,7 +118,7 @@ impl Node<Edges> for WriteRaw {
     }
 
     fn controls(&self) -> Vec<Control<Edges>> {
-        vec![Control { name: "after recording", kind: crate::SettingKind::Command, read_only: true, on_right: true }]
+        vec![Control { name: "after recording", kind: crate::ValueKind::Script, read_only: true, on_right: true }]
     }
 
     /// What it recorded, once it's finished (see `after_recording`).

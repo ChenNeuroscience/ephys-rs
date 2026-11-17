@@ -2,7 +2,7 @@
 //! what they're for: electrophysiology (`ephys`), spikes (`spikes`) and video tracking (`tracking`), each with its edge
 //! types and node types; alarms on them all (`alarms`); writers, which record them (`recording`); programs to run on
 //! what's recorded (`other`); annotation types (`annotations`); and themes (`themes`). The kinds of data and settings
-//! they share (`Edges`, `DataStream`, `Setting`...) are declared here.
+//! they share (`Edges`, `DataStream`, `PublishedValue`...) are declared here.
 //!
 //! Its tests are the framework's, which are of the whole program, and build this source as a module, `standard` (see
 //! the framework's src/lib.rs). So its code calls itself `crate::standard`, and its own test build is empty.
@@ -47,16 +47,16 @@ ephys_rs::edge_types! {
         AlarmStates(alarms::AlarmStates),
         LogLines(logs::LogLines),
     }
-    settings: pub enum Setting, SettingKind {
+    values: pub enum PublishedValue, ValueKind {
         Thresholds(spikes::Thresholds),
         Gains(spikes::Gains),
         ChannelSelection(ephys::ChannelSelection),
         Reference(reference::Reference),
-        Camera(camera::CameraSettings),
+        Camera(camera::CameraConfig),
         Detection(tracking::Detection),
         Alarms(alarms::Alarms),
-        Command(run_command::CommandSettings),
-        Sync(sync_positions::SyncSettings),
+        Script(run_command::ScriptConfig),
+        Sync(sync_positions::SyncConfig),
     }
     triggers: pub enum Trigger, TriggerKind {
         RunOnFiles(run_command::RunOnFiles),

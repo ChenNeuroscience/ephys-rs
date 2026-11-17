@@ -21,7 +21,7 @@ use libloading::Library;
 use serde::{Deserialize, Serialize};
 
 use super::{Camera, CameraControls, FrameInfo, Range};
-use super::{CameraSettings, Control};
+use super::{CameraConfig, Control};
 use ephys_rs::global_settings::GlobalSettings;
 use ephys_rs::search_folders::{self, SearchFolders};
 use ephys_rs::theme::Colours;
@@ -625,7 +625,7 @@ impl Camera for SpinnakerCamera {
         self.warnings.clone()
     }
 
-    fn apply(&mut self, settings: &CameraSettings) -> io::Result<()> {
+    fn apply(&mut self, settings: &CameraConfig) -> io::Result<()> {
         let api = self.api;
         // Not an error if it won't: what it's doing about it is reported as it opens, and in `controls`.
         if settings.frame_rate != self.frame_rate {

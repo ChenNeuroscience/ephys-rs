@@ -72,7 +72,7 @@ impl DataStreamType for CameraStats {
 /// Camera settings that another node (the Tracker View) can adjust.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct CameraSettings {
+pub struct CameraConfig {
     /// Frames per second, for a camera that takes one: also the rate declared for the video stream, whatever the camera
     /// does (an externally triggered one goes by its trigger), so changing it starts the node afresh.
     pub frame_rate: f64,
@@ -86,9 +86,9 @@ pub struct CameraSettings {
     pub gain: Control,
 }
 
-impl Default for CameraSettings {
+impl Default for CameraConfig {
     fn default() -> Self {
-        CameraSettings {
+        CameraConfig {
             frame_rate: 50.0,
             frame_size: [640, 480],
             exposure: Control::Unchanged,
@@ -108,7 +108,7 @@ pub enum Control {
     Manual(f64),
 }
 
-impl EdgeType for CameraSettings {
+impl EdgeType for CameraConfig {
     const INFO: EdgeInfo = EdgeInfo {
         name: "camera",
         colour: Color32::from_rgb(150, 160, 255),
@@ -151,7 +151,7 @@ pub trait Camera: Send {
     }
 
     /// Applies the frame rate, exposure and gain.
-    fn apply(&mut self, _settings: &CameraSettings) -> io::Result<()> {
+    fn apply(&mut self, _settings: &CameraConfig) -> io::Result<()> {
         Ok(())
     }
 
@@ -203,7 +203,7 @@ impl Default for Source {
 pub const FAKE_ADDRESS: &str = "127.0.0.1:27030";
 
 /// Opens the camera, telling `note` how it's getting on, for the console.
-pub fn open(source: &Source, settings: &CameraSettings, note: &mut dyn FnMut(String)) -> io::Result<Box<dyn Camera>> {
+pub fn open(source: &Source, settings: &CameraConfig, note: &mut dyn FnMut(String)) -> io::Result<Box<dyn Camera>> {
     let blank_as_none = |s: &str| Some(s.trim()).filter(|s| !s.is_empty()).map(str::to_string);
     Ok(match source {
         // The fake camera's rate is set by fake_camera.py --fps.

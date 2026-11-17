@@ -1361,7 +1361,7 @@ pub mod tests {
 
     fn link(graph: &mut Graph<Nodes>, from: NodeId, output: usize, to: NodeId, input: usize) {
         let port = |node, role, index| Port { node, role, index };
-        graph.connect(port(from, PortRole::Output, output), port(to, PortRole::Input, input)).unwrap();
+        graph.connect(port(from, PortRole::DataStreamOut, output), port(to, PortRole::DataStreamIn, input)).unwrap();
     }
 
     #[test]

@@ -164,7 +164,7 @@ pub struct PrepareContext<'a, E: Edges, N> {
     /// For each input, the data stream connected to it, if any.
     pub inputs: &'a [Option<E::DataStream>],
     /// For each of the node's controls, the setting it's connected to, if it is.
-    pub controls: &'a [Option<E::Setting>],
+    pub controls: &'a [Option<E::PublishedValue>],
     /// If the snapshot's recording, the recording (where it goes, and when it was asked for).
     pub recording: Option<&'a Recording>,
     /// The node's controls can send triggers to the nodes they're connected to (see `crate::triggers`), through this.

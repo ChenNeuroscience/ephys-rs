@@ -1062,7 +1062,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                     }
                 }
                 Triggered::SettingsUpdate { setting, value } => {
-                    let Ok(value) = value.downcast::<<N::Edges as engine::Edges>::Setting>() else { continue };
+                    let Ok(value) = value.downcast::<<N::Edges as engine::Edges>::PublishedValue>() else { continue };
                     let name = entry.node.settings().get(setting).map_or("a setting", |s| s.name);
                     if locked {
                         log::warn!("{}'s {name} weren't changed: settings are locked while recording", entry.label);
@@ -2240,7 +2240,7 @@ mod tests {
         let edge = |h: &Harness<TestApp>, dimension: Dimension| {
             *h.state().graph.edges().iter().find(|e| e.dimension == dimension).unwrap()
         };
-        let (settings, data) = (edge(&harness, Dimension::Settings), edge(&harness, Dimension::Data));
+        let (settings, data) = (edge(&harness, Dimension::Values), edge(&harness, Dimension::Data));
         harness.state_mut().selection.edge = Some(settings);
         harness.get_by_label("Hide settings").click();
         harness.run_steps(2);
@@ -2324,7 +2324,7 @@ mod tests {
         let app = harness.state();
         assert_eq!(app.graph.edges().len(), edges + 1);
         // Named after chen-neuro's own.
-        let gain = Port { node: node_named(app, "Continuous Gain 2"), role: PortRole::Input, index: 0 };
+        let gain = Port { node: node_named(app, "Continuous Gain 2"), role: PortRole::DataStreamIn, index: 0 };
         let board = node_named(app, "Acquisition Board");
         assert_eq!(app.graph.edge_into(gain).map(|e| e.from.node), Some(board));
     }
@@ -2430,7 +2430,7 @@ mod tests {
         harness.state_mut().perform(&ctx, Action::Play);
         harness.run_steps(2);
         let detector = node_named(harness.state(), "Spike Detector");
-        let thresholds = crate::Setting::Thresholds(crate::standard::spikes::Thresholds {
+        let thresholds = crate::PublishedValue::Thresholds(crate::standard::spikes::Thresholds {
             values: vec![60.0],
             ..Default::default()
         });
@@ -2449,7 +2449,7 @@ mod tests {
         let detector = node_named(harness.state(), "Spike Detector");
         let before = harness.state().graph.get(detector).unwrap().node.settings()[0].value.clone();
         harness.state_mut().set_recording(Some(Arc::new(engine::Recording::default())));
-        let thresholds = crate::Setting::Thresholds(crate::standard::spikes::Thresholds {
+        let thresholds = crate::PublishedValue::Thresholds(crate::standard::spikes::Thresholds {
             values: vec![60.0],
             ..Default::default()
         });
@@ -3661,8 +3661,8 @@ mod tests {
     /// When auto detect was started for node `node`'s setting (its gains, or thresholds), if it's going.
     fn auto_detect_started(app: &TestApp, node: NodeId) -> Option<std::time::Instant> {
         match &app.graph.get(node)?.node.settings().first()?.value {
-            crate::Setting::Gains(gains) => gains.detect.started,
-            crate::Setting::Thresholds(thresholds) => thresholds.detect.started,
+            crate::PublishedValue::Gains(gains) => gains.detect.started,
+            crate::PublishedValue::Thresholds(thresholds) => thresholds.detect.started,
             _ => None,
         }
     }
@@ -3671,8 +3671,8 @@ mod tests {
     fn auto_detect_progress(app: &TestApp, node: NodeId) -> Option<f32> {
         let started = auto_detect_started(app, node)?;
         let seconds = match &app.graph.get(node)?.node.settings().first()?.value {
-            crate::Setting::Gains(gains) => gains.detect.seconds,
-            crate::Setting::Thresholds(thresholds) => thresholds.detect.seconds,
+            crate::PublishedValue::Gains(gains) => gains.detect.seconds,
+            crate::PublishedValue::Thresholds(thresholds) => thresholds.detect.seconds,
             _ => return None,
         };
         Some(crate::standard::auto_detect::estimated_progress(started, seconds))
@@ -3746,10 +3746,14 @@ mod tests {
         assert_eq!(progress(&harness), None, "stopped");
         // A settings update from the passes is applied, as an edit.
         let gains = crate::standard::spikes::Gains { gains: vec![0.25], ..Default::default() };
-        harness.state().triggers.trigger_settings_update(gain, 0, Box::new(crate::Setting::Gains(gains.clone())));
+        harness.state().triggers.trigger_settings_update(
+            gain,
+            0,
+            Box::new(crate::PublishedValue::Gains(gains.clone())),
+        );
         harness.run_steps(2);
         let settings = harness.state().graph.get(gain).unwrap().node.settings();
-        assert_eq!(settings[0].value, crate::Setting::Gains(gains), "applied");
+        assert_eq!(settings[0].value, crate::PublishedValue::Gains(gains), "applied");
         harness.state_mut().perform(&ctx, Action::Play);
     }
 
@@ -3811,14 +3815,14 @@ mod tests {
         let link = |graph: &mut Graph<Nodes>, from, to| graph.connect(from, to).unwrap();
         let port_of = |node, role, index| engine::Port { node, role, index };
         for (output, input) in [(0, 2), (1, 4), (2, 5)] {
-            link(&mut graph, port_of(vr, PortRole::Output, output), port_of(ltx, PortRole::Input, input));
+            link(&mut graph, port_of(vr, PortRole::DataStreamOut, output), port_of(ltx, PortRole::DataStreamIn, input));
         }
-        link(&mut graph, port_of(ltx, PortRole::Control, 0), port_of(vr, PortRole::Setting, 0));
+        link(&mut graph, port_of(ltx, PortRole::ValInCmdOut, 0), port_of(vr, PortRole::ValOutCmdIn, 0));
         let viewer = graph.add(Nodes::LogViewer(Default::default()), [300.0, 300.0]);
-        link(&mut graph, port_of(vr, PortRole::Output, 2), port_of(viewer, PortRole::Input, 0));
+        link(&mut graph, port_of(vr, PortRole::DataStreamOut, 2), port_of(viewer, PortRole::DataStreamIn, 0));
         let control = TtlRecordingControl { line: 2, stop_on_down: true };
         let control = graph.add(Nodes::TtlRecordingControl(control), [300.0, 600.0]);
-        link(&mut graph, port_of(vr, PortRole::Output, 1), port_of(control, PortRole::Input, 0));
+        link(&mut graph, port_of(vr, PortRole::DataStreamOut, 1), port_of(control, PortRole::DataStreamIn, 0));
 
         let mut harness = harness();
         harness.state_mut().graph = graph;

@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use super::{self as camera, CameraControls, CameraSettings, Source};
+use super::{self as camera, CameraConfig, CameraControls, Source};
 use crate::standard::pool::{Pool, SLACK_PASSES};
 use crate::standard::tracking::{Video, VideoBuffer};
 use ephys_rs::engine::{DataStreamType, PASS_DURATION};
@@ -77,7 +77,7 @@ impl Status {
 struct Shared {
     stop: AtomicBool,
     /// What to apply to the camera; exposure and gain take effect as they change.
-    settings: Mutex<CameraSettings>,
+    settings: Mutex<CameraConfig>,
     status: Mutex<Status>,
     /// The video the passes expect, and the pool frames go into for them.
     target: Mutex<(Video, Pool<VideoBuffer>)>,
@@ -129,7 +129,7 @@ pub struct Capture {
 impl Capture {
     /// Uses `source` at `settings`, for passes' `video`: carrying on with it, if it's capturing already, otherwise
     /// opening it.
-    pub fn start(source: Source, settings: CameraSettings, video: Video) -> Self {
+    pub fn start(source: Source, settings: CameraConfig, video: Video) -> Self {
         let mut running = RUNNING.lock().unwrap();
         running.retain(|(_, capture)| capture.strong_count() > 0);
         if let Some(capture) = running.iter().find(|(s, _)| *s == source).and_then(|(_, capture)| capture.upgrade()) {
@@ -177,7 +177,7 @@ impl Capture {
     }
 
     /// Changes the frame rate, exposure and gain.
-    pub fn apply(&self, settings: &CameraSettings) {
+    pub fn apply(&self, settings: &CameraConfig) {
         *self.running.shared.settings.lock().unwrap() = *settings;
     }
 
@@ -376,7 +376,7 @@ mod tests {
         let mut notes = Notes::default();
         let source = Source::Fake { address: "127.0.0.1:1".into() };
         for _ in 0..3 {
-            let _ = camera::open(&source, &CameraSettings::default(), &mut |text| notes.say(text));
+            let _ = camera::open(&source, &CameraConfig::default(), &mut |text| notes.say(text));
         }
         assert_eq!(notes.0.len(), 1, "however many times it's tried");
         assert!(notes.0.iter().all(|text| text.contains("127.0.0.1:1")), "and says where");
@@ -386,7 +386,7 @@ mod tests {
     fn passes_take_frames_as_they_come() {
         let source = Source::Fake { address: camera::serve_test_scene(320, 240) };
         let video = Video { width: 320, height: 240, fps: 50.0 };
-        let capture = Capture::start(source, CameraSettings::default(), video);
+        let capture = Capture::start(source, CameraConfig::default(), video);
         let frames = take_like_passes(&capture, 25, 10);
         let mut status = Status::default();
         capture.status_into(&mut status);
@@ -395,7 +395,7 @@ mod tests {
         assert_eq!((status.not_taken, status.wrong_size), (0, 0));
         // Frames of another size are skipped.
         let source = Source::Fake { address: camera::serve_test_scene(320, 240) };
-        let capture = Capture::start(source, CameraSettings::default(), Video { width: 640, ..video });
+        let capture = Capture::start(source, CameraConfig::default(), Video { width: 640, ..video });
         assert!(take_like_passes(&capture, 1, 1).is_empty());
         capture.status_into(&mut status);
         assert_eq!(status.last_wrong_size, Some([320, 240]));
@@ -405,7 +405,7 @@ mod tests {
     fn fresh_state_carries_on_with_the_camera_and_the_last_closes_it() {
         // The test scene takes one connection, so frames coming later show it wasn't opened again.
         let source = Source::Fake { address: camera::serve_test_scene(320, 240) };
-        let settings = CameraSettings::default();
+        let settings = CameraConfig::default();
         let (right, wrong) =
             (Video { width: 320, height: 240, fps: 50.0 }, Video { width: 640, height: 480, fps: 50.0 });
         let first = Capture::start(source.clone(), settings, wrong);
@@ -429,7 +429,7 @@ mod tests {
         assert!(take_like_passes(&third, 5, 5).len() >= 5);
 
         // Another frame rate's set on the camera that's open, for buffers of its own.
-        let (other_rate, slower) = (CameraSettings { frame_rate: 25.0, ..settings }, Video { fps: 25.0, ..right });
+        let (other_rate, slower) = (CameraConfig { frame_rate: 25.0, ..settings }, Video { fps: 25.0, ..right });
         let fourth = Capture::start(source, other_rate, slower);
         assert!(Arc::ptr_eq(&third.running, &fourth.running));
         drop(fourth);
@@ -452,7 +452,7 @@ mod tests {
             .expect("run python3");
         let source = Source::Fake { address: format!("127.0.0.1:{port}") };
         let video = Video { width: 640, height: 480, fps: 50.0 };
-        let capture = Capture::start(source, CameraSettings::default(), video);
+        let capture = Capture::start(source, CameraConfig::default(), video);
         let frames = take_like_passes(&capture, 50, 10);
         let mut status = Status::default();
         capture.status_into(&mut status);

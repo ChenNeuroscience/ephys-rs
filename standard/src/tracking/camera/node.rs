@@ -5,11 +5,11 @@ use eframe::egui::{self, RichText};
 use serde::{Deserialize, Serialize};
 
 use super::capture::{Capture, State};
-use super::{CameraControls, CameraSettings, CameraStats, CaptureStats, Control, Range, Source};
+use super::{CameraConfig, CameraControls, CameraStats, CaptureStats, Control, Range, Source};
 use crate::standard::pool::Pool;
 use crate::standard::tracking::Video;
 use crate::standard::widgets::{setting, settings_grid};
-use crate::{Buffer, DataStream, Edges, Kind, Setting};
+use crate::{Buffer, DataStream, Edges, Kind, PublishedValue};
 use ephys_rs::engine::{
     Category, Flow, Node, NodeInfo, NodeThread, Output, PassContext, PoolStatus, Prepare, PrepareContext, Prepared,
     SettingPort, Suggestion, ThreadContext, UiContext, UserDecision,
@@ -19,7 +19,7 @@ use ephys_rs::engine::{
 #[serde(default)]
 pub struct Camera {
     pub source: Source,
-    pub settings: CameraSettings,
+    pub settings: CameraConfig,
 }
 
 /// Capturing, while running.
@@ -57,7 +57,7 @@ impl Camera {
         }
         let Some(size @ [w, h]) = status.last_wrong_size else { return Vec::new() };
         let [set_w, set_h] = self.settings.frame_size;
-        let fixed = Camera { settings: CameraSettings { frame_size: size, ..self.settings }, ..self.clone() };
+        let fixed = Camera { settings: CameraConfig { frame_size: size, ..self.settings }, ..self.clone() };
         let what = format!("frames are {w}×{h}, not the {set_w}×{set_h} set");
         let suggestion = Suggestion { label: "Use the hardware's settings".into(), node: fixed };
         vec![UserDecision { what, suggestion: Some(suggestion) }]
@@ -89,11 +89,11 @@ impl Node<Edges> for Camera {
     }
 
     fn settings(&self) -> Vec<SettingPort<Edges>> {
-        vec![SettingPort { name: "camera", value: Setting::Camera(self.settings), on_right: true }]
+        vec![SettingPort { name: "camera", value: PublishedValue::Camera(self.settings), on_right: true }]
     }
 
-    fn set_setting(&mut self, _index: usize, value: Setting) {
-        if let Setting::Camera(settings) = value {
+    fn set_setting(&mut self, _index: usize, value: PublishedValue) {
+        if let PublishedValue::Camera(settings) = value {
             self.settings = settings;
         }
     }
@@ -267,7 +267,7 @@ fn source_ui(ui: &mut egui::Ui, source: &mut Source) -> egui::Response {
 /// The frame rate, exposure and gain. `controls`, if the camera's running, says what it supports.
 pub(in super::super) fn camera_settings_ui(
     ui: &mut egui::Ui,
-    settings: &mut CameraSettings,
+    settings: &mut CameraConfig,
     controls: Option<&CameraControls>,
 ) {
     egui::Grid::new("camera settings").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {

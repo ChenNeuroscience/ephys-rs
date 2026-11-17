@@ -20,7 +20,7 @@ pub struct UiContext<'a, E: Edges> {
     pub inputs: &'a [Option<E::DataStream>],
     /// For each control, the current value of the setting it's connected to, if any. The window edits that setting by
     /// changing the value.
-    pub controls: &'a mut [Option<E::Setting>],
+    pub controls: &'a mut [Option<E::PublishedValue>],
     /// For each setting, the names of the nodes with a control connected to it, while the edge is live.
     pub controlled_by: &'a [Vec<String>],
     /// The theme's colours to draw with, by role. A node can derive more of its own from these.

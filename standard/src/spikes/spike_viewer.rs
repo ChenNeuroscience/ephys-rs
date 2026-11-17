@@ -26,7 +26,7 @@ use crate::standard::spikes::{
     trimmed,
 };
 use crate::standard::widgets::{open_settings_button, require_input};
-use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
+use crate::{Buffer, DataStream, Edges, Kind, PublishedValue, ValueKind};
 use ephys_rs::engine::{
     Category, Control, EdgeType, Input, Node, NodeInfo, Output, PassContext, Prepare, PrepareContext, Prepared,
     Shortcut, UiContext,
@@ -121,10 +121,10 @@ impl AutoDetecting {
 /// going, and how many seconds it samples for (see `crate::standard::auto_detect`).
 fn detecting(context: &UiContext<Edges>, control: usize) -> Option<(Instant, f32)> {
     match &context.controls[control] {
-        Some(Setting::Thresholds(thresholds)) => {
+        Some(PublishedValue::Thresholds(thresholds)) => {
             thresholds.detect.started.map(|started| (started, thresholds.detect.seconds))
         }
-        Some(Setting::Gains(gains)) => gains.detect.started.map(|started| (started, gains.detect.seconds)),
+        Some(PublishedValue::Gains(gains)) => gains.detect.started.map(|started| (started, gains.detect.seconds)),
         _ => None,
     }
 }
@@ -132,8 +132,8 @@ fn detecting(context: &UiContext<Edges>, control: usize) -> Option<(Instant, f32
 /// Starts auto detect for the setting control `control` connects to, as of `at`, or (`None`) stops it.
 fn set_detect(context: &mut UiContext<Edges>, control: usize, at: Option<Instant>) {
     match &mut context.controls[control] {
-        Some(Setting::Thresholds(thresholds)) => thresholds.detect.started = at,
-        Some(Setting::Gains(gains)) => gains.detect.started = at,
+        Some(PublishedValue::Thresholds(thresholds)) => thresholds.detect.started = at,
+        Some(PublishedValue::Gains(gains)) => gains.detect.started = at,
         _ => {}
     }
 }
@@ -267,8 +267,8 @@ impl Node<Edges> for SpikeViewer {
 
     fn controls(&self) -> Vec<Control<Edges>> {
         vec![
-            Control { name: "thresholds", kind: SettingKind::Thresholds, read_only: false, on_right: false },
-            Control { name: "gains", kind: SettingKind::Gains, read_only: false, on_right: false },
+            Control { name: "thresholds", kind: ValueKind::Thresholds, read_only: false, on_right: false },
+            Control { name: "gains", kind: ValueKind::Gains, read_only: false, on_right: false },
         ]
     }
 
@@ -349,11 +349,11 @@ impl Node<Edges> for SpikeViewer {
         let display = reading.as_deref();
         self.toolbar(ui, context);
         let mut thresholds = match &context.controls[THRESHOLDS] {
-            Some(Setting::Thresholds(t)) => Some(t.clone()),
+            Some(PublishedValue::Thresholds(t)) => Some(t.clone()),
             _ => None,
         };
         let mut gains = match &context.controls[GAINS_CONTROL] {
-            Some(Setting::Gains(g)) => Some(g.clone()),
+            Some(PublishedValue::Gains(g)) => Some(g.clone()),
             _ => None,
         };
 
@@ -367,10 +367,10 @@ impl Node<Edges> for SpikeViewer {
         };
         self.plots_ui(ui, plots);
         if let Some(thresholds) = thresholds {
-            context.controls[THRESHOLDS] = Some(Setting::Thresholds(thresholds));
+            context.controls[THRESHOLDS] = Some(PublishedValue::Thresholds(thresholds));
         }
         if let Some(gains) = gains {
-            context.controls[GAINS_CONTROL] = Some(Setting::Gains(gains));
+            context.controls[GAINS_CONTROL] = Some(PublishedValue::Gains(gains));
         }
     }
 }

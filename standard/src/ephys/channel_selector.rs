@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::standard::ephys::reference::{channels_ui, parse_channels};
 use crate::standard::ephys::{ChannelSelection, Continuous};
 use crate::standard::widgets::{inline_block, input_summary, power, require_input};
-use crate::{Buffer, DataStream, Edges, Kind, Setting};
+use crate::{Buffer, DataStream, Edges, Kind, PublishedValue};
 use ephys_rs::engine::{Category, Input, Node, NodeInfo, Output, PassContext, SettingPort, UiContext};
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -108,8 +108,8 @@ impl Node<Edges> for ChannelSelector {
         vec![SettingPort { name: "selection", value: selection.into(), on_right: true }]
     }
 
-    fn set_setting(&mut self, _index: usize, value: Setting) {
-        if let Setting::ChannelSelection(selection) = value {
+    fn set_setting(&mut self, _index: usize, value: PublishedValue) {
+        if let PublishedValue::ChannelSelection(selection) = value {
             (self.apply, self.channels) = (selection.apply, selection.channels);
         }
     }
@@ -212,19 +212,19 @@ mod tests {
                     let id = graph.add(node, [0.0, 0.0]);
                     added.push(id);
                     for (input, port) in inputs {
-                        graph.connect(port, Port { node: id, role: PortRole::Input, index: input }).unwrap();
+                        graph.connect(port, Port { node: id, role: PortRole::DataStreamIn, index: input }).unwrap();
                     }
                 }
             }
             added
         };
-        let selected = Port { node: selector, role: PortRole::Output, index: 0 };
+        let selected = Port { node: selector, role: PortRole::DataStreamOut, index: 0 };
         let first = takers(&mut graph, &[(Kind::Continuous, selected)]);
         let resolved = graph.resolve();
         let made: Vec<(Kind, Port)> = (first.iter())
             .flat_map(|&node| {
                 let outputs = resolved[&node].outputs.iter().enumerate();
-                outputs.map(move |(index, o)| (o.kind, Port { node, role: PortRole::Output, index }))
+                outputs.map(move |(index, o)| (o.kind, Port { node, role: PortRole::DataStreamOut, index }))
             })
             .filter(|(kind, _)| matches!(kind, Kind::Spikes | Kind::Spectra))
             .collect();

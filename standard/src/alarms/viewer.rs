@@ -27,7 +27,7 @@ use crate::standard::plots;
 use crate::standard::pool::Pool;
 use crate::standard::widgets::{mark_mixed, open_settings_button, require_input};
 use crate::standard::widgets::{power, small_toggle};
-use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
+use crate::{Buffer, DataStream, Edges, Kind, PublishedValue, ValueKind};
 use ephys_rs::engine::{
     Category, Control, Flow, Input, Node, NodeInfo, NodeThread, Output, PassContext, PassState, PoolStatus, Prepare,
     PrepareContext, Prepared, Shared, UiContext,
@@ -193,7 +193,7 @@ impl Node<Edges> for AlarmViewer {
     }
 
     fn controls(&self) -> Vec<Control<Edges>> {
-        vec![Control { name: "alarms", kind: SettingKind::Alarms, read_only: false, on_right: false }]
+        vec![Control { name: "alarms", kind: ValueKind::Alarms, read_only: false, on_right: false }]
     }
 
     fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
@@ -238,7 +238,7 @@ impl Node<Edges> for AlarmViewer {
     fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
         self.take_updates(context);
         let Some(ui) = ui else { return };
-        let (Some(DataStream::AlarmStates(stream)), Some(Setting::Alarms(alarms))) =
+        let (Some(DataStream::AlarmStates(stream)), Some(PublishedValue::Alarms(alarms))) =
             (context.inputs[0], context.controls[ALARMS].as_ref())
         else {
             ui.horizontal(|ui| context.node_toolbar(ui));
@@ -270,7 +270,7 @@ impl Node<Edges> for AlarmViewer {
                 ui.add_space(4.0);
             }
         });
-        context.controls[ALARMS] = Some(Setting::Alarms(alarms));
+        context.controls[ALARMS] = Some(PublishedValue::Alarms(alarms));
     }
 }
 
@@ -282,7 +282,7 @@ impl AlarmViewer {
         let AlarmsUi { shown, going_off, recording, overrides, tone } = &mut *ui;
         if !context.locked && (!overrides.ignored.is_empty() || !overrides.sounds.is_empty()) {
             let alarms = match &mut context.controls[ALARMS] {
-                Some(Setting::Alarms(alarms)) => Some(alarms),
+                Some(PublishedValue::Alarms(alarms)) => Some(alarms),
                 _ => None,
             };
             overrides.save(alarms, &mut self.sounding);
@@ -771,8 +771,8 @@ mod tests {
             *node = AlarmProcessor { alarms };
         }
         let (from, to) = (
-            Port { node: viewer, role: PortRole::Control, index: 0 },
-            Port { node: processor, role: PortRole::Setting, index: 0 },
+            Port { node: viewer, role: PortRole::ValInCmdOut, index: 0 },
+            Port { node: processor, role: PortRole::ValOutCmdIn, index: 0 },
         );
         graph.connect(from, to).unwrap();
         let gui: Gui =
@@ -1168,8 +1168,8 @@ mod tests {
             node.alarms = alarms;
         }
         let port = |node, role, index| Port { node, role, index };
-        graph.connect(port(board, PortRole::Output, 1), port(processor, PortRole::Input, 3)).unwrap();
-        graph.connect(port(processor, PortRole::Output, 0), port(viewer, PortRole::Input, 0)).unwrap();
+        graph.connect(port(board, PortRole::DataStreamOut, 1), port(processor, PortRole::DataStreamIn, 3)).unwrap();
+        graph.connect(port(processor, PortRole::DataStreamOut, 0), port(viewer, PortRole::DataStreamIn, 0)).unwrap();
 
         let snapshot = Snapshot::new(0, graph.clone());
         let runner = Runner::start(&snapshot, 2);

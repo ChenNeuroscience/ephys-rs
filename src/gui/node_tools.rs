@@ -36,7 +36,7 @@ impl<'e> NodeTools<'e> {
         let own_triggers = (0..node.settings().len()).flat_map(|s| keys(node.triggers(s))).collect::<Vec<_>>();
         let controls = (0..node.controls().len())
             .map(|index| {
-                let edge = graph.live_edges_from(Port { node: id, role: PortRole::Control, index }).next()?;
+                let edge = graph.live_edges_from(Port { node: id, role: PortRole::ValInCmdOut, index }).next()?;
                 Some((edge.to.node, keys(graph.get(edge.to.node)?.node.triggers(edge.to.port))))
             })
             .collect();

@@ -55,10 +55,10 @@ pub fn standard<E: Edges, N: Node<E>>(
         ui.add_enabled_ui(!locked, |ui| settings(node, ui, context));
         ui.add_space(8.0);
         for (role, title) in [
-            (PortRole::Input, "Inputs"),
-            (PortRole::Output, "Outputs"),
-            (PortRole::Setting, "Settings"),
-            (PortRole::Control, "Controls"),
+            (PortRole::DataStreamIn, "Inputs"),
+            (PortRole::DataStreamOut, "Outputs"),
+            (PortRole::ValOutCmdIn, "Settings"),
+            (PortRole::ValInCmdOut, "Controls"),
         ] {
             if state.count(role) == 0 {
                 continue;
@@ -67,12 +67,12 @@ pub fn standard<E: Edges, N: Node<E>>(
             for index in 0..state.count(role) {
                 // What it carries (or a setting's value); a control, whether it's connected.
                 let detail = match role {
-                    PortRole::Input | PortRole::Output => {
+                    PortRole::DataStreamIn | PortRole::DataStreamOut => {
                         state.summary(role, index).unwrap_or_else(|| "not connected".into())
                     }
-                    PortRole::Setting => state.summary(role, index).unwrap_or_default(),
-                    PortRole::Control if context.control_connected(index) => "connected".into(),
-                    PortRole::Control => "not connected".into(),
+                    PortRole::ValOutCmdIn => state.summary(role, index).unwrap_or_default(),
+                    PortRole::ValInCmdOut if context.control_connected(index) => "connected".into(),
+                    PortRole::ValInCmdOut => "not connected".into(),
                 };
                 ui.horizontal(|ui| {
                     let (dot, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());

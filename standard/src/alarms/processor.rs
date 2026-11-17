@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use super::settings::alarms_ui;
 use super::{Alarm, AlarmKind, AlarmState, AlarmStates, Alarms, Phase, Source};
 use crate::standard::widgets::require_input;
-use crate::{Buffer, DataStream, Edges, Kind, Setting};
+use crate::{Buffer, DataStream, Edges, Kind, PublishedValue};
 use ephys_rs::engine::{
     Category, Input, Node, NodeInfo, Output, PassContext, PassState, Prepare, PrepareContext, Prepared, SettingPort,
     UiContext,
@@ -287,11 +287,11 @@ impl Node<Edges> for AlarmProcessor {
     }
 
     fn settings(&self) -> Vec<SettingPort<Edges>> {
-        vec![SettingPort { name: "alarms", value: Setting::Alarms(self.alarms.clone()), on_right: true }]
+        vec![SettingPort { name: "alarms", value: PublishedValue::Alarms(self.alarms.clone()), on_right: true }]
     }
 
-    fn set_setting(&mut self, _index: usize, value: Setting) {
-        if let Setting::Alarms(alarms) = value {
+    fn set_setting(&mut self, _index: usize, value: PublishedValue) {
+        if let PublishedValue::Alarms(alarms) = value {
             self.alarms = alarms;
         }
     }

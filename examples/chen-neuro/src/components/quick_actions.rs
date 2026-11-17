@@ -121,7 +121,7 @@ impl Change {
     fn link(&mut self, from: (NodeId, PortRole, usize), to: (NodeId, PortRole, usize)) {
         let (from, to) = (port(from), port(to));
         let free = match to.role {
-            PortRole::Input => !self.linked(to),
+            PortRole::DataStreamIn => !self.linked(to),
             _ => !self.linked(from),
         };
         if free && self.graph.connect(from, to).is_ok() {
@@ -154,7 +154,7 @@ fn port((node, role, index): (NodeId, PortRole, usize)) -> Port {
     Port { node, role, index }
 }
 
-use PortRole::{Control, Input, Output, Setting};
+use PortRole::{DataStreamIn, DataStreamOut, ValInCmdOut, ValOutCmdIn};
 
 /// A real board: the Open Ephys acquisition board, generation 1 or 2.
 fn real_board() -> board::Source {
@@ -187,26 +187,26 @@ fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
         }
     };
     let reference = change.upsert(NodeType::Reference, Some(board));
-    change.link((board, Output, 0), (reference, Input, 0));
+    change.link((board, DataStreamOut, 0), (reference, DataStreamIn, 0));
 
     // Spikes.
     let band = match change.find(|n| matches!(n, Nodes::BandPassFilter(f) if f.low_hz >= 100.0)) {
         Some(band) => band,
         None => change.add(Nodes::BandPassFilter(Default::default()), Some(reference)),
     };
-    change.link((reference, Output, 0), (band, Input, 0));
+    change.link((reference, DataStreamOut, 0), (band, DataStreamIn, 0));
     let detector = change.upsert(NodeType::SpikeDetector, Some(band));
-    change.link((band, Output, 0), (detector, Input, 0));
+    change.link((band, DataStreamOut, 0), (detector, DataStreamIn, 0));
     let gain = change.upsert(NodeType::SpikeGain, Some(detector));
-    change.link((detector, Output, 0), (gain, Input, 0));
+    change.link((detector, DataStreamOut, 0), (gain, DataStreamIn, 0));
     let spike_viewer = change.upsert(NodeType::SpikeViewer, Some(gain));
-    change.link((gain, Output, 0), (spike_viewer, Input, 0));
-    change.link((spike_viewer, Control, 0), (detector, Setting, 0));
-    change.link((spike_viewer, Control, 1), (gain, Setting, 0));
+    change.link((gain, DataStreamOut, 0), (spike_viewer, DataStreamIn, 0));
+    change.link((spike_viewer, ValInCmdOut, 0), (detector, ValOutCmdIn, 0));
+    change.link((spike_viewer, ValInCmdOut, 1), (gain, ValOutCmdIn, 0));
 
     // EEG: only some channels, chosen in the LFP Viewer.
     let selector = change.upsert(NodeType::ChannelSelector, Some(board));
-    change.link((board, Output, 0), (selector, Input, 0));
+    change.link((board, DataStreamOut, 0), (selector, DataStreamIn, 0));
     let lfp = match change.find(|n| matches!(n, Nodes::BandPassFilter(f) if f.high_hz <= 500.0)) {
         Some(lfp) => lfp,
         None => {
@@ -214,17 +214,17 @@ fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
             change.add(Nodes::BandPassFilter(filter), Some(selector))
         }
     };
-    change.link((selector, Output, 0), (lfp, Input, 0));
+    change.link((selector, DataStreamOut, 0), (lfp, DataStreamIn, 0));
     let spectrum = change.upsert(NodeType::Spectrum, Some(lfp));
-    change.link((lfp, Output, 0), (spectrum, Input, 0));
+    change.link((lfp, DataStreamOut, 0), (spectrum, DataStreamIn, 0));
     let lfp_viewer = change.upsert(NodeType::LfpViewer, Some(spectrum));
-    change.link((lfp, Output, 0), (lfp_viewer, Input, 0));
-    change.link((spectrum, Output, 0), (lfp_viewer, Input, 1));
-    change.link((lfp_viewer, Control, 1), (selector, Setting, 0));
+    change.link((lfp, DataStreamOut, 0), (lfp_viewer, DataStreamIn, 0));
+    change.link((spectrum, DataStreamOut, 0), (lfp_viewer, DataStreamIn, 1));
+    change.link((lfp_viewer, ValInCmdOut, 1), (selector, ValOutCmdIn, 0));
 
     // Digital inputs.
     let ttl_viewer = change.upsert(NodeType::TtlViewer, Some(board));
-    change.link((board, Output, 1), (ttl_viewer, Input, 0));
+    change.link((board, DataStreamOut, 1), (ttl_viewer, DataStreamIn, 0));
 
     // Positions.
     let camera = match change.find(|n| matches!(n, Nodes::Camera(_))) {
@@ -232,39 +232,39 @@ fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
         None => change.add(Nodes::Camera(Camera { source: real_camera(), ..Default::default() }), None),
     };
     let positions = change.upsert(NodeType::PositionDetector, Some(camera));
-    change.link((camera, Output, 0), (positions, Input, 0));
+    change.link((camera, DataStreamOut, 0), (positions, DataStreamIn, 0));
     let tracker = change.upsert(NodeType::TrackerView, Some(positions));
-    change.link((camera, Output, 0), (tracker, Input, 0));
-    change.link((positions, Output, 0), (tracker, Input, 1));
-    change.link((camera, Output, 1), (tracker, Input, 2));
-    change.link((tracker, Control, 0), (camera, Setting, 0));
-    change.link((tracker, Control, 1), (positions, Setting, 0));
+    change.link((camera, DataStreamOut, 0), (tracker, DataStreamIn, 0));
+    change.link((positions, DataStreamOut, 0), (tracker, DataStreamIn, 1));
+    change.link((camera, DataStreamOut, 1), (tracker, DataStreamIn, 2));
+    change.link((tracker, ValInCmdOut, 0), (camera, ValOutCmdIn, 0));
+    change.link((tracker, ValInCmdOut, 1), (positions, ValOutCmdIn, 0));
 
     // Recording it all.
     let ltx = change.upsert(NodeType::WriteLtx, Some(gain));
-    change.link((gain, Output, 0), (ltx, Input, 0));
+    change.link((gain, DataStreamOut, 0), (ltx, DataStreamIn, 0));
     // The EEG, at LTX's 5 kHz.
     let downsample = match change.find(|n| matches!(n, Nodes::Downsample(d) if d.rate_hz == 5000.0)) {
         Some(downsample) => downsample,
         None => change.add(Nodes::Downsample(Downsample { rate_hz: 5000.0 }), Some(lfp)),
     };
-    change.link((lfp, Output, 0), (downsample, Input, 0));
+    change.link((lfp, DataStreamOut, 0), (downsample, DataStreamIn, 0));
     let continuous_gain = change.upsert(NodeType::ContinuousGain, Some(downsample));
-    change.link((downsample, Output, 0), (continuous_gain, Input, 0));
-    change.link((continuous_gain, Output, 0), (ltx, Input, 1));
-    change.link((lfp_viewer, Control, 0), (continuous_gain, Setting, 0));
-    change.link((lfp_viewer, Control, 2), (reference, Setting, 0));
-    change.link((reference, Output, 1), (lfp_viewer, Input, 2));
-    change.link((positions, Output, 0), (ltx, Input, 2));
-    change.link((board, Output, 1), (ltx, Input, 3));
-    change.link((positions, Output, 1), (ltx, Input, 4));
-    change.link((ltx, Control, 0), (positions, Setting, 0));
-    change.link((ltx, Control, 1), (gain, Setting, 0));
-    change.link((ltx, Control, 2), (selector, Setting, 0));
-    change.link((ltx, Control, 3), (continuous_gain, Setting, 0));
+    change.link((downsample, DataStreamOut, 0), (continuous_gain, DataStreamIn, 0));
+    change.link((continuous_gain, DataStreamOut, 0), (ltx, DataStreamIn, 1));
+    change.link((lfp_viewer, ValInCmdOut, 0), (continuous_gain, ValOutCmdIn, 0));
+    change.link((lfp_viewer, ValInCmdOut, 2), (reference, ValOutCmdIn, 0));
+    change.link((reference, DataStreamOut, 1), (lfp_viewer, DataStreamIn, 2));
+    change.link((positions, DataStreamOut, 0), (ltx, DataStreamIn, 2));
+    change.link((board, DataStreamOut, 1), (ltx, DataStreamIn, 3));
+    change.link((positions, DataStreamOut, 1), (ltx, DataStreamIn, 4));
+    change.link((ltx, ValInCmdOut, 0), (positions, ValOutCmdIn, 0));
+    change.link((ltx, ValInCmdOut, 1), (gain, ValOutCmdIn, 0));
+    change.link((ltx, ValInCmdOut, 2), (selector, ValOutCmdIn, 0));
+    change.link((ltx, ValInCmdOut, 3), (continuous_gain, ValOutCmdIn, 0));
     // Once it's recorded, the positions put on the board's clock.
     let sync = change.upsert(NodeType::SyncPositions, Some(ltx));
-    change.link((ltx, Control, 4), (sync, Setting, 0));
+    change.link((ltx, ValInCmdOut, 4), (sync, ValOutCmdIn, 0));
 
     // The Arduino: the rig's sketch pulses pin 6, for syncing, while pin 8's high.
     if change.find(|n| matches!(n, Nodes::Arduino(_))).is_none() {
@@ -291,13 +291,13 @@ fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
             added
         }
     };
-    change.link((gain, Output, 0), (alarm_processor, Input, 0));
-    change.link((lfp, Output, 0), (alarm_processor, Input, 1));
-    change.link((positions, Output, 0), (alarm_processor, Input, 2));
-    change.link((positions, Output, 1), (alarm_processor, Input, 3));
+    change.link((gain, DataStreamOut, 0), (alarm_processor, DataStreamIn, 0));
+    change.link((lfp, DataStreamOut, 0), (alarm_processor, DataStreamIn, 1));
+    change.link((positions, DataStreamOut, 0), (alarm_processor, DataStreamIn, 2));
+    change.link((positions, DataStreamOut, 1), (alarm_processor, DataStreamIn, 3));
     let alarm_viewer = change.upsert(NodeType::AlarmViewer, Some(alarm_processor));
-    change.link((alarm_processor, Output, 0), (alarm_viewer, Input, 0));
-    change.link((alarm_viewer, Control, 0), (alarm_processor, Setting, 0));
+    change.link((alarm_processor, DataStreamOut, 0), (alarm_viewer, DataStreamIn, 0));
+    change.link((alarm_viewer, ValInCmdOut, 0), (alarm_processor, ValOutCmdIn, 0));
 
     let mut result = change.finish(state, &[spike_viewer, lfp_viewer, ttl_viewer, tracker, alarm_viewer])?;
     // A new graph, laid out tidily; recording each subject's trials.
@@ -326,15 +326,15 @@ fn position_nodes(graph: &Graph<Nodes>) -> Vec<NodeId> {
 /// the VR Computer and the position detector.)
 fn move_positions(graph: &mut Graph<Nodes>, from: NodeId, to: NodeId) {
     for index in 0..2 {
-        let targets: Vec<Port> = graph.edges_from(port((from, Output, index))).map(|e| e.target()).collect();
+        let targets: Vec<Port> = graph.edges_from(port((from, DataStreamOut, index))).map(|e| e.target()).collect();
         for target in targets {
-            let _ = graph.connect(port((to, Output, index)), target);
+            let _ = graph.connect(port((to, DataStreamOut, index)), target);
         }
     }
-    let setting = port((from, Setting, 0));
+    let setting = port((from, ValOutCmdIn, 0));
     let controls: Vec<Port> = graph.edges().iter().filter(|e| e.target() == setting).map(|e| e.source()).collect();
     for control in controls {
-        let _ = graph.connect(control, port((to, Setting, 0)));
+        let _ = graph.connect(control, port((to, ValOutCmdIn, 0)));
     }
 }
 
@@ -379,11 +379,11 @@ fn use_vr(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
     set_disabled(&mut change.graph, &tracking, true);
     set_disabled(&mut change.graph, &[vr], false);
     if let Some(ltx) = change.find(|n| matches!(n, Nodes::WriteLtx(_))) {
-        change.link((vr, Output, 2), (ltx, Input, 5));
+        change.link((vr, DataStreamOut, 2), (ltx, DataStreamIn, 5));
     }
     let log_viewer = change.upsert(NodeType::LogViewer, Some(vr));
     set_disabled(&mut change.graph, &[log_viewer], false);
-    change.link((vr, Output, 2), (log_viewer, Input, 0));
+    change.link((vr, DataStreamOut, 2), (log_viewer, DataStreamIn, 0));
     change.changed = true;
     let ttl_viewer = change.find(|n| matches!(n, Nodes::TtlViewer(_)));
     let mut result = change.finish(state, &[])?;
@@ -410,7 +410,7 @@ fn use_camera(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
         return None;
     }
     if let Some(vr) = vr {
-        let fed = change.graph.edges_from(port((vr, Output, 2))).map(|e| e.to.node);
+        let fed = change.graph.edges_from(port((vr, DataStreamOut, 2))).map(|e| e.to.node);
         let is_viewer = |id: &NodeId| matches!(state.graph.get(*id).map(|e| &e.node), Some(Nodes::LogViewer(_)));
         log_viewers = fed.filter(is_viewer).collect();
         move_positions(&mut change.graph, vr, detector);
@@ -497,7 +497,13 @@ mod tests {
         // The Channel Selector's only on the LFP branch: the spikes' starts at the board.
         let named = |name: &str| graph.iter().find(|(_, e)| e.label == name).unwrap().0;
         let feeding = |id| {
-            graph.edges().iter().find(|e| e.target() == Port { node: id, role: Input, index: 0 }).unwrap().from.node
+            graph
+                .edges()
+                .iter()
+                .find(|e| e.target() == Port { node: id, role: DataStreamIn, index: 0 })
+                .unwrap()
+                .from
+                .node
         };
         assert_eq!(feeding(named("Reference")), named("Acquisition Board"));
         let selector = named("Channel Selector");
@@ -517,7 +523,7 @@ mod tests {
         let alarm_processor = named("Alarm Processor");
         let inputs = &resolved[&alarm_processor].input_streams;
         assert!(inputs.iter().all(Option::is_some), "all connected");
-        let into = Port { node: alarm_processor, role: Input, index: 1 };
+        let into = Port { node: alarm_processor, role: DataStreamIn, index: 1 };
         assert!(graph.edges().iter().any(|e| e.target() == into && e.from.node == lfp), "the LFP, filtered");
         assert!(graph.get(alarm_processor).unwrap().shown_in_basic(), "for its settings");
         let Nodes::AlarmProcessor(alarms) = &graph.get(named("Alarm Processor")).unwrap().node else { panic!() };
@@ -528,21 +534,21 @@ mod tests {
         let lfp_viewer = named("LFP Viewer");
         let controls = |port| {
             let from = ephys_rs::engine::PortRef { node: lfp_viewer, port };
-            let settings = graph.edges().iter().filter(|e| e.dimension == ephys_rs::engine::Dimension::Settings);
+            let settings = graph.edges().iter().filter(|e| e.dimension == ephys_rs::engine::Dimension::Values);
             settings.into_iter().find(|e| e.from == from).map(|e| e.to.node)
         };
         assert_eq!(controls(0), Some(named("Continuous Gain")));
         assert_eq!(controls(1), Some(selector));
         assert_eq!(controls(2), Some(named("Reference")));
-        let reference_shown = Port { node: lfp_viewer, role: Input, index: 2 };
+        let reference_shown = Port { node: lfp_viewer, role: DataStreamIn, index: 2 };
         assert_eq!(graph.edge_into(reference_shown).map(|e| (e.from.node, e.from.port)), Some((named("Reference"), 1)));
         let ltx = graph.iter().find(|(_, e)| e.node.info().name == "Write LTX").unwrap().0;
-        let into = |i| graph.edges().iter().any(|e| e.target() == Port { node: ltx, role: Input, index: i });
+        let into = |i| graph.edges().iter().any(|e| e.target() == Port { node: ltx, role: DataStreamIn, index: i });
         assert!((0..4).all(into), "Write LTX records spikes, EEG, positions and digital inputs");
         // With the EEG's selection and gains.
         let ltx_controls = |port| {
             let from = ephys_rs::engine::PortRef { node: ltx, port };
-            graph.edges().iter().find(|e| e.dimension == ephys_rs::engine::Dimension::Settings && e.from == from)
+            graph.edges().iter().find(|e| e.dimension == ephys_rs::engine::Dimension::Values && e.from == from)
         };
         assert_eq!(ltx_controls(2).map(|e| e.to.node), Some(selector));
         assert_eq!(ltx_controls(3).map(|e| e.to.node), Some(named("Continuous Gain")));
@@ -581,21 +587,21 @@ mod tests {
             (named(&vr, "Write LTX"), named(&vr, "Alarm Processor"), named(&vr, "VR Computer"));
         assert!(!vr.get(computer).unwrap().disabled && vr.get(computer).unwrap().shown_in_basic());
         for (node, input) in [(ltx, 2), (ltx, 4), (ltx, 5), (alarms, 2), (alarms, 3)] {
-            assert_eq!(feeding(&vr, node, Input, input).as_deref(), Some("VR Computer"), "input {input}");
+            assert_eq!(feeding(&vr, node, DataStreamIn, input).as_deref(), Some("VR Computer"), "input {input}");
         }
         let change = run("Use VR computer", &camera).unwrap();
         let log_viewer = named(&vr, "Log Viewer");
-        assert_eq!(feeding(&vr, log_viewer, Input, 0).as_deref(), Some("VR Computer"));
+        assert_eq!(feeding(&vr, log_viewer, DataStreamIn, 0).as_deref(), Some("VR Computer"));
         assert!(change.layout.open_windows().contains(&log_viewer), "its window's opened");
-        let settings = vr.edges_from(port((ltx, Control, 0))).next().unwrap();
+        let settings = vr.edges_from(port((ltx, ValInCmdOut, 0))).next().unwrap();
         assert_eq!(settings.to.node, computer, "the custom settings are recorded");
         let resolved = vr.resolve();
         let warned = |id| vr.get(id).unwrap().node.warnings(&resolved[&id].input_streams);
         assert!(warned(ltx).is_empty() && warned(alarms).is_empty(), "all connected");
         let tracker = named(&vr, "Tracker View");
         assert!(!vr.get(tracker).unwrap().disabled, "it shows positions without video");
-        assert_eq!(feeding(&vr, tracker, Input, 1).as_deref(), Some("VR Computer"));
-        assert_eq!(vr.edges_from(port((tracker, Control, 1))).next().unwrap().to.node, computer, "for the window");
+        assert_eq!(feeding(&vr, tracker, DataStreamIn, 1).as_deref(), Some("VR Computer"));
+        assert_eq!(vr.edges_from(port((tracker, ValInCmdOut, 1))).next().unwrap().to.node, computer, "for the window");
         assert!(resolved[&tracker].input_streams[0].is_none(), "no video");
         assert!(warned(tracker).is_empty());
 
@@ -607,15 +613,19 @@ mod tests {
         assert!(position_nodes(&back).iter().all(|id| !back.get(*id).unwrap().disabled));
         assert!(!back.get(arduino).unwrap().disabled, "and with it, the Arduino");
         for (node, input) in [(ltx, 2), (ltx, 4), (alarms, 2), (alarms, 3)] {
-            assert_eq!(feeding(&back, node, Input, input).as_deref(), Some("Position Detector"), "input {input}");
+            assert_eq!(
+                feeding(&back, node, DataStreamIn, input).as_deref(),
+                Some("Position Detector"),
+                "input {input}"
+            );
         }
-        assert_eq!(feeding(&back, ltx, Input, 5), None, "no log without the VR computer");
+        assert_eq!(feeding(&back, ltx, DataStreamIn, 5), None, "no log without the VR computer");
         assert!(back.get(log_viewer).unwrap().disabled, "kept, like the VR computer");
-        assert_eq!(feeding(&back, log_viewer, Input, 0), None);
-        assert_eq!(feeding(&back, tracker, Input, 1).as_deref(), Some("Position Detector"));
-        assert_eq!(feeding(&back, tracker, Input, 0).as_deref(), Some("Camera"), "and the video again");
+        assert_eq!(feeding(&back, log_viewer, DataStreamIn, 0), None);
+        assert_eq!(feeding(&back, tracker, DataStreamIn, 1).as_deref(), Some("Position Detector"));
+        assert_eq!(feeding(&back, tracker, DataStreamIn, 0).as_deref(), Some("Camera"), "and the video again");
         let detector = named(&back, "Position Detector");
-        assert_eq!(back.edges_from(port((ltx, Control, 0))).next().unwrap().to.node, detector);
+        assert_eq!(back.edges_from(port((ltx, ValInCmdOut, 0))).next().unwrap().to.node, detector);
         // The same again uses the one there is.
         let again = run("Use VR computer", &back).unwrap().graph;
         assert_eq!(again.iter().filter(|(_, e)| matches!(e.node, Nodes::VrComputer(_))).count(), 1);

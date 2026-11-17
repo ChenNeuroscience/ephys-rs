@@ -20,49 +20,52 @@ use crate::theme::Colours;
 #[serde(transparent)]
 pub struct NodeId(pub u64);
 
-/// A node has ports of four roles: data edges run from outputs to inputs, and settings edges from controls to
-/// settings.
+/// A node has ports of four roles, each named for what flows through it, which way. Data edges run from a
+/// `DataStreamOut` to a `DataStreamIn`, carrying a pass's data. Value edges run from a `ValInCmdOut` to a
+/// `ValOutCmdIn`: the node at the `ValOutCmdIn` end publishes a value, which the node at the other end reads, and which
+/// that node can send commands back to.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum PortRole {
-    Input,
-    Output,
-    /// Another node may edit a setting of this node, through its control.
-    Setting,
-    /// The node edits another node's setting through a control.
-    Control,
+    DataStreamIn,
+    DataStreamOut,
+    /// The node publishes a value here, and takes commands through the edges into it.
+    ValOutCmdIn,
+    /// The node reads another node's published value here, and sends it commands.
+    ValInCmdOut,
 }
 
 impl PortRole {
-    /// Inputs and outputs are data ports; settings and controls, settings ports.
+    /// `DataStreamIn` and `DataStreamOut` ports are data ports; the others, value ports.
     pub fn dimension(self) -> Dimension {
         match self {
-            PortRole::Input | PortRole::Output => Dimension::Data,
-            PortRole::Setting | PortRole::Control => Dimension::Settings,
+            PortRole::DataStreamIn | PortRole::DataStreamOut => Dimension::Data,
+            PortRole::ValOutCmdIn | PortRole::ValInCmdOut => Dimension::Values,
         }
     }
 
     /// An edge from a port of this role ends at a port of this one.
     pub fn partner(self) -> PortRole {
         match self {
-            PortRole::Input => PortRole::Output,
-            PortRole::Output => PortRole::Input,
-            PortRole::Setting => PortRole::Control,
-            PortRole::Control => PortRole::Setting,
+            PortRole::DataStreamIn => PortRole::DataStreamOut,
+            PortRole::DataStreamOut => PortRole::DataStreamIn,
+            PortRole::ValOutCmdIn => PortRole::ValInCmdOut,
+            PortRole::ValInCmdOut => PortRole::ValOutCmdIn,
         }
     }
 
-    /// Edges start at outputs and controls, and end at inputs and settings. This says whether they start here.
+    /// Edges start at a `DataStreamOut` or `ValInCmdOut`, and end at a `DataStreamIn` or `ValOutCmdIn`. This says
+    /// whether they start here.
     pub fn is_source(self) -> bool {
-        matches!(self, PortRole::Output | PortRole::Control)
+        matches!(self, PortRole::DataStreamOut | PortRole::ValInCmdOut)
     }
 
     /// The role's name, for people.
     pub fn name(self) -> &'static str {
         match self {
-            PortRole::Input => "input",
-            PortRole::Output => "output",
-            PortRole::Setting => "setting",
-            PortRole::Control => "control",
+            PortRole::DataStreamIn => "input",
+            PortRole::DataStreamOut => "output",
+            PortRole::ValOutCmdIn => "setting",
+            PortRole::ValInCmdOut => "control",
         }
     }
 }
@@ -95,13 +98,13 @@ pub struct Edge {
 impl Edge {
     /// The edge starts from an output or control: this one.
     pub fn source(&self) -> Port {
-        let role = if self.dimension == Dimension::Data { PortRole::Output } else { PortRole::Control };
+        let role = if self.dimension == Dimension::Data { PortRole::DataStreamOut } else { PortRole::ValInCmdOut };
         Port { node: self.from.node, role, index: self.from.port }
     }
 
     /// The edge goes into an input or setting: this one.
     pub fn target(&self) -> Port {
-        let role = if self.dimension == Dimension::Data { PortRole::Input } else { PortRole::Setting };
+        let role = if self.dimension == Dimension::Data { PortRole::DataStreamIn } else { PortRole::ValOutCmdIn };
         Port { node: self.to.node, role, index: self.to.port }
     }
 }
@@ -156,7 +159,7 @@ impl fmt::Display for ConnectError {
             ConnectError::KindMismatch { dimension: Dimension::Data, from, to } => {
                 write!(f, "a {from} output can't feed a {to} input")
             }
-            ConnectError::KindMismatch { dimension: Dimension::Settings, from, to } => {
+            ConnectError::KindMismatch { dimension: Dimension::Values, from, to } => {
                 write!(f, "a {from} control can't edit a {to} setting")
             }
             ConnectError::Cycle => write!(f, "that would make a loop"),
@@ -215,10 +218,10 @@ impl<E: Edges> NodeState<E> {
     /// right.
     pub fn on_right(&self, role: PortRole, index: usize) -> bool {
         match role {
-            PortRole::Output => true,
-            PortRole::Input => false,
-            PortRole::Setting => self.settings.get(index).is_some_and(|p| p.on_right),
-            PortRole::Control => self.controls.get(index).is_some_and(|p| p.on_right),
+            PortRole::DataStreamOut => true,
+            PortRole::DataStreamIn => false,
+            PortRole::ValOutCmdIn => self.settings.get(index).is_some_and(|p| p.on_right),
+            PortRole::ValInCmdOut => self.controls.get(index).is_some_and(|p| p.on_right),
         }
     }
 
@@ -229,30 +232,30 @@ impl<E: Edges> NodeState<E> {
 
     pub fn count(&self, role: PortRole) -> usize {
         match role {
-            PortRole::Input => self.inputs.len(),
-            PortRole::Output => self.outputs.len(),
-            PortRole::Setting => self.settings.len(),
-            PortRole::Control => self.controls.len(),
+            PortRole::DataStreamIn => self.inputs.len(),
+            PortRole::DataStreamOut => self.outputs.len(),
+            PortRole::ValOutCmdIn => self.settings.len(),
+            PortRole::ValInCmdOut => self.controls.len(),
         }
     }
 
     pub fn name(&self, role: PortRole, index: usize) -> Option<&'static str> {
         match role {
-            PortRole::Input => self.inputs.get(index).map(|p| p.name),
-            PortRole::Output => self.outputs.get(index).map(|p| p.name),
-            PortRole::Setting => self.settings.get(index).map(|p| p.name),
-            PortRole::Control => self.controls.get(index).map(|p| p.name),
+            PortRole::DataStreamIn => self.inputs.get(index).map(|p| p.name),
+            PortRole::DataStreamOut => self.outputs.get(index).map(|p| p.name),
+            PortRole::ValOutCmdIn => self.settings.get(index).map(|p| p.name),
+            PortRole::ValInCmdOut => self.controls.get(index).map(|p| p.name),
         }
     }
 
     pub fn kind(&self, role: PortRole, index: usize) -> Option<KindKey> {
         let stream = |kind| (Dimension::Data, E::DataStream::kind_index(kind));
-        let setting = |kind| (Dimension::Settings, E::Setting::kind_index(kind));
+        let setting = |kind| (Dimension::Values, E::PublishedValue::kind_index(kind));
         match role {
-            PortRole::Input => self.inputs.get(index).map(|p| stream(p.kind)),
-            PortRole::Output => self.outputs.get(index).map(|p| stream(p.kind)),
-            PortRole::Setting => self.settings.get(index).map(|p| setting(p.value.kind())),
-            PortRole::Control => self.controls.get(index).map(|p| setting(p.kind)),
+            PortRole::DataStreamIn => self.inputs.get(index).map(|p| stream(p.kind)),
+            PortRole::DataStreamOut => self.outputs.get(index).map(|p| stream(p.kind)),
+            PortRole::ValOutCmdIn => self.settings.get(index).map(|p| setting(p.value.kind())),
+            PortRole::ValInCmdOut => self.controls.get(index).map(|p| setting(p.kind)),
         }
     }
 
@@ -264,15 +267,15 @@ impl<E: Edges> NodeState<E> {
     /// setting.
     pub fn summary(&self, role: PortRole, index: usize) -> Option<String> {
         match role {
-            PortRole::Input => self.input_streams.get(index).copied().flatten().map(|s| s.summary()),
-            PortRole::Output => self.outputs.get(index)?.stream.map(|s| s.summary()),
-            PortRole::Setting => self.settings.get(index).map(|s| s.value.summary()),
-            PortRole::Control => None,
+            PortRole::DataStreamIn => self.input_streams.get(index).copied().flatten().map(|s| s.summary()),
+            PortRole::DataStreamOut => self.outputs.get(index)?.stream.map(|s| s.summary()),
+            PortRole::ValOutCmdIn => self.settings.get(index).map(|s| s.value.summary()),
+            PortRole::ValInCmdOut => None,
         }
     }
 
     pub fn ports(&self, node: NodeId) -> impl Iterator<Item = Port> + '_ {
-        [PortRole::Output, PortRole::Input, PortRole::Setting, PortRole::Control]
+        [PortRole::DataStreamOut, PortRole::DataStreamIn, PortRole::ValOutCmdIn, PortRole::ValInCmdOut]
             .into_iter()
             .flat_map(move |role| (0..self.count(role)).map(move |index| Port { node, role, index }))
     }
@@ -289,8 +292,8 @@ impl<E: Edges> NodeState<E> {
             return true;
         }
         let (control, setting) = match role {
-            PortRole::Control => ((self, index), (other, to.1)),
-            PortRole::Setting => ((other, to.1), (self, index)),
+            PortRole::ValInCmdOut => ((self, index), (other, to.1)),
+            PortRole::ValOutCmdIn => ((other, to.1), (self, index)),
             _ => return false,
         };
         let sends = control.0.sends.get(control.1).copied().unwrap_or_default();
@@ -309,7 +312,7 @@ impl<E: Edges> NodeState<E> {
 pub fn edge_info<E: Edges>((dimension, index): KindKey) -> &'static EdgeInfo {
     match dimension {
         Dimension::Data => &E::DataStream::KINDS[index],
-        Dimension::Settings => &E::Setting::KINDS[index],
+        Dimension::Values => &E::PublishedValue::KINDS[index],
     }
 }
 
@@ -336,7 +339,7 @@ impl<N> Default for Graph<N> {
     }
 }
 
-type Setting<N> = <<N as NodesEnum>::Edges as Edges>::Setting;
+type PublishedValue<N> = <<N as NodesEnum>::Edges as Edges>::PublishedValue;
 type DataStream<N> = <<N as NodesEnum>::Edges as Edges>::DataStream;
 
 impl<N: NodesEnum> Graph<N> {
@@ -441,7 +444,7 @@ impl<N: NodesEnum> Graph<N> {
     fn controlled_by(&self, id: NodeId) -> Vec<Vec<String>> {
         let count = self.nodes.get(&id).map_or(0, |entry| entry.node.settings().len());
         let labels = |index| {
-            let port = Port { node: id, role: PortRole::Setting, index };
+            let port = Port { node: id, role: PortRole::ValOutCmdIn, index };
             let edges = self.edges.iter().filter(|e| e.target() == port && self.is_live(e));
             edges.filter_map(|e| Some(self.nodes.get(&e.from.node)?.label.clone())).collect()
         };
@@ -489,7 +492,7 @@ impl<N: NodesEnum> Graph<N> {
         let edge = self.check(a, b)?;
         self.edges.retain(|e| match edge.dimension {
             Dimension::Data => e.target() != edge.target(),
-            Dimension::Settings => e.source() != edge.source(),
+            Dimension::Values => e.source() != edge.source(),
         });
         let edges = &self.edges;
         self.disabled_edges.retain(|e| edges.contains(e));
@@ -583,7 +586,7 @@ impl<N: NodesEnum> Graph<N> {
             let inputs = node.inputs();
             let input_streams: Vec<Option<DataStream<N>>> = (0..inputs.len())
                 .map(|index| {
-                    let edge = self.live_edge_into(Port { node: id, role: PortRole::Input, index })?;
+                    let edge = self.live_edge_into(Port { node: id, role: PortRole::DataStreamIn, index })?;
                     let stream = resolved.get(&edge.from.node)?.outputs.get(edge.from.port)?.stream?;
                     (stream.kind() == inputs[index].kind).then_some(stream)
                 })
@@ -610,7 +613,7 @@ impl<N: NodesEnum> Graph<N> {
     /// sets off can, in the end, set it off again. The canvas warns of the nodes in such a loop, which this finds.
     pub fn trigger_loops(&self) -> std::collections::HashSet<NodeId> {
         let mut next: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
-        for edge in self.edges.iter().filter(|e| e.dimension == Dimension::Settings && self.is_live(e)) {
+        for edge in self.edges.iter().filter(|e| e.dimension == Dimension::Values && self.is_live(e)) {
             let takes = self.nodes.get(&edge.to.node).is_some_and(|n| !n.node.triggers(edge.to.port).is_empty());
             if takes {
                 next.entry(edge.from.node).or_default().push(edge.to.node);
@@ -635,11 +638,11 @@ impl<N: NodesEnum> Graph<N> {
 
     /// A node's controls see the settings they're connected to. This gives, for each of node `id`'s controls, the
     /// current value of that setting, if there is one.
-    pub fn control_values(&self, id: NodeId) -> Vec<Option<Setting<N>>> {
+    pub fn control_values(&self, id: NodeId) -> Vec<Option<PublishedValue<N>>> {
         let Some(entry) = self.nodes.get(&id) else { return Vec::new() };
         (0..entry.node.controls().len())
             .map(|index| {
-                let edge = self.live_edges_from(Port { node: id, role: PortRole::Control, index }).next()?;
+                let edge = self.live_edges_from(Port { node: id, role: PortRole::ValInCmdOut, index }).next()?;
                 self.nodes.get(&edge.to.node)?.node.settings().into_iter().nth(edge.to.port).map(|s| s.value)
             })
             .collect()
@@ -654,7 +657,7 @@ impl<N: NodesEnum> Graph<N> {
     ) -> crate::triggers::ControlTriggers<<N::Edges as super::Edges>::Trigger> {
         let count = self.get(id).map_or(0, |entry| entry.node.controls().len());
         let control = |index| {
-            let edges = self.live_edges_from(Port { node: id, role: PortRole::Control, index });
+            let edges = self.live_edges_from(Port { node: id, role: PortRole::ValInCmdOut, index });
             edges.filter_map(|e| Some((e.to.node, self.get(e.to.node)?.node.triggers(e.to.port)))).collect()
         };
         crate::triggers::ControlTriggers::new(triggers.clone(), (0..count).map(control).collect())
@@ -715,7 +718,7 @@ impl<N: NodesEnum> Graph<N> {
             }
             let Some(new) = new.filter(|new| Some(new) != old.as_ref()) else { continue };
             let targets: Vec<PortRef> =
-                self.live_edges_from(Port { node: id, role: PortRole::Control, index }).map(|e| e.to).collect();
+                self.live_edges_from(Port { node: id, role: PortRole::ValInCmdOut, index }).map(|e| e.to).collect();
             for target in targets {
                 let Some(entry) = self.nodes.get_mut(&target.node) else { continue };
                 if entry.node.settings().get(target.port).is_some_and(|s| s.value.kind() == new.kind()) {
@@ -728,7 +731,7 @@ impl<N: NodesEnum> Graph<N> {
 }
 
 /// A snapshot keeps, for each node with controls, the value of the setting each is connected to, if it is.
-pub type ControlValues<N> = HashMap<NodeId, Vec<Option<Setting<N>>>>;
+pub type ControlValues<N> = HashMap<NodeId, Vec<Option<PublishedValue<N>>>>;
 
 /// When Record's pressed (or a node asks), the app makes a recording: its base directory (see
 /// `crate::base_directory`), when it was asked for, and once it has, when it took effect. Its nodes prepare for it as
@@ -867,7 +870,7 @@ mod tests {
     use crate::Nodes;
     use crate::engine::NodeTypeEnum;
     use crate::standard::{ephys, spikes};
-    use crate::{DataStream, Setting};
+    use crate::{DataStream, PublishedValue};
 
     fn create(name: &str) -> Nodes {
         Nodes::create(NodeType::named(name).unwrap())
@@ -883,15 +886,15 @@ mod tests {
         let board = graph.add(create("Acquisition Board"), [0.0, 0.0]);
         let filter = graph.add(create("Band-pass Filter"), [0.0, 0.0]);
         let detector = graph.add(create("Spike Detector"), [0.0, 0.0]);
-        graph.connect(port(board, PortRole::Output, 0), port(filter, PortRole::Input, 0)).unwrap();
-        graph.connect(port(detector, PortRole::Input, 0), port(filter, PortRole::Output, 0)).unwrap();
+        graph.connect(port(board, PortRole::DataStreamOut, 0), port(filter, PortRole::DataStreamIn, 0)).unwrap();
+        graph.connect(port(detector, PortRole::DataStreamIn, 0), port(filter, PortRole::DataStreamOut, 0)).unwrap();
 
         let resolved = graph.resolve();
         let continuous = ephys::Continuous { channels: 64, sample_rate: 30000.0 };
         assert_eq!(resolved[&filter].outputs[0].stream, Some(DataStream::Continuous(continuous)));
         assert!(matches!(resolved[&detector].outputs[0].stream, Some(DataStream::Spikes(s)) if s.channels == 64));
 
-        graph.disconnect(graph.edge_into(port(filter, PortRole::Input, 0)).unwrap());
+        graph.disconnect(graph.edge_into(port(filter, PortRole::DataStreamIn, 0)).unwrap());
         let resolved = graph.resolve();
         assert_eq!(resolved[&detector].outputs[0].stream, None);
         assert!(!resolved[&detector].warnings.is_empty(), "unconnected input should warn");
@@ -908,29 +911,29 @@ mod tests {
 
         let check = |a, b| graph.check(a, b).err();
         assert_eq!(
-            check(port(gain, PortRole::Output, 0), port(gain, PortRole::Input, 0)),
+            check(port(gain, PortRole::DataStreamOut, 0), port(gain, PortRole::DataStreamIn, 0)),
             Some(ConnectError::SameNode)
         );
         assert!(matches!(
-            check(port(board, PortRole::Output, 0), port(video, PortRole::Input, 0)),
+            check(port(board, PortRole::DataStreamOut, 0), port(video, PortRole::DataStreamIn, 0)),
             Some(ConnectError::KindMismatch { dimension: Dimension::Data, .. })
         ));
         assert_eq!(
-            check(port(board, PortRole::Output, 5), port(gain, PortRole::Input, 0)),
+            check(port(board, PortRole::DataStreamOut, 5), port(gain, PortRole::DataStreamIn, 0)),
             Some(ConnectError::NoSuchPort)
         );
         assert_eq!(
-            check(port(board, PortRole::Output, 0), port(gain, PortRole::Output, 0)),
+            check(port(board, PortRole::DataStreamOut, 0), port(gain, PortRole::DataStreamOut, 0)),
             Some(ConnectError::RoleMismatch)
         );
         assert!(matches!(
-            check(port(spikes, PortRole::Control, 0), port(gain, PortRole::Setting, 0)),
-            Some(ConnectError::KindMismatch { dimension: Dimension::Settings, .. })
+            check(port(spikes, PortRole::ValInCmdOut, 0), port(gain, PortRole::ValOutCmdIn, 0)),
+            Some(ConnectError::KindMismatch { dimension: Dimension::Values, .. })
         ));
 
-        graph.connect(port(gain, PortRole::Output, 0), port(gain2, PortRole::Input, 0)).unwrap();
+        graph.connect(port(gain, PortRole::DataStreamOut, 0), port(gain2, PortRole::DataStreamIn, 0)).unwrap();
         assert_eq!(
-            graph.check(port(gain2, PortRole::Output, 0), port(gain, PortRole::Input, 0)).err(),
+            graph.check(port(gain2, PortRole::DataStreamOut, 0), port(gain, PortRole::DataStreamIn, 0)).err(),
             Some(ConnectError::Cycle)
         );
     }
@@ -941,8 +944,8 @@ mod tests {
         let a = graph.add(create("Acquisition Board"), [0.0, 0.0]);
         let b = graph.add(create("Acquisition Board"), [0.0, 0.0]);
         let gain = graph.add(create("Continuous Gain"), [0.0, 0.0]);
-        graph.connect(port(a, PortRole::Output, 0), port(gain, PortRole::Input, 0)).unwrap();
-        let edge = graph.connect(port(b, PortRole::Output, 0), port(gain, PortRole::Input, 0)).unwrap();
+        graph.connect(port(a, PortRole::DataStreamOut, 0), port(gain, PortRole::DataStreamIn, 0)).unwrap();
+        let edge = graph.connect(port(b, PortRole::DataStreamOut, 0), port(gain, PortRole::DataStreamIn, 0)).unwrap();
         assert_eq!(graph.edges(), &[edge]);
     }
 
@@ -953,8 +956,8 @@ mod tests {
         let (viewer, writer) =
             (graph.add(create("Spike Viewer"), [0.0, 0.0]), graph.add(create("Write LTX"), [0.0, 0.0]));
         assert_eq!(graph.controlled_by(gain), [Vec::<String>::new()]);
-        let edge = graph.connect(port(viewer, PortRole::Control, 1), port(gain, PortRole::Setting, 0)).unwrap();
-        graph.connect(port(writer, PortRole::Control, 1), port(gain, PortRole::Setting, 0)).unwrap();
+        let edge = graph.connect(port(viewer, PortRole::ValInCmdOut, 1), port(gain, PortRole::ValOutCmdIn, 0)).unwrap();
+        graph.connect(port(writer, PortRole::ValInCmdOut, 1), port(gain, PortRole::ValOutCmdIn, 0)).unwrap();
         assert_eq!(graph.controlled_by(gain), [["Spike Viewer", "Write LTX"]]);
         graph.set_edge_disabled(edge, true);
         assert_eq!(graph.controlled_by(gain), [["Write LTX"]]);
@@ -968,13 +971,14 @@ mod tests {
         let board = graph.add(create("Acquisition Board"), [0.0, 0.0]);
         let detector = graph.add(create("Spike Detector"), [0.0, 0.0]);
         let viewer = graph.add(create("Spike Viewer"), [0.0, 0.0]);
-        graph.connect(port(board, PortRole::Output, 0), port(detector, PortRole::Input, 0)).unwrap();
-        graph.connect(port(detector, PortRole::Output, 0), port(viewer, PortRole::Input, 0)).unwrap();
+        graph.connect(port(board, PortRole::DataStreamOut, 0), port(detector, PortRole::DataStreamIn, 0)).unwrap();
+        graph.connect(port(detector, PortRole::DataStreamOut, 0), port(viewer, PortRole::DataStreamIn, 0)).unwrap();
         // The viewer is downstream of the detector, but can still edit its thresholds.
-        graph.connect(port(viewer, PortRole::Control, 0), port(detector, PortRole::Setting, 0)).unwrap();
+        graph.connect(port(viewer, PortRole::ValInCmdOut, 0), port(detector, PortRole::ValOutCmdIn, 0)).unwrap();
         assert_eq!(graph.topological_order(), vec![board, detector, viewer]);
 
-        let thresholds = |uv: Vec<f32>| Setting::Thresholds(spikes::Thresholds { values: uv, ..Default::default() });
+        let thresholds =
+            |uv: Vec<f32>| PublishedValue::Thresholds(spikes::Thresholds { values: uv, ..Default::default() });
         assert_eq!(graph.control_values(viewer), vec![Some(thresholds(vec![])), None]);
         let theme = &crate::standard::themes::THEMES[0].colours;
         graph.edit(viewer, &[], theme, None, None, None, false, false, None, |_, context| {
@@ -986,10 +990,10 @@ mod tests {
         // setting.
         let writer = graph.add(create("Write LTX"), [0.0, 0.0]);
         let gain = graph.add(create("Spike Gain"), [0.0, 0.0]);
-        graph.connect(port(viewer, PortRole::Control, 1), port(gain, PortRole::Setting, 0)).unwrap();
-        graph.connect(port(writer, PortRole::Control, 1), port(gain, PortRole::Setting, 0)).unwrap();
+        graph.connect(port(viewer, PortRole::ValInCmdOut, 1), port(gain, PortRole::ValOutCmdIn, 0)).unwrap();
+        graph.connect(port(writer, PortRole::ValInCmdOut, 1), port(gain, PortRole::ValOutCmdIn, 0)).unwrap();
         let into_gains = |graph: &Graph<Nodes>| {
-            graph.edges().iter().filter(|e| e.target() == port(gain, PortRole::Setting, 0)).count()
+            graph.edges().iter().filter(|e| e.target() == port(gain, PortRole::ValOutCmdIn, 0)).count()
         };
         assert_eq!(into_gains(&graph), 2);
     }
@@ -1000,9 +1004,11 @@ mod tests {
         let board = graph.add(create("Acquisition Board"), [0.0, 0.0]);
         let detector = graph.add(create("Spike Detector"), [0.0, 0.0]);
         let viewer = graph.add(create("Spike Viewer"), [0.0, 0.0]);
-        let feed = graph.connect(port(board, PortRole::Output, 0), port(detector, PortRole::Input, 0)).unwrap();
-        graph.connect(port(detector, PortRole::Output, 0), port(viewer, PortRole::Input, 0)).unwrap();
-        let control = graph.connect(port(viewer, PortRole::Control, 0), port(detector, PortRole::Setting, 0)).unwrap();
+        let feed =
+            graph.connect(port(board, PortRole::DataStreamOut, 0), port(detector, PortRole::DataStreamIn, 0)).unwrap();
+        graph.connect(port(detector, PortRole::DataStreamOut, 0), port(viewer, PortRole::DataStreamIn, 0)).unwrap();
+        let control =
+            graph.connect(port(viewer, PortRole::ValInCmdOut, 0), port(detector, PortRole::ValOutCmdIn, 0)).unwrap();
         let streams = |graph: &Graph<Nodes>, id| graph.resolve()[&id].input_streams[0].is_some();
         let planned =
             |graph: &Graph<Nodes>, id| super::super::Plan::new(graph, false).steps().iter().any(|s| s.id == id);

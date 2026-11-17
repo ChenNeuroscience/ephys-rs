@@ -120,19 +120,21 @@ pub fn node_size<E: Edges>(state: &NodeState<E>) -> egui::Vec2 {
 
 /// A node has a row for each setting and control, if `settings` are showing. This counts them.
 fn settings_rows<E: Edges>(state: &NodeState<E>, settings: bool) -> usize {
-    if settings { state.count(PortRole::Setting) + state.count(PortRole::Control) } else { 0 }
+    if settings { state.count(PortRole::ValOutCmdIn) + state.count(PortRole::ValInCmdOut) } else { 0 }
 }
 
 /// A node with no ports at all (an Arduino's, say) has a row saying so, rather than none. This says whether it has
 /// none.
 fn has_no_ports<E: Edges>(state: &NodeState<E>) -> bool {
-    [PortRole::Output, PortRole::Input, PortRole::Setting, PortRole::Control].into_iter().all(|r| state.count(r) == 0)
+    [PortRole::DataStreamOut, PortRole::DataStreamIn, PortRole::ValOutCmdIn, PortRole::ValInCmdOut]
+        .into_iter()
+        .all(|r| state.count(r) == 0)
 }
 
 /// A node takes this much room on the graph (unzoomed): its header and a row per port (or one saying it has none),
 /// with a divider between the data and settings ports, if it has both.
 fn size_with<E: Edges>(state: &NodeState<E>, settings: bool) -> egui::Vec2 {
-    let data_rows = state.count(PortRole::Output) + state.count(PortRole::Input);
+    let data_rows = state.count(PortRole::DataStreamOut) + state.count(PortRole::DataStreamIn);
     let settings_rows = settings_rows(state, settings);
     let divider = if settings_rows > 0 && data_rows > 0 { DIVIDER } else { 0.0 };
     let rows = (data_rows + settings_rows).max(usize::from(has_no_ports(state)));
@@ -145,7 +147,7 @@ impl Layout {
     fn new<E: Edges>(pos: [f32; 2], state: &NodeState<E>, to_screen: &TSTransform, settings: bool) -> Self {
         let zoom = to_screen.scaling;
         let count = |role| state.count(role);
-        let data_rows = count(PortRole::Output) + count(PortRole::Input);
+        let data_rows = count(PortRole::DataStreamOut) + count(PortRole::DataStreamIn);
         let settings_rows = settings_rows(state, settings);
         let divider = if settings_rows > 0 && data_rows > 0 { DIVIDER } else { 0.0 };
         let height = size_with(state, settings).y;
@@ -156,11 +158,11 @@ impl Layout {
 
         let mut ports = HashMap::new();
         let mut row = 0;
-        for role in [PortRole::Output, PortRole::Input, PortRole::Setting, PortRole::Control] {
-            if role.dimension() == Dimension::Settings && !settings {
+        for role in [PortRole::DataStreamOut, PortRole::DataStreamIn, PortRole::ValOutCmdIn, PortRole::ValInCmdOut] {
+            if role.dimension() == Dimension::Values && !settings {
                 continue;
             }
-            let extra = if role.dimension() == Dimension::Settings { divider } else { 0.0 };
+            let extra = if role.dimension() == Dimension::Values { divider } else { 0.0 };
             for index in 0..count(role) {
                 let on_right = state.on_right(role, index);
                 let x = if on_right { rect.right() } else { rect.left() };
@@ -244,14 +246,14 @@ fn paint_wire(
                 arrowhead(painter, at, direction, size, stroke.color);
             }
         }
-        Dimension::Settings if read_only => {
+        Dimension::Values if read_only => {
             painter.extend(Shape::dotted_line(&path, stroke.color, 5.0 * zoom, stroke.width * 0.6));
             // From the setting (where the wire ends) back to the control reading it.
             for (at, direction) in places {
                 arrowhead(painter, at, -direction, size, stroke.color);
             }
         }
-        Dimension::Settings => {
+        Dimension::Values => {
             painter.extend(Shape::dashed_line(&path, stroke, 7.0 * zoom, 4.0 * zoom));
             for (at, direction) in places {
                 both_ways(painter, at, direction, size, stroke.color);
@@ -316,7 +318,7 @@ fn both_ways(painter: &Painter, at: Pos2, direction: Vec2, size: f32, colour: Co
 
 /// Some controls only read the setting they're linked to. This says whether a control does.
 fn read_only<E: Edges>(resolved: &Resolved<E>, port: Port) -> bool {
-    port.role == PortRole::Control
+    port.role == PortRole::ValInCmdOut
         && resolved.get(&port.node).and_then(|s| s.controls.get(port.index)).is_some_and(|c| c.read_only)
 }
 
@@ -325,7 +327,7 @@ fn read_only<E: Edges>(resolved: &Resolved<E>, port: Port) -> bool {
 fn wire_colour(dimension: Dimension, colour: Color32, colours: &Colours) -> Color32 {
     match dimension {
         Dimension::Data => colour,
-        Dimension::Settings => colours.text_secondary,
+        Dimension::Values => colours.text_secondary,
     }
 }
 
@@ -760,7 +762,7 @@ impl Canvas {
         for (heading, dimension, kinds) in sections {
             // Each section's title in the middle of a divider: the settings', with a small gear, greyer from their
             // divider down, as nodes have them.
-            let settings = dimension == Dimension::Settings;
+            let settings = dimension == Dimension::Values;
             let fill = colours.surface.lerp_to_gamma(colours.divider, 0.5);
             let mid = y + ROW / 2.0;
             // While the settings are hidden, just their title, with no area or divider.
@@ -803,9 +805,9 @@ impl Canvas {
                         y += ROW;
                     }
                 }
-                Dimension::Settings if !shown => {}
+                Dimension::Values if !shown => {}
                 // A dashed edge both ways into a port, as on the graph, where the port has its setting's colour.
-                Dimension::Settings => {
+                Dimension::Values => {
                     let mid = y + ROW / 2.0;
                     let (start, end) = ends(mid);
                     let stroke = Stroke::new(2.0, colours.text_secondary);
@@ -840,8 +842,8 @@ impl Canvas {
         if eye_button.on_hover_text(tip).clicked() {
             self.settings_shown = !self.settings_shown;
             if !self.settings_shown {
-                selection.edge = selection.edge.filter(|e| e.dimension != Dimension::Settings);
-                self.menu_edge = self.menu_edge.filter(|e| e.dimension != Dimension::Settings);
+                selection.edge = selection.edge.filter(|e| e.dimension != Dimension::Values);
+                self.menu_edge = self.menu_edge.filter(|e| e.dimension != Dimension::Values);
             }
             ui.ctx().request_repaint();
         }
@@ -852,7 +854,7 @@ impl Canvas {
 
     /// Settings edges can be hidden. This says whether `edge` is on show.
     fn shows(&self, edge: &Edge) -> bool {
-        edge.dimension != Dimension::Settings || self.settings_shown
+        edge.dimension != Dimension::Values || self.settings_shown
     }
 
     /// The canvas handles clicks and drags on empty canvas with this (middle and right drags pan, in `pan_and_zoom`).
@@ -1132,12 +1134,14 @@ impl Canvas {
             let (kind, description) = state.info(port.role, port.index).map_or(("?", ""), |i| (i.name, i.description));
             let summary = state.summary(port.role, port.index).unwrap_or_else(|| "not connected".into());
             let help = match port.role {
-                PortRole::Input | PortRole::Output => "Drag to connect; click to add or pick a node to connect",
-                PortRole::Setting => "Other nodes can edit this. Drag to a control to link them",
-                PortRole::Control if state.controls.get(port.index).is_some_and(|c| c.read_only) => {
+                PortRole::DataStreamIn | PortRole::DataStreamOut => {
+                    "Drag to connect; click to add or pick a node to connect"
+                }
+                PortRole::ValOutCmdIn => "Other nodes can edit this. Drag to a control to link them",
+                PortRole::ValInCmdOut if state.controls.get(port.index).is_some_and(|c| c.read_only) => {
                     "Reads a setting of another node, without changing it. Drag to a setting to link them"
                 }
-                PortRole::Control => "Edits a setting of another node. Drag to a setting to link them",
+                PortRole::ValInCmdOut => "Edits a setting of another node. Drag to a setting to link them",
             };
             response.on_hover_text(format!("{name} ({kind} {}): {summary}\n{description}\n\n{help}", port.role.name()));
         }
@@ -1279,8 +1283,8 @@ pub fn legend_entries<N: NodesEnum>(
         ("Data", Dimension::Data, shown(Dimension::Data, <<N::Edges as Edges>::DataStream as EdgeTypesEnum>::KINDS)),
         (
             "Settings",
-            Dimension::Settings,
-            shown(Dimension::Settings, <<N::Edges as Edges>::Setting as EdgeTypesEnum>::KINDS),
+            Dimension::Values,
+            shown(Dimension::Values, <<N::Edges as Edges>::PublishedValue as EdgeTypesEnum>::KINDS),
         ),
     ]
     .into_iter()
@@ -1454,7 +1458,7 @@ fn paint_node<N: NodesEnum>(
             if connected || port.role.is_source() { colours.text_primary } else { colours.text_secondary };
         painter.text(name_pos, align, name, font(12.5), fade(name_colour));
         // Outputs and settings also show what they carry, on the far side.
-        if matches!(port.role, PortRole::Output | PortRole::Setting) {
+        if matches!(port.role, PortRole::DataStreamOut | PortRole::ValOutCmdIn) {
             let (summary, colour) = match state.summary(port.role, port.index) {
                 Some(summary) => (summary, colours.text_secondary),
                 None => ("—".into(), colours.text_disabled),
@@ -1466,7 +1470,8 @@ fn paint_node<N: NodesEnum>(
             };
             painter.text(at, align, summary, font(11.0), fade(colour));
         }
-        let read_only = port.role == PortRole::Control && state.controls.get(port.index).is_some_and(|c| c.read_only);
+        let read_only =
+            port.role == PortRole::ValInCmdOut && state.controls.get(port.index).is_some_and(|c| c.read_only);
         paint_port(painter, port, pos, colour, connected, read_only, ports, z, fade);
     }
 }
@@ -1504,12 +1509,12 @@ fn paint_port(
         }
         // Settings ports are diamonds, of the type's colour. A connected one has a grey centre, the colour of
         // its edge, to tie the two together. A read-only control is only an outline: it can't fill in the setting.
-        Dimension::Settings => {
+        Dimension::Values => {
             let d = r * 1.25;
             let fill = if read_only { fade(ports.colours.surface_raised) } else { fill };
             painter.add(Shape::convex_polygon(diamond(pos, d), fill, Stroke::new(1.5 * z, colour)));
             if connected {
-                let centre = fade(wire_colour(Dimension::Settings, colour, ports.colours));
+                let centre = fade(wire_colour(Dimension::Values, colour, ports.colours));
                 painter.add(Shape::convex_polygon(diamond(pos, d * 0.45), centre, Stroke::NONE));
             }
         }
@@ -1542,10 +1547,10 @@ mod tests {
 
     #[test]
     fn a_port_can_be_on_the_other_side_from_others_like_it() {
-        assert!(drawn_on_right("Spike Gain", PortRole::Setting, 0), "settings are on the right");
-        assert!(!drawn_on_right("Write LTX", PortRole::Control, 0), "controls on the left");
-        assert!(drawn_on_right("Write LTX", PortRole::Control, 4), "but what comes after recording flows onward");
-        assert!(!drawn_on_right("Run Command", PortRole::Setting, 0), "into what it connects to");
+        assert!(drawn_on_right("Spike Gain", PortRole::ValOutCmdIn, 0), "settings are on the right");
+        assert!(!drawn_on_right("Write LTX", PortRole::ValInCmdOut, 0), "controls on the left");
+        assert!(drawn_on_right("Write LTX", PortRole::ValInCmdOut, 4), "but what comes after recording flows onward");
+        assert!(!drawn_on_right("Run Command", PortRole::ValOutCmdIn, 0), "into what it connects to");
     }
 
     #[test]

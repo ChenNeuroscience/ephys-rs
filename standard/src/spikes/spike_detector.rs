@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::standard::auto_detect::{Distribution, PercentMultiple, SAMPLING, auto_detect_ui, detect_changed};
 use crate::standard::spikes::{Spike, Spikes, Thresholds};
 use crate::standard::widgets::{combo, input_summary, named_settings_grid, require_input, setting, settings_grid};
-use crate::{Buffer, DataStream, Edges, Kind, Setting};
+use crate::{Buffer, DataStream, Edges, Kind, PublishedValue};
 use ephys_rs::engine::EdgeType;
 use ephys_rs::engine::{
     Category, Input, Node, NodeInfo, Output, PASS_DURATION, PassContext, Prepare, PrepareContext, Prepared,
@@ -309,8 +309,8 @@ impl Node<Edges> for SpikeDetector {
         vec![SettingPort { name: "thresholds", value: self.thresholds.clone().into(), on_right: true }]
     }
 
-    fn set_setting(&mut self, _index: usize, value: Setting) {
-        if let Setting::Thresholds(t) = value {
+    fn set_setting(&mut self, _index: usize, value: PublishedValue) {
+        if let PublishedValue::Thresholds(t) = value {
             self.thresholds = t;
         }
     }
@@ -403,7 +403,7 @@ impl SpikeDetector {
                         thresholds.set(channel, level.max(0.5));
                     }
                 }
-                pass.trigger_settings_update(0, Setting::Thresholds(thresholds));
+                pass.trigger_settings_update(0, PublishedValue::Thresholds(thresholds));
                 *sampling = Sampling { done: true, ..Sampling::new(sampling.seconds, 0) };
             }
         }
@@ -572,7 +572,9 @@ mod tests {
             detector.process(&mut pass, &mut state, &mut ());
         }
         let updates = triggers.take_settings_updates();
-        let Some(Setting::Thresholds(thresholds)) = updates[0].2.downcast_ref::<Setting>() else { panic!() };
+        let Some(PublishedValue::Thresholds(thresholds)) = updates[0].2.downcast_ref::<PublishedValue>() else {
+            panic!()
+        };
         for channel in 0..4 {
             let threshold = thresholds.get(channel);
             assert!((threshold - 60.0).abs() < 1.0, "the 98th percentile, 30, doubled, from zero: {threshold}");

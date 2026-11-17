@@ -101,7 +101,7 @@ pub trait Edges: 'static {
     /// Data streams flow from outputs to inputs, a pass at a time.
     type DataStream: DataStreamsEnum;
     /// Settings are values nodes share, through settings edges from a control to a setting.
-    type Setting: EdgeTypesEnum;
+    type PublishedValue: EdgeTypesEnum;
     /// Triggers can be sent to a node, through a settings edge or by the node itself (see `crate::triggers`).
     type Trigger: crate::triggers::TriggersEnum;
 }
@@ -118,7 +118,9 @@ pub type Buffer<E> = <<E as Edges>::DataStream as DataStreamsEnum>::Buffer;
 pub enum Dimension {
     #[default]
     Data,
-    Settings,
+    /// Saved graphs from before it was renamed call it `Settings`.
+    #[serde(alias = "Settings")]
+    Values,
 }
 
 /// A program declares the edge types it's built with like this:
@@ -129,7 +131,7 @@ pub enum Dimension {
 ///     data_streams: pub enum DataStream, Kind, Buffer {
 ///         Continuous(ephys::Continuous),
 ///     }
-///     settings: pub enum Setting, SettingKind {
+///     values: pub enum PublishedValue, ValueKind {
 ///         Thresholds(spikes::Thresholds),
 ///     }
 ///     triggers: pub enum Trigger, TriggerKind {
@@ -138,22 +140,22 @@ pub enum Dimension {
 /// }
 /// ```
 ///
-/// This makes `Edges` (implementing `engine::Edges`), the `DataStream`, `Setting` and `Trigger` enums of values, the
-/// `Kind`, `SettingKind` and `TriggerKind` enums naming their variants, and the `Buffer` enum of the data streams'
+/// This makes `Edges` (implementing `engine::Edges`), the `DataStream`, `PublishedValue` and `Trigger` enums of values, the
+/// `Kind`, `ValueKind` and `TriggerKind` enums naming their variants, and the `Buffer` enum of the data streams'
 /// buffers.
 #[macro_export]
 macro_rules! edge_types {
     (
         $vis:vis struct $edges:ident;
         data_streams: $svis:vis enum $data_stream:ident, $kind:ident, $buffer:ident { $($sv:ident($st:ty)),+ $(,)? }
-        settings: $cvis:vis enum $setting:ident, $ckind:ident { $($cv:ident($ct:ty)),+ $(,)? }
+        values: $cvis:vis enum $setting:ident, $ckind:ident { $($cv:ident($ct:ty)),+ $(,)? }
         triggers: $tvis:vis enum $trigger:ident, $tkind:ident { $($tv:ident($tt:ty)),+ $(,)? }
     ) => {
         $vis struct $edges;
 
         impl $crate::engine::Edges for $edges {
             type DataStream = $data_stream;
-            type Setting = $setting;
+            type PublishedValue = $setting;
             type Trigger = $trigger;
         }
 

@@ -132,10 +132,10 @@ mod tests {
         let detector = add(&mut graph, "Spike Detector", [20.0, 0.0]);
         let lfp = add(&mut graph, "LFP Viewer", [30.0, 0.0]);
         let port = |node, role, index| Port { node, role, index };
-        graph.connect(port(board, PortRole::Output, 0), port(detector, PortRole::Input, 0)).unwrap();
-        graph.connect(port(detector, PortRole::Output, 0), port(viewer, PortRole::Input, 0)).unwrap();
-        graph.connect(port(board, PortRole::Output, 0), port(lfp, PortRole::Input, 0)).unwrap();
-        graph.connect(port(viewer, PortRole::Control, 0), port(detector, PortRole::Setting, 0)).unwrap();
+        graph.connect(port(board, PortRole::DataStreamOut, 0), port(detector, PortRole::DataStreamIn, 0)).unwrap();
+        graph.connect(port(detector, PortRole::DataStreamOut, 0), port(viewer, PortRole::DataStreamIn, 0)).unwrap();
+        graph.connect(port(board, PortRole::DataStreamOut, 0), port(lfp, PortRole::DataStreamIn, 0)).unwrap();
+        graph.connect(port(viewer, PortRole::ValInCmdOut, 0), port(detector, PortRole::ValOutCmdIn, 0)).unwrap();
         let placed = arrange(&graph);
         let x = |id| placed[&id][0];
         assert!(x(board) < x(detector) && x(detector) < x(viewer), "{placed:?}");
@@ -162,13 +162,13 @@ mod tests {
         let detector = add(&mut graph, "Spike Detector");
         let writer = add(&mut graph, "Write LTX");
         let port = |node, role, index| Port { node, role, index };
-        graph.connect(port(board, PortRole::Output, 0), port(detector, PortRole::Input, 0)).unwrap();
-        graph.connect(port(detector, PortRole::Output, 0), port(writer, PortRole::Input, 0)).unwrap();
-        graph.connect(port(writer, PortRole::Control, 4), port(command, PortRole::Setting, 0)).unwrap();
+        graph.connect(port(board, PortRole::DataStreamOut, 0), port(detector, PortRole::DataStreamIn, 0)).unwrap();
+        graph.connect(port(detector, PortRole::DataStreamOut, 0), port(writer, PortRole::DataStreamIn, 0)).unwrap();
+        graph.connect(port(writer, PortRole::ValInCmdOut, 4), port(command, PortRole::ValOutCmdIn, 0)).unwrap();
         let placed = arrange(&graph);
         let x = |id| placed[&id][0];
         assert!(x(board) < x(detector) && x(detector) < x(writer) && x(writer) < x(command), "{placed:?}");
-        let edge = graph.edge_into(port(command, PortRole::Setting, 0)).unwrap();
+        let edge = graph.edge_into(port(command, PortRole::ValOutCmdIn, 0)).unwrap();
         graph.set_edge_disabled(edge, true);
         assert_eq!(arrange(&graph), placed, "disabled");
     }
@@ -183,7 +183,7 @@ mod tests {
         let command = graph.add(Nodes::create(node_type), [0.0, 0.0]);
         let writer = find(&graph, "Write LTX");
         let port = |node, role, index| Port { node, role, index };
-        graph.connect(port(writer, PortRole::Control, 4), port(command, PortRole::Setting, 0)).unwrap();
+        graph.connect(port(writer, PortRole::ValInCmdOut, 4), port(command, PortRole::ValOutCmdIn, 0)).unwrap();
         let placed = arrange(&graph);
         let (alarms, processor) = (find(&graph, "Alarm Viewer"), find(&graph, "Alarm Processor"));
         assert!(placed[&writer][1] < placed[&processor][1], "as the rig is: {placed:?}");

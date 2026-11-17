@@ -33,7 +33,7 @@ use crate::standard::plots::axis_ui;
 use crate::standard::pool::Pool;
 use crate::standard::spikes::{Channels, GainScope, Gains, gain_field};
 use crate::standard::widgets::{TIME_AXIS_HEIGHT, inline_block, open_settings_button, require_input, time_axis_ui};
-use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
+use crate::{Buffer, DataStream, Edges, Kind, PublishedValue, ValueKind};
 use ephys_rs::engine::{
     Category, Control, EdgeType, Input, Node, NodeInfo, Output, PassContext, Prepare, PrepareContext, Prepared,
     UiContext,
@@ -367,9 +367,9 @@ impl Node<Edges> for LfpViewer {
 
     fn controls(&self) -> Vec<Control<Edges>> {
         vec![
-            Control { name: "gains", kind: SettingKind::Gains, read_only: false, on_right: false },
-            Control { name: "selection", kind: SettingKind::ChannelSelection, read_only: false, on_right: false },
-            Control { name: "reference", kind: SettingKind::Reference, read_only: false, on_right: false },
+            Control { name: "gains", kind: ValueKind::Gains, read_only: false, on_right: false },
+            Control { name: "selection", kind: ValueKind::ChannelSelection, read_only: false, on_right: false },
+            Control { name: "reference", kind: ValueKind::Reference, read_only: false, on_right: false },
         ]
     }
 
@@ -383,15 +383,15 @@ impl Node<Edges> for LfpViewer {
             return;
         };
         let mut selection = match &context.controls[SELECTION] {
-            Some(Setting::ChannelSelection(s)) => Some(s.clone()),
+            Some(PublishedValue::ChannelSelection(s)) => Some(s.clone()),
             _ => None,
         };
         let mut reference = match &context.controls[REFERENCE] {
-            Some(Setting::Reference(r)) => Some(r.clone()),
+            Some(PublishedValue::Reference(r)) => Some(r.clone()),
             _ => None,
         };
         let mut gains = match &context.controls[GAINS] {
-            Some(Setting::Gains(g)) => Some(g.clone()),
+            Some(PublishedValue::Gains(g)) => Some(g.clone()),
             _ => None,
         };
         let kept = context.ui_state::<TracesDisplay>();
@@ -427,13 +427,13 @@ impl Node<Edges> for LfpViewer {
             edit.apply(reference, stream.channels);
         }
         if let Some(selection) = selection {
-            context.controls[SELECTION] = Some(Setting::ChannelSelection(selection));
+            context.controls[SELECTION] = Some(PublishedValue::ChannelSelection(selection));
         }
         if let Some(reference) = reference {
-            context.controls[REFERENCE] = Some(Setting::Reference(reference));
+            context.controls[REFERENCE] = Some(PublishedValue::Reference(reference));
         }
         if let Some(gains) = gains {
-            context.controls[GAINS] = Some(Setting::Gains(gains));
+            context.controls[GAINS] = Some(PublishedValue::Gains(gains));
         }
     }
 }

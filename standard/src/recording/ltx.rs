@@ -48,7 +48,7 @@ use crate::standard::pool::Pool;
 use crate::standard::spikes::{Gains, RECORDED_FULL_SCALE_UV, Spikes, trimmed};
 use crate::standard::tracking::{Crop, Detection, Positions};
 use crate::standard::widgets::{require_input, setting, settings_grid};
-use crate::{Buffer, DataStream, Edges, Kind, Setting, SettingKind};
+use crate::{Buffer, DataStream, Edges, Kind, PublishedValue, ValueKind};
 use ephys_rs::engine::{
     Category, Control, EdgeTypesEnum, Flow, Input, Node, NodeInfo, NodeThread, Output, PASS_DURATION, PassContext,
     PoolStatus, ThreadContext, UiContext,
@@ -193,11 +193,11 @@ impl Node<Edges> for WriteLtx {
 
     fn controls(&self) -> Vec<Control<Edges>> {
         vec![
-            Control { name: "detection", kind: SettingKind::Detection, read_only: true, on_right: false },
-            Control { name: "gains", kind: SettingKind::Gains, read_only: true, on_right: false },
-            Control { name: "eeg selection", kind: SettingKind::ChannelSelection, read_only: true, on_right: false },
-            Control { name: "eeg gains", kind: SettingKind::Gains, read_only: true, on_right: false },
-            Control { name: "after recording", kind: SettingKind::Command, read_only: true, on_right: true },
+            Control { name: "detection", kind: ValueKind::Detection, read_only: true, on_right: false },
+            Control { name: "gains", kind: ValueKind::Gains, read_only: true, on_right: false },
+            Control { name: "eeg selection", kind: ValueKind::ChannelSelection, read_only: true, on_right: false },
+            Control { name: "eeg gains", kind: ValueKind::Gains, read_only: true, on_right: false },
+            Control { name: "after recording", kind: ValueKind::Script, read_only: true, on_right: true },
         ]
     }
 
@@ -397,18 +397,18 @@ struct Recorded {
 }
 
 impl Recorded {
-    fn of(controls: &[Option<Setting>], scales: Scales) -> Self {
+    fn of(controls: &[Option<PublishedValue>], scales: Scales) -> Self {
         let mut recorded = Recorded { scales, ..Default::default() };
-        if let Some(Some(Setting::Detection(detection))) = controls.first() {
+        if let Some(Some(PublishedValue::Detection(detection))) = controls.first() {
             recorded.detection = Some(detection.clone());
         }
-        if let Some(Some(Setting::Gains(gains))) = controls.get(1) {
+        if let Some(Some(PublishedValue::Gains(gains))) = controls.get(1) {
             recorded.gains = gains.clone();
         }
-        if let Some(Some(Setting::ChannelSelection(selection))) = controls.get(2) {
+        if let Some(Some(PublishedValue::ChannelSelection(selection))) = controls.get(2) {
             recorded.eeg_selection = Some(selection.clone());
         }
-        if let Some(Some(Setting::Gains(gains))) = controls.get(3) {
+        if let Some(Some(PublishedValue::Gains(gains))) = controls.get(3) {
             recorded.eeg_gains = gains.clone();
         }
         recorded

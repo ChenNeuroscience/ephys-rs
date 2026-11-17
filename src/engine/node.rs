@@ -73,7 +73,7 @@ pub struct Output<E: Edges> {
 /// current value.
 pub struct SettingPort<E: Edges> {
     pub name: &'static str,
-    pub value: E::Setting,
+    pub value: E::PublishedValue,
     /// The graph draws the setting's port on the right of the node if this is set, as it usually is for settings.
     pub on_right: bool,
 }
@@ -82,7 +82,7 @@ pub struct SettingPort<E: Edges> {
 /// edge. This describes one control.
 pub struct Control<E: Edges> {
     pub name: &'static str,
-    pub kind: Kind<E::Setting>,
+    pub kind: Kind<E::PublishedValue>,
     /// Some controls only read the setting they're connected to (a writer recording a setting, say). If this is set,
     /// the engine ignores any change the node makes to the setting.
     pub read_only: bool,
@@ -221,7 +221,7 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
 
     /// When another node edits one of the node's settings (one of `self.settings()`, by index), the app sets the new
     /// value here, which is always of the setting's own kind.
-    fn set_setting(&mut self, _index: usize, _value: E::Setting) {}
+    fn set_setting(&mut self, _index: usize, _value: E::PublishedValue) {}
 
     /// A node can see and edit other nodes' settings through its controls (see `Control`), which the node lists here.
     fn controls(&self) -> Vec<Control<E>> {
