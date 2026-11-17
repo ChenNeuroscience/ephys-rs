@@ -4,12 +4,12 @@
 
 use eframe::egui::{self, Id, Key, Order, Pos2, RichText};
 
-use crate::engine::{Category, Graph, NodeId, NodeState, NodeTypeEnum, NodesEnum, Port, Resolved};
+use crate::engine::{Category, Graph, NodeId, NodeState, NodeTypeEnum, NodesEnum, PortAddress, Resolved};
 
 /// Someone chooses either a new node from the menu, of a type (`NodesEnum::Type`), or a port already in the graph.
 pub enum Choice<T> {
     New(T),
-    Existing(Port),
+    Existing(PortAddress),
 }
 
 /// The app keeps the menu here while it's open: where it was opened (on screen, and in the scene, for the new node),
@@ -17,20 +17,24 @@ pub enum Choice<T> {
 pub struct CreateMenu {
     pub screen: Pos2,
     pub scene: Pos2,
-    pub from: Option<Port>,
+    pub from: Option<PortAddress>,
     search: String,
     focused: bool,
 }
 
 /// Opened from port `from`, the menu offers a node type only if a new node of that type has a port `from` would
 /// connect to. This finds that port, if any; the port's node is a placeholder.
-pub fn port_on_new<N: NodesEnum>(from: Port, resolved: &Resolved<N::Edges>, node_type: N::Type) -> Option<Port> {
+pub fn port_on_new<N: NodesEnum>(
+    from: PortAddress,
+    resolved: &Resolved<N::Edges>,
+    node_type: N::Type,
+) -> Option<PortAddress> {
     let from_state = resolved.get(&from.node)?;
-    NodeState::unconnected(&N::create(node_type)).find(NodeId(0), from_state, (from.role, from.index))
+    NodeState::unconnected(&N::create(node_type)).find(NodeId(0), from_state, (from.role, from.port_idx))
 }
 
 impl CreateMenu {
-    pub fn new(screen: Pos2, scene: Pos2, from: Option<Port>) -> Self {
+    pub fn new(screen: Pos2, scene: Pos2, from: Option<PortAddress>) -> Self {
         CreateMenu { screen, scene, from, search: String::new(), focused: false }
     }
 
@@ -49,13 +53,13 @@ impl CreateMenu {
             .filter(|t| matches(t.info().name) && !hidden.contains(t.info().name))
             .filter(|&t| from.is_none_or(|from| port_on_new::<N>(from, resolved, t).is_some()))
             .collect();
-        let existing: Vec<(Port, String)> = from
+        let existing: Vec<(PortAddress, String)> = from
             .map(|from| graph.targets(from))
             .unwrap_or_default()
             .into_iter()
             .filter_map(|t| {
                 let label = &graph.get(t.node)?.label;
-                Some((t, format!("{label} › {}", resolved.get(&t.node)?.name(t.role, t.index)?)))
+                Some((t, format!("{label} › {}", resolved.get(&t.node)?.name(t.role, t.port_idx)?)))
             })
             .filter(|(_, label)| matches(label))
             .collect();
@@ -72,7 +76,7 @@ impl CreateMenu {
                         Some(port) => {
                             let label = graph.get(port.node).map_or("", |e| e.label.as_str());
                             let name =
-                                resolved.get(&port.node).and_then(|s| s.name(port.role, port.index)).unwrap_or("?");
+                                resolved.get(&port.node).and_then(|s| s.name(port.role, port.port_idx)).unwrap_or("?");
                             format!("Connect to {label} › {name}")
                         }
                         None => "Add a node".into(),

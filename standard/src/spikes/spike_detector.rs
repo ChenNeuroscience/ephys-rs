@@ -19,8 +19,8 @@ use crate::standard::widgets::{combo, input_summary, named_settings_grid, requir
 use crate::{Buffer, Command, CommandKind, DataStream, Edges, Kind, PublishedValue, ValueKind};
 use ephys_rs::engine::EdgeType;
 use ephys_rs::engine::{
-    Category, CommandContext, CommandSource, DataStreamInput, DataStreamOutput, Node, NodeInfo, PASS_DURATION,
-    PassContext, Prepare, PrepareContext, Prepared, UiContext, ValCmdPort,
+    Category, CommandContext, CommandSource, Node, NodeInfo, PASS_DURATION, PassContext, Port, Prepare, PrepareContext,
+    Prepared, UiContext,
 };
 use ephys_rs::gui::widgets::info_icon;
 
@@ -278,16 +278,16 @@ impl Node<Edges> for SpikeDetector {
         self.choose_thresholds(pass, sampling);
     }
 
-    fn data_stream_inputs(&self) -> Vec<DataStreamInput<Edges>> {
-        vec![DataStreamInput { name: "continuous", kind: Kind::Continuous }]
+    fn data_stream_inputs(&self) -> Vec<Port<Edges>> {
+        vec![Port::DataStreamIn { name: "continuous", data_stream_kind: Kind::Continuous }]
     }
 
-    fn data_stream_outputs(&self, inputs: &[Option<DataStream>]) -> Vec<DataStreamOutput<Edges>> {
+    fn data_stream_outputs(&self, inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
         let stream = match inputs[0] {
             Some(DataStream::Continuous(c)) => Some(DataStream::Spikes(self.stream(c.channels, c.sample_rate))),
             _ => None,
         };
-        vec![DataStreamOutput { name: "spikes", kind: Kind::Spikes, stream }]
+        vec![Port::DataStreamOut { name: "spikes", data_stream_kind: Kind::Spikes, stream }]
     }
 
     fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
@@ -305,8 +305,8 @@ impl Node<Edges> for SpikeDetector {
         warnings
     }
 
-    fn val_cmd_ports(&self) -> Vec<ValCmdPort<Edges>> {
-        vec![ValCmdPort::val_out_cmd_in(
+    fn val_cmd_ports(&self) -> Vec<Port<Edges>> {
+        vec![Port::val_out_cmd_in(
             "thresholds",
             ValueKind::Thresholds,
             &[CommandKind::SetThresholds, CommandKind::Detect],

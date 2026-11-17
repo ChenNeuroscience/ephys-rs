@@ -30,8 +30,7 @@ use crate::standard::spikes::{
 use crate::standard::widgets::{open_settings_button, require_input};
 use crate::{Buffer, Command, CommandKind, DataStream, Edges, Kind, ValueKind};
 use ephys_rs::engine::{
-    Category, DataStreamInput, DataStreamOutput, EdgeType, Node, NodeInfo, PassContext, Prepare, PrepareContext,
-    Prepared, Shortcut, UiContext, ValCmdPort,
+    Category, EdgeType, Node, NodeInfo, PassContext, Port, Prepare, PrepareContext, Prepared, Shortcut, UiContext,
 };
 use ephys_rs::gui::widgets::Icon;
 
@@ -244,11 +243,11 @@ impl Node<Edges> for SpikeViewer {
     const WINDOW_SIZE: [f32; 2] = [820.0, 520.0];
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
-    fn data_stream_inputs(&self) -> Vec<DataStreamInput<Edges>> {
-        vec![DataStreamInput { name: "spikes", kind: Kind::Spikes }]
+    fn data_stream_inputs(&self) -> Vec<Port<Edges>> {
+        vec![Port::DataStreamIn { name: "spikes", data_stream_kind: Kind::Spikes }]
     }
 
-    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<DataStreamOutput<Edges>> {
+    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
         Vec::new()
     }
 
@@ -256,14 +255,14 @@ impl Node<Edges> for SpikeViewer {
         require_input(inputs, "spikes")
     }
 
-    fn val_cmd_ports(&self) -> Vec<ValCmdPort<Edges>> {
+    fn val_cmd_ports(&self) -> Vec<Port<Edges>> {
         vec![
-            ValCmdPort::val_in_cmd_out(
+            Port::val_in_cmd_out(
                 "thresholds",
                 ValueKind::Thresholds,
                 &[CommandKind::SetThresholds, CommandKind::Detect],
             ),
-            ValCmdPort::val_in_cmd_out("gains", ValueKind::Gains, &[CommandKind::SetGains, CommandKind::Detect]),
+            Port::val_in_cmd_out("gains", ValueKind::Gains, &[CommandKind::SetGains, CommandKind::Detect]),
         ]
     }
 

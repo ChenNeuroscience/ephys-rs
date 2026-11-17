@@ -21,10 +21,7 @@ use crate::standard::recording::expand;
 use crate::standard::widgets::{combo, setting, settings_grid};
 use crate::{Command, CommandKind, DataStream, Edges, PublishedValue, ValueKind};
 use ephys_rs::commands::CmdSender;
-use ephys_rs::engine::{
-    Category, CommandContext, CommandSource, DataStreamOutput, EdgeInfo, EdgeType, Node, NodeInfo, UiContext,
-    ValCmdPort,
-};
+use ephys_rs::engine::{Category, CommandContext, CommandSource, EdgeInfo, EdgeType, Node, NodeInfo, Port, UiContext};
 use ephys_rs::gui::widgets::{Icon, help_link, small_icon_button};
 use ephys_rs::theme::Colours;
 
@@ -616,16 +613,16 @@ impl Node<Edges> for RunCommand {
     const WINDOW_SIZE: [f32; 2] = [820.0, 520.0];
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
-    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<DataStreamOutput<Edges>> {
+    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
         Vec::new()
     }
 
     /// Where it's sent files to run on, on the left, as what sends them comes before it; and where it sends them on,
     /// once it's done (see `Then`), on the right, as what runs then comes after it.
-    fn val_cmd_ports(&self) -> Vec<ValCmdPort<Edges>> {
+    fn val_cmd_ports(&self) -> Vec<Port<Edges>> {
         vec![
-            ValCmdPort::val_out_cmd_in("files", ValueKind::FileInput, &[CommandKind::ProcessFiles]).flipped(),
-            ValCmdPort::val_in_cmd_out("after running", ValueKind::FileInput, &[CommandKind::ProcessFiles]).flipped(),
+            Port::val_out_cmd_in("files", ValueKind::FileInput, &[CommandKind::ProcessFiles]).flipped(),
+            Port::val_in_cmd_out("after running", ValueKind::FileInput, &[CommandKind::ProcessFiles]).flipped(),
         ]
     }
 
@@ -767,7 +764,7 @@ mod tests {
     use crate::standard::themes::THEMES;
     use ephys_rs::commands::{Address, Commands};
     use ephys_rs::engine::NodeTypeEnum;
-    use ephys_rs::engine::{CommandSource, Graph, NodesEnum, Port, PortRole, Recording, Runner, Snapshot};
+    use ephys_rs::engine::{CommandSource, Graph, NodesEnum, PortAddress, PortRole, Recording, Runner, Snapshot};
 
     /// One per file, in turn, if the arguments have a file in them, otherwise just one.
     fn settings(program: &str, arguments: &str) -> ScriptConfig {
@@ -799,8 +796,8 @@ mod tests {
         let id = graph.add(Nodes::RunCommand(node), [0.0, 0.0]);
         let after = graph.add(Nodes::RunCommand(RunCommand::default()), [0.0, 0.0]);
         let (from, to) = (
-            Port { node: id, role: PortRole::ValInCmdOut, index: AFTER_RUNNING },
-            Port { node: after, role: PortRole::ValOutCmdIn, index: FILES },
+            PortAddress { node: id, role: PortRole::ValInCmdOut, port_idx: AFTER_RUNNING },
+            PortAddress { node: after, role: PortRole::ValOutCmdIn, port_idx: FILES },
         );
         graph.connect(from, to).unwrap();
         let state: ephys_rs::engine::UiStateCell = std::cell::RefCell::new(Box::new(CommandState::default()));
@@ -1191,7 +1188,7 @@ mod tests {
             c.settings.pattern = r"^continuous\.dat$".into();
             c.settings.regex = true;
         }
-        let port = |node, role, index| Port { node, role, index };
+        let port = |node, role, index| PortAddress { node, role, port_idx: index };
         graph.connect(port(board, PortRole::DataStreamOut, 0), port(writer, PortRole::DataStreamIn, 0)).unwrap();
         graph.connect(port(writer, PortRole::ValInCmdOut, 0), port(command, PortRole::ValOutCmdIn, 0)).unwrap();
 
@@ -1279,8 +1276,8 @@ mod tests {
         }
         if writer {
             let writer = add(&mut graph, "Write Raw");
-            let from = Port { node: writer, role: PortRole::ValInCmdOut, index: 0 };
-            graph.connect(from, Port { node: id, role: PortRole::ValOutCmdIn, index: 0 }).unwrap();
+            let from = PortAddress { node: writer, role: PortRole::ValInCmdOut, port_idx: 0 };
+            graph.connect(from, PortAddress { node: id, role: PortRole::ValOutCmdIn, port_idx: 0 }).unwrap();
         }
         let inputs: [Option<DataStream>; 0] = [];
         // Kept, as the app keeps it.
@@ -1356,8 +1353,8 @@ mod tests {
                 node.settings.files = paths(&["/recordings/trial a.set"]);
             }
             if chained {
-                let from = Port { node: id, role: PortRole::ValInCmdOut, index: AFTER_RUNNING };
-                graph.connect(from, Port { node: after, role: PortRole::ValOutCmdIn, index: 0 }).unwrap();
+                let from = PortAddress { node: id, role: PortRole::ValInCmdOut, port_idx: AFTER_RUNNING };
+                graph.connect(from, PortAddress { node: after, role: PortRole::ValOutCmdIn, port_idx: 0 }).unwrap();
             }
             let inputs: [Option<DataStream>; 0] = [];
             let mut harness = egui_kittest::Harness::builder().with_size([560.0, 560.0]).wgpu().build_ui_state(
@@ -1419,7 +1416,7 @@ mod chain_tests {
     use crate::NodeType;
     use crate::Nodes;
     use ephys_rs::commands::{Address, CmdSender, Commands};
-    use ephys_rs::engine::{Graph, NodeId, NodesEnum, Port, PortRole};
+    use ephys_rs::engine::{Graph, NodeId, NodesEnum, PortAddress, PortRole};
 
     /// Whether `then`, after runs that ended with these codes (`None` if stopped; not there if not run), sends the
     /// files on to what's connected after it.
@@ -1463,8 +1460,8 @@ mod chain_tests {
         let node_type = NodeType::RunCommand;
         let [a, b, c] = [0, 1, 2].map(|_| graph.add(Nodes::create(node_type), [0.0, 0.0]));
         let after = |from, to| {
-            let control = Port { node: from, role: PortRole::ValInCmdOut, index: AFTER_RUNNING };
-            (control, Port { node: to, role: PortRole::ValOutCmdIn, index: 0 })
+            let control = PortAddress { node: from, role: PortRole::ValInCmdOut, port_idx: AFTER_RUNNING };
+            (control, PortAddress { node: to, role: PortRole::ValOutCmdIn, port_idx: 0 })
         };
         let looped = |graph: &Graph<Nodes>| {
             let resolved = graph.resolve();

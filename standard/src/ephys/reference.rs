@@ -8,16 +8,14 @@
 //! referenced data, it outputs the references themselves: a channel each.
 
 use eframe::egui::{self, Color32, RichText};
-use ephys_rs::engine::{BufferUsage, CommandContext, CommandSource, TreeShake, ValCmdPort};
+use ephys_rs::engine::{BufferUsage, CommandContext, CommandSource, Port, TreeShake};
 use serde::{Deserialize, Serialize};
 
 use crate::standard::ephys::{Continuous, ContinuousBuffer};
 use crate::standard::medians::Medians;
 use crate::standard::widgets::{all_checkbox, input_summary, require_input, setting, settings_grid};
 use crate::{Buffer, Command, CommandKind, DataStream, Edges, Kind, PublishedValue, ValueKind};
-use ephys_rs::engine::{
-    Category, DataStreamInput, DataStreamOutput, EdgeInfo, EdgeType, Node, NodeInfo, PassContext, UiContext,
-};
+use ephys_rs::engine::{Category, EdgeInfo, EdgeType, Node, NodeInfo, PassContext, UiContext};
 use ephys_rs::gui::widgets::{Icon, small_toggle_button};
 
 /// How a reference is made from its channels.
@@ -381,8 +379,8 @@ impl Node<Edges> for Reference {
         BufferUsage { in_place: vec![Some(0); outputs], ..BufferUsage::none(inputs, outputs) }
     }
 
-    fn val_cmd_ports(&self) -> Vec<ValCmdPort<Edges>> {
-        vec![ValCmdPort::val_out_cmd_in("reference", ValueKind::Reference, &[CommandKind::SetReference])]
+    fn val_cmd_ports(&self) -> Vec<Port<Edges>> {
+        vec![Port::val_out_cmd_in("reference", ValueKind::Reference, &[CommandKind::SetReference])]
     }
 
     fn val_out(&self, _port_idx: usize) -> PublishedValue {
@@ -434,11 +432,11 @@ impl Node<Edges> for Reference {
         }
     }
 
-    fn data_stream_inputs(&self) -> Vec<DataStreamInput<Edges>> {
-        vec![DataStreamInput { name: "continuous", kind: Kind::Continuous }]
+    fn data_stream_inputs(&self) -> Vec<Port<Edges>> {
+        vec![Port::DataStreamIn { name: "continuous", data_stream_kind: Kind::Continuous }]
     }
 
-    fn data_stream_outputs(&self, inputs: &[Option<DataStream>]) -> Vec<DataStreamOutput<Edges>> {
+    fn data_stream_outputs(&self, inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
         let references = match inputs[0] {
             Some(DataStream::Continuous(c)) => {
                 Some(DataStream::Continuous(Continuous { channels: self.references() as u32, ..c }))
@@ -446,8 +444,8 @@ impl Node<Edges> for Reference {
             _ => None,
         };
         vec![
-            DataStreamOutput { name: "referenced", kind: Kind::Continuous, stream: inputs[0] },
-            DataStreamOutput { name: "reference", kind: Kind::Continuous, stream: references },
+            Port::DataStreamOut { name: "referenced", data_stream_kind: Kind::Continuous, stream: inputs[0] },
+            Port::DataStreamOut { name: "reference", data_stream_kind: Kind::Continuous, stream: references },
         ]
     }
 
@@ -728,7 +726,7 @@ mod tests {
         ]);
         assert_eq!((reference.references(), of(vec![]).references()), (3, 0));
         let outputs = reference.data_stream_outputs(&[Some(DataStream::Continuous(stream))]);
-        assert_eq!(outputs[1].stream, Some(DataStream::Continuous(Continuous { channels: 3, ..stream })));
+        assert_eq!(outputs[1].stream(), Some(DataStream::Continuous(Continuous { channels: 3, ..stream })));
         let mut input = stream.buffer(PASS_DURATION);
         input.len = 2;
         for (c, samples) in data.iter().enumerate() {

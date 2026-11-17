@@ -13,8 +13,8 @@ use crate::standard::pool::Pool;
 use crate::standard::widgets::require_input;
 use crate::{Buffer, DataStream, Edges, Kind};
 use ephys_rs::engine::{
-    Category, DataStreamInput, DataStreamOutput, Node, NodeInfo, PassContext, PassState, PoolStatus, Prepare,
-    PrepareContext, Prepared, Shared, UiContext,
+    Category, Node, NodeInfo, PassContext, PassState, PoolStatus, Port, Prepare, PrepareContext, Prepared, Shared,
+    UiContext,
 };
 
 /// The most lines kept: the oldest go.
@@ -77,11 +77,11 @@ impl Node<Edges> for LogViewer {
     const WINDOW_SIZE: [f32; 2] = [820.0, 520.0];
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
-    fn data_stream_inputs(&self) -> Vec<DataStreamInput<Edges>> {
-        vec![DataStreamInput { name: "log", kind: Kind::LogLines }]
+    fn data_stream_inputs(&self) -> Vec<Port<Edges>> {
+        vec![Port::DataStreamIn { name: "log", data_stream_kind: Kind::LogLines }]
     }
 
-    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<DataStreamOutput<Edges>> {
+    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
         Vec::new()
     }
 

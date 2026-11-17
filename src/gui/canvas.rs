@@ -27,8 +27,8 @@ use crate::annotation::{
     Annotation, AnnotationId, AnnotationTypeEnum, AnnotationUi, Annotations, AnnotationsEnum, PastedContent,
 };
 use crate::engine::{
-    Dimension, Edge, EdgeInfo, EdgeTypesEnum, Edges, Graph, KindKey, NodeEntry, NodeId, NodeState, NodesEnum, Port,
-    PortRole, Resolved,
+    Dimension, Edge, EdgeInfo, EdgeTypesEnum, Edges, Graph, KindKey, NodeEntry, NodeId, NodeState, NodesEnum,
+    PortAddress, PortRole, Resolved,
 };
 use crate::layout::Pane;
 use crate::theme::Colours;
@@ -188,12 +188,12 @@ impl Layout {
         }
     }
 
-    fn port(&self, port: Port) -> Option<Pos2> {
-        self.ports.get(&(port.role, port.index)).map(|(pos, _)| *pos)
+    fn port(&self, port: PortAddress) -> Option<Pos2> {
+        self.ports.get(&(port.role, port.port_idx)).map(|(pos, _)| *pos)
     }
 
-    fn on_right(&self, port: Port) -> bool {
-        self.ports.get(&(port.role, port.index)).is_some_and(|(_, on_right)| *on_right)
+    fn on_right(&self, port: PortAddress) -> bool {
+        self.ports.get(&(port.role, port.port_idx)).is_some_and(|(_, on_right)| *on_right)
     }
 }
 
@@ -318,8 +318,8 @@ fn both_ways(painter: &Painter, at: Pos2, direction: Vec2, size: f32, colour: Co
 
 /// Some ports only read the value they're connected to (`PortRole::ValIn`, val-only), which people see as read-only.
 /// This says whether a port does.
-fn read_only<E: Edges>(resolved: &Resolved<E>, port: Port) -> bool {
-    port.role == PortRole::ValInCmdOut && resolved.get(&port.node).is_some_and(|s| s.val_only(port.index))
+fn read_only<E: Edges>(resolved: &Resolved<E>, port: PortAddress) -> bool {
+    port.role == PortRole::ValInCmdOut && resolved.get(&port.node).is_some_and(|s| s.val_only(port.port_idx))
 }
 
 /// An edge of a type with colour `colour` is drawn in this colour: settings edges are all the same grey, so they stay
@@ -359,7 +359,7 @@ pub struct Canvas {
     screen_rect: Rect,
     frame_requested: bool,
     /// A wire may be being dragged from this port.
-    wire: Option<Port>,
+    wire: Option<PortAddress>,
     /// A selection rectangle started here, in scene coordinates.
     marquee: Option<Pos2>,
     hovered_edge: Option<Edge>,
@@ -593,7 +593,7 @@ impl Canvas {
         self.paint_edges(&painter, graph, resolved, &layouts, selection);
         if let (Some(port), Some(p)) = (self.wire, pointer)
             && let Some(start) = port_pos(&layouts, port)
-            && let Some(info) = resolved.get(&port.node).and_then(|s| s.info(port.role, port.index))
+            && let Some(info) = resolved.get(&port.node).and_then(|s| s.info(port.role, port.port_idx))
         {
             let tip = target.and_then(|t| port_pos(&layouts, t)).unwrap_or(p);
             let right = port_on_right(&layouts, port);
@@ -609,7 +609,7 @@ impl Canvas {
             paint_wire(&painter, points, dimension, read_only, stroke, zoom, &[]);
         }
 
-        let connected: HashSet<Port> = graph.edges().iter().flat_map(|e| [e.source(), e.target()]).collect();
+        let connected: HashSet<PortAddress> = graph.edges().iter().flat_map(|e| [e.source(), e.target()]).collect();
         for &id in &order {
             let (Some(layout), Some(entry), Some(state)) = (layouts.get(&id), graph.get(id), resolved.get(&id)) else {
                 continue;
@@ -1114,7 +1114,7 @@ impl Canvas {
             let Some(pos) = layout.port(port) else { continue };
             let response = ui.interact(
                 Rect::from_center_size(pos, Vec2::splat(2.0 * HIT_DISTANCE)),
-                Id::unique(("port", port.node, port.role.name(), port.index)),
+                Id::unique(("port", port.node, port.role.name(), port.port_idx)),
                 Sense::click_and_drag(),
             );
             if response.drag_started() {
@@ -1130,15 +1130,16 @@ impl Canvas {
             if response.clicked() {
                 events.push(Event::OpenMenu { screen: pos, scene: self.to_screen.inverse() * pos, from: Some(port) });
             }
-            let name = state.name(port.role, port.index).unwrap_or("?");
-            let (kind, description) = state.info(port.role, port.index).map_or(("?", ""), |i| (i.name, i.description));
-            let summary = state.summary(port.role, port.index).unwrap_or_else(|| "not connected".into());
+            let name = state.name(port.role, port.port_idx).unwrap_or("?");
+            let (kind, description) =
+                state.info(port.role, port.port_idx).map_or(("?", ""), |i| (i.name, i.description));
+            let summary = state.summary(port.role, port.port_idx).unwrap_or_else(|| "not connected".into());
             let help = match port.role {
                 PortRole::DataStreamIn | PortRole::DataStreamOut => {
                     "Drag to connect; click to add or pick a node to connect"
                 }
                 PortRole::ValOutCmdIn => "Other nodes can edit this. Drag to a control to link them",
-                PortRole::ValInCmdOut | PortRole::ValIn if state.val_only(port.index) => {
+                PortRole::ValInCmdOut | PortRole::ValIn if state.val_only(port.port_idx) => {
                     "Reads a setting of another node, without changing it. Drag to a setting to link them"
                 }
                 PortRole::ValInCmdOut | PortRole::ValIn => {
@@ -1153,8 +1154,8 @@ impl Canvas {
     #[allow(clippy::too_many_arguments)]
     fn drop_wire<N: NodesEnum>(
         &self,
-        port: Port,
-        target: Option<Port>,
+        port: PortAddress,
+        target: Option<PortAddress>,
         pointer: Pos2,
         graph: &mut Graph<N>,
         resolved: &Resolved<N::Edges>,
@@ -1179,9 +1180,9 @@ impl Canvas {
         }
         // Dropped on a node with nowhere to connect: say why.
         let Some(state) = resolved.get(&node) else { return };
-        let Some(kind) = resolved.get(&port.node).and_then(|s| s.kind(port.role, port.index)) else { return };
+        let Some(kind) = resolved.get(&port.node).and_then(|s| s.kind(port.role, port.port_idx)) else { return };
         let from = &resolved[&port.node];
-        let reason = state.find(node, from, (port.role, port.index)).and_then(|p| graph.check(port, p).err());
+        let reason = state.find(node, from, (port.role, port.port_idx)).and_then(|p| graph.check(port, p).err());
         let reason = reason.map(|e| e.to_string()).unwrap_or_else(|| {
             let label = graph.get(node).map_or("", |e| e.label.as_str());
             let kind = crate::engine::edge_info::<N::Edges>(kind).name;
@@ -1228,9 +1229,9 @@ impl Canvas {
             let Some(points) = edge_points(edge, layouts, zoom) else { continue };
             let source = edge.source();
             let Some(state) = resolved.get(&source.node) else { continue };
-            let Some(info) = state.info(source.role, source.index) else { continue };
+            let Some(info) = state.info(source.role, source.port_idx) else { continue };
             let mut colour = wire_colour(edge.dimension, info.colour, self.colours);
-            let unknown = edge.dimension == Dimension::Data && state.summary(source.role, source.index).is_none();
+            let unknown = edge.dimension == Dimension::Data && state.summary(source.role, source.port_idx).is_none();
             if unknown || self.wire.is_some() {
                 colour = colour.gamma_multiply(0.4);
             }
@@ -1276,8 +1277,10 @@ impl Canvas {
 pub fn legend_entries<N: NodesEnum>(
     resolved: &Resolved<N::Edges>,
 ) -> Vec<(&'static str, Dimension, Vec<&'static EdgeInfo>)> {
-    let present: HashSet<KindKey> =
-        resolved.iter().flat_map(|(id, state)| state.ports(*id).filter_map(|p| state.kind(p.role, p.index))).collect();
+    let present: HashSet<KindKey> = resolved
+        .iter()
+        .flat_map(|(id, state)| state.ports(*id).filter_map(|p| state.kind(p.role, p.port_idx)))
+        .collect();
     let shown = |dimension: Dimension, kinds: &'static [EdgeInfo]| -> Vec<&'static EdgeInfo> {
         kinds.iter().enumerate().filter(|(i, _)| present.contains(&(dimension, *i))).map(|(_, k)| k).collect()
     };
@@ -1325,11 +1328,11 @@ fn layouts<N: NodesEnum>(
         .collect()
 }
 
-fn port_pos(layouts: &HashMap<NodeId, Layout>, port: Port) -> Option<Pos2> {
+fn port_pos(layouts: &HashMap<NodeId, Layout>, port: PortAddress) -> Option<Pos2> {
     layouts.get(&port.node)?.port(port)
 }
 
-fn port_on_right(layouts: &HashMap<NodeId, Layout>, port: Port) -> bool {
+fn port_on_right(layouts: &HashMap<NodeId, Layout>, port: PortAddress) -> bool {
     layouts.get(&port.node).is_some_and(|layout| layout.on_right(port))
 }
 
@@ -1341,7 +1344,7 @@ fn edge_points(edge: &Edge, layouts: &HashMap<NodeId, Layout>, zoom: f32) -> Opt
 
 /// A wire dropped connects to the target port under the pointer: the nearest within reach, or failing that the first
 /// on a node it's over.
-fn target_at(pointer: Pos2, layouts: &HashMap<NodeId, Layout>, targets: &[Port]) -> Option<Port> {
+fn target_at(pointer: Pos2, layouts: &HashMap<NodeId, Layout>, targets: &[PortAddress]) -> Option<PortAddress> {
     let nearest = targets
         .iter()
         .filter_map(|t| Some((*t, port_pos(layouts, *t)?.distance(pointer))))
@@ -1357,9 +1360,9 @@ fn target_at(pointer: Pos2, layouts: &HashMap<NodeId, Layout>, targets: &[Port])
 /// Painting a node's ports needs to know more than the node: which are connected, and where a wire being dragged could
 /// go.
 struct PortPaint<'a> {
-    connected: &'a HashSet<Port>,
-    targets: &'a [Port],
-    target: Option<Port>,
+    connected: &'a HashSet<PortAddress>,
+    targets: &'a [PortAddress],
+    target: Option<PortAddress>,
     pointer: Option<Pos2>,
     colours: &'a Colours,
 }
@@ -1447,9 +1450,9 @@ fn paint_node<N: NodesEnum>(
     }
     for port in state.ports(id) {
         let Some(pos) = layout.port(port) else { continue };
-        let name = state.name(port.role, port.index).unwrap_or("?");
+        let name = state.name(port.role, port.port_idx).unwrap_or("?");
         let connected = ports.connected.contains(&port);
-        let colour = state.info(port.role, port.index).map_or(Color32::GRAY, |i| i.colour);
+        let colour = state.info(port.role, port.port_idx).map_or(Color32::GRAY, |i| i.colour);
         let on_right = layout.on_right(port);
         let (name_pos, align) = if on_right {
             (pos - egui::vec2(12.0 * z, 0.0), Align2::RIGHT_CENTER)
@@ -1461,7 +1464,7 @@ fn paint_node<N: NodesEnum>(
         painter.text(name_pos, align, name, font(12.5), fade(name_colour));
         // Outputs and settings also show what they carry, on the far side.
         if matches!(port.role, PortRole::DataStreamOut | PortRole::ValOutCmdIn) {
-            let (summary, colour) = match state.summary(port.role, port.index) {
+            let (summary, colour) = match state.summary(port.role, port.port_idx) {
                 Some(summary) => (summary, colours.text_secondary),
                 None => ("—".into(), colours.text_disabled),
             };
@@ -1472,7 +1475,7 @@ fn paint_node<N: NodesEnum>(
             };
             painter.text(at, align, summary, font(11.0), fade(colour));
         }
-        let read_only = port.role == PortRole::ValInCmdOut && state.val_only(port.index);
+        let read_only = port.role == PortRole::ValInCmdOut && state.val_only(port.port_idx);
         paint_port(painter, port, pos, colour, connected, read_only, ports, z, fade);
     }
 }
@@ -1480,7 +1483,7 @@ fn paint_node<N: NodesEnum>(
 #[allow(clippy::too_many_arguments)]
 fn paint_port(
     painter: &Painter,
-    port: Port,
+    port: PortAddress,
     pos: Pos2,
     colour: Color32,
     connected: bool,
@@ -1532,7 +1535,7 @@ mod tests {
         use crate::{NodeType, Nodes};
         let state = NodeState::unconnected(&Nodes::create(NodeType::named(name).unwrap()));
         let layout = Layout::new([0.0, 0.0], &state, &TSTransform::IDENTITY, true);
-        let port = Port { node: NodeId(0), role, index };
+        let port = PortAddress { node: NodeId(0), role, port_idx: index };
         assert_eq!(layout.port(port).unwrap().x == layout.rect.right(), layout.on_right(port));
         layout.on_right(port)
     }

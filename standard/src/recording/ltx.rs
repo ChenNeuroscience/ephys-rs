@@ -50,8 +50,8 @@ use crate::standard::tracking::{Crop, Detection, Positions};
 use crate::standard::widgets::{require_input, setting, settings_grid};
 use crate::{Buffer, CommandKind, DataStream, Edges, Kind, PublishedValue, ValueKind};
 use ephys_rs::engine::{
-    Category, DataStreamInput, DataStreamOutput, EdgeTypesEnum, Flow, Node, NodeInfo, NodeThread, PASS_DURATION,
-    PassContext, PoolStatus, ThreadContext, UiContext, ValCmdPort,
+    Category, EdgeTypesEnum, Flow, Node, NodeInfo, NodeThread, PASS_DURATION, PassContext, PoolStatus, Port,
+    ThreadContext, UiContext,
 };
 
 /// Ticks a second, for timestamps.
@@ -176,30 +176,30 @@ impl Node<Edges> for WriteLtx {
         TreeShake::needing_all(recording && inputs.contains(&true), inputs.len())
     }
 
-    fn data_stream_inputs(&self) -> Vec<DataStreamInput<Edges>> {
+    fn data_stream_inputs(&self) -> Vec<Port<Edges>> {
         vec![
-            DataStreamInput { name: "spikes", kind: Kind::Spikes },
-            DataStreamInput { name: "eeg", kind: Kind::Continuous },
-            DataStreamInput { name: "positions", kind: Kind::Positions },
-            DataStreamInput { name: "events", kind: Kind::Events },
-            DataStreamInput { name: "pos ttl", kind: Kind::Events },
-            DataStreamInput { name: "log", kind: Kind::LogLines },
+            Port::DataStreamIn { name: "spikes", data_stream_kind: Kind::Spikes },
+            Port::DataStreamIn { name: "eeg", data_stream_kind: Kind::Continuous },
+            Port::DataStreamIn { name: "positions", data_stream_kind: Kind::Positions },
+            Port::DataStreamIn { name: "events", data_stream_kind: Kind::Events },
+            Port::DataStreamIn { name: "pos ttl", data_stream_kind: Kind::Events },
+            Port::DataStreamIn { name: "log", data_stream_kind: Kind::LogLines },
         ]
     }
 
-    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<DataStreamOutput<Edges>> {
+    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
         Vec::new()
     }
 
     /// The settings it records with the data, which it only reads; and, on the right, as what it sets off comes after
     /// it, where it sends what it's recorded, once it's finished (see `after_recording`).
-    fn val_cmd_ports(&self) -> Vec<ValCmdPort<Edges>> {
+    fn val_cmd_ports(&self) -> Vec<Port<Edges>> {
         vec![
-            ValCmdPort::val_in("detection", ValueKind::Detection),
-            ValCmdPort::val_in("gains", ValueKind::Gains),
-            ValCmdPort::val_in("eeg selection", ValueKind::ChannelSelection),
-            ValCmdPort::val_in("eeg gains", ValueKind::Gains),
-            ValCmdPort::val_in_cmd_out("after recording", ValueKind::FileInput, &[CommandKind::ProcessFiles]).flipped(),
+            Port::val_in("detection", ValueKind::Detection),
+            Port::val_in("gains", ValueKind::Gains),
+            Port::val_in("eeg selection", ValueKind::ChannelSelection),
+            Port::val_in("eeg gains", ValueKind::Gains),
+            Port::val_in_cmd_out("after recording", ValueKind::FileInput, &[CommandKind::ProcessFiles]).flipped(),
         ]
     }
 
@@ -304,7 +304,7 @@ impl Node<Edges> for WriteLtx {
                 .data_stream_inputs()
                 .iter()
                 .zip(context.inputs)
-                .filter_map(|(input, stream)| stream.map(|s| format!("{}: {}", input.name, s.summary())))
+                .filter_map(|(input, stream)| stream.map(|s| format!("{}: {}", input.name(), s.summary())))
                 .collect();
             if recording.is_empty() {
                 ui.weak("Nothing connected to record.");

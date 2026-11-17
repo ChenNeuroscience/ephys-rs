@@ -117,7 +117,7 @@ mod tests {
     use crate::NodeType;
     use crate::Nodes;
     use crate::engine::NodeTypeEnum;
-    use crate::engine::{Port, PortRole};
+    use crate::engine::{PortAddress, PortRole};
 
     #[test]
     fn data_flows_left_to_right_in_columns() {
@@ -131,7 +131,7 @@ mod tests {
         let board = add(&mut graph, "Acquisition Board", [10.0, 0.0]);
         let detector = add(&mut graph, "Spike Detector", [20.0, 0.0]);
         let lfp = add(&mut graph, "LFP Viewer", [30.0, 0.0]);
-        let port = |node, role, index| Port { node, role, index };
+        let port = |node, role, index| PortAddress { node, role, port_idx: index };
         graph.connect(port(board, PortRole::DataStreamOut, 0), port(detector, PortRole::DataStreamIn, 0)).unwrap();
         graph.connect(port(detector, PortRole::DataStreamOut, 0), port(viewer, PortRole::DataStreamIn, 0)).unwrap();
         graph.connect(port(board, PortRole::DataStreamOut, 0), port(lfp, PortRole::DataStreamIn, 0)).unwrap();
@@ -161,7 +161,7 @@ mod tests {
         let board = add(&mut graph, "Acquisition Board");
         let detector = add(&mut graph, "Spike Detector");
         let writer = add(&mut graph, "Write LTX");
-        let port = |node, role, index| Port { node, role, index };
+        let port = |node, role, index| PortAddress { node, role, port_idx: index };
         graph.connect(port(board, PortRole::DataStreamOut, 0), port(detector, PortRole::DataStreamIn, 0)).unwrap();
         graph.connect(port(detector, PortRole::DataStreamOut, 0), port(writer, PortRole::DataStreamIn, 0)).unwrap();
         graph.connect(port(writer, PortRole::ValInCmdOut, 4), port(command, PortRole::ValOutCmdIn, 0)).unwrap();
@@ -182,7 +182,7 @@ mod tests {
         let node_type = NodeType::RunCommand;
         let command = graph.add(Nodes::create(node_type), [0.0, 0.0]);
         let writer = find(&graph, "Write LTX");
-        let port = |node, role, index| Port { node, role, index };
+        let port = |node, role, index| PortAddress { node, role, port_idx: index };
         graph.connect(port(writer, PortRole::ValInCmdOut, 4), port(command, PortRole::ValOutCmdIn, 0)).unwrap();
         let placed = arrange(&graph);
         let (alarms, processor) = (find(&graph, "Alarm Viewer"), find(&graph, "Alarm Processor"));

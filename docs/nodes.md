@@ -39,7 +39,7 @@ The parts of the API are there for three different reasons, and it helps to know
 - `data_stream_inputs()` and `data_stream_outputs(inputs)`: its data ports. An output says what data stream it produces, given what's on the
   inputs (or `None` while that can't be known), so a graph's streams are worked out before anything runs.
 - `warnings(inputs)`: what's wrong (an input not connected, say), shown on the graph and in its window.
-- `val_cmd_ports()`: its value ports (see [Edges](edges.md#values-and-commands)), each a `ValCmdPort`: where it publishes a value
+- `val_cmd_ports()`: its value ports (see [Edges](edges.md#values-and-commands)), each a `Port`: where it publishes a value
   (`ValOutCmdIn`, with `val_out` saying what it is now), and where it reads another node's, sending it commands
   (`ValInCmdOut`) or not (`ValIn`, val-only). Each says the commands it accepts or sends (`&[CommandKind::SetGains]`,
   say). Its `ValOutCmdIn` ports are numbered separately from its `ValInCmdOut` and `ValIn` ports, in the order listed.

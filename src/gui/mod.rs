@@ -49,7 +49,7 @@ use crate::base_directory::{BaseDirectories, BaseDirectoryType, Place};
 use crate::commands::{Commands, Sent};
 use crate::config_patching::{self, PatchSets, Versions};
 use crate::engine::{
-    self, CommandsEnum, Graph, NodeId, NodeTypeEnum, NodesEnum, Port, PortRef, Resolved, Runner, Snapshot, Stats,
+    self, CommandsEnum, EdgeEnd, Graph, NodeId, NodeTypeEnum, NodesEnum, PortAddress, Resolved, Runner, Snapshot, Stats,
 };
 use crate::layout::{Layout, Mode, Pane};
 use crate::theme::{Colours, Theme};
@@ -164,7 +164,7 @@ pub enum Event {
     OpenMenu {
         screen: Pos2,
         scene: Pos2,
-        from: Option<Port>,
+        from: Option<PortAddress>,
     },
     /// A pane asks to open a node's window (see `Layout::toggle`), or close it: from the pane, if it's done from one.
     ToggleWindow(NodeId, Option<Pane>),
@@ -906,8 +906,8 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         for edge in self.graph.edges().to_vec() {
             if let (Some(from), Some(to)) = (copies.get(&edge.from.node), copies.get(&edge.to.node)) {
                 let mut copy = edge;
-                copy.from = PortRef { node: *from, ..edge.from };
-                copy.to = PortRef { node: *to, ..edge.to };
+                copy.from = EdgeEnd { node: *from, ..edge.from };
+                copy.to = EdgeEnd { node: *to, ..edge.to };
                 let _ = self.graph.connect(copy.source(), copy.target());
             }
         }
@@ -1590,7 +1590,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         if !keep {
             self.menu = None;
         }
-        let connect = |app: &mut Self, from: Port, to: Port| {
+        let connect = |app: &mut Self, from: PortAddress, to: PortAddress| {
             if let Err(e) = app.graph.connect(from, to) {
                 app.set_status(ctx, format!("Can't connect: {e}"));
             }
@@ -1599,7 +1599,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             Some(Choice::New(node_type)) => {
                 // Beside the port it's connected to, on the side its edge leaves from.
                 let pos = match from {
-                    Some(port) if resolved.get(&port.node).is_some_and(|s| s.on_right(port.role, port.index)) => {
+                    Some(port) if resolved.get(&port.node).is_some_and(|s| s.on_right(port.role, port.port_idx)) => {
                         [scene.x + 40.0, scene.y - HEADER]
                     }
                     Some(_) => [scene.x - NODE_WIDTH - 40.0, scene.y - HEADER],
@@ -1610,7 +1610,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                 if let Some(from) = from
                     && let Some(port) = create_menu::port_on_new::<N>(from, resolved, node_type)
                 {
-                    connect(self, from, Port { node: id, ..port });
+                    connect(self, from, PortAddress { node: id, ..port });
                 }
             }
             Some(Choice::Existing(port)) => {
@@ -2302,7 +2302,8 @@ mod tests {
         let app = harness.state();
         assert_eq!(app.graph.edges().len(), edges + 1);
         // Named after chen-neuro's own.
-        let gain = Port { node: node_named(app, "Continuous Gain 2"), role: PortRole::DataStreamIn, index: 0 };
+        let gain =
+            PortAddress { node: node_named(app, "Continuous Gain 2"), role: PortRole::DataStreamIn, port_idx: 0 };
         let board = node_named(app, "Acquisition Board");
         assert_eq!(app.graph.edge_into(gain).map(|e| e.from.node), Some(board));
     }
@@ -3795,7 +3796,7 @@ mod tests {
         let vr = graph.add(Nodes::VrComputer(VrComputer { port, ..Default::default() }), [0.0, 0.0]);
         let ltx = graph.add(Nodes::WriteLtx(WriteLtx::default()), [300.0, 0.0]);
         let link = |graph: &mut Graph<Nodes>, from, to| graph.connect(from, to).unwrap();
-        let port_of = |node, role, index| engine::Port { node, role, index };
+        let port_of = |node, role, index| engine::PortAddress { node, role, port_idx: index };
         for (output, input) in [(0, 2), (1, 4), (2, 5)] {
             link(&mut graph, port_of(vr, PortRole::DataStreamOut, output), port_of(ltx, PortRole::DataStreamIn, input));
         }

@@ -12,7 +12,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::OnceLock;
 
 use super::pass_context::*;
-use super::{BufferUsage, DataStreamsEnum, Edges, Graph, NodeId, NodesEnum, Port, PortRole, TreeShake};
+use super::{BufferUsage, DataStreamsEnum, Edges, Graph, NodeId, NodesEnum, PortAddress, PortRole, TreeShake};
 
 type DataStream<N> = <<N as NodesEnum>::Edges as Edges>::DataStream;
 
@@ -79,8 +79,8 @@ pub struct Plan<N: NodesEnum> {
 
 /// The tree shake (`settle`) sees each data edge as a link from an output to an input.
 struct Link {
-    from: super::PortRef,
-    to: super::PortRef,
+    from: super::EdgeEnd,
+    to: super::EdgeEnd,
 }
 
 /// The tree shake asks a node this many times before taking the node's answer as it stands (see `settle`).
@@ -111,9 +111,9 @@ fn settle(
         if asked > SETTLE_ASKS {
             continue;
         }
-        let port = |port_idx| super::PortRef { node: id, port_idx };
+        let port = |port_idx| super::EdgeEnd { node: id, port_idx };
         let runs = |node: NodeId| shakes.get(&node).is_some_and(|s| s.runs);
-        let needs = |to: super::PortRef| shakes.get(&to.node).is_some_and(|s| s.runs && s.needs[to.port_idx]);
+        let needs = |to: super::EdgeEnd| shakes.get(&to.node).is_some_and(|s| s.runs && s.needs[to.port_idx]);
         let inputs: Vec<bool> =
             (0..input_count).map(|i| links.iter().any(|l| l.to == port(i) && runs(l.from.node))).collect();
         let outputs: Vec<bool> =
@@ -165,7 +165,7 @@ impl<N: NodesEnum> Plan<N> {
             .iter()
             .filter(|id| graph.get(**id).is_some_and(|e| !e.disabled))
             .filter_map(|id| resolved.get(id).map(|s| (*id, s)))
-            .filter(|(_, s)| s.outputs.iter().all(|o| o.stream.is_some()))
+            .filter(|(_, s)| s.outputs.iter().all(|o| o.stream().is_some()))
             .map(|(id, s)| (id, s.inputs.len(), s.outputs.len()))
             .collect();
         let links: Vec<Link> = data.iter().map(|e| Link { from: e.from, to: e.to }).collect();
@@ -264,7 +264,11 @@ impl<N: NodesEnum> Plan<N> {
             let (Some(entry), Some(state)) = (graph.get(id), resolved.get(&id)) else { continue };
             let mut inputs: Vec<Option<usize>> = (0..state.inputs.len())
                 .map(|index| {
-                    let edge = graph.live_edge_into(Port { node: id, role: PortRole::DataStreamIn, index })?;
+                    let edge = graph.live_edge_into(PortAddress {
+                        node: id,
+                        role: PortRole::DataStreamIn,
+                        port_idx: index,
+                    })?;
                     buffer_of.get(&(edge.from.node, edge.from.port_idx)).copied()
                 })
                 .collect();
@@ -277,7 +281,7 @@ impl<N: NodesEnum> Plan<N> {
                         buffer
                     }
                     None => {
-                        buffers.push(output.stream.expect("only nodes with known outputs run"));
+                        buffers.push(output.stream().expect("only nodes with known outputs run"));
                         buffers.len() - 1
                     }
                 };
@@ -302,7 +306,8 @@ impl<N: NodesEnum> Plan<N> {
                     takes.push(true);
                 } else {
                     // Copied once the node making it has run, before anything edits it in place.
-                    let edge = graph.live_edge_into(Port { node: id, role: PortRole::DataStreamIn, index: input });
+                    let edge =
+                        graph.live_edge_into(PortAddress { node: id, role: PortRole::DataStreamIn, port_idx: input });
                     let maker = edge.and_then(|e| steps.iter_mut().find(|s: &&mut Step| s.id == e.from.node));
                     let Some(maker) = maker else {
                         takes.push(false);
@@ -317,7 +322,7 @@ impl<N: NodesEnum> Plan<N> {
             }
             let copies = Vec::new();
             step_inputs.push(state.input_streams.clone());
-            step_outputs.push(state.outputs.iter().map(|output| output.stream).collect());
+            step_outputs.push(state.outputs.iter().map(|output| output.stream()).collect());
             steps.push(Step { id, inputs, outputs, in_place: made_in_place, takes, state: node_state, copies });
         }
         Plan { steps, buffers, state_inputs, step_inputs, step_outputs, bytes: OnceLock::new() }
@@ -426,7 +431,7 @@ mod tests {
     }
 
     fn link(graph: &mut Graph<Nodes>, from: NodeId, output_idx: usize, to: NodeId, input_idx: usize) {
-        let port = |node, role, index| Port { node, role, index };
+        let port = |node, role, index| PortAddress { node, role, port_idx: index };
         graph
             .connect(port(from, PortRole::DataStreamOut, output_idx), port(to, PortRole::DataStreamIn, input_idx))
             .unwrap();
@@ -548,8 +553,8 @@ mod tests {
         use std::cell::Cell;
         let (a, b) = (NodeId(1), NodeId(2));
         let links = [Link {
-            from: super::super::PortRef { node: a, port_idx: 0 },
-            to: super::super::PortRef { node: b, port_idx: 0 },
+            from: super::super::EdgeEnd { node: a, port_idx: 0 },
+            to: super::super::EdgeEnd { node: b, port_idx: 0 },
         }];
         let asked = Cell::new(0);
         // a runs only while nothing uses what it makes, and b only while it's given something: round they'd go.

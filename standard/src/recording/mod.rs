@@ -287,7 +287,9 @@ mod tests {
 
     use crate::standard::ephys::board::{Source, serve_test_board};
     use crate::{NodeType, Nodes};
-    use ephys_rs::engine::{Graph, NodeId, NodeTypeEnum, NodesEnum, Port, PortRole, Recording, Runner, Snapshot};
+    use ephys_rs::engine::{
+        Graph, NodeId, NodeTypeEnum, NodesEnum, PortAddress, PortRole, Recording, Runner, Snapshot,
+    };
 
     fn add(graph: &mut Graph<Nodes>, name: &str) -> NodeId {
         let node_type = NodeType::named(name).unwrap();
@@ -295,7 +297,7 @@ mod tests {
     }
 
     fn link(graph: &mut Graph<Nodes>, from: NodeId, output: usize, to: NodeId, input: usize) {
-        let port = |node, role, index| Port { node, role, index };
+        let port = |node, role, index| PortAddress { node, role, port_idx: index };
         graph.connect(port(from, PortRole::DataStreamOut, output), port(to, PortRole::DataStreamIn, input)).unwrap();
     }
 

@@ -10,8 +10,7 @@ use crate::standard::tracking::overlay::Overlays;
 use crate::standard::widgets::require_input;
 use crate::{Buffer, DataStream, Edges, Kind};
 use ephys_rs::engine::{
-    Category, DataStreamInput, DataStreamOutput, DataStreamType, EdgeType, Node, NodeInfo, PASS_DURATION, PassContext,
-    UiContext,
+    Category, DataStreamType, EdgeType, Node, NodeInfo, PASS_DURATION, PassContext, Port, UiContext,
 };
 
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -33,11 +32,11 @@ impl Node<Edges> for VideoViewer {
     type UiState = ();
     type GlobalSettings = ();
 
-    fn data_stream_inputs(&self) -> Vec<DataStreamInput<Edges>> {
-        vec![DataStreamInput { name: "video", kind: Kind::Video }]
+    fn data_stream_inputs(&self) -> Vec<Port<Edges>> {
+        vec![Port::DataStreamIn { name: "video", data_stream_kind: Kind::Video }]
     }
 
-    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<DataStreamOutput<Edges>> {
+    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
         Vec::new()
     }
 

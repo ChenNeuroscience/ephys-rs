@@ -23,7 +23,7 @@ use crate::standard::ephys::band_pass::BandPassFilter;
 use crate::standard::ephys::board::{self, node::AcquisitionBoard, opal_kelly::OpalKellyKind};
 use crate::standard::ephys::downsample::Downsample;
 use crate::standard::tracking::camera::{self, node::Camera};
-use ephys_rs::engine::{Graph, NodeId, NodesEnum, Port, PortRole};
+use ephys_rs::engine::{Graph, NodeId, NodesEnum, PortAddress, PortRole};
 use ephys_rs::layout::{Pane, WindowState};
 use ephys_rs::quick_action::{Arrangement, QuickAction, QuickChange, QuickState, Tab};
 
@@ -113,7 +113,7 @@ impl Change {
     }
 
     /// Whether a port has an edge.
-    fn linked(&self, port: Port) -> bool {
+    fn linked(&self, port: PortAddress) -> bool {
         self.graph.edges().iter().any(|e| e.source() == port || e.target() == port)
     }
 
@@ -150,8 +150,8 @@ impl Change {
     }
 }
 
-fn port((node, role, index): (NodeId, PortRole, usize)) -> Port {
-    Port { node, role, index }
+fn port((node, role, index): (NodeId, PortRole, usize)) -> PortAddress {
+    PortAddress { node, role, port_idx: index }
 }
 
 use PortRole::{DataStreamIn, DataStreamOut, ValInCmdOut, ValOutCmdIn};
@@ -326,13 +326,15 @@ fn position_nodes(graph: &Graph<Nodes>) -> Vec<NodeId> {
 /// the VR Computer and the position detector.)
 fn move_positions(graph: &mut Graph<Nodes>, from: NodeId, to: NodeId) {
     for index in 0..2 {
-        let targets: Vec<Port> = graph.edges_from(port((from, DataStreamOut, index))).map(|e| e.target()).collect();
+        let targets: Vec<PortAddress> =
+            graph.edges_from(port((from, DataStreamOut, index))).map(|e| e.target()).collect();
         for target in targets {
             let _ = graph.connect(port((to, DataStreamOut, index)), target);
         }
     }
     let setting = port((from, ValOutCmdIn, 0));
-    let controls: Vec<Port> = graph.edges().iter().filter(|e| e.target() == setting).map(|e| e.source()).collect();
+    let controls: Vec<PortAddress> =
+        graph.edges().iter().filter(|e| e.target() == setting).map(|e| e.source()).collect();
     for control in controls {
         let _ = graph.connect(control, port((to, ValOutCmdIn, 0)));
     }
@@ -500,7 +502,7 @@ mod tests {
             graph
                 .edges()
                 .iter()
-                .find(|e| e.target() == Port { node: id, role: DataStreamIn, index: 0 })
+                .find(|e| e.target() == PortAddress { node: id, role: DataStreamIn, port_idx: 0 })
                 .unwrap()
                 .from
                 .node
@@ -523,7 +525,7 @@ mod tests {
         let alarm_processor = named("Alarm Processor");
         let inputs = &resolved[&alarm_processor].input_streams;
         assert!(inputs.iter().all(Option::is_some), "all connected");
-        let into = Port { node: alarm_processor, role: DataStreamIn, index: 1 };
+        let into = PortAddress { node: alarm_processor, role: DataStreamIn, port_idx: 1 };
         assert!(graph.edges().iter().any(|e| e.target() == into && e.from.node == lfp), "the LFP, filtered");
         assert!(graph.get(alarm_processor).unwrap().shown_in_basic(), "for its settings");
         let Nodes::AlarmProcessor(alarms) = &graph.get(named("Alarm Processor")).unwrap().node else { panic!() };
@@ -533,24 +535,25 @@ mod tests {
         // The LFP Viewer sets the EEG's gains, the selection and the spikes' reference.
         let lfp_viewer = named("LFP Viewer");
         let controls = |port| {
-            let from = ephys_rs::engine::PortRef { node: lfp_viewer, port_idx: port };
+            let from = ephys_rs::engine::EdgeEnd { node: lfp_viewer, port_idx: port };
             let settings = graph.edges().iter().filter(|e| e.dimension == ephys_rs::engine::Dimension::Values);
             settings.into_iter().find(|e| e.from == from).map(|e| e.to.node)
         };
         assert_eq!(controls(0), Some(named("Continuous Gain")));
         assert_eq!(controls(1), Some(selector));
         assert_eq!(controls(2), Some(named("Reference")));
-        let reference_shown = Port { node: lfp_viewer, role: DataStreamIn, index: 2 };
+        let reference_shown = PortAddress { node: lfp_viewer, role: DataStreamIn, port_idx: 2 };
         assert_eq!(
             graph.edge_into(reference_shown).map(|e| (e.from.node, e.from.port_idx)),
             Some((named("Reference"), 1))
         );
         let ltx = graph.iter().find(|(_, e)| e.node.info().name == "Write LTX").unwrap().0;
-        let into = |i| graph.edges().iter().any(|e| e.target() == Port { node: ltx, role: DataStreamIn, index: i });
+        let into =
+            |i| graph.edges().iter().any(|e| e.target() == PortAddress { node: ltx, role: DataStreamIn, port_idx: i });
         assert!((0..4).all(into), "Write LTX records spikes, EEG, positions and digital inputs");
         // With the EEG's selection and gains.
         let ltx_controls = |port| {
-            let from = ephys_rs::engine::PortRef { node: ltx, port_idx: port };
+            let from = ephys_rs::engine::EdgeEnd { node: ltx, port_idx: port };
             graph.edges().iter().find(|e| e.dimension == ephys_rs::engine::Dimension::Values && e.from == from)
         };
         assert_eq!(ltx_controls(2).map(|e| e.to.node), Some(selector));
@@ -567,7 +570,7 @@ mod tests {
 
     /// What feeds a port, by the label of the node.
     fn feeding(graph: &Graph<Nodes>, node: NodeId, role: PortRole, index: usize) -> Option<String> {
-        let edge = graph.edge_into(Port { node, role, index })?;
+        let edge = graph.edge_into(PortAddress { node, role, port_idx: index })?;
         Some(graph.get(edge.from.node)?.label.clone())
     }
 

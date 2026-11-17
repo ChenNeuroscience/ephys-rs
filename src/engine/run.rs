@@ -1334,7 +1334,7 @@ pub fn default_workers() -> usize {
 
 #[cfg(test)]
 pub mod tests {
-    use super::super::{Port, PortRole};
+    use super::super::{PortAddress, PortRole};
     use super::*;
     use crate::NodeType;
     use crate::engine::Graph;
@@ -1359,7 +1359,7 @@ pub mod tests {
     }
 
     fn link(graph: &mut Graph<Nodes>, from: NodeId, output_idx: usize, to: NodeId, input_idx: usize) {
-        let port = |node, role, index| Port { node, role, index };
+        let port = |node, role, index| PortAddress { node, role, port_idx: index };
         graph
             .connect(port(from, PortRole::DataStreamOut, output_idx), port(to, PortRole::DataStreamIn, input_idx))
             .unwrap();

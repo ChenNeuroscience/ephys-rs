@@ -27,8 +27,8 @@ use crate::standard::tracking::{Crop, Detection, Positions};
 use crate::standard::widgets::{named_settings_grid, section};
 use crate::{Buffer, Command, CommandKind, DataStream, Edges, Kind, ValueKind};
 use ephys_rs::engine::{
-    Category, DataStreamInput, DataStreamOutput, EdgeType, Node, NodeInfo, PassContext, PoolStatus, Prepare,
-    PrepareContext, Prepared, Shared, UiContext, ValCmdPort,
+    Category, EdgeType, Node, NodeInfo, PassContext, PoolStatus, Port, Prepare, PrepareContext, Prepared, Shared,
+    UiContext,
 };
 use ephys_rs::theme::Colours;
 
@@ -154,15 +154,15 @@ impl Node<Edges> for TrackerView {
     type UiState = TrackerUi;
     type GlobalSettings = ();
 
-    fn data_stream_inputs(&self) -> Vec<DataStreamInput<Edges>> {
+    fn data_stream_inputs(&self) -> Vec<Port<Edges>> {
         vec![
-            DataStreamInput { name: "video", kind: Kind::Video },
-            DataStreamInput { name: "positions", kind: Kind::Positions },
-            DataStreamInput { name: "stats", kind: Kind::CameraStats },
+            Port::DataStreamIn { name: "video", data_stream_kind: Kind::Video },
+            Port::DataStreamIn { name: "positions", data_stream_kind: Kind::Positions },
+            Port::DataStreamIn { name: "stats", data_stream_kind: Kind::CameraStats },
         ]
     }
 
-    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<DataStreamOutput<Edges>> {
+    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
         Vec::new()
     }
 
@@ -170,10 +170,10 @@ impl Node<Edges> for TrackerView {
         if inputs[0].is_none() && inputs[1].is_none() { vec!["Connect video or positions".into()] } else { Vec::new() }
     }
 
-    fn val_cmd_ports(&self) -> Vec<ValCmdPort<Edges>> {
+    fn val_cmd_ports(&self) -> Vec<Port<Edges>> {
         vec![
-            ValCmdPort::val_in_cmd_out("camera", ValueKind::Camera, &[CommandKind::SetCamera]),
-            ValCmdPort::val_in_cmd_out("detection", ValueKind::Detection, &[CommandKind::SetDetection]),
+            Port::val_in_cmd_out("camera", ValueKind::Camera, &[CommandKind::SetCamera]),
+            Port::val_in_cmd_out("detection", ValueKind::Detection, &[CommandKind::SetDetection]),
         ]
     }
 
@@ -927,7 +927,7 @@ mod tests {
     use crate::NodeType;
     use crate::Nodes;
     use ephys_rs::engine::NodeTypeEnum;
-    use ephys_rs::engine::{Graph, NodeId, NodesEnum, Port, PortRole, Runner, Snapshot};
+    use ephys_rs::engine::{Graph, NodeId, NodesEnum, PortAddress, PortRole, Runner, Snapshot};
 
     /// The path's sent to the window while recording, a pass at a time, and goes when recording starts again.
     #[test]
@@ -1005,7 +1005,7 @@ mod tests {
         }
         let detector = add(&mut graph, "Position Detector");
         let view = add(&mut graph, "Tracker View");
-        let port = |node, role, index| Port { node, role, index };
+        let port = |node, role, index| PortAddress { node, role, port_idx: index };
         graph.connect(port(camera, PortRole::DataStreamOut, 0), port(detector, PortRole::DataStreamIn, 0)).unwrap();
         graph.connect(port(camera, PortRole::DataStreamOut, 0), port(view, PortRole::DataStreamIn, 0)).unwrap();
         graph.connect(port(detector, PortRole::DataStreamOut, 0), port(view, PortRole::DataStreamIn, 1)).unwrap();
@@ -1033,7 +1033,7 @@ mod tests {
         }
         let detector = add(&mut graph, "Position Detector");
         let view = add(&mut graph, "Tracker View");
-        let port = |node, role, index| Port { node, role, index };
+        let port = |node, role, index| PortAddress { node, role, port_idx: index };
         graph.connect(port(camera, PortRole::DataStreamOut, 0), port(detector, PortRole::DataStreamIn, 0)).unwrap();
         graph.connect(port(camera, PortRole::DataStreamOut, 0), port(view, PortRole::DataStreamIn, 0)).unwrap();
         graph.connect(port(detector, PortRole::DataStreamOut, 0), port(view, PortRole::DataStreamIn, 1)).unwrap();
@@ -1064,7 +1064,7 @@ mod tests {
         }
         let detector = add(&mut graph, "Position Detector");
         let view = add(&mut graph, "Tracker View");
-        let port = |node, role, index| Port { node, role, index };
+        let port = |node, role, index| PortAddress { node, role, port_idx: index };
         graph.connect(port(camera, PortRole::DataStreamOut, 0), port(detector, PortRole::DataStreamIn, 0)).unwrap();
         graph.connect(port(camera, PortRole::DataStreamOut, 0), port(view, PortRole::DataStreamIn, 0)).unwrap();
         graph.connect(port(detector, PortRole::DataStreamOut, 0), port(view, PortRole::DataStreamIn, 1)).unwrap();
@@ -1098,7 +1098,7 @@ mod tests {
         let camera = add(&mut graph, "Camera");
         let detector = add(&mut graph, "Position Detector");
         let view = add(&mut graph, "Tracker View");
-        let port = |node, role, index| Port { node, role, index };
+        let port = |node, role, index| PortAddress { node, role, port_idx: index };
         graph.connect(port(camera, PortRole::DataStreamOut, 0), port(detector, PortRole::DataStreamIn, 0)).unwrap();
         graph.connect(port(camera, PortRole::DataStreamOut, 0), port(view, PortRole::DataStreamIn, 0)).unwrap();
         graph.connect(port(detector, PortRole::DataStreamOut, 0), port(view, PortRole::DataStreamIn, 1)).unwrap();
@@ -1204,7 +1204,7 @@ mod tests {
         let mut graph = Graph::default();
         let vr = add(&mut graph, "VR Computer");
         let view = add(&mut graph, "Tracker View");
-        let port = |node, role, index| Port { node, role, index };
+        let port = |node, role, index| PortAddress { node, role, port_idx: index };
         graph.connect(port(vr, PortRole::DataStreamOut, 0), port(view, PortRole::DataStreamIn, 1)).unwrap();
         graph.connect(port(view, PortRole::ValInCmdOut, 1), port(vr, PortRole::ValOutCmdIn, 0)).unwrap();
         let window = [

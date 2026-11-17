@@ -51,8 +51,8 @@ use crate::standard::widgets::{named_settings_grid, setting};
 use crate::standard::{Buffer, Command, CommandKind, DataStream, Edges, Kind, PublishedValue, ValueKind};
 use eframe::egui::{self, RichText};
 use ephys_rs::engine::{
-    Category, CommandContext, CommandSource, DataStreamOutput, Flow, Node, NodeInfo, NodeThread, PassContext,
-    SnapshotLite, ThreadContext, UiContext, ValCmdPort,
+    Category, CommandContext, CommandSource, Flow, Node, NodeInfo, NodeThread, PassContext, Port, SnapshotLite,
+    ThreadContext, UiContext,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -541,21 +541,25 @@ impl Node<Edges> for VrComputer {
     type UiState = ();
     type GlobalSettings = ();
 
-    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<DataStreamOutput<Edges>> {
+    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
         let [_, _, width, height] = window(&self.custom).and_then(|crop| crop.bounds()).unwrap_or([0.0; 4]);
         let frame = |size: f32| if size > 0.0 { size.ceil() as u32 } else { FRAME_SIZE };
         let positions = Positions { fps: self.fps, width: frame(width), height: frame(height), source: SOURCE };
         let ttl = Events { lines: ttl_channels(&self.custom).unwrap_or(0), sample_rate: TTL_RATE as f32 };
         vec![
-            DataStreamOutput {
+            Port::DataStreamOut {
                 name: "positions",
-                kind: Kind::Positions,
+                data_stream_kind: Kind::Positions,
                 stream: Some(DataStream::Positions(positions)),
             },
-            DataStreamOutput { name: "pos ttl", kind: Kind::Events, stream: Some(DataStream::Events(ttl)) },
-            DataStreamOutput {
+            Port::DataStreamOut {
+                name: "pos ttl",
+                data_stream_kind: Kind::Events,
+                stream: Some(DataStream::Events(ttl)),
+            },
+            Port::DataStreamOut {
                 name: "log",
-                kind: Kind::LogLines,
+                data_stream_kind: Kind::LogLines,
                 stream: Some(DataStream::LogLines(LogLines { width: self.log_width })),
             },
         ]
@@ -568,8 +572,8 @@ impl Node<Edges> for VrComputer {
         vec!["No settings from the VR computer yet: positions can't be recorded properly without them".into()]
     }
 
-    fn val_cmd_ports(&self) -> Vec<ValCmdPort<Edges>> {
-        vec![ValCmdPort::val_out_cmd_in("settings", ValueKind::Detection, &[CommandKind::SetDetection])]
+    fn val_cmd_ports(&self) -> Vec<Port<Edges>> {
+        vec![Port::val_out_cmd_in("settings", ValueKind::Detection, &[CommandKind::SetDetection])]
     }
 
     fn val_out(&self, _port_idx: usize) -> PublishedValue {
@@ -754,7 +758,7 @@ mod tests {
     fn buffers(node: &VrComputer) -> (PositionsBuffer, EventsBuffer, LogLinesBuffer) {
         let outputs = node.data_stream_outputs(&[]);
         let (Some(DataStream::Positions(p)), Some(DataStream::Events(e)), Some(DataStream::LogLines(l))) =
-            (outputs[0].stream, outputs[1].stream, outputs[2].stream)
+            (outputs[0].stream(), outputs[1].stream(), outputs[2].stream())
         else {
             panic!("its streams")
         };
@@ -846,7 +850,7 @@ mod tests {
         assert!(complete(&custom));
         let node = VrComputer { custom, ..node };
         assert!(node.warnings(&[]).is_empty());
-        let Some(DataStream::Events(ttl)) = node.data_stream_outputs(&[])[1].stream else { panic!() };
+        let Some(DataStream::Events(ttl)) = node.data_stream_outputs(&[])[1].stream() else { panic!() };
         assert_eq!(ttl.lines, 3, "a line a channel");
         let PublishedValue::Detection(detection) = &node.val_out(0) else { panic!() };
         assert_eq!(detection.crop, crop, "for Write LTX");

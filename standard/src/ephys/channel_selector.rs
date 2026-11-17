@@ -10,10 +10,7 @@ use crate::standard::ephys::reference::{channels_ui, parse_channels};
 use crate::standard::ephys::{ChannelSelection, Continuous};
 use crate::standard::widgets::{inline_block, input_summary, power, require_input};
 use crate::{Buffer, Command, CommandKind, DataStream, Edges, Kind, PublishedValue, ValueKind};
-use ephys_rs::engine::{
-    Category, CommandContext, CommandSource, DataStreamInput, DataStreamOutput, Node, NodeInfo, PassContext, UiContext,
-    ValCmdPort,
-};
+use ephys_rs::engine::{Category, CommandContext, CommandSource, Node, NodeInfo, PassContext, Port, UiContext};
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -66,11 +63,11 @@ impl Node<Edges> for ChannelSelector {
     type UiState = ();
     type GlobalSettings = ();
 
-    fn data_stream_inputs(&self) -> Vec<DataStreamInput<Edges>> {
-        vec![DataStreamInput { name: "continuous", kind: Kind::Continuous }]
+    fn data_stream_inputs(&self) -> Vec<Port<Edges>> {
+        vec![Port::DataStreamIn { name: "continuous", data_stream_kind: Kind::Continuous }]
     }
 
-    fn data_stream_outputs(&self, inputs: &[Option<DataStream>]) -> Vec<DataStreamOutput<Edges>> {
+    fn data_stream_outputs(&self, inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
         let stream = match inputs[0] {
             Some(DataStream::Continuous(c)) => {
                 let channels = self.passed(c.channels).len() as u32;
@@ -78,7 +75,7 @@ impl Node<Edges> for ChannelSelector {
             }
             _ => None,
         };
-        vec![DataStreamOutput { name: "selected", kind: Kind::Continuous, stream }]
+        vec![Port::DataStreamOut { name: "selected", data_stream_kind: Kind::Continuous, stream }]
     }
 
     fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
@@ -106,8 +103,8 @@ impl Node<Edges> for ChannelSelector {
         }
     }
 
-    fn val_cmd_ports(&self) -> Vec<ValCmdPort<Edges>> {
-        vec![ValCmdPort::val_out_cmd_in("selection", ValueKind::ChannelSelection, &[CommandKind::SetChannelSelection])]
+    fn val_cmd_ports(&self) -> Vec<Port<Edges>> {
+        vec![Port::val_out_cmd_in("selection", ValueKind::ChannelSelection, &[CommandKind::SetChannelSelection])]
     }
 
     fn val_out(&self, _port_idx: usize) -> PublishedValue {
@@ -157,7 +154,7 @@ mod tests {
         let mut selector = ChannelSelector { apply: false, channels: "2, 4".into() };
         let run = |selector: &ChannelSelector| {
             let Some(DataStream::Continuous(out)) =
-                selector.data_stream_outputs(&[Some(DataStream::Continuous(stream))])[0].stream
+                selector.data_stream_outputs(&[Some(DataStream::Continuous(stream))])[0].stream()
             else {
                 unreachable!()
             };
@@ -190,7 +187,7 @@ mod tests {
         use crate::standard::themes::THEMES;
         use crate::{Nodes, example_graph};
         use ephys_rs::base_directory::Place;
-        use ephys_rs::engine::{Graph, NodesEnum, Port, PortRole, Recording, Runner, Snapshot};
+        use ephys_rs::engine::{Graph, NodesEnum, PortAddress, PortRole, Recording, Runner, Snapshot};
         use std::sync::Arc;
         use std::time::{Duration, Instant};
 
@@ -208,37 +205,46 @@ mod tests {
             b.source = Source::Fake { address: serve_test_board() };
         }
         // A node of each type taking what `from` has, of the kinds in `kinds`.
-        let takers = |graph: &mut Graph<Nodes>, from: &[(Kind, Port)]| {
+        let takers = |graph: &mut Graph<Nodes>, from: &[(Kind, PortAddress)]| {
             let mut added = Vec::new();
             for &node_type in <crate::NodeType as ephys_rs::engine::NodeTypeEnum>::ALL {
                 let node = Nodes::create(node_type);
                 let inputs: Vec<_> = (node.data_stream_inputs().iter().enumerate())
-                    .filter_map(|(input, i)| from.iter().find(|(kind, _)| *kind == i.kind).map(|f| (input, f.1)))
+                    .filter_map(|(input, i)| {
+                        from.iter().find(|(kind, _)| Some(*kind) == i.data_stream_kind()).map(|f| (input, f.1))
+                    })
                     .collect();
                 if !inputs.is_empty() {
                     let id = graph.add(node, [0.0, 0.0]);
                     added.push(id);
                     for (input, port) in inputs {
-                        graph.connect(port, Port { node: id, role: PortRole::DataStreamIn, index: input }).unwrap();
+                        graph
+                            .connect(port, PortAddress { node: id, role: PortRole::DataStreamIn, port_idx: input })
+                            .unwrap();
                     }
                 }
             }
             added
         };
-        let selected = Port { node: selector, role: PortRole::DataStreamOut, index: 0 };
+        let selected = PortAddress { node: selector, role: PortRole::DataStreamOut, port_idx: 0 };
         let first = takers(&mut graph, &[(Kind::Continuous, selected)]);
         let resolved = graph.resolve();
-        let made: Vec<(Kind, Port)> = (first.iter())
+        let made: Vec<(Kind, PortAddress)> = (first.iter())
             .flat_map(|&node| {
                 let outputs = resolved[&node].outputs.iter().enumerate();
-                outputs.map(move |(index, o)| (o.kind, Port { node, role: PortRole::DataStreamOut, index }))
+                outputs.map(move |(index, o)| {
+                    (
+                        o.data_stream_kind().expect("a data port"),
+                        PortAddress { node, role: PortRole::DataStreamOut, port_idx: index },
+                    )
+                })
             })
             .filter(|(kind, _)| matches!(kind, Kind::Spikes | Kind::Spectra))
             .collect();
         assert!(made.len() >= 2, "some spikes and spectra, of no channels");
         takers(&mut graph, &made);
         let resolved = graph.resolve();
-        let stream = &resolved[&selector].outputs[0].stream;
+        let stream = &resolved[&selector].outputs[0].stream();
         assert!(matches!(stream, Some(DataStream::Continuous(c)) if c.channels == 0));
 
         let dir = std::env::temp_dir().join(format!("ephys-rs-nothing-selected-{}", std::process::id()));

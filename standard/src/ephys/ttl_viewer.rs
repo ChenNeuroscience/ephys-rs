@@ -12,8 +12,7 @@ use crate::standard::pool::Pool;
 use crate::standard::widgets::{TIME_AXIS_HEIGHT, require_input, time_axis_ui};
 use crate::{Buffer, DataStream, Edges, Kind};
 use ephys_rs::engine::{
-    Category, DataStreamInput, DataStreamOutput, EdgeType, Node, NodeInfo, PassContext, PassState, Prepare,
-    PrepareContext, Prepared, UiContext,
+    Category, EdgeType, Node, NodeInfo, PassContext, PassState, Port, Prepare, PrepareContext, Prepared, UiContext,
 };
 
 /// The most changes kept, however many come.
@@ -103,11 +102,11 @@ impl Node<Edges> for TtlViewer {
     const WINDOW_SIZE: [f32; 2] = [820.0, 520.0];
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
-    fn data_stream_inputs(&self) -> Vec<DataStreamInput<Edges>> {
-        vec![DataStreamInput { name: "events", kind: Kind::Events }]
+    fn data_stream_inputs(&self) -> Vec<Port<Edges>> {
+        vec![Port::DataStreamIn { name: "events", data_stream_kind: Kind::Events }]
     }
 
-    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<DataStreamOutput<Edges>> {
+    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
         Vec::new()
     }
 

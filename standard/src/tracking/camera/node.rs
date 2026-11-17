@@ -11,8 +11,8 @@ use crate::standard::tracking::Video;
 use crate::standard::widgets::{setting, settings_grid};
 use crate::{Buffer, Command, CommandKind, DataStream, Edges, Kind, PublishedValue, ValueKind};
 use ephys_rs::engine::{
-    Category, CommandContext, CommandSource, DataStreamOutput, Flow, Node, NodeInfo, NodeThread, PassContext,
-    PoolStatus, Prepare, PrepareContext, Prepared, Suggestion, ThreadContext, UiContext, UserDecision, ValCmdPort,
+    Category, CommandContext, CommandSource, Flow, Node, NodeInfo, NodeThread, PassContext, PoolStatus, Port, Prepare,
+    PrepareContext, Prepared, Suggestion, ThreadContext, UiContext, UserDecision,
 };
 
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -79,21 +79,25 @@ impl Node<Edges> for Camera {
     type UiState = ();
     type GlobalSettings = super::SpinnakerSettings;
 
-    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<DataStreamOutput<Edges>> {
+    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
         let [width, height] = self.settings.frame_size;
         let stream = Video { width, height, fps: self.settings.frame_rate as f32 };
         vec![
-            DataStreamOutput { name: "video", kind: Kind::Video, stream: Some(DataStream::Video(stream)) },
-            DataStreamOutput {
+            Port::DataStreamOut {
+                name: "video",
+                data_stream_kind: Kind::Video,
+                stream: Some(DataStream::Video(stream)),
+            },
+            Port::DataStreamOut {
                 name: "stats",
-                kind: Kind::CameraStats,
+                data_stream_kind: Kind::CameraStats,
                 stream: Some(DataStream::CameraStats(CameraStats)),
             },
         ]
     }
 
-    fn val_cmd_ports(&self) -> Vec<ValCmdPort<Edges>> {
-        vec![ValCmdPort::val_out_cmd_in("camera", ValueKind::Camera, &[CommandKind::SetCamera])]
+    fn val_cmd_ports(&self) -> Vec<Port<Edges>> {
+        vec![Port::val_out_cmd_in("camera", ValueKind::Camera, &[CommandKind::SetCamera])]
     }
 
     fn val_out(&self, _port_idx: usize) -> PublishedValue {

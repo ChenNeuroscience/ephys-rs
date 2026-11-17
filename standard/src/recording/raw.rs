@@ -32,8 +32,8 @@ use crate::standard::pool::Pool;
 use crate::standard::widgets::require_input;
 use crate::{Buffer, CommandKind, DataStream, Edges, Kind, ValueKind};
 use ephys_rs::engine::{
-    Category, DataStreamInput, DataStreamOutput, DataStreamType, EdgeTypesEnum, Flow, Node, NodeInfo, NodeThread,
-    PASS_DURATION, PassContext, PoolStatus, ThreadContext, UiContext, ValCmdPort,
+    Category, DataStreamType, EdgeTypesEnum, Flow, Node, NodeInfo, NodeThread, PASS_DURATION, PassContext, PoolStatus,
+    Port, ThreadContext, UiContext,
 };
 
 /// Its port sending what it recorded to what's to process it, once it's finished (see `after_recording`).
@@ -113,22 +113,20 @@ impl Node<Edges> for WriteRaw {
         TreeShake::needing_all(recording && inputs.contains(&true), inputs.len())
     }
 
-    fn data_stream_inputs(&self) -> Vec<DataStreamInput<Edges>> {
+    fn data_stream_inputs(&self) -> Vec<Port<Edges>> {
         vec![
-            DataStreamInput { name: "continuous", kind: Kind::Continuous },
-            DataStreamInput { name: "events", kind: Kind::Events },
+            Port::DataStreamIn { name: "continuous", data_stream_kind: Kind::Continuous },
+            Port::DataStreamIn { name: "events", data_stream_kind: Kind::Events },
         ]
     }
 
     /// On the right, as what it sets off comes after it: where it sends what it's recorded, once it's finished (see
     /// `after_recording`).
-    fn val_cmd_ports(&self) -> Vec<ValCmdPort<Edges>> {
-        vec![
-            ValCmdPort::val_in_cmd_out("after recording", ValueKind::FileInput, &[CommandKind::ProcessFiles]).flipped(),
-        ]
+    fn val_cmd_ports(&self) -> Vec<Port<Edges>> {
+        vec![Port::val_in_cmd_out("after recording", ValueKind::FileInput, &[CommandKind::ProcessFiles]).flipped()]
     }
 
-    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<DataStreamOutput<Edges>> {
+    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
         Vec::new()
     }
 
@@ -219,7 +217,7 @@ impl Node<Edges> for WriteRaw {
                 .data_stream_inputs()
                 .iter()
                 .zip(context.inputs)
-                .filter_map(|(input, stream)| stream.map(|s| format!("{}: {}", input.name, s.summary())))
+                .filter_map(|(input, stream)| stream.map(|s| format!("{}: {}", input.name(), s.summary())))
                 .collect();
             if recording.is_empty() {
                 ui.weak("Nothing connected to record.");

@@ -616,8 +616,8 @@ fn step_row<N: NodesEnum>(
     ui.label(RichText::new(format!("{:>2}", index + 1)).monospace().size(10.5).color(colours.text_disabled));
     node_chip(ui, graph, step.id, Some(130.0));
     let state = resolved.get(&step.id);
-    let input_names: Vec<&str> = state.map(|s| s.inputs.iter().map(|i| i.name).collect()).unwrap_or_default();
-    let output_names: Vec<&str> = state.map(|s| s.outputs.iter().map(|o| o.name).collect()).unwrap_or_default();
+    let input_names: Vec<&str> = state.map(|s| s.inputs.iter().map(|i| i.name()).collect()).unwrap_or_default();
+    let output_names: Vec<&str> = state.map(|s| s.outputs.iter().map(|o| o.name()).collect()).unwrap_or_default();
     for (i, buffer) in step.inputs.iter().enumerate() {
         let name = input_names.get(i).copied().unwrap_or("input");
         // Copied for it, if it takes a buffer it can't be the last to read.

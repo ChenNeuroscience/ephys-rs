@@ -12,8 +12,8 @@ use crate::standard::pool::Pool;
 use crate::standard::widgets::{named_settings_grid, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind};
 use ephys_rs::engine::{
-    Category, DataStreamOutput, Flow, Node, NodeInfo, NodeThread, PassContext, PoolStatus, Prepare, PrepareContext,
-    Prepared, Suggestion, ThreadContext, UiContext, UserDecision,
+    Category, Flow, Node, NodeInfo, NodeThread, PassContext, PoolStatus, Port, Prepare, PrepareContext, Prepared,
+    Suggestion, ThreadContext, UiContext, UserDecision,
 };
 use ephys_rs::gui::widgets::{Icon, small_icon_button};
 
@@ -134,29 +134,33 @@ impl Node<Edges> for AcquisitionBoard {
     type UiState = ();
     type GlobalSettings = super::OpenEphysSettings;
 
-    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<DataStreamOutput<Edges>> {
+    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
         let rate = self.sample_rate as f32;
         let continuous = |channels| Some(DataStream::Continuous(Continuous { channels, sample_rate: rate }));
         let mut outputs = vec![
-            DataStreamOutput {
+            Port::DataStreamOut {
                 name: "headstages",
-                kind: Kind::Continuous,
+                data_stream_kind: Kind::Continuous,
                 stream: continuous(Headstage::total(&self.headstages)),
             },
-            DataStreamOutput {
+            Port::DataStreamOut {
                 name: "digital",
-                kind: Kind::Events,
+                data_stream_kind: Kind::Events,
                 stream: Some(DataStream::Events(Events { lines: self.source.ttl_lines(), sample_rate: rate })),
             },
         ];
         if self.aux {
             let channels = AUX_PER_HEADSTAGE * self.headstages.len() as u32;
-            outputs.push(DataStreamOutput { name: "auxiliary", kind: Kind::Continuous, stream: continuous(channels) });
+            outputs.push(Port::DataStreamOut {
+                name: "auxiliary",
+                data_stream_kind: Kind::Continuous,
+                stream: continuous(channels),
+            });
         }
         if self.adc {
-            outputs.push(DataStreamOutput {
+            outputs.push(Port::DataStreamOut {
                 name: "analogue",
-                kind: Kind::Continuous,
+                data_stream_kind: Kind::Continuous,
                 stream: continuous(ADC_CHANNELS),
             });
         }

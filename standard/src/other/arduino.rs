@@ -25,8 +25,8 @@ use crate::standard::pool::Pool;
 use crate::standard::widgets::{combo, named_settings_grid, setting};
 use crate::{DataStream, Edges};
 use ephys_rs::engine::{
-    Category, DataStreamOutput, Flow, Node, NodeInfo, NodeThread, PassContext, PassState, Prepare, PrepareContext,
-    Prepared, ThreadContext, UiContext,
+    Category, Flow, Node, NodeInfo, NodeThread, PassContext, PassState, Port, Prepare, PrepareContext, Prepared,
+    ThreadContext, UiContext,
 };
 use ephys_rs::gui::widgets::{Icon, small_icon_button};
 
@@ -356,7 +356,7 @@ impl Node<Edges> for Arduino {
     type UiState = ();
     type GlobalSettings = ();
 
-    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<DataStreamOutput<Edges>> {
+    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
         Vec::new()
     }
 

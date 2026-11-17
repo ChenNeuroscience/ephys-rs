@@ -29,8 +29,8 @@ use crate::standard::widgets::{mark_mixed, open_settings_button, require_input};
 use crate::standard::widgets::{power, small_toggle};
 use crate::{Buffer, Command, CommandKind, DataStream, Edges, Kind, ValueKind};
 use ephys_rs::engine::{
-    Category, DataStreamInput, DataStreamOutput, Flow, Node, NodeInfo, NodeThread, PassContext, PassState, PoolStatus,
-    Prepare, PrepareContext, Prepared, Shared, UiContext, ValCmdPort,
+    Category, Flow, Node, NodeInfo, NodeThread, PassContext, PassState, PoolStatus, Port, Prepare, PrepareContext,
+    Prepared, Shared, UiContext,
 };
 use ephys_rs::gui::widgets::Icon;
 use ephys_rs::theme::Colours;
@@ -184,16 +184,16 @@ impl Node<Edges> for AlarmViewer {
     const WINDOW_SIZE: [f32; 2] = [820.0, 520.0];
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
-    fn data_stream_inputs(&self) -> Vec<DataStreamInput<Edges>> {
-        vec![DataStreamInput { name: "alarms", kind: Kind::AlarmStates }]
+    fn data_stream_inputs(&self) -> Vec<Port<Edges>> {
+        vec![Port::DataStreamIn { name: "alarms", data_stream_kind: Kind::AlarmStates }]
     }
 
-    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<DataStreamOutput<Edges>> {
+    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
         Vec::new()
     }
 
-    fn val_cmd_ports(&self) -> Vec<ValCmdPort<Edges>> {
-        vec![ValCmdPort::val_in_cmd_out("alarms", ValueKind::Alarms, &[CommandKind::SetAlarms])]
+    fn val_cmd_ports(&self) -> Vec<Port<Edges>> {
+        vec![Port::val_in_cmd_out("alarms", ValueKind::Alarms, &[CommandKind::SetAlarms])]
     }
 
     fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
@@ -679,7 +679,7 @@ mod tests {
     use crate::standard::themes::THEMES;
     use egui_kittest::kittest::Queryable;
     use ephys_rs::engine::NodeTypeEnum;
-    use ephys_rs::engine::{Graph, NodesEnum, Port, PortRole};
+    use ephys_rs::engine::{Graph, NodesEnum, PortAddress, PortRole};
     use ephys_rs::engine::{NodeId, SharedByNode};
     use std::any::Any;
     use std::cell::RefCell;
@@ -771,8 +771,8 @@ mod tests {
             *node = AlarmProcessor { alarms };
         }
         let (from, to) = (
-            Port { node: viewer, role: PortRole::ValInCmdOut, index: 0 },
-            Port { node: processor, role: PortRole::ValOutCmdIn, index: 0 },
+            PortAddress { node: viewer, role: PortRole::ValInCmdOut, port_idx: 0 },
+            PortAddress { node: processor, role: PortRole::ValOutCmdIn, port_idx: 0 },
         );
         graph.connect(from, to).unwrap();
         let gui: Gui =
@@ -1167,7 +1167,7 @@ mod tests {
         if let Some(Nodes::AlarmProcessor(node)) = graph.get_mut(processor).map(|e| &mut e.node) {
             node.alarms = alarms;
         }
-        let port = |node, role, index| Port { node, role, index };
+        let port = |node, role, index| PortAddress { node, role, port_idx: index };
         graph.connect(port(board, PortRole::DataStreamOut, 1), port(processor, PortRole::DataStreamIn, 3)).unwrap();
         graph.connect(port(processor, PortRole::DataStreamOut, 0), port(viewer, PortRole::DataStreamIn, 0)).unwrap();
 

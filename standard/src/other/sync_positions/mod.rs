@@ -22,9 +22,7 @@ use serde::{Deserialize, Serialize};
 use crate::standard::other::run_command::{FileInput, Files};
 use crate::{Command, CommandKind, DataStream, Edges, PublishedValue, ValueKind};
 use ephys_rs::commands::CmdSender;
-use ephys_rs::engine::{
-    Category, CommandContext, CommandSource, DataStreamOutput, Node, NodeInfo, UiContext, ValCmdPort,
-};
+use ephys_rs::engine::{Category, CommandContext, CommandSource, Node, NodeInfo, Port, UiContext};
 
 mod checks;
 pub mod files;
@@ -321,16 +319,16 @@ impl Node<Edges> for SyncPositions {
     const WINDOW_SIZE: [f32; 2] = [680.0, 780.0];
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
-    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<DataStreamOutput<Edges>> {
+    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
         Vec::new()
     }
 
     /// Where it's sent recordings' files to sync, on the left, as what sends them comes before it; and where it sends
     /// them on, once it's synced them, on the right, as what's sent them then comes after it.
-    fn val_cmd_ports(&self) -> Vec<ValCmdPort<Edges>> {
+    fn val_cmd_ports(&self) -> Vec<Port<Edges>> {
         vec![
-            ValCmdPort::val_out_cmd_in("files", ValueKind::FileInput, &[CommandKind::ProcessFiles]).flipped(),
-            ValCmdPort::val_in_cmd_out("after syncing", ValueKind::FileInput, &[CommandKind::ProcessFiles]).flipped(),
+            Port::val_out_cmd_in("files", ValueKind::FileInput, &[CommandKind::ProcessFiles]).flipped(),
+            Port::val_in_cmd_out("after syncing", ValueKind::FileInput, &[CommandKind::ProcessFiles]).flipped(),
         ]
     }
 

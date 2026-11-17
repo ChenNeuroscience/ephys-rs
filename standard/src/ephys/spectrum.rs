@@ -19,8 +19,8 @@ use crate::standard::ephys::{Continuous, ContinuousBuffer};
 use crate::standard::widgets::{input_summary, require_input, setting, settings_grid};
 use crate::{Buffer, DataStream, Edges, Kind};
 use ephys_rs::engine::{
-    Category, DataStreamInput, DataStreamOutput, DataStreamType, EdgeInfo, EdgeType, Node, NodeInfo, PassContext,
-    Prepare, PrepareContext, Prepared, UiContext,
+    Category, DataStreamType, EdgeInfo, EdgeType, Node, NodeInfo, PassContext, Port, Prepare, PrepareContext, Prepared,
+    UiContext,
 };
 
 /// About how many samples a second the spectra are worked out from.
@@ -135,16 +135,16 @@ impl Node<Edges> for Spectrum {
         TreeShake::needing_all(inputs.contains(&true) && outputs.contains(&true), inputs.len())
     }
 
-    fn data_stream_inputs(&self) -> Vec<DataStreamInput<Edges>> {
-        vec![DataStreamInput { name: "continuous", kind: Kind::Continuous }]
+    fn data_stream_inputs(&self) -> Vec<Port<Edges>> {
+        vec![Port::DataStreamIn { name: "continuous", data_stream_kind: Kind::Continuous }]
     }
 
-    fn data_stream_outputs(&self, inputs: &[Option<DataStream>]) -> Vec<DataStreamOutput<Edges>> {
+    fn data_stream_outputs(&self, inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
         let stream = match inputs[0] {
             Some(DataStream::Continuous(c)) => Some(DataStream::Spectra(Spectra::of(c, self.band))),
             _ => None,
         };
-        vec![DataStreamOutput { name: "spectra", kind: Kind::Spectra, stream }]
+        vec![Port::DataStreamOut { name: "spectra", data_stream_kind: Kind::Spectra, stream }]
     }
 
     fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {

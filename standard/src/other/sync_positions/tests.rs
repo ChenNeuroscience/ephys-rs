@@ -6,7 +6,7 @@ use super::*;
 use crate::standard::themes::THEMES;
 use crate::{NodeType, Nodes};
 use ephys_rs::commands::{Address, Commands};
-use ephys_rs::engine::{CommandSource, Graph, NodesEnum, Port, PortRole};
+use ephys_rs::engine::{CommandSource, Graph, NodesEnum, PortAddress, PortRole};
 
 /// A folder of its own, for a test's recording.
 fn scratch(name: &str) -> PathBuf {
@@ -135,8 +135,8 @@ fn send_then(paths: Vec<PathBuf>, commands: Option<&std::sync::Arc<Commands>>) -
     let mut graph = Graph::<Nodes>::default();
     let id = graph.add(Nodes::create(NodeType::SyncPositions), [0.0, 0.0]);
     let after = graph.add(Nodes::create(NodeType::SyncPositions), [0.0, 0.0]);
-    let from = Port { node: id, role: PortRole::ValInCmdOut, index: AFTER_SYNCING };
-    graph.connect(from, Port { node: after, role: PortRole::ValOutCmdIn, index: 0 }).unwrap();
+    let from = PortAddress { node: id, role: PortRole::ValInCmdOut, port_idx: AFTER_SYNCING };
+    graph.connect(from, PortAddress { node: after, role: PortRole::ValOutCmdIn, port_idx: 0 }).unwrap();
     let state: ephys_rs::engine::UiStateCell = std::cell::RefCell::new(Box::new(SyncState::default()));
     let command = Command::ProcessFiles(Files(paths));
     assert!(graph.command(id, CommandSource::Port(0), command, Some(&state), commands, false));
@@ -323,12 +323,12 @@ fn it_shows_what_it_did() {
 /// command: what's sent is all that passes between them.
 #[test]
 fn what_sends_files_connects_to_it() {
-    use ephys_rs::engine::{Port, PortRole};
+    use ephys_rs::engine::{PortAddress, PortRole};
     let mut graph = Graph::<Nodes>::default();
     let [sync, writer, raw, command] =
         [NodeType::SyncPositions, NodeType::WriteLtx, NodeType::WriteRaw, NodeType::RunCommand]
             .map(|node_type| graph.add(Nodes::create(node_type), [0.0, 0.0]));
-    let port = |node, role, index| Port { node, role, index };
+    let port = |node, role, index| PortAddress { node, role, port_idx: index };
     let setting = port(sync, PortRole::ValOutCmdIn, 0);
     assert!(graph.check(port(writer, PortRole::ValInCmdOut, 4), setting).is_ok(), "Write LTX, after recording");
     assert!(graph.check(setting, port(raw, PortRole::ValInCmdOut, 0)).is_ok(), "Write Raw, either way round");

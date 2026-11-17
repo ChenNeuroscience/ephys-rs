@@ -19,10 +19,7 @@ use crate::standard::spikes::{
 };
 use crate::standard::widgets::{input_summary, named_settings_grid, require_input, setting};
 use crate::{Buffer, Command, CommandKind, DataStream, Edges, Kind, PublishedValue, ValueKind};
-use ephys_rs::engine::{
-    Category, CommandContext, CommandSource, DataStreamInput, DataStreamOutput, Node, NodeInfo, PassContext, UiContext,
-    ValCmdPort,
-};
+use ephys_rs::engine::{Category, CommandContext, CommandSource, Node, NodeInfo, PassContext, Port, UiContext};
 use ephys_rs::gui::widgets::info_icon;
 
 #[derive(Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -199,12 +196,12 @@ impl Node<Edges> for SpikeGain {
         TreeShake::needing_all(inputs.contains(&true) && wanted, inputs.len())
     }
 
-    fn data_stream_inputs(&self) -> Vec<DataStreamInput<Edges>> {
-        vec![DataStreamInput { name: "spikes", kind: Kind::Spikes }]
+    fn data_stream_inputs(&self) -> Vec<Port<Edges>> {
+        vec![Port::DataStreamIn { name: "spikes", data_stream_kind: Kind::Spikes }]
     }
 
-    fn data_stream_outputs(&self, inputs: &[Option<DataStream>]) -> Vec<ephys_rs::engine::DataStreamOutput<Edges>> {
-        vec![DataStreamOutput { name: "spikes", kind: Kind::Spikes, stream: inputs[0] }]
+    fn data_stream_outputs(&self, inputs: &[Option<DataStream>]) -> Vec<ephys_rs::engine::Port<Edges>> {
+        vec![Port::DataStreamOut { name: "spikes", data_stream_kind: Kind::Spikes, stream: inputs[0] }]
     }
 
     fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
@@ -216,8 +213,8 @@ impl Node<Edges> for SpikeGain {
         BufferUsage { in_place: vec![Some(0); outputs], ..BufferUsage::none(inputs, outputs) }
     }
 
-    fn val_cmd_ports(&self) -> Vec<ValCmdPort<Edges>> {
-        vec![ValCmdPort::val_out_cmd_in("gains", ValueKind::Gains, &[CommandKind::SetGains, CommandKind::Detect])]
+    fn val_cmd_ports(&self) -> Vec<Port<Edges>> {
+        vec![Port::val_out_cmd_in("gains", ValueKind::Gains, &[CommandKind::SetGains, CommandKind::Detect])]
     }
 
     fn val_out(&self, _port_idx: usize) -> PublishedValue {

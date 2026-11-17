@@ -85,9 +85,9 @@ pub fn show<N: NodesEnum>(
                             .filter_map(|(input, stream)| {
                                 let summary = EdgeTypesEnum::summary(stream.as_ref()?);
                                 Some(if summary.is_empty() {
-                                    input.name.to_string()
+                                    input.name().to_string()
                                 } else {
-                                    format!("{}: {summary}", input.name)
+                                    format!("{}: {summary}", input.name())
                                 })
                             })
                             .collect();
@@ -96,8 +96,8 @@ pub fn show<N: NodesEnum>(
                         }
                         // A source has nothing to connect: what it gives is what's worth saying.
                         let outputs = state.outputs.iter().filter_map(|output| {
-                            let summary = EdgeTypesEnum::summary(output.stream.as_ref()?);
-                            Some(format!("{}: {summary}", output.name))
+                            let summary = EdgeTypesEnum::summary(output.stream().as_ref()?);
+                            Some(format!("{}: {summary}", output.name()))
                         });
                         state.inputs.is_empty().then(|| outputs.collect::<Vec<_>>().join(" · "))
                     });
