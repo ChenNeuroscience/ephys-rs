@@ -26,7 +26,7 @@ edge_types! {
 
 That makes the `DataStream` and `PublishedValue` enums of values, the `Kind` and `ValueKind` enums that ports are declared
 with, and the `Buffer` enum of the data streams' buffers; and the `Command` enum of what nodes can tell each other to
-do, through value edges (or themselves, from their passes and threads), with `CommandKind` naming them (see
+do, through ValCmd edges (or themselves, from their passes and threads), with `CommandKind` naming them (see
 [Nodes](nodes.md#commands)). `Command` has one more variant than the program declares, the core's own
 `ClearTransientState`.
 
@@ -51,11 +51,11 @@ lines in `logs`.
 
 ## Values and commands
 
-Value edges can be hidden, to clear up the graph, with the eye by Settings in the legend. Their ports stay, and they're
+ValCmd edges can be hidden, to clear up the graph, with the eye by Settings in the legend. Their ports stay, and they're
 only hidden: nothing changes, and they come back while a new one's being dragged out. Hiding them deselects any that was
 selected, so Delete can't remove something out of sight.
 
-A value edge runs from a node's `ValInCmdOut` port to another node's `ValOutCmdIn` port of the same kind. Each port is
+A ValCmd edge runs from a node's `ValInCmdOut` port to another node's `ValOutCmdIn` port of the same kind. Each port is
 named for what flows through it, which way (as data ports are `DataStreamIn` and `DataStreamOut`):
 
 - At the `ValOutCmdIn` end, the node **publishes a value** (`Node::val_out`), usually a copy of one of its settings,
@@ -65,7 +65,7 @@ named for what flows through it, which way (as data ports are `DataStreamIn` and
 - A `ValIn` port is val-only: the node only reads the value (a writer recording the gains). The GUI calls it read-only.
 
 A viewer setting a detector's thresholds reads them and sends `SetThresholds`; a writer recording the gains only reads
-them. Value edges carry no data, so can point anywhere, upstream included; a `ValOutCmdIn` can have several edges into
+them. ValCmd edges carry no data, so can point anywhere, upstream included; a `ValOutCmdIn` can have several edges into
 it, a `ValInCmdOut` one out of it. A value's type (a list of thresholds, say) implements `EdgeType`; it needn't be
 `Copy`. A command's type needn't implement anything but `Debug`. Settings stay a node's own: what it saves and loads, and
 what's copied and pasted; what values it gives its `ValOutCmdIn` ports and what it does with commands are up to it.
@@ -79,6 +79,6 @@ A command sent through a port goes through the app's queue (see [`commands.rs`](
 port, not the node at the far end: the app follows the edge as it delivers it, on the GUI's thread. So a sender kept
 for later (`CmdSender`) sends to where the edge points then.
 
-Value edges are drawn dashed, with arrows both ways (dotted when read-only); the legend has one row for each, not a
+ValCmd edges are drawn dashed, with arrows both ways (dotted when read-only); the legend has one row for each, not a
 row per kind of value. Disabled edges are broken in the
 middle.

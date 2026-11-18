@@ -184,7 +184,7 @@ impl<E: Edges> NodeState<E> {
         }
     }
 
-    /// The value port at `(role, port_idx)`, if it's one.
+    /// The ValCmd port at `(role, port_idx)`, if it's one.
     pub fn val_port(&self, role: PortRole, port_idx: usize) -> Option<&Port<E>> {
         match role {
             PortRole::ValOutCmdIn => self.val_outs.get(port_idx),
@@ -434,7 +434,7 @@ impl<N: NodesEnum> Graph<N> {
                 ConnectError::ValueKindMismatch { from, to }
             });
         }
-        // Value edges carry no data, so may point anywhere; only data edges must not loop.
+        // ValCmd edges carry no data, so may point anywhere; only data edges must not loop.
         if from.role.carries_data_stream() && self.reaches(to.node, from.node) {
             return Err(ConnectError::Cycle);
         }
@@ -564,7 +564,7 @@ impl<N: NodesEnum> Graph<N> {
         resolved
     }
 
-    /// Live value edges carrying commands (a command the near end sends that the far end accepts) can make a loop, so
+    /// Live ValCmd edges carrying commands (a command the near end sends that the far end accepts) can make a loop, so
     /// what a node sets off can, in the end, set it off again (Run Commands running each other, say). The canvas warns
     /// of the nodes in such a loop, which this finds.
     pub fn command_loops(&self) -> std::collections::HashSet<NodeId> {

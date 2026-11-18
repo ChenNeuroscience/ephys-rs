@@ -313,10 +313,6 @@ impl Node<Edges> for LfpViewer {
         Vec::new()
     }
 
-    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
-        require_input(inputs, "a continuous data stream")
-    }
-
     fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Traces, (), Self> {
         let inputs = context.inputs;
         if context.same_streams() {
@@ -427,6 +423,10 @@ impl Node<Edges> for LfpViewer {
         if let Some(gains) = gains {
             context.cmd_out_if_changed(GAINS, gains, Command::SetGains);
         }
+    }
+
+    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
+        require_input(inputs, "a continuous data stream")
     }
 }
 

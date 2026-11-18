@@ -102,6 +102,18 @@ impl Node<Edges> for Downsample {
         vec![Port::DataStreamOut { name: "downsampled", data_stream_kind: Kind::Continuous, stream }]
     }
 
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+        let Some(ui) = ui else { return };
+        ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, context| {
+            settings_grid(ui, |ui| {
+                setting(ui, "Rate", |ui| {
+                    ui.add(egui::DragValue::new(&mut node.rate_hz).range(1.0..=100_000.0).speed(10.0).suffix(" Hz"))
+                });
+            });
+            input_summary(ui, context.inputs);
+        });
+    }
+
     fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
         let mut warnings = require_input(inputs, "a continuous data stream");
         if let Some(DataStream::Continuous(input)) = inputs[0]
@@ -114,18 +126,6 @@ impl Node<Edges> for Downsample {
             ));
         }
         warnings
-    }
-
-    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
-        let Some(ui) = ui else { return };
-        ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, context| {
-            settings_grid(ui, |ui| {
-                setting(ui, "Rate", |ui| {
-                    ui.add(egui::DragValue::new(&mut node.rate_hz).range(1.0..=100_000.0).speed(10.0).suffix(" Hz"))
-                });
-            });
-            input_summary(ui, context.inputs);
-        });
     }
 }
 

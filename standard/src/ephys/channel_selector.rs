@@ -78,16 +78,6 @@ impl Node<Edges> for ChannelSelector {
         vec![Port::DataStreamOut { name: "selected", data_stream_kind: Kind::Continuous, stream }]
     }
 
-    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
-        let mut warnings = require_input(inputs, "a continuous data stream");
-        if let Some(DataStream::Continuous(c)) = inputs[0]
-            && let Err(e) = parse_channels(&self.channels, c.channels)
-        {
-            warnings.push(format!("{e}: passing on all the channels"));
-        }
-        warnings
-    }
-
     fn process(&self, pass: &mut PassContext<Edges>, _: &mut (), passed: &mut Passed) {
         let Some(Some(Buffer::Continuous(input))) = pass.inputs.first() else { return };
         let Some(Buffer::Continuous(output)) = pass.outputs.get_mut(0) else { return };
@@ -140,6 +130,16 @@ impl Node<Edges> for ChannelSelector {
             ui.add_space(4.0);
             input_summary(ui, context.inputs);
         });
+    }
+
+    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
+        let mut warnings = require_input(inputs, "a continuous data stream");
+        if let Some(DataStream::Continuous(c)) = inputs[0]
+            && let Err(e) = parse_channels(&self.channels, c.channels)
+        {
+            warnings.push(format!("{e}: passing on all the channels"));
+        }
+        warnings
     }
 }
 

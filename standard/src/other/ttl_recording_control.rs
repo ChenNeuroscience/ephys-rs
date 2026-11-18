@@ -80,17 +80,6 @@ impl Node<Edges> for TtlRecordingControl {
         Vec::new()
     }
 
-    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
-        let mut warnings = require_input(inputs, "events");
-        if let Some(Some(DataStream::Events(stream))) = inputs.first()
-            && self.line > stream.lines
-        {
-            let lines = if stream.lines == 1 { "line".to_string() } else { format!("{} lines", stream.lines) };
-            warnings.push(format!("Its events have {lines}: there's no line {}", self.line));
-        }
-        warnings
-    }
-
     fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Seen, (), Self> {
         if context.same_streams() {
             return Prepared::nothing().into();
@@ -145,6 +134,17 @@ impl Node<Edges> for TtlRecordingControl {
             });
             ui.weak(format!("Started recording {} times, stopped it {} times", seen.starts, seen.stops));
         });
+    }
+
+    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
+        let mut warnings = require_input(inputs, "events");
+        if let Some(Some(DataStream::Events(stream))) = inputs.first()
+            && self.line > stream.lines
+        {
+            let lines = if stream.lines == 1 { "line".to_string() } else { format!("{} lines", stream.lines) };
+            warnings.push(format!("Its events have {lines}: there's no line {}", self.line));
+        }
+        warnings
     }
 }
 

@@ -450,20 +450,6 @@ impl Node<Edges> for Reference {
         ]
     }
 
-    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
-        let mut warnings = require_input(inputs, "a continuous data stream");
-        if let Some(DataStream::Continuous(c)) = inputs[0] {
-            for (index, reference) in self.list.iter().enumerate() {
-                for (what, text) in [("channels", &reference.channels), ("users", &reference.used_by)] {
-                    if let Err(e) = parse_channels(text, c.channels) {
-                        warnings.push(format!("Reference {}'s {what}: {e}", index + 1));
-                    }
-                }
-            }
-        }
-        warnings
-    }
-
     fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
         let Some(ui) = ui else { return };
         ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, context| {
@@ -511,6 +497,20 @@ impl Node<Edges> for Reference {
             ui.add_space(4.0);
             input_summary(ui, context.inputs);
         });
+    }
+
+    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
+        let mut warnings = require_input(inputs, "a continuous data stream");
+        if let Some(DataStream::Continuous(c)) = inputs[0] {
+            for (index, reference) in self.list.iter().enumerate() {
+                for (what, text) in [("channels", &reference.channels), ("users", &reference.used_by)] {
+                    if let Err(e) = parse_channels(text, c.channels) {
+                        warnings.push(format!("Reference {}'s {what}: {e}", index + 1));
+                    }
+                }
+            }
+        }
+        warnings
     }
 }
 

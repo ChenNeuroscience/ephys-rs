@@ -21,7 +21,7 @@ else.
 The parts of the API are there for three different reasons, and it helps to know which is which:
 
 - **The data model: what the node is and does.** These have to be right for the node to work: its data ports (`list_ports_data_stream_in`,
-  `list_ports_data_stream_out`), its value ports (`list_ports_val_cmd`: the values it publishes, `val_out`, and those of others it reads),
+  `list_ports_data_stream_out`), its ValCmd ports (`list_ports_val_cmd`: the values it publishes, `val_out`, and those of others it reads),
   the commands it takes (`on_command`), `process` and its state (prepared for each snapshot: `prepare_for_snapshot`).
 - **Optimisation: how cheaply it runs.** Leaving these at their defaults is always correct, only slower or using more
   memory: `evaluate_buffer_usage`, `evaluate_tree_shake` (one exception: a writer says it only runs while recording,
@@ -39,7 +39,7 @@ The parts of the API are there for three different reasons, and it helps to know
 - `list_ports_data_stream_in()` and `list_ports_data_stream_out(inputs)`: its data ports. An output says what data stream it produces, given what's on the
   inputs (or `None` while that can't be known), so a graph's streams are worked out before anything runs.
 - `warnings(inputs)`: what's wrong (an input not connected, say), shown on the graph and in its window.
-- `list_ports_val_cmd()`: its value ports (see [Edges](edges.md#values-and-commands)), each a `Port`: where it publishes a value
+- `list_ports_val_cmd()`: its ValCmd ports (see [Edges](edges.md#values-and-commands)), each a `Port`: where it publishes a value
   (`ValOutCmdIn`, with `val_out` saying what it is now), and where it reads another node's, sending it commands
   (`ValInCmdOut`) or not (`ValIn`, val-only). Each says the commands it accepts or sends (`&[CommandKind::SetGains]`,
   say). Its `ValOutCmdIn` ports are numbered separately from its `ValInCmdOut` and `ValIn` ports, in the order listed.
@@ -75,7 +75,7 @@ GUI, and where to send itself commands (`cmd_self`). `self` is the snapshot's se
   overlap. Once it's prepared, that's it: hardware it couldn't open isn't tried again, and hardware that fails later
   just stops giving it data, which it says.
 
-  At the snapshot's first pass, the new state's made from the proto-state: `on_snapshot_change(state, proto_state)` on
+  At the snapshot's first pass, the new state's made from the proto-state: `adopt_snapshot(state, proto_state)` on
   the worker running it, once the pass before has finished with the old state. By default the proto-state's swapped
   in; a node can take what it likes across from the old state instead (a device it has open, say), quickly. Each
   worker's own state is simply replaced by the one made for it, as nothing in it is carried over. What's left of the
@@ -216,7 +216,7 @@ its window closed too.
 Anything a node tells another to do is a command: setting a value it publishes (`SetGains`), starting auto detect
 (`Detect`), processing files (`ProcessFiles`). The program lists them in `edge_types!` (`commands:`), which makes its
 `Command` enum, with `CommandKind` naming them; every set is a command like any other, so the core knows nothing of
-settings. A command goes through a value edge, from the node's `ValInCmdOut` port to the node at the `ValOutCmdIn`
+settings. A command goes through a ValCmd edge, from the node's `ValInCmdOut` port to the node at the `ValOutCmdIn`
 end, which says which commands each of its ports accepts; or from a node to itself (`CommandSource::Itself`), from
 its passes (`PassContext::cmd_self`) or threads (`UiContext::self_sender`). It needs no pass, or even a run: the app
 delivers it on the GUI's thread, whatever's going on, to `Node::on_command(from, command, context)`, saying where it
@@ -284,7 +284,7 @@ anything can send files to process. A "files" port publishes nothing: it's there
 Run Command has an "after running" port of its own: once what it ran is done, it sends the same files on to what's
 connected there (another Run Command, say), if every command succeeded, if any failed, or either way, as its "Then"
 setting says (only shown while something's connected), but never if it was stopped. Run by hand, it does as it would
-with files sent, so it's the same either way. A loop of value edges carrying commands (one Run Command after another,
+with files sent, so it's the same either way. A loop of ValCmd edges carrying commands (one Run Command after another,
 round to the first) could go on for ever: the graph warns of it on each node in the loop (see
 `Graph::command_loops`), and Stop ends it.
 
@@ -309,7 +309,7 @@ found and where to get it.
 Not everything a node does belongs to a pass. The nodes in the Other category aren't about data as it's acquired: [Run
 Command](../standard/src/other/run_command/mod.rs) runs a program in a terminal of its own, with or without a run.
 The terminal's a separate process, which can be stopped from the node, and which carries on if the app quits.
-A node's UI can see what's connected to its value ports (`UiContext::controlled_by`): while a writer's connected, it's all Run
+A node's UI can see what's connected to its ValCmd ports (`UiContext::controlled_by`): while a writer's connected, it's all Run
 Command runs on, so it says so and doesn't offer files of its own.
 
 ## Testing

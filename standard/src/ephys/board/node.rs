@@ -167,14 +167,6 @@ impl Node<Edges> for AcquisitionBoard {
         outputs
     }
 
-    fn warnings(&self, _inputs: &[Option<DataStream>]) -> Vec<String> {
-        if self.headstages.is_empty() {
-            vec!["No headstages: add some, or detect the board's".into()]
-        } else {
-            Vec::new()
-        }
-    }
-
     fn threads(&self) -> Vec<NodeThread> {
         vec![NodeThread {
             name: "Board capture",
@@ -385,6 +377,14 @@ impl Node<Edges> for AcquisitionBoard {
                 ui.label(RichText::new(warning).small().color(theme.warning));
             }
         });
+    }
+
+    fn warnings(&self, _inputs: &[Option<DataStream>]) -> Vec<String> {
+        if self.headstages.is_empty() {
+            vec!["No headstages: add some, or detect the board's".into()]
+        } else {
+            Vec::new()
+        }
     }
 }
 

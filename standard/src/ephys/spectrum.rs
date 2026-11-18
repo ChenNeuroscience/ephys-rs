@@ -147,10 +147,6 @@ impl Node<Edges> for Spectrum {
         vec![Port::DataStreamOut { name: "spectra", data_stream_kind: Kind::Spectra, stream }]
     }
 
-    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
-        require_input(inputs, "a continuous data stream")
-    }
-
     fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Analysis, (), Self> {
         let inputs = context.inputs;
         if context.same_streams() {
@@ -202,6 +198,10 @@ impl Node<Edges> for Spectrum {
             });
             input_summary(ui, context.inputs);
         });
+    }
+
+    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
+        require_input(inputs, "a continuous data stream")
     }
 }
 

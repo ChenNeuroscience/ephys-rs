@@ -110,10 +110,6 @@ impl Node<Edges> for TtlViewer {
         Vec::new()
     }
 
-    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
-        require_input(inputs, "events")
-    }
-
     fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Lines, (), Self> {
         let inputs = context.inputs;
         if context.same_streams() {
@@ -213,6 +209,10 @@ impl Node<Edges> for TtlViewer {
         ui.painter().rect_filled(area, 2.0, theme.surface_sunken);
         let row = self.line_height.clamp(12.0, 200.0);
         egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| Self::lines_ui(ui, &display, row, theme));
+    }
+
+    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
+        require_input(inputs, "events")
     }
 }
 

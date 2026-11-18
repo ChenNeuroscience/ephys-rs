@@ -66,7 +66,7 @@ Given a snapshot, the run has each node with state prepare for it (`Node::prepar
 time, on a thread of its own; a newer snapshot given meanwhile replaces one waiting its turn, so a burst of changes
 prepares only the latest. A node makes its state ahead of time (proto-states: shared, and one per worker), or nothing
 new, so its state carries on; slow work (opening a device) is started and waited for once every node's been asked.
-At the snapshot's first pass the new state's made from the proto-state (`Node::on_snapshot_change`), and each worker's
+At the snapshot's first pass the new state's made from the proto-state (`Node::adopt_snapshot`), and each worker's
 replaced by its own, so nothing's allocated on the passes. A node says what someone should decide as it
 prepares (`UserDecision`: a source's hardware not as its settings say, say): the snapshot runs meanwhile, and the app
 asks ([`user_decisions`](../src/gui/user_decisions.rs)) whether to take what the node suggests, carry on without the
@@ -146,7 +146,7 @@ The passes never wait on the GUI, nor it on them.
   thread, running or not, so they belong to it rather than a run. A setting a pass found (an auto detect's) is one.
 - Once a run's stopped, the app keeps what its last snapshot shared, so everything goes on showing what it last had,
   until the next run, or until the graph changes so it would need new buffers (`Plan::same_shape`).
-- A node can **command** another (`Node::on_command`), through a value edge from its `ValInCmdOut` port: set the value
+- A node can **command** another (`Node::on_command`), through a ValCmd edge from its `ValInCmdOut` port: set the value
   the other publishes, start its auto detect, process files. Having a node do something with the data over a while (an
   auto detect) is kept as its **transient state**: the node prepares for it, runs while it's set, and its passes clear
   it with what they found; the app has every node clear it (`Command::ClearTransientState`) on undo and redo, and as

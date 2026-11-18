@@ -251,10 +251,6 @@ impl Node<Edges> for SpikeViewer {
         Vec::new()
     }
 
-    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
-        require_input(inputs, "spikes")
-    }
-
     fn list_ports_val_cmd(&self) -> Vec<Port<Edges>> {
         vec![
             Port::val_in_cmd_out(
@@ -360,6 +356,10 @@ impl Node<Edges> for SpikeViewer {
         if let Some(gains) = gains {
             context.cmd_out_if_changed(GAINS_CONTROL, gains, Command::SetGains);
         }
+    }
+
+    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
+        require_input(inputs, "spikes")
     }
 }
 

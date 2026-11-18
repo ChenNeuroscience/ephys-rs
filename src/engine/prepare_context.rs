@@ -1,7 +1,7 @@
 //! Before passes switch to a new snapshot, the engine asks each node to get ready for it
 //! (`Node::prepare_for_snapshot`). This module has what the node is told (`PrepareContext`, including how the node was
 //! in the snapshot before) and what the node answers (`Prepared`): any state the node needs, made ahead of time as
-//! proto-states that become its state as the snapshot takes over (see `Node::on_snapshot_change`), and anything someone
+//! proto-states that become its state as the snapshot takes over (see `Node::adopt_snapshot`), and anything someone
 //! should decide (`UserDecision`: hardware not as the node's settings say, say). A node can answer at once, or once
 //! something it's started (opening a device, say) is done (`Prepare`).
 
@@ -14,7 +14,7 @@ use crate::commands::{Address, CmdSender, Commands};
 /// time, and what someone should decide. `S` is the node's state, `W` each worker's own, and `N` the node.
 pub struct Prepared<S, W, N> {
     /// The node can make new state ahead of time, which becomes its state as the snapshot takes over (see
-    /// `Node::on_snapshot_change`). Without any, the node's state carries on as it is, which only fits if the node's
+    /// `Node::adopt_snapshot`). Without any, the node's state carries on as it is, which only fits if the node's
     /// data streams are the same as in the snapshot before.
     pub proto_shared_state: Option<S>,
     /// Each worker can have state of its own for the node; the node can make that ahead of time too, one per worker

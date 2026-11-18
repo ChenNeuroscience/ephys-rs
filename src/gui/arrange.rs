@@ -143,7 +143,7 @@ mod tests {
         assert!(d[1] + height(detector) <= l[1] || l[1] + height(lfp) <= d[1], "{d:?} {l:?}");
     }
 
-    /// Run Command has only a value edge, from the writer that sends it files: it goes after the writer, not first as
+    /// Run Command has only a ValCmd edge, from the writer that sends it files: it goes after the writer, not first as
     /// if it were a source, and the same whether the edge is enabled or not.
     #[test]
     fn a_node_with_only_settings_edges_is_placed_by_them() {

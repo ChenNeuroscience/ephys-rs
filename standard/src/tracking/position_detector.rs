@@ -82,10 +82,6 @@ impl Node<Edges> for PositionDetector {
         ]
     }
 
-    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
-        require_input(inputs, "video")
-    }
-
     fn list_ports_val_cmd(&self) -> Vec<Port<Edges>> {
         vec![Port::val_out_cmd_in("detection", ValueKind::Detection, &[CommandKind::SetDetection])]
     }
@@ -147,6 +143,10 @@ impl Node<Edges> for PositionDetector {
             };
             all_detection_ui(ui, &mut node.detection, size);
         });
+    }
+
+    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
+        require_input(inputs, "video")
     }
 }
 

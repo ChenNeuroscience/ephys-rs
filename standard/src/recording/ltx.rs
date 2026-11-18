@@ -203,24 +203,6 @@ impl Node<Edges> for WriteLtx {
         ]
     }
 
-    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
-        let mut warnings = require_input(inputs, "something to record");
-        if let Some(DataStream::Spikes(spikes)) = inputs[0]
-            && spikes.group_size != SPIKE_CHANNELS as u32
-        {
-            warnings.push(format!("LTX spikes are in tetrodes: groups of 4, not {}", spikes.group_size));
-        }
-        if let Some(DataStream::Continuous(continuous)) = inputs[1]
-            && continuous.sample_rate != EGF_RATE
-        {
-            warnings.push(format!("LTX's EEG is {EGF_RATE} Hz: downsample it first (with a Downsample)"));
-        }
-        if inputs[4].is_some() && inputs[2].is_none() {
-            warnings.push("Connect the positions too, so the pos ttl's times can be compared with them".into());
-        }
-        warnings
-    }
-
     fn threads(&self) -> Vec<NodeThread> {
         vec![NodeThread {
             name: "LTX writer",
@@ -324,6 +306,24 @@ impl Node<Edges> for WriteLtx {
             let pool = context.shared::<Pool<Status>>();
             status_ui(ui, pool.and_then(Pool::newest).as_deref(), context.running, context.theme);
         });
+    }
+
+    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
+        let mut warnings = require_input(inputs, "something to record");
+        if let Some(DataStream::Spikes(spikes)) = inputs[0]
+            && spikes.group_size != SPIKE_CHANNELS as u32
+        {
+            warnings.push(format!("LTX spikes are in tetrodes: groups of 4, not {}", spikes.group_size));
+        }
+        if let Some(DataStream::Continuous(continuous)) = inputs[1]
+            && continuous.sample_rate != EGF_RATE
+        {
+            warnings.push(format!("LTX's EEG is {EGF_RATE} Hz: downsample it first (with a Downsample)"));
+        }
+        if inputs[4].is_some() && inputs[2].is_none() {
+            warnings.push("Connect the positions too, so the pos ttl's times can be compared with them".into());
+        }
+        warnings
     }
 }
 

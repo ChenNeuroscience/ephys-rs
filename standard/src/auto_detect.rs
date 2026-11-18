@@ -1,7 +1,7 @@
 //! Choosing settings from the data ("auto detect"). The setting to choose (gains, or thresholds) has its auto detect's
 //! own settings in `detect`: how long it samples the data for (`seconds`), and when it was started (`started`), while
 //! it's going. `started` is the node's transient state, not saved: the node starts it from its window, or when it's
-//! sent `Detect` (`DetectRequest`, from a viewer, through a value edge), and clears it when it's stopped, or sent
+//! sent `Detect` (`DetectRequest`, from a viewer, through a ValCmd edge), and clears it when it's stopped, or sent
 //! `ClearTransientState` (see `ephys_rs::engine::CommandsEnum`). While it's started, the node runs, with room to
 //! sample into that it made as it prepared, which its passes sample the data into for that long, then send the node
 //! the setting they found (`PassContext::cmd_self`), which clears `started`. Whatever can see the setting (the node's
@@ -55,8 +55,8 @@ const BINS: usize = DOUBLINGS << MANTISSA_BITS;
 /// The bits of a float below those kept.
 const SHIFT: u32 = 23 - MANTISSA_BITS;
 
-/// What's come in, as a histogram with bins of about the same relative width (a float's own bits are its bin), either side
-/// of zero. It counts every value in little space and time, whatever order they come in, so it can say what's in a
+/// What's come in, as a histogram with bins of about the same relative width (a float's own bits are its bin), either
+/// side of zero. It counts every value in little space and time, whatever order they come in, so it can say what's in a
 /// distribution's tail to within a bin: about 1.5% of the value.
 #[derive(Clone)]
 pub struct Distribution {

@@ -181,7 +181,7 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     /// an entry for each of `self.list_ports_data_stream_in()`: the data stream connected to that input, if any.
     fn list_ports_data_stream_out(&self, inputs: &[Option<E::DataStream>]) -> Vec<Port<E>>;
 
-    /// A node's value ports (see `Port`). Its `ValOutCmdIn` ports are numbered separately from its `ValInCmdOut`
+    /// A node's ValCmd ports (see `Port`). Its `ValOutCmdIn` ports are numbered separately from its `ValInCmdOut`
     /// and `ValIn` ports (which are numbered together), each in the order they're listed here.
     fn list_ports_val_cmd(&self) -> Vec<Port<E>> {
         Vec::new()
@@ -230,7 +230,7 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     ///
     /// A node makes its state here, ahead of time, as proto-states: a shared one, and one per worker
     /// (`context.workers`). These become the node's state and each worker's as the snapshot takes over (see
-    /// `on_snapshot_change`; a worker's proto-state simply replaces the worker's old state). The node also says
+    /// `adopt_snapshot`; a worker's proto-state simply replaces the worker's old state). The node also says
     /// anything someone should decide (`UserDecision`: its hardware not as its settings say, say). To go by, the node
     /// has its data streams (`context.inputs`), its settings (`self`: an auto detect started needs room to sample into,
     /// say), its controls, whether the snapshot's recording (a writer opens its files, say), and how the node was in
@@ -257,7 +257,7 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     /// (a device it has open, say). The engine calls this on the worker running the snapshot's first pass, once the
     /// pass before has finished with the old state, so the node must be quick. The engine lets go of whatever's left
     /// in `proto_state` (the old state, by default) in the background.
-    fn on_snapshot_change(&self, state: &mut Self::State, proto_state: &mut Self::State) {
+    fn adopt_snapshot(&self, state: &mut Self::State, proto_state: &mut Self::State) {
         std::mem::swap(state, proto_state);
     }
 

@@ -130,10 +130,6 @@ impl Node<Edges> for WriteRaw {
         Vec::new()
     }
 
-    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
-        require_input(inputs, "something to record")
-    }
-
     fn threads(&self) -> Vec<NodeThread> {
         vec![NodeThread {
             name: "Raw writer",
@@ -228,6 +224,10 @@ impl Node<Edges> for WriteRaw {
             let pool = context.shared::<Pool<Status>>();
             status_ui(ui, pool.and_then(Pool::newest).as_deref(), context.running, context.theme);
         });
+    }
+
+    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
+        require_input(inputs, "something to record")
     }
 }
 

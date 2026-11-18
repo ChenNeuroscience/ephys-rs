@@ -565,13 +565,6 @@ impl Node<Edges> for VrComputer {
         ]
     }
 
-    fn warnings(&self, _inputs: &[Option<DataStream>]) -> Vec<String> {
-        if complete(&self.custom) {
-            return Vec::new();
-        }
-        vec!["No settings from the VR computer yet: positions can't be recorded properly without them".into()]
-    }
-
     fn list_ports_val_cmd(&self) -> Vec<Port<Edges>> {
         vec![Port::val_out_cmd_in("settings", ValueKind::Detection, &[CommandKind::SetDetection])]
     }
@@ -710,6 +703,13 @@ impl Node<Edges> for VrComputer {
                 }
             });
         });
+    }
+
+    fn warnings(&self, _inputs: &[Option<DataStream>]) -> Vec<String> {
+        if complete(&self.custom) {
+            return Vec::new();
+        }
+        vec!["No settings from the VR computer yet: positions can't be recorded properly without them".into()]
     }
 }
 

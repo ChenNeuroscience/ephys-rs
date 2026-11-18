@@ -82,8 +82,8 @@ pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + S
         &self,
         context: &PrepareContext<Self::Edges, Self>,
     ) -> Prepare<Box<dyn Any + Send>, Box<dyn Any + Send>, Self>;
-    /// `state` and `proto_state` are the node's state, as its own type (see `Node::on_snapshot_change`).
-    fn on_snapshot_change(&self, state: &mut (dyn Any + Send), proto_state: &mut (dyn Any + Send));
+    /// `state` and `proto_state` are the node's state, as its own type (see `Node::adopt_snapshot`).
+    fn adopt_snapshot(&self, state: &mut (dyn Any + Send), proto_state: &mut (dyn Any + Send));
     fn shared(&self, inputs: &[Option<<Self::Edges as Edges>::DataStream>]) -> Box<dyn Shared>;
     /// The pass runs the node with its state and the worker's, as `prepare_for_snapshot` made them (`None` for none).
     /// If the node hasn't the state it needs (it failed to prepare), it does nothing, and this returns false.
@@ -323,7 +323,7 @@ macro_rules! nodes_enum {
                 }
             }
 
-            fn on_snapshot_change(
+            fn adopt_snapshot(
                 &self,
                 state: &mut (dyn std::any::Any + Send),
                 proto_state: &mut (dyn std::any::Any + Send),
@@ -334,7 +334,7 @@ macro_rules! nodes_enum {
                         if let (Some(state), Some(proto_state)) =
                             (state.downcast_mut::<State>(), proto_state.downcast_mut::<State>())
                         {
-                            $crate::engine::Node::on_snapshot_change(n, state, proto_state);
+                            $crate::engine::Node::adopt_snapshot(n, state, proto_state);
                         }
                     }),+
                 }

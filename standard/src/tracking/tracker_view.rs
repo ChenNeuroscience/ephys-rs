@@ -166,10 +166,6 @@ impl Node<Edges> for TrackerView {
         Vec::new()
     }
 
-    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
-        if inputs[0].is_none() && inputs[1].is_none() { vec!["Connect video or positions".into()] } else { Vec::new() }
-    }
-
     fn list_ports_val_cmd(&self) -> Vec<Port<Edges>> {
         vec![
             Port::val_in_cmd_out("camera", ValueKind::Camera, &[CommandKind::SetCamera]),
@@ -278,6 +274,10 @@ impl Node<Edges> for TrackerView {
             });
             self.camera_ui(ui, context, arrangement);
         }
+    }
+
+    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
+        if inputs[0].is_none() && inputs[1].is_none() { vec!["Connect video or positions".into()] } else { Vec::new() }
     }
 }
 

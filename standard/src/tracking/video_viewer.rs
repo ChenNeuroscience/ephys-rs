@@ -40,10 +40,6 @@ impl Node<Edges> for VideoViewer {
         Vec::new()
     }
 
-    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
-        require_input(inputs, "video")
-    }
-
     /// Takes the pass's frames, to show the last.
     fn evaluate_buffer_usage(&self, inputs: usize, outputs: usize) -> BufferUsage {
         BufferUsage { takes: vec![true; inputs], ..BufferUsage::none(inputs, outputs) }
@@ -105,5 +101,9 @@ impl Node<Edges> for VideoViewer {
             FontId::proportional(11.0),
             Color32::WHITE,
         );
+    }
+
+    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
+        require_input(inputs, "video")
     }
 }

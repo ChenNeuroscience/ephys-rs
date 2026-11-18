@@ -2,14 +2,14 @@
 //! its node types.
 //!
 //! There are two kinds of edge, by the roles of the ports they join (see `PortRole`). Data edges carry data streams
-//! from outputs to inputs, and must form a DAG. Value edges let one node read a value another publishes, and send that
+//! from outputs to inputs, and must form a DAG. ValCmd edges let one node read a value another publishes, and send that
 //! node commands (a viewer reading a detector's thresholds, and setting them, say); they carry no data, so they may
 //! point anywhere, including upstream.
 //!
 //! Each edge type is a struct implementing `EdgeType`: for data, a small `Copy` description of the data stream (its
-//! channel count and sample rate, say); for values, the value itself. `edge_types!` gathers them into an enum per
-//! dimension, with a matching fieldless `Kind` enum that ports are declared with. It gathers the program's commands
-//! into an enum as well (see `CommandsEnum`).
+//! channel count and sample rate, say); for values, the value itself. `edge_types!` gathers each kind into an enum (one
+//! of data streams, one of values), with a matching fieldless `Kind` enum that ports are declared with. It gathers the
+//! program's commands into an enum as well (see `CommandsEnum`).
 
 use std::fmt::Debug;
 use std::hash::Hash;
@@ -32,8 +32,8 @@ pub trait EdgeType: Clone + PartialEq + Debug + Send + Sync + 'static {
     fn summary(&self) -> String;
 }
 
-/// A program's edge types for one dimension form a closed set: an enum with one variant per type, which `edge_types!`
-/// makes and implements this for.
+/// A program's data streams form a closed set, and so do its values: each an enum with one variant per type, which
+/// `edge_types!` makes and implements this for.
 pub trait EdgeTypesEnum: Clone + PartialEq + Debug + Send + Sync + 'static {
     /// Ports are matched by which type a value is, without what's in it: its kind.
     type Kind: Copy + Eq + Hash + Debug + 'static;
@@ -90,7 +90,7 @@ pub trait ValueType<V>: Sized {
     fn from_value(value: &V) -> Option<&Self>;
 }
 
-/// A node can command another through a value edge (or itself, from its passes or threads; see `Node::on_command`).
+/// A node can command another through a ValCmd edge (or itself, from its passes or threads; see `Node::on_command`).
 /// The program declares its commands with `edge_types!`, which makes an enum of them, implementing this. The core adds
 /// one command of its own, `ClearTransientState`, which the app sends nodes itself.
 pub trait CommandsEnum: Debug + Send + 'static {
@@ -109,14 +109,14 @@ pub trait CommandsEnum: Debug + Send + 'static {
     fn is_clear_transient_state(&self) -> bool;
 }
 
-/// A program is built with edge types in both dimensions, and the commands sent along value edges; `edge_types!` makes
-/// a type implementing this, naming them.
+/// A program is built with edge types of both kinds, data streams and values, and the commands sent along ValCmd edges;
+/// `edge_types!` makes a type implementing this, naming them.
 pub trait Edges: 'static {
     /// Data streams flow from outputs to inputs, a pass at a time.
     type DataStream: DataStreamsEnum;
-    /// Nodes publish values, which other nodes read through value edges.
+    /// Nodes publish values, which other nodes read through ValCmd edges.
     type PublishedValue: EdgeTypesEnum;
-    /// Nodes command each other through value edges (see `CommandsEnum`).
+    /// Nodes command each other through ValCmd edges (see `CommandsEnum`).
     type Command: CommandsEnum;
 }
 

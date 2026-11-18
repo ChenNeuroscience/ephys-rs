@@ -282,10 +282,6 @@ impl Node<Edges> for AlarmProcessor {
         vec![Port::DataStreamOut { name: "alarms", data_stream_kind: Kind::AlarmStates, stream }]
     }
 
-    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
-        require_input(inputs, "something to watch")
-    }
-
     fn list_ports_val_cmd(&self) -> Vec<Port<Edges>> {
         vec![Port::val_out_cmd_in("alarms", ValueKind::Alarms, &[CommandKind::SetAlarms])]
     }
@@ -352,6 +348,10 @@ impl Node<Edges> for AlarmProcessor {
         ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, context| {
             alarms_ui(ui, &mut node.alarms, streams(context.inputs));
         });
+    }
+
+    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
+        require_input(inputs, "something to watch")
     }
 }
 

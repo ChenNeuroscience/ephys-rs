@@ -204,10 +204,6 @@ impl Node<Edges> for SpikeGain {
         vec![Port::DataStreamOut { name: "spikes", data_stream_kind: Kind::Spikes, stream: inputs[0] }]
     }
 
-    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
-        require_input(inputs, "spikes")
-    }
-
     /// Its output's made in place, from its input.
     fn evaluate_buffer_usage(&self, inputs: usize, outputs: usize) -> BufferUsage {
         BufferUsage { in_place: vec![Some(0); outputs], ..BufferUsage::none(inputs, outputs) }
@@ -457,6 +453,10 @@ impl Node<Edges> for SpikeGain {
             input_summary(ui, context.inputs);
         });
     }
+
+    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
+        require_input(inputs, "spikes")
+    }
 }
 
 impl Sampling {
@@ -676,7 +676,7 @@ mod tests {
         let previous = Previous { node: &was, inputs: &inputs, same_streams: true };
         let context = PrepareContext { previous: Some(previous), ..PrepareContext::trying(&inputs, None) };
         let mut proto = gain.prepare_for_snapshot(&context).wait().proto_shared_state.expect("made afresh");
-        gain.on_snapshot_change(&mut state, &mut proto);
+        gain.adopt_snapshot(&mut state, &mut proto);
         assert!(state.sampling.is_none(), "let go of");
         for sequence in 2..600 {
             let mut pass = PassContext::new(sequence, PASS_DURATION, &[], &mut outputs);

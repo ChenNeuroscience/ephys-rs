@@ -91,22 +91,6 @@ impl Node<Edges> for BandPassFilter {
         vec![Port::DataStreamOut { name: "filtered", data_stream_kind: Kind::Continuous, stream: inputs[0] }]
     }
 
-    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
-        let mut warnings = require_input(inputs, "a continuous data stream");
-        if self.low_hz >= self.high_hz {
-            warnings.push("The low cut-off must be below the high cut-off".into());
-        }
-        if let Some(DataStream::Continuous(c)) = inputs[0]
-            && self.high_hz >= c.sample_rate / 2.0
-        {
-            warnings.push(format!(
-                "The high cut-off must be below {} (half the sample rate)",
-                format_rate(c.sample_rate / 2.0)
-            ));
-        }
-        warnings
-    }
-
     fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
         let Some(ui) = ui else { return };
         ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, context| {
@@ -121,6 +105,22 @@ impl Node<Edges> for BandPassFilter {
             });
             input_summary(ui, context.inputs);
         });
+    }
+
+    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
+        let mut warnings = require_input(inputs, "a continuous data stream");
+        if self.low_hz >= self.high_hz {
+            warnings.push("The low cut-off must be below the high cut-off".into());
+        }
+        if let Some(DataStream::Continuous(c)) = inputs[0]
+            && self.high_hz >= c.sample_rate / 2.0
+        {
+            warnings.push(format!(
+                "The high cut-off must be below {} (half the sample rate)",
+                format_rate(c.sample_rate / 2.0)
+            ));
+        }
+        warnings
     }
 }
 

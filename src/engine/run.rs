@@ -21,7 +21,7 @@
 //! (`Node::prepare_for_snapshot`, see `prepare_snapshots`): the node makes its state ahead of time (proto-states), or
 //! makes nothing new, so its state carries on (a node with the same data streams in and out sees its new settings on
 //! the next pass, and adjusts). The new state's made from the proto-state at the new snapshot's first pass, once the
-//! pass before has finished with the old (`Node::on_snapshot_change`), so passes see it in order across snapshots too;
+//! pass before has finished with the old (`Node::adopt_snapshot`), so passes see it in order across snapshots too;
 //! each worker takes its own, replacing what it had, at its first pass of the snapshot. What a node shares with the
 //! GUI is handed on likewise, or made afresh.
 //!
@@ -117,7 +117,7 @@ impl<N: NodesEnum> Plan<N> {
                 let ran = console::in_pass(pass, || match step.state {
                     Some(slot) => {
                         let change = |state: &mut (dyn Any + Send), proto_state: &mut (dyn Any + Send)| {
-                            node.on_snapshot_change(state, proto_state)
+                            node.adopt_snapshot(state, proto_state)
                         };
                         run.states[slot].with(sequence, &change, |state| {
                             began = Instant::now();
@@ -249,13 +249,13 @@ struct StateSlot {
 
 /// As its snapshot takes over, a slot can take its state from the slot the node had in the snapshot before: as it is
 /// (`carry`: the node kept it), or made from the proto-state the node prepared, which the slot holds till then (see
-/// `Node::on_snapshot_change`).
+/// `Node::adopt_snapshot`).
 struct From {
     slot: Arc<StateSlot>,
     carry: bool,
 }
 
-/// A slot's node makes its state from the proto-state it prepared by this (`Node::on_snapshot_change`).
+/// A slot's node makes its state from the proto-state it prepared by this (`Node::adopt_snapshot`).
 type ChangeFn<'a> = &'a dyn Fn(&mut (dyn Any + Send), &mut (dyn Any + Send));
 
 // Safety: the state is only touched by the pass whose turn it is, which `with` waits for, or before its turns begin by

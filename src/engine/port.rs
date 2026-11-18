@@ -7,7 +7,7 @@ use super::{CommandKind, Edges, Kind, NodeId};
 
 /// Edges connect nodes at their ports, each named for what flows through it, which way (see `PortRole`, which names a
 /// port's role without what's in it). A node declares its ports as these: its data ports
-/// (`Node::list_ports_data_stream_in` and `Node::list_ports_data_stream_out`) and its value ports
+/// (`Node::list_ports_data_stream_in` and `Node::list_ports_data_stream_out`) and its ValCmd ports
 /// (`Node::list_ports_val_cmd`). The graph numbers the ports of each role separately, in the order they're declared
 /// (see `PortAddress`). The node itself numbers its `ValInCmdOut` and `ValIn` ports together, in the order they're
 /// declared, as the ports it reads values through: `UiContext::val_in` and the like take that number.
@@ -104,7 +104,7 @@ impl<E: Edges> Port<E> {
     }
 
     /// The graph draws `DataStreamOut` and `ValOutCmdIn` ports on the right of the node, and the others on the left,
-    /// unless a value port's flipped (a writer's "after recording" is on the right, as what it sets off comes after
+    /// unless a ValCmd port's flipped (a writer's "after recording" is on the right, as what it sets off comes after
     /// it). This is the same port, flipped (data ports aren't).
     pub fn flipped(self) -> Self {
         match self {
@@ -139,7 +139,7 @@ impl<E: Edges> Port<E> {
         }
     }
 
-    /// Whether a value port's flipped (see `flipped`); data ports never are.
+    /// Whether a ValCmd port's flipped (see `flipped`); data ports never are.
     pub fn is_flipped(&self) -> bool {
         match self {
             Port::ValOutCmdIn { flipped, .. } | Port::ValInCmdOut { flipped, .. } | Port::ValIn { flipped, .. } => {
@@ -167,7 +167,7 @@ impl<E: Edges> Port<E> {
         }
     }
 
-    /// A value port's kind of value.
+    /// A ValCmd port's kind of value.
     pub fn value_kind(&self) -> Option<Kind<E::PublishedValue>> {
         match self {
             Port::ValOutCmdIn { value_kind, .. }
@@ -187,7 +187,7 @@ impl<E: Edges> Port<E> {
 }
 
 /// A node has ports of five roles, each named for what flows through it, which way. Data edges run from a
-/// `DataStreamOut` to a `DataStreamIn`, carrying a pass's data. Value edges run from a `ValInCmdOut` to a
+/// `DataStreamOut` to a `DataStreamIn`, carrying a pass's data. ValCmd edges run from a `ValInCmdOut` to a
 /// `ValOutCmdIn`: the node at the `ValOutCmdIn` end publishes a value, which the node at the other end reads, and which
 /// that node can send commands back to.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]

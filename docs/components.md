@@ -49,7 +49,7 @@ alarms by it. The stream
 pass (`AlarmStatesBuffer`), a few numbers for each alarm.
 
 The processor sits with the data. The [Alarm Viewer](../standard/src/alarms/viewer.rs) shows how the alarms
-stand, and has their on and off switches, which set the processor's alarms through a value edge (`SetAlarms`), so nothing bulky goes to
+stand, and has their on and off switches, which set the processor's alarms through a ValCmd edge (`SetAlarms`), so nothing bulky goes to
 the window. Each alarm counts in bins, a fiftieth of its period each, and doesn't go off until it's
 seen a whole period, so a new period, or fresh state (its streams changing), starts it waiting again. Time is counted in passes, not samples, so a
 source that stops looks like a low rate.

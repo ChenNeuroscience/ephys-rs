@@ -85,10 +85,6 @@ impl Node<Edges> for LogViewer {
         Vec::new()
     }
 
-    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
-        require_input(inputs, "log lines")
-    }
-
     fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Viewing, (), Self> {
         if context.same_streams() {
             return Prepared::nothing().into();
@@ -139,6 +135,10 @@ impl Node<Edges> for LogViewer {
                 });
             }
         });
+    }
+
+    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
+        require_input(inputs, "log lines")
     }
 }
 

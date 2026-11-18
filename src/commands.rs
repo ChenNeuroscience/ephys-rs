@@ -1,12 +1,12 @@
-//! Nodes command each other through value edges (see `crate::engine::PortRole`), and themselves, from their passes and
+//! Nodes command each other through ValCmd edges (see `crate::engine::PortRole`), and themselves, from their passes and
 //! threads. A command goes on its way through the app's queue (`Commands`), which delivers it to the commanded node's
 //! `Node::on_command` on the GUI's thread, as soon as it can, whether anything's running or not: from a thread that's
 //! outlived the run that started it, say.
 //!
-//! A command sent through a value edge is addressed to the edge, not the node at its far end: to whatever node `from`'s
-//! `ValInCmdOut` port `val_in_idx` connects to (`Address::Port`). The app follows the edge as it delivers the command,
-//! so a sender kept for a while (a writer's, for when its files are finished: see `CmdSender`) sends to where the edge
-//! points then, or nowhere, if it's been disconnected.
+//! A command sent through a ValCmd edge is addressed to the edge, not the node at its far end: to whatever node
+//! `from`'s `ValInCmdOut` port `val_in_idx` connects to (`Address::Port`). The app follows the edge as it delivers the
+//! command, so a sender kept for a while (a writer's, for when its files are finished: see `CmdSender`) sends to where
+//! the edge points then, or nowhere, if it's been disconnected.
 //!
 //! A pass can also ask the app to start or stop recording (`PassContext::request_recording`), as the toolbar's Record
 //! does. That goes through the queue too, though it isn't a command to a node.
@@ -22,7 +22,7 @@ use eframe::egui;
 
 use crate::engine::NodeId;
 
-/// A command goes to a node through one of the node's value edges, or from the node to itself.
+/// A command goes to a node through one of the node's ValCmd edges, or from the node to itself.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Address {
     /// Whatever node `from`'s `ValInCmdOut` port `val_in_idx` (as the node numbers its `ValInCmdOut` and `ValIn` ports:

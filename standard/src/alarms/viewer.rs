@@ -196,10 +196,6 @@ impl Node<Edges> for AlarmViewer {
         vec![Port::val_in_cmd_out("alarms", ValueKind::Alarms, &[CommandKind::SetAlarms])]
     }
 
-    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
-        require_input(inputs, "an Alarm Processor")
-    }
-
     fn threads(&self) -> Vec<NodeThread> {
         vec![NodeThread {
             name: "Alarm tone",
@@ -271,6 +267,10 @@ impl Node<Edges> for AlarmViewer {
             }
         });
         context.cmd_out_if_changed(ALARMS, alarms, Command::SetAlarms);
+    }
+
+    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
+        require_input(inputs, "an Alarm Processor")
     }
 }
 

@@ -86,7 +86,7 @@ pub struct Detector {
 #[derive(Default)]
 pub struct Detecting {
     /// `None` only in a proto-state made for detecting the thresholds starting or ending, the node's data streams being
-    /// the same: the detector so far carries on (see `on_snapshot_change`).
+    /// the same: the detector so far carries on (see `adopt_snapshot`).
     detector: Option<Detector>,
     sampling: Option<Sampling>,
 }
@@ -188,7 +188,7 @@ impl Node<Edges> for SpikeDetector {
     }
 
     /// The detector so far carries on unless the node made a new one; the sampling's always what the node prepared.
-    fn on_snapshot_change(&self, state: &mut Detecting, proto_state: &mut Detecting) {
+    fn adopt_snapshot(&self, state: &mut Detecting, proto_state: &mut Detecting) {
         if proto_state.detector.is_some() {
             std::mem::swap(&mut state.detector, &mut proto_state.detector);
         }
@@ -290,21 +290,6 @@ impl Node<Edges> for SpikeDetector {
         vec![Port::DataStreamOut { name: "spikes", data_stream_kind: Kind::Spikes, stream }]
     }
 
-    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
-        let mut warnings = require_input(inputs, "a (filtered) continuous data stream");
-        if let Some(DataStream::Continuous(c)) = inputs[0]
-            && c.channels % self.group_size.max(1) != 0
-        {
-            warnings.push(format!(
-                "{} channels don't make whole groups of {}: the last group has {}",
-                c.channels,
-                self.group_size,
-                c.channels % self.group_size.max(1)
-            ));
-        }
-        warnings
-    }
-
     fn list_ports_val_cmd(&self) -> Vec<Port<Edges>> {
         vec![Port::val_out_cmd_in(
             "thresholds",
@@ -401,6 +386,21 @@ impl Node<Edges> for SpikeDetector {
             }
             input_summary(ui, context.inputs);
         });
+    }
+
+    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
+        let mut warnings = require_input(inputs, "a (filtered) continuous data stream");
+        if let Some(DataStream::Continuous(c)) = inputs[0]
+            && c.channels % self.group_size.max(1) != 0
+        {
+            warnings.push(format!(
+                "{} channels don't make whole groups of {}: the last group has {}",
+                c.channels,
+                self.group_size,
+                c.channels % self.group_size.max(1)
+            ));
+        }
+        warnings
     }
 }
 

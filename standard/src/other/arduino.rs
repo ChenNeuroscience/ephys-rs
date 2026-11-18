@@ -360,10 +360,6 @@ impl Node<Edges> for Arduino {
         Vec::new()
     }
 
-    fn warnings(&self, _inputs: &[Option<DataStream>]) -> Vec<String> {
-        if self.pins.is_empty() { vec!["No pins to set".into()] } else { Vec::new() }
-    }
-
     fn threads(&self) -> Vec<NodeThread> {
         vec![NodeThread {
             name: "Arduino",
@@ -463,6 +459,10 @@ impl Node<Edges> for Arduino {
                 None => drop(ui.weak("Press Play to open its port.")),
             }
         });
+    }
+
+    fn warnings(&self, _inputs: &[Option<DataStream>]) -> Vec<String> {
+        if self.pins.is_empty() { vec!["No pins to set".into()] } else { Vec::new() }
     }
 }
 
