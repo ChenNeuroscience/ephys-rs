@@ -64,7 +64,7 @@ mod tests {
         assert_eq!(graph["edges"], json!([data, data, value]));
         assert_eq!(graph["disabled_edges"], json!([value]));
         let edge: crate::engine::Edge = serde_json::from_value(value).unwrap();
-        assert_eq!(edge.dimension(), crate::engine::Dimension::ValCmd, "and they load");
+        assert!(!edge.carries_data_stream(), "and they load");
     }
 
     /// Written since, as it is.

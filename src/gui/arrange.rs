@@ -15,7 +15,7 @@ use dugong::graphlib::{Graph as Layered, GraphOptions};
 use dugong::{EdgeLabel, GraphLabel, NodeLabel, RankDir};
 
 use super::canvas::node_size;
-use crate::engine::{Dimension, Graph, NodeId, NodesEnum};
+use crate::engine::{Graph, NodeId, NodesEnum};
 
 /// The layout leaves this much room between nodes in a column, and between columns.
 const NODE_GAP: f64 = 36.0;
@@ -48,16 +48,10 @@ pub fn arrange<N: NodesEnum>(graph: &Graph<N>) -> HashMap<NodeId, [f32; 2]> {
         layered.set_node(key(id), label);
     }
     // Nodes with data edges (enabled or not); a settings edge to or from one without counts as a data edge.
-    let has_data: std::collections::HashSet<NodeId> = graph
-        .edges()
-        .iter()
-        .filter(|e| e.dimension() == Dimension::DataStream)
-        .flat_map(|e| [e.from.node, e.to.node])
-        .collect();
+    let has_data: std::collections::HashSet<NodeId> =
+        graph.edges().iter().filter(|e| e.carries_data_stream()).flat_map(|e| [e.from.node, e.to.node]).collect();
     let as_data = |edge: &crate::engine::Edge| {
-        edge.dimension() == Dimension::DataStream
-            || !has_data.contains(&edge.from.node)
-            || !has_data.contains(&edge.to.node)
+        edge.carries_data_stream() || !has_data.contains(&edge.from.node) || !has_data.contains(&edge.to.node)
     };
     // One edge each way between a pair of nodes, weighted by how many there are (settings counting for less).
     let mut weights: HashMap<(NodeId, NodeId), f64> = HashMap::new();

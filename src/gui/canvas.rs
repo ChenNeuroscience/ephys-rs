@@ -27,8 +27,8 @@ use crate::annotation::{
     Annotation, AnnotationId, AnnotationTypeEnum, AnnotationUi, Annotations, AnnotationsEnum, PastedContent,
 };
 use crate::engine::{
-    Dimension, Edge, EdgeInfo, EdgeTypesEnum, Edges, Graph, KindKey, NodeEntry, NodeId, NodeState, NodesEnum,
-    PortAddress, PortRole, Resolved,
+    Edge, EdgeInfo, EdgeTypesEnum, Edges, Graph, NodeEntry, NodeId, NodeState, NodesEnum, PortAddress, PortKind,
+    PortRole, Resolved,
 };
 use crate::layout::Pane;
 use crate::theme::Colours;
@@ -158,10 +158,10 @@ impl Layout {
         // In the order the graph draws them (see `NodeState::ports`), any node's id doing for the order.
         for (row, port) in state.ports(NodeId(0)).enumerate() {
             let (role, port_idx) = (port.role, port.port_idx);
-            if role.dimension() == Dimension::ValCmd && !settings {
+            if !role.carries_data_stream() && !settings {
                 break;
             }
-            let extra = if role.dimension() == Dimension::ValCmd { divider } else { 0.0 };
+            let extra = if role.carries_data_stream() { 0.0 } else { divider };
             let on_right = state.on_right(role, port_idx);
             let x = if on_right { rect.right() } else { rect.left() };
             ports.insert((role, port_idx), (egui::pos2(x, row_y(row, extra)), on_right));
@@ -219,15 +219,7 @@ fn bezier_points([a, b, c, d]: [Pos2; 4]) -> Vec<Pos2> {
 /// setting's node and the control's can both change it): their ports show their type. A read-only one (to a control
 /// that only reads the setting) is dotted, with an arrowhead pointing to the reader. Where nodes (`covers`) hide much
 /// of a wire, each stretch of it that shows gets arrowheads of its own (see `arrow_places`).
-fn paint_wire(
-    painter: &Painter,
-    points: [Pos2; 4],
-    dimension: Dimension,
-    read_only: bool,
-    stroke: Stroke,
-    zoom: f32,
-    covers: &[Rect],
-) {
+fn paint_wire(painter: &Painter, points: [Pos2; 4], style: WireStyle, stroke: Stroke, zoom: f32, covers: &[Rect]) {
     let path = bezier_points(points);
     let [a, b, c, d] = points.map(|p| p.to_vec2());
     // The curve's midpoint and its direction there.
@@ -235,21 +227,21 @@ fn paint_wire(
     let direction = 0.75 * ((b - a) + 2.0 * (c - b) + (d - c));
     let size = (4.0 + 1.5 * stroke.width) * zoom.sqrt();
     let places = arrow_places(&path, covers, (middle, direction), size);
-    match dimension {
-        Dimension::DataStream => {
+    match style {
+        WireStyle::DataStream => {
             painter.add(Shape::line(path, stroke));
             for (at, direction) in places {
                 arrowhead(painter, at, direction, size, stroke.color);
             }
         }
-        Dimension::ValCmd if read_only => {
+        WireStyle::ReadOnly => {
             painter.extend(Shape::dotted_line(&path, stroke.color, 5.0 * zoom, stroke.width * 0.6));
             // From the setting (where the wire ends) back to the control reading it.
             for (at, direction) in places {
                 arrowhead(painter, at, -direction, size, stroke.color);
             }
         }
-        Dimension::ValCmd => {
+        WireStyle::ReadWrite => {
             painter.extend(Shape::dashed_line(&path, stroke, 7.0 * zoom, 4.0 * zoom));
             for (at, direction) in places {
                 both_ways(painter, at, direction, size, stroke.color);
@@ -312,18 +304,36 @@ fn both_ways(painter: &Painter, at: Pos2, direction: Vec2, size: f32, colour: Co
     }
 }
 
-/// Some ports only read the value they're connected to (`PortRole::ValIn`, val-only), which people see as read-only.
-/// This says whether a port does.
-fn read_only(port: PortAddress) -> bool {
-    port.role == PortRole::ValIn
+/// A wire's drawn by what its edge carries: a data stream, solid (see `paint_wire`); a value and commands, dashed; a
+/// value only, to a `ValIn`, dotted.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum WireStyle {
+    DataStream,
+    ReadWrite,
+    ReadOnly,
+}
+
+impl WireStyle {
+    /// How a wire to or from a port of `role` (or, dragged, between two) is drawn.
+    fn of(roles: impl IntoIterator<Item = PortRole>) -> Self {
+        let mut style = WireStyle::ReadWrite;
+        for role in roles {
+            match role {
+                PortRole::DataStreamIn | PortRole::DataStreamOut => return WireStyle::DataStream,
+                PortRole::ValIn => style = WireStyle::ReadOnly,
+                PortRole::ValInCmdOut | PortRole::ValOutCmdIn => {}
+            }
+        }
+        style
+    }
 }
 
 /// An edge of a type with colour `colour` is drawn in this colour: settings edges are all the same grey, so they stay
 /// in the background of the data flowing through the graph.
-fn wire_colour(dimension: Dimension, colour: Color32, colours: &Colours) -> Color32 {
-    match dimension {
-        Dimension::DataStream => colour,
-        Dimension::ValCmd => colours.text_secondary,
+fn wire_colour(style: WireStyle, colour: Color32, colours: &Colours) -> Color32 {
+    match style {
+        WireStyle::DataStream => colour,
+        WireStyle::ReadWrite | WireStyle::ReadOnly => colours.text_secondary,
     }
 }
 
@@ -598,11 +608,10 @@ impl Canvas {
             } else {
                 bezier(tip, !right, start, right, zoom)
             };
-            let dimension = port.role.dimension();
-            let colour = wire_colour(dimension, info.colour, self.colours);
-            let read_only = read_only(port) || target.is_some_and(read_only);
+            let style = WireStyle::of(std::iter::once(port.role).chain(target.map(|t| t.role)));
+            let colour = wire_colour(style, info.colour, self.colours);
             let stroke = Stroke::new(2.0 * zoom.sqrt(), colour);
-            paint_wire(&painter, points, dimension, read_only, stroke, zoom, &[]);
+            paint_wire(&painter, points, style, stroke, zoom, &[]);
         }
 
         let connected: HashSet<PortAddress> = graph.edges().iter().flat_map(|e| [e.from, e.to]).collect();
@@ -711,11 +720,10 @@ impl Canvas {
         let shown = self.settings_shown;
         let read_only = shown && resolved.values().any(|s| s.count(PortRole::ValIn) > 0);
         // Data's types are listed; settings are all edged alike, so there's just the one row for them, if they're showing.
-        let rows_of = |dimension: Dimension, kinds: usize| {
-            if dimension == Dimension::DataStream { kinds } else { shown as usize }
-        };
+        let rows_of =
+            |style: WireStyle, kinds: usize| if style == WireStyle::DataStream { kinds } else { shown as usize };
         let rows: usize = if self.legend_open {
-            sections.iter().map(|(_, dimension, kinds)| 1 + rows_of(*dimension, kinds.len())).sum::<usize>()
+            sections.iter().map(|(_, style, kinds)| 1 + rows_of(*style, kinds.len())).sum::<usize>()
                 + read_only as usize
         } else {
             0
@@ -756,10 +764,10 @@ impl Canvas {
         }
 
         let mut y = title.bottom();
-        for (heading, dimension, kinds) in sections {
+        for (heading, style, kinds) in sections {
             // Each section's title in the middle of a divider: the settings', with a small gear, greyer from their
             // divider down, as nodes have them.
-            let settings = dimension == Dimension::ValCmd;
+            let settings = style != WireStyle::DataStream;
             let fill = colours.surface.lerp_to_gamma(colours.divider, 0.5);
             let mid = y + ROW / 2.0;
             // While the settings are hidden, just their title, with no area or divider.
@@ -790,21 +798,21 @@ impl Canvas {
             y += ROW;
             let label_at = |mid: f32| egui::pos2(title.left() + 36.0, mid);
             let ends = |mid: f32| (egui::pos2(title.left(), mid), egui::pos2(title.left() + 26.0, mid));
-            match dimension {
-                Dimension::DataStream => {
+            match style {
+                WireStyle::DataStream => {
                     for info in kinds {
                         let mid = y + ROW / 2.0;
                         let (start, end) = ends(mid);
-                        let stroke = Stroke::new(2.0, wire_colour(dimension, info.colour, colours));
+                        let stroke = Stroke::new(2.0, wire_colour(style, info.colour, colours));
                         painter.line_segment([start, end], stroke);
                         arrowhead(painter, start.lerp(end, 0.5), egui::vec2(1.0, 0.0), 7.0, info.colour);
                         painter.text(label_at(mid), Align2::LEFT_CENTER, info.name, font.clone(), colours.text_primary);
                         y += ROW;
                     }
                 }
-                Dimension::ValCmd if !shown => {}
+                WireStyle::ReadWrite | WireStyle::ReadOnly if !shown => {}
                 // A dashed edge both ways into a port, as on the graph, where the port has its setting's colour.
-                Dimension::ValCmd => {
+                WireStyle::ReadWrite | WireStyle::ReadOnly => {
                     let mid = y + ROW / 2.0;
                     let (start, end) = ends(mid);
                     let stroke = Stroke::new(2.0, colours.text_secondary);
@@ -839,8 +847,8 @@ impl Canvas {
         if eye_button.on_hover_text(tip).clicked() {
             self.settings_shown = !self.settings_shown;
             if !self.settings_shown {
-                selection.edge = selection.edge.filter(|e| e.dimension() != Dimension::ValCmd);
-                self.menu_edge = self.menu_edge.filter(|e| e.dimension() != Dimension::ValCmd);
+                selection.edge = selection.edge.filter(Edge::carries_data_stream);
+                self.menu_edge = self.menu_edge.filter(Edge::carries_data_stream);
             }
             ui.ctx().request_repaint();
         }
@@ -851,7 +859,7 @@ impl Canvas {
 
     /// Settings edges can be hidden. This says whether `edge` is on show.
     fn shows(&self, edge: &Edge) -> bool {
-        edge.dimension() != Dimension::ValCmd || self.settings_shown
+        edge.carries_data_stream() || self.settings_shown
     }
 
     /// The canvas handles clicks and drags on empty canvas with this (middle and right drags pan, in `pan_and_zoom`).
@@ -1225,9 +1233,9 @@ impl Canvas {
             let source = edge.from;
             let Some(state) = resolved.get(&source.node) else { continue };
             let Some(info) = state.info(source.role, source.port_idx) else { continue };
-            let mut colour = wire_colour(edge.dimension(), info.colour, self.colours);
-            let unknown =
-                edge.dimension() == Dimension::DataStream && state.summary(source.role, source.port_idx).is_none();
+            let style = WireStyle::of([edge.from.role, edge.to.role]);
+            let mut colour = wire_colour(style, info.colour, self.colours);
+            let unknown = edge.carries_data_stream() && state.summary(source.role, source.port_idx).is_none();
             if unknown || self.wire.is_some() {
                 colour = colour.gamma_multiply(0.4);
             }
@@ -1246,10 +1254,9 @@ impl Canvas {
             };
             if selected {
                 let halo = Stroke::new(w + 3.0, self.colours.text_primary.gamma_multiply(0.12));
-                paint_wire(painter, points, Dimension::DataStream, false, halo, zoom, &covers);
+                paint_wire(painter, points, WireStyle::DataStream, halo, zoom, &covers);
             }
-            let read_only = read_only(source);
-            paint_wire(painter, points, edge.dimension(), read_only, Stroke::new(w, colour), zoom, &covers);
+            paint_wire(painter, points, style, Stroke::new(w, colour), zoom, &covers);
             // A disabled edge is broken in the middle.
             if graph.is_edge_disabled(edge) {
                 let [a, b, c, d] = points.map(|p| p.to_vec2());
@@ -1269,27 +1276,27 @@ impl Canvas {
 }
 
 /// The legend lists the edge types on some port of the graph (which covers the edges, as each connects two ports), in
-/// sections (data, then settings). Sections with none are left out.
-pub fn legend_entries<N: NodesEnum>(
+/// sections (data, then settings), each drawn as its wires are. Sections with none are left out.
+pub(super) fn legend_entries<N: NodesEnum>(
     resolved: &Resolved<N::Edges>,
-) -> Vec<(&'static str, Dimension, Vec<&'static EdgeInfo>)> {
-    let present: HashSet<KindKey> = resolved
+) -> Vec<(&'static str, WireStyle, Vec<&'static EdgeInfo>)> {
+    let present: HashSet<PortKind> = resolved
         .iter()
         .flat_map(|(id, state)| state.ports(*id).filter_map(|p| state.kind(p.role, p.port_idx)))
         .collect();
-    let shown = |dimension: Dimension, kinds: &'static [EdgeInfo]| -> Vec<&'static EdgeInfo> {
-        kinds.iter().enumerate().filter(|(i, _)| present.contains(&(dimension, *i))).map(|(_, k)| k).collect()
+    let shown = |kind: fn(usize) -> PortKind, kinds: &'static [EdgeInfo]| -> Vec<&'static EdgeInfo> {
+        kinds.iter().enumerate().filter(|(i, _)| present.contains(&kind(*i))).map(|(_, k)| k).collect()
     };
     [
         (
             "Data",
-            Dimension::DataStream,
-            shown(Dimension::DataStream, <<N::Edges as Edges>::DataStream as EdgeTypesEnum>::KINDS),
+            WireStyle::DataStream,
+            shown(PortKind::DataStream, <<N::Edges as Edges>::DataStream as EdgeTypesEnum>::KINDS),
         ),
         (
             "Settings",
-            Dimension::ValCmd,
-            shown(Dimension::ValCmd, <<N::Edges as Edges>::PublishedValue as EdgeTypesEnum>::KINDS),
+            WireStyle::ReadWrite,
+            shown(PortKind::Value, <<N::Edges as Edges>::PublishedValue as EdgeTypesEnum>::KINDS),
         ),
     ]
     .into_iter()
@@ -1504,23 +1511,20 @@ fn paint_port(
         painter.circle_filled(pos, r + 4.0 * z, colour.gamma_multiply(0.25));
     }
     let fill = if connected { colour } else { fade(ports.colours.surface_raised) };
-    match port.role.dimension() {
-        Dimension::DataStream => {
-            painter.circle_filled(pos, r, fill);
-            if !connected {
-                painter.circle_stroke(pos, r - 0.75 * z, Stroke::new(1.5 * z, colour));
-            }
+    if port.role.carries_data_stream() {
+        painter.circle_filled(pos, r, fill);
+        if !connected {
+            painter.circle_stroke(pos, r - 0.75 * z, Stroke::new(1.5 * z, colour));
         }
-        // Settings ports are diamonds, of the type's colour. A connected one has a grey centre, the colour of
-        // its edge, to tie the two together. A read-only control is only an outline: it can't fill in the setting.
-        Dimension::ValCmd => {
-            let d = r * 1.25;
-            let fill = if read_only { fade(ports.colours.surface_raised) } else { fill };
-            painter.add(Shape::convex_polygon(diamond(pos, d), fill, Stroke::new(1.5 * z, colour)));
-            if connected {
-                let centre = fade(wire_colour(Dimension::ValCmd, colour, ports.colours));
-                painter.add(Shape::convex_polygon(diamond(pos, d * 0.45), centre, Stroke::NONE));
-            }
+    } else {
+        // Settings ports are diamonds, of the type's colour. A connected one has a grey centre, the colour of its
+        // edge, to tie the two together. A read-only control is only an outline: it can't fill in the setting.
+        let d = r * 1.25;
+        let fill = if read_only { fade(ports.colours.surface_raised) } else { fill };
+        painter.add(Shape::convex_polygon(diamond(pos, d), fill, Stroke::new(1.5 * z, colour)));
+        if connected {
+            let centre = fade(wire_colour(WireStyle::ReadWrite, colour, ports.colours));
+            painter.add(Shape::convex_polygon(diamond(pos, d * 0.45), centre, Stroke::NONE));
         }
     }
 }

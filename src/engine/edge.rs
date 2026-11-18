@@ -1,7 +1,7 @@
 //! Edges connect nodes on the graph, and each carries one type of thing. A program declares its edge types as it does
 //! its node types.
 //!
-//! There are two dimensions of edge. Data edges carry data streams from outputs to inputs, and must form a DAG. Value
+//! There are two kinds of edge, by the roles of the ports they join (see `PortRole`). Data edges carry data streams from outputs to inputs, and must form a DAG. Value
 //! edges let one node read a value another publishes, and send that node commands (a viewer reading a detector's
 //! thresholds, and setting them, say); they carry no data, so they may point anywhere, including upstream.
 //!
@@ -14,7 +14,6 @@ use std::fmt::Debug;
 use std::hash::Hash;
 
 use eframe::egui::Color32;
-use serde::{Deserialize, Serialize};
 
 /// The graph describes each edge type by these facts, which never change.
 pub struct EdgeInfo {
@@ -125,17 +124,6 @@ pub type CommandKind<E> = <<E as Edges>::Command as CommandsEnum>::Kind;
 
 /// A data edge holds a pass's worth of data in one of these.
 pub type Buffer<E> = <<E as Edges>::DataStream as DataStreamsEnum>::Buffer;
-
-/// An edge is of one of two dimensions, by the roles of the ports it joins (see `PortRole`): a data stream, from a
-/// `DataStreamOut` to a `DataStreamIn`, each pass; or a value and commands, between a `ValInCmdOut` (or `ValIn`) and a
-/// `ValOutCmdIn`. An edge saves each end as a node and the index of a port among the node's ports of its role, so the
-/// dimension says which roles those are.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default, Serialize, Deserialize)]
-pub enum Dimension {
-    #[default]
-    DataStream,
-    ValCmd,
-}
 
 /// A program declares the edge types it's built with, and its commands, like this:
 ///

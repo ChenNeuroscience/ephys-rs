@@ -2213,12 +2213,11 @@ mod tests {
 
     #[test]
     fn the_legends_eye_hides_settings() {
-        use crate::engine::Dimension;
         let mut harness = harness();
-        let edge = |h: &Harness<TestApp>, dimension: Dimension| {
-            *h.state().graph.edges().iter().find(|e| e.dimension() == dimension).unwrap()
+        let edge = |h: &Harness<TestApp>, data_stream: bool| {
+            *h.state().graph.edges().iter().find(|e| e.carries_data_stream() == data_stream).unwrap()
         };
-        let (settings, data) = (edge(&harness, Dimension::ValCmd), edge(&harness, Dimension::DataStream));
+        let (settings, data) = (edge(&harness, false), edge(&harness, true));
         harness.state_mut().selection.edge = Some(settings);
         harness.get_by_label("Hide settings").click();
         harness.run_steps(2);

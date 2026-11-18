@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{CommandKind, Dimension, Edges, Kind, NodeId};
+use super::{CommandKind, Edges, Kind, NodeId};
 
 /// Edges connect nodes at their ports, each named for what flows through it, which way (see `PortRole`, which names
 /// a port's role without what's in it). A node declares its ports as these: its data ports (`Node::data_stream_inputs`
@@ -203,12 +203,9 @@ pub enum PortRole {
 }
 
 impl PortRole {
-    /// `DataStreamIn` and `DataStreamOut` ports are data ports; the others, value ports.
-    pub fn dimension(self) -> Dimension {
-        match self {
-            PortRole::DataStreamIn | PortRole::DataStreamOut => Dimension::DataStream,
-            PortRole::ValOutCmdIn | PortRole::ValInCmdOut | PortRole::ValIn => Dimension::ValCmd,
-        }
+    /// `DataStreamIn` and `DataStreamOut` ports carry data streams; the others, values and commands.
+    pub fn carries_data_stream(self) -> bool {
+        matches!(self, PortRole::DataStreamIn | PortRole::DataStreamOut)
     }
 
     /// An edge from a port of this role ends at a port of one of these.
@@ -251,4 +248,18 @@ pub struct PortAddress {
     pub node: NodeId,
     pub role: PortRole,
     pub port_idx: usize,
+}
+
+/// The graph names what a port carries by which kind of data stream or value it is, as its index in the program's
+/// list of them (`EdgeTypesEnum::KINDS`), for the port's name, colour and description (see `edge_info`).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum PortKind {
+    DataStream(usize),
+    Value(usize),
+}
+
+impl PortKind {
+    pub fn carries_data_stream(self) -> bool {
+        matches!(self, PortKind::DataStream(_))
+    }
 }

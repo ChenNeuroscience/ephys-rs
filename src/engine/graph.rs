@@ -9,8 +9,8 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    CommandContext, CommandSource, CommandsEnum, Dimension, EdgeInfo, EdgeTypesEnum, Edges, Node, NodesEnum, Plan,
-    Port, PortAddress, PortRole, UiContext,
+    CommandContext, CommandSource, CommandsEnum, EdgeInfo, EdgeTypesEnum, Edges, Node, NodesEnum, Plan, Port,
+    PortAddress, PortKind, PortRole, UiContext,
 };
 use crate::commands::{Address, Commands};
 use crate::theme::Colours;
@@ -32,9 +32,9 @@ pub struct Edge {
 }
 
 impl Edge {
-    /// Whether the edge carries a data stream, or a value and commands, by the roles of its ports.
-    pub fn dimension(&self) -> Dimension {
-        self.from.role.dimension()
+    /// Whether the edge carries a data stream (rather than a value and commands), by the roles of its ports.
+    pub fn carries_data_stream(&self) -> bool {
+        self.from.role.carries_data_stream()
     }
 }
 
@@ -86,8 +86,13 @@ pub enum ConnectError {
     /// Only a `DataStreamOut` and a `DataStreamIn`, or a `ValInCmdOut` or `ValIn` and a `ValOutCmdIn`, can be
     /// connected.
     RoleMismatch,
-    KindMismatch {
-        dimension: Dimension,
+    /// A `DataStreamOut` of one kind of data stream can't feed a `DataStreamIn` of another.
+    DataStreamKindMismatch {
+        from: &'static str,
+        to: &'static str,
+    },
+    /// A `ValInCmdOut` or `ValIn` can't read a `ValOutCmdIn` of another kind of value.
+    ValueKindMismatch {
         from: &'static str,
         to: &'static str,
     },
@@ -100,12 +105,8 @@ impl fmt::Display for ConnectError {
             ConnectError::NoSuchPort => write!(f, "no such port"),
             ConnectError::SameNode => write!(f, "a node can't connect to itself"),
             ConnectError::RoleMismatch => write!(f, "outputs connect to inputs, and controls to settings"),
-            ConnectError::KindMismatch { dimension: Dimension::DataStream, from, to } => {
-                write!(f, "a {from} output can't feed a {to} input")
-            }
-            ConnectError::KindMismatch { dimension: Dimension::ValCmd, from, to } => {
-                write!(f, "a {from} control can't edit a {to} setting")
-            }
+            ConnectError::DataStreamKindMismatch { from, to } => write!(f, "a {from} output can't feed a {to} input"),
+            ConnectError::ValueKindMismatch { from, to } => write!(f, "a {from} control can't edit a {to} setting"),
             ConnectError::Cycle => write!(f, "that would make a loop"),
         }
     }
@@ -126,9 +127,6 @@ pub struct NodeState<E: Edges> {
     pub val_ins: Vec<Port<E>>,
     pub warnings: Vec<String>,
 }
-
-/// The graph names an edge type by its dimension and its index in that dimension's `EdgeTypesEnum::KINDS`.
-pub type KindKey = (Dimension, usize);
 
 impl<E: Edges> NodeState<E> {
     /// The state of `node`, given the data streams on its inputs.
@@ -208,9 +206,9 @@ impl<E: Edges> NodeState<E> {
         }
     }
 
-    pub fn kind(&self, role: PortRole, port_idx: usize) -> Option<KindKey> {
-        let stream = |kind| (Dimension::DataStream, E::DataStream::kind_index(kind));
-        let value = |kind| (Dimension::ValCmd, E::PublishedValue::kind_index(kind));
+    pub fn kind(&self, role: PortRole, port_idx: usize) -> Option<PortKind> {
+        let stream = |kind| PortKind::DataStream(E::DataStream::kind_index(kind));
+        let value = |kind| PortKind::Value(E::PublishedValue::kind_index(kind));
         match role {
             PortRole::DataStreamIn => self.inputs.get(port_idx).and_then(Port::data_stream_kind).map(stream),
             PortRole::DataStreamOut => self.outputs.get(port_idx).and_then(Port::data_stream_kind).map(stream),
@@ -261,10 +259,10 @@ impl<E: Edges> NodeState<E> {
     }
 }
 
-pub fn edge_info<E: Edges>((dimension, index): KindKey) -> &'static EdgeInfo {
-    match dimension {
-        Dimension::DataStream => &E::DataStream::KINDS[index],
-        Dimension::ValCmd => &E::PublishedValue::KINDS[index],
+pub fn edge_info<E: Edges>(kind: PortKind) -> &'static EdgeInfo {
+    match kind {
+        PortKind::DataStream(index) => &E::DataStream::KINDS[index],
+        PortKind::Value(index) => &E::PublishedValue::KINDS[index],
     }
 }
 
@@ -349,7 +347,7 @@ impl<N: NodesEnum> Graph<N> {
     }
 
     fn data_edges(&self) -> impl Iterator<Item = &Edge> {
-        self.edges.iter().filter(|e| e.dimension() == Dimension::DataStream)
+        self.edges.iter().filter(|e| e.carries_data_stream())
     }
 
     /// A `DataStreamIn` has at most one edge into it. This finds it, enabled or not (or, for a `ValOutCmdIn`, the
@@ -409,7 +407,7 @@ impl<N: NodesEnum> Graph<N> {
         (0..count).map(labels).collect()
     }
 
-    fn kind(&self, port: PortAddress) -> Option<KindKey> {
+    fn kind(&self, port: PortAddress) -> Option<PortKind> {
         NodeState::unconnected(&self.nodes.get(&port.node)?.node).kind(port.role, port.port_idx)
     }
 
@@ -426,14 +424,19 @@ impl<N: NodesEnum> Graph<N> {
         if from.node == to.node {
             return Err(ConnectError::SameNode);
         }
-        let dimension = from.role.dimension();
         let state = |port: PortAddress| NodeState::unconnected(&self.nodes[&port.node].node);
         if !state(from).fits((from.role, from.port_idx), &state(to), (to.role, to.port_idx)) {
             let name = |kind| edge_info::<N::Edges>(kind).name;
-            return Err(ConnectError::KindMismatch { dimension, from: name(from_kind), to: name(to_kind) });
+            let (from, to) = (name(from_kind), name(to_kind));
+            let data_stream = from_kind.carries_data_stream();
+            return Err(if data_stream {
+                ConnectError::DataStreamKindMismatch { from, to }
+            } else {
+                ConnectError::ValueKindMismatch { from, to }
+            });
         }
         // Value edges carry no data, so may point anywhere; only data edges must not loop.
-        if dimension == Dimension::DataStream && self.reaches(to.node, from.node) {
+        if from.role.carries_data_stream() && self.reaches(to.node, from.node) {
             return Err(ConnectError::Cycle);
         }
         Ok(Edge { from, to })
@@ -445,10 +448,7 @@ impl<N: NodesEnum> Graph<N> {
     /// `ValInCmdOut` or `ValIn` reads just the one.)
     pub fn connect(&mut self, a: PortAddress, b: PortAddress) -> Result<Edge, ConnectError> {
         let edge = self.check(a, b)?;
-        self.edges.retain(|e| match edge.dimension() {
-            Dimension::DataStream => e.to != edge.to,
-            Dimension::ValCmd => e.from != edge.from,
-        });
+        self.edges.retain(|e| if edge.carries_data_stream() { e.to != edge.to } else { e.from != edge.from });
         let edges = &self.edges;
         self.disabled_edges.retain(|e| edges.contains(e));
         self.edges.push(edge);
@@ -570,7 +570,7 @@ impl<N: NodesEnum> Graph<N> {
     /// of the nodes in such a loop, which this finds.
     pub fn command_loops(&self) -> std::collections::HashSet<NodeId> {
         let mut next: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
-        for edge in self.edges.iter().filter(|e| e.dimension() == Dimension::ValCmd && self.is_live(e)) {
+        for edge in self.edges.iter().filter(|e| !e.carries_data_stream() && self.is_live(e)) {
             let ports = |id: NodeId| self.nodes.get(&id).map(|n| n.node.val_cmd_ports()).unwrap_or_default();
             let (from, to) = (ports(edge.from.node), ports(edge.to.node));
             let commands =
@@ -937,7 +937,7 @@ mod tests {
         );
         assert!(matches!(
             check(port(board, PortRole::DataStreamOut, 0), port(video, PortRole::DataStreamIn, 0)),
-            Some(ConnectError::KindMismatch { dimension: Dimension::DataStream, .. })
+            Some(ConnectError::DataStreamKindMismatch { .. })
         ));
         assert_eq!(
             check(port(board, PortRole::DataStreamOut, 5), port(gain, PortRole::DataStreamIn, 0)),
@@ -949,7 +949,7 @@ mod tests {
         );
         assert!(matches!(
             check(port(spikes, PortRole::ValInCmdOut, 0), port(gain, PortRole::ValOutCmdIn, 0)),
-            Some(ConnectError::KindMismatch { dimension: Dimension::ValCmd, .. })
+            Some(ConnectError::ValueKindMismatch { .. })
         ));
 
         graph.connect(port(gain, PortRole::DataStreamOut, 0), port(gain2, PortRole::DataStreamIn, 0)).unwrap();

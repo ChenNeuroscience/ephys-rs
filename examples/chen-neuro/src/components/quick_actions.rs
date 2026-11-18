@@ -510,7 +510,7 @@ mod tests {
         let fed: Vec<NodeId> = graph
             .edges()
             .iter()
-            .filter(|e| e.from.node == selector && e.dimension() == ephys_rs::engine::Dimension::DataStream)
+            .filter(|e| e.from.node == selector && e.carries_data_stream())
             .map(|e| e.to.node)
             .collect();
         let lfp =
