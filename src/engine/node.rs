@@ -181,12 +181,6 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     /// an entry for each of `self.list_ports_data_stream_in()`: the data stream connected to that input, if any.
     fn list_ports_data_stream_out(&self, inputs: &[Option<E::DataStream>]) -> Vec<Port<E>>;
 
-    /// The graph and the node's window show any problems with how the node's set up, which the node lists here, given
-    /// what's connected to its inputs.
-    fn warnings(&self, _inputs: &[Option<E::DataStream>]) -> Vec<String> {
-        Vec::new()
-    }
-
     /// A node's value ports (see `Port`). Its `ValOutCmdIn` ports are numbered separately from its `ValInCmdOut`
     /// and `ValIn` ports (which are numbered together), each in the order they're listed here.
     fn list_ports_val_cmd(&self) -> Vec<Port<E>> {
@@ -319,5 +313,11 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     /// has any.
     fn thread_pool(&self, _thread_idx: usize, _context: &ThreadContext) -> Option<PoolStatus> {
         None
+    }
+
+    /// The graph and the node's window show any problems with how the node's set up, which the node lists here, given
+    /// what's connected to its inputs.
+    fn warnings(&self, _inputs: &[Option<E::DataStream>]) -> Vec<String> {
+        Vec::new()
     }
 }
