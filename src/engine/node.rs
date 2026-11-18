@@ -173,13 +173,13 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     const SHOW_IN_BASIC_DEFAULT: bool = false;
 
     /// A node's inputs (see `Port`) can depend on its settings. By default, a node has none.
-    fn data_stream_inputs(&self) -> Vec<Port<E>> {
+    fn list_ports_data_stream_in(&self) -> Vec<Port<E>> {
         Vec::new()
     }
 
     /// A node's outputs (see `Port`) can depend on its settings and on what's connected to its inputs. `inputs` has
-    /// an entry for each of `self.data_stream_inputs()`: the data stream connected to that input, if any.
-    fn data_stream_outputs(&self, inputs: &[Option<E::DataStream>]) -> Vec<Port<E>>;
+    /// an entry for each of `self.list_ports_data_stream_in()`: the data stream connected to that input, if any.
+    fn list_ports_data_stream_out(&self, inputs: &[Option<E::DataStream>]) -> Vec<Port<E>>;
 
     /// The graph and the node's window show any problems with how the node's set up, which the node lists here, given
     /// what's connected to its inputs.
@@ -189,7 +189,7 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
 
     /// A node's value ports (see `Port`). Its `ValOutCmdIn` ports are numbered separately from its `ValInCmdOut`
     /// and `ValIn` ports (which are numbered together), each in the order they're listed here.
-    fn val_cmd_ports(&self) -> Vec<Port<E>> {
+    fn list_ports_val_cmd(&self) -> Vec<Port<E>> {
         Vec::new()
     }
 

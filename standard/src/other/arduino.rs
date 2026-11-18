@@ -356,7 +356,7 @@ impl Node<Edges> for Arduino {
     type UiState = ();
     type GlobalSettings = ();
 
-    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
+    fn list_ports_data_stream_out(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
         Vec::new()
     }
 
@@ -587,8 +587,8 @@ mod tests {
         assert_eq!(version(&[0xf9, 0x90, 0]), None, "not a version");
     }
 
-    /// Talking to the sketch, on a pseudo-terminal standing in for the Arduino's port (which can't be opened by name, as
-    /// it has no baud rate to set).
+    /// Talking to the sketch, on a pseudo-terminal standing in for the Arduino's port (which can't be opened by name,
+    /// as it has no baud rate to set).
     #[cfg(unix)]
     #[test]
     fn it_waits_for_the_sketch_then_sets_its_pins_and_sets_them_low_when_it_stops() {

@@ -83,11 +83,11 @@ impl Node<Edges> for BandPassFilter {
         filters.run(output, input);
     }
 
-    fn data_stream_inputs(&self) -> Vec<Port<Edges>> {
+    fn list_ports_data_stream_in(&self) -> Vec<Port<Edges>> {
         vec![Port::DataStreamIn { name: "continuous", data_stream_kind: Kind::Continuous }]
     }
 
-    fn data_stream_outputs(&self, inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
+    fn list_ports_data_stream_out(&self, inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
         vec![Port::DataStreamOut { name: "filtered", data_stream_kind: Kind::Continuous, stream: inputs[0] }]
     }
 

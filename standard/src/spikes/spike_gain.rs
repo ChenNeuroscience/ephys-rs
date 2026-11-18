@@ -30,8 +30,8 @@ pub struct SpikeGain {
     pub fit: Fit,
 }
 
-/// What's to fill what's recorded, for each channel, when choosing the gains: its threshold times a factor, its
-/// spikes' peaks (a percentile of them) times a factor, or the two together. Never less than 1.5 × the threshold, so it's in
+/// What's to fill what's recorded, for each channel, when choosing the gains: its threshold times a factor, its spikes'
+/// peaks (a percentile of them) times a factor, or the two together. Never less than 1.5 × the threshold, so it's in
 /// view; and a channel with no spikes goes by its threshold.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -196,11 +196,11 @@ impl Node<Edges> for SpikeGain {
         TreeShake::needing_all(inputs.contains(&true) && wanted, inputs.len())
     }
 
-    fn data_stream_inputs(&self) -> Vec<Port<Edges>> {
+    fn list_ports_data_stream_in(&self) -> Vec<Port<Edges>> {
         vec![Port::DataStreamIn { name: "spikes", data_stream_kind: Kind::Spikes }]
     }
 
-    fn data_stream_outputs(&self, inputs: &[Option<DataStream>]) -> Vec<ephys_rs::engine::Port<Edges>> {
+    fn list_ports_data_stream_out(&self, inputs: &[Option<DataStream>]) -> Vec<ephys_rs::engine::Port<Edges>> {
         vec![Port::DataStreamOut { name: "spikes", data_stream_kind: Kind::Spikes, stream: inputs[0] }]
     }
 
@@ -213,7 +213,7 @@ impl Node<Edges> for SpikeGain {
         BufferUsage { in_place: vec![Some(0); outputs], ..BufferUsage::none(inputs, outputs) }
     }
 
-    fn val_cmd_ports(&self) -> Vec<Port<Edges>> {
+    fn list_ports_val_cmd(&self) -> Vec<Port<Edges>> {
         vec![Port::val_out_cmd_in("gains", ValueKind::Gains, &[CommandKind::SetGains, CommandKind::Detect])]
     }
 

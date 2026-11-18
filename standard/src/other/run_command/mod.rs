@@ -1,10 +1,10 @@
 //! Runs a program on files, in a terminal of its own, whatever the graph's doing: by hand, on files picked here, or by
-//! itself, on files sent to it (by a writer, once it's finished recording them, say: the `ProcessFiles` command, at
-//! its "files" port). It's nothing to do with passes: the files come as a command (see `ephys_rs::commands`).
+//! itself, on files sent to it (by a writer, once it's finished recording them, say: the `ProcessFiles` command, at its
+//! "files" port). It's nothing to do with passes: the files come as a command (see `ephys_rs::commands`).
 //!
 //! The terminal's a process apart, running a script written here, so its output's there, not here, and it carries on if
-//! the app quits. To be stopped it has to be findable, and what's started here often isn't what's running (macOS's `open`
-//! hands the script to Terminal and goes): see `terminal`.
+//! the app quits. To be stopped it has to be findable, and what's started here often isn't what's running (macOS's
+//! `open` hands the script to Terminal and goes): see `terminal`.
 //!
 //! The arguments are quoted in the script, so a path with spaces in it arrives whole, but pipes and `&&` mean nothing,
 //! unless the program's a shell (`bash`, with `-c "..."`).
@@ -71,8 +71,8 @@ pub enum Mode {
     Once,
 }
 
-/// When what's connected after it (to its "after running" control) is sent the files it ran on, once it's done. Never if
-/// it was stopped.
+/// When what's connected after it (to its "after running" control) is sent the files it ran on, once it's done. Never
+/// if it was stopped.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 pub enum Then {
     /// If every command succeeded.
@@ -177,7 +177,8 @@ impl ScriptConfig {
     }
 }
 
-/// `arguments`, with `file` for `EACH_FILE`, and `files` for `ALL_FILES`: as arguments of their own if it's one by itself.
+/// `arguments`, with `file` for `EACH_FILE`, and `files` for `ALL_FILES`: as arguments of their own if it's one by
+/// itself.
 fn expanded(arguments: &[String], file: Option<&PathBuf>, files: &[PathBuf]) -> Vec<String> {
     let text = |path: &PathBuf| path.to_string_lossy().into_owned();
     let all: Vec<String> = files.iter().map(text).collect();
@@ -613,13 +614,13 @@ impl Node<Edges> for RunCommand {
     const WINDOW_SIZE: [f32; 2] = [820.0, 520.0];
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
-    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
+    fn list_ports_data_stream_out(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
         Vec::new()
     }
 
     /// Where it's sent files to run on, on the left, as what sends them comes before it; and where it sends them on,
     /// once it's done (see `Then`), on the right, as what runs then comes after it.
-    fn val_cmd_ports(&self) -> Vec<Port<Edges>> {
+    fn list_ports_val_cmd(&self) -> Vec<Port<Edges>> {
         vec![
             Port::val_out_cmd_in("files", ValueKind::FileInput, &[CommandKind::ProcessFiles]).flipped(),
             Port::val_in_cmd_out("after running", ValueKind::FileInput, &[CommandKind::ProcessFiles]).flipped(),

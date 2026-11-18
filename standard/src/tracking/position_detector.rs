@@ -1,6 +1,6 @@
 //! Finds LEDs in video: in each frame, the two biggest bright spots within the crop (see `tracking::pipeline`). There
-//! can also be a timing LED, in a spot of its own: its coming on and going off are the `pos ttl` output's ups and downs,
-//! timed by the camera's clock, as the positions are.
+//! can also be a timing LED, in a spot of its own: its coming on and going off are the `pos ttl` output's ups and
+//! downs, timed by the camera's clock, as the positions are.
 
 use eframe::egui::{self, RichText};
 use ephys_rs::engine::TreeShake;
@@ -59,11 +59,11 @@ impl Node<Edges> for PositionDetector {
     type UiState = ();
     type GlobalSettings = ();
 
-    fn data_stream_inputs(&self) -> Vec<Port<Edges>> {
+    fn list_ports_data_stream_in(&self) -> Vec<Port<Edges>> {
         vec![Port::DataStreamIn { name: "video", data_stream_kind: Kind::Video }]
     }
 
-    fn data_stream_outputs(&self, inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
+    fn list_ports_data_stream_out(&self, inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
         let (positions, ttl) = match inputs[0] {
             Some(DataStream::Video(video)) => (
                 Some(DataStream::Positions(Positions {
@@ -86,7 +86,7 @@ impl Node<Edges> for PositionDetector {
         require_input(inputs, "video")
     }
 
-    fn val_cmd_ports(&self) -> Vec<Port<Edges>> {
+    fn list_ports_val_cmd(&self) -> Vec<Port<Edges>> {
         vec![Port::val_out_cmd_in("detection", ValueKind::Detection, &[CommandKind::SetDetection])]
     }
 
@@ -387,7 +387,7 @@ mod tests {
     #[test]
     fn says_what_it_outputs() {
         let video = crate::standard::tracking::Video { width: 640, height: 480, fps: 50.0 };
-        let outputs = PositionDetector::default().data_stream_outputs(&[Some(DataStream::Video(video))]);
+        let outputs = PositionDetector::default().list_ports_data_stream_out(&[Some(DataStream::Video(video))]);
         assert_eq!(outputs[1].name(), "pos ttl");
         assert!(matches!(outputs[1].stream(), Some(DataStream::Events(Events { lines: 1, .. }))), "a single line");
     }

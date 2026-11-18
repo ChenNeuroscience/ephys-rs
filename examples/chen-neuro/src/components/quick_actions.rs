@@ -1,18 +1,18 @@
 //! chen-neuro's quick actions, offered in the basic view:
 //!
 //! - The standard LTX graph (v0.5): an Open Ephys acquisition board (generation 1 or 2) giving spikes, EEG and digital
-//!   inputs, and a FLIR camera giving positions, all viewed, and recorded by Write LTX, which has Post-Process Positions LTX put the
-//!   positions on the board's clock once it's done; and an Arduino, for pin 8 to be high while acquiring (which has the
-//!   rig's sketch pulse pin 6, for syncing). It reuses what the graph
-//!   already has, adding only what's missing (and connecting only ports that are free), so it's offered until the
-//!   graph has it all. It arranges the panes: the tracker view in a column at the left (with home as a tab behind
-//!   it); the spike viewer filling the rest above (with any panes open before as tabs behind it), and the LFP viewer
-//!   below that (with the TTL viewer and the alarms as tabs behind it).
+//!   inputs, and a FLIR camera giving positions, all viewed, and recorded by Write LTX, which has Post-Process
+//!   Positions LTX put the positions on the board's clock once it's done; and an Arduino, for pin 8 to be high while
+//!   acquiring (which has the rig's sketch pulse pin 6, for syncing). It reuses what the graph already has, adding only
+//!   what's missing (and connecting only ports that are free), so it's offered until the graph has it all. It arranges
+//!   the panes: the tracker view in a column at the left (with home as a tab behind it); the spike viewer filling the
+//!   rest above (with any panes open before as tabs behind it), and the LFP viewer below that (with the TTL viewer and
+//!   the alarms as tabs behind it).
 //! - Swapping the positions' source between the camera (with its position detector) and the VR Computer. What's unused
-//!   is disabled, and whatever took the positions, their TTLs and the settings (the tracker view among them, which shows
-//!   positions without video) takes them from the other, as an input has the one edge. The VR Computer's added the first
-//!   time, and from then on kept, disabled, with no edges; likewise a Log Viewer, showing its log lines. The Arduino's
-//!   for the camera, so it's disabled with it, and enabled again with it.
+//!   is disabled, and whatever took the positions, their TTLs and the settings (the tracker view among them, which
+//!   shows positions without video) takes them from the other, as an input has the one edge. The VR Computer's added
+//!   the first time, and from then on kept, disabled, with no edges; likewise a Log Viewer, showing its log lines. The
+//!   Arduino's for the camera, so it's disabled with it, and enabled again with it.
 //! - Using synthetic data (the fake board and camera in `synthetic_streams`), while any board or camera is real; and
 //!   real devices, while any is synthetic.
 
@@ -166,17 +166,18 @@ fn real_camera() -> camera::Source {
     camera::Source::Spinnaker { serial: String::new() }
 }
 
-/// Board → Reference → Band-pass (spikes' band) → Spike Detector → Spike Gain → Spike Viewer (setting the
-/// detector's thresholds and the gain's gains); Board → Channel Selector → Band-pass (LFP's band) → LFP Viewer
-/// (choosing the selector's channels, which only the LFP branch is, the Continuous Gain's gains, and the spikes' Reference's
-/// reference channels, and showing the reference), with a Spectrum of it too; the board's digital
-/// inputs → TTL Viewer; Camera → Position Detector → Tracker View (setting the camera's and detector's settings).
-/// Write LTX records the spikes (at their gains), the LFP branch's data as EEG (the channels selected, band-passed,
-/// downsampled to 5 kHz, through a Continuous Gain), the positions (with the detector's settings), the digital inputs and the timing LED, if
+/// Board → Reference → Band-pass (spikes' band) → Spike Detector → Spike Gain → Spike Viewer (setting the detector's
+/// thresholds and the gain's gains); Board → Channel Selector → Band-pass (LFP's band) → LFP Viewer (choosing the
+/// selector's channels, which only the LFP branch is, the Continuous Gain's gains, and the spikes' Reference's
+/// reference channels, and showing the reference), with a Spectrum of it too; the board's digital inputs → TTL Viewer;
+/// Camera → Position Detector → Tracker View (setting the camera's and detector's settings). Write LTX records the
+/// spikes (at their gains), the LFP branch's data as EEG (the channels selected, band-passed, downsampled to 5 kHz,
+/// through a Continuous Gain), the positions (with the detector's settings), the digital inputs and the timing LED, if
 /// there is one, then has Post-Process Positions LTX put the positions on the board's clock. An Arduino (the first
-/// found) sets pin 8 high while acquiring; disabled, if the VR computer's in use, as it's for the camera.
-/// An Alarm Processor (in the basic view, for its settings) watches the spikes, the LFP branch and the
-/// positions, with the timing LED connected to add an alarm for, for an Alarm Viewer with switches for it. New boards and cameras are real. Recordings go in a directory for each subject, day and trial.
+/// found) sets pin 8 high while acquiring; disabled, if the VR computer's in use, as it's for the camera. An Alarm
+/// Processor (in the basic view, for its settings) watches the spikes, the LFP branch and the positions, with the
+/// timing LED connected to add an alarm for, for an Alarm Viewer with switches for it. New boards and cameras are real.
+/// Recordings go in a directory for each subject, day and trial.
 fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
     let mut change = Change::new(state.graph);
     let empty = state.graph.iter().next().is_none();
@@ -322,8 +323,8 @@ fn position_nodes(graph: &Graph<Nodes>) -> Vec<NodeId> {
         .collect()
 }
 
-/// Whatever takes `from`'s positions, its TTLs and its settings takes `to`'s instead. (The outputs' order is the same on
-/// the VR Computer and the position detector.)
+/// Whatever takes `from`'s positions, its TTLs and its settings takes `to`'s instead. (The outputs' order is the same
+/// on the VR Computer and the position detector.)
 fn move_positions(graph: &mut Graph<Nodes>, from: NodeId, to: NodeId) {
     for index in 0..2 {
         let targets: Vec<PortAddress> = graph.edges_from(port((from, DataStreamOut, index))).map(|e| e.to).collect();
@@ -534,7 +535,7 @@ mod tests {
         let lfp_viewer = named("LFP Viewer");
         // A node's port it reads a value through, by the node's own numbering (see `val_in_address`).
         let reading = |node: NodeId, val_in_idx| {
-            let ports = graph.get(node).unwrap().node.val_cmd_ports();
+            let ports = graph.get(node).unwrap().node.list_ports_val_cmd();
             let (role, port_idx) = ephys_rs::engine::val_in_address(&ports, val_in_idx).unwrap();
             PortAddress { node, role, port_idx }
         };

@@ -1,8 +1,8 @@
 //! The Alarm Processor: measures spikes, LFP, positions and TTLs over each alarm's period, and says whether each is
-//! within its range. An input's only needed while an alarm that's on watches it (see `Node::evaluate_tree_shake`). Each measure's
-//! counted in bins, a
-//! small fraction of the period each, so however long the period, a window is the same small size, and what's selected
-//! can change without waiting for a new period. An alarm doesn't go off until it's seen a whole period.
+//! within its range. An input's only needed while an alarm that's on watches it (see `Node::evaluate_tree_shake`). Each
+//! measure's counted in bins, a small fraction of the period each, so however long the period, a window is the same
+//! small size, and what's selected can change without waiting for a new period. An alarm doesn't go off until it's seen
+//! a whole period.
 
 use ephys_rs::engine::TreeShake;
 use std::collections::VecDeque;
@@ -268,7 +268,7 @@ impl Node<Edges> for AlarmProcessor {
         TreeShake { runs: given && outputs.contains(&true), needs }
     }
 
-    fn data_stream_inputs(&self) -> Vec<Port<Edges>> {
+    fn list_ports_data_stream_in(&self) -> Vec<Port<Edges>> {
         vec![
             Port::DataStreamIn { name: "spikes", data_stream_kind: Kind::Spikes },
             Port::DataStreamIn { name: "lfp", data_stream_kind: Kind::Continuous },
@@ -277,7 +277,7 @@ impl Node<Edges> for AlarmProcessor {
         ]
     }
 
-    fn data_stream_outputs(&self, inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
+    fn list_ports_data_stream_out(&self, inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
         let stream = Some(DataStream::AlarmStates(streams(inputs)));
         vec![Port::DataStreamOut { name: "alarms", data_stream_kind: Kind::AlarmStates, stream }]
     }
@@ -286,7 +286,7 @@ impl Node<Edges> for AlarmProcessor {
         require_input(inputs, "something to watch")
     }
 
-    fn val_cmd_ports(&self) -> Vec<Port<Edges>> {
+    fn list_ports_val_cmd(&self) -> Vec<Port<Edges>> {
         vec![Port::val_out_cmd_in("alarms", ValueKind::Alarms, &[CommandKind::SetAlarms])]
     }
 

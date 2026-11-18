@@ -20,8 +20,8 @@ else.
 
 The parts of the API are there for three different reasons, and it helps to know which is which:
 
-- **The data model: what the node is and does.** These have to be right for the node to work: its data ports (`data_stream_inputs`,
-  `data_stream_outputs`), its value ports (`val_cmd_ports`: the values it publishes, `val_out`, and those of others it reads),
+- **The data model: what the node is and does.** These have to be right for the node to work: its data ports (`list_ports_data_stream_in`,
+  `list_ports_data_stream_out`), its value ports (`list_ports_val_cmd`: the values it publishes, `val_out`, and those of others it reads),
   the commands it takes (`on_command`), `process` and its state (prepared for each snapshot: `prepare_for_snapshot`).
 - **Optimisation: how cheaply it runs.** Leaving these at their defaults is always correct, only slower or using more
   memory: `evaluate_buffer_usage`, `evaluate_tree_shake` (one exception: a writer says it only runs while recording,
@@ -36,10 +36,10 @@ The parts of the API are there for three different reasons, and it helps to know
 
 - `INFO`: its name, category (source, processing, visualisation, recording or other) and description. The category
   is only a label (see above).
-- `data_stream_inputs()` and `data_stream_outputs(inputs)`: its data ports. An output says what data stream it produces, given what's on the
+- `list_ports_data_stream_in()` and `list_ports_data_stream_out(inputs)`: its data ports. An output says what data stream it produces, given what's on the
   inputs (or `None` while that can't be known), so a graph's streams are worked out before anything runs.
 - `warnings(inputs)`: what's wrong (an input not connected, say), shown on the graph and in its window.
-- `val_cmd_ports()`: its value ports (see [Edges](edges.md#values-and-commands)), each a `Port`: where it publishes a value
+- `list_ports_val_cmd()`: its value ports (see [Edges](edges.md#values-and-commands)), each a `Port`: where it publishes a value
   (`ValOutCmdIn`, with `val_out` saying what it is now), and where it reads another node's, sending it commands
   (`ValInCmdOut`) or not (`ValIn`, val-only). Each says the commands it accepts or sends (`&[CommandKind::SetGains]`,
   say). Its `ValOutCmdIn` ports are numbered separately from its `ValInCmdOut` and `ValIn` ports, in the order listed.

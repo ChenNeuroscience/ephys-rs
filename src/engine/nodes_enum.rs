@@ -51,10 +51,13 @@ pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + S
     /// Settings… has a tab for each type of global settings the program's node types read: each type once, in the order
     /// of the node types that first name them.
     fn global_settings_types() -> Vec<crate::global_settings::GlobalSettingsType>;
-    fn data_stream_inputs(&self) -> Vec<Port<Self::Edges>>;
-    fn data_stream_outputs(&self, inputs: &[Option<<Self::Edges as Edges>::DataStream>]) -> Vec<Port<Self::Edges>>;
+    fn list_ports_data_stream_in(&self) -> Vec<Port<Self::Edges>>;
+    fn list_ports_data_stream_out(
+        &self,
+        inputs: &[Option<<Self::Edges as Edges>::DataStream>],
+    ) -> Vec<Port<Self::Edges>>;
     fn warnings(&self, inputs: &[Option<<Self::Edges as Edges>::DataStream>]) -> Vec<String>;
-    fn val_cmd_ports(&self) -> Vec<Port<Self::Edges>>;
+    fn list_ports_val_cmd(&self) -> Vec<Port<Self::Edges>>;
     fn val_out(&self, port_idx: usize) -> <Self::Edges as Edges>::PublishedValue;
     fn on_command(
         &mut self,
@@ -216,23 +219,23 @@ macro_rules! nodes_enum {
                 types
             }
 
-            fn data_stream_inputs(&self) -> Vec<$crate::engine::Port<$edges>> {
-                match self { $($name::$variant(n) => $crate::engine::Node::data_stream_inputs(n)),+ }
+            fn list_ports_data_stream_in(&self) -> Vec<$crate::engine::Port<$edges>> {
+                match self { $($name::$variant(n) => $crate::engine::Node::list_ports_data_stream_in(n)),+ }
             }
 
-            fn data_stream_outputs(
+            fn list_ports_data_stream_out(
                 &self,
                 inputs: &[Option<<$edges as $crate::engine::Edges>::DataStream>],
             ) -> Vec<$crate::engine::Port<$edges>> {
-                match self { $($name::$variant(n) => $crate::engine::Node::data_stream_outputs(n, inputs)),+ }
+                match self { $($name::$variant(n) => $crate::engine::Node::list_ports_data_stream_out(n, inputs)),+ }
             }
 
             fn warnings(&self, inputs: &[Option<<$edges as $crate::engine::Edges>::DataStream>]) -> Vec<String> {
                 match self { $($name::$variant(n) => $crate::engine::Node::warnings(n, inputs)),+ }
             }
 
-            fn val_cmd_ports(&self) -> Vec<$crate::engine::Port<$edges>> {
-                match self { $($name::$variant(n) => $crate::engine::Node::val_cmd_ports(n)),+ }
+            fn list_ports_val_cmd(&self) -> Vec<$crate::engine::Port<$edges>> {
+                match self { $($name::$variant(n) => $crate::engine::Node::list_ports_val_cmd(n)),+ }
             }
 
             fn val_out(&self, port_idx: usize) -> <$edges as $crate::engine::Edges>::PublishedValue {

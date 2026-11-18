@@ -113,7 +113,7 @@ impl Node<Edges> for WriteRaw {
         TreeShake::needing_all(recording && inputs.contains(&true), inputs.len())
     }
 
-    fn data_stream_inputs(&self) -> Vec<Port<Edges>> {
+    fn list_ports_data_stream_in(&self) -> Vec<Port<Edges>> {
         vec![
             Port::DataStreamIn { name: "continuous", data_stream_kind: Kind::Continuous },
             Port::DataStreamIn { name: "events", data_stream_kind: Kind::Events },
@@ -122,11 +122,11 @@ impl Node<Edges> for WriteRaw {
 
     /// On the right, as what it sets off comes after it: where it sends what it's recorded, once it's finished (see
     /// `after_recording`).
-    fn val_cmd_ports(&self) -> Vec<Port<Edges>> {
+    fn list_ports_val_cmd(&self) -> Vec<Port<Edges>> {
         vec![Port::val_in_cmd_out("after recording", ValueKind::FileInput, &[CommandKind::ProcessFiles]).flipped()]
     }
 
-    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
+    fn list_ports_data_stream_out(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
         Vec::new()
     }
 
@@ -214,7 +214,7 @@ impl Node<Edges> for WriteRaw {
             location_summary(ui, context.base_directory, "a folder");
             ui.add_space(4.0);
             let recording: Vec<String> = node
-                .data_stream_inputs()
+                .list_ports_data_stream_in()
                 .iter()
                 .zip(context.inputs)
                 .filter_map(|(input, stream)| stream.map(|s| format!("{}: {}", input.name(), s.summary())))

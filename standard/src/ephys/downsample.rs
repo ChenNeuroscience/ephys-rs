@@ -88,11 +88,11 @@ impl Node<Edges> for Downsample {
         downsampling.so_far += input.len as u64;
     }
 
-    fn data_stream_inputs(&self) -> Vec<Port<Edges>> {
+    fn list_ports_data_stream_in(&self) -> Vec<Port<Edges>> {
         vec![Port::DataStreamIn { name: "continuous", data_stream_kind: Kind::Continuous }]
     }
 
-    fn data_stream_outputs(&self, inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
+    fn list_ports_data_stream_out(&self, inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
         let stream = match inputs[0] {
             Some(DataStream::Continuous(input)) if self.step(input).is_some() => {
                 Some(DataStream::Continuous(Continuous { sample_rate: self.rate_hz, ..input }))
@@ -160,7 +160,7 @@ mod tests {
         let input = Continuous { channels: 2, sample_rate: 30000.0 };
         let mut downsampling = ephys_rs::engine::fresh_state(&node, &[Some(DataStream::Continuous(input))]);
         let Some(DataStream::Continuous(output)) =
-            node.data_stream_outputs(&[Some(DataStream::Continuous(input))])[0].stream()
+            node.list_ports_data_stream_out(&[Some(DataStream::Continuous(input))])[0].stream()
         else {
             panic!("a 5 kHz stream");
         };
@@ -194,6 +194,6 @@ mod tests {
         assert!(node.warnings(&input(30000.0)).is_empty());
         assert!(node.warnings(&input(5000.0)).is_empty(), "as it is");
         assert_eq!(node.warnings(&input(25600.0)).len(), 1);
-        assert!(node.data_stream_outputs(&input(25600.0))[0].stream().is_none());
+        assert!(node.list_ports_data_stream_out(&input(25600.0))[0].stream().is_none());
     }
 }

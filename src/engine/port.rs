@@ -5,12 +5,12 @@ use serde::{Deserialize, Serialize};
 
 use super::{CommandKind, Edges, Kind, NodeId};
 
-/// Edges connect nodes at their ports, each named for what flows through it, which way (see `PortRole`, which names
-/// a port's role without what's in it). A node declares its ports as these: its data ports (`Node::data_stream_inputs`
-/// and `Node::data_stream_outputs`) and its value ports (`Node::val_cmd_ports`). The graph numbers the ports of each
-/// role separately, in the order they're declared (see `PortAddress`). The node itself numbers its `ValInCmdOut` and
-/// `ValIn` ports together, in the order they're declared, as the ports it reads values through: `UiContext::val_in`
-/// and the like take that number.
+/// Edges connect nodes at their ports, each named for what flows through it, which way (see `PortRole`, which names a
+/// port's role without what's in it). A node declares its ports as these: its data ports
+/// (`Node::list_ports_data_stream_in` and `Node::list_ports_data_stream_out`) and its value ports
+/// (`Node::list_ports_val_cmd`). The graph numbers the ports of each role separately, in the order they're declared
+/// (see `PortAddress`). The node itself numbers its `ValInCmdOut` and `ValIn` ports together, in the order they're
+/// declared, as the ports it reads values through: `UiContext::val_in` and the like take that number.
 pub enum Port<E: Edges> {
     /// Data reaches the node here, each pass, from another node's `DataStreamOut`.
     DataStreamIn {

@@ -132,10 +132,10 @@ impl<E: Edges> NodeState<E> {
     /// The state of `node`, given the data streams on its inputs.
     pub fn of<N: Node<E>>(node: &N, input_streams: Vec<Option<E::DataStream>>) -> Self {
         let (val_outs, val_ins): (Vec<_>, Vec<_>) =
-            node.val_cmd_ports().into_iter().partition(|p| p.role() == PortRole::ValOutCmdIn);
+            node.list_ports_val_cmd().into_iter().partition(|p| p.role() == PortRole::ValOutCmdIn);
         NodeState {
-            inputs: node.data_stream_inputs(),
-            outputs: node.data_stream_outputs(&input_streams),
+            inputs: node.list_ports_data_stream_in(),
+            outputs: node.list_ports_data_stream_out(&input_streams),
             warnings: node.warnings(&input_streams),
             input_streams,
             values: (0..val_outs.len()).map(|port| node.val_out(port)).collect(),
@@ -146,10 +146,10 @@ impl<E: Edges> NodeState<E> {
 
     pub fn new<N: NodesEnum<Edges = E>>(node: &N, input_streams: Vec<Option<E::DataStream>>) -> Self {
         let (val_outs, val_ins): (Vec<_>, Vec<_>) =
-            node.val_cmd_ports().into_iter().partition(|p| p.role() == PortRole::ValOutCmdIn);
+            node.list_ports_val_cmd().into_iter().partition(|p| p.role() == PortRole::ValOutCmdIn);
         NodeState {
-            inputs: node.data_stream_inputs(),
-            outputs: node.data_stream_outputs(&input_streams),
+            inputs: node.list_ports_data_stream_in(),
+            outputs: node.list_ports_data_stream_out(&input_streams),
             warnings: node.warnings(&input_streams),
             input_streams,
             values: (0..val_outs.len()).map(|port| node.val_out(port)).collect(),
@@ -171,7 +171,7 @@ impl<E: Edges> NodeState<E> {
 
     /// The state of `node` with nothing connected.
     pub fn unconnected<N: NodesEnum<Edges = E>>(node: &N) -> Self {
-        Self::new(node, vec![None; node.data_stream_inputs().len()])
+        Self::new(node, vec![None; node.list_ports_data_stream_in().len()])
     }
 
     /// How many ports of `role` the node has.
@@ -395,10 +395,9 @@ impl<N: NodesEnum> Graph<N> {
     /// A node's window says which nodes read and command what it publishes: for each of its `ValOutCmdIn` ports, the
     /// labels of the nodes with a live edge to it.
     fn controlled_by(&self, id: NodeId) -> Vec<Vec<String>> {
-        let count = self
-            .nodes
-            .get(&id)
-            .map_or(0, |entry| entry.node.val_cmd_ports().iter().filter(|p| p.role() == PortRole::ValOutCmdIn).count());
+        let count = self.nodes.get(&id).map_or(0, |entry| {
+            entry.node.list_ports_val_cmd().iter().filter(|p| p.role() == PortRole::ValOutCmdIn).count()
+        });
         let labels = |index| {
             let port = PortAddress { node: id, role: PortRole::ValOutCmdIn, port_idx: index };
             let edges = self.edges.iter().filter(|e| e.to == port && self.is_live(e));
@@ -536,7 +535,7 @@ impl<N: NodesEnum> Graph<N> {
         for id in self.topological_order() {
             let entry = &self.nodes[&id];
             let node = &entry.node;
-            let inputs = node.data_stream_inputs();
+            let inputs = node.list_ports_data_stream_in();
             let input_streams: Vec<Option<DataStream<N>>> = (0..inputs.len())
                 .map(|index| {
                     let edge =
@@ -571,7 +570,7 @@ impl<N: NodesEnum> Graph<N> {
     pub fn command_loops(&self) -> std::collections::HashSet<NodeId> {
         let mut next: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
         for edge in self.edges.iter().filter(|e| !e.carries_data_stream() && self.is_live(e)) {
-            let ports = |id: NodeId| self.nodes.get(&id).map(|n| n.node.val_cmd_ports()).unwrap_or_default();
+            let ports = |id: NodeId| self.nodes.get(&id).map(|n| n.node.list_ports_val_cmd()).unwrap_or_default();
             let (from, to) = (ports(edge.from.node), ports(edge.to.node));
             let commands =
                 |ports, end: PortAddress| port_at(ports, end.role, end.port_idx).map_or(&[][..], Port::commands);
@@ -601,12 +600,12 @@ impl<N: NodesEnum> Graph<N> {
     /// node at the other end publishes there now, if the port's connected (by a live edge).
     pub fn val_ins(&self, id: NodeId) -> Vec<Option<PublishedValue<N>>> {
         let Some(entry) = self.nodes.get(&id) else { return Vec::new() };
-        let count = entry.node.val_cmd_ports().iter().filter(|p| p.role() != PortRole::ValOutCmdIn).count();
+        let count = entry.node.list_ports_val_cmd().iter().filter(|p| p.role() != PortRole::ValOutCmdIn).count();
         (0..count)
             .map(|val_in_idx| {
                 let to = self.val_in_target(id, val_in_idx)?;
                 let target = &self.nodes.get(&to.node)?.node;
-                let val_outs = target.val_cmd_ports().iter().filter(|p| p.role() == PortRole::ValOutCmdIn).count();
+                let val_outs = target.list_ports_val_cmd().iter().filter(|p| p.role() == PortRole::ValOutCmdIn).count();
                 (to.port_idx < val_outs).then(|| target.val_out(to.port_idx))
             })
             .collect()
@@ -615,7 +614,7 @@ impl<N: NodesEnum> Graph<N> {
     /// Node `from`'s `ValInCmdOut` or `ValIn` port `val_in_idx` (as the node numbers them: see `val_in_address`)
     /// connects to at most one `ValOutCmdIn`: this finds it, if the edge is live.
     pub fn val_in_target(&self, from: NodeId, val_in_idx: usize) -> Option<PortAddress> {
-        let (role, port_idx) = val_in_address(&self.nodes.get(&from)?.node.val_cmd_ports(), val_in_idx)?;
+        let (role, port_idx) = val_in_address(&self.nodes.get(&from)?.node.list_ports_val_cmd(), val_in_idx)?;
         self.live_edges_from(PortAddress { node: from, role, port_idx }).next().map(|e| e.to)
     }
 
@@ -652,7 +651,7 @@ impl<N: NodesEnum> Graph<N> {
             return false;
         }
         if let CommandSource::Port(port_idx) = from {
-            let ports = entry.node.val_cmd_ports();
+            let ports = entry.node.list_ports_val_cmd();
             let accepts = ports
                 .iter()
                 .filter(|p| p.role() == PortRole::ValOutCmdIn)
@@ -857,7 +856,7 @@ impl<N: NodesEnum> Snapshot<N> {
     ) -> Self {
         let val_ins = graph
             .iter()
-            .filter(|(_, entry)| entry.node.val_cmd_ports().iter().any(|p| p.role() != PortRole::ValOutCmdIn))
+            .filter(|(_, entry)| entry.node.list_ports_val_cmd().iter().any(|p| p.role() != PortRole::ValOutCmdIn))
             .map(|(id, _)| (id, graph.val_ins(id)))
             .collect();
         let plan = Arc::new(Plan::new(&graph, recording.is_some()));

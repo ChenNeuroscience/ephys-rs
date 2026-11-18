@@ -1,16 +1,16 @@
-//! Post-Process Positions LTX: puts a recording's positions on the board's clock, after it's recorded, using the timing LED's
-//! pulses, which both the camera (`name.pos.ttl`) and one of the board's digital inputs (`name.ttl`) saw. It's given the
-//! recording's `.set` file (picked here, or sent with `ProcessFiles`, by Write LTX once it's finished, say), and finds the
-//! rest beside it (see `files`). It runs here, on a thread of its own, not in a terminal, and it's nothing to do with
-//! passes.
+//! Post-Process Positions LTX: puts a recording's positions on the board's clock, after it's recorded, using the timing
+//! LED's pulses, which both the camera (`name.pos.ttl`) and one of the board's digital inputs (`name.ttl`) saw. It's
+//! given the recording's `.set` file (picked here, or sent with `ProcessFiles`, by Write LTX once it's finished, say),
+//! and finds the rest beside it (see `files`). It runs here, on a thread of its own, not in a terminal, and it's
+//! nothing to do with passes.
 //!
 //! The positions as recorded are kept, as `name.pos.original` (or `name (2).pos.original`... if that's taken), and the
 //! synced ones written in their place, saying which original they're from: synced again, they're synced from it, not
 //! from themselves. Nothing's written unless it syncs.
 //!
 //! The board's clock is taken as true. Syncing goes in steps: the timing LED's changes paired with the board's
-//! (`pairs`), the offset between the clocks through the recording (`offsets`), the positions put on the board's clock at
-//! the rate they say they're at (`resample`), then what's worth a warning (`checks`). Its window's in `window`.
+//! (`pairs`), the offset between the clocks through the recording (`offsets`), the positions put on the board's clock
+//! at the rate they say they're at (`resample`), then what's worth a warning (`checks`). Its window's in `window`.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -319,13 +319,13 @@ impl Node<Edges> for SyncPositions {
     const WINDOW_SIZE: [f32; 2] = [680.0, 780.0];
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
-    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
+    fn list_ports_data_stream_out(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
         Vec::new()
     }
 
     /// Where it's sent recordings' files to sync, on the left, as what sends them comes before it; and where it sends
     /// them on, once it's synced them, on the right, as what's sent them then comes after it.
-    fn val_cmd_ports(&self) -> Vec<Port<Edges>> {
+    fn list_ports_val_cmd(&self) -> Vec<Port<Edges>> {
         vec![
             Port::val_out_cmd_in("files", ValueKind::FileInput, &[CommandKind::ProcessFiles]).flipped(),
             Port::val_in_cmd_out("after syncing", ValueKind::FileInput, &[CommandKind::ProcessFiles]).flipped(),

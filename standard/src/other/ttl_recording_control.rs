@@ -72,11 +72,11 @@ impl Node<Edges> for TtlRecordingControl {
     type UiState = ();
     type GlobalSettings = ();
 
-    fn data_stream_inputs(&self) -> Vec<Port<Edges>> {
+    fn list_ports_data_stream_in(&self) -> Vec<Port<Edges>> {
         vec![Port::DataStreamIn { name: "events", data_stream_kind: Kind::Events }]
     }
 
-    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
+    fn list_ports_data_stream_out(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
         Vec::new()
     }
 

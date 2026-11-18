@@ -278,11 +278,11 @@ impl Node<Edges> for SpikeDetector {
         self.choose_thresholds(pass, sampling);
     }
 
-    fn data_stream_inputs(&self) -> Vec<Port<Edges>> {
+    fn list_ports_data_stream_in(&self) -> Vec<Port<Edges>> {
         vec![Port::DataStreamIn { name: "continuous", data_stream_kind: Kind::Continuous }]
     }
 
-    fn data_stream_outputs(&self, inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
+    fn list_ports_data_stream_out(&self, inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
         let stream = match inputs[0] {
             Some(DataStream::Continuous(c)) => Some(DataStream::Spikes(self.stream(c.channels, c.sample_rate))),
             _ => None,
@@ -305,7 +305,7 @@ impl Node<Edges> for SpikeDetector {
         warnings
     }
 
-    fn val_cmd_ports(&self) -> Vec<Port<Edges>> {
+    fn list_ports_val_cmd(&self) -> Vec<Port<Edges>> {
         vec![Port::val_out_cmd_in(
             "thresholds",
             ValueKind::Thresholds,

@@ -27,7 +27,7 @@ impl<'e> NodeTools<'e> {
     /// The app makes node `id`'s toolbar with this, knowing what its `ValInCmdOut` and `ValIn` ports connect to.
     pub fn new<N: NodesEnum>(graph: &Graph<N>, id: NodeId, advanced: bool, events: &'e mut Vec<Event>) -> Option<Self> {
         let entry = graph.get(id)?;
-        let count = entry.node.val_cmd_ports().iter().filter(|p| p.role() != PortRole::ValOutCmdIn).count();
+        let count = entry.node.list_ports_val_cmd().iter().filter(|p| p.role() != PortRole::ValOutCmdIn).count();
         let controls = (0..count).map(|port| Some(graph.val_in_target(id, port)?.node)).collect();
         let (show_in_basic, enabled) = (entry.shown_in_basic(), !entry.disabled);
         Some(NodeTools { id, show_in_basic, enabled, advanced, controls, events })

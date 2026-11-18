@@ -2,12 +2,11 @@
 //! `dugong`), left to right the way data flows. Nodes go in columns by how far along the data's flow they are, ordered
 //! within each to cross as few edges as can be, and placed to keep edges short and straight.
 //!
-//! Sources go in the first column, and writers in the last (viewers go just after what they view). Settings edges
-//! count too, though for less than data edges, the other way round (from the node whose setting it is to the one
-//! editing or reading it), as a viewer editing a detector's settings is usually after it anyway. But a settings edge
-//! to or from a node without data edges (Run Command, say, which a writer sends files to) is all there is to place that node
-//! by, so it counts just as a data edge would. Whether an edge is enabled doesn't matter: the layout's the same either
-//! way.
+//! Sources go in the first column, and writers in the last (viewers go just after what they view). Settings edges count
+//! too, though for less than data edges, the other way round (from the node whose setting it is to the one editing or
+//! reading it), as a viewer editing a detector's settings is usually after it anyway. But a settings edge to or from a
+//! node without data edges (Run Command, say, which a writer sends files to) is all there is to place that node by, so
+//! it counts just as a data edge would. Whether an edge is enabled doesn't matter: the layout's the same either way.
 
 use std::collections::HashMap;
 
@@ -76,7 +75,7 @@ pub fn arrange<N: NodesEnum>(graph: &Graph<N>) -> HashMap<NodeId, [f32; 2]> {
     let mut ids: Vec<NodeId> = sizes.keys().copied().collect();
     ids.sort_by_key(|id| id.0);
     for id in ids {
-        if graph.get(id).is_some_and(|e| e.node.data_stream_inputs().is_empty()) && !led_to.contains(&id) {
+        if graph.get(id).is_some_and(|e| e.node.list_ports_data_stream_in().is_empty()) && !led_to.contains(&id) {
             layered.set_edge_with_label(START, key(id), edge(START_WEIGHT));
         }
     }

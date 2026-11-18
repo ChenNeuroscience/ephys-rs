@@ -3,8 +3,8 @@
 //!
 //! It keeps about four seconds of each channel, averaged down to about 1 kHz, and works out a few channels' spectra
 //! each pass (by real FFT, Hann windowed), so each is fresh every few passes, smoothed over the last few. Each pass
-//! passes on the latest of them all. It only runs while something needs them (see `Node::evaluate_tree_shake`): the LFP Viewer,
-//! with its spectrum on.
+//! passes on the latest of them all. It only runs while something needs them (see `Node::evaluate_tree_shake`): the LFP
+//! Viewer, with its spectrum on.
 
 use ephys_rs::engine::TreeShake;
 use std::ops::Range;
@@ -135,11 +135,11 @@ impl Node<Edges> for Spectrum {
         TreeShake::needing_all(inputs.contains(&true) && outputs.contains(&true), inputs.len())
     }
 
-    fn data_stream_inputs(&self) -> Vec<Port<Edges>> {
+    fn list_ports_data_stream_in(&self) -> Vec<Port<Edges>> {
         vec![Port::DataStreamIn { name: "continuous", data_stream_kind: Kind::Continuous }]
     }
 
-    fn data_stream_outputs(&self, inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
+    fn list_ports_data_stream_out(&self, inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
         let stream = match inputs[0] {
             Some(DataStream::Continuous(c)) => Some(DataStream::Spectra(Spectra::of(c, self.band))),
             _ => None,

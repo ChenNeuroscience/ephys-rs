@@ -541,7 +541,7 @@ impl Node<Edges> for VrComputer {
     type UiState = ();
     type GlobalSettings = ();
 
-    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
+    fn list_ports_data_stream_out(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
         let [_, _, width, height] = window(&self.custom).and_then(|crop| crop.bounds()).unwrap_or([0.0; 4]);
         let frame = |size: f32| if size > 0.0 { size.ceil() as u32 } else { FRAME_SIZE };
         let positions = Positions { fps: self.fps, width: frame(width), height: frame(height), source: SOURCE };
@@ -572,7 +572,7 @@ impl Node<Edges> for VrComputer {
         vec!["No settings from the VR computer yet: positions can't be recorded properly without them".into()]
     }
 
-    fn val_cmd_ports(&self) -> Vec<Port<Edges>> {
+    fn list_ports_val_cmd(&self) -> Vec<Port<Edges>> {
         vec![Port::val_out_cmd_in("settings", ValueKind::Detection, &[CommandKind::SetDetection])]
     }
 
@@ -756,7 +756,7 @@ mod tests {
 
     /// A pass's buffers.
     fn buffers(node: &VrComputer) -> (PositionsBuffer, EventsBuffer, LogLinesBuffer) {
-        let outputs = node.data_stream_outputs(&[]);
+        let outputs = node.list_ports_data_stream_out(&[]);
         let (Some(DataStream::Positions(p)), Some(DataStream::Events(e)), Some(DataStream::LogLines(l))) =
             (outputs[0].stream(), outputs[1].stream(), outputs[2].stream())
         else {
@@ -850,7 +850,7 @@ mod tests {
         assert!(complete(&custom));
         let node = VrComputer { custom, ..node };
         assert!(node.warnings(&[]).is_empty());
-        let Some(DataStream::Events(ttl)) = node.data_stream_outputs(&[])[1].stream() else { panic!() };
+        let Some(DataStream::Events(ttl)) = node.list_ports_data_stream_out(&[])[1].stream() else { panic!() };
         assert_eq!(ttl.lines, 3, "a line a channel");
         let PublishedValue::Detection(detection) = &node.val_out(0) else { panic!() };
         assert_eq!(detection.crop, crop, "for Write LTX");

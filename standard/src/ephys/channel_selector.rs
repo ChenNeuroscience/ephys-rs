@@ -1,6 +1,6 @@
 //! The Channel Selector: selects some of a continuous stream's channels (such as "1-4, 9"), perhaps none, and passes on
-//! those while the selection's on, or all of them while it's off. The selection's a setting, which an LFP Viewer downstream
-//! can choose: look through all the channels, click the numbers of the ones to keep, then apply it.
+//! those while the selection's on, or all of them while it's off. The selection's a setting, which an LFP Viewer
+//! downstream can choose: look through all the channels, click the numbers of the ones to keep, then apply it.
 
 use eframe::egui;
 use ephys_rs::engine::TreeShake;
@@ -63,11 +63,11 @@ impl Node<Edges> for ChannelSelector {
     type UiState = ();
     type GlobalSettings = ();
 
-    fn data_stream_inputs(&self) -> Vec<Port<Edges>> {
+    fn list_ports_data_stream_in(&self) -> Vec<Port<Edges>> {
         vec![Port::DataStreamIn { name: "continuous", data_stream_kind: Kind::Continuous }]
     }
 
-    fn data_stream_outputs(&self, inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
+    fn list_ports_data_stream_out(&self, inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
         let stream = match inputs[0] {
             Some(DataStream::Continuous(c)) => {
                 let channels = self.passed(c.channels).len() as u32;
@@ -103,7 +103,7 @@ impl Node<Edges> for ChannelSelector {
         }
     }
 
-    fn val_cmd_ports(&self) -> Vec<Port<Edges>> {
+    fn list_ports_val_cmd(&self) -> Vec<Port<Edges>> {
         vec![Port::val_out_cmd_in("selection", ValueKind::ChannelSelection, &[CommandKind::SetChannelSelection])]
     }
 
@@ -154,7 +154,7 @@ mod tests {
         let mut selector = ChannelSelector { apply: false, channels: "2, 4".into() };
         let run = |selector: &ChannelSelector| {
             let Some(DataStream::Continuous(out)) =
-                selector.data_stream_outputs(&[Some(DataStream::Continuous(stream))])[0].stream()
+                selector.list_ports_data_stream_out(&[Some(DataStream::Continuous(stream))])[0].stream()
             else {
                 unreachable!()
             };
@@ -179,8 +179,8 @@ mod tests {
         assert!(selector.warnings(&[Some(DataStream::Continuous(stream))]).is_empty());
     }
 
-    /// The rig with nothing selected, and every kind of node that takes continuous data taking that, and every kind that
-    /// takes what those make of it: all of it runs on real samples, records and draws, with no channels at all.
+    /// The rig with nothing selected, and every kind of node that takes continuous data taking that, and every kind
+    /// that takes what those make of it: all of it runs on real samples, records and draws, with no channels at all.
     #[test]
     fn nothing_selected_runs_records_and_draws_everything_after_it() {
         use crate::standard::ephys::board::{Source, serve_test_board};
@@ -209,7 +209,7 @@ mod tests {
             let mut added = Vec::new();
             for &node_type in <crate::NodeType as ephys_rs::engine::NodeTypeEnum>::ALL {
                 let node = Nodes::create(node_type);
-                let inputs: Vec<_> = (node.data_stream_inputs().iter().enumerate())
+                let inputs: Vec<_> = (node.list_ports_data_stream_in().iter().enumerate())
                     .filter_map(|(input, i)| {
                         from.iter().find(|(kind, _)| Some(*kind) == i.data_stream_kind()).map(|f| (input, f.1))
                     })

@@ -1,22 +1,23 @@
-//! The LFP Viewer: scrolling traces of continuous data, a row per channel, each at a fixed height (scrolled
-//! through), each with a y axis of the scale chosen, and beside each, its spectrum over a band of interest (from a
-//! Spectrum node, which only runs while the spectrum's on: see `Node::evaluate_tree_shake`). The time's along the bottom, after the last
-//! channel.
+//! The LFP Viewer: scrolling traces of continuous data, a row per channel, each at a fixed height (scrolled through),
+//! each with a y axis of the scale chosen, and beside each, its spectrum over a band of interest (from a Spectrum node,
+//! which only runs while the spectrum's on: see `Node::evaluate_tree_shake`). The time's along the bottom, after the
+//! last channel.
 //!
-//! Each pass adds its samples to a few seconds' worth for each channel shown, kept as the lowest and highest
-//! sample in each of the view's columns (so spikes show however far it's zoomed out).
+//! Each pass adds its samples to a few seconds' worth for each channel shown, kept as the lowest and highest sample in
+//! each of the view's columns (so spikes show however far it's zoomed out).
 //!
 //! It sets what's upstream of it and beside it, through its controls (as the Spike Viewer does the spikes'):
 //! - an Continuous Gain's gains (what the continuous data's amplified by, as it's recorded): one for all can be set
 //!   here, and their auto-detect run;
-//! - a Channel Selector's selection, upstream: click the numbers of the channels to keep, while all are shown, then apply
-//!   it, from above the first channel;
-//! - a Reference's references (the spikes' re-referencing, from the same channels): a column of Rs for each, left of the
-//!   channels' numbers, an R putting its channel in that reference and having it use it, as a channel's in one at most
-//!   here. Settings can say otherwise (see `Reference::agrees`), when its Rs can't be changed. The traces themselves aren't
-//!   referenced. Connected to the Reference's reference output too, it shows the references themselves, in rows of their
-//!   own at the top, with what's particular to each: otherwise that's in the toolbar. Each reference has a colour, for
-//!   telling which row's which column: the channels are neutral, to leave the colours to them.
+//! - a Channel Selector's selection, upstream: click the numbers of the channels to keep, while all are shown, then
+//!   apply it, from above the first channel;
+//! - a Reference's references (the spikes' re-referencing, from the same channels): a column of Rs for each, left of
+//!   the channels' numbers, an R putting its channel in that reference and having it use it, as a channel's in one at
+//!   most here. Settings can say otherwise (see `Reference::agrees`), when its Rs can't be changed. The traces
+//!   themselves aren't referenced. Connected to the Reference's reference output too, it shows the references
+//!   themselves, in rows of their own at the top, with what's particular to each: otherwise that's in the toolbar. Each
+//!   reference has a colour, for telling which row's which column: the channels are neutral, to leave the colours to
+//!   them.
 
 use eframe::egui::{self, Align2, FontId, Pos2, Rect, Sense, Shape, Stroke};
 use ephys_rs::engine::TreeShake;
@@ -197,7 +198,8 @@ pub struct TracesDisplay {
     references: usize,
     /// How many columns there are (up to `COLUMNS`), the newest last.
     columns: usize,
-    /// Where in each row's ring the columns start: column `c` (0 oldest) of what's shown is at `(oldest + c) % COLUMNS`.
+    /// Where in each row's ring the columns start: column `c` (0 oldest) of what's shown is at `(oldest + c) %
+    /// COLUMNS`.
     oldest: usize,
     /// The seconds in a column.
     column_seconds: f64,
@@ -291,7 +293,7 @@ impl Node<Edges> for LfpViewer {
     const WINDOW_SIZE: [f32; 2] = [820.0, 520.0];
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
-    fn data_stream_inputs(&self) -> Vec<Port<Edges>> {
+    fn list_ports_data_stream_in(&self) -> Vec<Port<Edges>> {
         vec![
             Port::DataStreamIn { name: "continuous", data_stream_kind: Kind::Continuous },
             Port::DataStreamIn { name: "spectra", data_stream_kind: Kind::Spectra },
@@ -307,7 +309,7 @@ impl Node<Edges> for LfpViewer {
         TreeShake { runs: given, needs }
     }
 
-    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
+    fn list_ports_data_stream_out(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
         Vec::new()
     }
 
@@ -364,7 +366,7 @@ impl Node<Edges> for LfpViewer {
         }
     }
 
-    fn val_cmd_ports(&self) -> Vec<Port<Edges>> {
+    fn list_ports_val_cmd(&self) -> Vec<Port<Edges>> {
         vec![
             Port::val_in_cmd_out("gains", ValueKind::Gains, &[CommandKind::SetGains, CommandKind::Detect]),
             Port::val_in_cmd_out("selection", ValueKind::ChannelSelection, &[CommandKind::SetChannelSelection]),
@@ -506,9 +508,10 @@ impl LfpViewer {
         });
     }
 
-    /// A row for each channel shown, at the row height: its trace, and its spectrum; with its number to click to select it if there's a selection to make, and left of
-    /// that an R for each reference if there are any. Above the first channel, scrolling with them, are what heads those
-    /// columns, and the selection, if there's one. Returns any change to the references.
+    /// A row for each channel shown, at the row height: its trace, and its spectrum; with its number to click to select
+    /// it if there's a selection to make, and left of that an R for each reference if there are any. Above the first
+    /// channel, scrolling with them, are what heads those columns, and the selection, if there's one. Returns any
+    /// change to the references.
     fn rows_ui(
         &self,
         ui: &mut egui::Ui,
@@ -791,8 +794,8 @@ fn spectrum_ui(
     }
 }
 
-/// What's particular to reference `index`, as words in `method` and `remove` that light up: whether it's a mean or a median,
-/// which clicking swaps, and removing it.
+/// What's particular to reference `index`, as words in `method` and `remove` that light up: whether it's a mean or a
+/// median, which clicking swaps, and removing it.
 fn reference_buttons(
     ui: &mut egui::Ui,
     method: Rect,
@@ -835,7 +838,8 @@ fn word_button(
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-/// The references (a Reference's, for the spikes), for the toolbar: adding one. What's particular to each is on the rows.
+/// The references (a Reference's, for the spikes), for the toolbar: adding one. What's particular to each is on the
+/// rows.
 fn reference_ui(ui: &mut egui::Ui, reference: &mut Reference, channels: u32) {
     ui.strong("Reference").on_hover_text(
         "What each channel has subtracted: its reference group's mean or median. R puts a channel in a group, and a \
@@ -916,8 +920,8 @@ fn has_selection(selection: &ChannelSelection, channels: u32) -> bool {
     selection.apply || selected(selection, channels).len() < channels as usize
 }
 
-/// The selection, if there is one (see `has_selection`): the button to apply or disable it, then `settings`, then whether
-/// it's applied, or waiting to be.
+/// The selection, if there is one (see `has_selection`): the button to apply or disable it, then `settings`, then
+/// whether it's applied, or waiting to be.
 fn selection_ui(
     ui: &mut egui::Ui,
     selection: &mut ChannelSelection,
@@ -1081,8 +1085,8 @@ fn neutral_toggle(
     })
 }
 
-/// The toggle for all the channels, or none: a check mark on a number's background, as it's over them, a dash if it's only
-/// some, as on a checkbox, and nothing if it's none.
+/// The toggle for all the channels, or none: a check mark on a number's background, as it's over them, a dash if it's
+/// only some, as on a checkbox, and nothing if it's none.
 fn all_toggle(ui: &mut egui::Ui, rect: Rect, (all, some): (bool, bool)) -> egui::Response {
     let response = toggle(ui, rect, (all, false), (String::new(), NUMBER_FONT), "All", |visuals, hovered| {
         let widgets = if hovered { &visuals.widgets.hovered } else { &visuals.widgets.inactive };
@@ -1099,9 +1103,9 @@ fn all_toggle(ui: &mut egui::Ui, rect: Rect, (all, some): (bool, bool)) -> egui:
     response
 }
 
-/// What heads the channels' columns, in `rect`: a toggle for all of them, or none, over their numbers, and an R likewise
-/// for each reference (going by the channels that can be changed: see `Reference::agrees`). Returns any change to the
-/// references.
+/// What heads the channels' columns, in `rect`: a toggle for all of them, or none, over their numbers, and an R
+/// likewise for each reference (going by the channels that can be changed: see `Reference::agrees`). Returns any change
+/// to the references.
 fn column_toggles(
     ui: &mut egui::Ui,
     rect: Rect,
@@ -1404,8 +1408,8 @@ mod tests {
         }
     }
 
-    /// Several references, their rows matching their columns, with channels in each of them, or none, and one that's been
-    /// set otherwise.
+    /// Several references, their rows matching their columns, with channels in each of them, or none, and one that's
+    /// been set otherwise.
     #[test]
     fn references_have_a_column_each_matching_their_rows() {
         use crate::standard::ephys::reference::has_channel;

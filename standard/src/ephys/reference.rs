@@ -1,8 +1,8 @@
-//! The Reference node: makes any number of references, each the mean or median of some channels, and subtracts from each
-//! channel the one it uses, if any.
+//! The Reference node: makes any number of references, each the mean or median of some channels, and subtracts from
+//! each channel the one it uses, if any.
 //!
-//! As in Open Ephys's common average reference; besides that, the median rather than the mean (a common median reference:
-//! a spike on one reference channel hardly moves it). One channel on its own is a reference of one channel.
+//! As in Open Ephys's common average reference; besides that, the median rather than the mean (a common median
+//! reference: a spike on one reference channel hardly moves it). One channel on its own is a reference of one channel.
 //!
 //! Its settings are one setting (`reference`), which another node can edit through a settings edge. Besides the
 //! referenced data, it outputs the references themselves: a channel each.
@@ -36,7 +36,8 @@ impl Method {
     }
 }
 
-/// A reference: which channels it's made from, and which channels use it. Each of those is a set such as "all" or "1-4, 9".
+/// A reference: which channels it's made from, and which channels use it. Each of those is a set such as "all" or "1-4,
+/// 9".
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Computation {
@@ -253,8 +254,8 @@ impl Reference {
     }
 }
 
-/// The channels a set such as "all", "none", "1-4, 9" names (counting from 1), out of `count`, as indices from 0; or why
-/// it doesn't make sense.
+/// The channels a set such as "all", "none", "1-4, 9" names (counting from 1), out of `count`, as indices from 0; or
+/// why it doesn't make sense.
 pub fn parse_channels(text: &str, count: u32) -> Result<Vec<u32>, String> {
     let text = text.trim();
     if text.eq_ignore_ascii_case("all") || text.is_empty() {
@@ -379,7 +380,7 @@ impl Node<Edges> for Reference {
         BufferUsage { in_place: vec![Some(0); outputs], ..BufferUsage::none(inputs, outputs) }
     }
 
-    fn val_cmd_ports(&self) -> Vec<Port<Edges>> {
+    fn list_ports_val_cmd(&self) -> Vec<Port<Edges>> {
         vec![Port::val_out_cmd_in("reference", ValueKind::Reference, &[CommandKind::SetReference])]
     }
 
@@ -432,11 +433,11 @@ impl Node<Edges> for Reference {
         }
     }
 
-    fn data_stream_inputs(&self) -> Vec<Port<Edges>> {
+    fn list_ports_data_stream_in(&self) -> Vec<Port<Edges>> {
         vec![Port::DataStreamIn { name: "continuous", data_stream_kind: Kind::Continuous }]
     }
 
-    fn data_stream_outputs(&self, inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
+    fn list_ports_data_stream_out(&self, inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
         let references = match inputs[0] {
             Some(DataStream::Continuous(c)) => {
                 Some(DataStream::Continuous(Continuous { channels: self.references() as u32, ..c }))
@@ -596,8 +597,8 @@ pub fn method_ui(ui: &mut egui::Ui, method: &mut Method) -> egui::Response {
         .response
 }
 
-/// A set of channels such as "1-4, 9" (see `parse_channels`), of `count`: a checkbox each, in rows as wide as fit, and one
-/// for all of them, beside a `heading` saying how many it is, then `beside`, given how many that is.
+/// A set of channels such as "1-4, 9" (see `parse_channels`), of `count`: a checkbox each, in rows as wide as fit, and
+/// one for all of them, beside a `heading` saying how many it is, then `beside`, given how many that is.
 pub fn channels_ui(
     ui: &mut egui::Ui,
     heading: &str,
@@ -725,7 +726,7 @@ mod tests {
             made(2, Method::Mean, "3", "all"),
         ]);
         assert_eq!((reference.references(), of(vec![]).references()), (3, 0));
-        let outputs = reference.data_stream_outputs(&[Some(DataStream::Continuous(stream))]);
+        let outputs = reference.list_ports_data_stream_out(&[Some(DataStream::Continuous(stream))]);
         assert_eq!(outputs[1].stream(), Some(DataStream::Continuous(Continuous { channels: 3, ..stream })));
         let mut input = stream.buffer(PASS_DURATION);
         input.len = 2;

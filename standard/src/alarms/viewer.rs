@@ -5,15 +5,15 @@
 //! Its passes send every pass's alarm states to the GUI's side (`Update`), where the viewer, called on by the app each
 //! frame (see `Node::on_gui_tick`), keeps track of them, whether its window's open or not, for the window to show.
 //!
-//! Switching an alarm off changes what the processor needs, and so the plan. While recording, the graph can't change, so
-//! an alarm switched off is only ignored here (`Overrides`); that's saved in the settings once recording's stopped. And an
-//! alarm off when recording started has no data coming, so can't come on until then.
+//! Switching an alarm off changes what the processor needs, and so the plan. While recording, the graph can't change,
+//! so an alarm switched off is only ignored here (`Overrides`); that's saved in the settings once recording's stopped.
+//! And an alarm off when recording started has no data coming, so can't come on until then.
 //!
 //! It can also pip as an alarm goes off, at a pitch for what it watches (see `tone`), on the GUI's side, so with its
-//! window closed (or the app minimised) too, but only while recording, as what's wrong before then needn't fill the room. An alarm still going off pips
-//! again, more each time (`REMINDERS`), in case the first were missed, and one going off as recording starts pips then. Which
-//! alarms pip is its own setting, not the processor's. That's locked while recording too, but as nothing depends on it, it
-//! can go either way (`Overrides` again).
+//! window closed (or the app minimised) too, but only while recording, as what's wrong before then needn't fill the
+//! room. An alarm still going off pips again, more each time (`REMINDERS`), in case the first were missed, and one
+//! going off as recording starts pips then. Which alarms pip is its own setting, not the processor's. That's locked
+//! while recording too, but as nothing depends on it, it can go either way (`Overrides` again).
 //!
 //! The buttons for all the alarms are only shortcuts: they set each one.
 
@@ -184,15 +184,15 @@ impl Node<Edges> for AlarmViewer {
     const WINDOW_SIZE: [f32; 2] = [820.0, 520.0];
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
-    fn data_stream_inputs(&self) -> Vec<Port<Edges>> {
+    fn list_ports_data_stream_in(&self) -> Vec<Port<Edges>> {
         vec![Port::DataStreamIn { name: "alarms", data_stream_kind: Kind::AlarmStates }]
     }
 
-    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
+    fn list_ports_data_stream_out(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
         Vec::new()
     }
 
-    fn val_cmd_ports(&self) -> Vec<Port<Edges>> {
+    fn list_ports_val_cmd(&self) -> Vec<Port<Edges>> {
         vec![Port::val_in_cmd_out("alarms", ValueKind::Alarms, &[CommandKind::SetAlarms])]
     }
 
@@ -335,8 +335,8 @@ fn sound_button(ui: &mut egui::Ui, on: &mut bool, label: &str) -> egui::Response
     small_toggle(ui, Icon::Sound, on, label, tip)
 }
 
-/// Moves on `seconds`, keeping `going_off` up to date with `states`, and calling `pip` with an alarm and how many pips it's
-/// due, as it goes off or reaches a reminder.
+/// Moves on `seconds`, keeping `going_off` up to date with `states`, and calling `pip` with an alarm and how many pips
+/// it's due, as it goes off or reaches a reminder.
 fn keep_time(
     going_off: &mut Vec<GoingOff>,
     states: impl Iterator<Item = AlarmState> + Clone,
@@ -362,8 +362,8 @@ fn keep_time(
     }
 }
 
-/// As `keep_time`, calling `pip` only while recording, and for those going off as it starts. `recording` is whether it was
-/// on the last pass, and whether it is on this one.
+/// As `keep_time`, calling `pip` only while recording, and for those going off as it starts. `recording` is whether it
+/// was on the last pass, and whether it is on this one.
 fn pips_due(
     going_off: &mut Vec<GoingOff>,
     states: impl Iterator<Item = AlarmState> + Clone,
@@ -382,9 +382,9 @@ fn pips_due(
     });
 }
 
-/// A power button for an alarm. While recording its setting's locked, so it only ignores what's coming in (`ignored`, if
-/// it can), and if the setting's off, there's nothing coming in to go back to. Returns whether to ignore it now, if that's
-/// changed.
+/// A power button for an alarm. While recording its setting's locked, so it only ignores what's coming in (`ignored`,
+/// if it can), and if the setting's off, there's nothing coming in to go back to. Returns whether to ignore it now, if
+/// that's changed.
 fn switch(ui: &mut egui::Ui, on: &mut bool, ignored: Option<bool>, locked: bool, label: &str) -> Option<bool> {
     if !locked {
         power(ui, on, label);
@@ -421,9 +421,9 @@ fn switch_sound(overrides: &mut Overrides, id: u32, locked: bool, sounding: &mut
     }
 }
 
-/// Buttons for all the alarms, lined up with each alarm's, if there are any: they set each one. While recording, one that
-/// was off when it started can't come on, so doesn't count. To their left, `settings`, there with or without alarms; and at
-/// the far left, if alarms with sound are `waiting_to_sound`, a note saying what for.
+/// Buttons for all the alarms, lined up with each alarm's, if there are any: they set each one. While recording, one
+/// that was off when it started can't come on, so doesn't count. To their left, `settings`, there with or without
+/// alarms; and at the far left, if alarms with sound are `waiting_to_sound`, a note saying what for.
 fn all_row(
     ui: &mut egui::Ui,
     alarms: &mut Alarms,

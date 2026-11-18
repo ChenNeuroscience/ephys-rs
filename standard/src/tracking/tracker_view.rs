@@ -1,10 +1,10 @@
-//! The tracker's window, laid out as in the Open Ephys tracker plugin: the camera's video with the LEDs found,
-//! and the crop and calibration rulers over it to drag; beside it, collapsible sections of the camera's and the
-//! detector's settings (which it edits through its controls), with eye and padlock toggles in their headers for
-//! what's shown over the video and whether it can be changed; below it, a chart of the LEDs' sizes.
+//! The tracker's window, laid out as in the Open Ephys tracker plugin: the camera's video with the LEDs found, and the
+//! crop and calibration rulers over it to drag; beside it, collapsible sections of the camera's and the detector's
+//! settings (which it edits through its controls), with eye and padlock toggles in their headers for what's shown over
+//! the video and whether it can be changed; below it, a chart of the LEDs' sizes.
 //!
-//! Without video, given positions from elsewhere, it shows where they are in the window they range over (the detection's
-//! crop). There's nothing there to adjust, so its settings are only shown, and nothing's edited.
+//! Without video, given positions from elsewhere, it shows where they are in the window they range over (the
+//! detection's crop). There's nothing there to adjust, so its settings are only shown, and nothing's edited.
 
 use eframe::egui::{self, Color32, ColorImage, Rect, RichText, Sense, TextureHandle, TextureOptions};
 use serde::{Deserialize, Serialize};
@@ -154,7 +154,7 @@ impl Node<Edges> for TrackerView {
     type UiState = TrackerUi;
     type GlobalSettings = ();
 
-    fn data_stream_inputs(&self) -> Vec<Port<Edges>> {
+    fn list_ports_data_stream_in(&self) -> Vec<Port<Edges>> {
         vec![
             Port::DataStreamIn { name: "video", data_stream_kind: Kind::Video },
             Port::DataStreamIn { name: "positions", data_stream_kind: Kind::Positions },
@@ -162,7 +162,7 @@ impl Node<Edges> for TrackerView {
         ]
     }
 
-    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
+    fn list_ports_data_stream_out(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
         Vec::new()
     }
 
@@ -170,7 +170,7 @@ impl Node<Edges> for TrackerView {
         if inputs[0].is_none() && inputs[1].is_none() { vec!["Connect video or positions".into()] } else { Vec::new() }
     }
 
-    fn val_cmd_ports(&self) -> Vec<Port<Edges>> {
+    fn list_ports_val_cmd(&self) -> Vec<Port<Edges>> {
         vec![
             Port::val_in_cmd_out("camera", ValueKind::Camera, &[CommandKind::SetCamera]),
             Port::val_in_cmd_out("detection", ValueKind::Detection, &[CommandKind::SetDetection]),

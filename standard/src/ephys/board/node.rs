@@ -134,7 +134,7 @@ impl Node<Edges> for AcquisitionBoard {
     type UiState = ();
     type GlobalSettings = super::OpenEphysSettings;
 
-    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
+    fn list_ports_data_stream_out(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
         let rate = self.sample_rate as f32;
         let continuous = |channels| Some(DataStream::Continuous(Continuous { channels, sample_rate: rate }));
         let mut outputs = vec![
@@ -182,7 +182,7 @@ impl Node<Edges> for AcquisitionBoard {
             flow: Flow::ToPasses,
             why: "On a thread of its own so samples are taken from the board as they come (before its buffer \
                   overflows), whatever the passes are doing.",
-            swapped_outputs: (0..self.data_stream_outputs(&[]).len()).collect(),
+            swapped_outputs: (0..self.list_ports_data_stream_out(&[]).len()).collect(),
         }]
     }
 

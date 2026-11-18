@@ -1,33 +1,33 @@
-//! Write LTX: recording in the LTX format, as the Open Ephys LTX plugin writes it, for legacy tetrode analysis
-//! code (and Waveform GUI). For a recording called `name` (the prefix and when it started):
+//! Write LTX: recording in the LTX format, as the Open Ephys LTX plugin writes it, for legacy tetrode analysis code
+//! (and Waveform GUI). For a recording called `name` (the prefix and when it started):
 //!
 //! - `name.set`: headers only.
 //! - `name.1`, `name.2`...: each tetrode's spikes, each as 4 × (a 4-byte timestamp, then 50 one-byte samples).
 //! - `name.egf`, `name.egf2`...: each continuous channel at 5 kHz, a byte a sample.
 //! - `name.pos`: LED positions, a 4-byte timestamp then 8 two-byte values (x1, y1, x2, y2, and the LEDs' sizes).
 //! - `name.ttl`: digital input changes, as text.
-//! - `name.pos.ttl`: the timing LED's changes, likewise, from its `pos ttl` input, if there's a timing LED. They're timed
-//!   by the camera's clock, as positions are, counting from the same first position.
-//! - `name.txt`: log lines, with no headers: each as `<seconds> <line>`, its time counting from the same first position.
+//! - `name.pos.ttl`: the timing LED's changes, likewise, from its `pos ttl` input, if there's a timing LED. They're
+//!   timed by the camera's clock, as positions are, counting from the same first position.
+//! - `name.txt`: log lines, with no headers: each as `<seconds> <line>`, its time counting from the same first
+//!   position.
 //!
 //! Each file but `name.txt` is `key value` header lines, then the data between `data_start` and `data_end`; counts and
 //! the duration (from the first pass recorded) are filled in at the end, and the `.set` file's `recording_requested`
 //! (when Record was pressed, which names the files) and `recording_effective` (its first pass), to the millisecond.
-//! Timestamps count 96 kHz ticks from the start of recording, and multi-byte values are big-endian.
-//! Spikes' samples are -128 to 127, covering the full scale: their waveforms should come
-//! amplified by a Spike Gain (see `Gains`), whose gains (connected, read-only, to `gains`) are recorded in the `.set`
-//! file, in Axona's terms: its full scale, and the gains that fit the same over it (`ADC_fullscale_mv`, `gain_ch_0`...).
-//! The EEG (its `eeg` input) should come at 5 kHz (from a Downsample), amplified too, by a Continuous Gain, whose gains
-//! (connected, read-only, to `eeg gains`) are recorded likewise, as `EEG_gain_1`... in the `.set` file, and `gain` in
-//! each `.egf` file. Which
-//! channel each EEG channel is (from the Channel Selector choosing them, connected to `eeg selection`) is recorded as
-//! `EEG_ch_1`... in the `.set` file, and `chan_name` in each `.egf` file.
+//! Timestamps count 96 kHz ticks from the start of recording, and multi-byte values are big-endian. Spikes' samples are
+//! -128 to 127, covering the full scale: their waveforms should come amplified by a Spike Gain (see `Gains`), whose
+//! gains (connected, read-only, to `gains`) are recorded in the `.set` file, in Axona's terms: its full scale, and the
+//! gains that fit the same over it (`ADC_fullscale_mv`, `gain_ch_0`...). The EEG (its `eeg` input) should come at 5 kHz
+//! (from a Downsample), amplified too, by a Continuous Gain, whose gains (connected, read-only, to `eeg gains`) are
+//! recorded likewise, as `EEG_gain_1`... in the `.set` file, and `gain` in each `.egf` file. Which channel each EEG
+//! channel is (from the Channel Selector choosing them, connected to `eeg selection`) is recorded as `EEG_ch_1`... in
+//! the `.set` file, and `chan_name` in each `.egf` file.
 //!
-//! The positions' header records the position detector's settings (connected, read-only, to `detection`): the
-//! crop, whose bounding box positions are measured from (scaled down to fit 0–1022 if need be; 1023 means no LED),
-//! and the calibration. And it records anything in its `custom` settings as headers of
-//! their own, as they are (whatever a reader makes of a key with a space in it, or one that's the same as another header),
-//! except that line breaks are written as spaces, as a header's a line.
+//! The positions' header records the position detector's settings (connected, read-only, to `detection`): the crop,
+//! whose bounding box positions are measured from (scaled down to fit 0–1022 if need be; 1023 means no LED), and the
+//! calibration. And it records anything in its `custom` settings as headers of their own, as they are (whatever a
+//! reader makes of a key with a space in it, or one that's the same as another header), except that line breaks are
+//! written as spaces, as a header's a line.
 
 use ephys_rs::engine::{BufferUsage, DataStreamsEnum, Prepare, PrepareContext, Prepared, TreeShake};
 use std::fs::File;
@@ -176,7 +176,7 @@ impl Node<Edges> for WriteLtx {
         TreeShake::needing_all(recording && inputs.contains(&true), inputs.len())
     }
 
-    fn data_stream_inputs(&self) -> Vec<Port<Edges>> {
+    fn list_ports_data_stream_in(&self) -> Vec<Port<Edges>> {
         vec![
             Port::DataStreamIn { name: "spikes", data_stream_kind: Kind::Spikes },
             Port::DataStreamIn { name: "eeg", data_stream_kind: Kind::Continuous },
@@ -187,13 +187,13 @@ impl Node<Edges> for WriteLtx {
         ]
     }
 
-    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
+    fn list_ports_data_stream_out(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
         Vec::new()
     }
 
     /// The settings it records with the data, which it only reads; and, on the right, as what it sets off comes after
     /// it, where it sends what it's recorded, once it's finished (see `after_recording`).
-    fn val_cmd_ports(&self) -> Vec<Port<Edges>> {
+    fn list_ports_val_cmd(&self) -> Vec<Port<Edges>> {
         vec![
             Port::val_in("detection", ValueKind::Detection),
             Port::val_in("gains", ValueKind::Gains),
@@ -301,7 +301,7 @@ impl Node<Edges> for WriteLtx {
             location_summary(ui, context.base_directory, "files");
             ui.add_space(4.0);
             let recording: Vec<String> = node
-                .data_stream_inputs()
+                .list_ports_data_stream_in()
                 .iter()
                 .zip(context.inputs)
                 .filter_map(|(input, stream)| stream.map(|s| format!("{}: {}", input.name(), s.summary())))
@@ -1063,7 +1063,7 @@ mod tests {
         use ephys_rs::engine::{Graph, NodesEnum};
         let mut graph = Graph::<Nodes>::default();
         let id = graph.add(Nodes::create(NodeType::WriteLtx), [0.0, 0.0]);
-        let inputs: Vec<Option<DataStream>> = vec![None; WriteLtx::default().data_stream_inputs().len()];
+        let inputs: Vec<Option<DataStream>> = vec![None; WriteLtx::default().list_ports_data_stream_in().len()];
         let mut harness = egui_kittest::Harness::builder().with_size([460.0, 300.0]).wgpu().build_ui_state(
             |ui, graph: &mut Graph<Nodes>| {
                 graph.edit(id, &inputs, &THEMES[0].colours, None, None, None, false, false, None, |node, context| {

@@ -1,9 +1,10 @@
 //! Edges connect nodes on the graph, and each carries one type of thing. A program declares its edge types as it does
 //! its node types.
 //!
-//! There are two kinds of edge, by the roles of the ports they join (see `PortRole`). Data edges carry data streams from outputs to inputs, and must form a DAG. Value
-//! edges let one node read a value another publishes, and send that node commands (a viewer reading a detector's
-//! thresholds, and setting them, say); they carry no data, so they may point anywhere, including upstream.
+//! There are two kinds of edge, by the roles of the ports they join (see `PortRole`). Data edges carry data streams
+//! from outputs to inputs, and must form a DAG. Value edges let one node read a value another publishes, and send that
+//! node commands (a viewer reading a detector's thresholds, and setting them, say); they carry no data, so they may
+//! point anywhere, including upstream.
 //!
 //! Each edge type is a struct implementing `EdgeType`: for data, a small `Copy` description of the data stream (its
 //! channel count and sample rate, say); for values, the value itself. `edge_types!` gathers them into an enum per
@@ -82,8 +83,8 @@ pub trait DataStreamsEnum: EdgeTypesEnum + Copy {
     fn empty(buffer: &mut Self::Buffer);
 }
 
-/// A node reading a published value (see `Node::val_cmd_ports`) finds it as its own type, rather than the program's
-/// enum of them, through this, which `edge_types!` implements for each type of value `V` holds.
+/// A node reading a published value (see `Node::list_ports_val_cmd`) finds it as its own type, rather than the
+/// program's enum of them, through this, which `edge_types!` implements for each type of value `V` holds.
 pub trait ValueType<V>: Sized {
     /// `value` as this type, if that's the type it is.
     fn from_value(value: &V) -> Option<&Self>;

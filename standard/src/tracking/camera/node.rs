@@ -79,7 +79,7 @@ impl Node<Edges> for Camera {
     type UiState = ();
     type GlobalSettings = super::SpinnakerSettings;
 
-    fn data_stream_outputs(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
+    fn list_ports_data_stream_out(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
         let [width, height] = self.settings.frame_size;
         let stream = Video { width, height, fps: self.settings.frame_rate as f32 };
         vec![
@@ -96,7 +96,7 @@ impl Node<Edges> for Camera {
         ]
     }
 
-    fn val_cmd_ports(&self) -> Vec<Port<Edges>> {
+    fn list_ports_val_cmd(&self) -> Vec<Port<Edges>> {
         vec![Port::val_out_cmd_in("camera", ValueKind::Camera, &[CommandKind::SetCamera])]
     }
 
