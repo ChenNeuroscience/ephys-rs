@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 
 use super::capture::{self, Capture, Shape, State, Status};
 use super::{AUX_PER_HEADSTAGE, Bandwidth, BoardInfo, Config, Headstage, OpalKellyKind, PORTS, SAMPLE_RATES, Source};
-use crate::Edges;
 use crate::standard::ephys::{Continuous, Events};
 use crate::standard::pool::Pool;
 use crate::standard::widgets::{named_settings_grid, setting, settings_grid};
@@ -124,7 +123,7 @@ impl AcquisitionBoard {
     }
 }
 
-impl Node<Edges> for AcquisitionBoard {
+impl<E: PortEdges> Node<E> for AcquisitionBoard {
     type Ports = Ports;
     const INFO: NodeInfo = NodeInfo {
         name: "Acquisition Board",
@@ -144,7 +143,7 @@ impl Node<Edges> for AcquisitionBoard {
         NoPorts
     }
 
-    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<Edges>) {
+    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<E>) {
         match command {}
     }
 
@@ -165,7 +164,8 @@ impl Node<Edges> for AcquisitionBoard {
             flow: Flow::ToPasses,
             why: "On a thread of its own so samples are taken from the board as they come (before its buffer \
                   overflows), whatever the passes are doing.",
-            swapped_outputs: (0..self.output_streams(&NoPorts).ports().len()).collect(),
+            swapped_outputs: (0..DataStreamOutPorts::<E>::ports(&Node::<E>::output_streams(self, &NoPorts)).len())
+                .collect(),
         }]
     }
 
@@ -196,7 +196,7 @@ impl Node<Edges> for AcquisitionBoard {
     /// Starts acquiring, carrying on with the board if it's acquiring as set already (see `Capture::start`): its
     /// capture thread opens the board, which is waited for, once every node's been asked, to say what isn't as set
     /// (see `decisions`).
-    fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Acquiring, (), Self> {
+    fn prepare_for_snapshot(&self, context: &PrepareContext<E, Self>) -> Prepare<Acquiring, (), Self> {
         if context.unchanged(self) {
             return Prepared::nothing().into();
         }
@@ -212,7 +212,7 @@ impl Node<Edges> for AcquisitionBoard {
     /// own (which go back to the capture thread's pool to fill), so nothing's copied.
     fn process(
         &self,
-        pass: &mut PassContext<Edges>,
+        pass: &mut PassContext<E>,
         _inputs: NoPorts,
         outputs: DataStreamOut<Buffers>,
         acquiring: &mut Acquiring,
@@ -246,7 +246,7 @@ impl Node<Edges> for AcquisitionBoard {
         }
     }
 
-    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<E>) {
         let Some(ui) = ui else { return };
         ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, context| {
             let theme = context.theme;

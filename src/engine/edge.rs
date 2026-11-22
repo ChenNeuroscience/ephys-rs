@@ -84,31 +84,40 @@ pub trait DataStreamsEnum: EdgeTypesEnum + Copy {
 }
 
 /// A node declares its data ports by the types of their data streams (see `ports!`), and the engine holds streams
-/// and buffers as the program's enums of them. `edge_types!` implements this for each data edge type the program
-/// lists, to go between the two.
-pub trait StreamOf<E: Edges>: DataStreamType {
-    /// Ports are matched by kind: this is the type's.
-    const KIND: Kind<E::DataStream>;
-    /// The stream, as the program's enum of them.
-    fn wrap(self) -> E::DataStream;
-    /// `stream` as this type, if that's the type it is.
-    fn from_stream(stream: &E::DataStream) -> Option<Self>;
-    /// `buffer` as this type's, if that's whose it is.
-    fn from_buffer(buffer: &Buffer<E>) -> Option<&Self::Buffer>;
-    /// `buffer` as this type's, to fill, if that's whose it is.
-    fn from_buffer_mut(buffer: &mut Buffer<E>) -> Option<&mut Self::Buffer>;
+/// and buffers as the program's enums of them. `edge_types!` implements this on the program's edges for each data
+/// stream type `T` it lists, to go between the two. Components written for any program say which they need as bounds
+/// on the program's edges (`E: HasDataStream<Continuous>`, or a trait gathering such bounds).
+#[diagnostic::on_unimplemented(
+    message = "the program's edges have no `{T}` data stream",
+    note = "add it to the program's `edge_types!`"
+)]
+pub trait HasDataStream<T: DataStreamType>: Edges {
+    /// Ports are matched by kind: this is `T`'s.
+    const KIND: Kind<Self::DataStream>;
+    /// `stream`, as the program's enum of them.
+    fn wrap(stream: T) -> Self::DataStream;
+    /// `stream` as a `T`, if that's the type it is.
+    fn from_stream(stream: &Self::DataStream) -> Option<T>;
+    /// `buffer` as a `T`'s, if that's whose it is.
+    fn from_buffer(buffer: &Buffer<Self>) -> Option<&T::Buffer>;
+    /// `buffer` as a `T`'s, to fill, if that's whose it is.
+    fn from_buffer_mut(buffer: &mut Buffer<Self>) -> Option<&mut T::Buffer>;
 }
 
-/// A node declares its ValCmd ports by the types of their values (see `ports!`), and the engine holds values
-/// as the program's enum of them. `edge_types!` implements this for each type of value the program lists, to go
-/// between the two.
-pub trait ValueOf<E: Edges>: EdgeType {
-    /// Ports are matched by kind: this is the type's.
-    const KIND: Kind<E::PublishedValue>;
-    /// The value, as the program's enum of them.
-    fn wrap(self) -> E::PublishedValue;
-    /// `value` as this type, if that's the type it is.
-    fn from_value(value: &E::PublishedValue) -> Option<&Self>;
+/// A node declares its ValCmd ports by the types of their values (see `ports!`), and the engine holds values as the
+/// program's enum of them. `edge_types!` implements this on the program's edges for each type of value `T` it lists,
+/// to go between the two (see `HasDataStream`).
+#[diagnostic::on_unimplemented(
+    message = "the program's edges have no `{T}` value",
+    note = "add it to the program's `edge_types!`"
+)]
+pub trait HasValue<T: EdgeType>: Edges {
+    /// Ports are matched by kind: this is `T`'s.
+    const KIND: Kind<Self::PublishedValue>;
+    /// `value`, as the program's enum of them.
+    fn wrap(value: T) -> Self::PublishedValue;
+    /// `value` as a `T`, if that's the type it is.
+    fn from_value(value: &Self::PublishedValue) -> Option<&T>;
 }
 
 /// A node can command another through a ValCmd edge (or itself, from its passes or threads; see `Node::on_command`).
@@ -122,14 +131,19 @@ pub trait CommandsEnum: Debug + Send + 'static {
 }
 
 /// Nodes send and take commands as their own types, and the engine carries them as the program's enum of them.
-/// `edge_types!` implements this for each command the program lists, to go between the two.
-pub trait CommandOf<E: Edges>: Debug + Send + Sized + 'static {
-    /// Ports say which commands they take or send by their kinds: this is the type's.
-    const KIND: CommandKind<E>;
-    /// The command, as the program's enum of them.
-    fn wrap(self) -> E::Command;
-    /// `command` as this type, if that's the type it is, or else `command` back.
-    fn from_command(command: E::Command) -> Result<Self, E::Command>;
+/// `edge_types!` implements this on the program's edges for each command `T` it lists, to go between the two (see
+/// `HasDataStream`).
+#[diagnostic::on_unimplemented(
+    message = "the program's edges have no `{T}` command",
+    note = "add it to the program's `edge_types!`"
+)]
+pub trait HasCommand<T: Debug + Send + 'static>: Edges {
+    /// Ports say which commands they take or send by their kinds: this is `T`'s.
+    const KIND: CommandKind<Self>;
+    /// `command`, as the program's enum of them.
+    fn wrap(command: T) -> Self::Command;
+    /// `command` as a `T`, if that's the type it is, or else `command` back.
+    fn from_command(command: Self::Command) -> Result<T, Self::Command>;
 }
 
 /// A program is built with edge types of both kinds, data streams and values, and the commands sent along ValCmd edges;
@@ -168,15 +182,15 @@ pub type Buffer<E> = <<E as Edges>::DataStream as DataStreamsEnum>::Buffer;
 ///
 /// This makes `Edges` (implementing `engine::Edges`), the `DataStream`, `PublishedValue` and `Command` enums, the
 /// `Kind`, `ValueKind` and `CommandKind` enums naming their variants, and the `Buffer` enum of the data streams'
-/// buffers; and `StreamOf`, `ValueOf` and `CommandOf` for each type listed, through which nodes use them as their own
+/// buffers; and `HasDataStream`, `HasValue` and `HasCommand` for each type listed, through which nodes use them as their own
 /// types.
 #[macro_export]
 macro_rules! edge_types {
     (
         $vis:vis struct $edges:ident;
-        data_streams: $svis:vis enum $data_stream:ident, $kind:ident, $buffer:ident { $($sv:ident($st:ty)),+ $(,)? }
-        values: $cvis:vis enum $value:ident, $ckind:ident { $($cv:ident($ct:ty)),+ $(,)? }
-        commands: $mvis:vis enum $command:ident, $mkind:ident { $($mv:ident($mt:ty)),+ $(,)? }
+        data_streams: $svis:vis enum $data_stream:ident, $kind:ident, $buffer:ident { $($sv:ident($st:ty)),* $(,)? }
+        values: $cvis:vis enum $value:ident, $ckind:ident { $($cv:ident($ct:ty)),* $(,)? }
+        commands: $mvis:vis enum $command:ident, $mkind:ident { $($mv:ident($mt:ty)),* $(,)? }
     ) => {
         $vis struct $edges;
 
@@ -188,34 +202,34 @@ macro_rules! edge_types {
 
         #[derive(Debug)]
         $mvis enum $command {
-            $($mv($mt),)+
+            $($mv($mt),)*
         }
 
         #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
         $mvis enum $mkind {
-            $($mv,)+
+            $($mv,)*
         }
 
         impl $crate::engine::CommandsEnum for $command {
             type Kind = $mkind;
 
             fn kind(&self) -> $mkind {
-                match self {
-                    $($command::$mv(_) => $mkind::$mv,)+
+                match *self {
+                    $($command::$mv(_) => $mkind::$mv,)*
                 }
             }
         }
 
         $(
             #[allow(unreachable_patterns)]
-            impl $crate::engine::CommandOf<$edges> for $mt {
+            impl $crate::engine::HasCommand<$mt> for $edges {
                 const KIND: $mkind = $mkind::$mv;
 
-                fn wrap(self) -> $command {
-                    $command::$mv(self)
+                fn wrap(command: $mt) -> $command {
+                    $command::$mv(command)
                 }
 
-                fn from_command(command: $command) -> Result<Self, $command> {
+                fn from_command(command: $command) -> Result<$mt, $command> {
                     match command {
                         $command::$mv(c) => Ok(c),
                         command => Err(command),
@@ -228,118 +242,121 @@ macro_rules! edge_types {
                     $command::$mv(c)
                 }
             }
-        )+
+        )*
 
         $(
             #[allow(unreachable_patterns)]
-            impl $crate::engine::ValueOf<$edges> for $ct {
+            impl $crate::engine::HasValue<$ct> for $edges {
                 const KIND: $ckind = $ckind::$cv;
 
-                fn wrap(self) -> $value {
-                    $value::$cv(self)
+                fn wrap(value: $ct) -> $value {
+                    $value::$cv(value)
                 }
 
-                fn from_value(value: &$value) -> Option<&Self> {
+                fn from_value(value: &$value) -> Option<&$ct> {
                     match value {
                         $value::$cv(v) => Some(v),
                         _ => None,
                     }
                 }
             }
-        )+
+        )*
 
-        $crate::edge_types!(@set $svis $data_stream $kind $($sv($st)),+);
-        $crate::edge_types!(@set $cvis $value $ckind $($cv($ct)),+);
+        $crate::edge_types!(@set $svis $data_stream $kind $($sv($st)),*);
+        $crate::edge_types!(@set $cvis $value $ckind $($cv($ct)),*);
 
         // Data streams are all `Copy` (see `DataStreamType`), so their enum can be too.
         impl Copy for $data_stream {}
 
         $svis enum $buffer {
-            $($sv(<$st as $crate::engine::DataStreamType>::Buffer)),+
+            $($sv(<$st as $crate::engine::DataStreamType>::Buffer)),*
         }
 
         $(
             #[allow(unreachable_patterns)]
-            impl $crate::engine::StreamOf<$edges> for $st {
+            impl $crate::engine::HasDataStream<$st> for $edges {
                 const KIND: $kind = $kind::$sv;
 
-                fn wrap(self) -> $data_stream {
-                    $data_stream::$sv(self)
+                fn wrap(stream: $st) -> $data_stream {
+                    $data_stream::$sv(stream)
                 }
 
-                fn from_stream(stream: &$data_stream) -> Option<Self> {
+                fn from_stream(stream: &$data_stream) -> Option<$st> {
                     match stream {
                         $data_stream::$sv(s) => Some(*s),
                         _ => None,
                     }
                 }
 
-                fn from_buffer(buffer: &$buffer) -> Option<&Self::Buffer> {
+                fn from_buffer(buffer: &$buffer) -> Option<&<$st as $crate::engine::DataStreamType>::Buffer> {
                     match buffer {
                         $buffer::$sv(b) => Some(b),
                         _ => None,
                     }
                 }
 
-                fn from_buffer_mut(buffer: &mut $buffer) -> Option<&mut Self::Buffer> {
+                fn from_buffer_mut(
+                    buffer: &mut $buffer,
+                ) -> Option<&mut <$st as $crate::engine::DataStreamType>::Buffer> {
                     match buffer {
                         $buffer::$sv(b) => Some(b),
                         _ => None,
                     }
                 }
             }
-        )+
+        )*
 
         impl $crate::engine::DataStreamsEnum for $data_stream {
             type Buffer = $buffer;
 
             fn buffer(&self, duration: f64) -> $buffer {
-                match self { $($data_stream::$sv(s) => $buffer::$sv($crate::engine::DataStreamType::buffer(s, duration))),+ }
+                match self { $($data_stream::$sv(s) => $buffer::$sv($crate::engine::DataStreamType::buffer(s, duration))),* }
             }
 
             fn bytes(buffer: &$buffer) -> usize {
-                match buffer { $($buffer::$sv(b) => <$st as $crate::engine::DataStreamType>::bytes(b)),+ }
+                match buffer { $($buffer::$sv(b) => <$st as $crate::engine::DataStreamType>::bytes(b)),* }
             }
 
             fn empty(buffer: &mut $buffer) {
-                match buffer { $($buffer::$sv(b) => <$st as $crate::engine::DataStreamType>::empty(b)),+ }
+                match buffer { $($buffer::$sv(b) => <$st as $crate::engine::DataStreamType>::empty(b)),* }
             }
 
             #[allow(unreachable_patterns)]
             fn copy(from: &$buffer, to: &mut $buffer) {
                 match (from, to) {
-                    $(($buffer::$sv(from), $buffer::$sv(to)) => <$st as $crate::engine::DataStreamType>::copy(from, to),)+
+                    $(($buffer::$sv(from), $buffer::$sv(to)) => <$st as $crate::engine::DataStreamType>::copy(from, to),)*
                     _ => {}
                 }
             }
         }
     };
 
-    (@set $vis:vis $value:ident $kind:ident $($variant:ident($ty:ty)),+) => {
+    (@set $vis:vis $value:ident $kind:ident $($variant:ident($ty:ty)),*) => {
         #[derive(Clone, PartialEq, Debug)]
         $vis enum $value {
-            $($variant($ty)),+
+            $($variant($ty)),*
         }
 
         #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
         $vis enum $kind {
-            $($variant),+
+            $($variant),*
         }
 
         impl $crate::engine::EdgeTypesEnum for $value {
             type Kind = $kind;
-            const KINDS: &'static [$crate::engine::EdgeInfo] = &[$(<$ty as $crate::engine::EdgeType>::INFO),+];
+            const KINDS: &'static [$crate::engine::EdgeInfo] = &[$(<$ty as $crate::engine::EdgeType>::INFO),*];
 
             fn kind(&self) -> $kind {
-                match self { $($value::$variant(_) => $kind::$variant),+ }
+                match *self { $($value::$variant(_) => $kind::$variant),* }
             }
 
             fn kind_index(kind: $kind) -> usize {
-                kind as usize
+                let kinds: &[$kind] = &[$($kind::$variant),*];
+                kinds.iter().position(|k| *k == kind).expect("each kind is listed")
             }
 
             fn summary(&self) -> String {
-                match self { $($value::$variant(v) => $crate::engine::EdgeType::summary(v)),+ }
+                match *self { $($value::$variant(ref v) => $crate::engine::EdgeType::summary(v)),* }
             }
         }
 
@@ -349,6 +366,6 @@ macro_rules! edge_types {
                     $value::$variant(v)
                 }
             }
-        )+
+        )*
     };
 }

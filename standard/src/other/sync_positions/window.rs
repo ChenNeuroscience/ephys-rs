@@ -8,7 +8,6 @@ use egui_plot::{Corner, Legend, Line, Plot, Points};
 
 use super::files::{Plan, Recording};
 use super::{Job, Report, Status, SyncPositions, Synced, ValInCmdOut, ValOutCmdIn, file_name};
-use crate::Edges;
 use crate::standard::widgets::{setting, settings_grid};
 use ephys_rs::engine::UiContext;
 use ephys_rs::gui::widgets::help_link;
@@ -51,12 +50,12 @@ impl SyncState {
 }
 
 impl SyncPositions {
-    pub(super) fn draw_window(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+    pub(super) fn draw_window<E: super::PortEdges>(&mut self, ui: &mut egui::Ui, context: &mut UiContext<E>) {
         ui.horizontal(|ui| context.node_toolbar(ui));
         egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| self.body(ui, context));
     }
 
-    fn body(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+    fn body<E: super::PortEdges>(&mut self, ui: &mut egui::Ui, context: &mut UiContext<E>) {
         ui.horizontal_wrapped(|ui| {
             ui.label(
                 "Puts a recording's positions on the board's clock, by the timing LED's pulses, which both the camera \

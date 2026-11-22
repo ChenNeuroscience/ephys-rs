@@ -21,7 +21,6 @@ use eframe::egui::{self, RichText};
 use serde::{Deserialize, Serialize};
 use serialport::SerialPortType;
 
-use crate::Edges;
 use crate::standard::pool::Pool;
 use crate::standard::widgets::{combo, named_settings_grid, setting};
 use ephys_rs::engine::{
@@ -342,7 +341,7 @@ impl PassState for Connected {
                                which pins it wants high.";
 }
 
-impl Node<Edges> for Arduino {
+impl<E: ephys_rs::engine::Edges> Node<E> for Arduino {
     const INFO: NodeInfo = NodeInfo {
         name: "Arduino",
         category: Category::Other,
@@ -361,7 +360,7 @@ impl Node<Edges> for Arduino {
         NoPorts
     }
 
-    fn on_command(&mut self, _from: CommandSource, command: NoCommands, _context: &mut CommandContext<Edges>) {
+    fn on_command(&mut self, _from: CommandSource, command: NoCommands, _context: &mut CommandContext<E>) {
         match command {}
     }
 
@@ -387,7 +386,7 @@ impl Node<Edges> for Arduino {
         }
     }
 
-    fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Connected, (), Self> {
+    fn prepare_for_snapshot(&self, context: &PrepareContext<E, Self>) -> Prepare<Connected, (), Self> {
         if context.same_streams() {
             return Prepared::nothing().into();
         }
@@ -395,7 +394,7 @@ impl Node<Edges> for Arduino {
             .into()
     }
 
-    fn process(&self, pass: &mut PassContext<Edges>, _: NoPorts, _: NoPorts, connected: &mut Connected, _: &mut ()) {
+    fn process(&self, pass: &mut PassContext<E>, _: NoPorts, _: NoPorts, connected: &mut Connected, _: &mut ()) {
         let key = (self.port.clone(), self.baud);
         if connected.connection.as_ref().is_none_or(|c| c.key != key) {
             connected.connection = Some(Connection::start(key));
@@ -413,7 +412,7 @@ impl Node<Edges> for Arduino {
         }
     }
 
-    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<E>) {
         let Some(ui) = ui else { return };
         let status = context.shared::<Pool<Status>>().and_then(Pool::newest).map(|s| s.clone());
         let (running, warning) = (context.running, context.theme.warning);
@@ -516,16 +515,17 @@ fn status_ui(ui: &mut egui::Ui, status: &Status, baud: u32, warning: egui::Color
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Edges;
 
     /// The pins wanted are worked out, and handed to the thread, only when they could change (recording starting or
     /// stopping, or the pins' settings changing), not every pass.
     #[test]
     fn the_pins_wanted_are_worked_out_again_only_when_they_could_change() {
         let mut node = Arduino::default();
-        let mut connected = ephys_rs::engine::fresh_state(&node, &NoPorts);
+        let mut connected = ephys_rs::engine::fresh_state::<Edges, _>(&node, &NoPorts);
         let shown = Pool::<Status>::default();
         let handed = |node: &Arduino, connected: &mut Connected, recording: bool| {
-            let mut pass = PassContext::new(0, 0.02);
+            let mut pass = PassContext::<Edges>::new(0, 0.02);
             pass.shared = &shown;
             pass.set_recording(recording);
             node.process(&mut pass, NoPorts, NoPorts, connected, &mut ());

@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 
 use super::capture::{Capture, State};
 use super::{CameraConfig, CameraControls, CameraStats, CaptureStats, Control, Range, SetCamera, Source};
-use crate::Edges;
 use crate::standard::pool::Pool;
 use crate::standard::tracking::Video;
 use crate::standard::widgets::{setting, settings_grid};
@@ -70,7 +69,7 @@ impl Camera {
     }
 }
 
-impl Node<Edges> for Camera {
+impl<E: PortEdges> Node<E> for Camera {
     type Ports = Ports;
     const INFO: NodeInfo = NodeInfo {
         name: "Camera",
@@ -98,7 +97,7 @@ impl Node<Edges> for Camera {
         ValOutCmdIn { camera: self.settings }
     }
 
-    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<Edges>) {
+    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<E>) {
         match command {
             CmdIn::SetCamera(SetCamera(settings)) => self.settings = settings,
         }
@@ -144,7 +143,7 @@ impl Node<Edges> for Camera {
     /// Starts capturing, carrying on with the camera if it's capturing already (see `Capture::start`): its capture
     /// thread opens the camera, whose first frame is waited for, once every node's been asked, to say what isn't as set
     /// (see `decisions`).
-    fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Capturing, (), Self> {
+    fn prepare_for_snapshot(&self, context: &PrepareContext<E, Self>) -> Prepare<Capturing, (), Self> {
         if context.unchanged(self) {
             return Prepared::nothing().into();
         }
@@ -162,7 +161,7 @@ impl Node<Edges> for Camera {
     /// (which goes back to the capture thread's pool to fill), so nothing's copied.
     fn process(
         &self,
-        pass: &mut PassContext<Edges>,
+        pass: &mut PassContext<E>,
         _inputs: NoPorts,
         outputs: DataStreamOut<Buffers>,
         capturing: &mut Capturing,
@@ -189,7 +188,7 @@ impl Node<Edges> for Camera {
         pass.shared::<Pool<CaptureStats>>().send_newest(pass.sequence, |shown| shown.copy_from(stats));
     }
 
-    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<E>) {
         let Some(ui) = ui else { return };
         ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, context| {
             settings_grid(ui, |ui| {

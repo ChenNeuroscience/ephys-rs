@@ -314,6 +314,7 @@ macro_rules! nodes_enum {
                 }
             }
 
+            #[allow(unreachable_code, unused_variables, reason = "a program without commands has none to deliver")]
             fn on_command(
                 &mut self,
                 from: $crate::engine::CommandSource,
@@ -324,7 +325,7 @@ macro_rules! nodes_enum {
                     $($name::$variant(n) => {
                         type CmdIn = $crate::engine::CmdInOf<$ty, $edges>;
                         let command = <CmdIn as $crate::engine::CommandSet<$edges>>::from_command(command)?;
-                        $crate::engine::Node::on_command(n, from, command, context);
+                        $crate::engine::Node::<$edges>::on_command(n, from, command, context);
                         Ok(())
                     }),+
                 }
@@ -339,7 +340,7 @@ macro_rules! nodes_enum {
                 ui: Option<&mut eframe::egui::Ui>,
                 context: &mut $crate::engine::UiContext<$edges>,
             ) {
-                match self { $($name::$variant(n) => $crate::engine::Node::on_gui_tick(n, ui, context)),+ }
+                match self { $($name::$variant(n) => $crate::engine::Node::<$edges>::on_gui_tick(n, ui, context)),+ }
             }
 
             fn new_ui_state(&self) -> Box<dyn std::any::Any> {
@@ -352,7 +353,7 @@ macro_rules! nodes_enum {
 
             fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool], recording: bool) -> $crate::engine::TreeShake {
                 match self {
-                    $($name::$variant(n) => $crate::engine::Node::evaluate_tree_shake(n, inputs, outputs, recording)),+
+                    $($name::$variant(n) => $crate::engine::Node::<$edges>::evaluate_tree_shake(n, inputs, outputs, recording)),+
                 }
             }
 
@@ -402,7 +403,7 @@ macro_rules! nodes_enum {
                             $name::$variant(previous) => Some(previous),
                             _ => None,
                         });
-                        $crate::engine::Node::prepare_for_snapshot(n, &context).map(
+                        $crate::engine::Node::<$edges>::prepare_for_snapshot(n, &context).map(
                             |state| Box::new(state) as Box<dyn std::any::Any + Send>,
                             |state| Box::new(state) as Box<dyn std::any::Any + Send>,
                             $name::$variant,
@@ -422,7 +423,7 @@ macro_rules! nodes_enum {
                         if let (Some(state), Some(proto_state)) =
                             (state.downcast_mut::<State>(), proto_state.downcast_mut::<State>())
                         {
-                            $crate::engine::Node::adopt_snapshot(n, state, proto_state);
+                            $crate::engine::Node::<$edges>::adopt_snapshot(n, state, proto_state);
                         }
                     }),+
                 }
@@ -462,7 +463,7 @@ macro_rules! nodes_enum {
                                     as $crate::engine::DataStreamInPorts<$edges>>::view(inputs, taken);
                                 let outputs = <$crate::engine::DataStreamOutOf<$ty, $edges>
                                     as $crate::engine::DataStreamOutPorts<$edges>>::view(outputs);
-                                $crate::engine::Node::process(n, pass, inputs, outputs, state, worker_state);
+                                $crate::engine::Node::<$edges>::process(n, pass, inputs, outputs, state, worker_state);
                                 true
                             }
                             _ => false,

@@ -11,8 +11,7 @@ use std::io;
 use eframe::egui::Color32;
 use serde::{Deserialize, Serialize};
 
-use crate::Edges;
-use ephys_rs::engine::{DataStreamType, EdgeInfo, EdgeType, Node, PoolStatus};
+use ephys_rs::engine::{DataStreamType, EdgeInfo, EdgeType, PoolStatus};
 pub use fake::FakeCamera;
 #[cfg(test)]
 pub use fake::serve_test_scene;
@@ -223,7 +222,7 @@ pub fn open(source: &Source, settings: &CameraConfig, note: &mut dyn FnMut(Strin
                 settings.frame_rate,
             ));
             // As they are now, so a change applies when it's next tried.
-            let spinnaker = <node::Camera as Node<Edges>>::global_settings();
+            let spinnaker = <SpinnakerSettings as ephys_rs::global_settings::GlobalSettingsSet>::current();
             Box::new(SpinnakerCamera::open(serial.as_deref(), settings.frame_rate, &spinnaker, note)?)
         }
     })

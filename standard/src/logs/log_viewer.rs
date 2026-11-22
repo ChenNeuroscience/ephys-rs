@@ -8,7 +8,6 @@ use std::collections::VecDeque;
 use eframe::egui::{self, RichText};
 use serde::{Deserialize, Serialize};
 
-use crate::Edges;
 use crate::standard::logs::LogLines;
 use crate::standard::plots;
 use crate::standard::pool::Pool;
@@ -67,7 +66,7 @@ impl PassState for Viewing {
     const WHY: &'static str = "The lines the GUI hasn't been sent yet, which each pass adds to, in order.";
 }
 
-impl Node<Edges> for LogViewer {
+impl<E: PortEdges> Node<E> for LogViewer {
     type Ports = Ports;
     type State = Viewing;
     type WorkerState = ();
@@ -87,7 +86,7 @@ impl Node<Edges> for LogViewer {
         NoPorts
     }
 
-    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<Edges>) {
+    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<E>) {
         match command {}
     }
 
@@ -95,7 +94,7 @@ impl Node<Edges> for LogViewer {
         NoPorts
     }
 
-    fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Viewing, (), Self> {
+    fn prepare_for_snapshot(&self, context: &PrepareContext<E, Self>) -> Prepare<Viewing, (), Self> {
         if context.same_streams() {
             return Prepared::nothing().into();
         }
@@ -104,7 +103,7 @@ impl Node<Edges> for LogViewer {
 
     fn process(
         &self,
-        pass: &mut PassContext<Edges>,
+        pass: &mut PassContext<E>,
         inputs: DataStreamIn<Buffers>,
         _: NoPorts,
         viewing: &mut Viewing,
@@ -124,7 +123,7 @@ impl Node<Edges> for LogViewer {
     }
 
     /// The viewer takes what its passes have sent, then draws its window if there's a `ui` to draw it in.
-    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<E>) {
         self.take_updates(context);
         let Some(ui) = ui else { return };
         let mut kept = context.ui_state::<KeptLines>();
@@ -155,13 +154,13 @@ impl Node<Edges> for LogViewer {
     }
 
     fn warnings(&self, inputs: &DataStreamIn) -> Vec<String> {
-        require_input(inputs, "log lines")
+        require_input(inputs.any_connected(), "log lines")
     }
 }
 
 impl LogViewer {
     /// The viewer takes the lines its passes sent, keeping the latest.
-    fn take_updates(&mut self, context: &mut UiContext<Edges>) {
+    fn take_updates<E: PortEdges>(&mut self, context: &mut UiContext<E>) {
         let Some(sent) = context.shared::<SentLines>() else { return };
         let mut kept = context.ui_state::<KeptLines>();
         sent.0.receive_all(|entries| {
@@ -178,6 +177,7 @@ mod tests {
     use std::cell::RefCell;
 
     use super::*;
+    use crate::Edges;
     use crate::Nodes;
     use crate::standard::pool::WINDOW_BUFFERS;
     use crate::standard::themes::THEMES;
@@ -191,7 +191,7 @@ mod tests {
         for (time, line) in lines {
             assert!(log.push(*time, line));
         }
-        let mut pass = PassContext::new(0, 0.02);
+        let mut pass = PassContext::<Edges>::new(0, 0.02);
         pass.shared = sent;
         LogViewer::default().process(&mut pass, DataStreamIn { log: Some(&log) }, NoPorts, viewing, &mut ());
     }

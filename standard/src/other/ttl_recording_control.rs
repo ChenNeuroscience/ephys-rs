@@ -5,13 +5,12 @@
 use eframe::egui::{self, RichText};
 use serde::{Deserialize, Serialize};
 
-use crate::Edges;
 use crate::standard::ephys::{Event, Events};
 use crate::standard::pool::Pool;
 use crate::standard::widgets::{named_settings_grid, require_input, setting};
 use ephys_rs::engine::{
-    Buffers, Category, CommandContext, CommandSource, DataStreamInPorts, NoPorts, Node, NodeInfo, PassContext,
-    PassState, Prepare, PrepareContext, Prepared, UiContext,
+    Buffers, Category, CommandContext, CommandSource, NoPorts, Node, NodeInfo, PassContext, PassState, Prepare,
+    PrepareContext, Prepared, UiContext,
 };
 
 ephys_rs::ports! {
@@ -63,7 +62,7 @@ impl TtlRecordingControl {
     }
 }
 
-impl Node<Edges> for TtlRecordingControl {
+impl<E: PortEdges> Node<E> for TtlRecordingControl {
     type Ports = Ports;
     const INFO: NodeInfo = NodeInfo {
         name: "TTL Recording Control",
@@ -82,7 +81,7 @@ impl Node<Edges> for TtlRecordingControl {
         NoPorts
     }
 
-    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<Edges>) {
+    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<E>) {
         match command {}
     }
 
@@ -90,7 +89,7 @@ impl Node<Edges> for TtlRecordingControl {
         NoPorts
     }
 
-    fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Seen, (), Self> {
+    fn prepare_for_snapshot(&self, context: &PrepareContext<E, Self>) -> Prepare<Seen, (), Self> {
         if context.same_streams() {
             return Prepared::nothing().into();
         }
@@ -99,7 +98,7 @@ impl Node<Edges> for TtlRecordingControl {
 
     fn process(
         &self,
-        pass: &mut PassContext<Edges>,
+        pass: &mut PassContext<E>,
         inputs: DataStreamIn<Buffers>,
         _: NoPorts,
         seen: &mut Seen,
@@ -114,9 +113,9 @@ impl Node<Edges> for TtlRecordingControl {
         pass.shared::<Pool<Seen>>().send_newest(pass.sequence, |shown| *shown = seen);
     }
 
-    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<E>) {
         let Some(ui) = ui else { return };
-        let lines = DataStreamIn::of(context.inputs).events.map(|stream| stream.lines);
+        let lines = context.data_stream_in::<DataStreamIn>().events.map(|stream| stream.lines);
         let seen = context.shared::<Pool<Seen>>().and_then(Pool::newest).map(|seen| *seen);
         let warning = context.theme.warning;
         ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, _context| {
@@ -151,7 +150,7 @@ impl Node<Edges> for TtlRecordingControl {
     }
 
     fn warnings(&self, inputs: &DataStreamIn) -> Vec<String> {
-        let mut warnings = require_input(inputs, "events");
+        let mut warnings = require_input(inputs.any_connected(), "events");
         if let Some(stream) = inputs.events
             && self.line > stream.lines
         {
@@ -165,6 +164,7 @@ impl Node<Edges> for TtlRecordingControl {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Edges;
     use crate::standard::ephys::EventsBuffer;
     use ephys_rs::commands::Sent;
 
@@ -175,7 +175,7 @@ mod tests {
     /// What a pass of `events` asks for, recording or not.
     fn asks(node: &TtlRecordingControl, events: Vec<Event>, recording: bool, seen: &mut Seen) -> Vec<bool> {
         let buffer = EventsBuffer { events, pass_samples: 0 };
-        let mut pass = PassContext::new(0, 0.02);
+        let mut pass = PassContext::<Edges>::new(0, 0.02);
         let shared = Pool::<Seen>::default();
         pass.shared = &shared;
         pass.set_recording(recording);
@@ -212,9 +212,9 @@ mod tests {
     #[test]
     fn it_warns_of_a_line_its_events_dont_have() {
         let node = TtlRecordingControl { line: 3, ..Default::default() };
-        assert_eq!(node.warnings(&DataStreamIn { events: None }), ["Connect events"]);
+        assert_eq!(Node::<Edges>::warnings(&node, &DataStreamIn { events: None }), ["Connect events"]);
         let events = |lines| DataStreamIn { events: Some(Events { lines, sample_rate: 1000.0 }) };
-        assert_eq!(node.warnings(&events(2)), ["Its events have 2 lines: there's no line 3"]);
-        assert!(node.warnings(&events(3)).is_empty());
+        assert_eq!(Node::<Edges>::warnings(&node, &events(2)), ["Its events have 2 lines: there's no line 3"]);
+        assert!(Node::<Edges>::warnings(&node, &events(3)).is_empty());
     }
 }

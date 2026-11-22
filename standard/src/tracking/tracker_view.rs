@@ -17,7 +17,6 @@ use super::camera::{CameraStats, CaptureStats};
 use super::frame_gpu::{self, Upload};
 use super::led_chart::{self, History};
 use super::position_detector::{calibration_ui, crop_ui, detection_ui, timing_led_ui};
-use crate::Edges;
 use crate::standard::plots;
 use crate::standard::pool::Pool;
 use crate::standard::tracking::VideoBuffer;
@@ -27,8 +26,8 @@ use crate::standard::tracking::pipeline::{Blob, RowSpans, row_spans};
 use crate::standard::tracking::{Crop, Detection, Positions, SetDetection, Video};
 use crate::standard::widgets::{named_settings_grid, section};
 use ephys_rs::engine::{
-    Buffers, Category, CommandContext, CommandSource, DataStreamInPorts, EdgeType, NoPorts, Node, NodeInfo,
-    PassContext, PoolStatus, Prepare, PrepareContext, Prepared, Shared, UiContext,
+    Buffers, Category, CommandContext, CommandSource, EdgeType, NoPorts, Node, NodeInfo, PassContext, PoolStatus,
+    Prepare, PrepareContext, Prepared, Shared, UiContext,
 };
 use ephys_rs::theme::Colours;
 
@@ -143,7 +142,7 @@ pub struct TrackerDisplay {
     stats: Option<CaptureStats>,
 }
 
-impl Node<Edges> for TrackerView {
+impl<E: PortEdges> Node<E> for TrackerView {
     type Ports = Ports;
     const INFO: NodeInfo = NodeInfo {
         name: "Tracker View",
@@ -169,16 +168,16 @@ impl Node<Edges> for TrackerView {
         NoPorts
     }
 
-    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<Edges>) {
+    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<E>) {
         match command {}
     }
 
     /// Room for the LEDs' sizes over `led_chart::SECONDS`, so it isn't allocated while running.
-    fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Tracking, (), Self> {
+    fn prepare_for_snapshot(&self, context: &PrepareContext<E, Self>) -> Prepare<Tracking, (), Self> {
         if context.same_streams() {
             return Prepared::nothing().into();
         }
-        let fps = DataStreamIn::of(context.inputs).positions.map_or(0.0, |positions| positions.fps as f64);
+        let fps = context.data_stream_in::<DataStreamIn>().positions.map_or(0.0, |positions| positions.fps as f64);
         let history = History::with_capacity((fps * led_chart::SECONDS) as usize + 16);
         Prepared::shared(Tracking { history, ..Default::default() }).into()
     }
@@ -187,7 +186,7 @@ impl Node<Edges> for TrackerView {
     /// pass without a frame is only shown if the camera isn't running, to say why.
     fn process(
         &self,
-        pass: &mut PassContext<Edges>,
+        pass: &mut PassContext<E>,
         inputs: DataStreamIn<Buffers>,
         _: NoPorts,
         tracking: &mut Tracking,
@@ -246,7 +245,7 @@ impl Node<Edges> for TrackerView {
     }
 
     /// The view takes what its passes have sent, then draws its window if there's a `ui` to draw it in.
-    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<E>) {
         self.take_updates(context);
         let Some(ui) = ui else { return };
         // The node's toolbar, along the top.
@@ -281,7 +280,7 @@ impl Node<Edges> for TrackerView {
 
 impl TrackerView {
     /// The view takes the path its passes sent.
-    fn take_updates(&mut self, context: &mut UiContext<Edges>) {
+    fn take_updates<E: PortEdges>(&mut self, context: &mut UiContext<E>) {
         let Some(shared) = context.shared::<TrackerShared>() else { return };
         let path = &mut context.ui_state::<TrackerUi>().path;
         shared.path.receive_all(|updates| {
@@ -298,10 +297,10 @@ impl TrackerView {
 impl TrackerView {
     /// The settings above the camera, as tall as they are (so closing sections makes room for the camera), up
     /// to a height that dragging their bottom edge sets. Returns the room left below.
-    fn controls_above(
+    fn controls_above<E: PortEdges>(
         &mut self,
         ui: &mut egui::Ui,
-        context: &mut UiContext<Edges>,
+        context: &mut UiContext<E>,
         size: [f32; 2],
         area: Rect,
     ) -> Rect {
@@ -335,7 +334,7 @@ impl TrackerView {
     }
 
     /// The camera, with what's detected drawn over it, and the LED chart beside or below it.
-    fn camera_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>, arrangement: Arrangement) {
+    fn camera_ui<E: PortEdges>(&mut self, ui: &mut egui::Ui, context: &mut UiContext<E>, arrangement: Arrangement) {
         let pool = context.shared::<TrackerShared>().map(|shared| &shared.shown);
         let reading = pool.and_then(Pool::newest);
         let display = reading.as_deref();
@@ -385,14 +384,14 @@ impl TrackerView {
 
     /// The camera's and the detector's settings (through the controls), in sections whose headers say what's
     /// shown over the video and lock what can be changed.
-    fn controls_ui(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>, size: [f32; 2]) {
+    fn controls_ui<E: PortEdges>(&mut self, ui: &mut egui::Ui, context: &mut UiContext<E>, size: [f32; 2]) {
         if positions_only(context) {
             return positions_settings_ui(ui, context);
         }
         let pool = context.shared::<TrackerShared>().map(|shared| &shared.shown);
         let reading = pool.and_then(Pool::newest);
         let stats = reading.as_deref().and_then(|d| d.stats.as_ref());
-        let inputs = DataStreamIn::of(context.inputs);
+        let inputs = context.data_stream_in::<DataStreamIn>();
         let declared = inputs.video.map(|video| video.fps as f64);
         let connected = inputs.stats.is_some();
         egui::CollapsingHeader::new(RichText::new("Stats").strong())
@@ -519,15 +518,15 @@ impl TrackerView {
 }
 
 /// Whether it's only got positions to show, with no video.
-fn positions_only(context: &UiContext<Edges>) -> bool {
-    let inputs = DataStreamIn::of(context.inputs);
+fn positions_only<E: PortEdges>(context: &UiContext<E>) -> bool {
+    let inputs = context.data_stream_in::<DataStreamIn>();
     inputs.video.is_none() && inputs.positions.is_some()
 }
 
 /// The window the positions range over: the crop's, if there's one, otherwise a frame's. Sized so it's never empty.
-fn positions_window(context: &UiContext<Edges>) -> [f32; 4] {
+fn positions_window<E: PortEdges>(context: &UiContext<E>) -> [f32; 4] {
     let crop = context.val_in(ValInCmdOut::detection).and_then(|detection| detection.crop.bounds());
-    let size = match DataStreamIn::of(context.inputs).positions {
+    let size = match context.data_stream_in::<DataStreamIn>().positions {
         Some(positions) => [positions.width as f32, positions.height as f32],
         None => [1.0, 1.0],
     };
@@ -535,7 +534,7 @@ fn positions_window(context: &UiContext<Edges>) -> [f32; 4] {
 }
 
 /// Where positions are in their window, with the path recorded, looking as they do over video.
-fn positions_ui(ui: &mut egui::Ui, context: &UiContext<Edges>, display: Option<&TrackerDisplay>) {
+fn positions_ui<E: PortEdges>(ui: &mut egui::Ui, context: &UiContext<E>, display: Option<&TrackerDisplay>) {
     let Some(display) = display else {
         return plots::unconnected(ui, context.theme, "Press Play to see the positions");
     };
@@ -570,8 +569,8 @@ fn positions_ui(ui: &mut egui::Ui, context: &UiContext<Edges>, display: Option<&
 }
 
 /// What's known of positions without video, which there's nothing to adjust of.
-fn positions_settings_ui(ui: &mut egui::Ui, context: &UiContext<Edges>) {
-    let source = DataStreamIn::of(context.inputs).positions.map_or("", |positions| positions.source);
+fn positions_settings_ui<E: PortEdges>(ui: &mut egui::Ui, context: &UiContext<E>) {
+    let source = context.data_stream_in::<DataStreamIn>().positions.map_or("", |positions| positions.source);
     ui.label(RichText::new("Positions").strong());
     ui.weak(format!("From {}, without video: there's nothing to adjust here.", source.replace('_', " ")));
     let Some(detection) = context.val_in(ValInCmdOut::detection) else { return };
@@ -647,8 +646,8 @@ fn stats_ui(ui: &mut egui::Ui, stats: Option<&CaptureStats>, connected: bool, de
 }
 
 /// The size of the frames coming in, or a likely one if none are.
-fn frame_size(context: &UiContext<Edges>) -> [f32; 2] {
-    match DataStreamIn::of(context.inputs).video {
+fn frame_size<E: PortEdges>(context: &UiContext<E>) -> [f32; 2] {
+    match context.data_stream_in::<DataStreamIn>().video {
         Some(video) => [video.width as f32, video.height as f32],
         None => [640.0, 480.0],
     }
@@ -918,6 +917,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::Edges;
     use crate::NodeType;
     use crate::Nodes;
     use ephys_rs::engine::NodeTypeEnum;
@@ -937,7 +937,7 @@ mod tests {
             let sample = PositionSample { frame: 0, time: 0.0, leds, timing_led: None, pixels_per_metre: f32::NAN };
             let positions = PositionsBuffer { samples: vec![sample] };
             let inputs = DataStreamIn { video: None, positions: Some(&positions), stats: None };
-            let mut pass = PassContext::new(0, 0.02);
+            let mut pass = PassContext::<Edges>::new(0, 0.02);
             (pass.shared, pass.node) = (shared, view);
             pass.set_recording(recording);
             TrackerView::default().process(&mut pass, inputs, NoPorts, &mut tracking, &mut ());

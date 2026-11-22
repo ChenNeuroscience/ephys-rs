@@ -50,7 +50,8 @@ The parts of the API are there for three different reasons, and it helps to know
   }
   ```
 
-  The macro makes, in the node's module, a struct of each role's ports (`DataStreamIn`, `DataStreamOut`,
+  The node's `Node` is for any build's edges with the types its ports carry: `impl<E: PortEdges> Node<E> for MyNode`
+  (`PortEdges` being one of what `ports!` makes). The macro makes, in the node's module, a struct of each role's ports (`DataStreamIn`, `DataStreamOut`,
   `ValOutCmdIn`), an enum of the commands the `ValOutCmdIn` ports take (`CmdIn`), and a handle to each port reading a
   value (`ValInCmdOut::gains`, `ValIn::...`). Saved graphs name each port by its field's name (its id), so reordering
   them is fine, but renaming one needs a config patch to rename the saved edges' ends.
@@ -153,7 +154,7 @@ window ([`node_window::standard`](../src/gui/node_window.rs)): its name, toolbar
 ports. A node with settings to set there shows them in the standard window, as most do:
 
 ```rust
-fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<E>) {
     let Some(ui) = ui else { return };
     standard(self, ui, context, |node, ui, context| { /* node's settings */ });
 }

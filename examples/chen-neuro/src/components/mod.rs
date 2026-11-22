@@ -6,7 +6,6 @@ pub mod quick_actions;
 pub mod trials;
 pub mod vr_computer;
 
-use crate::standard::Edges;
 use crate::standard::alarms::{processor, viewer};
 use crate::standard::annotations::{arrow, group_box, heading, image, markdown, sticky_note};
 use crate::standard::base_directories::A_DIRECTORY;
@@ -25,6 +24,44 @@ use ephys_rs::quick_action::QuickAction;
 use ephys_rs::theme::Theme;
 use ephys_rs::{Components, build_version};
 use ephys_rs::{annotations_enum, nodes_enum};
+
+// The edge types chen-neuro's nodes need: all the standard ones, as it has every standard node type. A build lists only
+// those its nodes' ports carry (each node's `PortEdges`), and its own beside them.
+ephys_rs::edge_types! {
+    pub struct Edges;
+    data_streams: pub enum DataStream, Kind, Buffer {
+        Continuous(crate::standard::ephys::Continuous),
+        Events(crate::standard::ephys::Events),
+        Spikes(crate::standard::spikes::Spikes),
+        Video(crate::standard::tracking::Video),
+        Positions(crate::standard::tracking::Positions),
+        CameraStats(crate::standard::tracking::camera::CameraStats),
+        Spectra(crate::standard::ephys::spectrum::Spectra),
+        AlarmStates(crate::standard::alarms::AlarmStates),
+        LogLines(crate::standard::logs::LogLines),
+    }
+    values: pub enum PublishedValue, ValueKind {
+        Thresholds(crate::standard::spikes::Thresholds),
+        Gains(crate::standard::spikes::Gains),
+        ChannelSelection(crate::standard::ephys::ChannelSelection),
+        Reference(crate::standard::ephys::reference::Reference),
+        Camera(crate::standard::tracking::camera::CameraConfig),
+        Detection(crate::standard::tracking::Detection),
+        Alarms(crate::standard::alarms::Alarms),
+        FileInput(crate::standard::other::run_command::FileInput),
+    }
+    commands: pub enum Command, CommandKind {
+        SetThresholds(crate::standard::spikes::SetThresholds),
+        SetGains(crate::standard::spikes::SetGains),
+        SetChannelSelection(crate::standard::ephys::SetChannelSelection),
+        SetReference(crate::standard::ephys::reference::SetReference),
+        SetCamera(crate::standard::tracking::camera::SetCamera),
+        SetDetection(crate::standard::tracking::SetDetection),
+        SetAlarms(crate::standard::alarms::SetAlarms),
+        Detect(crate::standard::auto_detect::Detect),
+        ProcessFiles(crate::standard::other::run_command::ProcessFiles),
+    }
+}
 
 // In the order they're offered in the add-node menu.
 nodes_enum! {

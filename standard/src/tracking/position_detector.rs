@@ -3,10 +3,9 @@
 //! downs, timed by the camera's clock, as the positions are.
 
 use eframe::egui::{self, RichText};
-use ephys_rs::engine::{Buffers, DataStreamInPorts, TreeShake};
+use ephys_rs::engine::{Buffers, TreeShake};
 use serde::{Deserialize, Serialize};
 
-use crate::Edges;
 use crate::standard::ephys::{Event, Events};
 use crate::standard::tracking::SetDetection;
 use crate::standard::tracking::pipeline::{Pipeline, timing_led_on};
@@ -47,7 +46,7 @@ fn changed(last: &mut Option<bool>, on: bool) -> bool {
     last.replace(on).is_some_and(|was| was != on)
 }
 
-impl Node<Edges> for PositionDetector {
+impl<E: PortEdges> Node<E> for PositionDetector {
     type Ports = Ports;
     const INFO: NodeInfo = NodeInfo {
         name: "Position Detector",
@@ -84,13 +83,13 @@ impl Node<Edges> for PositionDetector {
         ValOutCmdIn { detection: self.detection.clone() }
     }
 
-    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<Edges>) {
+    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<E>) {
         match command {
             CmdIn::SetDetection(SetDetection(detection)) => self.detection = detection,
         }
     }
 
-    fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Finding, (), Self> {
+    fn prepare_for_snapshot(&self, context: &PrepareContext<E, Self>) -> Prepare<Finding, (), Self> {
         if context.same_streams() {
             return Prepared::nothing().into();
         }
@@ -99,7 +98,7 @@ impl Node<Edges> for PositionDetector {
 
     fn process(
         &self,
-        _pass: &mut PassContext<Edges>,
+        _pass: &mut PassContext<E>,
         inputs: DataStreamIn<Buffers>,
         outputs: DataStreamOut<Buffers>,
         finding: &mut Finding,
@@ -135,10 +134,10 @@ impl Node<Edges> for PositionDetector {
         }
     }
 
-    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<E>) {
         let Some(ui) = ui else { return };
         ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, context| {
-            let size = match DataStreamIn::of(context.inputs).video {
+            let size = match context.data_stream_in::<DataStreamIn>().video {
                 Some(video) => [video.width as f32, video.height as f32],
                 _ => [640.0, 480.0],
             };
@@ -147,7 +146,7 @@ impl Node<Edges> for PositionDetector {
     }
 
     fn warnings(&self, inputs: &DataStreamIn) -> Vec<String> {
-        require_input(inputs, "video")
+        require_input(inputs.any_connected(), "video")
     }
 }
 
@@ -377,6 +376,7 @@ pub(super) fn calibration_ui(ui: &mut egui::Ui, detection: &mut Detection, size:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Edges;
 
     #[test]
     fn only_changes_of_the_timing_led_count_and_not_the_first_frame() {
@@ -389,8 +389,8 @@ mod tests {
     fn says_what_it_outputs() {
         use ephys_rs::engine::DataStreamOutPorts;
         let video = Video { width: 640, height: 480, fps: 50.0 };
-        let outputs = PositionDetector::default().output_streams(&DataStreamIn { video: Some(video) });
-        assert_eq!(outputs.ports()[1].name(), "pos ttl");
+        let outputs = Node::<Edges>::output_streams(&PositionDetector::default(), &DataStreamIn { video: Some(video) });
+        assert_eq!(DataStreamOutPorts::<Edges>::ports(&outputs)[1].name(), "pos ttl");
         assert!(matches!(outputs.pos_ttl, Some(Events { lines: 1, .. })), "a single line");
     }
 }

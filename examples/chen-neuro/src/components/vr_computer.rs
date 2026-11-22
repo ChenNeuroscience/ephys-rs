@@ -42,7 +42,6 @@ use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwapOption;
 
-use crate::standard::Edges;
 use crate::standard::ephys::{Event, Events, EventsBuffer};
 use crate::standard::logs::{LogLines, LogLinesBuffer};
 use crate::standard::pool::Pool;
@@ -536,7 +535,7 @@ ephys_rs::ports! {
     settings: ValOutCmdIn<Detection, (SetDetection,)>,
 }
 
-impl Node<Edges> for VrComputer {
+impl<E: PortEdges> Node<E> for VrComputer {
     type Ports = Ports;
     const INFO: NodeInfo = NodeInfo {
         name: "VR Computer",
@@ -576,7 +575,7 @@ impl Node<Edges> for VrComputer {
         ValOutCmdIn { settings: Detection { crop, rulers, timing_led, custom, ..Default::default() } }
     }
 
-    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<Edges>) {
+    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<E>) {
         match command {
             CmdIn::SetDetection(SetDetection(detection)) => self.custom = detection.custom,
         }
@@ -602,7 +601,7 @@ impl Node<Edges> for VrComputer {
 
     fn prepare_for_snapshot(
         &self,
-        context: &ephys_rs::engine::PrepareContext<Edges, Self>,
+        context: &ephys_rs::engine::PrepareContext<E, Self>,
     ) -> ephys_rs::engine::Prepare<Receiving, (), Self> {
         if context.same_streams() {
             return ephys_rs::engine::Prepared::nothing().into();
@@ -616,7 +615,7 @@ impl Node<Edges> for VrComputer {
 
     fn process(
         &self,
-        pass: &mut PassContext<Edges>,
+        pass: &mut PassContext<E>,
         _inputs: NoPorts,
         outputs: DataStreamOut<Buffers>,
         receiving: &mut Receiving,
@@ -664,7 +663,7 @@ impl Node<Edges> for VrComputer {
         }
     }
 
-    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<E>) {
         let Some(ui) = ui else { return };
         ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, context| {
             named_settings_grid(ui, "vr computer", |ui| {
@@ -742,6 +741,7 @@ fn status_ui(ui: &mut egui::Ui, status: &Status, warning: egui::Color32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::Edges;
     use ephys_rs::engine::{DataStreamType, Graph, PASS_DURATION, Recording, Snapshot};
     use std::io::Write;
     use std::net::TcpListener;
@@ -752,7 +752,9 @@ mod tests {
 
     /// A pass's buffers.
     fn buffers(node: &VrComputer) -> (PositionsBuffer, EventsBuffer, LogLinesBuffer) {
-        let DataStreamOut { positions: Some(p), pos_ttl: Some(e), log: Some(l) } = node.output_streams(&NoPorts) else {
+        let DataStreamOut { positions: Some(p), pos_ttl: Some(e), log: Some(l) } =
+            Node::<Edges>::output_streams(node, &NoPorts)
+        else {
             panic!("its streams")
         };
         (p.buffer(PASS_DURATION), e.buffer(PASS_DURATION), l.buffer(PASS_DURATION))
@@ -823,7 +825,7 @@ mod tests {
         assert_eq!(window(&keys(["5", "-5", "0", "1"])), None, "backwards");
 
         let node = VrComputer::default();
-        assert_eq!(node.warnings(&NoPorts).len(), 1);
+        assert_eq!(Node::<Edges>::warnings(&node, &NoPorts).len(), 1);
         let mut custom = keys(["-5", "5", "-1", "3"]);
         assert!(!complete(&custom), "no calibration");
         custom.insert(CALIBRATION_KEY.into(), "0".into());
@@ -837,15 +839,15 @@ mod tests {
         custom.insert(TTL_CHANNELS_KEY.into(), "0".into());
         assert!(complete(&custom), "none");
         let node = VrComputer { custom: custom.clone(), ..VrComputer::default() };
-        let detection = &node.val_out().settings;
+        let detection = &Node::<Edges>::val_out(&node).settings;
         assert!(!detection.timing_led.enabled, "no TTLs");
         custom.insert(TTL_CHANNELS_KEY.into(), "3".into());
         assert!(complete(&custom));
         let node = VrComputer { custom, ..node };
-        assert!(node.warnings(&NoPorts).is_empty());
-        let ttl = node.output_streams(&NoPorts).pos_ttl.unwrap();
+        assert!(Node::<Edges>::warnings(&node, &NoPorts).is_empty());
+        let ttl = Node::<Edges>::output_streams(&node, &NoPorts).pos_ttl.unwrap();
         assert_eq!(ttl.lines, 3, "a line a channel");
-        let detection = &node.val_out().settings;
+        let detection = &Node::<Edges>::val_out(&node).settings;
         assert_eq!(detection.crop, crop, "for Write LTX");
         assert_eq!(detection.pixels_per_metre(), Some(250.0));
         assert!(detection.timing_led.enabled, "there'll be TTLs");

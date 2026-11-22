@@ -19,7 +19,6 @@ use std::time::Instant;
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 
-use crate::Edges;
 use crate::standard::other::run_command::{FileInput, ProcessFiles};
 use ephys_rs::commands::CmdSender;
 use ephys_rs::engine::{Category, CommandContext, CommandSource, NoPorts, Node, NodeInfo, UiContext};
@@ -254,12 +253,12 @@ pub struct Job(Arc<Mutex<Status>>);
 impl Job {
     /// Syncs `set`'s recording, unless it's syncing one already; then, if it did, sends `sent` on through `after`, with
     /// the positions it wrote and the original kept, if they weren't among them.
-    fn start(
+    fn start<E: PortEdges>(
         &self,
         set: PathBuf,
         sent: Vec<PathBuf>,
         settings: SyncConfig,
-        after: Option<CmdSender<Edges, (ProcessFiles,)>>,
+        after: Option<CmdSender<E, (ProcessFiles,)>>,
     ) {
         let mut status = self.0.lock().unwrap();
         if matches!(*status, Status::Running { .. }) {
@@ -312,7 +311,7 @@ pub struct SyncPositions {
     pub settings: SyncConfig,
 }
 
-impl Node<Edges> for SyncPositions {
+impl<E: PortEdges> Node<E> for SyncPositions {
     type Ports = Ports;
     type State = ();
     type WorkerState = ();
@@ -339,7 +338,7 @@ impl Node<Edges> for SyncPositions {
     }
 
     /// Syncs the recording whose `.set` file's among the files sent, then sends them on to what's connected after it.
-    fn on_command(&mut self, _from: CommandSource, command: CmdIn, context: &mut CommandContext<Edges>) {
+    fn on_command(&mut self, _from: CommandSource, command: CmdIn, context: &mut CommandContext<E>) {
         let CmdIn::ProcessFiles(ProcessFiles(paths)) = command;
         let Some(state) = context.ui_state::<SyncState>() else {
             return log::warn!("{}: sent files to sync, without its state to keep the sync in", context.label);
@@ -352,7 +351,7 @@ impl Node<Edges> for SyncPositions {
         ephys_rs::engine::TreeShake::needing_all(false, inputs.len())
     }
 
-    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<E>) {
         if let Some(ui) = ui {
             self.draw_window(ui, context);
         }
@@ -362,7 +361,7 @@ impl Node<Edges> for SyncPositions {
 impl SyncPositions {
     /// Syncs, as `job`, the recording whose `.set` file's among `paths` (sent, or picked by hand), then sends them on
     /// through `after`, if that's connected.
-    fn sync(&self, job: &Job, paths: Vec<PathBuf>, after: Option<CmdSender<Edges, (ProcessFiles,)>>) {
+    fn sync<E: PortEdges>(&self, job: &Job, paths: Vec<PathBuf>, after: Option<CmdSender<E, (ProcessFiles,)>>) {
         match paths.iter().find(|path| path.extension().is_some_and(|e| e == "set")) {
             Some(set) => job.start(set.clone(), paths.clone(), self.settings.clone(), after),
             None => job.fail("There's no .set file among the files sent".into()),

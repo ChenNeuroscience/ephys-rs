@@ -17,7 +17,6 @@ use eframe::egui::{self, Color32, RichText};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use crate::Edges;
 use crate::standard::recording::expand;
 use crate::standard::widgets::{combo, setting, settings_grid};
 use ephys_rs::commands::CmdSender;
@@ -297,11 +296,19 @@ pub struct RunCommand {
 impl RunCommand {
     /// Runs the program on `files` as `job`, or says why it can't; then sends them on through `after`, if that's
     /// connected, as the settings say (see `Then`).
-    fn run_on(&self, job: &Job, files: Result<Vec<PathBuf>, String>, after: Option<CmdSender<Edges, (ProcessFiles,)>>) {
+    fn run_on<E: PortEdges>(
+        &self,
+        job: &Job,
+        files: Result<Vec<PathBuf>, String>,
+        after: Option<CmdSender<E, (ProcessFiles,)>>,
+    ) {
         let runs = files.and_then(|files| Ok((self.settings.runs(&files)?, files)));
         match runs {
             Ok((runs, files)) => {
-                let chain = after.map(|sender| Chain { sender, then: self.settings.then, files });
+                let send = |sender: CmdSender<E, (ProcessFiles,)>| -> Box<dyn FnOnce(Vec<PathBuf>) + Send> {
+                    Box::new(move |files| sender.send(ProcessFiles(files)))
+                };
+                let chain = after.map(|sender| Chain { send: send(sender), then: self.settings.then, files });
                 job.start(&self.settings, &runs, chain)
             }
             Err(problem) => job.fail(problem),
@@ -601,7 +608,7 @@ fn files_help(senders: &[String]) -> String {
     }
 }
 
-impl Node<Edges> for RunCommand {
+impl<E: PortEdges> Node<E> for RunCommand {
     type Ports = Ports;
     type State = ();
     type WorkerState = ();
@@ -627,7 +634,7 @@ impl Node<Edges> for RunCommand {
     }
 
     /// Runs the program on the files sent, and then, as it says, what's connected after it.
-    fn on_command(&mut self, _from: CommandSource, command: CmdIn, context: &mut CommandContext<Edges>) {
+    fn on_command(&mut self, _from: CommandSource, command: CmdIn, context: &mut CommandContext<E>) {
         let CmdIn::ProcessFiles(ProcessFiles(paths)) = command;
         let Some(state) = context.ui_state::<CommandState>() else {
             return log::warn!("{}: sent files to run on, without its state to keep the run in", context.label);
@@ -640,7 +647,7 @@ impl Node<Edges> for RunCommand {
         ephys_rs::engine::TreeShake::needing_all(false, inputs.len())
     }
 
-    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<E>) {
         let Some(ui) = ui else { return };
         ui.horizontal(|ui| context.node_toolbar(ui));
         ui.horizontal(|ui| {
@@ -758,15 +765,14 @@ mod tests {
 
     use super::terminal::{How, shell_script, write_private};
     use super::*;
+    use crate::Edges;
     use crate::NodeType;
     use crate::Nodes;
     use crate::standard::ephys::board::{Source, serve_test_board};
     use crate::standard::themes::THEMES;
     use ephys_rs::commands::{Address, Commands};
     use ephys_rs::engine::NodeTypeEnum;
-    use ephys_rs::engine::{
-        CommandSource, Graph, NodesEnum, PortAddress, PortRole, ReadsValIn, Recording, Runner, Snapshot,
-    };
+    use ephys_rs::engine::{CommandSource, Graph, NodesEnum, PortAddress, PortRole, Recording, Runner, Snapshot};
 
     /// One per file, in turn, if the arguments have a file in them, otherwise just one.
     fn settings(program: &str, arguments: &str) -> ScriptConfig {
@@ -1167,10 +1173,10 @@ mod tests {
     #[test]
     fn a_problem_is_shown_until_it_runs_again() {
         let (mut node, job) = (RunCommand::default(), Job::default());
-        node.run_on(&job, Ok(Vec::new()), None);
+        node.run_on::<Edges>(&job, Ok(Vec::new()), None);
         assert_eq!(job.problem().as_deref(), Some("There's no program to run"));
         node.settings = settings("/usr/bin/true", "");
-        node.run_on(&job, Ok(Vec::new()), None);
+        node.run_on::<Edges>(&job, Ok(Vec::new()), None);
         assert_eq!(job.problem(), None);
         wait_for_job(&job);
     }
@@ -1424,17 +1430,18 @@ mod chain_tests {
 
     use super::*;
     use crate::Command;
+    use crate::Edges;
     use crate::NodeType;
     use crate::Nodes;
     use ephys_rs::commands::{Address, CmdSender, Commands};
-    use ephys_rs::engine::{Graph, NodeId, NodesEnum, PortAddress, PortRole, ReadsValIn};
+    use ephys_rs::engine::{Graph, NodeId, NodesEnum, PortAddress, PortRole};
 
     /// Whether `then`, after runs that ended with these codes (`None` if stopped; not there if not run), sends the
     /// files on to what's connected after it.
     fn sends(then: Then, runs: &[Option<Option<i64>>]) -> bool {
         let commands = Arc::new(Commands::default());
         let address = Address::Port { from: NodeId(1), val_in_idx: ValInCmdOut::after_running.index() };
-        let sender = CmdSender::new(commands.clone(), address);
+        let sender = CmdSender::<Edges, (ProcessFiles,)>::new(commands.clone(), address);
         let progress = runs.iter().map(|run| Progress {
             shown: String::new(),
             outcome: match run {
@@ -1442,7 +1449,8 @@ mod chain_tests {
                 None => Outcome::NotRun,
             },
         });
-        Chain { sender, then, files: vec![PathBuf::from("a.dat")] }.send_after(&progress.collect::<Vec<_>>());
+        let send = Box::new(move |files| sender.send(ProcessFiles(files)));
+        Chain { send, then, files: vec![PathBuf::from("a.dat")] }.send_after(&progress.collect::<Vec<_>>());
         let sent = commands.take_commands::<Command>();
         match &sent[..] {
             [] => false,

@@ -1,8 +1,9 @@
 //! ephys-rs-standard: the standard components of ephys-rs, which programs built on it pick from. They're grouped by
 //! what they're for: electrophysiology (`ephys`), spikes (`spikes`) and video tracking (`tracking`), each with its edge
 //! types and node types; alarms on them all (`alarms`); writers, which record them (`recording`); programs to run on
-//! what's recorded (`other`); annotation types (`annotations`); and themes (`themes`). The kinds of data and settings
-//! they share (`Edges`, `DataStream`, `PublishedValue`...) are declared here.
+//! what's recorded (`other`); annotation types (`annotations`); and themes (`themes`). A program lists the edge types
+//! it's built with in its own `edge_types!`: those its nodes need, standard or its own. Each standard node works in any
+//! program whose edges have the types its ports carry (its `PortEdges`).
 //!
 //! Its tests are the framework's, which are of the whole program, and build this source as a module, `standard` (see
 //! the framework's src/lib.rs). So its code calls itself `crate::standard`, and its own test build is empty.
@@ -29,46 +30,6 @@ pub mod spikes;
 pub mod themes;
 pub mod tracking;
 pub mod widgets;
-
-use ephys::{reference, spectrum};
-use other::run_command;
-use tracking::camera;
-
-ephys_rs::edge_types! {
-    pub struct Edges;
-    data_streams: pub enum DataStream, Kind, Buffer {
-        Continuous(ephys::Continuous),
-        Events(ephys::Events),
-        Spikes(spikes::Spikes),
-        Video(tracking::Video),
-        Positions(tracking::Positions),
-        CameraStats(camera::CameraStats),
-        Spectra(spectrum::Spectra),
-        AlarmStates(alarms::AlarmStates),
-        LogLines(logs::LogLines),
-    }
-    values: pub enum PublishedValue, ValueKind {
-        Thresholds(spikes::Thresholds),
-        Gains(spikes::Gains),
-        ChannelSelection(ephys::ChannelSelection),
-        Reference(reference::Reference),
-        Camera(camera::CameraConfig),
-        Detection(tracking::Detection),
-        Alarms(alarms::Alarms),
-        FileInput(run_command::FileInput),
-    }
-    commands: pub enum Command, CommandKind {
-        SetThresholds(spikes::SetThresholds),
-        SetGains(spikes::SetGains),
-        SetChannelSelection(ephys::SetChannelSelection),
-        SetReference(reference::SetReference),
-        SetCamera(camera::SetCamera),
-        SetDetection(tracking::SetDetection),
-        SetAlarms(alarms::SetAlarms),
-        Detect(auto_detect::Detect),
-        ProcessFiles(run_command::ProcessFiles),
-    }
-}
 
 /// The most samples (or frames) of a data stream at `rate` that fall in `duration` seconds.
 fn per_pass(rate: f32, duration: f64) -> usize {

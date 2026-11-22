@@ -112,13 +112,51 @@ mod tests {
 #[cfg(test)]
 extern crate self as ephys_rs;
 #[cfg(test)]
+#[path = "../examples/chen-neuro/src/components/mod.rs"]
+mod components;
+#[cfg(test)]
 #[path = "../standard/src/lib.rs"]
 #[allow(dead_code, reason = "what's public is for builds, not all of which the tests use")]
 mod standard;
 #[cfg(test)]
-use standard::{Buffer, Command, DataStream, Edges, Kind, PublishedValue};
+use components::{
+    AnnotationKind, AnnotationTypes, Buffer, Command, DataStream, Edges, Kind, NodeType, Nodes, PublishedValue,
+    example_graph,
+};
+
+/// A build lists only the edge types its nodes need: this one has continuous data alone (no values, no commands), for
+/// the two standard node types it's made of, whose ports carry nothing else.
 #[cfg(test)]
-#[path = "../examples/chen-neuro/src/components/mod.rs"]
-mod components;
-#[cfg(test)]
-use components::{AnnotationKind, AnnotationTypes, NodeType, Nodes, example_graph};
+mod minimal_build {
+    use crate::engine::{Graph, PortAddress, PortRole};
+    use crate::standard::ephys::{Continuous, band_pass, downsample};
+
+    ephys_rs::edge_types! {
+        pub struct Edges;
+        data_streams: pub enum DataStream, Kind, Buffer {
+            Continuous(Continuous),
+        }
+        values: pub enum PublishedValue, ValueKind {}
+        commands: pub enum Command, CommandKind {}
+    }
+
+    ephys_rs::nodes_enum! {
+        edges: Edges;
+        pub enum Nodes {
+            BandPassFilter(band_pass::BandPassFilter),
+            Downsample(downsample::Downsample),
+        }
+        pub enum NodeType;
+    }
+
+    #[test]
+    fn a_build_needs_only_the_edge_types_its_nodes_ports_carry() {
+        let mut graph = Graph::<Nodes>::default();
+        let filter = graph.add(Nodes::BandPassFilter(Default::default()), [0.0, 0.0]);
+        let downsample = graph.add(Nodes::Downsample(Default::default()), [0.0, 0.0]);
+        let port = |node, role| PortAddress { node, role, port_idx: 0 };
+        graph.connect(port(filter, PortRole::DataStreamOut), port(downsample, PortRole::DataStreamIn)).unwrap();
+        let saved = serde_json::to_value(&graph).unwrap();
+        assert_eq!(saved["edges"][0]["to"]["port"], "continuous");
+    }
+}

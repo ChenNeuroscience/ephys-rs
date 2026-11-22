@@ -11,7 +11,7 @@ There are three parts:
   annotation types, and doesn't depend on the standard components.
 - The standard components, the `ephys-rs-standard` crate, in [`standard/`](../standard/src/lib.rs): the node, edge and
   annotation types, themes and base directory most labs will need, grouped by feature (`ephys`, `spikes`, `tracking`,
-  `recording`...), and the kinds of data and settings they share (`ephys_rs_standard::Edges`, `DataStream`...).
+  `recording`...). Each standard node works in any build whose edges have the types its ports carry.
 - A custom build: a program that declares which components it's made of, including any of its own, and runs them.
   [`examples/chen-neuro/`](../examples/chen-neuro/src/components/mod.rs) is one, and what this repository builds and releases: the standard
   components, with quick actions for the LTX rig and a base directory for subjects, dates and trials.
@@ -21,8 +21,8 @@ All three are in one workspace, and the two libraries share a version (ephys-rs'
 your own starts with `cargo add --git https://github.com/ChenNeuroscience/ephys-rs ephys-rs ephys-rs-standard`, as well
 as `serde` and `eframe`, which the macros below use. (`cargo install --git` installs programs, so here that's chen-neuro.)
 
-A build lists its types with `nodes_enum!` (node types, in the order the add-node menu offers them) and
-`annotations_enum!`, then implements [`Components`](../src/lib.rs) with them, its themes, quick actions and base
+A build lists its types with `edge_types!` (the edge types its nodes' ports carry: see [Edges](edges.md)),
+`nodes_enum!` (node types, in the order the add-node menu offers them) and `annotations_enum!`, then implements [`Components`](../src/lib.rs) with them, its themes, quick actions and base
 directories, and calls `gui::run`. Each macro makes an enum with a variant per type, which forwards the traits'
 methods to the variant's type, so the framework works with one concrete type (`Nodes`, say) without trait objects: the
 enum dispatch pattern. Each also makes a second enum, named in the macro call, of just the types, with the same variants
@@ -36,10 +36,10 @@ version, and the core's in brackets, `chen-neuro v0.900 (ephys-rs v0.55)`. Witho
 Help › About shows the version, with `Components::ABOUT` under it: markdown saying what's special about the build. Help ›
 Source Code, and a link in About, go to `Components::SOURCE`, which is this repository unless a fork changes it.
 
-So a build can add nodes, annotations, themes, quick actions and base directories of its own. The kinds of data stream,
-published value and command are the exception: they're declared once, with `edge_types!` in the standard components'
-[`lib.rs`](../standard/src/lib.rs), as they're written against them, and adding one means adding it there. There's no loading of code at run time, and
-no stable interface between versions.
+So a build can add nodes, edge types (data streams, values and commands), annotations, themes, quick actions and base
+directories of its own, and takes only the standard ones it wants: its `edge_types!` lists the edge types its nodes
+need, standard or its own, and nothing else. There's no loading of code at run time, and no stable interface between
+versions.
 
 The app's tests are in the framework, as they use its internals, but they're of the whole program: its `lib.rs`
 compiles the standard components and chen-neuro's into them, as modules (`crate::standard`, which the standard

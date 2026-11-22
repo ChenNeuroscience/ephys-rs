@@ -27,6 +27,7 @@ use std::path::PathBuf;
 use crate::standard::other::run_command::ProcessFiles;
 use ephys_rs::base_directory::Place;
 use ephys_rs::commands::CmdSender;
+use ephys_rs::engine::HasCommand;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -68,7 +69,9 @@ pub trait Files<C>: Send {
 
 /// A writer sends what it's recorded, once the files are finished, through `sender` (its "after recording" port's,
 /// if that's connected), as the `ProcessFiles` command. Not if it failed.
-pub fn after_recording(sender: Option<CmdSender<crate::Edges, (ProcessFiles,)>>) -> Option<OnFinished> {
+pub fn after_recording<E: HasCommand<ProcessFiles>>(
+    sender: Option<CmdSender<E, (ProcessFiles,)>>,
+) -> Option<OnFinished> {
     let sender = sender?;
     Some(Box::new(move |result| {
         if let Ok(paths) = result {

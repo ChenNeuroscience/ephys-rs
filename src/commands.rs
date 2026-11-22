@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use eframe::egui;
 
-use crate::engine::{CommandOf, Edges, Includes, NodeId};
+use crate::engine::{Edges, HasCommand, Includes, NodeId};
 
 /// A command goes to a node through one of the node's ValCmd edges, or from the node to itself.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -120,11 +120,12 @@ impl<E: Edges, S> CmdSender<E, S> {
 
     /// This sends `command`, one of those the control sends. The app delivers it as soon as it can, following the edge
     /// then (see `Address`).
-    pub fn send<C: CommandOf<E>, I>(&self, command: C)
+    pub fn send<C: std::fmt::Debug + Send + 'static, I>(&self, command: C)
     where
+        E: HasCommand<C>,
         S: Includes<C, I>,
     {
-        self.commands.send(self.address, command.wrap());
+        self.commands.send(self.address, E::wrap(command));
     }
 
     /// Where the sender sends.

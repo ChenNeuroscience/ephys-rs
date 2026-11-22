@@ -7,7 +7,6 @@ use crate::Command;
 use crate::standard::themes::THEMES;
 use crate::{NodeType, Nodes};
 use ephys_rs::commands::{Address, Commands};
-use ephys_rs::engine::ReadsValIn;
 use ephys_rs::engine::{CommandSource, Graph, NodesEnum, PortAddress, PortRole};
 
 /// A folder of its own, for a test's recording.

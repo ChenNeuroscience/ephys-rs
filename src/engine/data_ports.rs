@@ -11,12 +11,12 @@
 //! `&mut ContinuousBuffer` for an output. The node's `process` is given these, already the right type.
 //!
 //! The graph and the plan still number ports, in the order they're declared, and the engine still holds streams and
-//! buffers as the program's enums of them; `DataStreamInPorts` and `DataStreamOutPorts` go between the two, through `StreamOf`.
+//! buffers as the program's enums of them; `DataStreamInPorts` and `DataStreamOutPorts` go between the two, through `HasDataStream`.
 
 use std::fmt::Debug;
 use std::marker::PhantomData;
 
-use super::{Buffer, DataStreamType, Edges, Port, StreamOf};
+use super::{Buffer, DataStreamType, Edges, HasDataStream, Port};
 
 /// A node's `DataStreamIn` and `DataStreamOut` structs (see `ports!`) are generic over a form, which says what each field
 /// holds, by the field's role: an input the node reads (`In`), an input the node takes (`Take`), or an output (`Out`).
@@ -128,28 +128,28 @@ impl<E: Edges> DataStreamOutPorts<E> for NoPorts {
 /// `ports!` finds an input's buffer to read with this: the one the node was given to take, if it was given one,
 /// or else the one to read.
 #[doc(hidden)]
-pub fn read_input<'a, E: Edges, T: StreamOf<E>>(
+pub fn read_input<'a, E: HasDataStream<T>, T: DataStreamType>(
     shared: Option<&'a Option<&'a Buffer<E>>>,
     taken: Option<&'a mut Option<Buffer<E>>>,
 ) -> Option<&'a T::Buffer> {
     let taken = taken.map(|taken| -> &'a Option<Buffer<E>> { taken });
-    taken.and_then(Option::as_ref).or(shared.copied().flatten()).and_then(T::from_buffer)
+    taken.and_then(Option::as_ref).or(shared.copied().flatten()).and_then(E::from_buffer)
 }
 
 /// `ports!` finds an input's buffer to take with this.
 #[doc(hidden)]
-pub fn take_input<'a, E: Edges, T: StreamOf<E>>(
+pub fn take_input<'a, E: HasDataStream<T>, T: DataStreamType>(
     _shared: Option<&'a Option<&'a Buffer<E>>>,
     taken: Option<&'a mut Option<Buffer<E>>>,
 ) -> Option<&'a mut T::Buffer> {
-    taken.and_then(Option::as_mut).and_then(T::from_buffer_mut)
+    taken.and_then(Option::as_mut).and_then(E::from_buffer_mut)
 }
 
 /// `ports!` finds an output's buffer with this. The plan makes each output's buffer from the stream the node gave
 /// for it, which is of the output's own type, so the buffer always is too.
 #[doc(hidden)]
-pub fn fill_output<E: Edges, T: StreamOf<E>>(output: Option<&mut Buffer<E>>) -> &mut T::Buffer {
+pub fn fill_output<E: HasDataStream<T>, T: DataStreamType>(output: Option<&mut Buffer<E>>) -> &mut T::Buffer {
     output
-        .and_then(T::from_buffer_mut)
+        .and_then(E::from_buffer_mut)
         .expect("the plan makes each output's buffer for the stream the node gave for it")
 }

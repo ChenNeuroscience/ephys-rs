@@ -1,9 +1,8 @@
 # Edges
 
-What can flow along an edge is declared like node types are: each edge type is a small struct, gathered by
-`edge_types!` at the root of the standard components (as `ephys_rs_standard::Edges` and so on, in
-[`standard/src/lib.rs`](../standard/src/lib.rs)), with
-the kinds the standard components are written against. The traits are in [`edge.rs`](../src/engine/edge.rs).
+What can flow along an edge is declared like node types are: each edge type is a small struct, and a build gathers
+those its nodes need, standard or its own, with `edge_types!` (as chen-neuro does, in its
+[components](../examples/chen-neuro/src/components/mod.rs)). The traits are in [`edge.rs`](../src/engine/edge.rs).
 
 ```rust
 edge_types! {
@@ -28,9 +27,12 @@ That makes the `DataStream` and `PublishedValue` enums of values, the `Kind` and
 with, and the `Buffer` enum of the data streams' buffers; and the `Command` enum of what nodes can tell each other to
 do, through ValCmd edges (or themselves, from their passes and threads), with `CommandKind` naming them (see
 [Nodes](nodes.md#commands)). Each command is a type of its own (`SetThresholds(pub Thresholds)`). For each type listed,
-`edge_types!` also implements `StreamOf`, `ValueOf` or `CommandOf`, which go between the type and the program's enum,
-so nodes declare their ports (see [Nodes](nodes.md#describing-it)) and work with what's on them as their own types,
-never naming the program's enums.
+`edge_types!` also implements `HasDataStream`, `HasValue` or `HasCommand` on the build's `Edges`, which go between the
+type and the build's enum, so nodes declare their ports (see [Nodes](nodes.md#describing-it)) and work with what's on
+them as their own types, never naming a build's enums. A node is written for any build's edges that have the types its
+ports carry (`impl<E: PortEdges> Node<E> for MyNode`, where `ports!` makes `PortEdges` from the node's ports), so a
+build lists only the types its nodes need; leaving one out, it doesn't compile, saying which ("the program's edges have
+no `Spikes` data stream"). A list can be empty: a build whose nodes take no commands lists none.
 
 ## Data streams
 

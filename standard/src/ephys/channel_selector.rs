@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 use crate::standard::ephys::reference::{channels_ui, parse_channels};
 use crate::standard::ephys::{ChannelSelection, Continuous, SetChannelSelection};
 use crate::standard::widgets::{inline_block, input_summary, power, require_input};
-use crate::{DataStream, Edges};
 use ephys_rs::engine::{Category, CommandContext, CommandSource, Node, NodeInfo, PassContext, UiContext};
 
 ephys_rs::ports! {
@@ -50,7 +49,7 @@ pub struct Passed {
     channels: Vec<u32>,
 }
 
-impl Node<Edges> for ChannelSelector {
+impl<E: PortEdges> Node<E> for ChannelSelector {
     type Ports = Ports;
     const INFO: NodeInfo = NodeInfo {
         name: "Channel Selector",
@@ -77,7 +76,7 @@ impl Node<Edges> for ChannelSelector {
 
     fn process(
         &self,
-        _pass: &mut PassContext<Edges>,
+        _pass: &mut PassContext<E>,
         inputs: DataStreamIn<Buffers>,
         outputs: DataStreamOut<Buffers>,
         _: &mut (),
@@ -100,7 +99,7 @@ impl Node<Edges> for ChannelSelector {
         ValOutCmdIn { selection: ChannelSelection { apply: self.apply, channels: self.channels.clone() } }
     }
 
-    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<Edges>) {
+    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<E>) {
         match command {
             CmdIn::SetChannelSelection(SetChannelSelection(selection)) => {
                 (self.apply, self.channels) = (selection.apply, selection.channels);
@@ -108,13 +107,10 @@ impl Node<Edges> for ChannelSelector {
         }
     }
 
-    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<E>) {
         let Some(ui) = ui else { return };
         ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, context| {
-            let count = match context.inputs[0] {
-                Some(DataStream::Continuous(c)) => c.channels,
-                _ => 64,
-            };
+            let count = context.data_stream_in::<DataStreamIn>().continuous.map_or(64, |c| c.channels);
             let apply = &mut node.apply;
             channels_ui(ui, "Selected", &mut node.channels, count, |ui, selected| {
                 // Together, on the next line if they won't fit on this one.
@@ -129,12 +125,12 @@ impl Node<Edges> for ChannelSelector {
                 });
             });
             ui.add_space(4.0);
-            input_summary(ui, context.inputs);
+            input_summary(ui, context);
         });
     }
 
     fn warnings(&self, inputs: &DataStreamIn) -> Vec<String> {
-        let mut warnings = require_input(inputs, "a continuous data stream");
+        let mut warnings = require_input(inputs.any_connected(), "a continuous data stream");
         if let Some(c) = inputs.continuous
             && let Err(e) = parse_channels(&self.channels, c.channels)
         {
@@ -147,6 +143,7 @@ impl Node<Edges> for ChannelSelector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Edges;
     use ephys_rs::engine::{DataStreamType, PASS_DURATION};
 
     #[test]
@@ -154,7 +151,8 @@ mod tests {
         let stream = Continuous { channels: 4, sample_rate: 1000.0 };
         let mut selector = ChannelSelector { apply: false, channels: "2, 4".into() };
         let run = |selector: &ChannelSelector| {
-            let out = selector.output_streams(&DataStreamIn { continuous: Some(stream) }).selected.unwrap();
+            let out =
+                Node::<Edges>::output_streams(selector, &DataStreamIn { continuous: Some(stream) }).selected.unwrap();
             let mut input = stream.buffer(PASS_DURATION);
             input.len = 3;
             for c in 0..4 {
@@ -163,7 +161,7 @@ mod tests {
             let mut output = out.buffer(PASS_DURATION);
             let (inputs, outputs) =
                 (DataStreamIn { continuous: Some(&input) }, DataStreamOut { selected: &mut output });
-            let mut pass = PassContext::new(0, PASS_DURATION);
+            let mut pass = PassContext::<Edges>::new(0, PASS_DURATION);
             selector.process(&mut pass, inputs, outputs, &mut (), &mut Passed::default());
             (0..output.channels).map(|c| output.channel(c)[2]).collect::<Vec<_>>()
         };
@@ -172,7 +170,7 @@ mod tests {
         assert_eq!(run(&selector), vec![1.0, 3.0]);
         selector.channels = "none".into();
         assert_eq!(run(&selector), Vec::<f32>::new(), "nothing, if that's what's selected");
-        assert!(selector.warnings(&DataStreamIn { continuous: Some(stream) }).is_empty());
+        assert!(Node::<Edges>::warnings(&selector, &DataStreamIn { continuous: Some(stream) }).is_empty());
     }
 
     /// The rig with nothing selected, and every kind of node that takes continuous data taking that, and every kind
@@ -241,7 +239,7 @@ mod tests {
         takers(&mut graph, &made);
         let resolved = graph.resolve();
         let stream = &resolved[&selector].outputs[0].stream();
-        assert!(matches!(stream, Some(DataStream::Continuous(c)) if c.channels == 0));
+        assert!(matches!(stream, Some(crate::DataStream::Continuous(c)) if c.channels == 0));
 
         let dir = std::env::temp_dir().join(format!("ephys-rs-nothing-selected-{}", std::process::id()));
         let snapshot = Snapshot::new(0, graph.clone());
@@ -297,7 +295,7 @@ mod tests {
                 let node_type = crate::NodeType::ChannelSelector;
                 let id = graph.add(crate::Nodes::create(node_type), [0.0, 0.0]);
                 let stream = Continuous { channels: 16, sample_rate: 30000.0 };
-                let inputs = [Some(DataStream::Continuous(stream))];
+                let inputs = [Some(crate::DataStream::Continuous(stream))];
                 graph.edit(id, &inputs, &THEMES[0].colours, None, None, None, false, false, None, |_, context| {
                     selector.on_gui_tick(Some(ui), context)
                 });

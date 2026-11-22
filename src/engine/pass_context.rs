@@ -7,7 +7,7 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use super::{Buffer, CommandSet, Edges, NodeId, ReadsValIn, SnapshotLite, ValueOf};
+use super::{Buffer, CommandSet, Edges, HasValue, NodeId, ReadsValIn, SnapshotLite};
 use crate::commands::{Address, Commands};
 
 /// Each pass covers this many seconds of data.
@@ -95,9 +95,10 @@ impl<'a, E: Edges> PassContext<'a, E> {
     /// connected.
     pub fn val_in<P: ReadsValIn>(&self, port: P) -> Option<&'a P::Value>
     where
-        P::Value: ValueOf<E> + 'a,
+        E: HasValue<P::Value>,
+        P::Value: 'a,
     {
-        P::Value::from_value(self.val_ins.get(port.index())?.as_ref()?)
+        E::from_value(self.val_ins.get(port.index())?.as_ref()?)
     }
 
     /// Passes can't change the graph themselves, so a node sends itself `command` here (to set one of its settings from

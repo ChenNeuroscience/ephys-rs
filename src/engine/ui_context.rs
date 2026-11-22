@@ -8,7 +8,9 @@ use std::sync::Arc;
 
 use eframe::egui;
 
-use super::{CommandOf, Edges, Includes, NodeId, ReadsValIn, Shared, SharedByNode, ValInCmdOutPort, ValueOf};
+use super::{
+    DataStreamInPorts, Edges, HasCommand, HasValue, Includes, NodeId, ReadsValIn, Shared, SharedByNode, ValInCmdOutPort,
+};
 use crate::commands::{Address, CmdSender, Commands};
 use crate::theme::Colours;
 
@@ -92,33 +94,41 @@ impl<'a, E: Edges> UiContext<'a, E> {
         }
     }
 
+    /// The window reads the data streams on its `DataStreamIn` ports with this, as the node's own `DataStreamIn` (`I`).
+    pub fn data_stream_in<I: DataStreamInPorts<E>>(&self) -> I {
+        I::of(self.inputs)
+    }
+
     /// The window reads what one of its `ValInCmdOut` or `ValIn` ports (`port`, a handle `ports!` made) sees with this, if the
     /// port's connected.
     pub fn val_in<P: ReadsValIn>(&self, port: P) -> Option<&'a P::Value>
     where
-        P::Value: ValueOf<E> + 'a,
+        E: HasValue<P::Value>,
+        P::Value: 'a,
     {
-        P::Value::from_value(self.val_ins.get(port.index())?.as_ref()?)
+        E::from_value(self.val_ins.get(port.index())?.as_ref()?)
     }
 
     /// The window sends `command` with this, through `port`, to the node at the other end: only one of the commands
     /// the port sends. The app delivers it once the window's drawn, so the window shows what changes the next frame.
-    pub fn cmd_out<V, S, C: CommandOf<E>, I>(&mut self, port: ValInCmdOutPort<V, S>, command: C)
+    pub fn cmd_out<V, S, C: std::fmt::Debug + Send + 'static, I>(&mut self, port: ValInCmdOutPort<V, S>, command: C)
     where
+        E: HasCommand<C>,
         S: Includes<C, I>,
     {
-        self.sent.push((port.index(), command.wrap()));
+        self.sent.push((port.index(), E::wrap(command)));
     }
 
     /// A window editing what `port` reads (a copy of it: `value`) sends it back, through the port, with this, as
     /// the command `set` makes of it, if it's changed. (The node at the other end sets the value it's a copy of.)
-    pub fn cmd_out_if_changed<V, S, C: CommandOf<E>, I>(
+    pub fn cmd_out_if_changed<V, S, C: std::fmt::Debug + Send + 'static, I>(
         &mut self,
         port: ValInCmdOutPort<V, S>,
         value: V,
         set: fn(V) -> C,
     ) where
-        V: ValueOf<E> + PartialEq + 'a,
+        E: HasValue<V> + HasCommand<C>,
+        V: crate::engine::EdgeType + PartialEq + 'a,
         S: Includes<C, I>,
     {
         if self.val_in(port).is_some_and(|read| *read != value) {
@@ -255,9 +265,10 @@ impl<'a, E: Edges> CommandContext<'a, E> {
     /// The node reads what `port` sees with this (see `UiContext::val_in`).
     pub fn val_in<P: ReadsValIn>(&self, port: P) -> Option<&'a P::Value>
     where
-        P::Value: ValueOf<E> + 'a,
+        E: HasValue<P::Value>,
+        P::Value: 'a,
     {
-        P::Value::from_value(self.val_ins.get(port.index())?.as_ref()?)
+        E::from_value(self.val_ins.get(port.index())?.as_ref()?)
     }
 
     /// See `UiContext::cmd_sender`.

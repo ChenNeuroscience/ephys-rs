@@ -2,8 +2,7 @@
 
 use eframe::egui;
 
-use crate::{DataStream, Edges};
-use ephys_rs::engine::{DataStreamInPorts, EdgeTypesEnum, ReadsValIn, UiContext};
+use ephys_rs::engine::{EdgeTypesEnum, Edges, ReadsValIn, UiContext};
 use ephys_rs::gui::widgets::{Icon, small_icon_button, small_toggle_button};
 use ephys_rs::theme::Colours;
 
@@ -43,10 +42,10 @@ pub fn combo<T: PartialEq + Copy>(
         .response
 }
 
-/// A node that needs something connected warns until something is. This is that warning, if none of `inputs` has a
-/// stream, asking for `what`.
-pub fn require_input(inputs: &impl DataStreamInPorts<Edges>, what: &str) -> Vec<String> {
-    if inputs.streams().iter().all(|i| i.is_none()) { vec![format!("Connect {what}")] } else { Vec::new() }
+/// A node that needs something connected warns until something is. This is that warning, asking for `what`, unless
+/// something's `connected` (see `DataStreamIn::any_connected`, which `ports!` makes).
+pub fn require_input(connected: bool, what: &str) -> Vec<String> {
+    if connected { Vec::new() } else { vec![format!("Connect {what}")] }
 }
 
 /// A round tick spacing (1, 2 or 5 times a power of ten) of at least `raw`.
@@ -121,7 +120,12 @@ pub fn mark_mixed(ui: &egui::Ui, button: &egui::Response) {
 
 /// A settings button, in the part of a view it's about, that opens the window of the node control `control` connects to:
 /// `what` is that node. It's greyed out while the control's not connected.
-pub fn open_settings_button(ui: &mut egui::Ui, context: &mut UiContext<Edges>, control: impl ReadsValIn, what: &str) {
+pub fn open_settings_button<E: Edges>(
+    ui: &mut egui::Ui,
+    context: &mut UiContext<E>,
+    control: impl ReadsValIn,
+    what: &str,
+) {
     let tip = format!("Open the {what}'s settings");
     let connected = context.val_in_connected(control);
     let button = ui.add_enabled_ui(connected, |ui| small_icon_button(ui, Icon::Settings, what, &tip)).inner;
@@ -147,8 +151,8 @@ pub fn inline_block(ui: &mut egui::Ui, salt: &str, separated: bool, add: impl Fn
 }
 
 /// Shows the incoming data streams, for settings panels of nodes that pass them on.
-pub fn input_summary(ui: &mut egui::Ui, inputs: &[Option<DataStream>]) {
-    for stream in inputs {
+pub fn input_summary<E: Edges>(ui: &mut egui::Ui, context: &UiContext<E>) {
+    for stream in context.inputs {
         match stream {
             Some(s) => ui.weak(format!("Input: {}", s.summary())),
             None => ui.weak("Input: not connected"),

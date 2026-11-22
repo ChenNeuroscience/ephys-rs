@@ -14,7 +14,6 @@ use std::time::Instant;
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 
-use crate::Edges;
 use ephys_rs::engine::UiContext;
 
 /// A viewer has a node choose a setting from the data (see the module's doc), or stop, by sending it this, as the
@@ -188,9 +187,9 @@ pub fn estimated_progress(started: Instant, seconds: f32) -> f32 {
 /// viewer reads): a button to start it, while acquiring (it needs data) and not recording, and while it's going, how
 /// far along it is, and a button to stop it. For the node's window, and a viewer's. This returns what was clicked: the
 /// node's window applies it (`DetectRequest::apply`), and a viewer sends it, as the `Detect` command.
-pub fn auto_detect_ui(
+pub fn auto_detect_ui<E: ephys_rs::engine::Edges>(
     ui: &mut egui::Ui,
-    context: &UiContext<Edges>,
+    context: &UiContext<E>,
     started: Option<Instant>,
     seconds: f32,
     tip: &str,

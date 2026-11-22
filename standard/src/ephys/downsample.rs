@@ -5,12 +5,11 @@
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 
-use crate::Edges;
 use crate::standard::ephys::Continuous;
 use crate::standard::widgets::{format_rate, input_summary, require_input, setting, settings_grid};
 use ephys_rs::engine::{
-    Buffers, Category, CommandContext, CommandSource, DataStreamInPorts, NoPorts, Node, NodeInfo, PassContext, Prepare,
-    PrepareContext, Prepared, TreeShake, UiContext,
+    Buffers, Category, CommandContext, CommandSource, NoPorts, Node, NodeInfo, PassContext, Prepare, PrepareContext,
+    Prepared, TreeShake, UiContext,
 };
 
 ephys_rs::ports! {
@@ -40,7 +39,7 @@ impl Downsample {
     }
 }
 
-impl Node<Edges> for Downsample {
+impl<E: PortEdges> Node<E> for Downsample {
     type Ports = Ports;
     const INFO: NodeInfo = NodeInfo {
         name: "Downsample",
@@ -60,17 +59,17 @@ impl Node<Edges> for Downsample {
         TreeShake::needing_all(inputs.contains(&true) && outputs.contains(&true), inputs.len())
     }
 
-    fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Downsampling, (), Self> {
+    fn prepare_for_snapshot(&self, context: &PrepareContext<E, Self>) -> Prepare<Downsampling, (), Self> {
         if context.same_streams() {
             return Prepared::nothing().into();
         }
-        let step = DataStreamIn::of(context.inputs).continuous.and_then(|input| self.step(input)).unwrap_or(0);
+        let step = context.data_stream_in::<DataStreamIn>().continuous.and_then(|input| self.step(input)).unwrap_or(0);
         Prepared::shared(Downsampling { step, so_far: 0 }).into()
     }
 
     fn process(
         &self,
-        _pass: &mut PassContext<Edges>,
+        _pass: &mut PassContext<E>,
         inputs: DataStreamIn<Buffers>,
         outputs: DataStreamOut<Buffers>,
         downsampling: &mut Downsampling,
@@ -97,7 +96,7 @@ impl Node<Edges> for Downsample {
         NoPorts
     }
 
-    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<Edges>) {
+    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<E>) {
         match command {}
     }
 
@@ -106,7 +105,7 @@ impl Node<Edges> for Downsample {
         DataStreamOut { downsampled: input.map(|input| Continuous { sample_rate: self.rate_hz, ..input }) }
     }
 
-    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<E>) {
         let Some(ui) = ui else { return };
         ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, context| {
             settings_grid(ui, |ui| {
@@ -114,12 +113,12 @@ impl Node<Edges> for Downsample {
                     ui.add(egui::DragValue::new(&mut node.rate_hz).range(1.0..=100_000.0).speed(10.0).suffix(" Hz"))
                 });
             });
-            input_summary(ui, context.inputs);
+            input_summary(ui, context);
         });
     }
 
     fn warnings(&self, inputs: &DataStreamIn) -> Vec<String> {
-        let mut warnings = require_input(inputs, "a continuous data stream");
+        let mut warnings = require_input(inputs.any_connected(), "a continuous data stream");
         if let Some(input) = inputs.continuous
             && self.step(input).is_none()
         {
@@ -155,6 +154,7 @@ fn keeping_from(so_far: u64, step: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Edges;
     use ephys_rs::engine::DataStreamType;
 
     /// Keeping every 6th of passes 4, 9 and 5 samples long keeps samples 0, 6 and 12 (of 18), on each channel.
@@ -163,8 +163,8 @@ mod tests {
         let node = Downsample { rate_hz: 5000.0 };
         let input = Continuous { channels: 2, sample_rate: 30000.0 };
         let inputs = DataStreamIn { continuous: Some(input) };
-        let mut downsampling = ephys_rs::engine::fresh_state(&node, &inputs);
-        let output = node.output_streams(&inputs).downsampled.expect("a 5 kHz stream");
+        let mut downsampling = ephys_rs::engine::fresh_state::<Edges, _>(&node, &inputs);
+        let output = Node::<Edges>::output_streams(&node, &inputs).downsampled.expect("a 5 kHz stream");
         assert_eq!(output.sample_rate, 5000.0);
         let (mut so_far, mut kept) = (0, vec![Vec::new(); 2]);
         for len in [4usize, 9, 5] {
@@ -178,7 +178,7 @@ mod tests {
             so_far += len;
             let mut out = output.buffer(0.02);
             let (inputs, outputs) = (DataStreamIn { continuous: Some(&data) }, DataStreamOut { downsampled: &mut out });
-            node.process(&mut PassContext::new(0, 0.02), inputs, outputs, &mut downsampling, &mut ());
+            node.process(&mut PassContext::<Edges>::new(0, 0.02), inputs, outputs, &mut downsampling, &mut ());
             for (channel, kept) in kept.iter_mut().enumerate() {
                 kept.extend_from_slice(out.channel(channel));
             }
@@ -190,9 +190,9 @@ mod tests {
     fn the_input_must_be_a_multiple_of_its_rate() {
         let node = Downsample { rate_hz: 5000.0 };
         let input = |hz| DataStreamIn { continuous: Some(Continuous { channels: 1, sample_rate: hz }) };
-        assert!(node.warnings(&input(30000.0)).is_empty());
-        assert!(node.warnings(&input(5000.0)).is_empty(), "as it is");
-        assert_eq!(node.warnings(&input(25600.0)).len(), 1);
-        assert!(node.output_streams(&input(25600.0)).downsampled.is_none());
+        assert!(Node::<Edges>::warnings(&node, &input(30000.0)).is_empty());
+        assert!(Node::<Edges>::warnings(&node, &input(5000.0)).is_empty(), "as it is");
+        assert_eq!(Node::<Edges>::warnings(&node, &input(25600.0)).len(), 1);
+        assert!(Node::<Edges>::output_streams(&node, &input(25600.0)).downsampled.is_none());
     }
 }

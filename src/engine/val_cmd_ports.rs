@@ -15,7 +15,12 @@
 use std::fmt::Debug;
 use std::marker::PhantomData;
 
-use super::{CommandKind, CommandOf, Edges, NoPorts, Port, ValueOf};
+use super::{CommandKind, EdgeType, Edges, HasCommand, HasValue, NoPorts, Port};
+
+/// Each command is a type of its own, holding what it carries (see `HasCommand`).
+pub trait Command: std::fmt::Debug + Send + 'static {}
+
+impl<T: std::fmt::Debug + Send + 'static> Command for T {}
 
 /// A port lists the commands it takes or sends as a tuple of their types. This lists their kinds, for the graph (see
 /// `Port::commands`).
@@ -29,27 +34,38 @@ impl<E: Edges> CommandList<E> for () {
     }
 }
 
-impl<E: Edges, A: CommandOf<E>> CommandList<E> for (A,) {
+impl<E: HasCommand<A>, A: Command> CommandList<E> for (A,) {
     fn kinds() -> Vec<CommandKind<E>> {
-        vec![A::KIND]
+        vec![<E as HasCommand<A>>::KIND]
     }
 }
 
-impl<E: Edges, A: CommandOf<E>, B: CommandOf<E>> CommandList<E> for (A, B) {
+impl<E: HasCommand<A> + HasCommand<B>, A: Command, B: Command> CommandList<E> for (A, B) {
     fn kinds() -> Vec<CommandKind<E>> {
-        vec![A::KIND, B::KIND]
+        vec![<E as HasCommand<A>>::KIND, <E as HasCommand<B>>::KIND]
     }
 }
 
-impl<E: Edges, A: CommandOf<E>, B: CommandOf<E>, C: CommandOf<E>> CommandList<E> for (A, B, C) {
+impl<E, A: Command, B: Command, C: Command> CommandList<E> for (A, B, C)
+where
+    E: HasCommand<A> + HasCommand<B> + HasCommand<C>,
+{
     fn kinds() -> Vec<CommandKind<E>> {
-        vec![A::KIND, B::KIND, C::KIND]
+        vec![<E as HasCommand<A>>::KIND, <E as HasCommand<B>>::KIND, <E as HasCommand<C>>::KIND]
     }
 }
 
-impl<E: Edges, A: CommandOf<E>, B: CommandOf<E>, C: CommandOf<E>, D: CommandOf<E>> CommandList<E> for (A, B, C, D) {
+impl<E, A: Command, B: Command, C: Command, D: Command> CommandList<E> for (A, B, C, D)
+where
+    E: HasCommand<A> + HasCommand<B> + HasCommand<C> + HasCommand<D>,
+{
     fn kinds() -> Vec<CommandKind<E>> {
-        vec![A::KIND, B::KIND, C::KIND, D::KIND]
+        vec![
+            <E as HasCommand<A>>::KIND,
+            <E as HasCommand<B>>::KIND,
+            <E as HasCommand<C>>::KIND,
+            <E as HasCommand<D>>::KIND,
+        ]
     }
 }
 
@@ -123,6 +139,11 @@ impl<V, S> ValInCmdOutPort<V, S> {
     pub const fn new(index: usize) -> Self {
         ValInCmdOutPort { index, types: PhantomData }
     }
+
+    /// The port's number, as the node numbers them (see `new`).
+    pub const fn index(self) -> usize {
+        self.index
+    }
 }
 
 impl<V> ValInPort<V> {
@@ -130,6 +151,11 @@ impl<V> ValInPort<V> {
     #[doc(hidden)]
     pub const fn new(index: usize) -> Self {
         ValInPort { index, types: PhantomData }
+    }
+
+    /// The port's number, as the node numbers them (see `ValInCmdOutPort::new`).
+    pub const fn index(self) -> usize {
+        self.index
     }
 }
 
@@ -153,12 +179,12 @@ impl<V> Copy for ValInPort<V> {}
 /// with this.
 pub trait ReadsValIn: Copy {
     /// The type of value the port reads.
-    type Value;
+    type Value: EdgeType;
     /// The port's number, as the node numbers them (see `ValInCmdOutPort::new`).
     fn index(self) -> usize;
 }
 
-impl<V, S> ReadsValIn for ValInCmdOutPort<V, S> {
+impl<V: EdgeType, S> ReadsValIn for ValInCmdOutPort<V, S> {
     type Value = V;
 
     fn index(self) -> usize {
@@ -166,7 +192,7 @@ impl<V, S> ReadsValIn for ValInCmdOutPort<V, S> {
     }
 }
 
-impl<V> ReadsValIn for ValInPort<V> {
+impl<V: EdgeType> ReadsValIn for ValInPort<V> {
     type Value = V;
 
     fn index(self) -> usize {
@@ -180,15 +206,15 @@ pub trait ValInPortOf<E: Edges> {
     fn port(id: &'static str, name: &'static str, flipped: bool) -> Port<E>;
 }
 
-impl<E: Edges, V: ValueOf<E>, S: CommandList<E>> ValInPortOf<E> for ValInCmdOutPort<V, S> {
+impl<E: HasValue<V>, V: EdgeType, S: CommandList<E>> ValInPortOf<E> for ValInCmdOutPort<V, S> {
     fn port(id: &'static str, name: &'static str, flipped: bool) -> Port<E> {
-        Port::ValInCmdOut { name, id, value_kind: V::KIND, commands: S::kinds(), flipped }
+        Port::ValInCmdOut { name, id, value_kind: <E as HasValue<V>>::KIND, commands: S::kinds(), flipped }
     }
 }
 
-impl<E: Edges, V: ValueOf<E>> ValInPortOf<E> for ValInPort<V> {
+impl<E: HasValue<V>, V: EdgeType> ValInPortOf<E> for ValInPort<V> {
     fn port(id: &'static str, name: &'static str, flipped: bool) -> Port<E> {
-        Port::ValIn { name, id, value_kind: V::KIND, flipped }
+        Port::ValIn { name, id, value_kind: <E as HasValue<V>>::KIND, flipped }
     }
 }
 

@@ -8,6 +8,8 @@
 //! - `ValInCmdOut` and `ValIn`: a handle to each port reading another node's value (`ValInCmdOut::gains`), for the
 //!   contexts to read and command through.
 //! - `Ports`, which the node names as its `Node::Ports`, gathering them for the engine (`PortSet`).
+//! - `PortEdges`: what a program's edges must have for the node (`impl<E: PortEdges> Node<E> for MyNode`), so a node
+//!   works in any program listing the types its ports carry, and a program lists only the types its nodes need.
 //!
 //! The graph numbers each role's ports, in the order they're declared (and the node numbers its `ValInCmdOut` and
 //! `ValIn` ports together, as it reads values through them); saved graphs name ports by their fields' names instead
@@ -56,7 +58,7 @@ impl<E: Edges> PortSet<E> for NoPorts {
 /// ```
 ///
 /// Each port's typed by the data stream or value it carries, and a `ValOutCmdIn` or `ValInCmdOut` port by the commands
-/// it takes or sends, as a tuple of command types in scope (see `CommandOf`). A port's named for people by its field's
+/// it takes or sends, as a tuple of command types in scope (see `HasCommand`). A port's named for people by its field's
 /// name, or the text after it. After that:
 ///
 /// - `take`: the node takes a `DataStreamIn` port's buffer (see `BufferUsage::takes`);
@@ -75,7 +77,10 @@ impl<E: Edges> PortSet<E> for NoPorts {
 ///   implementing `CommandSet` (a command can be taken through only one `ValOutCmdIn` port, so it's listed once);
 /// - `ValInCmdOut` and `ValIn`: unit structs with a handle to each such port, as a constant named as it
 ///   (`ValInCmdOut::gains: ValInCmdOutPort<Gains, (SetGains, Detect)>`);
-/// - `Ports`, implementing `PortSet`.
+/// - `Ports`, implementing `PortSet`;
+/// - `PortEdges`, a trait gathering what a program's edges must have for the node's ports (`HasDataStream<T>`,
+///   `HasValue<V>` and `HasCommand<C>` for each type they carry), implemented for any that do: so the node's `Node` is
+///   `impl<E: PortEdges> Node<E> for MyNode`, for any program whose `edge_types!` lists them.
 ///
 /// Saved graphs name each port by its field's name, with its role (`Port::id`), never by the text it's shown with, so
 /// renaming a field breaks existing files (unless a config patch renames the edges' ends), but reordering doesn't.
@@ -114,15 +119,14 @@ macro_rules! ports {
         $(= $name:literal)? $($flipped:ident)?, $($rest:tt)*
     ) => {
         $crate::ports!(@munch [$($i)*] [$($o)*] [$($vo)*]
-            [$($vi)* { ($(#[$m])*) $field ValInCmdOut ($crate::engine::ValInCmdOutPort<$value, ($($command,)*)>)
-                ($($name)?) ($($flipped)?) }] $($rest)*
+            [$($vi)* { ($(#[$m])*) $field ValInCmdOut ($value) ($($command),*) ($($name)?) ($($flipped)?) }] $($rest)*
         );
     };
     (@munch [$($i:tt)*] [$($o:tt)*] [$($vo:tt)*] [$($vi:tt)*]
         $(#[$m:meta])* $field:ident : ValIn < $value:ty > $(= $name:literal)? $($flipped:ident)?, $($rest:tt)*
     ) => {
         $crate::ports!(@munch [$($i)*] [$($o)*] [$($vo)*]
-            [$($vi)* { ($(#[$m])*) $field ValIn ($crate::engine::ValInPort<$value>) ($($name)?) ($($flipped)?) }]
+            [$($vi)* { ($(#[$m])*) $field ValIn ($value) () ($($name)?) ($($flipped)?) }]
             $($rest)*
         );
     };
@@ -136,6 +140,7 @@ macro_rules! ports {
         $crate::ports!(@val_out_cmd_in $($vo)*);
         $crate::ports!(@cmd_in $($vo)*);
         $crate::ports!(@val_in $($vi)*);
+        $crate::ports!(@port_edges [$($i)*] [$($o)*] [$($vo)*] [$($vi)*]);
 
         /// The node's ports (see `ephys_rs::engine::ports`), which it names as its `Node::Ports`.
         pub struct Ports;
@@ -219,9 +224,16 @@ macro_rules! ports {
                 }
             }
 
+            impl DataStreamIn {
+                /// Whether anything's connected to any of the node's `DataStreamIn` ports.
+                pub fn any_connected(&self) -> bool {
+                    false $(|| self.$field.is_some())+
+                }
+            }
+
             impl<E: $crate::engine::Edges> $crate::engine::DataStreamInPorts<E> for DataStreamIn
             where
-                $($ty: $crate::engine::StreamOf<E>,)+
+                $(E: $crate::engine::HasDataStream<$ty>,)+
             {
                 type View<'a> = DataStreamIn<$crate::engine::Buffers<'a>>;
                 const TAKES: &'static [bool] = &[$($crate::ports!(@takes $role)),+];
@@ -231,7 +243,7 @@ macro_rules! ports {
                         $crate::engine::Port::data_stream_in(
                             stringify!($field),
                             $crate::ports!(@name $field $($name)?),
-                            <$ty as $crate::engine::StreamOf<E>>::KIND,
+                            <E as $crate::engine::HasDataStream<$ty>>::KIND,
                         )
                     ),+]
                 }
@@ -242,12 +254,12 @@ macro_rules! ports {
                         $($field: streams
                             .next()
                             .and_then(Option::as_ref)
-                            .and_then(<$ty as $crate::engine::StreamOf<E>>::from_stream),)+
+                            .and_then(<E as $crate::engine::HasDataStream<$ty>>::from_stream),)+
                     }
                 }
 
                 fn streams(&self) -> Vec<Option<E::DataStream>> {
-                    vec![$(self.$field.map($crate::engine::StreamOf::<E>::wrap)),+]
+                    vec![$(self.$field.map(<E as $crate::engine::HasDataStream<$ty>>::wrap)),+]
                 }
 
                 fn view<'a>(
@@ -304,7 +316,7 @@ macro_rules! ports {
 
             impl<E: $crate::engine::Edges> $crate::engine::DataStreamOutPorts<E> for DataStreamOut
             where
-                $($ty: $crate::engine::StreamOf<E>,)+
+                $(E: $crate::engine::HasDataStream<$ty>,)+
             {
                 type View<'a> = DataStreamOut<$crate::engine::Buffers<'a>>;
                 const IN_PLACE: &'static [Option<usize>] = &[$($crate::ports!(@in_place $($input)?)),+];
@@ -314,8 +326,8 @@ macro_rules! ports {
                         $crate::engine::Port::data_stream_out(
                             stringify!($field),
                             $crate::ports!(@name $field $($name)?),
-                            <$ty as $crate::engine::StreamOf<E>>::KIND,
-                            self.$field.map($crate::engine::StreamOf::<E>::wrap),
+                            <E as $crate::engine::HasDataStream<$ty>>::KIND,
+                            self.$field.map(<E as $crate::engine::HasDataStream<$ty>>::wrap),
                         )
                     ),+]
                 }
@@ -352,14 +364,14 @@ macro_rules! ports {
 
         impl<E: $crate::engine::Edges> $crate::engine::ValOutCmdInPorts<E> for ValOutCmdIn
         where
-            $($value: $crate::engine::ValueOf<E>, ($($command,)*): $crate::engine::CommandList<E>,)+
+            $(E: $crate::engine::HasValue<$value>, ($($command,)*): $crate::engine::CommandList<E>,)+
         {
             fn ports() -> Vec<$crate::engine::Port<E>> {
                 vec![$(
                     $crate::engine::Port::ValOutCmdIn {
                         name: $crate::ports!(@name $field $($name)?),
                         id: stringify!($field),
-                        value_kind: <$value as $crate::engine::ValueOf<E>>::KIND,
+                        value_kind: <E as $crate::engine::HasValue<$value>>::KIND,
                         commands: <($($command,)*) as $crate::engine::CommandList<E>>::kinds(),
                         flipped: $crate::ports!(@flipped $($flipped)?),
                     }
@@ -367,7 +379,7 @@ macro_rules! ports {
             }
 
             fn values(self) -> Vec<E::PublishedValue> {
-                vec![$($crate::engine::ValueOf::<E>::wrap(self.$field)),+]
+                vec![$(<E as $crate::engine::HasValue<$value>>::wrap(self.$field)),+]
             }
         }
     };
@@ -389,11 +401,11 @@ macro_rules! ports {
 
         impl<E: $crate::engine::Edges> $crate::engine::CommandSet<E> for CmdIn
         where
-            $($($command: $crate::engine::CommandOf<E>,)*)*
+            $($(E: $crate::engine::HasCommand<$command>,)*)*
         {
             fn from_command(command: E::Command) -> Result<Self, E::Command> {
                 $($(
-                    let command = match <$command as $crate::engine::CommandOf<E>>::from_command(command) {
+                    let command = match <E as $crate::engine::HasCommand<$command>>::from_command(command) {
                         Ok(command) => return Ok(CmdIn::$command(command)),
                         Err(command) => command,
                     };
@@ -403,13 +415,15 @@ macro_rules! ports {
 
             fn wrap(self) -> E::Command {
                 match self {
-                    $($(CmdIn::$command(command) => $crate::engine::CommandOf::<E>::wrap(command),)*)*
+                    $($(CmdIn::$command(command) => <E as $crate::engine::HasCommand<$command>>::wrap(command),)*)*
                 }
             }
         }
     };
 
-    (@val_in $({ ($($m:tt)*) $field:ident $role:ident ($handle:ty) ($($name:literal)?) ($($flipped:ident)?) })*) => {
+    (@val_in $(
+        { ($($m:tt)*) $field:ident $role:ident ($value:ty) ($($command:ident),*) ($($name:literal)?) ($($flipped:ident)?) }
+    )*) => {
         /// Handles to the node's `ValInCmdOut` ports (see `ephys_rs::engine::ports`).
         #[allow(dead_code, reason = "a node without such ports has none")]
         pub struct ValInCmdOut;
@@ -425,17 +439,18 @@ macro_rules! ports {
                 #[allow(non_upper_case_globals, dead_code)]
                 impl $role {
                     $($m)*
-                    pub const $field: $handle = <$handle>::new(Index::$field as usize);
+                    pub const $field: $crate::ports!(@handle $role $value, $($command),*) =
+                        <$crate::ports!(@handle $role $value, $($command),*)>::new(Index::$field as usize);
                 }
             )*
 
             impl<E: $crate::engine::Edges> $crate::engine::ValInPortList<E> for ValIn
             where
-                $($handle: $crate::engine::ValInPortOf<E>,)*
+                $($crate::ports!(@handle $role $value, $($command),*): $crate::engine::ValInPortOf<E>,)*
             {
                 fn ports() -> Vec<$crate::engine::Port<E>> {
                     vec![$(
-                        <$handle as $crate::engine::ValInPortOf<E>>::port(
+                        <$crate::ports!(@handle $role $value, $($command),*) as $crate::engine::ValInPortOf<E>>::port(
                             stringify!($field),
                             $crate::ports!(@name $field $($name)?),
                             $crate::ports!(@flipped $($flipped)?),
@@ -446,6 +461,34 @@ macro_rules! ports {
         };
     };
 
+    (@handle ValInCmdOut $value:ty, $($command:ident),*) => { $crate::engine::ValInCmdOutPort<$value, ($($command,)*)> };
+    (@handle ValIn $value:ty,) => { $crate::engine::ValInPort<$value> };
+    (@port_edges
+        [$({ ($($im:tt)*) $ifield:ident ($ity:ty) ($($iname:literal)?) $irole:ident })*]
+        [$({ ($($om:tt)*) $ofield:ident ($oty:ty) ($($oname:literal)?) ($($oinput:ident)?) })*]
+        [$({ ($($vm:tt)*) $vfield:ident ($vty:ty) ($($vc:ident),*) ($($vname:literal)?) ($($vfl:ident)?) })*]
+        [$({ ($($wm:tt)*) $wfield:ident $wrole:ident ($wty:ty) ($($wc:ident),*) ($($wname:literal)?) ($($wfl:ident)?) })*]
+    ) => {
+        /// The edge types the node's ports carry, which a program's edges must have for the node (see
+        /// `ephys_rs::engine::ports`): the node's `Node` is implemented for any program's edges implementing this.
+        pub trait PortEdges:
+            $crate::engine::Edges
+            $(+ $crate::engine::HasDataStream<$ity>)*
+            $(+ $crate::engine::HasDataStream<$oty>)*
+            $(+ $crate::engine::HasValue<$vty> $(+ $crate::engine::HasCommand<$vc>)*)*
+            $(+ $crate::engine::HasValue<$wty> $(+ $crate::engine::HasCommand<$wc>)*)*
+        {
+        }
+
+        impl<E> PortEdges for E where
+            E: $crate::engine::Edges
+                $(+ $crate::engine::HasDataStream<$ity>)*
+                $(+ $crate::engine::HasDataStream<$oty>)*
+                $(+ $crate::engine::HasValue<$vty> $(+ $crate::engine::HasCommand<$vc>)*)*
+                $(+ $crate::engine::HasValue<$wty> $(+ $crate::engine::HasCommand<$wc>)*)*
+        {
+        }
+    };
     (@name $field:ident $name:literal) => { $name };
     (@name $field:ident) => { stringify!($field) };
     (@flipped flipped) => { true };

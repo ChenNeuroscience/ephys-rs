@@ -8,10 +8,9 @@
 //! referenced data, it outputs the references themselves: a channel each.
 
 use eframe::egui::{self, Color32, RichText};
-use ephys_rs::engine::{Buffers, CommandContext, CommandSource, DataStreamInPorts, TreeShake};
+use ephys_rs::engine::{Buffers, CommandContext, CommandSource, TreeShake};
 use serde::{Deserialize, Serialize};
 
-use crate::Edges;
 use crate::standard::ephys::{Continuous, ContinuousBuffer};
 use crate::standard::medians::Medians;
 use crate::standard::widgets::{all_checkbox, input_summary, require_input, setting, settings_grid};
@@ -367,7 +366,7 @@ impl Referencing {
     }
 }
 
-impl Node<Edges> for Reference {
+impl<E: PortEdges> Node<E> for Reference {
     type Ports = Ports;
     const INFO: NodeInfo = NodeInfo {
         name: "Reference",
@@ -391,7 +390,7 @@ impl Node<Edges> for Reference {
         ValOutCmdIn { reference: self.clone() }
     }
 
-    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<Edges>) {
+    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<E>) {
         match command {
             CmdIn::SetReference(SetReference(reference)) => *self = reference,
         }
@@ -399,7 +398,7 @@ impl Node<Edges> for Reference {
 
     fn process(
         &self,
-        _pass: &mut PassContext<Edges>,
+        _pass: &mut PassContext<E>,
         inputs: DataStreamIn<Buffers>,
         outputs: DataStreamOut<Buffers>,
         _: &mut (),
@@ -443,10 +442,10 @@ impl Node<Edges> for Reference {
         DataStreamOut { referenced: inputs.continuous, reference }
     }
 
-    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<E>) {
         let Some(ui) = ui else { return };
         ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, context| {
-            let count = DataStreamIn::of(context.inputs).continuous.map_or(64, |c| c.channels);
+            let count = context.data_stream_in::<DataStreamIn>().continuous.map_or(64, |c| c.channels);
             let mut remove = None;
             for index in 0..node.list.len() {
                 let reference = &mut node.list[index];
@@ -485,12 +484,12 @@ impl Node<Edges> for Reference {
             ui.add_space(6.0);
             uses_ui(ui, node, count);
             ui.add_space(4.0);
-            input_summary(ui, context.inputs);
+            input_summary(ui, context);
         });
     }
 
     fn warnings(&self, inputs: &DataStreamIn) -> Vec<String> {
-        let mut warnings = require_input(inputs, "a continuous data stream");
+        let mut warnings = require_input(inputs.any_connected(), "a continuous data stream");
         if let Some(c) = inputs.continuous {
             for (index, reference) in self.list.iter().enumerate() {
                 for (what, text) in [("channels", &reference.channels), ("users", &reference.used_by)] {
@@ -632,7 +631,9 @@ pub fn channels_ui(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Edges;
     use crate::NodeType;
+    use ephys_rs::engine::DataStreamInPorts;
     use ephys_rs::engine::{DataStreamType, PASS_DURATION};
 
     /// Runs one pass of `channels` (each a few samples) through `reference`.
@@ -647,7 +648,7 @@ mod tests {
         let mut references = Continuous { channels: reference.references() as u32, ..stream }.buffer(PASS_DURATION);
         let inputs = DataStreamIn { continuous: Some(&input) };
         let outputs = DataStreamOut { referenced: &mut output, reference: &mut references };
-        let mut pass = PassContext::new(0, PASS_DURATION);
+        let mut pass = PassContext::<Edges>::new(0, PASS_DURATION);
         reference.process(&mut pass, inputs, outputs, &mut (), &mut Referencing::default());
         (0..channels.len()).map(|c| output.channel(c).to_vec()).collect()
     }
@@ -716,7 +717,7 @@ mod tests {
             made(2, Method::Mean, "3", "all"),
         ]);
         assert_eq!((reference.references(), of(vec![]).references()), (3, 0));
-        let outputs = reference.output_streams(&DataStreamIn { continuous: Some(stream) });
+        let outputs = Node::<Edges>::output_streams(&reference, &DataStreamIn { continuous: Some(stream) });
         assert_eq!(outputs.reference, Some(Continuous { channels: 3, ..stream }));
         let mut input = stream.buffer(PASS_DURATION);
         input.len = 2;
@@ -727,7 +728,7 @@ mod tests {
             (stream.buffer(PASS_DURATION), Continuous { channels: 3, ..stream }.buffer(PASS_DURATION));
         let inputs = DataStreamIn { continuous: Some(&input) };
         let outputs = DataStreamOut { referenced: &mut referenced, reference: &mut references };
-        let mut pass = PassContext::new(0, PASS_DURATION);
+        let mut pass = PassContext::<Edges>::new(0, PASS_DURATION);
         reference.process(&mut pass, inputs, outputs, &mut (), &mut Referencing::default());
         assert_eq!(references.channel(0), &[1.0, 2.0][..], "even if nothing uses it");
         assert_eq!(references.channel(1), &[0.0, 0.0][..], "of nothing");
@@ -813,7 +814,9 @@ mod tests {
         if let Some(Nodes::Reference(reference)) = graph.get_mut(id).map(|e| &mut e.node) {
             reference.list[0].channels = "1-3, 5-8, 13".into();
         }
-        let inputs = DataStreamIn { continuous: Some(Continuous { channels: 16, sample_rate: 30000.0 }) }.streams();
+        let inputs = DataStreamInPorts::<Edges>::streams(&DataStreamIn {
+            continuous: Some(Continuous { channels: 16, sample_rate: 30000.0 }),
+        });
         let mut harness = egui_kittest::Harness::builder().with_size([360.0, 300.0]).wgpu().build_ui_state(
             |ui, graph: &mut Graph<Nodes>| {
                 graph.edit(id, &inputs, &THEMES[0].colours, None, None, None, false, false, None, |node, context| {

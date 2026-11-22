@@ -20,9 +20,8 @@ use std::io;
 
 use serde::{Deserialize, Serialize};
 
-use crate::Edges;
 use crate::standard::ephys::{Continuous, ContinuousBuffer, Events, EventsBuffer};
-use ephys_rs::engine::{DataStreamType, Node, PASS_DURATION};
+use ephys_rs::engine::{DataStreamType, PASS_DURATION};
 
 pub use fake::FakeBoard;
 #[cfg(test)]
@@ -264,7 +263,7 @@ pub const FAKE_ADDRESS: &str = "127.0.0.1:27031";
 /// Opens the board, finding out what it has. Its files are the Open Ephys GUI's, from where the global settings say
 /// now, so a change applies when it's next tried.
 pub fn open(source: &Source) -> io::Result<Box<dyn Board>> {
-    let settings = <node::AcquisitionBoard as Node<Edges>>::global_settings();
+    let settings = <OpenEphysSettings as ephys_rs::global_settings::GlobalSettingsSet>::current();
     Ok(match source {
         Source::Fake { address } => Box::new(FakeBoard::connect(address)?),
         Source::OpalKelly { board } => Box::new(opal_kelly::open(*board, &settings)?),

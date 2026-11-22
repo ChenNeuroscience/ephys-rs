@@ -26,7 +26,6 @@ use super::npy::Npy;
 use super::{
     Files, OnFinished, Status, Writing, after_recording, location_summary, recording_path, show_status, status_ui,
 };
-use crate::Edges;
 use crate::standard::ephys::board::EPHYS_MICROVOLTS_PER_BIT;
 use crate::standard::ephys::{Continuous, ContinuousBuffer, Event, Events, EventsBuffer};
 use crate::standard::other::run_command::{FileInput, ProcessFiles};
@@ -101,7 +100,7 @@ ephys_rs::ports! {
     after_recording: ValInCmdOut<FileInput, (ProcessFiles,)> = "after recording" flipped,
 }
 
-impl Node<Edges> for WriteRaw {
+impl<E: PortEdges> Node<E> for WriteRaw {
     type Ports = Ports;
     type State = Recorder;
     type WorkerState = ();
@@ -126,7 +125,7 @@ impl Node<Edges> for WriteRaw {
         NoPorts
     }
 
-    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<Edges>) {
+    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<E>) {
         match command {}
     }
 
@@ -155,11 +154,11 @@ impl Node<Edges> for WriteRaw {
 
     /// While recording, opens the files and starts the thread to write them (carrying on with them through the
     /// recording's snapshots, as long as its inputs are the same).
-    fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Recorder, (), Self> {
+    fn prepare_for_snapshot(&self, context: &PrepareContext<E, Self>) -> Prepare<Recorder, (), Self> {
         if context.same_streams() && !context.recording_changed {
             return Prepared::nothing().into();
         }
-        let DataStreamIn { continuous, events } = DataStreamIn::of(context.inputs);
+        let DataStreamIn { continuous, events } = context.data_stream_in::<DataStreamIn>();
         let writing = context.recording.map(|recording| {
             let folder = recording_path(recording.base_directory(), recording.start_requested_date());
             let files = RawFiles::open(&folder, continuous, events);
@@ -172,7 +171,7 @@ impl Node<Edges> for WriteRaw {
     /// While recording, hands the pass's data to the writer's thread, swapping the buffers it's in for a chunk's.
     fn process(
         &self,
-        pass: &mut PassContext<Edges>,
+        pass: &mut PassContext<E>,
         inputs: DataStreamIn<Buffers>,
         _: NoPorts,
         recorder: &mut Recorder,
@@ -202,12 +201,12 @@ impl Node<Edges> for WriteRaw {
         show_status(recorder.writing.as_ref(), pass.shared::<Pool<Status>>(), pass.sequence);
     }
 
-    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<E>) {
         let Some(ui) = ui else { return };
         ephys_rs::gui::node_window::standard(self, ui, context, |_, ui, context| {
             location_summary(ui, context.base_directory, "a folder");
             ui.add_space(4.0);
-            let recording: Vec<String> = DataStreamIn::ports()
+            let recording: Vec<String> = <DataStreamIn as DataStreamInPorts<E>>::ports()
                 .iter()
                 .zip(context.inputs)
                 .filter_map(|(input, stream)| stream.map(|s| format!("{}: {}", input.name(), s.summary())))
@@ -224,7 +223,7 @@ impl Node<Edges> for WriteRaw {
     }
 
     fn warnings(&self, inputs: &DataStreamIn) -> Vec<String> {
-        require_input(inputs, "something to record")
+        require_input(inputs.any_connected(), "something to record")
     }
 }
 

@@ -4,7 +4,7 @@
 //! small size, and what's selected can change without waiting for a new period. An alarm doesn't go off until it's seen
 //! a whole period.
 
-use ephys_rs::engine::{Buffers, DataStreamInPorts, TreeShake};
+use ephys_rs::engine::{Buffers, TreeShake};
 use std::collections::VecDeque;
 
 use eframe::egui;
@@ -12,7 +12,6 @@ use serde::{Deserialize, Serialize};
 
 use super::settings::alarms_ui;
 use super::{Alarm, AlarmKind, AlarmState, AlarmStates, Alarms, Phase, SetAlarms, Source};
-use crate::Edges;
 use crate::standard::ephys::{Continuous, Events};
 use crate::standard::spikes::Spikes;
 use crate::standard::tracking::Positions;
@@ -268,7 +267,7 @@ impl AlarmProcessor {
     }
 }
 
-impl Node<Edges> for AlarmProcessor {
+impl<E: PortEdges> Node<E> for AlarmProcessor {
     type Ports = Ports;
     type State = Watching;
     type WorkerState = ();
@@ -299,17 +298,17 @@ impl Node<Edges> for AlarmProcessor {
         ValOutCmdIn { alarms: self.alarms.clone() }
     }
 
-    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<Edges>) {
+    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<E>) {
         match command {
             CmdIn::SetAlarms(SetAlarms(alarms)) => self.alarms = alarms,
         }
     }
 
-    fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Watching, (), Self> {
+    fn prepare_for_snapshot(&self, context: &PrepareContext<E, Self>) -> Prepare<Watching, (), Self> {
         if context.same_streams() {
             return Prepared::nothing().into();
         }
-        let inputs = DataStreamIn::of(context.inputs);
+        let inputs = context.data_stream_in::<DataStreamIn>();
         let stream = streams(&inputs);
         let lfp_rate = inputs.lfp.map(|continuous| continuous.sample_rate as f64);
         let fps = inputs.positions.map(|positions| positions.fps as f64);
@@ -325,7 +324,7 @@ impl Node<Edges> for AlarmProcessor {
 
     fn process(
         &self,
-        pass: &mut PassContext<Edges>,
+        pass: &mut PassContext<E>,
         inputs: DataStreamIn<Buffers>,
         outputs: DataStreamOut<Buffers>,
         watching: &mut Watching,
@@ -352,21 +351,22 @@ impl Node<Edges> for AlarmProcessor {
         }
     }
 
-    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<E>) {
         let Some(ui) = ui else { return };
         ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, context| {
-            alarms_ui(ui, &mut node.alarms, streams(&DataStreamIn::of(context.inputs)));
+            alarms_ui(ui, &mut node.alarms, streams(&context.data_stream_in::<DataStreamIn>()));
         });
     }
 
     fn warnings(&self, inputs: &DataStreamIn) -> Vec<String> {
-        require_input(inputs, "something to watch")
+        require_input(inputs.any_connected(), "something to watch")
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Edges;
     use crate::standard::alarms::Selection;
     use crate::standard::ephys::{ContinuousBuffer, Event, EventsBuffer};
     use crate::standard::spikes::{Spike, SpikesBuffer};
@@ -409,7 +409,7 @@ mod tests {
     impl Run {
         fn new(alarms: Alarms, inputs: DataStreamIn) -> Self {
             let processor = AlarmProcessor { alarms };
-            let watching = ephys_rs::engine::fresh_state(&processor, &inputs);
+            let watching = ephys_rs::engine::fresh_state::<Edges, _>(&processor, &inputs);
             Run { processor, watching }
         }
 
@@ -417,7 +417,7 @@ mod tests {
         fn all(&mut self, input: Input, seconds: f64) -> Vec<AlarmState> {
             let mut output = AlarmStates::default().buffer(PASS_DURATION);
             for sequence in 0..(seconds / PASS_DURATION).round() as u64 {
-                let mut pass = PassContext::new(sequence, PASS_DURATION);
+                let mut pass = PassContext::<Edges>::new(sequence, PASS_DURATION);
                 let outputs = DataStreamOut { alarms: &mut output };
                 self.processor.process(&mut pass, input.alone(), outputs, &mut self.watching, &mut ());
             }

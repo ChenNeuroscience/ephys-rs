@@ -2,14 +2,11 @@
 //! run as second-order sections by sci-rs (a port of SciPy's `butter` and `sosfilt`).
 
 use eframe::egui;
-use ephys_rs::engine::{
-    Buffers, CommandContext, CommandSource, DataStreamInPorts, NoPorts, Prepare, PrepareContext, Prepared, TreeShake,
-};
+use ephys_rs::engine::{Buffers, CommandContext, CommandSource, NoPorts, Prepare, PrepareContext, Prepared, TreeShake};
 use sci_rs::signal::filter::design::{DigitalFilter, FilterBandType, FilterOutputType, Sos, butter_dyn};
 use sci_rs::signal::filter::sosfilt_item;
 use serde::{Deserialize, Serialize};
 
-use crate::Edges;
 use crate::standard::ephys::{Continuous, ContinuousBuffer};
 use crate::standard::widgets::format_rate;
 use crate::standard::widgets::{input_summary, require_input, setting, settings_grid};
@@ -35,7 +32,7 @@ impl Default for BandPassFilter {
     }
 }
 
-impl Node<Edges> for BandPassFilter {
+impl<E: PortEdges> Node<E> for BandPassFilter {
     type Ports = Ports;
     const INFO: NodeInfo = NodeInfo {
         name: "Band-pass Filter",
@@ -55,11 +52,11 @@ impl Node<Edges> for BandPassFilter {
     type UiState = ();
     type GlobalSettings = ();
 
-    fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Filters, (), Self> {
+    fn prepare_for_snapshot(&self, context: &PrepareContext<E, Self>) -> Prepare<Filters, (), Self> {
         if context.same_streams() {
             return Prepared::nothing().into();
         }
-        let Some(stream) = DataStreamIn::of(context.inputs).continuous else {
+        let Some(stream) = context.data_stream_in::<DataStreamIn>().continuous else {
             return Prepared::shared(Filters::default()).into();
         };
         let mut filters = Filters { channels: vec![Vec::new(); stream.channels as usize], ..Default::default() };
@@ -69,7 +66,7 @@ impl Node<Edges> for BandPassFilter {
 
     fn process(
         &self,
-        _pass: &mut PassContext<Edges>,
+        _pass: &mut PassContext<E>,
         inputs: DataStreamIn<Buffers>,
         outputs: DataStreamOut<Buffers>,
         filters: &mut Filters,
@@ -91,7 +88,7 @@ impl Node<Edges> for BandPassFilter {
         NoPorts
     }
 
-    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<Edges>) {
+    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<E>) {
         match command {}
     }
 
@@ -99,7 +96,7 @@ impl Node<Edges> for BandPassFilter {
         DataStreamOut { filtered: inputs.continuous }
     }
 
-    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<E>) {
         let Some(ui) = ui else { return };
         ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, context| {
             settings_grid(ui, |ui| {
@@ -111,12 +108,12 @@ impl Node<Edges> for BandPassFilter {
                 });
                 setting(ui, "Order", |ui| ui.add(egui::DragValue::new(&mut node.order).range(1..=8)));
             });
-            input_summary(ui, context.inputs);
+            input_summary(ui, context);
         });
     }
 
     fn warnings(&self, inputs: &DataStreamIn) -> Vec<String> {
-        let mut warnings = require_input(inputs, "a continuous data stream");
+        let mut warnings = require_input(inputs.any_connected(), "a continuous data stream");
         if self.low_hz >= self.high_hz {
             warnings.push("The low cut-off must be below the high cut-off".into());
         }

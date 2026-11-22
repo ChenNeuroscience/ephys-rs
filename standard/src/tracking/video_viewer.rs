@@ -2,15 +2,14 @@ use eframe::egui::{self, Align2, Color32, FontId, Stroke};
 use serde::{Deserialize, Serialize};
 
 use super::tracker_view::{FrameView, show_frame};
-use crate::Edges;
 use crate::standard::plots;
 use crate::standard::pool::{Pool, WINDOW_BUFFERS};
 use crate::standard::tracking::overlay::Overlays;
 use crate::standard::tracking::{Video, VideoBuffer};
 use crate::standard::widgets::require_input;
 use ephys_rs::engine::{
-    Buffers, Category, CommandContext, CommandSource, DataStreamInPorts, DataStreamType, EdgeType, NoPorts, Node,
-    NodeInfo, PASS_DURATION, PassContext, UiContext,
+    Buffers, Category, CommandContext, CommandSource, DataStreamType, EdgeType, NoPorts, Node, NodeInfo, PASS_DURATION,
+    PassContext, UiContext,
 };
 
 ephys_rs::ports! {
@@ -24,7 +23,7 @@ pub struct VideoViewer {
     pub crosshair: bool,
 }
 
-impl Node<Edges> for VideoViewer {
+impl<E: PortEdges> Node<E> for VideoViewer {
     type Ports = Ports;
     const INFO: NodeInfo =
         NodeInfo { name: "Video Viewer", category: Category::Visualisation, description: "The latest video frame." };
@@ -42,7 +41,7 @@ impl Node<Edges> for VideoViewer {
         NoPorts
     }
 
-    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<Edges>) {
+    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<E>) {
         match command {}
     }
 
@@ -57,14 +56,7 @@ impl Node<Edges> for VideoViewer {
     }
 
     /// Swaps the pass's frames (if it has any) into the pool its window reads from: nothing's copied.
-    fn process(
-        &self,
-        pass: &mut PassContext<Edges>,
-        inputs: DataStreamIn<Buffers>,
-        _: NoPorts,
-        _: &mut (),
-        _: &mut (),
-    ) {
+    fn process(&self, pass: &mut PassContext<E>, inputs: DataStreamIn<Buffers>, _: NoPorts, _: &mut (), _: &mut ()) {
         let Some(video) = inputs.video else { return };
         if video.frames == 0 {
             return;
@@ -75,14 +67,14 @@ impl Node<Edges> for VideoViewer {
         pool.send_as_of(sequence, frames);
     }
 
-    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<E>) {
         let Some(ui) = ui else { return };
         let locked = context.locked;
         ui.horizontal(|ui| {
             ui.add_enabled_ui(!locked, |ui| ui.checkbox(&mut self.crosshair, "Crosshair"));
             context.node_toolbar(ui);
         });
-        let Some(stream) = DataStreamIn::of(context.inputs).video else {
+        let Some(stream) = context.data_stream_in::<DataStreamIn>().video else {
             plots::unconnected(ui, context.theme, "Connect video to view it");
             return;
         };
@@ -114,6 +106,6 @@ impl Node<Edges> for VideoViewer {
     }
 
     fn warnings(&self, inputs: &DataStreamIn) -> Vec<String> {
-        require_input(inputs, "video")
+        require_input(inputs.any_connected(), "video")
     }
 }

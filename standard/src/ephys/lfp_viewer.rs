@@ -20,10 +20,9 @@
 //!   them.
 
 use eframe::egui::{self, Align2, FontId, Pos2, Rect, Sense, Shape, Stroke};
-use ephys_rs::engine::{Buffers, DataStreamInPorts, NoPorts, TreeShake};
+use ephys_rs::engine::{Buffers, NoPorts, TreeShake};
 use serde::{Deserialize, Serialize};
 
-use crate::Edges;
 use crate::standard::auto_detect::{Detect, auto_detect_ui};
 use crate::standard::ephys::reference::{
     Computation, Method, Reference, SetReference, format_channels, parse_channels, reference_colour,
@@ -280,7 +279,7 @@ ephys_rs::ports! {
     reference: ValInCmdOut<Reference, (SetReference,)>,
 }
 
-impl Node<Edges> for LfpViewer {
+impl<E: PortEdges> Node<E> for LfpViewer {
     type Ports = Ports;
     type State = Traces;
     type WorkerState = ();
@@ -312,17 +311,17 @@ impl Node<Edges> for LfpViewer {
         NoPorts
     }
 
-    fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Traces, (), Self> {
+    fn prepare_for_snapshot(&self, context: &PrepareContext<E, Self>) -> Prepare<Traces, (), Self> {
         if context.same_streams() {
             return Prepared::nothing().into();
         }
-        let rate = DataStreamIn::of(context.inputs).continuous.map_or(30000.0, |c| c.sample_rate);
+        let rate = context.data_stream_in::<DataStreamIn>().continuous.map_or(30000.0, |c| c.sample_rate);
         Prepared::shared(Traces { rate, ..Default::default() }).into()
     }
 
     fn process(
         &self,
-        pass: &mut PassContext<Edges>,
+        pass: &mut PassContext<E>,
         inputs: DataStreamIn<Buffers>,
         _: NoPorts,
         traces: &mut Traces,
@@ -362,16 +361,16 @@ impl Node<Edges> for LfpViewer {
         NoPorts
     }
 
-    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<Edges>) {
+    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<E>) {
         match command {}
     }
 
     /// The viewer takes what its passes have sent, then draws its window if there's a `ui` to draw it in.
-    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<E>) {
         self.take_updates(context);
         let Some(ui) = ui else { return };
         let locked = context.locked;
-        let inputs = DataStreamIn::of(context.inputs);
+        let inputs = context.data_stream_in::<DataStreamIn>();
         let Some(stream) = inputs.continuous else {
             plots::unconnected(ui, context.theme, "Connect a continuous data stream to view it");
             return;
@@ -424,13 +423,13 @@ impl Node<Edges> for LfpViewer {
     }
 
     fn warnings(&self, inputs: &DataStreamIn) -> Vec<String> {
-        require_input(inputs, "a continuous data stream")
+        require_input(inputs.any_connected(), "a continuous data stream")
     }
 }
 
 impl LfpViewer {
     /// The viewer takes what its passes have sent, every update in order, whether or not its window's shown.
-    fn take_updates(&mut self, context: &mut UiContext<Edges>) {
+    fn take_updates<E: PortEdges>(&mut self, context: &mut UiContext<E>) {
         let Some(pool) = context.shared::<Pool<TracesUpdate>>() else { return };
         let mut kept = context.ui_state::<TracesDisplay>();
         while let Some(update) = pool.try_full() {
@@ -451,10 +450,10 @@ impl LfpViewer {
 
     /// The span, scale and rows' height, the spectrum, and (if they're connected) the gains and the reference, which
     /// can't be changed while a selection's `applied`: it can't be told from what's shown.
-    fn toolbar(
+    fn toolbar<E: PortEdges>(
         &mut self,
         ui: &mut egui::Ui,
-        context: &mut UiContext<Edges>,
+        context: &mut UiContext<E>,
         stream: Continuous,
         applied: bool,
         reference: Option<&mut Reference>,
@@ -492,7 +491,7 @@ impl LfpViewer {
                         }
                     });
                 }
-                let tip = match DataStreamIn::of(context.inputs).spectra {
+                let tip = match context.data_stream_in::<DataStreamIn>().spectra {
                     Some(s) => format!("Show each channel's spectrum, {}", s.summary()),
                     _ => "Show each channel's spectrum: connect a Spectrum node's".into(),
                 };
@@ -853,7 +852,7 @@ fn reference_ui(ui: &mut egui::Ui, reference: &mut Reference, channels: u32) {
 
 /// The gains (a Continuous Gain's: what the continuous data's amplified by, as it's recorded), compactly: one for all,
 /// or that they're each channel's; and detecting them from the data.
-fn gains_ui(ui: &mut egui::Ui, context: &mut UiContext<Edges>, gains: &mut Gains, channels: u32) {
+fn gains_ui<E: PortEdges>(ui: &mut egui::Ui, context: &mut UiContext<E>, gains: &mut Gains, channels: u32) {
     let label = ui.strong("Gain");
     let label = label.on_hover_text(
         "The gains the continuous data's amplified by, as it's recorded (×2 doubles it). The traces here are as it \

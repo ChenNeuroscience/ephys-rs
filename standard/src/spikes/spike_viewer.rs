@@ -20,7 +20,6 @@ use crate::standard::auto_detect::estimated_progress;
 use eframe::egui::{self, Align2, FontId, Key, Pos2, Rect, Sense, Shape, Stroke};
 use serde::{Deserialize, Serialize};
 
-use crate::Edges;
 use crate::standard::auto_detect::{Detect, DetectRequest};
 use crate::standard::plots::{self, axis_ui};
 use crate::standard::pool::Pool;
@@ -30,8 +29,8 @@ use crate::standard::spikes::{
 };
 use crate::standard::widgets::{open_settings_button, require_input};
 use ephys_rs::engine::{
-    Buffers, Category, CommandContext, CommandSource, DataStreamInPorts, EdgeType, NoPorts, Node, NodeInfo,
-    PassContext, Prepare, PrepareContext, Prepared, Shortcut, UiContext,
+    Buffers, Category, CommandContext, CommandSource, EdgeType, NoPorts, Node, NodeInfo, PassContext, Prepare,
+    PrepareContext, Prepared, Shortcut, UiContext,
 };
 use ephys_rs::gui::widgets::Icon;
 
@@ -113,7 +112,7 @@ impl Detector {
     }
 
     /// When its auto detect was started, if it's going, and how many seconds it samples for.
-    fn detecting(self, context: &UiContext<Edges>) -> Option<(Instant, f32)> {
+    fn detecting<E: PortEdges>(self, context: &UiContext<E>) -> Option<(Instant, f32)> {
         match self {
             Detector::Thresholds => {
                 let detect = &context.val_in(ValInCmdOut::thresholds)?.detect;
@@ -127,7 +126,7 @@ impl Detector {
     }
 
     /// The viewer asks it to start or stop its auto detect with this.
-    fn detect(self, context: &mut UiContext<Edges>, request: DetectRequest) {
+    fn detect<E: PortEdges>(self, context: &mut UiContext<E>, request: DetectRequest) {
         match self {
             Detector::Thresholds => context.cmd_out(ValInCmdOut::thresholds, Detect(request)),
             Detector::Gains => context.cmd_out(ValInCmdOut::gains, Detect(request)),
@@ -135,7 +134,7 @@ impl Detector {
     }
 
     /// Whether the viewer's port is connected to one.
-    fn connected(self, context: &UiContext<Edges>) -> bool {
+    fn connected<E: PortEdges>(self, context: &UiContext<E>) -> bool {
         match self {
             Detector::Thresholds => context.val_in_connected(ValInCmdOut::thresholds),
             Detector::Gains => context.val_in_connected(ValInCmdOut::gains),
@@ -153,7 +152,7 @@ pub struct AutoDetecting {
 
 impl AutoDetecting {
     /// Starts the next, once what's going is done; or gives up, if it can't be (as acquiring's stopped, say).
-    fn carry_on(&mut self, context: &mut UiContext<Edges>) {
+    fn carry_on<E: PortEdges>(&mut self, context: &mut UiContext<E>) {
         let running = [Detector::Thresholds, Detector::Gains].into_iter().any(|d| d.detecting(context).is_some());
         if running || self.next.is_empty() {
             return;
@@ -258,7 +257,7 @@ fn group_title(kind: &str, group: usize, channels: std::ops::Range<u32>) -> Stri
     }
 }
 
-impl Node<Edges> for SpikeViewer {
+impl<E: PortEdges> Node<E> for SpikeViewer {
     type Ports = Ports;
     type State = Recent;
     type WorkerState = ();
@@ -291,15 +290,15 @@ impl Node<Edges> for SpikeViewer {
         NoPorts
     }
 
-    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<Edges>) {
+    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<E>) {
         match command {}
     }
 
-    fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Recent, (), Self> {
+    fn prepare_for_snapshot(&self, context: &PrepareContext<E, Self>) -> Prepare<Recent, (), Self> {
         if context.same_streams() {
             return Prepared::nothing().into();
         }
-        let Some(stream) = DataStreamIn::of(context.inputs).spikes else {
+        let Some(stream) = context.data_stream_in::<DataStreamIn>().spikes else {
             return Prepared::shared(Recent::default()).into();
         };
         let groups = stream.groups() as usize;
@@ -320,7 +319,7 @@ impl Node<Edges> for SpikeViewer {
 
     fn process(
         &self,
-        pass: &mut PassContext<Edges>,
+        pass: &mut PassContext<E>,
         inputs: DataStreamIn<Buffers>,
         _: NoPorts,
         recent: &mut Recent,
@@ -367,11 +366,11 @@ impl Node<Edges> for SpikeViewer {
     }
 
     /// The viewer takes what its passes have sent, then draws its window if there's a `ui` to draw it in.
-    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<E>) {
         self.take_updates(context);
         let Some(ui) = ui else { return };
         let locked = context.locked;
-        let Some(stream) = DataStreamIn::of(context.inputs).spikes else {
+        let Some(stream) = context.data_stream_in::<DataStreamIn>().spikes else {
             plots::unconnected(ui, context.theme, "Connect spikes to view them");
             return;
         };
@@ -400,13 +399,13 @@ impl Node<Edges> for SpikeViewer {
     }
 
     fn warnings(&self, inputs: &DataStreamIn) -> Vec<String> {
-        require_input(inputs, "spikes")
+        require_input(inputs.any_connected(), "spikes")
     }
 }
 
 impl SpikeViewer {
     /// The viewer carries on detecting the gains once the thresholds are done, whether or not its window's shown.
-    fn take_updates(&mut self, context: &mut UiContext<Edges>) {
+    fn take_updates<E: PortEdges>(&mut self, context: &mut UiContext<E>) {
         let mut detecting = context.ui_state::<AutoDetecting>();
         detecting.carry_on(context);
     }
@@ -431,7 +430,7 @@ impl SpikeViewer {
 
     /// The plots' height; detecting the gains and thresholds from the data (starting the Spike Gain's and Spike
     /// Detector's auto-detect), and in advanced mode, opening them, and a hint of what else can be done.
-    fn toolbar(&mut self, ui: &mut egui::Ui, context: &mut UiContext<Edges>) {
+    fn toolbar<E: PortEdges>(&mut self, ui: &mut egui::Ui, context: &mut UiContext<E>) {
         ui.horizontal_wrapped(|ui| {
             ui.add_enabled_ui(!context.locked, |ui| {
                 let label = ui.label("Plot height");

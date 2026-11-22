@@ -6,14 +6,13 @@ use std::collections::VecDeque;
 use eframe::egui::{self, Align2, FontId, Pos2, Shape, Stroke};
 use serde::{Deserialize, Serialize};
 
-use crate::Edges;
 use crate::standard::ephys::Events;
 use crate::standard::plots;
 use crate::standard::pool::Pool;
 use crate::standard::widgets::{TIME_AXIS_HEIGHT, require_input, time_axis_ui};
 use ephys_rs::engine::{
-    Buffers, Category, CommandContext, CommandSource, DataStreamInPorts, EdgeType, NoPorts, Node, NodeInfo,
-    PassContext, PassState, Prepare, PrepareContext, Prepared, UiContext,
+    Buffers, Category, CommandContext, CommandSource, EdgeType, NoPorts, Node, NodeInfo, PassContext, PassState,
+    Prepare, PrepareContext, Prepared, UiContext,
 };
 
 ephys_rs::ports! {
@@ -90,7 +89,7 @@ pub struct LinesDisplay {
     pub recorded: bool,
 }
 
-impl Node<Edges> for TtlViewer {
+impl<E: PortEdges> Node<E> for TtlViewer {
     type Ports = Ports;
     type State = Lines;
     type WorkerState = ();
@@ -112,7 +111,7 @@ impl Node<Edges> for TtlViewer {
         NoPorts
     }
 
-    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<Edges>) {
+    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<E>) {
         match command {}
     }
 
@@ -120,11 +119,11 @@ impl Node<Edges> for TtlViewer {
         NoPorts
     }
 
-    fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Lines, (), Self> {
+    fn prepare_for_snapshot(&self, context: &PrepareContext<E, Self>) -> Prepare<Lines, (), Self> {
         if context.same_streams() {
             return Prepared::nothing().into();
         }
-        let Some(stream) = DataStreamIn::of(context.inputs).events else {
+        let Some(stream) = context.data_stream_in::<DataStreamIn>().events else {
             return Prepared::shared(Lines::default()).into();
         };
         let lines = stream.lines as usize;
@@ -140,7 +139,7 @@ impl Node<Edges> for TtlViewer {
 
     fn process(
         &self,
-        pass: &mut PassContext<Edges>,
+        pass: &mut PassContext<E>,
         inputs: DataStreamIn<Buffers>,
         _: NoPorts,
         lines: &mut Lines,
@@ -198,7 +197,7 @@ impl Node<Edges> for TtlViewer {
         });
     }
 
-    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<E>) {
         let Some(ui) = ui else { return };
         let locked = context.locked;
         ui.horizontal(|ui| {
@@ -212,7 +211,7 @@ impl Node<Edges> for TtlViewer {
             });
             context.node_toolbar(ui);
         });
-        let Some(stream) = DataStreamIn::of(context.inputs).events else {
+        let Some(stream) = context.data_stream_in::<DataStreamIn>().events else {
             plots::unconnected(ui, context.theme, "Connect events to view them");
             return;
         };
@@ -230,7 +229,7 @@ impl Node<Edges> for TtlViewer {
     }
 
     fn warnings(&self, inputs: &DataStreamIn) -> Vec<String> {
-        require_input(inputs, "events")
+        require_input(inputs.any_connected(), "events")
     }
 }
 
@@ -295,8 +294,10 @@ impl TtlViewer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Edges;
     use crate::NodeType;
     use crate::standard::ephys::{Event, EventsBuffer};
+    use ephys_rs::engine::DataStreamInPorts;
 
     fn events(list: &[(u32, u8, bool)], pass_samples: usize) -> EventsBuffer {
         let events = list.iter().map(|&(sample, line, high)| Event { sample, line, high, time: None }).collect();
@@ -308,10 +309,10 @@ mod tests {
         let viewer = TtlViewer::default();
         let stream = Events { lines: 2, sample_rate: 1000.0 };
         let shared = Pool::<LinesDisplay>::default();
-        let mut lines = ephys_rs::engine::fresh_state(&viewer, &DataStreamIn { events: Some(stream) });
+        let mut lines = ephys_rs::engine::fresh_state::<Edges, _>(&viewer, &DataStreamIn { events: Some(stream) });
         let mut run = |list: &[(u32, u8, bool)], recording: bool| {
             let input = events(list, 100);
-            let mut pass = PassContext::new(0, 0.1);
+            let mut pass = PassContext::<Edges>::new(0, 0.1);
             pass.set_recording(recording);
             pass.shared = &shared;
             viewer.process(&mut pass, DataStreamIn { events: Some(&input) }, NoPorts, &mut lines, &mut ());
@@ -347,7 +348,9 @@ mod tests {
             ups_recording: vec![0; 8],
             ..Default::default()
         };
-        let streams = DataStreamIn { events: Some(Events { lines: 8, sample_rate: 30000.0 }) }.streams();
+        let streams = DataStreamInPorts::<Edges>::streams(&DataStreamIn {
+            events: Some(Events { lines: 8, sample_rate: 30000.0 }),
+        });
         let shared = ephys_rs::engine::SharedByNode::default().with(viewer, Pool::holding(display));
         let mut harness = egui_kittest::Harness::builder().with_size([600.0, 220.0]).wgpu().build_ui_state(
             |ui, graph: &mut Graph<Nodes>| {

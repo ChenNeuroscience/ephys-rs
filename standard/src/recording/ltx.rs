@@ -41,7 +41,6 @@ use serde::{Deserialize, Serialize};
 use super::{
     Files, OnFinished, Status, Writing, after_recording, location_summary, recording_path, show_status, status_ui,
 };
-use crate::Edges;
 use crate::standard::ephys::reference::parse_channels;
 use crate::standard::ephys::{ChannelSelection, Continuous, Events};
 use crate::standard::logs::LogLines;
@@ -204,7 +203,7 @@ impl Chunk {
     }
 }
 
-impl Node<Edges> for WriteLtx {
+impl<E: PortEdges> Node<E> for WriteLtx {
     type Ports = Ports;
     type State = Recorder;
     type WorkerState = ();
@@ -234,7 +233,7 @@ impl Node<Edges> for WriteLtx {
         NoPorts
     }
 
-    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<Edges>) {
+    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<E>) {
         match command {}
     }
 
@@ -259,14 +258,14 @@ impl Node<Edges> for WriteLtx {
 
     /// While recording, opens the files and starts the thread to write them (carrying on with them through the
     /// recording's snapshots, as long as its inputs are the same).
-    fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Recorder, (), Self> {
+    fn prepare_for_snapshot(&self, context: &PrepareContext<E, Self>) -> Prepare<Recorder, (), Self> {
         if context.same_streams() && !context.recording_changed {
             return Prepared::nothing().into();
         }
         let writing = context.recording.map(|recording| {
             let date = recording.start_requested_date();
             let base = recording_path(recording.base_directory(), date);
-            let (streams, recorded) = (DataStreamIn::of(context.inputs), Recorded::of(context, self.scales));
+            let (streams, recorded) = (context.data_stream_in::<DataStreamIn>(), Recorded::of(context, self.scales));
             let files = LtxFiles::open(&base, *date, streams, recorded);
             Chunk::writing(&base, streams, files, after_recording(context.cmd_sender(ValInCmdOut::after_recording)))
         });
@@ -276,7 +275,7 @@ impl Node<Edges> for WriteLtx {
     /// While recording, hands the pass's data to the writer's thread, swapping the buffers it's in for a chunk's.
     fn process(
         &self,
-        pass: &mut PassContext<Edges>,
+        pass: &mut PassContext<E>,
         inputs: DataStreamIn<Buffers>,
         _: NoPorts,
         recorder: &mut Recorder,
@@ -304,7 +303,7 @@ impl Node<Edges> for WriteLtx {
         show_status(recorder.writing.as_ref(), pass.shared::<Pool<Status>>(), pass.sequence);
     }
 
-    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
+    fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<E>) {
         let Some(ui) = ui else { return };
         ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, context| {
             settings_grid(ui, |ui| {
@@ -317,7 +316,7 @@ impl Node<Edges> for WriteLtx {
             });
             location_summary(ui, context.base_directory, "files");
             ui.add_space(4.0);
-            let recording: Vec<String> = DataStreamIn::ports()
+            let recording: Vec<String> = <DataStreamIn as DataStreamInPorts<E>>::ports()
                 .iter()
                 .zip(context.inputs)
                 .filter_map(|(input, stream)| stream.map(|s| format!("{}: {}", input.name(), s.summary())))
@@ -327,7 +326,7 @@ impl Node<Edges> for WriteLtx {
             } else {
                 ui.label(format!("Records {}.", recording.join(", ")));
             }
-            let inputs = DataStreamIn::of(context.inputs);
+            let inputs = context.data_stream_in::<DataStreamIn>();
             if !context.val_in_connected(ValIn::detection) && inputs.positions.is_some() {
                 ui.weak("Connect the detection to record the crop and calibration with the positions.");
             }
@@ -345,7 +344,7 @@ impl Node<Edges> for WriteLtx {
     }
 
     fn warnings(&self, inputs: &DataStreamIn) -> Vec<String> {
-        let mut warnings = require_input(inputs, "something to record");
+        let mut warnings = require_input(inputs.any_connected(), "something to record");
         if let Some(spikes) = inputs.spikes
             && spikes.group_size != SPIKE_CHANNELS as u32
         {
@@ -399,7 +398,7 @@ struct Recorded {
 
 impl Recorded {
     /// What the writer's controls read, as the snapshot it's preparing for was made, with its own `scales`.
-    fn of(context: &Context<Edges, WriteLtx>, scales: Scales) -> Self {
+    fn of<E: PortEdges>(context: &Context<E, WriteLtx>, scales: Scales) -> Self {
         Recorded {
             detection: context.val_in(ValIn::detection).cloned(),
             gains: context.val_in(ValIn::gains).cloned().unwrap_or_default(),
@@ -901,6 +900,7 @@ impl Files<Chunk> for LtxFiles {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Edges;
     use crate::standard::ephys::Event;
     use crate::standard::spikes::Spike;
     use crate::standard::tracking::PositionSample;
@@ -1060,7 +1060,7 @@ mod tests {
         use ephys_rs::engine::{Graph, NodesEnum};
         let mut graph = Graph::<Nodes>::default();
         let id = graph.add(Nodes::create(NodeType::WriteLtx), [0.0, 0.0]);
-        let inputs = DataStreamIn::default().streams();
+        let inputs = DataStreamInPorts::<Edges>::streams(&DataStreamIn::default());
         let mut harness = egui_kittest::Harness::builder().with_size([460.0, 300.0]).wgpu().build_ui_state(
             |ui, graph: &mut Graph<Nodes>| {
                 graph.edit(id, &inputs, &THEMES[0].colours, None, None, None, false, false, None, |node, context| {

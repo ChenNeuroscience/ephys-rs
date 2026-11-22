@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use super::{Edges, NodeId, ReadsValIn, Recording, ValInCmdOutPort, ValueOf};
+use super::{DataStreamInPorts, Edges, HasValue, NodeId, ReadsValIn, Recording, ValInCmdOutPort};
 use crate::commands::{Address, CmdSender, Commands};
 
 /// When a node prepares for a snapshot (see `Node::prepare_for_snapshot`), it answers with this: what it made ahead of
@@ -198,12 +198,18 @@ impl<'a, E: Edges, N> PrepareContext<'a, E, N> {
         }
     }
 
+    /// The node reads the data streams on its `DataStreamIn` ports with this, as its own `DataStreamIn` (`I`).
+    pub fn data_stream_in<I: DataStreamInPorts<E>>(&self) -> I {
+        I::of(self.inputs)
+    }
+
     /// The node reads what `port` sees with this (see `UiContext::val_in`).
     pub fn val_in<P: ReadsValIn>(&self, port: P) -> Option<&'a P::Value>
     where
-        P::Value: ValueOf<E> + 'a,
+        E: HasValue<P::Value>,
+        P::Value: 'a,
     {
-        P::Value::from_value(self.val_ins.get(port.index())?.as_ref()?)
+        E::from_value(self.val_ins.get(port.index())?.as_ref()?)
     }
 
     /// A node keeps one of these to command, later, from any thread (a writer's, once its files are finished, say), the
