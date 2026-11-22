@@ -20,25 +20,26 @@ use crate::standard::auto_detect::estimated_progress;
 use eframe::egui::{self, Align2, FontId, Key, Pos2, Rect, Sense, Shape, Stroke};
 use serde::{Deserialize, Serialize};
 
-use crate::standard::auto_detect::DetectRequest;
+use crate::Edges;
+use crate::standard::auto_detect::{Detect, DetectRequest};
 use crate::standard::plots::{self, axis_ui};
 use crate::standard::pool::Pool;
 use crate::standard::spikes::{
-    Channels, DEFAULT_THRESHOLD_UV, Gains, RECORDED_FULL_SCALE_UV, Spikes, Thresholds, nice_step, threshold_step,
-    trimmed,
+    Channels, DEFAULT_THRESHOLD_UV, Gains, RECORDED_FULL_SCALE_UV, SetGains, SetThresholds, Spikes, Thresholds,
+    nice_step, threshold_step, trimmed,
 };
 use crate::standard::widgets::{open_settings_button, require_input};
-use crate::{Command, CommandKind, Edges, ValueKind};
 use ephys_rs::engine::{
-    Buffers, Category, EdgeType, InputPorts, NoPorts, Node, NodeInfo, PassContext, Port, Prepare, PrepareContext,
-    Prepared, Shortcut, UiContext,
+    Buffers, Category, CommandContext, CommandSource, DataStreamInPorts, EdgeType, NoPorts, Node, NodeInfo,
+    PassContext, Prepare, PrepareContext, Prepared, Shortcut, UiContext,
 };
 use ephys_rs::gui::widgets::Icon;
 
-ephys_rs::data_ports! {
-    inputs: pub struct Inputs {
-        spikes: In<Spikes>,
-    }
+ephys_rs::ports! {
+    spikes: DataStreamIn<Spikes>,
+    // The thresholds (a Spike Detector's) and the gains (a Spike Gain's) the viewer sets.
+    thresholds: ValInCmdOut<Thresholds, (SetThresholds, Detect)>,
+    gains: ValInCmdOut<Gains, (SetGains, Detect)>,
 }
 
 /// A channel's plot's width, for its height.
@@ -54,7 +55,7 @@ pub struct SpikeViewer {
     /// Each channel's plot's height, in points (its width follows).
     pub plot_height: f32,
     /// What to detect from the data, when it's run.
-    pub detect: Detect,
+    pub detect: ToDetect,
     /// The amplified µV either side of zero the plots show (the spikes as they're recorded): the gains' full scale, to
     /// begin with.
     pub scale_uv: f32,
@@ -62,77 +63,108 @@ pub struct SpikeViewer {
 
 impl Default for SpikeViewer {
     fn default() -> Self {
-        SpikeViewer { plot_height: 120.0, detect: Detect::Both, scale_uv: RECORDED_FULL_SCALE_UV }
+        SpikeViewer { plot_height: 120.0, detect: ToDetect::Both, scale_uv: RECORDED_FULL_SCALE_UV }
     }
 }
 
 /// What to detect from the data.
 #[derive(Clone, Copy, PartialEq, Debug, Default, Serialize, Deserialize)]
-pub enum Detect {
+pub enum ToDetect {
     #[default]
     Both,
     Gains,
     Thresholds,
 }
 
-impl Detect {
+impl ToDetect {
     fn name(self) -> &'static str {
         match self {
-            Detect::Both => "Gains and thresholds",
-            Detect::Gains => "Gains",
-            Detect::Thresholds => "Thresholds",
+            ToDetect::Both => "Gains and thresholds",
+            ToDetect::Gains => "Gains",
+            ToDetect::Thresholds => "Thresholds",
         }
     }
 
-    /// The ports whose values' auto-detect it starts, with what each detects and what does it: in order, each
-    /// once the one before is done.
-    fn controls(self) -> &'static [(usize, &'static str, &'static str)] {
-        const GAIN: (usize, &str, &str) = (GAINS_CONTROL, "gains", "Spike Gain");
-        const THRESHOLD: (usize, &str, &str) = (THRESHOLDS, "thresholds", "Spike Detector");
+    /// What it starts auto-detecting: in order, each once the one before is done.
+    fn detectors(self) -> &'static [Detector] {
         match self {
-            Detect::Both => &[THRESHOLD, GAIN],
-            Detect::Gains => &[GAIN],
-            Detect::Thresholds => &[THRESHOLD],
+            ToDetect::Both => &[Detector::Thresholds, Detector::Gains],
+            ToDetect::Gains => &[Detector::Gains],
+            ToDetect::Thresholds => &[Detector::Thresholds],
         }
     }
 }
 
-/// Its controls: the thresholds (a Spike Detector's) and the gains (a Spike Gain's) it sets.
-const THRESHOLDS: usize = 0;
-const GAINS_CONTROL: usize = 1;
+/// The viewer can start what its two `ValInCmdOut` ports connect to auto-detecting (see `crate::standard::auto_detect`): a Spike
+/// Detector's thresholds, and a Spike Gain's gains. This is one of them.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Detector {
+    Thresholds,
+    Gains,
+}
+
+impl Detector {
+    /// What it detects, and what does it.
+    fn what(self) -> (&'static str, &'static str) {
+        match self {
+            Detector::Thresholds => ("thresholds", "Spike Detector"),
+            Detector::Gains => ("gains", "Spike Gain"),
+        }
+    }
+
+    /// When its auto detect was started, if it's going, and how many seconds it samples for.
+    fn detecting(self, context: &UiContext<Edges>) -> Option<(Instant, f32)> {
+        match self {
+            Detector::Thresholds => {
+                let detect = &context.val_in(ValInCmdOut::thresholds)?.detect;
+                detect.started.map(|started| (started, detect.seconds))
+            }
+            Detector::Gains => {
+                let detect = &context.val_in(ValInCmdOut::gains)?.detect;
+                detect.started.map(|started| (started, detect.seconds))
+            }
+        }
+    }
+
+    /// The viewer asks it to start or stop its auto detect with this.
+    fn detect(self, context: &mut UiContext<Edges>, request: DetectRequest) {
+        match self {
+            Detector::Thresholds => context.cmd_out(ValInCmdOut::thresholds, Detect(request)),
+            Detector::Gains => context.cmd_out(ValInCmdOut::gains, Detect(request)),
+        }
+    }
+
+    /// Whether the viewer's port is connected to one.
+    fn connected(self, context: &UiContext<Edges>) -> bool {
+        match self {
+            Detector::Thresholds => context.val_in_connected(ValInCmdOut::thresholds),
+            Detector::Gains => context.val_in_connected(ValInCmdOut::gains),
+        }
+    }
+}
 
 /// Detecting gains and thresholds one after the other: the gains wait for the thresholds, as the spikes they're
 /// chosen from (and their thresholds, which they can go by) depend on them.
 #[derive(Default)]
 pub struct AutoDetecting {
-    /// The controls whose auto-detect comes once the one running is done, in order.
-    next: Vec<usize>,
+    /// What's to auto-detect once what's running is done, in order.
+    next: Vec<Detector>,
 }
 
 impl AutoDetecting {
     /// Starts the next, once what's going is done; or gives up, if it can't be (as acquiring's stopped, say).
     fn carry_on(&mut self, context: &mut UiContext<Edges>) {
-        let running = [THRESHOLDS, GAINS_CONTROL].into_iter().any(|c| detecting(context, c).is_some());
+        let running = [Detector::Thresholds, Detector::Gains].into_iter().any(|d| d.detecting(context).is_some());
         if running || self.next.is_empty() {
             return;
         }
-        let control = self.next.remove(0);
-        if context.locked || !context.running || !context.control_connected(control) {
+        let detector = self.next.remove(0);
+        if context.locked || !context.running || !detector.connected(context) {
             self.next.clear();
             return;
         }
-        context.cmd_out(control, Command::Detect(DetectRequest::Start));
+        detector.detect(context, DetectRequest::Start);
     }
-}
-
-/// When auto detect was started for what its port `control` reads (a Spike Detector's thresholds, or a Spike Gain's
-/// gains), if it's going, and how many seconds it samples for (see `crate::standard::auto_detect`).
-fn detecting(context: &UiContext<Edges>, control: usize) -> Option<(Instant, f32)> {
-    if let Some(thresholds) = context.val_in::<Thresholds>(control) {
-        return thresholds.detect.started.map(|started| (started, thresholds.detect.seconds));
-    }
-    let gains = context.val_in::<Gains>(control)?;
-    gains.detect.started.map(|started| (started, gains.detect.seconds))
 }
 
 /// Each group's most recent spikes, round a ring, and each channel's latest threshold and gain.
@@ -227,8 +259,7 @@ fn group_title(kind: &str, group: usize, channels: std::ops::Range<u32>) -> Stri
 }
 
 impl Node<Edges> for SpikeViewer {
-    type Inputs = Inputs;
-    type Outputs = NoPorts;
+    type Ports = Ports;
     type State = Recent;
     type WorkerState = ();
     /// What it shows, for its window.
@@ -252,26 +283,25 @@ impl Node<Edges> for SpikeViewer {
     const WINDOW_SIZE: [f32; 2] = [820.0, 520.0];
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
-    fn output_streams(&self, _inputs: &Inputs) -> NoPorts {
+    fn output_streams(&self, _inputs: &DataStreamIn) -> NoPorts {
         NoPorts
     }
 
-    fn list_ports_val_cmd(&self) -> Vec<Port<Edges>> {
-        vec![
-            Port::val_in_cmd_out(
-                "thresholds",
-                ValueKind::Thresholds,
-                &[CommandKind::SetThresholds, CommandKind::Detect],
-            ),
-            Port::val_in_cmd_out("gains", ValueKind::Gains, &[CommandKind::SetGains, CommandKind::Detect]),
-        ]
+    fn val_out(&self) -> NoPorts {
+        NoPorts
+    }
+
+    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<Edges>) {
+        match command {}
     }
 
     fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Recent, (), Self> {
         if context.same_streams() {
             return Prepared::nothing().into();
         }
-        let Some(stream) = Inputs::of(context.inputs).spikes else { return Prepared::shared(Recent::default()).into() };
+        let Some(stream) = DataStreamIn::of(context.inputs).spikes else {
+            return Prepared::shared(Recent::default()).into();
+        };
         let groups = stream.groups() as usize;
         let keep = WAVEFORMS;
         let size = (stream.group_size * stream.waveform_samples()) as usize;
@@ -291,7 +321,7 @@ impl Node<Edges> for SpikeViewer {
     fn process(
         &self,
         pass: &mut PassContext<Edges>,
-        inputs: Inputs<Buffers>,
+        inputs: DataStreamIn<Buffers>,
         _: NoPorts,
         recent: &mut Recent,
         _: &mut (),
@@ -341,7 +371,7 @@ impl Node<Edges> for SpikeViewer {
         self.take_updates(context);
         let Some(ui) = ui else { return };
         let locked = context.locked;
-        let Some(stream) = Inputs::of(context.inputs).spikes else {
+        let Some(stream) = DataStreamIn::of(context.inputs).spikes else {
             plots::unconnected(ui, context.theme, "Connect spikes to view them");
             return;
         };
@@ -349,8 +379,8 @@ impl Node<Edges> for SpikeViewer {
         let reading = pool.and_then(Pool::newest).filter(|d| d.stream.is_some());
         let display = reading.as_deref();
         self.toolbar(ui, context);
-        let mut thresholds = context.val_in::<Thresholds>(THRESHOLDS).cloned();
-        let mut gains = context.val_in::<Gains>(GAINS_CONTROL).cloned();
+        let mut thresholds = context.val_in(ValInCmdOut::thresholds).cloned();
+        let mut gains = context.val_in(ValInCmdOut::gains).cloned();
 
         let plots = Plots {
             stream,
@@ -362,14 +392,14 @@ impl Node<Edges> for SpikeViewer {
         };
         self.plots_ui(ui, plots);
         if let Some(thresholds) = thresholds {
-            context.cmd_out_if_changed(THRESHOLDS, thresholds, Command::SetThresholds);
+            context.cmd_out_if_changed(ValInCmdOut::thresholds, thresholds, SetThresholds);
         }
         if let Some(gains) = gains {
-            context.cmd_out_if_changed(GAINS_CONTROL, gains, Command::SetGains);
+            context.cmd_out_if_changed(ValInCmdOut::gains, gains, SetGains);
         }
     }
 
-    fn warnings(&self, inputs: &Inputs) -> Vec<String> {
+    fn warnings(&self, inputs: &DataStreamIn) -> Vec<String> {
         require_input(inputs, "spikes")
     }
 }
@@ -424,10 +454,10 @@ impl SpikeViewer {
             // Auto detect: what, then run (each by its node, as it says: see their settings).
             let label = ui.strong("Auto detect");
             // What it's detecting, while it is.
-            let running: Vec<(usize, f32)> = [GAINS_CONTROL, THRESHOLDS]
+            let running: Vec<(Detector, f32)> = [Detector::Gains, Detector::Thresholds]
                 .into_iter()
-                .filter_map(|c| {
-                    detecting(context, c).map(|(started, seconds)| (c, estimated_progress(started, seconds)))
+                .filter_map(|d| {
+                    d.detecting(context).map(|(started, seconds)| (d, estimated_progress(started, seconds)))
                 })
                 .collect();
             // And what's to come after.
@@ -437,7 +467,7 @@ impl SpikeViewer {
                     .selected_text(self.detect.name())
                     .width(150.0)
                     .show_ui(ui, |ui| {
-                        for option in [Detect::Both, Detect::Gains, Detect::Thresholds] {
+                        for option in [ToDetect::Both, ToDetect::Gains, ToDetect::Thresholds] {
                             ui.selectable_value(&mut self.detect, option, option.name());
                         }
                     })
@@ -449,21 +479,20 @@ impl SpikeViewer {
                 let stop = ui.add(egui::Button::new("Stop").small());
                 if stop.on_hover_text("Stop detecting, leaving what's not done as it was").clicked() {
                     context.ui_state::<AutoDetecting>().next.clear();
-                    for &(control, _) in &running {
-                        context.cmd_out(control, Command::Detect(DetectRequest::Stop));
+                    for &(detector, _) in &running {
+                        detector.detect(context, DetectRequest::Stop);
                     }
                 }
-                let what = |control| if control == THRESHOLDS { "thresholds" } else { "gains" };
-                let doing = running.iter().map(|r| what(r.0)).chain(next.iter().map(|&c| what(c)));
+                let doing = running.iter().map(|r| r.0.what().0).chain(next.iter().map(|d| d.what().0));
                 ui.weak(doing.collect::<Vec<_>>().join(", then "));
                 let least = running.iter().map(|r| r.1).fold(if running.is_empty() { 0.0 } else { 1.0 }, f32::min);
                 ui.add(egui::ProgressBar::new(least).desired_width(60.0).show_percentage());
             } else {
-                let controls = self.detect.controls();
-                let missing: Vec<String> = controls
+                let detectors = self.detect.detectors();
+                let missing: Vec<String> = detectors
                     .iter()
-                    .filter(|&&(c, _, _)| !context.control_connected(c))
-                    .map(|&(_, what, by)| format!("connect its {what} to a {by}"))
+                    .filter(|d| !d.connected(context))
+                    .map(|d| format!("connect its {} to a {}", d.what().0, d.what().1))
                     .collect();
                 let can = missing.is_empty() && !context.locked && context.running;
                 let why = if !missing.is_empty() {
@@ -475,21 +504,21 @@ impl SpikeViewer {
                 };
                 let tip = format!(
                     "Sample each channel, then set its {}",
-                    controls.iter().map(|c| c.1).collect::<Vec<_>>().join(", then sample again and set its ")
+                    detectors.iter().map(|d| d.what().0).collect::<Vec<_>>().join(", then sample again and set its ")
                 );
                 let run = ui.add_enabled(can, egui::Button::new("Run").small());
                 if run.on_hover_text(tip).on_disabled_hover_text(why).clicked() {
-                    let (first, rest) = (controls[0].0, controls[1..].iter().map(|c| c.0).collect());
-                    context.cmd_out(first, Command::Detect(DetectRequest::Start));
+                    let (first, rest) = (detectors[0], detectors[1..].to_vec());
+                    first.detect(context, DetectRequest::Start);
                     context.ui_state::<AutoDetecting>().next = rest;
                 }
             }
             if context.advanced() {
                 ui.separator();
                 ui.label("Gains");
-                open_settings_button(ui, context, GAINS_CONTROL, "Spike Gain");
+                open_settings_button(ui, context, ValInCmdOut::gains, "Spike Gain");
                 ui.label("Thresholds");
-                open_settings_button(ui, context, THRESHOLDS, "Spike Detector");
+                open_settings_button(ui, context, ValInCmdOut::thresholds, "Spike Detector");
             }
             context.node_toolbar(ui);
         });

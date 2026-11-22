@@ -9,15 +9,13 @@ use crate::standard::tracking::overlay::Overlays;
 use crate::standard::tracking::{Video, VideoBuffer};
 use crate::standard::widgets::require_input;
 use ephys_rs::engine::{
-    Buffers, Category, DataStreamType, EdgeType, InputPorts, NoPorts, Node, NodeInfo, PASS_DURATION, PassContext,
-    UiContext,
+    Buffers, Category, CommandContext, CommandSource, DataStreamInPorts, DataStreamType, EdgeType, NoPorts, Node,
+    NodeInfo, PASS_DURATION, PassContext, UiContext,
 };
 
-ephys_rs::data_ports! {
-    inputs: pub struct Inputs {
-        /// The viewer takes the pass's frames, to show the last.
-        video: Take<Video>,
-    }
+ephys_rs::ports! {
+    /// The viewer takes the pass's frames, to show the last.
+    video: DataStreamIn<Video> take,
 }
 
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -27,13 +25,12 @@ pub struct VideoViewer {
 }
 
 impl Node<Edges> for VideoViewer {
+    type Ports = Ports;
     const INFO: NodeInfo =
         NodeInfo { name: "Video Viewer", category: Category::Visualisation, description: "The latest video frame." };
     const WINDOW_SIZE: [f32; 2] = [820.0, 520.0];
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
-    type Inputs = Inputs;
-    type Outputs = NoPorts;
     type State = ();
     type WorkerState = ();
     /// The latest frames, for its window: their buffers, swapped in (so a pool of buffers like the pass's).
@@ -41,18 +38,33 @@ impl Node<Edges> for VideoViewer {
     type UiState = ();
     type GlobalSettings = ();
 
-    fn output_streams(&self, _inputs: &Inputs) -> NoPorts {
+    fn val_out(&self) -> NoPorts {
+        NoPorts
+    }
+
+    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<Edges>) {
+        match command {}
+    }
+
+    fn output_streams(&self, _inputs: &DataStreamIn) -> NoPorts {
         NoPorts
     }
 
     /// Buffers like the pass's, to swap for them.
-    fn shared(&self, inputs: &Inputs) -> Pool<VideoBuffer> {
+    fn shared(&self, inputs: &DataStreamIn) -> Pool<VideoBuffer> {
         let Some(stream) = inputs.video else { return Pool::default() };
         Pool::new((0..WINDOW_BUFFERS).map(|_| stream.buffer(PASS_DURATION)), 0)
     }
 
     /// Swaps the pass's frames (if it has any) into the pool its window reads from: nothing's copied.
-    fn process(&self, pass: &mut PassContext<Edges>, inputs: Inputs<Buffers>, _: NoPorts, _: &mut (), _: &mut ()) {
+    fn process(
+        &self,
+        pass: &mut PassContext<Edges>,
+        inputs: DataStreamIn<Buffers>,
+        _: NoPorts,
+        _: &mut (),
+        _: &mut (),
+    ) {
         let Some(video) = inputs.video else { return };
         if video.frames == 0 {
             return;
@@ -70,7 +82,7 @@ impl Node<Edges> for VideoViewer {
             ui.add_enabled_ui(!locked, |ui| ui.checkbox(&mut self.crosshair, "Crosshair"));
             context.node_toolbar(ui);
         });
-        let Some(stream) = Inputs::of(context.inputs).video else {
+        let Some(stream) = DataStreamIn::of(context.inputs).video else {
             plots::unconnected(ui, context.theme, "Connect video to view it");
             return;
         };
@@ -101,7 +113,7 @@ impl Node<Edges> for VideoViewer {
         );
     }
 
-    fn warnings(&self, inputs: &Inputs) -> Vec<String> {
+    fn warnings(&self, inputs: &DataStreamIn) -> Vec<String> {
         require_input(inputs, "video")
     }
 }

@@ -149,7 +149,7 @@ The passes never wait on the GUI, nor it on them.
 - A node can **command** another (`Node::on_command`), through a ValCmd edge from its `ValInCmdOut` port: set the value
   the other publishes, start its auto detect, process files. Having a node do something with the data over a while (an
   auto detect) is kept as its **transient state**: the node prepares for it, runs while it's set, and its passes clear
-  it with what they found; the app has every node clear it (`Command::ClearTransientState`) on undo and redo, and as
+  it with what they found; the app has every node clear it (`Node::clear_transient_state`) on undo and redo, and as
   recording starts or running stops.
 - Passes can't change the graph, but can **command their node** (`PassContext::cmd_self`), which the GUI applies as an
   edit (undone while recording, if it changes how the graph processes).

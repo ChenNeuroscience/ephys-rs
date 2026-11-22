@@ -176,6 +176,10 @@ pub struct ChannelSelection {
     pub channels: String,
 }
 
+/// A node publishing a channel selection (a Channel Selector's) is told a new one with this command, holding it.
+#[derive(Debug)]
+pub struct SetChannelSelection(pub ChannelSelection);
+
 impl EdgeType for ChannelSelection {
     const INFO: EdgeInfo = EdgeInfo {
         name: "channel selection",

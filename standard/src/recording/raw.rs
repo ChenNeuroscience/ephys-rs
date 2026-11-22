@@ -14,7 +14,7 @@
 //!
 //! Samples are numbered, and timed, from the start of recording.
 
-use ephys_rs::engine::{Buffers, InputPorts, NoPorts, Prepare, PrepareContext, Prepared, TreeShake};
+use ephys_rs::engine::{Buffers, DataStreamInPorts, NoPorts, Prepare, PrepareContext, Prepared, TreeShake};
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -26,18 +26,16 @@ use super::npy::Npy;
 use super::{
     Files, OnFinished, Status, Writing, after_recording, location_summary, recording_path, show_status, status_ui,
 };
+use crate::Edges;
 use crate::standard::ephys::board::EPHYS_MICROVOLTS_PER_BIT;
 use crate::standard::ephys::{Continuous, ContinuousBuffer, Event, Events, EventsBuffer};
+use crate::standard::other::run_command::{FileInput, ProcessFiles};
 use crate::standard::pool::Pool;
 use crate::standard::widgets::require_input;
-use crate::{CommandKind, Edges, ValueKind};
 use ephys_rs::engine::{
-    Category, DataStreamType, EdgeTypesEnum, Flow, Node, NodeInfo, NodeThread, PASS_DURATION, PassContext, PoolStatus,
-    Port, ThreadContext, UiContext,
+    Category, CommandContext, CommandSource, DataStreamType, EdgeTypesEnum, Flow, Node, NodeInfo, NodeThread,
+    PASS_DURATION, PassContext, PoolStatus, ThreadContext, UiContext,
 };
-
-/// Its port sending what it recorded to what's to process it, once it's finished (see `after_recording`).
-const AFTER_RECORDING: usize = 0;
 
 const CONTINUOUS_FOLDER: &str = "ephys-rs-100.continuous";
 const EVENTS_FOLDER: &str = "ephys-rs-100.events";
@@ -93,18 +91,18 @@ impl Chunk {
     }
 }
 
-ephys_rs::data_ports! {
-    /// The writer takes its inputs, swapping their buffers into the chunk for its thread (the plan copies them for it,
-    /// if something else needs them after it).
-    inputs: pub struct Inputs {
-        continuous: Take<Continuous>,
-        events: Take<Events>,
-    }
+ephys_rs::ports! {
+    // The writer takes its inputs, swapping their buffers into the chunk for its thread (the plan copies them for it,
+    // if something else needs them after it).
+    continuous: DataStreamIn<Continuous> take,
+    events: DataStreamIn<Events> take,
+    /// Where the writer sends what it's recorded, once it's finished (see `after_recording`): on the right, as
+    /// what it sets off comes after it.
+    after_recording: ValInCmdOut<FileInput, (ProcessFiles,)> = "after recording" flipped,
 }
 
 impl Node<Edges> for WriteRaw {
-    type Inputs = Inputs;
-    type Outputs = NoPorts;
+    type Ports = Ports;
     type State = Recorder;
     type WorkerState = ();
     /// What it shows, for its window.
@@ -124,13 +122,15 @@ impl Node<Edges> for WriteRaw {
         TreeShake::needing_all(recording && inputs.contains(&true), inputs.len())
     }
 
-    /// On the right, as what it sets off comes after it: where it sends what it's recorded, once it's finished (see
-    /// `after_recording`).
-    fn list_ports_val_cmd(&self) -> Vec<Port<Edges>> {
-        vec![Port::val_in_cmd_out("after recording", ValueKind::FileInput, &[CommandKind::ProcessFiles]).flipped()]
+    fn val_out(&self) -> NoPorts {
+        NoPorts
     }
 
-    fn output_streams(&self, _inputs: &Inputs) -> NoPorts {
+    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<Edges>) {
+        match command {}
+    }
+
+    fn output_streams(&self, _inputs: &DataStreamIn) -> NoPorts {
         NoPorts
     }
 
@@ -159,11 +159,11 @@ impl Node<Edges> for WriteRaw {
         if context.same_streams() && !context.recording_changed {
             return Prepared::nothing().into();
         }
-        let Inputs { continuous, events } = Inputs::of(context.inputs);
+        let DataStreamIn { continuous, events } = DataStreamIn::of(context.inputs);
         let writing = context.recording.map(|recording| {
             let folder = recording_path(recording.base_directory(), recording.start_requested_date());
             let files = RawFiles::open(&folder, continuous, events);
-            let after = after_recording(context.cmd_sender(AFTER_RECORDING));
+            let after = after_recording(context.cmd_sender(ValInCmdOut::after_recording));
             Chunk::writing(&folder, continuous, events, files, after)
         });
         Prepared::shared(Recorder { writing }).into()
@@ -173,7 +173,7 @@ impl Node<Edges> for WriteRaw {
     fn process(
         &self,
         pass: &mut PassContext<Edges>,
-        inputs: Inputs<Buffers>,
+        inputs: DataStreamIn<Buffers>,
         _: NoPorts,
         recorder: &mut Recorder,
         _: &mut (),
@@ -207,7 +207,7 @@ impl Node<Edges> for WriteRaw {
         ephys_rs::gui::node_window::standard(self, ui, context, |_, ui, context| {
             location_summary(ui, context.base_directory, "a folder");
             ui.add_space(4.0);
-            let recording: Vec<String> = Inputs::ports()
+            let recording: Vec<String> = DataStreamIn::ports()
                 .iter()
                 .zip(context.inputs)
                 .filter_map(|(input, stream)| stream.map(|s| format!("{}: {}", input.name(), s.summary())))
@@ -223,7 +223,7 @@ impl Node<Edges> for WriteRaw {
         });
     }
 
-    fn warnings(&self, inputs: &Inputs) -> Vec<String> {
+    fn warnings(&self, inputs: &DataStreamIn) -> Vec<String> {
         require_input(inputs, "something to record")
     }
 }

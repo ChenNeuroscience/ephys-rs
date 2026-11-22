@@ -86,6 +86,10 @@ pub struct CameraConfig {
     pub gain: Control,
 }
 
+/// A Camera publishes its settings, and is told new ones with this command, holding them.
+#[derive(Debug)]
+pub struct SetCamera(pub CameraConfig);
+
 impl Default for CameraConfig {
     fn default() -> Self {
         CameraConfig {

@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use eframe::egui;
 
-use crate::engine::NodeId;
+use crate::engine::{CommandOf, Edges, Includes, NodeId};
 
 /// A command goes to a node through one of the node's ValCmd edges, or from the node to itself.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -97,29 +97,34 @@ impl Drop for Commands {
     }
 }
 
-/// A node keeps one of these to send commands of the program's `C` later, from any thread: through one of its value
-/// edges (a writer's "after recording", say), or to itself.
-pub struct CmdSender<C> {
+/// A node keeps one of these to send commands later, from any thread, through one of its controls (a writer's "after
+/// recording", say: see `crate::engine::Control`). It sends only the commands in the control's tuple of them, `S`, as
+/// the program's `E` has them.
+pub struct CmdSender<E, S> {
     commands: Arc<Commands>,
     address: Address,
-    command: PhantomData<fn(C)>,
+    types: PhantomData<fn(E, S)>,
 }
 
-impl<C> Clone for CmdSender<C> {
+impl<E, S> Clone for CmdSender<E, S> {
     fn clone(&self) -> Self {
-        CmdSender { commands: self.commands.clone(), address: self.address, command: PhantomData }
+        CmdSender { commands: self.commands.clone(), address: self.address, types: PhantomData }
     }
 }
 
-impl<C: Any + Send> CmdSender<C> {
+impl<E: Edges, S> CmdSender<E, S> {
     /// A sender of commands to the node at `address`, through `commands`.
     pub fn new(commands: Arc<Commands>, address: Address) -> Self {
-        CmdSender { commands, address, command: PhantomData }
+        CmdSender { commands, address, types: PhantomData }
     }
 
-    /// This sends `command`. The app delivers it as soon as it can, following the edge then (see `Address`).
-    pub fn send(&self, command: C) {
-        self.commands.send(self.address, command);
+    /// This sends `command`, one of those the control sends. The app delivers it as soon as it can, following the edge
+    /// then (see `Address`).
+    pub fn send<C: CommandOf<E>, I>(&self, command: C)
+    where
+        S: Includes<C, I>,
+    {
+        self.commands.send(self.address, command.wrap());
     }
 
     /// Where the sender sends.
@@ -134,15 +139,24 @@ mod tests {
 
     #[test]
     fn a_sender_sends_through_the_queue_to_its_address() {
+        use crate::Command;
+        use crate::standard::other::run_command::ProcessFiles;
+        let files = |name: &str| ProcessFiles(vec![name.into()]);
         let commands = Arc::new(Commands::default());
         let address = Address::Port { from: NodeId(1), val_in_idx: 2 };
-        let sender = CmdSender::<u32>::new(commands.clone(), address);
-        sender.send(7);
-        sender.clone().send(8);
-        CmdSender::<u32>::new(commands.clone(), Address::Itself(NodeId(3))).send(9);
+        let sender = CmdSender::<crate::Edges, (ProcessFiles,)>::new(commands.clone(), address);
+        sender.send(files("a"));
+        sender.clone().send(files("b"));
         commands.request_recording(NodeId(4), true);
-        let sent = commands.take_commands::<u32>();
-        assert_eq!(sent, [(address, 7), (address, 8), (Address::Itself(NodeId(3)), 9)]);
+        let sent: Vec<_> =
+            commands.take_commands::<Command>().into_iter().map(|(to, c)| (to, format!("{c:?}"))).collect();
+        assert_eq!(
+            sent,
+            [
+                (address, format!("{:?}", Command::from(files("a")))),
+                (address, format!("{:?}", Command::from(files("b"))))
+            ]
+        );
         assert!(commands.take().is_empty(), "taken, the request to record with them");
     }
 }

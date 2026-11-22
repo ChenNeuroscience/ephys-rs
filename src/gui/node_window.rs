@@ -75,7 +75,9 @@ pub fn standard<E: Edges, N: Node<E>>(
                         state.summary(role, port_idx).unwrap_or_else(|| "not connected".into())
                     }
                     PortRole::ValOutCmdIn => state.summary(role, port_idx).unwrap_or_default(),
-                    PortRole::ValInCmdOut | PortRole::ValIn if context.control_connected(val_in_idx) => {
+                    PortRole::ValInCmdOut | PortRole::ValIn
+                        if context.val_ins.get(val_in_idx).is_some_and(Option::is_some) =>
+                    {
                         "connected".into()
                     }
                     PortRole::ValInCmdOut | PortRole::ValIn => "not connected".into(),

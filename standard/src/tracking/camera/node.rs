@@ -5,21 +5,20 @@ use eframe::egui::{self, RichText};
 use serde::{Deserialize, Serialize};
 
 use super::capture::{Capture, State};
-use super::{CameraConfig, CameraControls, CameraStats, CaptureStats, Control, Range, Source};
+use super::{CameraConfig, CameraControls, CameraStats, CaptureStats, Control, Range, SetCamera, Source};
+use crate::Edges;
 use crate::standard::pool::Pool;
 use crate::standard::tracking::Video;
 use crate::standard::widgets::{setting, settings_grid};
-use crate::{Command, CommandKind, Edges, PublishedValue, ValueKind};
 use ephys_rs::engine::{
     Buffers, Category, CommandContext, CommandSource, Flow, NoPorts, Node, NodeInfo, NodeThread, PassContext,
-    PoolStatus, Port, Prepare, PrepareContext, Prepared, Suggestion, ThreadContext, UiContext, UserDecision,
+    PoolStatus, Prepare, PrepareContext, Prepared, Suggestion, ThreadContext, UiContext, UserDecision,
 };
 
-ephys_rs::data_ports! {
-    outputs: pub struct Outputs {
-        video: Out<Video>,
-        stats: Out<CameraStats>,
-    }
+ephys_rs::ports! {
+    video: DataStreamOut<Video>,
+    stats: DataStreamOut<CameraStats>,
+    camera: ValOutCmdIn<CameraConfig, (SetCamera,)>,
 }
 
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -72,6 +71,7 @@ impl Camera {
 }
 
 impl Node<Edges> for Camera {
+    type Ports = Ports;
     const INFO: NodeInfo = NodeInfo {
         name: "Camera",
         category: Category::Source,
@@ -79,8 +79,6 @@ impl Node<Edges> for Camera {
                       synthetic_streams/.",
     };
 
-    type Inputs = NoPorts;
-    type Outputs = Outputs;
     type State = Capturing;
     type WorkerState = ();
     /// What it shows, for its window.
@@ -88,22 +86,21 @@ impl Node<Edges> for Camera {
     type UiState = ();
     type GlobalSettings = super::SpinnakerSettings;
 
-    fn output_streams(&self, _inputs: &NoPorts) -> Outputs {
+    fn output_streams(&self, _inputs: &NoPorts) -> DataStreamOut {
         let [width, height] = self.settings.frame_size;
-        Outputs { video: Some(Video { width, height, fps: self.settings.frame_rate as f32 }), stats: Some(CameraStats) }
+        DataStreamOut {
+            video: Some(Video { width, height, fps: self.settings.frame_rate as f32 }),
+            stats: Some(CameraStats),
+        }
     }
 
-    fn list_ports_val_cmd(&self) -> Vec<Port<Edges>> {
-        vec![Port::val_out_cmd_in("camera", ValueKind::Camera, &[CommandKind::SetCamera])]
+    fn val_out(&self) -> ValOutCmdIn {
+        ValOutCmdIn { camera: self.settings }
     }
 
-    fn val_out(&self, _port_idx: usize) -> PublishedValue {
-        PublishedValue::Camera(self.settings)
-    }
-
-    fn on_command(&mut self, _from: CommandSource, command: Command, _context: &mut CommandContext<Edges>) {
-        if let Command::SetCamera(settings) = command {
-            self.settings = settings;
+    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<Edges>) {
+        match command {
+            CmdIn::SetCamera(SetCamera(settings)) => self.settings = settings,
         }
     }
 
@@ -167,7 +164,7 @@ impl Node<Edges> for Camera {
         &self,
         pass: &mut PassContext<Edges>,
         _inputs: NoPorts,
-        outputs: Outputs<Buffers>,
+        outputs: DataStreamOut<Buffers>,
         capturing: &mut Capturing,
         _: &mut (),
     ) {

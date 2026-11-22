@@ -717,7 +717,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         self.bake();
     }
 
-    /// The app has the nodes drop what they were asked to do only for now (see `CommandsEnum::clear_transient_state`)
+    /// The app has the nodes drop what they were asked to do only for now (see `Node::clear_transient_state`)
     /// with this, as if they'd never been asked: not as an edit.
     fn clear_transient(&mut self) {
         self.graph.clear_transient_state();
@@ -899,7 +899,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             let copy = self.graph.add(node, pos);
             // A copy isn't asked to do what the original was.
             if let Some(entry) = self.graph.get_mut(copy) {
-                crate::engine::clear_transient_state(copy, entry);
+                crate::engine::clear_transient_state(entry);
             }
             copies.insert(*id, copy);
         }
@@ -2062,7 +2062,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> History<N, A> {
     }
 
     /// The history has the current item's nodes drop what they were asked to do only for now (see
-    /// `CommandsEnum::clear_transient_state`) with this, as if they'd never been asked.
+    /// `Node::clear_transient_state`) with this, as if they'd never been asked.
     fn clear_transient(&mut self) {
         let mut graph = (*self.current.graph).clone();
         graph.clear_transient_state();
@@ -2072,7 +2072,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> History<N, A> {
     }
 
     /// Undo and redo restore the current item, without what its nodes were asked to do only for now (see
-    /// `CommandsEnum::clear_transient_state`), so bringing it back doesn't start anything again. The item's changed to match, so it isn't taken as an edit.
+    /// `Node::clear_transient_state`), so bringing it back doesn't start anything again. The item's changed to match, so it isn't taken as an edit.
     fn restored(&mut self) -> (Graph<N>, Annotations<A>) {
         self.clear_transient();
         ((*self.current.graph).clone(), (*self.current.annotations).clone())
@@ -2368,7 +2368,7 @@ mod tests {
     fn files_sent_reach_their_node_with_nothing_running() {
         use crate::commands::{Address, CmdSender};
         use crate::components::Nodes;
-        use crate::standard::other::run_command::Files;
+        use crate::standard::other::run_command::ProcessFiles;
         let mut harness = harness();
         let node_type = NodeType::RunCommand;
         let id = harness.state_mut().graph.add(Nodes::create(node_type), [0.0, 0.0]);
@@ -2378,16 +2378,17 @@ mod tests {
             node.settings.arguments = ran.display().to_string();
             node.settings.mode = crate::standard::other::run_command::Mode::Once;
         }
-        let sender = CmdSender::new(harness.state().commands.clone(), Address::Itself(id));
+        let sender =
+            CmdSender::<crate::Edges, (ProcessFiles,)>::new(harness.state().commands.clone(), Address::Itself(id));
 
         harness.state_mut().graph.get_mut(id).unwrap().disabled = true;
-        sender.send(crate::Command::ProcessFiles(Files(Vec::new())));
+        sender.send(ProcessFiles(Vec::new()));
         harness.run_steps(1);
         std::thread::sleep(std::time::Duration::from_millis(100));
         assert!(!ran.exists(), "disabled, it's not for it");
 
         harness.state_mut().graph.get_mut(id).unwrap().disabled = false;
-        sender.send(crate::Command::ProcessFiles(Files(Vec::new())));
+        sender.send(ProcessFiles(Vec::new()));
         assert!(harness.state().runner.is_none());
         harness.run_steps(1);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -2408,7 +2409,10 @@ mod tests {
         let detector = node_named(harness.state(), "Spike Detector");
         let thresholds = crate::standard::spikes::Thresholds { values: vec![60.0], ..Default::default() };
         let address = crate::commands::Address::Itself(detector);
-        harness.state().commands.send(address, crate::Command::SetThresholds(thresholds.clone()));
+        harness
+            .state()
+            .commands
+            .send(address, crate::Command::SetThresholds(crate::standard::spikes::SetThresholds(thresholds.clone())));
         harness.state_mut().perform(&ctx, Action::Play);
         assert!(harness.state().runner.is_none());
         harness.run_steps(2);
@@ -2424,7 +2428,10 @@ mod tests {
         harness.state_mut().set_recording(Some(Arc::new(engine::Recording::default())));
         let thresholds = crate::standard::spikes::Thresholds { values: vec![60.0], ..Default::default() };
         let address = crate::commands::Address::Itself(detector);
-        harness.state().commands.send(address, crate::Command::SetThresholds(thresholds));
+        harness
+            .state()
+            .commands
+            .send(address, crate::Command::SetThresholds(crate::standard::spikes::SetThresholds(thresholds)));
         harness.run_steps(2);
         assert_eq!(harness.state().graph.get(detector).unwrap().node.val_out(0), before);
     }
@@ -2458,10 +2465,9 @@ mod tests {
         harness.state_mut().graph.command(
             detector,
             engine::CommandSource::Itself,
-            crate::Command::SetThresholds(crate::standard::spikes::Thresholds {
-                values: vec![60.0],
-                ..Default::default()
-            }),
+            crate::Command::SetThresholds(crate::standard::spikes::SetThresholds(
+                crate::standard::spikes::Thresholds { values: vec![60.0], ..Default::default() },
+            )),
             None,
             None,
             false,
@@ -2641,10 +2647,9 @@ mod tests {
         harness.state_mut().graph.command(
             gain_free,
             engine::CommandSource::Itself,
-            crate::Command::SetThresholds(crate::standard::spikes::Thresholds {
-                values: vec![60.0],
-                ..Default::default()
-            }),
+            crate::Command::SetThresholds(crate::standard::spikes::SetThresholds(
+                crate::standard::spikes::Thresholds { values: vec![60.0], ..Default::default() },
+            )),
             None,
             None,
             false,
@@ -3110,10 +3115,9 @@ mod tests {
             app.graph.command(
                 detector,
                 engine::CommandSource::Itself,
-                crate::Command::SetThresholds(crate::standard::spikes::Thresholds {
-                    values: vec![77.0],
-                    ..Default::default()
-                }),
+                crate::Command::SetThresholds(crate::standard::spikes::SetThresholds(
+                    crate::standard::spikes::Thresholds { values: vec![77.0], ..Default::default() },
+                )),
                 None,
                 None,
                 false,
@@ -3723,7 +3727,7 @@ mod tests {
         harness.run_steps(2);
         // Just the gains, from the viewer's toolbar.
         if let Some(Nodes::SpikeViewer(v)) = harness.state_mut().graph.get_mut(viewer).map(|e| &mut e.node) {
-            v.detect = crate::standard::spikes::spike_viewer::Detect::Gains;
+            v.detect = crate::standard::spikes::spike_viewer::ToDetect::Gains;
         }
         harness.run_steps(2);
         // Not the Run menu's: the viewer's, drawn after it.
@@ -3738,7 +3742,10 @@ mod tests {
         // Gains its passes send it are applied, as an edit.
         let gains = crate::standard::spikes::Gains { gains: vec![0.25], ..Default::default() };
         let address = crate::commands::Address::Itself(gain);
-        harness.state().commands.send(address, crate::Command::SetGains(gains.clone()));
+        harness
+            .state()
+            .commands
+            .send(address, crate::Command::SetGains(crate::standard::spikes::SetGains(gains.clone())));
         harness.run_steps(2);
         assert_eq!(harness.state().graph.get(gain).unwrap().node.val_out(0), gains.into(), "applied");
         harness.state_mut().perform(&ctx, Action::Play);

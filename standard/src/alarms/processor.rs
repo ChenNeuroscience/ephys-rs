@@ -4,35 +4,32 @@
 //! small size, and what's selected can change without waiting for a new period. An alarm doesn't go off until it's seen
 //! a whole period.
 
-use ephys_rs::engine::{Buffers, InputPorts, TreeShake};
+use ephys_rs::engine::{Buffers, DataStreamInPorts, TreeShake};
 use std::collections::VecDeque;
 
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 
 use super::settings::alarms_ui;
-use super::{Alarm, AlarmKind, AlarmState, AlarmStates, Alarms, Phase, Source};
+use super::{Alarm, AlarmKind, AlarmState, AlarmStates, Alarms, Phase, SetAlarms, Source};
+use crate::Edges;
 use crate::standard::ephys::{Continuous, Events};
 use crate::standard::spikes::Spikes;
 use crate::standard::tracking::Positions;
 use crate::standard::widgets::require_input;
-use crate::{Command, CommandKind, Edges, PublishedValue, ValueKind};
 use ephys_rs::engine::{
-    Category, CommandContext, CommandSource, Node, NodeInfo, PassContext, PassState, Port, Prepare, PrepareContext,
-    Prepared, UiContext,
+    Category, CommandContext, CommandSource, Node, NodeInfo, PassContext, PassState, Prepare, PrepareContext, Prepared,
+    UiContext,
 };
 
-ephys_rs::data_ports! {
-    /// An input for each of the alarms' sources, in the order of `Source::ALL`.
-    inputs: pub struct Inputs {
-        spikes: In<Spikes>,
-        lfp: In<Continuous>,
-        positions: In<Positions>,
-        ttl: In<Events>,
-    }
-    outputs: pub struct Outputs {
-        alarms: Out<AlarmStates>,
-    }
+ephys_rs::ports! {
+    // An input for each of the alarms' sources, in the order of `Source::ALL`.
+    spikes: DataStreamIn<Spikes>,
+    lfp: DataStreamIn<Continuous>,
+    positions: DataStreamIn<Positions>,
+    ttl: DataStreamIn<Events>,
+    alarms: DataStreamOut<AlarmStates>,
+    alarms: ValOutCmdIn<Alarms, (SetAlarms,)>,
 }
 
 /// How many bins a period's cut into. At the shortest period, that's a bin a pass.
@@ -212,7 +209,7 @@ fn judge(alarm: &Alarm, window: &Window, lfp_rate: f64, fps: f64) -> AlarmState 
 }
 
 /// Whether the pass has data from the source an alarm of `kind` watches.
-fn given(kind: &AlarmKind, inputs: &Inputs<Buffers>) -> bool {
+fn given(kind: &AlarmKind, inputs: &DataStreamIn<Buffers>) -> bool {
     match kind.source() {
         Source::Spikes => inputs.spikes.is_some(),
         Source::Lfp => inputs.lfp.is_some(),
@@ -222,24 +219,24 @@ fn given(kind: &AlarmKind, inputs: &Inputs<Buffers>) -> bool {
 }
 
 /// Adds a pass's data, from the source an alarm of `kind` watches, to `window`.
-fn count(kind: &AlarmKind, inputs: &Inputs<Buffers>, window: &mut Window) {
+fn count(kind: &AlarmKind, inputs: &DataStreamIn<Buffers>, window: &mut Window) {
     match (kind, inputs) {
-        (AlarmKind::SpikeRate { .. }, Inputs { spikes: Some(spikes), .. }) => {
+        (AlarmKind::SpikeRate { .. }, DataStreamIn { spikes: Some(spikes), .. }) => {
             for spike in &spikes.spikes {
                 window.count(spike.group as usize, 1);
             }
         }
-        (AlarmKind::LfpSaturation { level_uv, .. }, Inputs { lfp: Some(continuous), .. }) => {
+        (AlarmKind::LfpSaturation { level_uv, .. }, DataStreamIn { lfp: Some(continuous), .. }) => {
             for channel in 0..continuous.channels {
                 let saturated = continuous.channel(channel).iter().filter(|x| x.abs() >= *level_uv).count();
                 window.count(channel, saturated as u32);
             }
         }
-        (AlarmKind::MissingPositions { .. }, Inputs { positions: Some(positions), .. }) => {
+        (AlarmKind::MissingPositions { .. }, DataStreamIn { positions: Some(positions), .. }) => {
             let found = positions.samples.iter().filter(|s| s.leds[0].is_some()).count();
             window.count(0, found as u32);
         }
-        (AlarmKind::TtlCount { .. }, Inputs { ttl: Some(events), .. }) => {
+        (AlarmKind::TtlCount { .. }, DataStreamIn { ttl: Some(events), .. }) => {
             for event in events.events.iter().filter(|e| e.high) {
                 window.count(event.line as usize, 1);
             }
@@ -249,7 +246,7 @@ fn count(kind: &AlarmKind, inputs: &Inputs<Buffers>, window: &mut Window) {
 }
 
 /// What the alarms have to choose from, given the processor's inputs.
-pub fn streams(inputs: &Inputs) -> AlarmStates {
+pub fn streams(inputs: &DataStreamIn) -> AlarmStates {
     let mut states = AlarmStates::default();
     if let Some(spikes) = inputs.spikes {
         (states.groups, states.group_size) = (spikes.groups(), spikes.group_size);
@@ -272,8 +269,7 @@ impl AlarmProcessor {
 }
 
 impl Node<Edges> for AlarmProcessor {
-    type Inputs = Inputs;
-    type Outputs = Outputs;
+    type Ports = Ports;
     type State = Watching;
     type WorkerState = ();
     type Shared = ();
@@ -295,21 +291,17 @@ impl Node<Edges> for AlarmProcessor {
         TreeShake { runs: given && outputs.contains(&true), needs }
     }
 
-    fn output_streams(&self, inputs: &Inputs) -> Outputs {
-        Outputs { alarms: Some(streams(inputs)) }
+    fn output_streams(&self, inputs: &DataStreamIn) -> DataStreamOut {
+        DataStreamOut { alarms: Some(streams(inputs)) }
     }
 
-    fn list_ports_val_cmd(&self) -> Vec<Port<Edges>> {
-        vec![Port::val_out_cmd_in("alarms", ValueKind::Alarms, &[CommandKind::SetAlarms])]
+    fn val_out(&self) -> ValOutCmdIn {
+        ValOutCmdIn { alarms: self.alarms.clone() }
     }
 
-    fn val_out(&self, _port_idx: usize) -> PublishedValue {
-        PublishedValue::Alarms(self.alarms.clone())
-    }
-
-    fn on_command(&mut self, _from: CommandSource, command: Command, _context: &mut CommandContext<Edges>) {
-        if let Command::SetAlarms(alarms) = command {
-            self.alarms = alarms;
+    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<Edges>) {
+        match command {
+            CmdIn::SetAlarms(SetAlarms(alarms)) => self.alarms = alarms,
         }
     }
 
@@ -317,7 +309,7 @@ impl Node<Edges> for AlarmProcessor {
         if context.same_streams() {
             return Prepared::nothing().into();
         }
-        let inputs = Inputs::of(context.inputs);
+        let inputs = DataStreamIn::of(context.inputs);
         let stream = streams(&inputs);
         let lfp_rate = inputs.lfp.map(|continuous| continuous.sample_rate as f64);
         let fps = inputs.positions.map(|positions| positions.fps as f64);
@@ -334,8 +326,8 @@ impl Node<Edges> for AlarmProcessor {
     fn process(
         &self,
         pass: &mut PassContext<Edges>,
-        inputs: Inputs<Buffers>,
-        outputs: Outputs<Buffers>,
+        inputs: DataStreamIn<Buffers>,
+        outputs: DataStreamOut<Buffers>,
         watching: &mut Watching,
         _: &mut (),
     ) {
@@ -363,11 +355,11 @@ impl Node<Edges> for AlarmProcessor {
     fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
         let Some(ui) = ui else { return };
         ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, context| {
-            alarms_ui(ui, &mut node.alarms, streams(&Inputs::of(context.inputs)));
+            alarms_ui(ui, &mut node.alarms, streams(&DataStreamIn::of(context.inputs)));
         });
     }
 
-    fn warnings(&self, inputs: &Inputs) -> Vec<String> {
+    fn warnings(&self, inputs: &DataStreamIn) -> Vec<String> {
         require_input(inputs, "something to watch")
     }
 }
@@ -402,8 +394,8 @@ mod tests {
 
     impl<'a> Input<'a> {
         /// The processor's inputs, with this on its own.
-        fn alone(self) -> Inputs<Buffers<'a>> {
-            let mut inputs = Inputs { spikes: None, lfp: None, positions: None, ttl: None };
+        fn alone(self) -> DataStreamIn<Buffers<'a>> {
+            let mut inputs = DataStreamIn { spikes: None, lfp: None, positions: None, ttl: None };
             match self {
                 Input::Spikes(spikes) => inputs.spikes = Some(spikes),
                 Input::Lfp(lfp) => inputs.lfp = Some(lfp),
@@ -415,7 +407,7 @@ mod tests {
     }
 
     impl Run {
-        fn new(alarms: Alarms, inputs: Inputs) -> Self {
+        fn new(alarms: Alarms, inputs: DataStreamIn) -> Self {
             let processor = AlarmProcessor { alarms };
             let watching = ephys_rs::engine::fresh_state(&processor, &inputs);
             Run { processor, watching }
@@ -426,7 +418,7 @@ mod tests {
             let mut output = AlarmStates::default().buffer(PASS_DURATION);
             for sequence in 0..(seconds / PASS_DURATION).round() as u64 {
                 let mut pass = PassContext::new(sequence, PASS_DURATION);
-                let outputs = Outputs { alarms: &mut output };
+                let outputs = DataStreamOut { alarms: &mut output };
                 self.processor.process(&mut pass, input.alone(), outputs, &mut self.watching, &mut ());
             }
             output.states.clone()
@@ -473,8 +465,8 @@ mod tests {
         buffer
     }
 
-    fn spike_input() -> Inputs {
-        Inputs { spikes: Some(SPIKES), ..Default::default() }
+    fn spike_input() -> DataStreamIn {
+        DataStreamIn { spikes: Some(SPIKES), ..Default::default() }
     }
 
     #[test]
@@ -509,7 +501,7 @@ mod tests {
     fn lfp_is_the_fraction_of_time_in_range() {
         let stream = Continuous { channels: 2, sample_rate: 1000.0 };
         let kind = AlarmKind::LfpSaturation { level_uv: 100.0, low: 90.0, selection: Selection::default() };
-        let mut run = Run::new(one(kind, 1.0), Inputs { lfp: Some(stream), ..Default::default() });
+        let mut run = Run::new(one(kind, 1.0), DataStreamIn { lfp: Some(stream), ..Default::default() });
         let mut buffer = stream.buffer(PASS_DURATION);
         buffer.len = 20;
         // A quarter of each pass on the second channel, either side of zero.
@@ -524,7 +516,7 @@ mod tests {
     fn positions_are_the_fraction_of_samples_with_leds() {
         let stream = Positions { fps: 50.0, width: 100, height: 100, source: "test" };
         let alarms = one(AlarmKind::MissingPositions { low: 80.0 }, 1.0);
-        let mut run = Run::new(alarms, Inputs { positions: Some(stream), ..Default::default() });
+        let mut run = Run::new(alarms, DataStreamIn { positions: Some(stream), ..Default::default() });
         let sample = |leds| PositionSample { frame: 0, time: 0.0, leds, timing_led: None, pixels_per_metre: f32::NAN };
         let found = PositionsBuffer { samples: vec![sample([Some(Blob { x: 1.0, y: 1.0, area: 1 }), None])] };
         let state = run.run(Input::Positions(&found), 2.0);
@@ -541,7 +533,7 @@ mod tests {
         let stream = Events { lines: 2, sample_rate: 1000.0 };
         let selection = Selection { together: true, ..Default::default() };
         let alarms = one(AlarmKind::TtlCount { low: 40.0, high: 60.0, selection }, 1.0);
-        let mut run = Run::new(alarms, Inputs { ttl: Some(stream), ..Default::default() });
+        let mut run = Run::new(alarms, DataStreamIn { ttl: Some(stream), ..Default::default() });
         let change = |high| Event { sample: 0, line: 0, high, time: None };
         let events = EventsBuffer { events: vec![change(true), change(false)], pass_samples: 20 };
         let state = run.run(Ttl(&events), 2.0);
@@ -555,7 +547,7 @@ mod tests {
     fn a_ttl_up_alarm_follows_its_line_at_once() {
         let stream = Events { lines: 2, sample_rate: 1000.0 };
         let mut run =
-            Run::new(one(AlarmKind::TtlUp { line: 1 }, 1.0), Inputs { ttl: Some(stream), ..Default::default() });
+            Run::new(one(AlarmKind::TtlUp { line: 1 }, 1.0), DataStreamIn { ttl: Some(stream), ..Default::default() });
         let pass = |events: Vec<Event>| EventsBuffer { events, pass_samples: 20 };
         let change = |line, high| Event { sample: 0, line, high, time: None };
         assert_eq!(run.run(Ttl(&pass(Vec::new())), 0.02).phase, Phase::Clear, "with no period to wait for");

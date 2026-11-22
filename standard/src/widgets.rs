@@ -3,7 +3,7 @@
 use eframe::egui;
 
 use crate::{DataStream, Edges};
-use ephys_rs::engine::{EdgeTypesEnum, InputPorts, UiContext};
+use ephys_rs::engine::{DataStreamInPorts, EdgeTypesEnum, ReadsValIn, UiContext};
 use ephys_rs::gui::widgets::{Icon, small_icon_button, small_toggle_button};
 use ephys_rs::theme::Colours;
 
@@ -45,7 +45,7 @@ pub fn combo<T: PartialEq + Copy>(
 
 /// A node that needs something connected warns until something is. This is that warning, if none of `inputs` has a
 /// stream, asking for `what`.
-pub fn require_input(inputs: &impl InputPorts<Edges>, what: &str) -> Vec<String> {
+pub fn require_input(inputs: &impl DataStreamInPorts<Edges>, what: &str) -> Vec<String> {
     if inputs.streams().iter().all(|i| i.is_none()) { vec![format!("Connect {what}")] } else { Vec::new() }
 }
 
@@ -121,12 +121,12 @@ pub fn mark_mixed(ui: &egui::Ui, button: &egui::Response) {
 
 /// A settings button, in the part of a view it's about, that opens the window of the node control `control` connects to:
 /// `what` is that node. It's greyed out while the control's not connected.
-pub fn open_settings_button(ui: &mut egui::Ui, context: &mut UiContext<Edges>, control: usize, what: &str) {
+pub fn open_settings_button(ui: &mut egui::Ui, context: &mut UiContext<Edges>, control: impl ReadsValIn, what: &str) {
     let tip = format!("Open the {what}'s settings");
-    let connected = context.control_connected(control);
+    let connected = context.val_in_connected(control);
     let button = ui.add_enabled_ui(connected, |ui| small_icon_button(ui, Icon::Settings, what, &tip)).inner;
     if button.clicked() {
-        context.open_control_target(control);
+        context.open_val_in_target(control);
     }
 }
 

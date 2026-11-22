@@ -20,12 +20,11 @@ else.
 
 The parts of the API are there for three different reasons, and it helps to know which is which:
 
-- **The data model: what the node is and does.** These have to be right for the node to work: its data ports (declared
-  with `data_ports!`, and `output_streams`), its ValCmd ports (`list_ports_val_cmd`: the values it publishes, `val_out`,
-  and those of others it reads), the commands it takes (`on_command`), `process` and its state (prepared for each
-  snapshot: `prepare_for_snapshot`).
+- **The data model: what the node is and does.** These have to be right for the node to work: its ports (declared
+  with `ports!`), the streams on its outputs (`output_streams`), the values it publishes (`val_out`), the commands it
+  takes (`on_command`), `process` and its state (prepared for each snapshot: `prepare_for_snapshot`).
 - **Optimisation: how cheaply it runs.** Leaving these at their defaults is always correct, only slower or using more
-  memory: inputs it takes and outputs it makes in place (in its `data_ports!`), `evaluate_tree_shake` (one exception: a writer says it only runs while recording,
+  memory: inputs it takes and outputs it makes in place (in its `ports!`), `evaluate_tree_shake` (one exception: a writer says it only runs while recording,
   with something to record, or it would write empty files), worker state instead of shared state where nothing's carried over (`WorkerState`), and pools for buffers its threads
   swap.
 - **The experience of using it: how it looks and behaves for people.** These change nothing it computes: its category,
@@ -37,39 +36,43 @@ The parts of the API are there for three different reasons, and it helps to know
 
 - `INFO`: its name, category (source, processing, visualisation, recording or other) and description. The category
   is only a label (see above).
-- Its data ports, declared on its type with `data_ports!` (see [`data_ports`](../src/engine/data_ports.rs)): a struct
-  of its inputs and a struct of its outputs, each field a port typed by its data stream, named by the field (or by text
-  after it). The node names them as `type Inputs` and `type Outputs` (or `NoPorts`, for none). Its ports are fixed by
-  its type, whatever its settings; only the streams on them change.
+- Its ports, declared on its type with `ports!` (see [`ports`](../src/engine/ports.rs)), each named by its field (or
+  by text after it), of one of the five roles (`PortRole`), and typed by what it carries: a data stream, or a value and
+  the commands it takes or sends (see [Edges](edges.md)). The node names them as `type Ports = Ports;` (or `NoPorts`,
+  for none). Its ports are fixed by its type, whatever its settings; only the streams on them change.
 
   ```rust
-  ephys_rs::data_ports! {
-      inputs: pub struct Inputs {
-          continuous: In<Continuous>,
-      }
-      outputs: pub struct Outputs {
-          spikes: Out<Spikes>,
-      }
+  ephys_rs::ports! {
+      continuous: DataStreamIn<Continuous>,
+      spikes: DataStreamOut<Spikes>,
+      thresholds: ValOutCmdIn<Thresholds, (SetThresholds, Detect)>,
+      gains: ValInCmdOut<Gains, (SetGains, Detect)>,
   }
   ```
 
-  Saved graphs number a node's ports in the order they're declared, so reordering them needs a config patch.
+  The macro makes, in the node's module, a struct of each role's ports (`DataStreamIn`, `DataStreamOut`,
+  `ValOutCmdIn`), an enum of the commands the `ValOutCmdIn` ports take (`CmdIn`), and a handle to each port reading a
+  value (`ValInCmdOut::gains`, `ValIn::...`). Saved graphs number a node's ports in the order they're declared (each
+  role's apart), so reordering them needs a config patch.
 - `output_streams(inputs)`: the data stream on each output, given those on the inputs (each `None` while it can't be
   known: nothing connected, say), so a graph's streams are worked out before anything runs. In the structs' default
   form, each field is the stream on its port (`Option<Continuous>`), so an output's stream is always of its type.
 - `warnings(inputs)`: what's wrong (an input not connected, say), shown on the graph and in its window.
-- `list_ports_val_cmd()`: its ValCmd ports (see [Edges](edges.md#values-and-commands)), each a `Port`: where it publishes a value
-  (`ValOutCmdIn`, with `val_out` saying what it is now), and where it reads another node's, sending it commands
-  (`ValInCmdOut`) or not (`ValIn`, val-only). Each says the commands it accepts or sends (`&[CommandKind::SetGains]`,
-  say). Its `ValOutCmdIn` ports are numbered separately from its `ValInCmdOut` and `ValIn` ports, in the order listed.
-- `on_command(from, command, context)`: what it does with a command sent to it (see [Commands](#commands)).
+- `val_out()`: the values at its `ValOutCmdIn` ports, now (a `ValOutCmdIn`, or `NoPorts`): usually copies of its
+  settings.
+- `on_command(from, command, context)`: what it does with a command sent to it, as its `CmdIn` (see
+  [Commands](#commands)).
+
+A node without ports of a role still says so: `output_streams(&self, _: &NoPorts) -> NoPorts` for a node with no
+inputs or outputs, `val_out(&self) -> NoPorts`, and `on_command(.., command: CmdIn, ..) { match command {} }` for one
+that takes no commands. None of these has a default, so a node can't forget them.
 
 ## Running
 
 `process(pass, inputs, outputs, state, worker_state)` is called once a pass, on a worker thread. `inputs` and `outputs`
 are its own structs in the `Buffers` form: each input's buffer to read (`Option<&ContinuousBuffer>`, `None` if it isn't
 connected), and each output's to fill (`&mut SpikesBuffer`, already sized: nothing should be allocated per pass).
-[`PassContext`](../src/engine/pass_context.rs) has the rest: the values its ports read (`val_in::<T>(port)`), whether
+[`PassContext`](../src/engine/pass_context.rs) has the rest: the values its ports read (`val_in(ValIn::gains)`), whether
 it's recording, what it shares with the GUI, and where to send itself commands (`cmd_self`). `self` is the snapshot's
 settings: the latest, as of the pass. Trying a node out, a test hands it its structs directly:
 `node.process(&mut PassContext::new(0, PASS_DURATION), Inputs { continuous: Some(&input) }, Outputs { spikes: &mut out }, ..)`.
@@ -161,7 +164,7 @@ A view of its own (a viewer's, say) draws whatever it likes instead, and says ho
 convention, nodes with a view are. Keys its window answers to (G over a Spike Viewer's channel, say) go in
 `SHORTCUTS`, which the keyboard shortcuts' help lists. It gets a [`UiContext`](../src/engine/ui_context.rs):
 
-- `inputs`: the streams on its inputs; `val_in::<T>(port)`: the values its ports read; `cmd_out(port, command)`: a
+- `inputs`: the streams on its inputs; `val_in(port)`: the values its ports read, through their handles; `cmd_out(port, command)`: a
   command, through a port, to the node at its `ValOutCmdIn` (to edit a value, send the edited copy back, with
   `cmd_out_if_changed`).
 - `shared::<T>()`: what its passes share with it (its `Shared`, which is `T`), or what they did in the last run once
@@ -238,32 +241,32 @@ its window closed too.
 ## Commands
 
 Anything a node tells another to do is a command: setting a value it publishes (`SetGains`), starting auto detect
-(`Detect`), processing files (`ProcessFiles`). The program lists them in `edge_types!` (`commands:`), which makes its
-`Command` enum, with `CommandKind` naming them; every set is a command like any other, so the core knows nothing of
-settings. A command goes through a ValCmd edge, from the node's `ValInCmdOut` port to the node at the `ValOutCmdIn`
-end, which says which commands each of its ports accepts; or from a node to itself (`CommandSource::Itself`), from
-its passes (`PassContext::cmd_self`) or threads (`UiContext::self_sender`). It needs no pass, or even a run: the app
-delivers it on the GUI's thread, whatever's going on, to `Node::on_command(from, command, context)`, saying where it
-came from (`CommandSource::Port(n)`, `Itself`, or `App`). Most nodes match on the command alone:
+(`Detect`), processing files (`ProcessFiles`). Each is a type of its own, holding what it carries
+(`SetGains(pub Gains)`), and the program lists them in `edge_types!` (`commands:`), which makes its `Command` enum,
+with `CommandKind` naming them; every set is a command like any other, so the core knows nothing of settings. A command
+goes through a ValCmd edge, from the node's `ValInCmdOut` port to the node at the `ValOutCmdIn` end, each port saying
+which commands it sends or takes; or from a node to itself (`CommandSource::Itself`), from its passes
+(`PassContext::cmd_self`). It needs no pass, or even a run: the app delivers it on the GUI's thread, whatever's going
+on, to `Node::on_command(from, command, context)`, saying where it came from (`CommandSource::Port(n)` or `Itself`),
+as the node's `CmdIn`: an enum of the commands its `ValOutCmdIn` ports take, so the node matches every one, and none it
+doesn't take:
 
 ```rust
-fn on_command(&mut self, from: CommandSource, command: Command, _context: &mut CommandContext<Edges>) {
+fn on_command(&mut self, from: CommandSource, command: CmdIn, _context: &mut CommandContext<Edges>) {
     match command {
-        Command::SetGains(gains) => self.gains = gains,
-        Command::Detect(request) => request.apply(&mut self.gains.detect.started),
-        Command::ClearTransientState => self.gains.detect.started = None,
-        _ => {}
+        CmdIn::SetGains(SetGains(gains)) => self.gains = gains,
+        CmdIn::Detect(Detect(request)) => request.apply(&mut self.gains.detect.started),
     }
 }
 ```
 
-A window sends one through a port with `UiContext::cmd_out(port, command)`; the app delivers it once the window's
-drawn, so the next frame shows what changed. A node can keep a `CmdSender` for later, from any thread
-(`UiContext::cmd_sender(port)`, `PrepareContext::cmd_sender(port)`): a writer keeps one for its "after recording"
-port, to send its files once they're finished. A sender's addressed to the port, not the node at the other end: the
-app follows the edge as it delivers each command (see [`commands.rs`](../src/commands.rs)), so it goes where the edge
-points then. On their way, commands are carried boxed, so the queue (and the run, which holds it) needn't know the
-program's enum; what's sent and what's taken is always the enum.
+A window sends one through a port with `UiContext::cmd_out(ValInCmdOut::gains, SetGains(gains))`, and only a command
+that port's declared with compiles; the app delivers it once the window's drawn, so the next frame shows what changed.
+A node can keep a `CmdSender` for later, from any thread (`UiContext::cmd_sender(port)`,
+`PrepareContext::cmd_sender(port)`): a writer keeps one for its "after recording" port, to send its files once they're
+finished. A sender's addressed to the port, not the node at the other end: the app follows the edge as it delivers each
+command (see [`commands.rs`](../src/commands.rs)), so it goes where the edge points then. On their way, commands are
+carried boxed, so the queue (and the run, which holds it) needn't know the program's enum.
 
 While recording, what a command changes is undone if it changes how the graph processes, as any edit is.
 
@@ -274,12 +277,12 @@ Having a node do something over a while, with the data going by, is a command to
 node's window starts it, or a viewer sends `Detect` through the port reading the value. It's a field of the node's,
 so a change is a new snapshot: the node prepares for it (an auto detect makes room to sample into, comparing with
 `context.previous`, and lets go of it once it's clear), and runs while it's set (in its tree shake). Once the node's
-passes are done, they send the node what they found (`PassContext::cmd_self(Command::SetGains(gains))`), which clears
+passes are done, they send the node what they found (`PassContext::cmd_self(CmdIn::SetGains(SetGains(gains)))`), which clears
 it; until that takes over, the node's state says it's done. Anything that can see the value can tell how far along it
 is: an auto detect's value also says how long it samples for (`detect.seconds`), so a window, or a viewer reading it,
 estimates it from when it was started (`auto_detect::estimated_progress`). Being transient, it isn't kept: it isn't
-saved (`#[serde(skip)]`), and the app sends every node `Command::ClearTransientState` (the core's own command) when it
-restores a graph from its history (undo or redo), starts recording, or stops running, and a node it duplicates. The
+saved (`#[serde(skip)]`), and the app has every node drop it (`Node::clear_transient_state`) when it restores a graph
+from its history (undo or redo), starts recording, or stops running, and a node it duplicates. The
 [Continuous Gain](../standard/src/ephys/continuous_gain.rs), [Spike Gain](../standard/src/spikes/spike_gain.rs) and
 [Spike Detector](../standard/src/spikes/spike_detector.rs) work this way.
 

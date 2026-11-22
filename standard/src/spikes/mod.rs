@@ -228,6 +228,10 @@ pub struct Thresholds {
     pub detect: DetectThresholds,
 }
 
+/// A node publishing thresholds (a Spike Detector's) is told new ones with this command, holding them.
+#[derive(Debug)]
+pub struct SetThresholds(pub Thresholds);
+
 /// Choosing the thresholds from the data (see `crate::standard::auto_detect`).
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -313,6 +317,10 @@ pub struct Gains {
     pub gains: Vec<f32>,
     pub detect: DetectGains,
 }
+
+/// A node publishing gains (a Spike Gain's or Continuous Gain's) is told new ones with this command, holding them.
+#[derive(Debug)]
+pub struct SetGains(pub Gains);
 
 impl Default for Gains {
     fn default() -> Self {

@@ -6,11 +6,11 @@ use serde::{Deserialize, Serialize};
 use super::{CommandKind, Edges, Kind, NodeId};
 
 /// Edges connect nodes at their ports, each named for what flows through it, which way (see `PortRole`, which names a
-/// port's role without what's in it). A node declares its ports as these: its data ports
-/// (`Node::list_ports_data_stream_in` and `Node::list_ports_data_stream_out`) and its ValCmd ports
-/// (`Node::list_ports_val_cmd`). The graph numbers the ports of each role separately, in the order they're declared
-/// (see `PortAddress`). The node itself numbers its `ValInCmdOut` and `ValIn` ports together, in the order they're
-/// declared, as the ports it reads values through: `UiContext::val_in` and the like take that number.
+/// port's role without what's in it). A node declares its ports on its type (see `crate::engine::ports`), and the graph
+/// lists them as these (see `NodesEnum::list_ports_data_stream_in`, `list_ports_data_stream_out` and
+/// `list_ports_val_cmd`). The graph numbers the ports of each role separately, in the order they're declared (see
+/// `PortAddress`). The node itself numbers its `ValInCmdOut` and `ValIn` ports together, in the order they're
+/// declared, as the ports it reads values through (see `ReadsValIn::index`).
 pub enum Port<E: Edges> {
     /// Data reaches the node here, each pass, from another node's `DataStreamOut`.
     DataStreamIn {
@@ -37,7 +37,7 @@ pub enum Port<E: Edges> {
         /// The kind of value the port has.
         value_kind: Kind<E::PublishedValue>,
         /// The commands the port accepts.
-        commands: &'static [CommandKind<E>],
+        commands: Vec<CommandKind<E>>,
         /// Whether it's drawn on the left of the node, rather than the right (see `Port::flipped`).
         flipped: bool,
     },
@@ -49,7 +49,7 @@ pub enum Port<E: Edges> {
         /// The kind of value the port reads.
         value_kind: Kind<E::PublishedValue>,
         /// The commands the port sends.
-        commands: &'static [CommandKind<E>],
+        commands: Vec<CommandKind<E>>,
         /// Whether it's drawn on the right of the node, rather than the left (see `Port::flipped`).
         flipped: bool,
     },
@@ -84,7 +84,7 @@ impl<E: Edges> Port<E> {
     pub fn val_out_cmd_in(
         name: &'static str,
         value_kind: Kind<E::PublishedValue>,
-        commands: &'static [CommandKind<E>],
+        commands: Vec<CommandKind<E>>,
     ) -> Self {
         Port::ValOutCmdIn { name, value_kind, commands, flipped: false }
     }
@@ -93,7 +93,7 @@ impl<E: Edges> Port<E> {
     pub fn val_in_cmd_out(
         name: &'static str,
         value_kind: Kind<E::PublishedValue>,
-        commands: &'static [CommandKind<E>],
+        commands: Vec<CommandKind<E>>,
     ) -> Self {
         Port::ValInCmdOut { name, value_kind, commands, flipped: false }
     }
@@ -178,7 +178,7 @@ impl<E: Edges> Port<E> {
     }
 
     /// The commands a `ValOutCmdIn` accepts, or a `ValInCmdOut` sends; none for the others.
-    pub fn commands(&self) -> &'static [CommandKind<E>] {
+    pub fn commands(&self) -> &[CommandKind<E>] {
         match self {
             Port::ValOutCmdIn { commands, .. } | Port::ValInCmdOut { commands, .. } => commands,
             _ => &[],

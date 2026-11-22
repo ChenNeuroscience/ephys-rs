@@ -209,6 +209,10 @@ pub struct Alarms {
     next_id: u32,
 }
 
+/// An Alarm Processor publishes its alarms, and is told new ones with this command, holding them.
+#[derive(Debug)]
+pub struct SetAlarms(pub Alarms);
+
 impl Alarms {
     /// Adds an alarm of `kind`, on.
     pub fn add(&mut self, kind: AlarmKind) -> &mut Alarm {

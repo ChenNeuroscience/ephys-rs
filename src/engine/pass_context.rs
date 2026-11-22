@@ -7,7 +7,7 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use super::{Buffer, Edges, NodeId, SnapshotLite, ValueType};
+use super::{Buffer, CommandSet, Edges, NodeId, ReadsValIn, SnapshotLite, ValueOf};
 use crate::commands::{Address, Commands};
 
 /// Each pass covers this many seconds of data.
@@ -15,7 +15,7 @@ pub const PASS_DURATION: f64 = 0.02;
 
 /// As a pass reaches a node, the engine takes the node's buffers out of the worker's, as the plan says, in the order the
 /// node's ports are declared. The engine hands these to the program's `NodesEnum::process`, which gives them to the
-/// node's `process` as the node's own types (see `InputPorts::view` and `OutputPorts::view`).
+/// node's `process` as the node's own types (see `DataStreamInPorts::view` and `DataStreamOutPorts::view`).
 pub struct PassBuffers<'a, E: Edges> {
     /// For each input, the pass's data on it, if it's connected (and the node isn't taking it).
     pub inputs: &'a [Option<&'a Buffer<E>>],
@@ -91,17 +91,20 @@ impl<'a, E: Edges> PassContext<'a, E> {
         self.shared.downcast_ref().expect("the node's own Node::Shared")
     }
 
-    /// The node reads what its `ValInCmdOut` (or `ValIn`) port `val_in_idx` saw as the snapshot was made with this, as
-    /// the type it expects, if the port's connected.
-    pub fn val_in<T: ValueType<E::PublishedValue> + 'a>(&self, val_in_idx: usize) -> Option<&'a T> {
-        T::from_value(self.val_ins.get(val_in_idx)?.as_ref()?)
+    /// The node reads what one of its `ValInCmdOut` or `ValIn` ports (`port`) saw as the snapshot was made with this, if the port's
+    /// connected.
+    pub fn val_in<P: ReadsValIn>(&self, port: P) -> Option<&'a P::Value>
+    where
+        P::Value: ValueOf<E> + 'a,
+    {
+        P::Value::from_value(self.val_ins.get(port.index())?.as_ref()?)
     }
 
     /// Passes can't change the graph themselves, so a node sends itself `command` here (to set one of its settings from
-    /// what its passes found, say), which the app delivers to the node's `Node::on_command` on the GUI's thread (see
-    /// `crate::commands`).
-    pub fn cmd_self(&self, command: E::Command) {
-        self.commands.send(Address::Itself(self.node), command);
+    /// what its passes found, say), as one of its own commands (its `CmdIn`: see `Node::on_command`), which the app delivers to the
+    /// node's `Node::on_command` on the GUI's thread (see `crate::commands`).
+    pub fn cmd_self<S: CommandSet<E>>(&self, command: S) {
+        self.commands.send(Address::Itself(self.node), command.wrap());
     }
 
     /// A node can have the app start (`on`) or stop recording, as the toolbar's Record does, if it isn't already.

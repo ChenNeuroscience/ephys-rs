@@ -19,10 +19,10 @@ use std::time::Instant;
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 
-use crate::standard::other::run_command::{FileInput, Files};
-use crate::{Command, CommandKind, Edges, PublishedValue, ValueKind};
+use crate::Edges;
+use crate::standard::other::run_command::{FileInput, ProcessFiles};
 use ephys_rs::commands::CmdSender;
-use ephys_rs::engine::{Category, CommandContext, CommandSource, NoPorts, Node, NodeInfo, Port, UiContext};
+use ephys_rs::engine::{Category, CommandContext, CommandSource, NoPorts, Node, NodeInfo, UiContext};
 
 mod checks;
 pub mod files;
@@ -37,8 +37,12 @@ use pairs::Pairing;
 use resample::Edits;
 pub use window::SyncState;
 
-/// Its port sending the recording's files on to what's connected, once it's synced them.
-const AFTER_SYNCING: usize = 0;
+ephys_rs::ports! {
+    // Where it's sent recordings' files to sync, on the left, as what sends them comes before it; and where it sends
+    // them on, once it's synced them, on the right, as what's sent them then comes after it.
+    files: ValOutCmdIn<FileInput, (ProcessFiles,)> flipped,
+    after_syncing: ValInCmdOut<FileInput, (ProcessFiles,)> = "after syncing" flipped,
+}
 
 /// How it syncs, and the recording to sync by hand. Times are in seconds.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
@@ -250,7 +254,13 @@ pub struct Job(Arc<Mutex<Status>>);
 impl Job {
     /// Syncs `set`'s recording, unless it's syncing one already; then, if it did, sends `sent` on through `after`, with
     /// the positions it wrote and the original kept, if they weren't among them.
-    fn start(&self, set: PathBuf, sent: Vec<PathBuf>, settings: SyncConfig, after: Option<CmdSender<Command>>) {
+    fn start(
+        &self,
+        set: PathBuf,
+        sent: Vec<PathBuf>,
+        settings: SyncConfig,
+        after: Option<CmdSender<Edges, (ProcessFiles,)>>,
+    ) {
         let mut status = self.0.lock().unwrap();
         if matches!(*status, Status::Running { .. }) {
             return;
@@ -270,7 +280,7 @@ impl Job {
             }
             // Before it's done, so whatever waits for that sees what was sent.
             if let (Ok(report), Some(after)) = (&result, after) {
-                after.send(Command::ProcessFiles(Files(files_on(sent, report))));
+                after.send(ProcessFiles(files_on(sent, report)));
             }
             *job.0.lock().unwrap() = Status::Done { set, result };
         });
@@ -303,8 +313,7 @@ pub struct SyncPositions {
 }
 
 impl Node<Edges> for SyncPositions {
-    type Inputs = NoPorts;
-    type Outputs = NoPorts;
+    type Ports = Ports;
     type State = ();
     type WorkerState = ();
     type Shared = ();
@@ -325,26 +334,17 @@ impl Node<Edges> for SyncPositions {
         NoPorts
     }
 
-    /// Where it's sent recordings' files to sync, on the left, as what sends them comes before it; and where it sends
-    /// them on, once it's synced them, on the right, as what's sent them then comes after it.
-    fn list_ports_val_cmd(&self) -> Vec<Port<Edges>> {
-        vec![
-            Port::val_out_cmd_in("files", ValueKind::FileInput, &[CommandKind::ProcessFiles]).flipped(),
-            Port::val_in_cmd_out("after syncing", ValueKind::FileInput, &[CommandKind::ProcessFiles]).flipped(),
-        ]
-    }
-
-    fn val_out(&self, _port_idx: usize) -> PublishedValue {
-        FileInput.into()
+    fn val_out(&self) -> ValOutCmdIn {
+        ValOutCmdIn { files: FileInput }
     }
 
     /// Syncs the recording whose `.set` file's among the files sent, then sends them on to what's connected after it.
-    fn on_command(&mut self, _from: CommandSource, command: Command, context: &mut CommandContext<Edges>) {
-        let Command::ProcessFiles(Files(paths)) = command else { return };
+    fn on_command(&mut self, _from: CommandSource, command: CmdIn, context: &mut CommandContext<Edges>) {
+        let CmdIn::ProcessFiles(ProcessFiles(paths)) = command;
         let Some(state) = context.ui_state::<SyncState>() else {
             return log::warn!("{}: sent files to sync, without its state to keep the sync in", context.label);
         };
-        self.sync(&state.job, paths, context.cmd_sender(AFTER_SYNCING));
+        self.sync(&state.job, paths, context.cmd_sender(ValInCmdOut::after_syncing));
     }
 
     /// Never in a pass: it's sent what to do (see `on_command`), and has nothing to do with the data going by.
@@ -362,7 +362,7 @@ impl Node<Edges> for SyncPositions {
 impl SyncPositions {
     /// Syncs, as `job`, the recording whose `.set` file's among `paths` (sent, or picked by hand), then sends them on
     /// through `after`, if that's connected.
-    fn sync(&self, job: &Job, paths: Vec<PathBuf>, after: Option<CmdSender<Command>>) {
+    fn sync(&self, job: &Job, paths: Vec<PathBuf>, after: Option<CmdSender<Edges, (ProcessFiles,)>>) {
         match paths.iter().find(|path| path.extension().is_some_and(|e| e == "set")) {
             Some(set) => job.start(set.clone(), paths.clone(), self.settings.clone(), after),
             None => job.fail("There's no .set file among the files sent".into()),

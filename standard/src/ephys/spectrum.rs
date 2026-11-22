@@ -19,8 +19,8 @@ use crate::Edges;
 use crate::standard::ephys::{Continuous, ContinuousBuffer};
 use crate::standard::widgets::{input_summary, require_input, setting, settings_grid};
 use ephys_rs::engine::{
-    Buffers, Category, DataStreamType, EdgeInfo, EdgeType, InputPorts, Node, NodeInfo, PassContext, Prepare,
-    PrepareContext, Prepared, UiContext,
+    Buffers, Category, CommandContext, CommandSource, DataStreamInPorts, DataStreamType, EdgeInfo, EdgeType, NoPorts,
+    Node, NodeInfo, PassContext, Prepare, PrepareContext, Prepared, UiContext,
 };
 
 /// About how many samples a second the spectra are worked out from.
@@ -116,18 +116,13 @@ impl ephys_rs::engine::PassState for Analysis {
                                spectrum, smoothed over passes.";
 }
 
-ephys_rs::data_ports! {
-    inputs: pub struct Inputs {
-        continuous: In<Continuous>,
-    }
-    outputs: pub struct Outputs {
-        spectra: Out<Spectra>,
-    }
+ephys_rs::ports! {
+    continuous: DataStreamIn<Continuous>,
+    spectra: DataStreamOut<Spectra>,
 }
 
 impl Node<Edges> for Spectrum {
-    type Inputs = Inputs;
-    type Outputs = Outputs;
+    type Ports = Ports;
     type State = Analysis;
     type WorkerState = ();
     type Shared = ();
@@ -146,8 +141,16 @@ impl Node<Edges> for Spectrum {
         TreeShake::needing_all(inputs.contains(&true) && outputs.contains(&true), inputs.len())
     }
 
-    fn output_streams(&self, inputs: &Inputs) -> Outputs {
-        Outputs { spectra: inputs.continuous.map(|c| Spectra::of(c, self.band)) }
+    fn val_out(&self) -> NoPorts {
+        NoPorts
+    }
+
+    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<Edges>) {
+        match command {}
+    }
+
+    fn output_streams(&self, inputs: &DataStreamIn) -> DataStreamOut {
+        DataStreamOut { spectra: inputs.continuous.map(|c| Spectra::of(c, self.band)) }
     }
 
     fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Analysis, (), Self> {
@@ -155,7 +158,7 @@ impl Node<Edges> for Spectrum {
             return Prepared::nothing().into();
         }
         let mut analysis = Analysis::default();
-        if let Some(c) = Inputs::of(context.inputs).continuous {
+        if let Some(c) = DataStreamIn::of(context.inputs).continuous {
             analysis.reshape(c.channels as usize, c.sample_rate, self.band);
             analysis.rate = c.sample_rate;
         }
@@ -165,8 +168,8 @@ impl Node<Edges> for Spectrum {
     fn process(
         &self,
         _pass: &mut PassContext<Edges>,
-        inputs: Inputs<Buffers>,
-        outputs: Outputs<Buffers>,
+        inputs: DataStreamIn<Buffers>,
+        outputs: DataStreamOut<Buffers>,
         analysis: &mut Analysis,
         _: &mut (),
     ) {
@@ -184,7 +187,7 @@ impl Node<Edges> for Spectrum {
     fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
         let Some(ui) = ui else { return };
         ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, context| {
-            let rate = match Inputs::of(context.inputs).continuous {
+            let rate = match DataStreamIn::of(context.inputs).continuous {
                 Some(c) => c.sample_rate,
                 _ => 30000.0,
             };
@@ -208,7 +211,7 @@ impl Node<Edges> for Spectrum {
         });
     }
 
-    fn warnings(&self, inputs: &Inputs) -> Vec<String> {
+    fn warnings(&self, inputs: &DataStreamIn) -> Vec<String> {
         require_input(inputs, "a continuous data stream")
     }
 }
@@ -350,7 +353,7 @@ mod tests {
     fn the_spectrum_peaks_at_the_rhythm() {
         let spectrum = Spectrum::default();
         let stream = Continuous { channels: 2, sample_rate: 30000.0 };
-        let mut analysis = ephys_rs::engine::fresh_state(&spectrum, &Inputs { continuous: Some(stream) });
+        let mut analysis = ephys_rs::engine::fresh_state(&spectrum, &DataStreamIn { continuous: Some(stream) });
         let mut out = Spectra::of(stream, spectrum.band).buffer(PASS_DURATION);
         let mut input = stream.buffer(PASS_DURATION);
         let per_pass = 600;
@@ -363,7 +366,7 @@ mod tests {
                     *x = 100.0 * (std::f32::consts::TAU * hz * t).sin();
                 }
             }
-            let (inputs, outputs) = (Inputs { continuous: Some(&input) }, Outputs { spectra: &mut out });
+            let (inputs, outputs) = (DataStreamIn { continuous: Some(&input) }, DataStreamOut { spectra: &mut out });
             spectrum.process(&mut PassContext::new(sequence, PASS_DURATION), inputs, outputs, &mut analysis, &mut ());
         }
         let spectra = &analysis;

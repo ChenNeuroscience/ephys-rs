@@ -42,16 +42,18 @@ use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwapOption;
 
+use crate::standard::Edges;
 use crate::standard::ephys::{Event, Events, EventsBuffer};
 use crate::standard::logs::{LogLines, LogLinesBuffer};
 use crate::standard::pool::Pool;
 use crate::standard::tracking::pipeline::Blob;
-use crate::standard::tracking::{Crop, Detection, PositionSample, Positions, PositionsBuffer, Ruler, TimingLed};
+use crate::standard::tracking::{
+    Crop, Detection, PositionSample, Positions, PositionsBuffer, Ruler, SetDetection, TimingLed,
+};
 use crate::standard::widgets::{named_settings_grid, setting};
-use crate::standard::{Command, CommandKind, Edges, PublishedValue, ValueKind};
 use eframe::egui::{self, RichText};
 use ephys_rs::engine::{
-    Buffers, Category, CommandContext, CommandSource, Flow, NoPorts, Node, NodeInfo, NodeThread, PassContext, Port,
+    Buffers, Category, CommandContext, CommandSource, Flow, NoPorts, Node, NodeInfo, NodeThread, PassContext,
     SnapshotLite, ThreadContext, UiContext,
 };
 use serde::{Deserialize, Serialize};
@@ -526,15 +528,16 @@ impl ephys_rs::engine::PassState for Receiving {
                                the last, in order.";
 }
 
-ephys_rs::data_ports! {
-    outputs: pub struct Outputs {
-        positions: Out<Positions>,
-        pos_ttl: Out<Events> = "pos ttl",
-        log: Out<LogLines>,
-    }
+ephys_rs::ports! {
+    positions: DataStreamOut<Positions>,
+    pos_ttl: DataStreamOut<Events> = "pos ttl",
+    log: DataStreamOut<LogLines>,
+    /// The task's settings, as a Position Detector's detection, for Write LTX to record with the positions.
+    settings: ValOutCmdIn<Detection, (SetDetection,)>,
 }
 
 impl Node<Edges> for VrComputer {
+    type Ports = Ports;
     const INFO: NodeInfo = NodeInfo {
         name: "VR Computer",
         category: Category::Source,
@@ -542,8 +545,6 @@ impl Node<Edges> for VrComputer {
                       object a line.",
     };
 
-    type Inputs = NoPorts;
-    type Outputs = Outputs;
     type State = Receiving;
     type WorkerState = ();
     /// What it shows, for its window.
@@ -551,19 +552,15 @@ impl Node<Edges> for VrComputer {
     type UiState = ();
     type GlobalSettings = ();
 
-    fn output_streams(&self, _inputs: &NoPorts) -> Outputs {
+    fn output_streams(&self, _inputs: &NoPorts) -> DataStreamOut {
         let [_, _, width, height] = window(&self.custom).and_then(|crop| crop.bounds()).unwrap_or([0.0; 4]);
         let frame = |size: f32| if size > 0.0 { size.ceil() as u32 } else { FRAME_SIZE };
         let positions = Positions { fps: self.fps, width: frame(width), height: frame(height), source: SOURCE };
         let ttl = Events { lines: ttl_channels(&self.custom).unwrap_or(0), sample_rate: TTL_RATE as f32 };
-        Outputs { positions: Some(positions), pos_ttl: Some(ttl), log: Some(LogLines { width: self.log_width }) }
+        DataStreamOut { positions: Some(positions), pos_ttl: Some(ttl), log: Some(LogLines { width: self.log_width }) }
     }
 
-    fn list_ports_val_cmd(&self) -> Vec<Port<Edges>> {
-        vec![Port::val_out_cmd_in("settings", ValueKind::Detection, &[CommandKind::SetDetection])]
-    }
-
-    fn val_out(&self, _port_idx: usize) -> PublishedValue {
+    fn val_out(&self) -> ValOutCmdIn {
         let crop = window(&self.custom).unwrap_or_default();
         // A metre's worth of pixels, as a ruler laid over the video would say.
         let ruler = |ppm| Ruler { a: [0.0, 0.0], b: [ppm, 0.0], length_cm: 100.0 };
@@ -576,12 +573,12 @@ impl Node<Edges> for VrComputer {
         // it as it is.
         let enabled = ttl_channels(&self.custom).is_some_and(|n| n > 0);
         let timing_led = TimingLed { enabled, radius: 0.0, ..Default::default() };
-        PublishedValue::Detection(Detection { crop, rulers, timing_led, custom, ..Default::default() })
+        ValOutCmdIn { settings: Detection { crop, rulers, timing_led, custom, ..Default::default() } }
     }
 
-    fn on_command(&mut self, _from: CommandSource, command: Command, _context: &mut CommandContext<Edges>) {
-        if let Command::SetDetection(detection) = command {
-            self.custom = detection.custom;
+    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<Edges>) {
+        match command {
+            CmdIn::SetDetection(SetDetection(detection)) => self.custom = detection.custom,
         }
     }
 
@@ -621,7 +618,7 @@ impl Node<Edges> for VrComputer {
         &self,
         pass: &mut PassContext<Edges>,
         _inputs: NoPorts,
-        outputs: Outputs<Buffers>,
+        outputs: DataStreamOut<Buffers>,
         receiving: &mut Receiving,
         _: &mut (),
     ) {
@@ -633,7 +630,7 @@ impl Node<Edges> for VrComputer {
         let shared = &connection.running.shared;
         let recording = pass.recording();
         shared.keep_newest(pass.snapshot());
-        let Outputs { positions, pos_ttl: ttls, log: logs } = outputs;
+        let DataStreamOut { positions, pos_ttl: ttls, log: logs } = outputs;
         positions.samples.clear();
         ttls.events.clear();
         ttls.pass_samples = (pass.duration * TTL_RATE).round() as usize;
@@ -659,7 +656,7 @@ impl Node<Edges> for VrComputer {
             sample.pixels_per_metre = pixels_per_metre;
         }
         if let Some(custom) = settings {
-            pass.cmd_self(Command::SetDetection(Detection { custom, ..Default::default() }));
+            pass.cmd_self(CmdIn::SetDetection(SetDetection(Detection { custom, ..Default::default() })));
         }
         // Not if the thread's updating the status just then: the next pass shows it.
         if let Ok(status) = shared.status.try_lock() {
@@ -755,7 +752,7 @@ mod tests {
 
     /// A pass's buffers.
     fn buffers(node: &VrComputer) -> (PositionsBuffer, EventsBuffer, LogLinesBuffer) {
-        let Outputs { positions: Some(p), pos_ttl: Some(e), log: Some(l) } = node.output_streams(&NoPorts) else {
+        let DataStreamOut { positions: Some(p), pos_ttl: Some(e), log: Some(l) } = node.output_streams(&NoPorts) else {
             panic!("its streams")
         };
         (p.buffer(PASS_DURATION), e.buffer(PASS_DURATION), l.buffer(PASS_DURATION))
@@ -840,7 +837,7 @@ mod tests {
         custom.insert(TTL_CHANNELS_KEY.into(), "0".into());
         assert!(complete(&custom), "none");
         let node = VrComputer { custom: custom.clone(), ..VrComputer::default() };
-        let PublishedValue::Detection(detection) = &node.val_out(0) else { panic!() };
+        let detection = &node.val_out().settings;
         assert!(!detection.timing_led.enabled, "no TTLs");
         custom.insert(TTL_CHANNELS_KEY.into(), "3".into());
         assert!(complete(&custom));
@@ -848,7 +845,7 @@ mod tests {
         assert!(node.warnings(&NoPorts).is_empty());
         let ttl = node.output_streams(&NoPorts).pos_ttl.unwrap();
         assert_eq!(ttl.lines, 3, "a line a channel");
-        let PublishedValue::Detection(detection) = &node.val_out(0) else { panic!() };
+        let detection = &node.val_out().settings;
         assert_eq!(detection.crop, crop, "for Write LTX");
         assert_eq!(detection.pixels_per_metre(), Some(250.0));
         assert!(detection.timing_led.enabled, "there'll be TTLs");

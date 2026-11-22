@@ -83,7 +83,7 @@ pub trait DataStreamsEnum: EdgeTypesEnum + Copy {
     fn empty(buffer: &mut Self::Buffer);
 }
 
-/// A node declares its data ports by the types of their data streams (see `data_ports!`), and the engine holds streams
+/// A node declares its data ports by the types of their data streams (see `ports!`), and the engine holds streams
 /// and buffers as the program's enums of them. `edge_types!` implements this for each data edge type the program
 /// lists, to go between the two.
 pub trait StreamOf<E: Edges>: DataStreamType {
@@ -99,30 +99,37 @@ pub trait StreamOf<E: Edges>: DataStreamType {
     fn from_buffer_mut(buffer: &mut Buffer<E>) -> Option<&mut Self::Buffer>;
 }
 
-/// A node reading a published value (see `Node::list_ports_val_cmd`) finds it as its own type, rather than the
-/// program's enum of them, through this, which `edge_types!` implements for each type of value `V` holds.
-pub trait ValueType<V>: Sized {
+/// A node declares its ValCmd ports by the types of their values (see `ports!`), and the engine holds values
+/// as the program's enum of them. `edge_types!` implements this for each type of value the program lists, to go
+/// between the two.
+pub trait ValueOf<E: Edges>: EdgeType {
+    /// Ports are matched by kind: this is the type's.
+    const KIND: Kind<E::PublishedValue>;
+    /// The value, as the program's enum of them.
+    fn wrap(self) -> E::PublishedValue;
     /// `value` as this type, if that's the type it is.
-    fn from_value(value: &V) -> Option<&Self>;
+    fn from_value(value: &E::PublishedValue) -> Option<&Self>;
 }
 
 /// A node can command another through a ValCmd edge (or itself, from its passes or threads; see `Node::on_command`).
-/// The program declares its commands with `edge_types!`, which makes an enum of them, implementing this. The core adds
-/// one command of its own, `ClearTransientState`, which the app sends nodes itself.
+/// Each command is a type of its own (`SetGains`, holding the gains, say), and the program lists them with
+/// `edge_types!`, which makes an enum of them, implementing this.
 pub trait CommandsEnum: Debug + Send + 'static {
     /// Ports say which commands they take or send by their kinds: which command, without what it carries.
     type Kind: Copy + Eq + Hash + Debug + Send + Sync + 'static;
 
     fn kind(&self) -> Self::Kind;
+}
 
-    /// Some of what a node has been asked to do is only for now (an auto detect that's started, say): the node keeps it
-    /// in fields of its own, not saved (`#[serde(skip)]`), and drops it when it's sent this. The app sends it, straight
-    /// away, to every node whenever it restores the graph from its history (undo or redo), and starts recording or
-    /// stops running; and to a node it duplicates.
-    fn clear_transient_state() -> Self;
-
-    /// Whether this is the core's `ClearTransientState`.
-    fn is_clear_transient_state(&self) -> bool;
+/// Nodes send and take commands as their own types, and the engine carries them as the program's enum of them.
+/// `edge_types!` implements this for each command the program lists, to go between the two.
+pub trait CommandOf<E: Edges>: Debug + Send + Sized + 'static {
+    /// Ports say which commands they take or send by their kinds: this is the type's.
+    const KIND: CommandKind<E>;
+    /// The command, as the program's enum of them.
+    fn wrap(self) -> E::Command;
+    /// `command` as this type, if that's the type it is, or else `command` back.
+    fn from_command(command: E::Command) -> Result<Self, E::Command>;
 }
 
 /// A program is built with edge types of both kinds, data streams and values, and the commands sent along ValCmd edges;
@@ -154,14 +161,15 @@ pub type Buffer<E> = <<E as Edges>::DataStream as DataStreamsEnum>::Buffer;
 ///         Thresholds(spikes::Thresholds),
 ///     }
 ///     commands: pub enum Command, CommandKind {
-///         SetThresholds(spikes::Thresholds),
+///         SetThresholds(spikes::SetThresholds),
 ///     }
 /// }
 /// ```
 ///
 /// This makes `Edges` (implementing `engine::Edges`), the `DataStream`, `PublishedValue` and `Command` enums, the
 /// `Kind`, `ValueKind` and `CommandKind` enums naming their variants, and the `Buffer` enum of the data streams'
-/// buffers. `Command` and `CommandKind` have one more variant, the core's `ClearTransientState` (see `CommandsEnum`).
+/// buffers; and `StreamOf`, `ValueOf` and `CommandOf` for each type listed, through which nodes use them as their own
+/// types.
 #[macro_export]
 macro_rules! edge_types {
     (
@@ -181,14 +189,11 @@ macro_rules! edge_types {
         #[derive(Debug)]
         $mvis enum $command {
             $($mv($mt),)+
-            /// The core's own (see `CommandsEnum::clear_transient_state`).
-            ClearTransientState,
         }
 
         #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
         $mvis enum $mkind {
             $($mv,)+
-            ClearTransientState,
         }
 
         impl $crate::engine::CommandsEnum for $command {
@@ -197,23 +202,44 @@ macro_rules! edge_types {
             fn kind(&self) -> $mkind {
                 match self {
                     $($command::$mv(_) => $mkind::$mv,)+
-                    $command::ClearTransientState => $mkind::ClearTransientState,
                 }
-            }
-
-            fn clear_transient_state() -> Self {
-                $command::ClearTransientState
-            }
-
-            fn is_clear_transient_state(&self) -> bool {
-                matches!(self, $command::ClearTransientState)
             }
         }
 
         $(
-            impl $crate::engine::ValueType<$value> for $ct {
+            #[allow(unreachable_patterns)]
+            impl $crate::engine::CommandOf<$edges> for $mt {
+                const KIND: $mkind = $mkind::$mv;
+
+                fn wrap(self) -> $command {
+                    $command::$mv(self)
+                }
+
+                fn from_command(command: $command) -> Result<Self, $command> {
+                    match command {
+                        $command::$mv(c) => Ok(c),
+                        command => Err(command),
+                    }
+                }
+            }
+
+            impl From<$mt> for $command {
+                fn from(c: $mt) -> Self {
+                    $command::$mv(c)
+                }
+            }
+        )+
+
+        $(
+            #[allow(unreachable_patterns)]
+            impl $crate::engine::ValueOf<$edges> for $ct {
+                const KIND: $ckind = $ckind::$cv;
+
+                fn wrap(self) -> $value {
+                    $value::$cv(self)
+                }
+
                 fn from_value(value: &$value) -> Option<&Self> {
-                    #[allow(unreachable_patterns)]
                     match value {
                         $value::$cv(v) => Some(v),
                         _ => None,

@@ -17,12 +17,12 @@ use eframe::egui::{self, Color32, RichText};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
+use crate::Edges;
 use crate::standard::recording::expand;
 use crate::standard::widgets::{combo, setting, settings_grid};
-use crate::{Command, CommandKind, Edges, PublishedValue, ValueKind};
 use ephys_rs::commands::CmdSender;
 use ephys_rs::engine::{
-    Category, CommandContext, CommandSource, EdgeInfo, EdgeType, NoPorts, Node, NodeInfo, Port, UiContext,
+    Category, CommandContext, CommandSource, EdgeInfo, EdgeType, NoPorts, Node, NodeInfo, UiContext,
 };
 use ephys_rs::gui::widgets::{Icon, help_link, small_icon_button};
 use ephys_rs::theme::Colours;
@@ -31,10 +31,10 @@ mod terminal;
 
 use terminal::{Chain, Job, Outcome, Progress};
 
-/// Files to process, sent with the `ProcessFiles` command (to Run Command, say, which runs its program on them).
-/// Whatever sends them, and whenever: a writer's are what it's just finished recording.
+/// A node can be sent files to process (Run Command, say, which runs its program on them) with this command, holding
+/// them. Whatever sends them, and whenever: a writer's are what it's just finished recording.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Files(pub Vec<PathBuf>);
+pub struct ProcessFiles(pub Vec<PathBuf>);
 
 /// Run Command and Sync Positions take files to process (`ProcessFiles`) at a port of their own, which publishes
 /// nothing: this. Writers, and they themselves, send files on through ports reading it.
@@ -53,8 +53,12 @@ impl EdgeType for FileInput {
     }
 }
 
-/// Run Command's and Sync Positions' port taking files (see `FileInput`).
-pub const FILES: usize = 0;
+ephys_rs::ports! {
+    // Where it's sent files to run on, on the left, as what sends them comes before it; and where it sends them on,
+    // once it's done (see `Then`), on the right, as what runs then comes after it.
+    files: ValOutCmdIn<FileInput, (ProcessFiles,)> flipped,
+    after_running: ValInCmdOut<FileInput, (ProcessFiles,)> = "after running" flipped,
+}
 
 /// In the arguments: replaced by a file, running the program once for each.
 const EACH_FILE: &str = "{file}";
@@ -85,9 +89,6 @@ pub enum Then {
     /// Either way.
     Always,
 }
-
-/// Its port sending the files it ran on to what's connected, once it's done (see `Then`).
-const AFTER_RUNNING: usize = 0;
 
 /// What to run, and on what.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
@@ -296,7 +297,7 @@ pub struct RunCommand {
 impl RunCommand {
     /// Runs the program on `files` as `job`, or says why it can't; then sends them on through `after`, if that's
     /// connected, as the settings say (see `Then`).
-    fn run_on(&self, job: &Job, files: Result<Vec<PathBuf>, String>, after: Option<CmdSender<Command>>) {
+    fn run_on(&self, job: &Job, files: Result<Vec<PathBuf>, String>, after: Option<CmdSender<Edges, (ProcessFiles,)>>) {
         let runs = files.and_then(|files| Ok((self.settings.runs(&files)?, files)));
         match runs {
             Ok((runs, files)) => {
@@ -601,8 +602,7 @@ fn files_help(senders: &[String]) -> String {
 }
 
 impl Node<Edges> for RunCommand {
-    type Inputs = NoPorts;
-    type Outputs = NoPorts;
+    type Ports = Ports;
     type State = ();
     type WorkerState = ();
     type Shared = ();
@@ -622,26 +622,17 @@ impl Node<Edges> for RunCommand {
         NoPorts
     }
 
-    /// Where it's sent files to run on, on the left, as what sends them comes before it; and where it sends them on,
-    /// once it's done (see `Then`), on the right, as what runs then comes after it.
-    fn list_ports_val_cmd(&self) -> Vec<Port<Edges>> {
-        vec![
-            Port::val_out_cmd_in("files", ValueKind::FileInput, &[CommandKind::ProcessFiles]).flipped(),
-            Port::val_in_cmd_out("after running", ValueKind::FileInput, &[CommandKind::ProcessFiles]).flipped(),
-        ]
-    }
-
-    fn val_out(&self, _port_idx: usize) -> PublishedValue {
-        FileInput.into()
+    fn val_out(&self) -> ValOutCmdIn {
+        ValOutCmdIn { files: FileInput }
     }
 
     /// Runs the program on the files sent, and then, as it says, what's connected after it.
-    fn on_command(&mut self, _from: CommandSource, command: Command, context: &mut CommandContext<Edges>) {
-        let Command::ProcessFiles(Files(paths)) = command else { return };
+    fn on_command(&mut self, _from: CommandSource, command: CmdIn, context: &mut CommandContext<Edges>) {
+        let CmdIn::ProcessFiles(ProcessFiles(paths)) = command;
         let Some(state) = context.ui_state::<CommandState>() else {
             return log::warn!("{}: sent files to run on, without its state to keep the run in", context.label);
         };
-        self.run_on(&state.job, self.settings.matching(paths), context.cmd_sender(AFTER_RUNNING));
+        self.run_on(&state.job, self.settings.matching(paths), context.cmd_sender(ValInCmdOut::after_running));
     }
 
     /// Never in a pass: it's sent what to do (see `on_command`), and has nothing to do with the data going by.
@@ -663,14 +654,14 @@ impl Node<Edges> for RunCommand {
         let job = context.ui_state::<CommandState>().job.clone();
         let (locked, running) = (context.locked, job.running());
         // What's connected supplies all the files, while it is.
-        let senders = context.controlled_by.get(FILES).map_or(&[][..], Vec::as_slice);
+        let senders = context.controlled_by.get(ValOutCmdIn::files).map_or(&[][..], Vec::as_slice);
         let connected = !senders.is_empty();
         let preview = context.ui_state::<CommandState>().preview.of(&self.settings, connected);
         // Nothing changes while it's running, to what it shows as running.
         // How many files picked here match, of how many.
         let matched = preview.picked.as_ref().ok().map(Vec::len);
         let counts = preview.listed.zip(matched).map(|(listed, matched)| (matched, listed));
-        let chained = context.control_connected(AFTER_RUNNING);
+        let chained = context.val_in_connected(ValInCmdOut::after_running);
         self.settings_section(ui, senders, counts, chained, locked || running);
         ui.add_space(6.0);
         let (picked, runs) = (&preview.picked, &preview.runs);
@@ -706,7 +697,11 @@ impl Node<Edges> for RunCommand {
                 if run.clicked()
                     && let Ok(files) = picked
                 {
-                    self.run_on(&job, self.settings.matching(files.clone()), context.cmd_sender(AFTER_RUNNING));
+                    self.run_on(
+                        &job,
+                        self.settings.matching(files.clone()),
+                        context.cmd_sender(ValInCmdOut::after_running),
+                    );
                 }
                 if connected {
                     ui.weak(format!("Run triggered by {}", any_of(senders)));
@@ -769,7 +764,9 @@ mod tests {
     use crate::standard::themes::THEMES;
     use ephys_rs::commands::{Address, Commands};
     use ephys_rs::engine::NodeTypeEnum;
-    use ephys_rs::engine::{CommandSource, Graph, NodesEnum, PortAddress, PortRole, Recording, Runner, Snapshot};
+    use ephys_rs::engine::{
+        CommandSource, Graph, NodesEnum, PortAddress, PortRole, ReadsValIn, Recording, Runner, Snapshot,
+    };
 
     /// One per file, in turn, if the arguments have a file in them, otherwise just one.
     fn settings(program: &str, arguments: &str) -> ScriptConfig {
@@ -801,14 +798,21 @@ mod tests {
         let id = graph.add(Nodes::RunCommand(node), [0.0, 0.0]);
         let after = graph.add(Nodes::RunCommand(RunCommand::default()), [0.0, 0.0]);
         let (from, to) = (
-            PortAddress { node: id, role: PortRole::ValInCmdOut, port_idx: AFTER_RUNNING },
-            PortAddress { node: after, role: PortRole::ValOutCmdIn, port_idx: FILES },
+            PortAddress { node: id, role: PortRole::ValInCmdOut, port_idx: ValInCmdOut::after_running.index() },
+            PortAddress { node: after, role: PortRole::ValOutCmdIn, port_idx: ValOutCmdIn::files },
         );
         graph.connect(from, to).unwrap();
         let state: ephys_rs::engine::UiStateCell = std::cell::RefCell::new(Box::new(CommandState::default()));
         let commands = Arc::new(Commands::default());
-        let command = crate::Command::ProcessFiles(Files(files));
-        assert!(graph.command(id, CommandSource::Port(FILES), command, Some(&state), Some(&commands), false));
+        let command = crate::Command::ProcessFiles(ProcessFiles(files));
+        assert!(graph.command(
+            id,
+            CommandSource::Port(ValOutCmdIn::files),
+            command,
+            Some(&state),
+            Some(&commands),
+            false
+        ));
         let job = state.borrow().downcast_ref::<CommandState>().unwrap().job.clone();
         (job, commands)
     }
@@ -825,10 +829,10 @@ mod tests {
         assert!(commands.take().is_empty(), "not till it's done");
         wait_for_job(&job);
         let sent = commands.take_commands::<crate::Command>();
-        let [(Address::Port { val_in_idx: AFTER_RUNNING, .. }, crate::Command::ProcessFiles(Files(files)))] = &sent[..]
-        else {
+        let [(Address::Port { val_in_idx, .. }, crate::Command::ProcessFiles(ProcessFiles(files)))] = &sent[..] else {
             panic!("sent once, to what's after it: {sent:?}")
         };
+        assert_eq!(*val_in_idx, ValInCmdOut::after_running.index());
         assert_eq!(files, &paths(&["a.dat"]));
     }
 
@@ -1223,7 +1227,7 @@ mod tests {
         ephys_rs::background::wait();
 
         let waiting = commands.take_commands::<crate::Command>();
-        let [(address, crate::Command::ProcessFiles(Files(files)))] = &waiting[..] else {
+        let [(address, crate::Command::ProcessFiles(ProcessFiles(files)))] = &waiting[..] else {
             panic!("once the files are finished: {waiting:?}")
         };
         assert_eq!(graph.command_target(*address).map(|(to, _)| to), Some(command));
@@ -1358,7 +1362,8 @@ mod tests {
                 node.settings.files = paths(&["/recordings/trial a.set"]);
             }
             if chained {
-                let from = PortAddress { node: id, role: PortRole::ValInCmdOut, port_idx: AFTER_RUNNING };
+                let from =
+                    PortAddress { node: id, role: PortRole::ValInCmdOut, port_idx: ValInCmdOut::after_running.index() };
                 graph.connect(from, PortAddress { node: after, role: PortRole::ValOutCmdIn, port_idx: 0 }).unwrap();
             }
             let inputs = Vec::new();
@@ -1418,16 +1423,17 @@ mod chain_tests {
     use std::sync::Arc;
 
     use super::*;
+    use crate::Command;
     use crate::NodeType;
     use crate::Nodes;
     use ephys_rs::commands::{Address, CmdSender, Commands};
-    use ephys_rs::engine::{Graph, NodeId, NodesEnum, PortAddress, PortRole};
+    use ephys_rs::engine::{Graph, NodeId, NodesEnum, PortAddress, PortRole, ReadsValIn};
 
     /// Whether `then`, after runs that ended with these codes (`None` if stopped; not there if not run), sends the
     /// files on to what's connected after it.
     fn sends(then: Then, runs: &[Option<Option<i64>>]) -> bool {
         let commands = Arc::new(Commands::default());
-        let address = Address::Port { from: NodeId(1), val_in_idx: AFTER_RUNNING };
+        let address = Address::Port { from: NodeId(1), val_in_idx: ValInCmdOut::after_running.index() };
         let sender = CmdSender::new(commands.clone(), address);
         let progress = runs.iter().map(|run| Progress {
             shown: String::new(),
@@ -1440,7 +1446,7 @@ mod chain_tests {
         let sent = commands.take_commands::<Command>();
         match &sent[..] {
             [] => false,
-            [(to, Command::ProcessFiles(Files(files)))] if *to == address => {
+            [(to, Command::ProcessFiles(ProcessFiles(files)))] if *to == address => {
                 assert_eq!(files, &[PathBuf::from("a.dat")], "the files it ran on");
                 true
             }
@@ -1465,7 +1471,8 @@ mod chain_tests {
         let node_type = NodeType::RunCommand;
         let [a, b, c] = [0, 1, 2].map(|_| graph.add(Nodes::create(node_type), [0.0, 0.0]));
         let after = |from, to| {
-            let control = PortAddress { node: from, role: PortRole::ValInCmdOut, port_idx: AFTER_RUNNING };
+            let control =
+                PortAddress { node: from, role: PortRole::ValInCmdOut, port_idx: ValInCmdOut::after_running.index() };
             (control, PortAddress { node: to, role: PortRole::ValOutCmdIn, port_idx: 0 })
         };
         let looped = |graph: &Graph<Nodes>| {

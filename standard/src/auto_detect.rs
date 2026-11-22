@@ -1,8 +1,8 @@
 //! Choosing settings from the data ("auto detect"). The setting to choose (gains, or thresholds) has its auto detect's
 //! own settings in `detect`: how long it samples the data for (`seconds`), and when it was started (`started`), while
 //! it's going. `started` is the node's transient state, not saved: the node starts it from its window, or when it's
-//! sent `Detect` (`DetectRequest`, from a viewer, through a ValCmd edge), and clears it when it's stopped, or sent
-//! `ClearTransientState` (see `ephys_rs::engine::CommandsEnum`). While it's started, the node runs, with room to
+//! sent `Detect` (holding a `DetectRequest`, from a viewer, through a ValCmd edge), and clears it when it's stopped, or
+//! told to clear its transient state (see `ephys_rs::engine::Node::clear_transient_state`). While it's started, the node runs, with room to
 //! sample into that it made as it prepared, which its passes sample the data into for that long, then send the node
 //! the setting they found (`PassContext::cmd_self`), which clears `started`. Whatever can see the setting (the node's
 //! window, or a viewer's, through the value the node publishes) can tell how far along it is from those two
@@ -24,6 +24,11 @@ pub enum DetectRequest {
     Start,
     Stop,
 }
+
+/// A node that can detect its setting from the data (see the module's docs) is asked to start or stop with this
+/// command.
+#[derive(Debug)]
+pub struct Detect(pub DetectRequest);
 
 impl DetectRequest {
     /// What the request does to an auto detect started at `started`, if it is.

@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use super::{Files, Mode, Run, ScriptConfig, Then};
+use super::{Mode, ProcessFiles, Run, ScriptConfig, Then};
 use ephys_rs::commands::CmdSender;
 
 /// `text`, as a single word to a shell.
@@ -402,7 +402,7 @@ pub(super) struct JobState {
 
 /// What's sent on once a batch has run (see `Then`): the files it ran on, to what's connected after it, and when.
 pub(super) struct Chain {
-    pub(super) sender: CmdSender<crate::Command>,
+    pub(super) sender: CmdSender<crate::Edges, (ProcessFiles,)>,
     pub(super) then: Then,
     pub(super) files: Vec<PathBuf>,
 }
@@ -419,7 +419,7 @@ impl Chain {
                 Then::Always => true,
             };
         if send {
-            self.sender.send(crate::Command::ProcessFiles(Files(self.files)));
+            self.sender.send(ProcessFiles(self.files));
         }
     }
 }

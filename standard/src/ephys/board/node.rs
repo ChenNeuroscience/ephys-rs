@@ -12,18 +12,16 @@ use crate::standard::ephys::{Continuous, Events};
 use crate::standard::pool::Pool;
 use crate::standard::widgets::{named_settings_grid, setting, settings_grid};
 use ephys_rs::engine::{
-    Buffers, Category, Flow, NoPorts, Node, NodeInfo, NodeThread, OutputPorts, PassContext, PoolStatus, Prepare,
-    PrepareContext, Prepared, Suggestion, ThreadContext, UiContext, UserDecision,
+    Buffers, Category, CommandContext, CommandSource, DataStreamOutPorts, Flow, NoPorts, Node, NodeInfo, NodeThread,
+    PassContext, PoolStatus, Prepare, PrepareContext, Prepared, Suggestion, ThreadContext, UiContext, UserDecision,
 };
 use ephys_rs::gui::widgets::{Icon, small_icon_button};
 
-ephys_rs::data_ports! {
-    outputs: pub struct Outputs {
-        headstages: Out<Continuous>,
-        digital: Out<Events>,
-        auxiliary: Out<Continuous>,
-        analogue: Out<Continuous>,
-    }
+ephys_rs::ports! {
+    headstages: DataStreamOut<Continuous>,
+    digital: DataStreamOut<Events>,
+    auxiliary: DataStreamOut<Continuous>,
+    analogue: DataStreamOut<Continuous>,
 }
 
 /// The board's analogue inputs.
@@ -127,6 +125,7 @@ impl AcquisitionBoard {
 }
 
 impl Node<Edges> for AcquisitionBoard {
+    type Ports = Ports;
     const INFO: NodeInfo = NodeInfo {
         name: "Acquisition Board",
         category: Category::Source,
@@ -134,8 +133,6 @@ impl Node<Edges> for AcquisitionBoard {
                       an Open Ephys board, Intan's RHD USB board, or the fake board in synthetic_streams/.",
     };
 
-    type Inputs = NoPorts;
-    type Outputs = Outputs;
     type State = Acquiring;
     type WorkerState = ();
     /// What it shows, for its window.
@@ -143,9 +140,17 @@ impl Node<Edges> for AcquisitionBoard {
     type UiState = ();
     type GlobalSettings = super::OpenEphysSettings;
 
-    fn output_streams(&self, _inputs: &NoPorts) -> Outputs {
+    fn val_out(&self) -> NoPorts {
+        NoPorts
+    }
+
+    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<Edges>) {
+        match command {}
+    }
+
+    fn output_streams(&self, _inputs: &NoPorts) -> DataStreamOut {
         let shape = self.shape();
-        Outputs {
+        DataStreamOut {
             headstages: Some(shape.ephys),
             digital: Some(shape.events),
             auxiliary: Some(shape.aux),
@@ -209,12 +214,12 @@ impl Node<Edges> for AcquisitionBoard {
         &self,
         pass: &mut PassContext<Edges>,
         _inputs: NoPorts,
-        outputs: Outputs<Buffers>,
+        outputs: DataStreamOut<Buffers>,
         acquiring: &mut Acquiring,
         _: &mut (),
     ) {
         let Some(capture) = &acquiring.capture else { return };
-        let Outputs { headstages, digital, auxiliary, analogue } = outputs;
+        let DataStreamOut { headstages, digital, auxiliary, analogue } = outputs;
         match capture.pool().take(|samples| samples.is_empty()) {
             Some(mut samples) => {
                 std::mem::swap(headstages, &mut samples.ephys);

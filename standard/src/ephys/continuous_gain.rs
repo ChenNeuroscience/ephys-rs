@@ -5,27 +5,24 @@
 //! multiple of a percentile's distance from it, fill what's recorded (`Gains::fill_uv`). Sign doesn't count.
 
 use eframe::egui;
-use ephys_rs::engine::{Buffers, InputPorts, Prepare, PrepareContext, Prepared, TreeShake};
+use ephys_rs::engine::{Buffers, DataStreamInPorts, Prepare, PrepareContext, Prepared, TreeShake};
 use serde::{Deserialize, Serialize};
 
-use crate::standard::auto_detect::{Distribution, PercentMultiple, SAMPLING, auto_detect_ui, detect_changed};
+use crate::standard::auto_detect::{Detect, Distribution, PercentMultiple, SAMPLING, auto_detect_ui, detect_changed};
 use crate::standard::spikes::{
-    Channels, DEFAULT_RANGE_UV, DetectGains, GainScope, Gains, RANGES_UV, fill_field, gain_field,
+    Channels, DEFAULT_RANGE_UV, DetectGains, GainScope, Gains, RANGES_UV, SetGains, fill_field, gain_field,
 };
 
+use crate::Edges;
 use crate::standard::ephys::Continuous;
 use crate::standard::widgets::{input_summary, named_settings_grid, require_input, setting};
-use crate::{Command, CommandKind, Edges, PublishedValue, ValueKind};
-use ephys_rs::engine::{Category, CommandContext, CommandSource, Node, NodeInfo, PassContext, Port, UiContext};
+use ephys_rs::engine::{Category, CommandContext, CommandSource, Node, NodeInfo, PassContext, UiContext};
 use ephys_rs::gui::widgets::info_icon;
 
-ephys_rs::data_ports! {
-    inputs: pub struct Inputs {
-        continuous: In<Continuous>,
-    }
-    outputs: pub struct Outputs {
-        scaled: Out<Continuous> in_place_of continuous,
-    }
+ephys_rs::ports! {
+    continuous: DataStreamIn<Continuous>,
+    scaled: DataStreamOut<Continuous> in_place_of continuous,
+    gains: ValOutCmdIn<Gains, (SetGains, Detect)>,
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -89,8 +86,7 @@ impl Sampling {
 }
 
 impl Node<Edges> for ContinuousGain {
-    type Inputs = Inputs;
-    type Outputs = Outputs;
+    type Ports = Ports;
     type State = Gaining;
     type WorkerState = ();
     type Shared = ();
@@ -111,33 +107,31 @@ impl Node<Edges> for ContinuousGain {
         TreeShake::needing_all(inputs.contains(&true) && wanted, inputs.len())
     }
 
-    fn output_streams(&self, inputs: &Inputs) -> Outputs {
-        Outputs { scaled: inputs.continuous }
+    fn output_streams(&self, inputs: &DataStreamIn) -> DataStreamOut {
+        DataStreamOut { scaled: inputs.continuous }
     }
 
-    fn list_ports_val_cmd(&self) -> Vec<Port<Edges>> {
-        vec![Port::val_out_cmd_in("gains", ValueKind::Gains, &[CommandKind::SetGains, CommandKind::Detect])]
-    }
-
-    fn val_out(&self, _port_idx: usize) -> PublishedValue {
-        self.gains.clone().into()
+    fn val_out(&self) -> ValOutCmdIn {
+        ValOutCmdIn { gains: self.gains.clone() }
     }
 
     /// New gains: from its passes, those auto detect chose, with it done; from a viewer, an edit, leaving auto
     /// detect as it is.
-    fn on_command(&mut self, from: CommandSource, command: Command, _context: &mut CommandContext<Edges>) {
+    fn on_command(&mut self, from: CommandSource, command: CmdIn, _context: &mut CommandContext<Edges>) {
         match command {
-            Command::SetGains(gains) => {
+            CmdIn::SetGains(SetGains(gains)) => {
                 let started = self.gains.detect.started;
                 self.gains = gains;
                 if from != CommandSource::Itself {
                     self.gains.detect.started = started;
                 }
             }
-            Command::Detect(request) => request.apply(&mut self.gains.detect.started),
-            Command::ClearTransientState => self.gains.detect.started = None,
-            _ => {}
+            CmdIn::Detect(Detect(request)) => request.apply(&mut self.gains.detect.started),
         }
+    }
+
+    fn clear_transient_state(&mut self) {
+        self.gains.detect.started = None;
     }
 
     /// While the gains are being detected, each channel's room to sample into.
@@ -146,7 +140,7 @@ impl Node<Edges> for ContinuousGain {
         if context.same_streams() && !detect_changed(self.gains.detect.started, before) {
             return Prepared::nothing().into();
         }
-        let channels = Inputs::of(context.inputs).continuous.map_or(0, |stream| stream.channels as usize);
+        let channels = DataStreamIn::of(context.inputs).continuous.map_or(0, |stream| stream.channels as usize);
         let seconds = self.gains.detect.seconds.clamp(*SAMPLING.start(), *SAMPLING.end()) as f64;
         let sampling = self.gains.detect.started.map(|_| Sampling::new(seconds, channels));
         Prepared::shared(Gaining { sampling }).into()
@@ -157,8 +151,8 @@ impl Node<Edges> for ContinuousGain {
     fn process(
         &self,
         pass: &mut PassContext<Edges>,
-        inputs: Inputs<Buffers>,
-        outputs: Outputs<Buffers>,
+        inputs: DataStreamIn<Buffers>,
+        outputs: DataStreamOut<Buffers>,
         gaining: &mut Gaining,
         _: &mut (),
     ) {
@@ -180,7 +174,7 @@ impl Node<Edges> for ContinuousGain {
                 gains
             });
             if let Some(gains) = chosen {
-                pass.cmd_self(Command::SetGains(gains));
+                pass.cmd_self(CmdIn::SetGains(SetGains(gains)));
                 *sampling = Sampling { done: true, ..Sampling::new(sampling.seconds, 0) };
             }
         }
@@ -195,7 +189,7 @@ impl Node<Edges> for ContinuousGain {
     fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
         let Some(ui) = ui else { return };
         ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, context| {
-            let count = Inputs::of(context.inputs).continuous.map_or(0, |c| c.channels as usize);
+            let count = DataStreamIn::of(context.inputs).continuous.map_or(0, |c| c.channels as usize);
             let channels = Channels { count, group_size: 1 };
             // The gains: one for all, or one each.
             ui.strong("Gains");
@@ -290,7 +284,7 @@ impl Node<Edges> for ContinuousGain {
         });
     }
 
-    fn warnings(&self, inputs: &Inputs) -> Vec<String> {
+    fn warnings(&self, inputs: &DataStreamIn) -> Vec<String> {
         require_input(inputs, "a continuous data stream")
     }
 }
@@ -298,6 +292,7 @@ impl Node<Edges> for ContinuousGain {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Command;
     use ephys_rs::engine::{DataStreamType, PASS_DURATION};
 
     #[test]
@@ -307,7 +302,7 @@ mod tests {
         gain.gains.detect.seconds = 4.0;
         let stream = Continuous { channels: 2, sample_rate: 1000.0 };
         let started = std::time::Instant::now();
-        let inputs = Inputs { continuous: Some(stream) };
+        let inputs = DataStreamIn { continuous: Some(stream) };
         gain.gains.detect.started = Some(started);
         let mut state = ephys_rs::engine::fresh_state(&gain, &inputs);
         let commands = ephys_rs::commands::Commands::default();
@@ -324,13 +319,13 @@ mod tests {
             let mut out = stream.buffer(PASS_DURATION);
             let mut pass = PassContext::new(sequence, PASS_DURATION);
             pass.commands = &commands;
-            let (inputs, outputs) = (Inputs { continuous: Some(&input) }, Outputs { scaled: &mut out });
+            let (inputs, outputs) = (DataStreamIn { continuous: Some(&input) }, DataStreamOut { scaled: &mut out });
             gain.process(&mut pass, inputs, outputs, &mut state, &mut ());
             let expected = -100.0 * gain.gains.get(0);
             assert_eq!(out.channel(0)[10], expected, "multiplied by the gain");
         }
         let updates = commands.take_commands::<Command>();
-        let [(_, Command::SetGains(gains))] = &updates[..] else { panic!("{updates:?}") };
+        let [(_, Command::SetGains(SetGains(gains)))] = &updates[..] else { panic!("{updates:?}") };
         // One for all, to begin with: the widest of theirs, so neither clips.
         assert!((gains.range_uv(0) - 900.0).abs() < 20.0 && (gains.range_uv(1) - 900.0).abs() < 20.0);
         // Wider than a quarter of a gain fits, it's the widest it can be.

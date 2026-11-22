@@ -3,9 +3,11 @@ use std::time::Duration;
 
 use super::files::{POS_RECORD, POST_PROCESSING_INFO, SYNCED_FROM};
 use super::*;
+use crate::Command;
 use crate::standard::themes::THEMES;
 use crate::{NodeType, Nodes};
 use ephys_rs::commands::{Address, Commands};
+use ephys_rs::engine::ReadsValIn;
 use ephys_rs::engine::{CommandSource, Graph, NodesEnum, PortAddress, PortRole};
 
 /// A folder of its own, for a test's recording.
@@ -135,10 +137,10 @@ fn send_then(paths: Vec<PathBuf>, commands: Option<&std::sync::Arc<Commands>>) -
     let mut graph = Graph::<Nodes>::default();
     let id = graph.add(Nodes::create(NodeType::SyncPositions), [0.0, 0.0]);
     let after = graph.add(Nodes::create(NodeType::SyncPositions), [0.0, 0.0]);
-    let from = PortAddress { node: id, role: PortRole::ValInCmdOut, port_idx: AFTER_SYNCING };
+    let from = PortAddress { node: id, role: PortRole::ValInCmdOut, port_idx: ValInCmdOut::after_syncing.index() };
     graph.connect(from, PortAddress { node: after, role: PortRole::ValOutCmdIn, port_idx: 0 }).unwrap();
     let state: ephys_rs::engine::UiStateCell = std::cell::RefCell::new(Box::new(SyncState::default()));
-    let command = Command::ProcessFiles(Files(paths));
+    let command = Command::ProcessFiles(ProcessFiles(paths));
     assert!(graph.command(id, CommandSource::Port(0), command, Some(&state), commands, false));
     state.borrow().downcast_ref::<SyncState>().unwrap().job.clone()
 }
@@ -214,8 +216,11 @@ fn once_synced_the_files_are_sent_on_with_the_positions_and_their_original() {
     wait_for(&send_then(vec![set.clone(), egf.clone()], Some(&commands))).unwrap();
     let sent = commands.take_commands::<Command>();
     let files = vec![set.clone(), egf, dir.join("session.pos"), dir.join("session.pos.original")];
-    let after = Address::Port { from: ephys_rs::engine::NodeId(1), val_in_idx: AFTER_SYNCING };
-    assert!(matches!(&sent[..], [(to, Command::ProcessFiles(Files(sent)))] if *to == after && *sent == files), "once");
+    let after = Address::Port { from: ephys_rs::engine::NodeId(1), val_in_idx: ValInCmdOut::after_syncing.index() };
+    assert!(
+        matches!(&sent[..], [(to, Command::ProcessFiles(ProcessFiles(sent)))] if *to == after && *sent == files),
+        "once"
+    );
     // Not if it couldn't sync.
     std::fs::remove_file(dir.join("session.ttl")).unwrap();
     wait_for(&send_then(vec![set], Some(&commands))).unwrap_err();

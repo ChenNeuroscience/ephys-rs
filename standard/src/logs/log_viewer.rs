@@ -14,14 +14,12 @@ use crate::standard::plots;
 use crate::standard::pool::Pool;
 use crate::standard::widgets::require_input;
 use ephys_rs::engine::{
-    Buffers, Category, NoPorts, Node, NodeInfo, PassContext, PassState, PoolStatus, Prepare, PrepareContext, Prepared,
-    Shared, UiContext,
+    Buffers, Category, CommandContext, CommandSource, NoPorts, Node, NodeInfo, PassContext, PassState, PoolStatus,
+    Prepare, PrepareContext, Prepared, Shared, UiContext,
 };
 
-ephys_rs::data_ports! {
-    inputs: pub struct Inputs {
-        log: In<LogLines>,
-    }
+ephys_rs::ports! {
+    log: DataStreamIn<LogLines>,
 }
 
 /// The most lines kept: the oldest go.
@@ -70,8 +68,7 @@ impl PassState for Viewing {
 }
 
 impl Node<Edges> for LogViewer {
-    type Inputs = Inputs;
-    type Outputs = NoPorts;
+    type Ports = Ports;
     type State = Viewing;
     type WorkerState = ();
     type Shared = SentLines;
@@ -86,7 +83,15 @@ impl Node<Edges> for LogViewer {
     const WINDOW_SIZE: [f32; 2] = [820.0, 520.0];
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
-    fn output_streams(&self, _inputs: &Inputs) -> NoPorts {
+    fn val_out(&self) -> NoPorts {
+        NoPorts
+    }
+
+    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<Edges>) {
+        match command {}
+    }
+
+    fn output_streams(&self, _inputs: &DataStreamIn) -> NoPorts {
         NoPorts
     }
 
@@ -100,7 +105,7 @@ impl Node<Edges> for LogViewer {
     fn process(
         &self,
         pass: &mut PassContext<Edges>,
-        inputs: Inputs<Buffers>,
+        inputs: DataStreamIn<Buffers>,
         _: NoPorts,
         viewing: &mut Viewing,
         _: &mut (),
@@ -149,7 +154,7 @@ impl Node<Edges> for LogViewer {
         });
     }
 
-    fn warnings(&self, inputs: &Inputs) -> Vec<String> {
+    fn warnings(&self, inputs: &DataStreamIn) -> Vec<String> {
         require_input(inputs, "log lines")
     }
 }
@@ -188,7 +193,7 @@ mod tests {
         }
         let mut pass = PassContext::new(0, 0.02);
         pass.shared = sent;
-        LogViewer::default().process(&mut pass, Inputs { log: Some(&log) }, NoPorts, viewing, &mut ());
+        LogViewer::default().process(&mut pass, DataStreamIn { log: Some(&log) }, NoPorts, viewing, &mut ());
     }
 
     /// A viewer on the GUI's side: its graph, what its passes share, and its state.

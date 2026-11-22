@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use super::{Edges, NodeId, Recording, ValueType};
+use super::{Edges, NodeId, ReadsValIn, Recording, ValInCmdOutPort, ValueOf};
 use crate::commands::{Address, CmdSender, Commands};
 
 /// When a node prepares for a snapshot (see `Node::prepare_for_snapshot`), it answers with this: what it made ahead of
@@ -198,15 +198,19 @@ impl<'a, E: Edges, N> PrepareContext<'a, E, N> {
         }
     }
 
-    /// The node reads what its `ValInCmdOut` (or `ValIn`) port `val_in_idx` sees with this (see `UiContext::val_in`).
-    pub fn val_in<T: ValueType<E::PublishedValue> + 'a>(&self, val_in_idx: usize) -> Option<&'a T> {
-        T::from_value(self.val_ins.get(val_in_idx)?.as_ref()?)
+    /// The node reads what `port` sees with this (see `UiContext::val_in`).
+    pub fn val_in<P: ReadsValIn>(&self, port: P) -> Option<&'a P::Value>
+    where
+        P::Value: ValueOf<E> + 'a,
+    {
+        P::Value::from_value(self.val_ins.get(port.index())?.as_ref()?)
     }
 
     /// A node keeps one of these to command, later, from any thread (a writer's, once its files are finished, say), the
-    /// node its `ValInCmdOut` port `val_in_idx` connects to then (see `CmdSender`). There's none if the port isn't
-    /// connected now, or there's no queue.
-    pub fn cmd_sender(&self, val_in_idx: usize) -> Option<CmdSender<E::Command>> {
+    /// node `port` connects to then (see `CmdSender`). There's none if the port isn't connected now, or there's
+    /// no queue.
+    pub fn cmd_sender<V, S>(&self, port: ValInCmdOutPort<V, S>) -> Option<CmdSender<E, S>> {
+        let val_in_idx = port.index();
         self.val_ins.get(val_in_idx)?.as_ref()?;
         Some(CmdSender::new(self.commands?.clone(), Address::Port { from: self.node, val_in_idx }))
     }
@@ -246,8 +250,11 @@ impl<'a, E: Edges, N> PrepareContext<'a, E, N> {
 
 /// Tests try nodes out with the state a node makes for `inputs` when it's new to the run, not recording, on one worker.
 /// This returns the node's shared state and its worker's.
-pub fn fresh_states<E: Edges, N: super::Node<E>>(node: &N, inputs: &N::Inputs) -> (N::State, N::WorkerState) {
-    let inputs = super::InputPorts::<E>::streams(inputs);
+pub fn fresh_states<E: Edges, N: super::Node<E>>(
+    node: &N,
+    inputs: &super::DataStreamInOf<N, E>,
+) -> (N::State, N::WorkerState) {
+    let inputs = super::DataStreamInPorts::<E>::streams(inputs);
     let context = PrepareContext::trying(&inputs, None);
     let prepared = node.prepare_for_snapshot(&context).wait();
     let shared = or_unit(prepared.proto_shared_state).expect("a node with state makes it when it's new");
@@ -256,7 +263,7 @@ pub fn fresh_states<E: Edges, N: super::Node<E>>(node: &N, inputs: &N::Inputs) -
 }
 
 /// Tests mostly need only the shared state a node makes for `inputs` (see `fresh_states`).
-pub fn fresh_state<E: Edges, N: super::Node<E>>(node: &N, inputs: &N::Inputs) -> N::State {
+pub fn fresh_state<E: Edges, N: super::Node<E>>(node: &N, inputs: &super::DataStreamInOf<N, E>) -> N::State {
     fresh_states(node, inputs).0
 }
 

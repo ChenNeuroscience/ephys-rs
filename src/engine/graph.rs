@@ -9,8 +9,9 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    CommandContext, CommandSource, CommandsEnum, EdgeInfo, EdgeTypesEnum, Edges, InputPorts, Node, NodesEnum,
-    OutputPorts, Plan, Port, PortAddress, PortKind, PortRole, UiContext,
+    CommandContext, CommandSource, CommandsEnum, DataStreamInOf, DataStreamInPorts, DataStreamOutPorts, EdgeInfo,
+    EdgeTypesEnum, Edges, Node, NodesEnum, Plan, Port, PortAddress, PortKind, PortRole, PortSet, UiContext,
+    ValOutCmdInOf, ValOutCmdInPorts,
 };
 use crate::commands::{Address, Commands};
 use crate::theme::Colours;
@@ -131,17 +132,15 @@ pub struct NodeState<E: Edges> {
 impl<E: Edges> NodeState<E> {
     /// The state of `node`, given the data streams on its inputs.
     pub fn of<N: Node<E>>(node: &N, input_streams: Vec<Option<E::DataStream>>) -> Self {
-        let (val_outs, val_ins): (Vec<_>, Vec<_>) =
-            node.list_ports_val_cmd().into_iter().partition(|p| p.role() == PortRole::ValOutCmdIn);
-        let inputs = N::Inputs::of(&input_streams);
+        let inputs = DataStreamInOf::<N, E>::of(&input_streams);
         NodeState {
-            inputs: N::Inputs::ports(),
+            inputs: DataStreamInOf::<N, E>::ports(),
             outputs: node.output_streams(&inputs).ports(),
             warnings: node.warnings(&inputs),
             input_streams,
-            values: (0..val_outs.len()).map(|port| node.val_out(port)).collect(),
-            val_outs,
-            val_ins,
+            values: node.val_out().values(),
+            val_outs: ValOutCmdInOf::<N, E>::ports(),
+            val_ins: N::Ports::val_in_ports(),
         }
     }
 
@@ -321,10 +320,10 @@ impl<N: NodesEnum> Graph<N> {
         self.nodes.get(&id)
     }
 
-    /// The app has every node drop what it was asked to do only for now (see `CommandsEnum::clear_transient_state`)
+    /// The app has every node drop what it was asked to do only for now (see `Node::clear_transient_state`)
     /// with this.
     pub fn clear_transient_state(&mut self) {
-        self.nodes.iter_mut().for_each(|(id, entry)| clear_transient_state(*id, entry));
+        self.nodes.values_mut().for_each(clear_transient_state);
     }
 
     pub fn get_mut(&mut self, id: NodeId) -> Option<&mut NodeEntry<N>> {
@@ -647,7 +646,7 @@ impl<N: NodesEnum> Graph<N> {
     ) -> bool {
         let val_ins = self.val_ins(to);
         let Some(entry) = self.nodes.get_mut(&to) else { return false };
-        if entry.disabled && !command.is_clear_transient_state() {
+        if entry.disabled {
             log::info!("{} is disabled: {:?} not delivered", entry.label, command.kind());
             return false;
         }
@@ -664,8 +663,13 @@ impl<N: NodesEnum> Graph<N> {
             }
         }
         let context = &mut CommandContext::new(to, &entry.label, &val_ins, ui_state, commands, running);
-        entry.node.on_command(from, command, context);
-        true
+        match entry.node.on_command(from, command, context) {
+            Ok(()) => true,
+            Err(command) => {
+                log::warn!("{} doesn't take {:?}: not delivered", entry.label, command.kind());
+                false
+            }
+        }
     }
 
     /// The app runs `f` (a node's window, say) on a node with this. The commands the window sends through its ports
@@ -821,12 +825,10 @@ impl Recording {
     }
 }
 
-/// The app has node `id` drop what it was asked to do only for now (see `CommandsEnum::clear_transient_state`) with
-/// this: when it duplicates the node, say. The node isn't edited otherwise.
-pub fn clear_transient_state<N: NodesEnum>(id: NodeId, entry: &mut NodeEntry<N>) {
-    let context = &mut CommandContext::new(id, &entry.label, &[], None, None, false);
-    let command = <<N::Edges as Edges>::Command as CommandsEnum>::clear_transient_state();
-    entry.node.on_command(CommandSource::App, command, context);
+/// The app has a node drop what it was asked to do only for now (see `Node::clear_transient_state`) with this: when it
+/// duplicates the node, say. The node isn't edited otherwise.
+pub fn clear_transient_state<N: NodesEnum>(entry: &mut NodeEntry<N>) {
+    entry.node.clear_transient_state();
 }
 
 /// The passes need to know the graph, with all its settings, the values its nodes read, the plan for running it, and
@@ -1004,7 +1006,8 @@ mod tests {
         let theme = &crate::standard::themes::THEMES[0].colours;
         graph.edit(viewer, &[], theme, None, None, None, false, false, None, |_, context| {
             let thresholds = spikes::Thresholds { values: vec![55.0], ..Default::default() };
-            context.cmd_out(0, crate::Command::SetThresholds(thresholds))
+            let thresholds_port = crate::standard::spikes::spike_viewer::ValInCmdOut::thresholds;
+            context.cmd_out(thresholds_port, spikes::SetThresholds(thresholds))
         });
         assert_eq!(graph.get(detector).unwrap().node.val_out(0), thresholds(vec![55.0]));
 
@@ -1038,10 +1041,10 @@ mod tests {
         assert_eq!(graph.command_target(address), Some((second, CommandSource::Port(0))), "reconnected: the new one");
 
         let thresholds = |uv: f32| spikes::Thresholds { values: vec![uv], ..Default::default() };
-        let set = |uv| crate::Command::SetThresholds(thresholds(uv));
+        let set = |uv| crate::Command::SetThresholds(spikes::SetThresholds(thresholds(uv)));
         assert!(graph.command(second, CommandSource::Port(0), set(55.0), None, None, false));
         assert_eq!(graph.get(second).unwrap().node.val_out(0), thresholds(55.0).into());
-        let files = crate::Command::ProcessFiles(crate::standard::other::run_command::Files(Vec::new()));
+        let files = crate::Command::ProcessFiles(crate::standard::other::run_command::ProcessFiles(Vec::new()));
         assert!(!graph.command(second, CommandSource::Port(0), files, None, None, false), "not what its port accepts");
         graph.get_mut(second).unwrap().disabled = true;
         assert!(!graph.command(second, CommandSource::Itself, set(60.0), None, None, false), "disabled");
@@ -1049,7 +1052,7 @@ mod tests {
     }
 
     /// An auto detect a viewer started carries on through its edits; it's done when the node's passes send what they
-    /// found, and forgotten on `ClearTransientState`.
+    /// found, and forgotten when the node's told to clear its transient state.
     #[test]
     fn auto_detect_is_started_by_a_command_and_ended_by_the_nodes_own() {
         use crate::standard::auto_detect::DetectRequest;
@@ -1060,16 +1063,26 @@ mod tests {
             _ => unreachable!(),
         };
         let mut send = |from, command| graph.command(detector, from, command, None, None, false);
-        assert!(send(CommandSource::Port(0), crate::Command::Detect(DetectRequest::Start)));
+        assert!(send(
+            CommandSource::Port(0),
+            crate::Command::from(crate::standard::auto_detect::Detect(DetectRequest::Start))
+        ));
         let edited = spikes::Thresholds { values: vec![70.0], ..Default::default() };
-        send(CommandSource::Port(0), crate::Command::SetThresholds(edited.clone()));
+        send(CommandSource::Port(0), crate::Command::SetThresholds(spikes::SetThresholds(edited.clone())));
         assert!(started(&graph), "an edit leaves it going");
-        graph.command(detector, CommandSource::Itself, crate::Command::SetThresholds(edited), None, None, false);
+        graph.command(
+            detector,
+            CommandSource::Itself,
+            crate::Command::SetThresholds(spikes::SetThresholds(edited)),
+            None,
+            None,
+            false,
+        );
         assert!(!started(&graph), "what its passes found ends it");
         graph.command(
             detector,
             CommandSource::Port(0),
-            crate::Command::Detect(DetectRequest::Start),
+            crate::Command::from(crate::standard::auto_detect::Detect(DetectRequest::Start)),
             None,
             None,
             false,

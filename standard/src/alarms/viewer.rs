@@ -22,21 +22,18 @@ use serde::{Deserialize, Serialize};
 
 use super::settings::{BUTTON_GAP, all_power, title};
 use super::tone::Tone;
-use super::{Alarm, AlarmKind, AlarmState, AlarmStates, Alarms, Phase, Source};
+use super::{Alarm, AlarmKind, AlarmState, AlarmStates, Alarms, Phase, SetAlarms, Source};
+use crate::Edges;
 use crate::standard::plots;
 use crate::standard::pool::Pool;
 use crate::standard::widgets::{mark_mixed, open_settings_button, require_input};
 use crate::standard::widgets::{power, small_toggle};
-use crate::{Command, CommandKind, Edges, ValueKind};
 use ephys_rs::engine::{
-    Buffers, Category, Flow, InputPorts, NoPorts, Node, NodeInfo, NodeThread, PassContext, PassState, PoolStatus, Port,
-    Prepare, PrepareContext, Prepared, Shared, UiContext,
+    Buffers, Category, CommandContext, CommandSource, DataStreamInPorts, Flow, NoPorts, Node, NodeInfo, NodeThread,
+    PassContext, PassState, PoolStatus, Prepare, PrepareContext, Prepared, Shared, UiContext,
 };
 use ephys_rs::gui::widgets::Icon;
 use ephys_rs::theme::Colours;
-
-/// Its one control: the processor's alarms.
-const ALARMS: usize = 0;
 
 #[derive(Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -169,15 +166,14 @@ pub struct AlarmsDisplay {
     pub going_off: Vec<(u32, f64)>,
 }
 
-ephys_rs::data_ports! {
-    inputs: pub struct Inputs {
-        alarms: In<AlarmStates>,
-    }
+ephys_rs::ports! {
+    alarms: DataStreamIn<AlarmStates>,
+    // An Alarm Processor's alarms, which the viewer switches on and off.
+    alarms: ValInCmdOut<Alarms, (SetAlarms,)>,
 }
 
 impl Node<Edges> for AlarmViewer {
-    type Inputs = Inputs;
-    type Outputs = NoPorts;
+    type Ports = Ports;
     type State = Sending;
     type WorkerState = ();
     type Shared = SentStates;
@@ -192,12 +188,16 @@ impl Node<Edges> for AlarmViewer {
     const WINDOW_SIZE: [f32; 2] = [820.0, 520.0];
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
-    fn output_streams(&self, _inputs: &Inputs) -> NoPorts {
+    fn output_streams(&self, _inputs: &DataStreamIn) -> NoPorts {
         NoPorts
     }
 
-    fn list_ports_val_cmd(&self) -> Vec<Port<Edges>> {
-        vec![Port::val_in_cmd_out("alarms", ValueKind::Alarms, &[CommandKind::SetAlarms])]
+    fn val_out(&self) -> NoPorts {
+        NoPorts
+    }
+
+    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<Edges>) {
+        match command {}
     }
 
     fn threads(&self) -> Vec<NodeThread> {
@@ -222,7 +222,7 @@ impl Node<Edges> for AlarmViewer {
     fn process(
         &self,
         pass: &mut PassContext<Edges>,
-        inputs: Inputs<Buffers>,
+        inputs: DataStreamIn<Buffers>,
         _: NoPorts,
         sending: &mut Sending,
         _: &mut (),
@@ -245,7 +245,9 @@ impl Node<Edges> for AlarmViewer {
     fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
         self.take_updates(context);
         let Some(ui) = ui else { return };
-        let (Some(stream), Some(alarms)) = (Inputs::of(context.inputs).alarms, context.val_in::<Alarms>(ALARMS)) else {
+        let (Some(stream), Some(alarms)) =
+            (DataStreamIn::of(context.inputs).alarms, context.val_in(ValInCmdOut::alarms))
+        else {
             ui.horizontal(|ui| context.node_toolbar(ui));
             plots::unconnected(ui, context.theme, "Connect an Alarm Processor's alarms and its setting");
             return;
@@ -264,7 +266,7 @@ impl Node<Edges> for AlarmViewer {
         let waiting_to_sound = context.running && !locked && any_sound(&alarms, overrides, &self.sounding);
         egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
             all_row(ui, &mut alarms, overrides, locked, &mut self.sounding, waiting_to_sound, |ui| {
-                open_settings_button(ui, context, ALARMS, "Alarm Processor");
+                open_settings_button(ui, context, ValInCmdOut::alarms, "Alarm Processor");
             });
             ui.add_space(2.0);
             for alarm in &mut alarms.list {
@@ -275,10 +277,10 @@ impl Node<Edges> for AlarmViewer {
                 ui.add_space(4.0);
             }
         });
-        context.cmd_out_if_changed(ALARMS, alarms, Command::SetAlarms);
+        context.cmd_out_if_changed(ValInCmdOut::alarms, alarms, SetAlarms);
     }
 
-    fn warnings(&self, inputs: &Inputs) -> Vec<String> {
+    fn warnings(&self, inputs: &DataStreamIn) -> Vec<String> {
         require_input(inputs, "an Alarm Processor")
     }
 }
@@ -290,10 +292,10 @@ impl AlarmViewer {
         let mut ui = context.ui_state::<AlarmsUi>();
         let AlarmsUi { shown, going_off, recording, overrides, tone } = &mut *ui;
         if !context.locked && (!overrides.ignored.is_empty() || !overrides.sounds.is_empty()) {
-            let mut alarms = context.val_in::<Alarms>(ALARMS).cloned();
+            let mut alarms = context.val_in(ValInCmdOut::alarms).cloned();
             overrides.save(alarms.as_mut(), &mut self.sounding);
             if let Some(alarms) = alarms {
-                context.cmd_out_if_changed(ALARMS, alarms, Command::SetAlarms);
+                context.cmd_out_if_changed(ValInCmdOut::alarms, alarms, SetAlarms);
             }
         }
         let Some(sent) = context.shared::<SentStates>() else { return };
@@ -710,7 +712,7 @@ mod tests {
         gui: &RefCell<Box<dyn Any>>,
         locked: bool,
     ) {
-        let inputs = Inputs { alarms: Some(STREAM) }.streams();
+        let inputs = DataStreamIn { alarms: Some(STREAM) }.streams();
         graph.edit(viewer, &inputs, &THEMES[0].colours, Some(by_node), Some(gui), None, true, locked, None, |n, c| {
             n.on_gui_tick(None, c);
         });
@@ -729,7 +731,13 @@ mod tests {
             let mut pass = PassContext::new(0, 0.02);
             pass.shared = by_node.get::<SentStates>(viewer).unwrap();
             pass.set_recording(recording);
-            AlarmViewer::default().process(&mut pass, Inputs { alarms: Some(&input) }, NoPorts, &mut sending, &mut ());
+            AlarmViewer::default().process(
+                &mut pass,
+                DataStreamIn { alarms: Some(&input) },
+                NoPorts,
+                &mut sending,
+                &mut (),
+            );
             background(&mut graph, viewer, &by_node, &gui, recording);
         }
         *gui.into_inner().downcast().unwrap()
@@ -786,7 +794,7 @@ mod tests {
         let gui: Gui =
             Rc::new(RefCell::new(Box::new(AlarmsUi { shown: display.into(), overrides, ..Default::default() })));
         let state = gui.clone();
-        let streams = Inputs { alarms: Some(STREAM) }.streams();
+        let streams = DataStreamIn { alarms: Some(STREAM) }.streams();
         let harness = egui_kittest::Harness::builder().with_size(size).wgpu().build_ui_state(
             move |ui, graph: &mut Graph<Nodes>| {
                 graph.edit(

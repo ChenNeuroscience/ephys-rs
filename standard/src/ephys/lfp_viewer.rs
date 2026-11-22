@@ -20,23 +20,24 @@
 //!   them.
 
 use eframe::egui::{self, Align2, FontId, Pos2, Rect, Sense, Shape, Stroke};
-use ephys_rs::engine::{Buffers, InputPorts, NoPorts, TreeShake};
+use ephys_rs::engine::{Buffers, DataStreamInPorts, NoPorts, TreeShake};
 use serde::{Deserialize, Serialize};
 
-use crate::standard::auto_detect::auto_detect_ui;
+use crate::Edges;
+use crate::standard::auto_detect::{Detect, auto_detect_ui};
 use crate::standard::ephys::reference::{
-    Computation, Method, Reference, format_channels, parse_channels, reference_colour,
+    Computation, Method, Reference, SetReference, format_channels, parse_channels, reference_colour,
 };
 use crate::standard::ephys::spectrum::{Spectra, SpectraBuffer};
-use crate::standard::ephys::{ChannelSelection, Continuous, ContinuousBuffer};
+use crate::standard::ephys::{ChannelSelection, Continuous, ContinuousBuffer, SetChannelSelection};
 use crate::standard::plots;
 use crate::standard::plots::axis_ui;
 use crate::standard::pool::Pool;
-use crate::standard::spikes::{Channels, GainScope, Gains, gain_field};
+use crate::standard::spikes::{Channels, GainScope, Gains, SetGains, gain_field};
 use crate::standard::widgets::{TIME_AXIS_HEIGHT, inline_block, open_settings_button, require_input, time_axis_ui};
-use crate::{Command, CommandKind, Edges, ValueKind};
 use ephys_rs::engine::{
-    Category, EdgeType, Node, NodeInfo, PassContext, Port, Prepare, PrepareContext, Prepared, UiContext,
+    Category, CommandContext, CommandSource, EdgeType, Node, NodeInfo, PassContext, Prepare, PrepareContext, Prepared,
+    UiContext,
 };
 use ephys_rs::gui::widgets::{Icon, small_toggle_button};
 
@@ -46,11 +47,6 @@ const COLUMNS: usize = 1200;
 const SPECTRUM_WIDTH: f32 = 160.0;
 /// The width of a row's y axis's labels and ticks.
 const AXIS_WIDTH: f32 = 44.0;
-
-/// Its controls: an Continuous Gain's gains, a Channel Selector's selection and a Reference's reference.
-const GAINS: usize = 0;
-const SELECTION: usize = 1;
-const REFERENCE: usize = 2;
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -274,17 +270,18 @@ struct Rows<'a> {
     selection_settings: Option<&'a mut dyn FnMut(&mut egui::Ui)>,
 }
 
-ephys_rs::data_ports! {
-    inputs: pub struct Inputs {
-        continuous: In<Continuous>,
-        spectra: In<Spectra>,
-        reference: In<Continuous>,
-    }
+ephys_rs::ports! {
+    continuous: DataStreamIn<Continuous>,
+    spectra: DataStreamIn<Spectra>,
+    reference: DataStreamIn<Continuous>,
+    // A Continuous Gain's gains, a Channel Selector's selection and a Reference's reference, which the viewer sets.
+    gains: ValInCmdOut<Gains, (SetGains, Detect)>,
+    selection: ValInCmdOut<ChannelSelection, (SetChannelSelection,)>,
+    reference: ValInCmdOut<Reference, (SetReference,)>,
 }
 
 impl Node<Edges> for LfpViewer {
-    type Inputs = Inputs;
-    type Outputs = NoPorts;
+    type Ports = Ports;
     type State = Traces;
     type WorkerState = ();
     /// What the passes send its window: each pass's new columns (every one taken, in order).
@@ -306,12 +303,12 @@ impl Node<Edges> for LfpViewer {
     /// The spectra only while they're shown: otherwise, the Spectrum node needn't run at all. It runs while it's
     /// given something it needs.
     fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool], _recording: bool) -> TreeShake {
-        let needs: Vec<bool> = (0..inputs.len()).map(|input| input != Inputs::spectra || self.spectrum).collect();
+        let needs: Vec<bool> = (0..inputs.len()).map(|input| input != DataStreamIn::spectra || self.spectrum).collect();
         let given = inputs.iter().zip(&needs).any(|(&used, &needed)| used && needed);
         TreeShake { runs: given, needs }
     }
 
-    fn output_streams(&self, _inputs: &Inputs) -> NoPorts {
+    fn output_streams(&self, _inputs: &DataStreamIn) -> NoPorts {
         NoPorts
     }
 
@@ -319,14 +316,14 @@ impl Node<Edges> for LfpViewer {
         if context.same_streams() {
             return Prepared::nothing().into();
         }
-        let rate = Inputs::of(context.inputs).continuous.map_or(30000.0, |c| c.sample_rate);
+        let rate = DataStreamIn::of(context.inputs).continuous.map_or(30000.0, |c| c.sample_rate);
         Prepared::shared(Traces { rate, ..Default::default() }).into()
     }
 
     fn process(
         &self,
         pass: &mut PassContext<Edges>,
-        inputs: Inputs<Buffers>,
+        inputs: DataStreamIn<Buffers>,
         _: NoPorts,
         traces: &mut Traces,
         _: &mut (),
@@ -361,12 +358,12 @@ impl Node<Edges> for LfpViewer {
         }
     }
 
-    fn list_ports_val_cmd(&self) -> Vec<Port<Edges>> {
-        vec![
-            Port::val_in_cmd_out("gains", ValueKind::Gains, &[CommandKind::SetGains, CommandKind::Detect]),
-            Port::val_in_cmd_out("selection", ValueKind::ChannelSelection, &[CommandKind::SetChannelSelection]),
-            Port::val_in_cmd_out("reference", ValueKind::Reference, &[CommandKind::SetReference]),
-        ]
+    fn val_out(&self) -> NoPorts {
+        NoPorts
+    }
+
+    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<Edges>) {
+        match command {}
     }
 
     /// The viewer takes what its passes have sent, then draws its window if there's a `ui` to draw it in.
@@ -374,14 +371,14 @@ impl Node<Edges> for LfpViewer {
         self.take_updates(context);
         let Some(ui) = ui else { return };
         let locked = context.locked;
-        let inputs = Inputs::of(context.inputs);
+        let inputs = DataStreamIn::of(context.inputs);
         let Some(stream) = inputs.continuous else {
             plots::unconnected(ui, context.theme, "Connect a continuous data stream to view it");
             return;
         };
-        let mut selection = context.val_in::<ChannelSelection>(SELECTION).cloned();
-        let mut reference = context.val_in::<Reference>(REFERENCE).cloned();
-        let mut gains = context.val_in::<Gains>(GAINS).cloned();
+        let mut selection = context.val_in(ValInCmdOut::selection).cloned();
+        let mut reference = context.val_in(ValInCmdOut::reference).cloned();
+        let mut gains = context.val_in(ValInCmdOut::gains).cloned();
         let kept = context.ui_state::<TracesDisplay>();
         let display = kept.received.then_some(&*kept);
         // The references are edited on the rows (an R for each), so only once there are rows, with data to show.
@@ -401,7 +398,8 @@ impl Node<Edges> for LfpViewer {
         };
         let advanced = context.advanced();
         let theme = context.theme;
-        let mut settings = |ui: &mut egui::Ui| open_settings_button(ui, context, SELECTION, "Channel Selector");
+        let mut settings =
+            |ui: &mut egui::Ui| open_settings_button(ui, context, ValInCmdOut::selection, "Channel Selector");
         let rows = Rows {
             display,
             stream,
@@ -415,17 +413,17 @@ impl Node<Edges> for LfpViewer {
             edit.apply(reference, stream.channels);
         }
         if let Some(selection) = selection {
-            context.cmd_out_if_changed(SELECTION, selection, Command::SetChannelSelection);
+            context.cmd_out_if_changed(ValInCmdOut::selection, selection, SetChannelSelection);
         }
         if let Some(reference) = reference {
-            context.cmd_out_if_changed(REFERENCE, reference, Command::SetReference);
+            context.cmd_out_if_changed(ValInCmdOut::reference, reference, SetReference);
         }
         if let Some(gains) = gains {
-            context.cmd_out_if_changed(GAINS, gains, Command::SetGains);
+            context.cmd_out_if_changed(ValInCmdOut::gains, gains, SetGains);
         }
     }
 
-    fn warnings(&self, inputs: &Inputs) -> Vec<String> {
+    fn warnings(&self, inputs: &DataStreamIn) -> Vec<String> {
         require_input(inputs, "a continuous data stream")
     }
 }
@@ -479,7 +477,7 @@ impl LfpViewer {
                     inline_block(ui, "gains", true, |ui| {
                         gains_ui(ui, context, gains, stream.channels);
                         if context.advanced() {
-                            open_settings_button(ui, context, GAINS, "Continuous Gain");
+                            open_settings_button(ui, context, ValInCmdOut::gains, "Continuous Gain");
                         }
                     });
                 }
@@ -490,11 +488,11 @@ impl LfpViewer {
                         });
                         shown.response.on_disabled_hover_text("Disable the selection to change it");
                         if context.advanced() {
-                            open_settings_button(ui, context, REFERENCE, "Reference");
+                            open_settings_button(ui, context, ValInCmdOut::reference, "Reference");
                         }
                     });
                 }
-                let tip = match Inputs::of(context.inputs).spectra {
+                let tip = match DataStreamIn::of(context.inputs).spectra {
                     Some(s) => format!("Show each channel's spectrum, {}", s.summary()),
                     _ => "Show each channel's spectrum: connect a Spectrum node's".into(),
                 };
@@ -880,7 +878,7 @@ fn gains_ui(ui: &mut egui::Ui, context: &mut UiContext<Edges>, gains: &mut Gains
         "Sample each channel, then set its gain",
     );
     if let Some(request) = detect {
-        context.cmd_out(GAINS, Command::Detect(request));
+        context.cmd_out(ValInCmdOut::gains, Detect(request));
     }
 }
 

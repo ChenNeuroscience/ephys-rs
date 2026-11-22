@@ -116,7 +116,7 @@ extern crate self as ephys_rs;
 #[allow(dead_code, reason = "what's public is for builds, not all of which the tests use")]
 mod standard;
 #[cfg(test)]
-use standard::{Buffer, Command, CommandKind, DataStream, Edges, Kind, PublishedValue, ValueKind};
+use standard::{Buffer, Command, DataStream, Edges, Kind, PublishedValue};
 #[cfg(test)]
 #[path = "../examples/chen-neuro/src/components/mod.rs"]
 mod components;

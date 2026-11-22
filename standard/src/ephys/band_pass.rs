@@ -2,7 +2,9 @@
 //! run as second-order sections by sci-rs (a port of SciPy's `butter` and `sosfilt`).
 
 use eframe::egui;
-use ephys_rs::engine::{Buffers, InputPorts, Prepare, PrepareContext, Prepared, TreeShake};
+use ephys_rs::engine::{
+    Buffers, CommandContext, CommandSource, DataStreamInPorts, NoPorts, Prepare, PrepareContext, Prepared, TreeShake,
+};
 use sci_rs::signal::filter::design::{DigitalFilter, FilterBandType, FilterOutputType, Sos, butter_dyn};
 use sci_rs::signal::filter::sosfilt_item;
 use serde::{Deserialize, Serialize};
@@ -13,13 +15,9 @@ use crate::standard::widgets::format_rate;
 use crate::standard::widgets::{input_summary, require_input, setting, settings_grid};
 use ephys_rs::engine::{Category, Node, NodeInfo, PassContext, UiContext};
 
-ephys_rs::data_ports! {
-    inputs: pub struct Inputs {
-        continuous: In<Continuous>,
-    }
-    outputs: pub struct Outputs {
-        filtered: Out<Continuous> in_place_of continuous,
-    }
+ephys_rs::ports! {
+    continuous: DataStreamIn<Continuous>,
+    filtered: DataStreamOut<Continuous> in_place_of continuous,
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -38,6 +36,7 @@ impl Default for BandPassFilter {
 }
 
 impl Node<Edges> for BandPassFilter {
+    type Ports = Ports;
     const INFO: NodeInfo = NodeInfo {
         name: "Band-pass Filter",
         category: Category::Processing,
@@ -50,8 +49,6 @@ impl Node<Edges> for BandPassFilter {
         TreeShake::needing_all(inputs.contains(&true) && outputs.contains(&true), inputs.len())
     }
 
-    type Inputs = Inputs;
-    type Outputs = Outputs;
     type State = Filters;
     type WorkerState = ();
     type Shared = ();
@@ -62,7 +59,7 @@ impl Node<Edges> for BandPassFilter {
         if context.same_streams() {
             return Prepared::nothing().into();
         }
-        let Some(stream) = Inputs::of(context.inputs).continuous else {
+        let Some(stream) = DataStreamIn::of(context.inputs).continuous else {
             return Prepared::shared(Filters::default()).into();
         };
         let mut filters = Filters { channels: vec![Vec::new(); stream.channels as usize], ..Default::default() };
@@ -73,8 +70,8 @@ impl Node<Edges> for BandPassFilter {
     fn process(
         &self,
         _pass: &mut PassContext<Edges>,
-        inputs: Inputs<Buffers>,
-        outputs: Outputs<Buffers>,
+        inputs: DataStreamIn<Buffers>,
+        outputs: DataStreamOut<Buffers>,
         filters: &mut Filters,
         _: &mut (),
     ) {
@@ -90,8 +87,16 @@ impl Node<Edges> for BandPassFilter {
         filters.run(output, inputs.continuous);
     }
 
-    fn output_streams(&self, inputs: &Inputs) -> Outputs {
-        Outputs { filtered: inputs.continuous }
+    fn val_out(&self) -> NoPorts {
+        NoPorts
+    }
+
+    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<Edges>) {
+        match command {}
+    }
+
+    fn output_streams(&self, inputs: &DataStreamIn) -> DataStreamOut {
+        DataStreamOut { filtered: inputs.continuous }
     }
 
     fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
@@ -110,7 +115,7 @@ impl Node<Edges> for BandPassFilter {
         });
     }
 
-    fn warnings(&self, inputs: &Inputs) -> Vec<String> {
+    fn warnings(&self, inputs: &DataStreamIn) -> Vec<String> {
         let mut warnings = require_input(inputs, "a continuous data stream");
         if self.low_hz >= self.high_hz {
             warnings.push("The low cut-off must be below the high cut-off".into());

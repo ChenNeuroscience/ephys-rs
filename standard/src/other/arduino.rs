@@ -25,8 +25,8 @@ use crate::Edges;
 use crate::standard::pool::Pool;
 use crate::standard::widgets::{combo, named_settings_grid, setting};
 use ephys_rs::engine::{
-    Category, Flow, NoPorts, Node, NodeInfo, NodeThread, PassContext, PassState, Prepare, PrepareContext, Prepared,
-    ThreadContext, UiContext,
+    Category, CommandContext, CommandSource, Flow, NoCommands, NoPorts, Node, NodeInfo, NodeThread, PassContext,
+    PassState, Prepare, PrepareContext, Prepared, ThreadContext, UiContext,
 };
 use ephys_rs::gui::widgets::{Icon, small_icon_button};
 
@@ -349,14 +349,21 @@ impl Node<Edges> for Arduino {
         description: "Sets an Arduino's pins while acquiring, while recording, or by hand, over Firmata.",
     };
 
-    type Inputs = NoPorts;
-    type Outputs = NoPorts;
+    type Ports = NoPorts;
     type State = Connected;
     type WorkerState = ();
     /// How it's getting on, for its window.
     type Shared = Pool<Status>;
     type UiState = ();
     type GlobalSettings = ();
+
+    fn val_out(&self) -> NoPorts {
+        NoPorts
+    }
+
+    fn on_command(&mut self, _from: CommandSource, command: NoCommands, _context: &mut CommandContext<Edges>) {
+        match command {}
+    }
 
     fn output_streams(&self, _inputs: &NoPorts) -> NoPorts {
         NoPorts

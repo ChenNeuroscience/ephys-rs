@@ -29,7 +29,7 @@
 //! reader makes of a key with a space in it, or one that's the same as another header), except that line breaks are
 //! written as spaces, as a header's a line.
 
-use ephys_rs::engine::{Buffers, InputPorts, NoPorts, PortForm, Prepare, PrepareContext, Prepared, TreeShake};
+use ephys_rs::engine::{Buffers, DataStreamInPorts, NoPorts, PortForm, Prepare, PrepareContext, Prepared, TreeShake};
 use std::fs::File;
 use std::io::{self, BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -41,37 +41,41 @@ use serde::{Deserialize, Serialize};
 use super::{
     Files, OnFinished, Status, Writing, after_recording, location_summary, recording_path, show_status, status_ui,
 };
+use crate::Edges;
 use crate::standard::ephys::reference::parse_channels;
 use crate::standard::ephys::{ChannelSelection, Continuous, Events};
 use crate::standard::logs::LogLines;
+use crate::standard::other::run_command::{FileInput, ProcessFiles};
 use crate::standard::pool::Pool;
 use crate::standard::spikes::{Gains, RECORDED_FULL_SCALE_UV, Spikes, trimmed};
 use crate::standard::tracking::{Crop, Detection, Positions};
 use crate::standard::widgets::{require_input, setting, settings_grid};
-use crate::{CommandKind, Edges, PublishedValue, ValueKind};
 use ephys_rs::engine::{
-    Category, DataStreamType, EdgeTypesEnum, Flow, Node, NodeInfo, NodeThread, PASS_DURATION, PassContext, PoolStatus,
-    Port, ThreadContext, UiContext,
+    Category, CommandContext, CommandSource, DataStreamType, EdgeTypesEnum, Flow, Node, NodeInfo, NodeThread,
+    PASS_DURATION, PassContext, PoolStatus, PrepareContext as Context, ThreadContext, UiContext,
 };
 
-ephys_rs::data_ports! {
-    /// The writer takes its inputs, swapping their buffers into a chunk for its thread, which makes what it writes of
-    /// them (the plan copies them for it, if something else needs them after it). As streams, these are the inputs'
-    /// as the run started.
-    inputs: pub struct Inputs {
-        spikes: Take<Spikes>,
-        continuous: Take<Continuous> = "eeg",
-        positions: Take<Positions>,
-        events: Take<Events>,
-        position_events: Take<Events> = "pos ttl",
-        log: Take<LogLines>,
-    }
+ephys_rs::ports! {
+    // The writer takes its inputs, swapping their buffers into a chunk for its thread, which makes what it writes of
+    // them (the plan copies them for it, if something else needs them after it). As streams, these are the inputs'
+    // as the run started.
+    spikes: DataStreamIn<Spikes> take,
+    continuous: DataStreamIn<Continuous> = "eeg" take,
+    positions: DataStreamIn<Positions> take,
+    events: DataStreamIn<Events> take,
+    position_events: DataStreamIn<Events> = "pos ttl" take,
+    log: DataStreamIn<LogLines> take,
+    /// The settings the writer records with the data, which it only reads.
+    detection: ValIn<Detection>,
+    gains: ValIn<Gains>,
+    eeg_selection: ValIn<ChannelSelection> = "eeg selection",
+    eeg_gains: ValIn<Gains> = "eeg gains",
+    /// Where the writer sends what it's recorded, once it's finished (see `after_recording`): on the right, as
+    /// what it sets off comes after it.
+    after_recording: ValInCmdOut<FileInput, (ProcessFiles,)> = "after recording" flipped,
 }
 
 /// Ticks a second, for timestamps.
-/// Its port sending what it recorded to what's to process it, once it's finished (see `after_recording`).
-const AFTER_RECORDING: usize = 4;
-
 const TIMEBASE: f64 = 96000.0;
 /// The EEG's rate.
 const EGF_RATE: f32 = 5000.0;
@@ -162,14 +166,14 @@ impl<T: DataStreamType> Slot<T> {
 /// A pass's data, for the writer's thread: in buffers like the passes' own, to swap with them (see `Held`); and when
 /// the recording took effect.
 pub struct Chunk {
-    inputs: Inputs<Held>,
+    inputs: DataStreamIn<Held>,
     effective: Option<DateTime<Local>>,
 }
 
 impl Chunk {
     /// Empty, with a buffer for each of `streams`.
-    fn new(streams: Inputs) -> Self {
-        let inputs = Inputs {
+    fn new(streams: DataStreamIn) -> Self {
+        let inputs = DataStreamIn {
             spikes: Slot::new(streams.spikes),
             continuous: Slot::new(streams.continuous),
             positions: Slot::new(streams.positions),
@@ -190,7 +194,7 @@ impl Chunk {
     /// The writer's thread, with a pool of chunks for `streams`, writing to `files`.
     fn writing(
         base: &Path,
-        streams: Inputs,
+        streams: DataStreamIn,
         files: io::Result<LtxFiles>,
         on_finished: Option<OnFinished>,
     ) -> Writing<Chunk> {
@@ -201,8 +205,7 @@ impl Chunk {
 }
 
 impl Node<Edges> for WriteLtx {
-    type Inputs = Inputs;
-    type Outputs = NoPorts;
+    type Ports = Ports;
     type State = Recorder;
     type WorkerState = ();
     /// What it shows, for its window.
@@ -223,20 +226,16 @@ impl Node<Edges> for WriteLtx {
         TreeShake::needing_all(recording && inputs.contains(&true), inputs.len())
     }
 
-    fn output_streams(&self, _inputs: &Inputs) -> NoPorts {
+    fn output_streams(&self, _inputs: &DataStreamIn) -> NoPorts {
         NoPorts
     }
 
-    /// The settings it records with the data, which it only reads; and, on the right, as what it sets off comes after
-    /// it, where it sends what it's recorded, once it's finished (see `after_recording`).
-    fn list_ports_val_cmd(&self) -> Vec<Port<Edges>> {
-        vec![
-            Port::val_in("detection", ValueKind::Detection),
-            Port::val_in("gains", ValueKind::Gains),
-            Port::val_in("eeg selection", ValueKind::ChannelSelection),
-            Port::val_in("eeg gains", ValueKind::Gains),
-            Port::val_in_cmd_out("after recording", ValueKind::FileInput, &[CommandKind::ProcessFiles]).flipped(),
-        ]
+    fn val_out(&self) -> NoPorts {
+        NoPorts
+    }
+
+    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<Edges>) {
+        match command {}
     }
 
     fn threads(&self) -> Vec<NodeThread> {
@@ -267,9 +266,9 @@ impl Node<Edges> for WriteLtx {
         let writing = context.recording.map(|recording| {
             let date = recording.start_requested_date();
             let base = recording_path(recording.base_directory(), date);
-            let (streams, recorded) = (Inputs::of(context.inputs), Recorded::of(context.val_ins, self.scales));
+            let (streams, recorded) = (DataStreamIn::of(context.inputs), Recorded::of(context, self.scales));
             let files = LtxFiles::open(&base, *date, streams, recorded);
-            Chunk::writing(&base, streams, files, after_recording(context.cmd_sender(AFTER_RECORDING)))
+            Chunk::writing(&base, streams, files, after_recording(context.cmd_sender(ValInCmdOut::after_recording)))
         });
         Prepared::shared(Recorder { writing }).into()
     }
@@ -278,7 +277,7 @@ impl Node<Edges> for WriteLtx {
     fn process(
         &self,
         pass: &mut PassContext<Edges>,
-        inputs: Inputs<Buffers>,
+        inputs: DataStreamIn<Buffers>,
         _: NoPorts,
         recorder: &mut Recorder,
         _: &mut (),
@@ -318,7 +317,7 @@ impl Node<Edges> for WriteLtx {
             });
             location_summary(ui, context.base_directory, "files");
             ui.add_space(4.0);
-            let recording: Vec<String> = Inputs::ports()
+            let recording: Vec<String> = DataStreamIn::ports()
                 .iter()
                 .zip(context.inputs)
                 .filter_map(|(input, stream)| stream.map(|s| format!("{}: {}", input.name(), s.summary())))
@@ -328,14 +327,15 @@ impl Node<Edges> for WriteLtx {
             } else {
                 ui.label(format!("Records {}.", recording.join(", ")));
             }
-            let inputs = Inputs::of(context.inputs);
-            if context.val_ins[0].is_none() && inputs.positions.is_some() {
+            let inputs = DataStreamIn::of(context.inputs);
+            if !context.val_in_connected(ValIn::detection) && inputs.positions.is_some() {
                 ui.weak("Connect the detection to record the crop and calibration with the positions.");
             }
-            if context.val_ins[1].is_none() && inputs.spikes.is_some() {
+            if !context.val_in_connected(ValIn::gains) && inputs.spikes.is_some() {
                 ui.weak("Connect the Spike Gain's gains, to record them with the spikes.");
             }
-            if (context.val_ins[2].is_none() || context.val_ins[3].is_none()) && inputs.continuous.is_some() {
+            let eeg = [context.val_in_connected(ValIn::eeg_selection), context.val_in_connected(ValIn::eeg_gains)];
+            if eeg.contains(&false) && inputs.continuous.is_some() {
                 ui.weak("Connect the Channel Selector's selection and the Continuous Gain's gains, to record them with the EEG.");
             }
             ui.separator();
@@ -344,7 +344,7 @@ impl Node<Edges> for WriteLtx {
         });
     }
 
-    fn warnings(&self, inputs: &Inputs) -> Vec<String> {
+    fn warnings(&self, inputs: &DataStreamIn) -> Vec<String> {
         let mut warnings = require_input(inputs, "something to record");
         if let Some(spikes) = inputs.spikes
             && spikes.group_size != SPIKE_CHANNELS as u32
@@ -398,21 +398,15 @@ struct Recorded {
 }
 
 impl Recorded {
-    fn of(controls: &[Option<PublishedValue>], scales: Scales) -> Self {
-        let mut recorded = Recorded { scales, ..Default::default() };
-        if let Some(Some(PublishedValue::Detection(detection))) = controls.first() {
-            recorded.detection = Some(detection.clone());
+    /// What the writer's controls read, as the snapshot it's preparing for was made, with its own `scales`.
+    fn of(context: &Context<Edges, WriteLtx>, scales: Scales) -> Self {
+        Recorded {
+            detection: context.val_in(ValIn::detection).cloned(),
+            gains: context.val_in(ValIn::gains).cloned().unwrap_or_default(),
+            eeg_selection: context.val_in(ValIn::eeg_selection).cloned(),
+            eeg_gains: context.val_in(ValIn::eeg_gains).cloned().unwrap_or_default(),
+            scales,
         }
-        if let Some(Some(PublishedValue::Gains(gains))) = controls.get(1) {
-            recorded.gains = gains.clone();
-        }
-        if let Some(Some(PublishedValue::ChannelSelection(selection))) = controls.get(2) {
-            recorded.eeg_selection = Some(selection.clone());
-        }
-        if let Some(Some(PublishedValue::Gains(gains))) = controls.get(3) {
-            recorded.eeg_gains = gains.clone();
-        }
-        recorded
     }
 
     /// Which channel (upstream, counting from 1) each of `count` EEG channels is: as the selection passes them on,
@@ -563,7 +557,7 @@ struct LtxFiles {
     /// When recording was asked for, and when it took effect (its first pass), once a chunk's said.
     start: DateTime<Local>,
     effective: Option<DateTime<Local>>,
-    streams: Inputs,
+    streams: DataStreamIn,
     set: LtxFile,
     tetrodes: Vec<Tetrode>,
     egf: Vec<Egf>,
@@ -585,7 +579,7 @@ struct LtxFiles {
 }
 
 impl LtxFiles {
-    fn open(base: &Path, start: DateTime<Local>, streams: Inputs, recorded: Recorded) -> io::Result<Self> {
+    fn open(base: &Path, start: DateTime<Local>, streams: DataStreamIn, recorded: Recorded) -> io::Result<Self> {
         if let Some(parent) = base.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -945,7 +939,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ephys-rs-ltx-ttl-{}", std::process::id()));
         let base = dir.join("test");
         let events = Events { lines: 8, sample_rate: 1000.0 };
-        let streams = Inputs {
+        let streams = DataStreamIn {
             positions: Some(Positions { fps: 50.0, width: 640, height: 480, source: CAMERA_TRACKER }),
             events: Some(events),
             position_events: Some(Events { lines: 1, sample_rate: 50.0 }),
@@ -1006,7 +1000,7 @@ mod tests {
     fn positions_from_elsewhere_say_so_with_their_custom_settings_ttls_and_log() {
         let dir = std::env::temp_dir().join(format!("ephys-rs-ltx-elsewhere-{}", std::process::id()));
         let base = dir.join("test");
-        let streams = Inputs {
+        let streams = DataStreamIn {
             positions: Some(Positions { fps: 50.0, width: 1000, height: 1000, source: "vr_computer" }),
             position_events: Some(Events { lines: 1, sample_rate: 1000.0 }),
             log: Some(LogLines { width: 32 }),
@@ -1066,7 +1060,7 @@ mod tests {
         use ephys_rs::engine::{Graph, NodesEnum};
         let mut graph = Graph::<Nodes>::default();
         let id = graph.add(Nodes::create(NodeType::WriteLtx), [0.0, 0.0]);
-        let inputs = Inputs::default().streams();
+        let inputs = DataStreamIn::default().streams();
         let mut harness = egui_kittest::Harness::builder().with_size([460.0, 300.0]).wgpu().build_ui_state(
             |ui, graph: &mut Graph<Nodes>| {
                 graph.edit(id, &inputs, &THEMES[0].colours, None, None, None, false, false, None, |node, context| {
@@ -1110,7 +1104,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ephys-rs-ltx-{}", std::process::id()));
         let base = dir.join("test");
         let spikes = Spikes { channels: 4, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32 };
-        let streams = Inputs {
+        let streams = DataStreamIn {
             spikes: Some(spikes),
             continuous: Some(Continuous { channels: 2, sample_rate: EGF_RATE }),
             positions: Some(Positions { fps: 50.0, width: 640, height: 480, source: CAMERA_TRACKER }),

@@ -58,15 +58,15 @@ ephys_rs::edge_types! {
         FileInput(run_command::FileInput),
     }
     commands: pub enum Command, CommandKind {
-        SetThresholds(spikes::Thresholds),
-        SetGains(spikes::Gains),
-        SetChannelSelection(ephys::ChannelSelection),
-        SetReference(reference::Reference),
-        SetCamera(camera::CameraConfig),
-        SetDetection(tracking::Detection),
-        SetAlarms(alarms::Alarms),
-        Detect(auto_detect::DetectRequest),
-        ProcessFiles(run_command::Files),
+        SetThresholds(spikes::SetThresholds),
+        SetGains(spikes::SetGains),
+        SetChannelSelection(ephys::SetChannelSelection),
+        SetReference(reference::SetReference),
+        SetCamera(camera::SetCamera),
+        SetDetection(tracking::SetDetection),
+        SetAlarms(alarms::SetAlarms),
+        Detect(auto_detect::Detect),
+        ProcessFiles(run_command::ProcessFiles),
     }
 }
 

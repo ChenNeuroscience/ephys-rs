@@ -9,16 +9,13 @@ use crate::Edges;
 use crate::standard::ephys::Continuous;
 use crate::standard::widgets::{format_rate, input_summary, require_input, setting, settings_grid};
 use ephys_rs::engine::{
-    Buffers, Category, InputPorts, Node, NodeInfo, PassContext, Prepare, PrepareContext, Prepared, TreeShake, UiContext,
+    Buffers, Category, CommandContext, CommandSource, DataStreamInPorts, NoPorts, Node, NodeInfo, PassContext, Prepare,
+    PrepareContext, Prepared, TreeShake, UiContext,
 };
 
-ephys_rs::data_ports! {
-    inputs: pub struct Inputs {
-        continuous: In<Continuous>,
-    }
-    outputs: pub struct Outputs {
-        downsampled: Out<Continuous>,
-    }
+ephys_rs::ports! {
+    continuous: DataStreamIn<Continuous>,
+    downsampled: DataStreamOut<Continuous>,
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -44,6 +41,7 @@ impl Downsample {
 }
 
 impl Node<Edges> for Downsample {
+    type Ports = Ports;
     const INFO: NodeInfo = NodeInfo {
         name: "Downsample",
         category: Category::Processing,
@@ -51,8 +49,6 @@ impl Node<Edges> for Downsample {
                       what's above half the new rate first.",
     };
 
-    type Inputs = Inputs;
-    type Outputs = Outputs;
     type State = Downsampling;
     type WorkerState = ();
     type Shared = ();
@@ -68,15 +64,15 @@ impl Node<Edges> for Downsample {
         if context.same_streams() {
             return Prepared::nothing().into();
         }
-        let step = Inputs::of(context.inputs).continuous.and_then(|input| self.step(input)).unwrap_or(0);
+        let step = DataStreamIn::of(context.inputs).continuous.and_then(|input| self.step(input)).unwrap_or(0);
         Prepared::shared(Downsampling { step, so_far: 0 }).into()
     }
 
     fn process(
         &self,
         _pass: &mut PassContext<Edges>,
-        inputs: Inputs<Buffers>,
-        outputs: Outputs<Buffers>,
+        inputs: DataStreamIn<Buffers>,
+        outputs: DataStreamOut<Buffers>,
         downsampling: &mut Downsampling,
         _: &mut (),
     ) {
@@ -97,9 +93,17 @@ impl Node<Edges> for Downsample {
         downsampling.so_far += input.len as u64;
     }
 
-    fn output_streams(&self, inputs: &Inputs) -> Outputs {
+    fn val_out(&self) -> NoPorts {
+        NoPorts
+    }
+
+    fn on_command(&mut self, _from: CommandSource, command: CmdIn, _context: &mut CommandContext<Edges>) {
+        match command {}
+    }
+
+    fn output_streams(&self, inputs: &DataStreamIn) -> DataStreamOut {
         let input = inputs.continuous.filter(|&input| self.step(input).is_some());
-        Outputs { downsampled: input.map(|input| Continuous { sample_rate: self.rate_hz, ..input }) }
+        DataStreamOut { downsampled: input.map(|input| Continuous { sample_rate: self.rate_hz, ..input }) }
     }
 
     fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
@@ -114,7 +118,7 @@ impl Node<Edges> for Downsample {
         });
     }
 
-    fn warnings(&self, inputs: &Inputs) -> Vec<String> {
+    fn warnings(&self, inputs: &DataStreamIn) -> Vec<String> {
         let mut warnings = require_input(inputs, "a continuous data stream");
         if let Some(input) = inputs.continuous
             && self.step(input).is_none()
@@ -158,7 +162,7 @@ mod tests {
     fn it_keeps_every_step_th_sample_across_passes() {
         let node = Downsample { rate_hz: 5000.0 };
         let input = Continuous { channels: 2, sample_rate: 30000.0 };
-        let inputs = Inputs { continuous: Some(input) };
+        let inputs = DataStreamIn { continuous: Some(input) };
         let mut downsampling = ephys_rs::engine::fresh_state(&node, &inputs);
         let output = node.output_streams(&inputs).downsampled.expect("a 5 kHz stream");
         assert_eq!(output.sample_rate, 5000.0);
@@ -173,7 +177,7 @@ mod tests {
             }
             so_far += len;
             let mut out = output.buffer(0.02);
-            let (inputs, outputs) = (Inputs { continuous: Some(&data) }, Outputs { downsampled: &mut out });
+            let (inputs, outputs) = (DataStreamIn { continuous: Some(&data) }, DataStreamOut { downsampled: &mut out });
             node.process(&mut PassContext::new(0, 0.02), inputs, outputs, &mut downsampling, &mut ());
             for (channel, kept) in kept.iter_mut().enumerate() {
                 kept.extend_from_slice(out.channel(channel));
@@ -185,7 +189,7 @@ mod tests {
     #[test]
     fn the_input_must_be_a_multiple_of_its_rate() {
         let node = Downsample { rate_hz: 5000.0 };
-        let input = |hz| Inputs { continuous: Some(Continuous { channels: 1, sample_rate: hz }) };
+        let input = |hz| DataStreamIn { continuous: Some(Continuous { channels: 1, sample_rate: hz }) };
         assert!(node.warnings(&input(30000.0)).is_empty());
         assert!(node.warnings(&input(5000.0)).is_empty(), "as it is");
         assert_eq!(node.warnings(&input(25600.0)).len(), 1);

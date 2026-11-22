@@ -8,8 +8,8 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use super::{
-    CommandContext, Edges, InputPorts, NodeThread, OutputPorts, PassContext, PoolStatus, Port, Shared, ThreadContext,
-    UiContext,
+    CmdInOf, CommandContext, DataStreamInOf, DataStreamInPorts, DataStreamOutOf, DataStreamOutPorts, Edges, NodeThread,
+    PassContext, PoolStatus, PortSet, Shared, ThreadContext, UiContext, ValOutCmdInOf,
 };
 use crate::global_settings::GlobalSettingsSet;
 
@@ -55,16 +55,14 @@ pub struct Shortcut {
     pub does: &'static str,
 }
 
-/// A command reaches a node from one of three places, which the node's told (see `Node::on_command`).
+/// A command reaches a node from one of two places, which the node's told (see `Node::on_command`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CommandSource {
-    /// Through an edge into the node's `ValOutCmdIn` port `n` (by index among them).
+    /// Through an edge into the node's setting (`ValOutCmdIn` port) `n`, by index among them.
     Port(usize),
     /// From the node itself: its passes (auto detect's result, say) or a thread of its own. The node's own window has
     /// `&mut self`, so it calls the node's methods directly rather than commanding itself.
     Itself,
-    /// From the app (`ClearTransientState`).
-    App,
 }
 
 /// A node can carry state from one pass to the next (see `Node::State`). Passes hand the state on in order, so passes
@@ -100,7 +98,7 @@ impl TreeShake {
 
 /// The plan gives each node buffers to read and fill, and can save memory, or copying, if it knows how the node uses
 /// them. The node says so in how it declares its data ports (`Take` inputs, and outputs `in_place_of` an input: see
-/// `data_ports!`), which the engine gathers into this. `none` is always correct.
+/// `ports!`), which the engine gathers into this. `none` is always correct.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BufferUsage {
     /// A node can sometimes make an output by editing one of its input's data where the data is, rather than filling a
@@ -127,7 +125,7 @@ impl BufferUsage {
 /// Each kind of node on the graph (a filter, a viewer, a device) is a type implementing this trait. The type itself is
 /// a plain struct of the node's settings, which the app saves with the graph.
 ///
-/// A node's ports are fixed by its type (see `Inputs` and `Outputs`), but its outputs' data streams can depend on its
+/// A node's ports are fixed by its type (see `Ports`), but its outputs' data streams can depend on its
 /// settings and on what's connected to its inputs: the graph works these out in order, from the sources down (see
 /// `Graph::resolve`).
 pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeOwned + Send + Sync + 'static {
@@ -177,36 +175,35 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     /// `NodeEntry::basic`), this decides. By convention, nodes with a view are listed, but each node type decides.
     const SHOW_IN_BASIC_DEFAULT: bool = false;
 
-    /// A node's data ports are declared on its type, with `data_ports!`, as a struct of its inputs and a struct of its
-    /// outputs (or `NoPorts`, for none). These name them. In the `Streams` form (as named here), each field holds the
-    /// data stream on its port; in a pass, the node gets them in the `Buffers` form (see `process`).
-    type Inputs: InputPorts<E>;
-    type Outputs: OutputPorts<E>;
+    /// A node's ports are declared on its type, with `ports!` (see `crate::engine::ports`), which makes `Ports`, naming
+    /// them all: this, or `NoPorts`, for a node with none. In a node's impl, the types it names are written as `ports!`
+    /// makes them: `DataStreamIn`, `DataStreamOut`, `ValOutCmdIn` and `CmdIn` (or `NoPorts` or `NoCommands`, for a
+    /// node without ports of a role).
+    type Ports: PortSet<E>;
 
-    /// The graph works out the data stream on each of the node's outputs from this, given the streams on its inputs
-    /// (`inputs`, each `None` if nothing's connected). The node can only run once every output's stream is known, so a
-    /// node gives `None` for an output it can't make from what it has (an input it needs isn't connected, say).
-    fn output_streams(&self, inputs: &Self::Inputs) -> Self::Outputs;
+    /// The graph works out the data stream on each of the node's `DataStreamOut` ports from this, given the streams on
+    /// its `DataStreamIn` ports (`inputs`, each `None` if nothing's connected). The node can only run once every output's
+    /// stream is known, so a node gives `None` for an output it can't make from what it has (an input it needs isn't
+    /// connected, say).
+    fn output_streams(&self, inputs: &DataStreamInOf<Self, E>) -> DataStreamOutOf<Self, E>;
 
-    /// A node's ValCmd ports (see `Port`). Its `ValOutCmdIn` ports are numbered separately from its `ValInCmdOut`
-    /// and `ValIn` ports (which are numbered together), each in the order they're listed here.
-    fn list_ports_val_cmd(&self) -> Vec<Port<E>> {
-        Vec::new()
-    }
-
-    /// Other nodes read the value at a node's `ValOutCmdIn` port `port_idx` (by index among them) from this: usually
-    /// a copy of one of its settings, as it is now. The app reads it each frame, for the nodes' windows, and each
-    /// snapshot keeps it, for passes.
-    fn val_out(&self, _port_idx: usize) -> E::PublishedValue {
-        unreachable!("a node with `ValOutCmdIn` ports says what their values are (Node::val_out)")
-    }
+    /// Other nodes read the values at the node's `ValOutCmdIn` ports from this: usually copies of some of its settings,
+    /// as they are now. The app reads them each frame, for the nodes' windows, and each snapshot keeps them, for passes.
+    /// A node with none gives `NoPorts`.
+    fn val_out(&self) -> ValOutCmdInOf<Self, E>;
 
     /// The app delivers each command sent to the node here, on the GUI's thread, running or not, in the order they were
-    /// sent, saying where each came from (most nodes needn't know). A command setting a value (`SetGains`, say) usually
-    /// just replaces the setting the value's a copy of; another usually starts something (a job kept in the node's
-    /// `UiState`), or, if the node's busy, is queued or reported as missed. Every node is sent `ClearTransientState`
-    /// (see `CommandsEnum::clear_transient_state`), which most can ignore.
-    fn on_command(&mut self, _from: CommandSource, _command: E::Command, _context: &mut CommandContext<E>) {}
+    /// sent, saying where each came from (most nodes needn't know), as the node's `CmdIn`: the commands its
+    /// `ValOutCmdIn` ports take. A command setting a value (`SetGains`, say) usually just replaces the setting the
+    /// value's a copy of; another usually starts something (a job kept in the node's `UiState`), or, if the node's busy,
+    /// is queued or reported as missed. A node that takes none has nothing to match: `match command {}`.
+    fn on_command(&mut self, from: CommandSource, command: CmdInOf<Self, E>, context: &mut CommandContext<E>);
+
+    /// Some of what a node has been asked to do is only for now (an auto detect that's started, say): the node keeps it
+    /// in fields of its own, not saved (`#[serde(skip)]`), and drops it here. The app has every node drop it whenever
+    /// it restores the graph from its history (undo or redo), and starts recording or stops running; and a node it
+    /// duplicates. By default, the node has nothing to drop.
+    fn clear_transient_state(&mut self) {}
 
     /// While running, the app tries to draw a frame 50 times a second; while stopped, it draws only when something
     /// changes (input, say). The app calls this for every node once a frame. If the node's window is shown, `ui` is
@@ -227,7 +224,7 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     /// The node's passes and the GUI share what's in `Self::Shared`. The engine asks the node for it here, for the
     /// node's input data streams (`inputs`), and asks again whenever those change, otherwise handing what it has on
     /// from snapshot to snapshot. By default, the node gives `Default`'s.
-    fn shared(&self, _inputs: &Self::Inputs) -> Self::Shared {
+    fn shared(&self, _inputs: &DataStreamInOf<Self, E>) -> Self::Shared {
         Self::Shared::default()
     }
 
@@ -240,7 +237,7 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     /// `adopt_snapshot`; a worker's proto-state simply replaces the worker's old state). The node also says
     /// anything someone should decide (`UserDecision`: its hardware not as its settings say, say). To go by, the node
     /// has its data streams (`context.inputs`), its settings (`self`: an auto detect started needs room to sample into,
-    /// say), its controls, whether the snapshot's recording (a writer opens its files, say), and how the node was in
+    /// say), what its `ValInCmdOut` and `ValIn` ports read, whether the snapshot's recording (a writer opens its files, say), and how the node was in
     /// the snapshot before (`context.previous`, with its settings then). A node that makes no proto-state carries its
     /// state on as it is, which only fits if the node's data streams are the same (`context.same_streams()`): so a node
     /// new to the run, or whose data streams have changed, must make its shared state (each worker's gets `Default`'s
@@ -282,7 +279,7 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     /// Nodes that only make data for others run only while something needs it, as the processing nodes do. A node whose
     /// running matters beyond the graph says when it runs: a writer only while recording, and given something to
     /// record. A node asked to do something with the data (an auto detect, kept as its transient state: see
-    /// `CommandsEnum::clear_transient_state`) can only do it by running, so it should run while it's asked, even if
+    /// `Node::clear_transient_state`) can only do it by running, so it should run while it's asked, even if
     /// nothing needs what it makes yet: a gain feeding only a writer, say, has its gains detected before recording. A
     /// node needn't need an input (a viewer with part of its view hidden, say), and then the plan doesn't count that
     /// input as using what feeds it. A change of settings means a new plan (new buffers for it), so tree shaking is for
@@ -293,15 +290,15 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
 
     /// The engine runs the graph in passes, each taking in a short stretch of data and sending it through every node
     /// that runs. In each pass, the node does its work here: the node reads its inputs and fills its outputs, which are
-    /// already sized for their data streams. The node gets its inputs' and outputs' buffers as the node's own `Inputs`
-    /// and `Outputs` structs, in the `Buffers` form. An output the node makes in place (`in_place_of` an input, as the
+    /// already sized for their data streams. The node gets its inputs' and outputs' buffers as its own `DataStreamIn`
+    /// and `DataStreamOut` structs, in the `Buffers` form. An output the node makes in place (`in_place_of` an input, as the
     /// node declared it) already holds that input's data to transform, if the plan let the node make it in place, and
     /// then that input is `None` in the pass.
     fn process(
         &self,
         _pass: &mut PassContext<E>,
-        _inputs: <Self::Inputs as InputPorts<E>>::View<'_>,
-        _outputs: <Self::Outputs as OutputPorts<E>>::View<'_>,
+        _inputs: <DataStreamInOf<Self, E> as DataStreamInPorts<E>>::View<'_>,
+        _outputs: <DataStreamOutOf<Self, E> as DataStreamOutPorts<E>>::View<'_>,
         _state: &mut Self::State,
         _worker_state: &mut Self::WorkerState,
     ) {
@@ -326,7 +323,7 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
 
     /// The graph and the node's window show any problems with how the node's set up, which the node lists here, given
     /// what's connected to its inputs.
-    fn warnings(&self, _inputs: &Self::Inputs) -> Vec<String> {
+    fn warnings(&self, _inputs: &DataStreamInOf<Self, E>) -> Vec<String> {
         Vec::new()
     }
 }

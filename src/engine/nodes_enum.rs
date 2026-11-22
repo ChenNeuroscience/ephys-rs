@@ -51,7 +51,7 @@ pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + S
     /// Settings… has a tab for each type of global settings the program's node types read: each type once, in the order
     /// of the node types that first name them.
     fn global_settings_types() -> Vec<crate::global_settings::GlobalSettingsType>;
-    /// The graph lists the node's inputs from this, in the order its type declares them (see `Node::Inputs`).
+    /// The graph lists the node's inputs from this, in the order its type declares them (see `Node::Ports`).
     fn list_ports_data_stream_in(&self) -> Vec<Port<Self::Edges>>;
     /// The graph lists the node's outputs from this, in the order its type declares them, with the streams on them
     /// given the streams on the node's inputs (see `Node::output_streams`).
@@ -60,14 +60,21 @@ pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + S
         inputs: &[Option<<Self::Edges as Edges>::DataStream>],
     ) -> Vec<Port<Self::Edges>>;
     fn warnings(&self, inputs: &[Option<<Self::Edges as Edges>::DataStream>]) -> Vec<String>;
+    /// The graph lists the node's ValCmd ports from this: its `ValOutCmdIn` ports, then its `ValInCmdOut` and `ValIn`
+    /// ports, each in the order its type declares them (see `Node::Ports`).
     fn list_ports_val_cmd(&self) -> Vec<Port<Self::Edges>>;
+    /// The value at the node's `ValOutCmdIn` port `port_idx` (by index among them), as it is now (see
+    /// `Node::val_out`).
     fn val_out(&self, port_idx: usize) -> <Self::Edges as Edges>::PublishedValue;
+    /// The app delivers `command` to the node with this, as one of the node's own commands (see `Node::Ports`: its `CmdIn`). If
+    /// it isn't one the node takes, it isn't delivered, and this hands it back.
     fn on_command(
         &mut self,
         from: CommandSource,
         command: <Self::Edges as Edges>::Command,
         context: &mut CommandContext<Self::Edges>,
-    );
+    ) -> Result<(), <Self::Edges as Edges>::Command>;
+    fn clear_transient_state(&mut self);
     fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Self::Edges>);
     /// The app keeps the node's `UiState`, starting from this.
     fn new_ui_state(&self) -> Box<dyn Any>;
@@ -229,7 +236,7 @@ macro_rules! nodes_enum {
             fn list_ports_data_stream_in(&self) -> Vec<$crate::engine::Port<$edges>> {
                 match self {
                     $($name::$variant(_) => {
-                        <<$ty as $crate::engine::Node<$edges>>::Inputs as $crate::engine::InputPorts<$edges>>::ports()
+                        <$crate::engine::DataStreamInOf<$ty, $edges> as $crate::engine::DataStreamInPorts<$edges>>::ports()
                     }),+
                 }
             }
@@ -240,10 +247,10 @@ macro_rules! nodes_enum {
             ) -> Vec<$crate::engine::Port<$edges>> {
                 match self {
                     $($name::$variant(n) => {
-                        let inputs = $crate::engine::InputPorts::<$edges>::of(inputs);
-                        let outputs: <$ty as $crate::engine::Node<$edges>>::Outputs =
+                        let inputs = <$crate::engine::DataStreamInOf<$ty, $edges> as $crate::engine::DataStreamInPorts<$edges>>::of(inputs);
+                        let outputs: $crate::engine::DataStreamOutOf<$ty, $edges> =
                             $crate::engine::Node::<$edges>::output_streams(n, &inputs);
-                        $crate::engine::OutputPorts::<$edges>::ports(&outputs)
+                        $crate::engine::DataStreamOutPorts::<$edges>::ports(&outputs)
                     }),+
                 }
             }
@@ -251,17 +258,31 @@ macro_rules! nodes_enum {
             fn warnings(&self, inputs: &[Option<<$edges as $crate::engine::Edges>::DataStream>]) -> Vec<String> {
                 match self {
                     $($name::$variant(n) => {
-                        $crate::engine::Node::<$edges>::warnings(n, &$crate::engine::InputPorts::<$edges>::of(inputs))
+                        $crate::engine::Node::<$edges>::warnings(n, &<$crate::engine::DataStreamInOf<$ty, $edges> as $crate::engine::DataStreamInPorts<$edges>>::of(inputs))
                     }),+
                 }
             }
 
             fn list_ports_val_cmd(&self) -> Vec<$crate::engine::Port<$edges>> {
-                match self { $($name::$variant(n) => $crate::engine::Node::list_ports_val_cmd(n)),+ }
+                match self {
+                    $($name::$variant(_) => {
+                        let mut ports = <$crate::engine::ValOutCmdInOf<$ty, $edges>
+                            as $crate::engine::ValOutCmdInPorts<$edges>>::ports();
+                        ports.extend(<<$ty as $crate::engine::Node<$edges>>::Ports
+                            as $crate::engine::PortSet<$edges>>::val_in_ports());
+                        ports
+                    }),+
+                }
             }
 
             fn val_out(&self, port_idx: usize) -> <$edges as $crate::engine::Edges>::PublishedValue {
-                match self { $($name::$variant(n) => $crate::engine::Node::val_out(n, port_idx)),+ }
+                match self {
+                    $($name::$variant(n) => {
+                        let values = $crate::engine::Node::<$edges>::val_out(n);
+                        let mut values = $crate::engine::ValOutCmdInPorts::<$edges>::values(values).into_iter();
+                        values.nth(port_idx).expect("the graph asks only for the settings a node declares")
+                    }),+
+                }
             }
 
             fn on_command(
@@ -269,8 +290,19 @@ macro_rules! nodes_enum {
                 from: $crate::engine::CommandSource,
                 command: <$edges as $crate::engine::Edges>::Command,
                 context: &mut $crate::engine::CommandContext<$edges>,
-            ) {
-                match self { $($name::$variant(n) => $crate::engine::Node::on_command(n, from, command, context)),+ }
+            ) -> Result<(), <$edges as $crate::engine::Edges>::Command> {
+                match self {
+                    $($name::$variant(n) => {
+                        type CmdIn = $crate::engine::CmdInOf<$ty, $edges>;
+                        let command = <CmdIn as $crate::engine::CommandSet<$edges>>::from_command(command)?;
+                        $crate::engine::Node::on_command(n, from, command, context);
+                        Ok(())
+                    }),+
+                }
+            }
+
+            fn clear_transient_state(&mut self) {
+                match self { $($name::$variant(n) => $crate::engine::Node::<$edges>::clear_transient_state(n)),+ }
             }
 
             fn on_gui_tick(
@@ -298,10 +330,10 @@ macro_rules! nodes_enum {
             fn buffer_usage(&self) -> $crate::engine::BufferUsage {
                 match self {
                     $($name::$variant(_) => $crate::engine::BufferUsage {
-                        in_place: <<$ty as $crate::engine::Node<$edges>>::Outputs
-                            as $crate::engine::OutputPorts<$edges>>::IN_PLACE.to_vec(),
-                        takes: <<$ty as $crate::engine::Node<$edges>>::Inputs
-                            as $crate::engine::InputPorts<$edges>>::TAKES.to_vec(),
+                        in_place: <$crate::engine::DataStreamOutOf<$ty, $edges>
+                            as $crate::engine::DataStreamOutPorts<$edges>>::IN_PLACE.to_vec(),
+                        takes: <$crate::engine::DataStreamInOf<$ty, $edges>
+                            as $crate::engine::DataStreamInPorts<$edges>>::TAKES.to_vec(),
                     }),+
                 }
             }
@@ -373,7 +405,7 @@ macro_rules! nodes_enum {
             ) -> Box<dyn $crate::engine::Shared> {
                 match self {
                     $($name::$variant(n) => {
-                        let inputs = $crate::engine::InputPorts::<$edges>::of(inputs);
+                        let inputs = <$crate::engine::DataStreamInOf<$ty, $edges> as $crate::engine::DataStreamInPorts<$edges>>::of(inputs);
                         Box::new($crate::engine::Node::<$edges>::shared(n, &inputs))
                     }),+
                 }
@@ -397,10 +429,10 @@ macro_rules! nodes_enum {
                         match (state, worker_state) {
                             (Some(state), Some(worker_state)) => {
                                 let $crate::engine::PassBuffers { inputs, taken, outputs } = buffers;
-                                let inputs = <<$ty as $crate::engine::Node<$edges>>::Inputs
-                                    as $crate::engine::InputPorts<$edges>>::view(inputs, taken);
-                                let outputs = <<$ty as $crate::engine::Node<$edges>>::Outputs
-                                    as $crate::engine::OutputPorts<$edges>>::view(outputs);
+                                let inputs = <$crate::engine::DataStreamInOf<$ty, $edges>
+                                    as $crate::engine::DataStreamInPorts<$edges>>::view(inputs, taken);
+                                let outputs = <$crate::engine::DataStreamOutOf<$ty, $edges>
+                                    as $crate::engine::DataStreamOutPorts<$edges>>::view(outputs);
                                 $crate::engine::Node::process(n, pass, inputs, outputs, state, worker_state);
                                 true
                             }

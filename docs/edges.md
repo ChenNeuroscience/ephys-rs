@@ -17,8 +17,8 @@ edge_types! {
         // ...
     }
     commands: pub enum Command, CommandKind {
-        SetThresholds(spikes::Thresholds),
-        ProcessFiles(run_command::Files),
+        SetThresholds(spikes::SetThresholds),
+        ProcessFiles(run_command::ProcessFiles),
         // ...
     }
 }
@@ -27,8 +27,10 @@ edge_types! {
 That makes the `DataStream` and `PublishedValue` enums of values, the `Kind` and `ValueKind` enums that ports are declared
 with, and the `Buffer` enum of the data streams' buffers; and the `Command` enum of what nodes can tell each other to
 do, through ValCmd edges (or themselves, from their passes and threads), with `CommandKind` naming them (see
-[Nodes](nodes.md#commands)). `Command` has one more variant than the program declares, the core's own
-`ClearTransientState`.
+[Nodes](nodes.md#commands)). Each command is a type of its own (`SetThresholds(pub Thresholds)`). For each type listed,
+`edge_types!` also implements `StreamOf`, `ValueOf` or `CommandOf`, which go between the type and the program's enum,
+so nodes declare their ports (see [Nodes](nodes.md#describing-it)) and work with what's on them as their own types,
+never naming the program's enums.
 
 ## Data streams
 
@@ -42,9 +44,8 @@ the legend, and a short summary: "64 ch · 30 kHz") and `DataStreamType`:
   has room for a quarter more, so a source can catch up after a hiccup.
 - `bytes(buffer)`: its memory, for the dev tools.
 
-Nodes declare their data ports by these types (`continuous: In<Continuous>`: see [Nodes](nodes.md#describing-it)),
-and `edge_types!` implements `StreamOf` for each, which goes between a type and the program's enums of streams and
-buffers, so a node never names those enums for its data.
+Nodes declare their data ports by these types (`continuous: DataStreamIn<Continuous>`: see
+[Nodes](nodes.md#describing-it)), and work with what's on them as these types and their buffers.
 
 Buffers are swapped between passes and threads (see the pools in [Architecture](architecture.md#threads-and-buffers)),
 so a buffer made for a stream must be interchangeable with any other made for it: make them only with `buffer`.
@@ -71,13 +72,17 @@ named for what flows through it, which way (as data ports are `DataStreamIn` and
 A viewer setting a detector's thresholds reads them and sends `SetThresholds`; a writer recording the gains only reads
 them. ValCmd edges carry no data, so can point anywhere, upstream included; a `ValOutCmdIn` can have several edges into
 it, a `ValInCmdOut` one out of it. A value's type (a list of thresholds, say) implements `EdgeType`; it needn't be
-`Copy`. A command's type needn't implement anything but `Debug`. Settings stay a node's own: what it saves and loads, and
+`Copy`. A command's type needn't implement anything but `Debug`, and is usually a struct holding what it carries
+(`SetGains(pub Gains)`). A `ValOutCmdIn` or `ValInCmdOut` port's declared with the commands it takes or sends, as a
+tuple of their types (`ValOutCmdIn<Gains, (SetGains, Detect)>`): a window can't send a command its port doesn't
+list, and a node is handed only the commands its ports take. Settings stay a node's own: what it saves and loads, and
 what's copied and pasted; what values it gives its `ValOutCmdIn` ports and what it does with commands are up to it.
 
 Each end of an edge is a port's address (`PortAddress`: its node, role and index among the node's ports of that role),
 and that's how edges are saved; whether an edge carries data or a value (`Edge::dimension`) follows from the roles. A
 node itself numbers the ports it reads values through (`ValInCmdOut` and `ValIn`) together, in the order it declares
-them: that's the number its `val_in`, `cmd_out` and the like take (see `val_in_address`).
+them, and reads and commands through handles to them (`UiContext::val_in(ValIn::gains)`,
+`UiContext::cmd_out(ValInCmdOut::gains, SetGains(gains))`), each holding that number (see `val_in_address`).
 
 A command sent through a port goes through the app's queue (see [`commands.rs`](../src/commands.rs)), addressed to the
 port, not the node at the far end: the app follows the edge as it delivers it, on the GUI's thread. So a sender kept

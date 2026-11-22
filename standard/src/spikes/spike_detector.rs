@@ -10,17 +10,17 @@
 //! those near the end of a pass come with the next, which carries on from the end of this one.
 
 use eframe::egui;
-use ephys_rs::engine::{Buffers, InputPorts, TreeShake};
+use ephys_rs::engine::{Buffers, DataStreamInPorts, TreeShake};
 use serde::{Deserialize, Serialize};
 
-use crate::standard::auto_detect::{Distribution, PercentMultiple, SAMPLING, auto_detect_ui, detect_changed};
+use crate::Edges;
+use crate::standard::auto_detect::{Detect, Distribution, PercentMultiple, SAMPLING, auto_detect_ui, detect_changed};
 use crate::standard::ephys::{Continuous, ContinuousBuffer};
-use crate::standard::spikes::{Spike, Spikes, Thresholds};
+use crate::standard::spikes::{SetThresholds, Spike, Spikes, Thresholds};
 use crate::standard::widgets::{combo, input_summary, named_settings_grid, require_input, setting, settings_grid};
-use crate::{Command, CommandKind, Edges, PublishedValue, ValueKind};
 use ephys_rs::engine::EdgeType;
 use ephys_rs::engine::{
-    Category, CommandContext, CommandSource, Node, NodeInfo, PASS_DURATION, PassContext, Port, Prepare, PrepareContext,
+    Category, CommandContext, CommandSource, Node, NodeInfo, PASS_DURATION, PassContext, Prepare, PrepareContext,
     Prepared, UiContext,
 };
 use ephys_rs::gui::widgets::info_icon;
@@ -146,16 +146,14 @@ impl Detector {
     }
 }
 
-ephys_rs::data_ports! {
-    inputs: pub struct Inputs {
-        continuous: In<Continuous>,
-    }
-    outputs: pub struct Outputs {
-        spikes: Out<Spikes>,
-    }
+ephys_rs::ports! {
+    continuous: DataStreamIn<Continuous>,
+    spikes: DataStreamOut<Spikes>,
+    thresholds: ValOutCmdIn<Thresholds, (SetThresholds, Detect)>,
 }
 
 impl Node<Edges> for SpikeDetector {
+    type Ports = Ports;
     const INFO: NodeInfo = NodeInfo {
         name: "Spike Detector",
         category: Category::Processing,
@@ -170,8 +168,6 @@ impl Node<Edges> for SpikeDetector {
         TreeShake::needing_all(inputs.contains(&true) && wanted, inputs.len())
     }
 
-    type Inputs = Inputs;
-    type Outputs = Outputs;
     type State = Detecting;
     type WorkerState = ();
     type Shared = ();
@@ -185,7 +181,7 @@ impl Node<Edges> for SpikeDetector {
         if context.same_streams() && !detect_changed(self.thresholds.detect.started, before) {
             return Prepared::nothing().into();
         }
-        let input = Inputs::of(context.inputs).continuous;
+        let input = DataStreamIn::of(context.inputs).continuous;
         let detector = (!context.same_streams()).then(|| match input {
             Some(c) => Detector::new(self.stream(c.channels, c.sample_rate)),
             None => Detector::default(),
@@ -207,8 +203,8 @@ impl Node<Edges> for SpikeDetector {
     fn process(
         &self,
         pass: &mut PassContext<Edges>,
-        inputs: Inputs<Buffers>,
-        outputs: Outputs<Buffers>,
+        inputs: DataStreamIn<Buffers>,
+        outputs: DataStreamOut<Buffers>,
         state: &mut Detecting,
         _: &mut (),
     ) {
@@ -293,43 +289,37 @@ impl Node<Edges> for SpikeDetector {
         self.choose_thresholds(pass, input, sampling);
     }
 
-    fn output_streams(&self, inputs: &Inputs) -> Outputs {
-        Outputs { spikes: inputs.continuous.map(|c| self.stream(c.channels, c.sample_rate)) }
+    fn output_streams(&self, inputs: &DataStreamIn) -> DataStreamOut {
+        DataStreamOut { spikes: inputs.continuous.map(|c| self.stream(c.channels, c.sample_rate)) }
     }
 
-    fn list_ports_val_cmd(&self) -> Vec<Port<Edges>> {
-        vec![Port::val_out_cmd_in(
-            "thresholds",
-            ValueKind::Thresholds,
-            &[CommandKind::SetThresholds, CommandKind::Detect],
-        )]
-    }
-
-    fn val_out(&self, _port_idx: usize) -> PublishedValue {
-        self.thresholds.clone().into()
+    fn val_out(&self) -> ValOutCmdIn {
+        ValOutCmdIn { thresholds: self.thresholds.clone() }
     }
 
     /// New thresholds: from its passes, those auto detect chose, with it done; from a viewer, an edit, leaving auto
     /// detect as it is.
-    fn on_command(&mut self, from: CommandSource, command: Command, _context: &mut CommandContext<Edges>) {
+    fn on_command(&mut self, from: CommandSource, command: CmdIn, _context: &mut CommandContext<Edges>) {
         match command {
-            Command::SetThresholds(thresholds) => {
+            CmdIn::SetThresholds(SetThresholds(thresholds)) => {
                 let started = self.thresholds.detect.started;
                 self.thresholds = thresholds;
                 if from != CommandSource::Itself {
                     self.thresholds.detect.started = started;
                 }
             }
-            Command::Detect(request) => request.apply(&mut self.thresholds.detect.started),
-            Command::ClearTransientState => self.thresholds.detect.started = None,
-            _ => {}
+            CmdIn::Detect(Detect(request)) => request.apply(&mut self.thresholds.detect.started),
         }
+    }
+
+    fn clear_transient_state(&mut self) {
+        self.thresholds.detect.started = None;
     }
 
     fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
         let Some(ui) = ui else { return };
         ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, context| {
-            let (rate, channels) = match Inputs::of(context.inputs).continuous {
+            let (rate, channels) = match DataStreamIn::of(context.inputs).continuous {
                 Some(c) => (c.sample_rate, c.channels as usize),
                 _ => (30000.0, 0),
             };
@@ -395,7 +385,7 @@ impl Node<Edges> for SpikeDetector {
         });
     }
 
-    fn warnings(&self, inputs: &Inputs) -> Vec<String> {
+    fn warnings(&self, inputs: &DataStreamIn) -> Vec<String> {
         let mut warnings = require_input(inputs, "a (filtered) continuous data stream");
         if let Some(c) = inputs.continuous
             && c.channels % self.group_size.max(1) != 0
@@ -430,7 +420,7 @@ impl SpikeDetector {
                         thresholds.set(channel, level.max(0.5));
                     }
                 }
-                pass.cmd_self(Command::SetThresholds(thresholds));
+                pass.cmd_self(CmdIn::SetThresholds(SetThresholds(thresholds)));
                 *sampling = Sampling { done: true, ..Sampling::new(sampling.seconds, 0) };
             }
         }
@@ -464,12 +454,13 @@ impl SpikeDetector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Command;
     use ephys_rs::engine::{DataStreamType, PassContext};
 
     /// Runs passes of `samples` through a detector, returning the spikes found (with their pass).
     fn detect(detector: &SpikeDetector, channels: u32, passes: &[Vec<Vec<f32>>]) -> Vec<(usize, Spike, Vec<f32>)> {
         let stream = Continuous { channels, sample_rate: 30000.0 };
-        let mut state = ephys_rs::engine::fresh_state(detector, &Inputs { continuous: Some(stream) });
+        let mut state = ephys_rs::engine::fresh_state(detector, &DataStreamIn { continuous: Some(stream) });
         let spikes = detector.stream(channels, 30000.0);
         let mut found = Vec::new();
         for (index, pass) in passes.iter().enumerate() {
@@ -479,7 +470,7 @@ mod tests {
                 input.channel_mut(channel).copy_from_slice(samples);
             }
             let mut output = spikes.buffer(PASS_DURATION);
-            let (inputs, outputs) = (Inputs { continuous: Some(&input) }, Outputs { spikes: &mut output });
+            let (inputs, outputs) = (DataStreamIn { continuous: Some(&input) }, DataStreamOut { spikes: &mut output });
             let mut pass = PassContext::new(index as u64, PASS_DURATION);
             detector.process(&mut pass, inputs, outputs, &mut state, &mut ());
             for (i, spike) in output.spikes.iter().enumerate() {
@@ -573,7 +564,7 @@ mod tests {
         detector.thresholds.detect.seconds = 4.0;
         let stream = Continuous { channels: 4, sample_rate: 30000.0 };
         let started = std::time::Instant::now();
-        let inputs = Inputs { continuous: Some(stream) };
+        let inputs = DataStreamIn { continuous: Some(stream) };
         detector.thresholds.detect.started = Some(started);
         let mut state = ephys_rs::engine::fresh_state(&detector, &inputs);
         let spikes = detector.stream(4, 30000.0);
@@ -589,13 +580,13 @@ mod tests {
                 }
             }
             let mut output = spikes.buffer(PASS_DURATION);
-            let (inputs, outputs) = (Inputs { continuous: Some(&input) }, Outputs { spikes: &mut output });
+            let (inputs, outputs) = (DataStreamIn { continuous: Some(&input) }, DataStreamOut { spikes: &mut output });
             let mut pass = PassContext::new(sequence, PASS_DURATION);
             pass.commands = &commands;
             detector.process(&mut pass, inputs, outputs, &mut state, &mut ());
         }
         let updates = commands.take_commands::<Command>();
-        let [(_, Command::SetThresholds(thresholds))] = &updates[..] else { panic!("{updates:?}") };
+        let [(_, Command::SetThresholds(SetThresholds(thresholds)))] = &updates[..] else { panic!("{updates:?}") };
         for channel in 0..4 {
             let threshold = thresholds.get(channel);
             assert!((threshold - 60.0).abs() < 1.0, "the 98th percentile, 30, doubled, from zero: {threshold}");
