@@ -55,22 +55,22 @@ use ephys_rs::engine::{
 };
 
 ephys_rs::ports! {
-    // The writer takes its inputs, swapping their buffers into a chunk for its thread, which makes what it writes of
-    // them (the plan copies them for it, if something else needs them after it). As streams, these are the inputs'
-    // as the run started.
+    // The writer takes all its inputs: each pass swaps the inputs' buffers into a chunk for the writer's thread, which
+    // writes the data out. If another node needs an input's data after the writer, the plan gives the writer a copy.
+    // The streams on these inputs are fixed when the run starts.
     spikes: DataStreamIn<Spikes> take,
     eeg: DataStreamIn<Continuous> take,
     positions: DataStreamIn<Positions> take,
     events: DataStreamIn<Events> take,
     pos_ttl: DataStreamIn<Events> = "pos ttl" take,
     log: DataStreamIn<LogLines> take,
-    /// The settings the writer records with the data, which it only reads.
+    /// Settings that the writer records alongside the data. The writer only reads them.
     detection: ValIn<Detection>,
     gains: ValIn<Gains>,
     eeg_selection: ValIn<ChannelSelection> = "eeg selection",
     eeg_gains: ValIn<Gains> = "eeg gains",
-    /// Where the writer sends what it's recorded, once it's finished (see `after_recording`): on the right, as
-    /// what it sets off comes after it.
+    /// Sends the recorded files on once they're finished (see `after_recording`). The port is on the right because
+    /// whatever processes the files next comes after the writer.
     after_recording: ValInCmdOut<FileInput, (ProcessFiles,)> = "after recording" side: Right,
 }
 
@@ -120,8 +120,7 @@ impl ephys_rs::engine::PassState for Recorder {
                                so the files are written in order.";
 }
 
-/// A chunk holds the writer's inputs in this form (see `ephys_rs::engine::PortForm`): for each, a buffer like the
-/// passes' own, if the input's connected, and whether the pass gave it any data.
+/// The form in which a chunk holds the writer's inputs (see `ephys_rs::engine::PortForm`). Each input is a `Slot`.
 struct Held;
 
 impl PortForm for Held {
@@ -130,24 +129,26 @@ impl PortForm for Held {
     type Out<T: DataStreamType> = ();
 }
 
-/// A chunk holds each input's buffer, if it's connected, and whether the pass gave it any data.
+/// One input's place in a chunk: a buffer like the passes' own (`None` if the input isn't connected), and whether the
+/// pass filled the buffer with data.
 struct Slot<T: DataStreamType> {
     buffer: Option<T::Buffer>,
     given: bool,
 }
 
 impl<T: DataStreamType> Slot<T> {
-    /// Empty, with a buffer for `stream`, if the input's connected.
+    /// An empty slot, with a buffer for `stream` if the input is connected.
     fn new(stream: Option<T>) -> Self {
         Slot { buffer: stream.map(|s| s.buffer(PASS_DURATION)), given: false }
     }
 
-    /// The input's data, if the pass gave it any.
+    /// The input's data, or `None` if the pass gave none.
     fn get(&self) -> Option<&T::Buffer> {
         self.buffer.as_ref().filter(|_| self.given)
     }
 
-    /// The pass gives the chunk what it took of the input (`taken`), if anything, swapping it for the chunk's buffer.
+    /// Swaps the buffer the pass took from the input (`taken`, if any) with the slot's own buffer, so the slot holds
+    /// the pass's data and the pass gets an empty buffer back.
     fn swap(&mut self, taken: Option<&mut T::Buffer>) {
         self.given = false;
         if let (Some(buffer), Some(taken)) = (&mut self.buffer, taken) {
@@ -156,14 +157,14 @@ impl<T: DataStreamType> Slot<T> {
         }
     }
 
-    /// The memory the buffer takes.
+    /// The memory used by the slot's buffer, in bytes.
     fn bytes(&self) -> usize {
         self.buffer.as_ref().map_or(0, T::bytes)
     }
 }
 
-/// A pass's data, for the writer's thread: in buffers like the passes' own, to swap with them (see `Held`); and when
-/// the recording took effect.
+/// One pass's data, for the writer's thread, in buffers like the passes' own so the two can be swapped (see `Held`).
+/// The chunk also says when the recording took effect.
 pub struct Chunk {
     inputs: DataStreamIn<Held>,
     effective: Option<DateTime<Local>>,
@@ -397,7 +398,8 @@ struct Recorded {
 }
 
 impl Recorded {
-    /// What the writer's controls read, as the snapshot it's preparing for was made, with its own `scales`.
+    /// The values the writer's `ValIn` ports read when the snapshot being prepared was made, with the writer's own
+    /// `scales`.
     fn of<E: PortEdges>(context: &Context<E, WriteLtx>, scales: Scales) -> Self {
         Recorded {
             detection: context.val_in(ValIn::detection).cloned(),

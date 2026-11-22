@@ -51,32 +51,31 @@ pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + S
     /// Settings… has a tab for each type of global settings the program's node types read: each type once, in the order
     /// of the node types that first name them.
     fn global_settings_types() -> Vec<crate::global_settings::GlobalSettingsType>;
-    /// The graph lists the node's inputs from this, in the order its type declares them (see `Node::Ports`).
+    /// The node's `DataStreamIn` ports, in declaration order, for the graph (see `Node::Ports`).
     fn list_ports_data_stream_in(&self) -> Vec<Port<Self::Edges>>;
-    /// The graph lists the node's outputs from this, in the order its type declares them, with the streams on them
-    /// given the streams on the node's inputs (see `Node::output_streams`).
+    /// The node's `DataStreamOut` ports, in declaration order, for the graph. Each port includes the stream on it,
+    /// computed from the streams on the node's inputs (see `Node::output_streams`).
     fn list_ports_data_stream_out(
         &self,
         inputs: &[Option<<Self::Edges as Edges>::DataStream>],
     ) -> Vec<Port<Self::Edges>>;
     fn warnings(&self, inputs: &[Option<<Self::Edges as Edges>::DataStream>]) -> Vec<String>;
-    /// A node's ports are fixed by its type: these are its ports of `role`, in the order its type declares them (the
-    /// graph's numbering), without what's on them (no `DataStreamOut`'s stream). For what a port is (its kind, its id),
-    /// not what it carries now: see `NodeState` for that.
+    /// The node's ports of `role`, in declaration order (which is how the graph numbers them). A node's ports are
+    /// fixed by its type, so this needs no input streams, and the `DataStreamOut` ports have no stream filled in. Use
+    /// this for what a port is (its kind and id); `NodeState` has what a port currently carries.
     fn ports_of(&self, role: PortRole) -> Vec<Port<Self::Edges>>;
-    /// Saved graphs name each of the node's ports by its id (see `Port::id`). These are the ids of the node's ports of
-    /// `role`, in order.
+    /// The ids of the node's ports of `role`, in declaration order. Saved graphs identify ports by these ids (see
+    /// `Port::id`).
     fn port_ids(&self, role: PortRole) -> Vec<&'static str> {
         self.ports_of(role).iter().map(Port::id).collect()
     }
-    /// The graph lists the node's ValCmd ports from this: its `ValOutCmdIn` ports, then its `ValInCmdOut` and `ValIn`
-    /// ports, each in the order its type declares them (see `Node::Ports`).
+    /// The node's ValCmd ports, for the graph: its `ValOutCmdIn` ports, then its `ValInCmdOut` and `ValIn` ports, each
+    /// group in declaration order (see `Node::Ports`).
     fn list_ports_val_cmd(&self) -> Vec<Port<Self::Edges>>;
-    /// The value at the node's `ValOutCmdIn` port `port_idx` (by index among them), as it is now (see
-    /// `Node::val_out`).
+    /// The current value at the node's `ValOutCmdIn` port number `port_idx` (see `Node::val_out`).
     fn val_out(&self, port_idx: usize) -> <Self::Edges as Edges>::PublishedValue;
-    /// The app delivers `command` to the node with this, as one of the node's own commands (see `Node::Ports`: its `CmdIn`). If
-    /// it isn't one the node takes, it isn't delivered, and this hands it back.
+    /// Delivers `command` to the node, converted to the node's own `CmdIn` (see `Node::on_command`). If the node doesn't
+    /// accept the command, nothing is delivered and the command is returned as the error.
     fn on_command(
         &mut self,
         from: CommandSource,
@@ -88,8 +87,8 @@ pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + S
     /// The app keeps the node's `UiState`, starting from this.
     fn new_ui_state(&self) -> Box<dyn Any>;
     fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool], recording: bool) -> TreeShake;
-    /// The plan asks how the node uses its buffers with this, which follows from how its type declares its data ports
-    /// (see `BufferUsage`).
+    /// How the node uses its buffers, for the plan. This follows from the node's data port declarations (see
+    /// `BufferUsage`).
     fn buffer_usage(&self) -> BufferUsage;
     /// A node with state (other than `()`) carries it from one pass to the next, and passes wait for each other there.
     /// This says whether the node has state.
@@ -106,9 +105,9 @@ pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + S
     /// `state` and `proto_state` are the node's state, as its own type (see `Node::adopt_snapshot`).
     fn adopt_snapshot(&self, state: &mut (dyn Any + Send), proto_state: &mut (dyn Any + Send));
     fn shared(&self, inputs: &[Option<<Self::Edges as Edges>::DataStream>]) -> Box<dyn Shared>;
-    /// The pass runs the node on its buffers (`buffers`), with its state and the worker's, as `prepare_for_snapshot`
-    /// made them (`None` for none). If the node hasn't the state it needs (it failed to prepare), it does nothing, and
-    /// this returns false.
+    /// Runs the node for one pass on `buffers`, with the node's state and the worker's state as
+    /// `prepare_for_snapshot` made them (`None` if there is none). If the node lacks the state it needs, because it
+    /// failed to prepare, the node does nothing and this returns false.
     fn process(
         &self,
         pass: &mut PassContext<Self::Edges>,
@@ -171,7 +170,7 @@ pub fn is_state<S: 'static>() -> bool {
 ///
 ///     fn process(&self, pass: &mut PassContext<Edges>, buffers: PassBuffers<Edges>, state: Option<&mut (dyn Any + Send)>) {
 ///         match self {
-///             Nodes::Gain(n) => Node::process(n, pass, /* its buffers and state, as its own types */),
+///             Nodes::Gain(n) => Node::process(n, pass, /* the buffers and state, converted to the node's types */),
 ///             Nodes::Writer(n) => Node::process(n, pass, /* … */),
 ///         }
 ///     }

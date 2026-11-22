@@ -1,16 +1,19 @@
-//! Edges' ends by port id, from 0.284.0: each end of an edge named its port by its index among its node's ports of its
-//! role (`{"node": 1, "role": "DataStreamOut", "port_idx": 2}`). It names it by the port's id now, its field's name in
-//! the node's `ports!` (`{"node": 1, "role": "DataStreamOut", "port": "auxiliary"}`), so the standard node types'
-//! ends are renamed here, by their ports as they were then (`PORTS`). An end with an index its node type didn't have
-//! couldn't have been connected, so its edge goes. A build's own node types' ends are its patches'.
+//! Edge ends by port id, from 0.284.0. Before that version, each end of an edge identified its port by the port's
+//! number among its node's ports of that role (`{"node": 1, "role": "DataStreamOut", "port_idx": 2}`). Each end now
+//! identifies its port by id, which is the port's field name in the node's `ports!`
+//! (`{"node": 1, "role": "DataStreamOut", "port": "auxiliary"}`).
+//!
+//! This patch converts the ends on standard node types, using a table of their ports as they were at the time
+//! (`PORTS`). An end with a number its node type didn't have could never have been connected, so the patch drops its
+//! edge. Each build's own patches convert the ends on the build's own node types.
 
 use ephys_rs::config_patching::IncomingConfig;
 use serde_json::{Value, json};
 
-/// Each standard node type's ports of each role, by index, as they were.
-/// A role's ports' ids, in order (`("DataStreamOut", &["video", "stats"])`).
+/// A role and the ids of its ports, in order, such as `("DataStreamOut", &["video", "stats"])`.
 type RolePorts = (&'static str, &'static [&'static str]);
 
+/// Each standard node type's ports of each role, in order, as they were at 0.284.0.
 const PORTS: &[(&str, &[RolePorts])] = &[
     ("AcquisitionBoard", &[("DataStreamOut", &["headstages", "digital", "auxiliary", "analogue"])]),
     ("Camera", &[("DataStreamOut", &["video", "stats"]), ("ValOutCmdIn", &["camera"])]),
@@ -85,7 +88,8 @@ pub fn patch(config: &mut IncomingConfig) {
     let types: Vec<(u64, String)> = (graph.get("nodes").and_then(Value::as_object).into_iter().flatten())
         .filter_map(|(id, entry)| Some((id.parse().ok()?, entry.pointer("/node/type")?.as_str()?.to_string())))
         .collect();
-    // The id of the port at `end`, if it's a standard node's: `Some(None)` if its node type had no such port.
+    // The id of the port at `end`. Returns `None` if the end's node isn't a standard node type (so this patch leaves
+    // it alone), and `Some(None)` if the node type had no port with that number.
     let id = |end: &Value| -> Option<Option<&'static str>> {
         let node = end["node"].as_u64()?;
         let node_type = &types.iter().find(|(id, _)| *id == node)?.1;
@@ -93,7 +97,7 @@ pub fn patch(config: &mut IncomingConfig) {
         let ports = roles.iter().find(|(role, _)| end["role"] == *role).map_or(&[][..], |(_, ports)| ports);
         Some(end["port_idx"].as_u64().and_then(|index| ports.get(index as usize).copied()))
     };
-    // A disabled edge is listed among the edges too.
+    // Disabled edges are saved in a list of their own, so both lists are converted.
     for list in ["edges", "disabled_edges"] {
         let Some(edges) = graph.get_mut(list).and_then(Value::as_array_mut) else { continue };
         edges.retain_mut(|edge| {
@@ -140,8 +144,8 @@ mod tests {
         } })
     }
 
-    /// Each standard node's end is named by its port's id; another set's node's is left for its patches; an end its
-    /// node type never had goes, with its edge.
+    /// Ends on standard nodes are converted to port ids. Ends on another set's nodes are left for that set's patches.
+    /// An edge with an end that its node type never had is dropped.
     #[test]
     fn standard_nodes_ends_are_named_by_their_ports_ids() {
         let mut config = IncomingConfig { versions: Versions::new(), json: project() };
@@ -156,7 +160,7 @@ mod tests {
         assert_eq!(config.json["graph"]["disabled_edges"], json!([expected[0]]));
     }
 
-    /// Written since, as it is.
+    /// A config written since 0.284.0 is left as it is.
     #[test]
     fn written_since_is_left_as_it_is() {
         let versions = Versions::from([("std".to_string(), "0.284.0".to_string())]);

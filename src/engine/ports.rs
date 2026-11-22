@@ -1,33 +1,37 @@
-//! A node declares its ports on its type, once, with `ports!`: each port named, of one of the five roles (see
-//! `PortRole`), and typed by what it carries. Everything else about the ports follows from that:
+//! Each node declares its ports once, on its type, with the `ports!` macro. Each port has a name, one of the five
+//! roles (see `PortRole`), and the type of what it carries. The macro generates everything else about the ports from
+//! that declaration:
 //!
 //! - `DataStreamIn` and `DataStreamOut`: structs of the node's data ports, generic over a form (see
-//!   `crate::engine::data_ports`): their streams, for `Node::output_streams`, or their buffers, for `Node::process`.
-//! - `ValOutCmdIn`: a struct of the values the node publishes, for `Node::val_out`; and `CmdIn`, an enum of every command
-//!   they take, for `Node::on_command` (see `crate::engine::val_cmd_ports`).
-//! - `ValInCmdOut` and `ValIn`: a handle to each port reading another node's value (`ValInCmdOut::gains`), for the
-//!   contexts to read and command through.
-//! - `Ports`, which the node names as its `Node::Ports`, gathering them for the engine (`PortSet`).
-//! - `PortEdges`: what a program's edges must have for the node (`impl<E: PortEdges> Node<E> for MyNode`), so a node
-//!   works in any program listing the types its ports carry, and a program lists only the types its nodes need.
+//!   `crate::engine::data_ports`). In one form the fields are the ports' streams, which `Node::output_streams` uses;
+//!   in another they are the ports' buffers, which `Node::process` uses.
+//! - `ValOutCmdIn`: a struct of the values the node publishes, which `Node::val_out` returns. `CmdIn` is an enum of
+//!   every command those ports accept, which `Node::on_command` receives (see `crate::engine::val_cmd_ports`).
+//! - `ValInCmdOut` and `ValIn`: a handle for each port that reads another node's value (such as
+//!   `ValInCmdOut::gains`). The contexts take these handles to read values and send commands.
+//! - `Ports`: the node's `Node::Ports`, which gathers the generated types for the engine (see `PortSet`).
+//! - `PortEdges`: the edge types that a program's edges must include for the node. The node implements
+//!   `impl<E: PortEdges> Node<E> for MyNode`, so the node works in any program that lists the types its ports carry,
+//!   and each program lists only the types its nodes need.
 //!
-//! The graph numbers each role's ports, in the order they're declared (and the node numbers its `ValInCmdOut` and
-//! `ValIn` ports together, as it reads values through them); saved graphs name ports by their fields' names instead
-//! (see `Port::id`).
+//! The graph numbers each role's ports in declaration order. The node itself numbers its `ValInCmdOut` and `ValIn`
+//! ports together, because it reads values through both. Saved graphs don't use numbers: they name each port by its
+//! field name (see `Port::id`).
 
 use super::{
     CommandSet, DataStreamInPorts, DataStreamOutPorts, Edges, NoCommands, NoPorts, Node, Port, ValOutCmdInPorts,
 };
 
-/// `ports!` implements this for a node's `Ports`, gathering what it makes, which the node names as its `Node::Ports`.
-/// A node without ports of a role has `NoPorts` for them (or `NoCommands`, for commands, without `ValOutCmdIn` ports).
+/// The types that `ports!` generates for one node, gathered for the engine. `ports!` implements this trait for the
+/// node's `Ports` struct, which the node names as its `Node::Ports`. A role with no ports uses `NoPorts`, and a node
+/// with no `ValOutCmdIn` ports uses `NoCommands` for its commands.
 pub trait PortSet<E: Edges>: 'static {
     type DataStreamIn: DataStreamInPorts<E>;
     type DataStreamOut: DataStreamOutPorts<E>;
     type ValOutCmdIn: ValOutCmdInPorts<E>;
     type CmdIn: CommandSet<E>;
 
-    /// The graph lists the node's `ValInCmdOut` and `ValIn` ports from this, in the order they're declared.
+    /// The node's `ValInCmdOut` and `ValIn` ports, in declaration order, for the graph.
     fn val_in_ports() -> Vec<Port<E>>;
 }
 
@@ -43,7 +47,7 @@ impl<E: Edges> PortSet<E> for NoPorts {
     }
 }
 
-/// A node declares its ports with this, each a field named as the port, of one of the five roles (see `PortRole`):
+/// Declares a node's ports. Each port is a field named after the port, in one of the five roles (see `PortRole`):
 ///
 /// ```ignore
 /// ports! {
@@ -57,37 +61,40 @@ impl<E: Edges> PortSet<E> for NoPorts {
 /// }
 /// ```
 ///
-/// Each port's typed by the data stream or value it carries, and a `ValOutCmdIn` or `ValInCmdOut` port by the commands
-/// it takes or sends, as a tuple of command types in scope (see `HasCommand`). A port's named for people by its field's
-/// name, or the text after it. After that:
+/// Each port's type parameter is the data stream or value the port carries. A `ValOutCmdIn` or `ValInCmdOut` port
+/// also lists the commands it accepts or sends, as a tuple of command types that are in scope (see `HasCommand`). The
+/// graph shows a port under its field name, unless a string follows (`= "recorded gains"`). These options can follow
+/// a port:
 ///
-/// - `take`: the node takes a `DataStreamIn` port's buffer (see `BufferUsage::takes`);
-/// - `in_place_of`: the node makes a `DataStreamOut` port in place of a `DataStreamIn` port of the same type (see
-///   `BufferUsage::in_place`);
-/// - `side: Left` or `side: Right`: the side of the node the graph draws a ValCmd port on (see `Side`).
+/// - `take`: the node takes ownership of a `DataStreamIn` port's buffer (see `BufferUsage::takes`).
+/// - `in_place_of`: the node writes a `DataStreamOut` port into the buffer of a `DataStreamIn` port of the same type
+///   (see `BufferUsage::in_place`).
+/// - `side: Left` or `side: Right`: the side of the node that the graph draws a ValCmd port on (see `Side`).
 ///
-/// The macro makes, in the node's module:
+/// The macro generates these items in the node's module:
 ///
-/// - `DataStreamIn` and `DataStreamOut` (if there are such ports): structs of them, generic over a `PortForm`
-///   (`Streams` by default), implementing `DataStreamInPorts` and `DataStreamOutPorts`, with, for each `DataStreamIn`
-///   port, an associated constant named as it holding its number (`DataStreamIn::continuous`);
-/// - `ValOutCmdIn` (if there are such ports): a struct of their values, implementing `ValOutCmdInPorts`, with, for each,
-///   an associated constant named as it holding its number (`ValOutCmdIn::files`, which `CommandSource::Port` gives);
-/// - `CmdIn`: an enum of the commands the `ValOutCmdIn` ports take, a variant holding each (`CmdIn::Detect(Detect)`),
-///   implementing `CommandSet` (a command can be taken through only one `ValOutCmdIn` port, so it's listed once);
-/// - `ValInCmdOut` and `ValIn`: unit structs with a handle to each such port, as a constant named as it
-///   (`ValInCmdOut::gains: ValInCmdOutPort<Gains, (SetGains, Detect)>`);
-/// - `Ports`, implementing `PortSet`;
-/// - `PortEdges`, a trait gathering what a program's edges must have for the node's ports (`HasDataStream<T>`,
-///   `HasValue<V>` and `HasCommand<C>` for each type they carry), implemented for any that do: so the node's `Node` is
-///   `impl<E: PortEdges> Node<E> for MyNode`, for any program whose `edge_types!` lists them.
+/// - `DataStreamIn` and `DataStreamOut`, if the node has such ports: structs of the ports, generic over a `PortForm`
+///   (`Streams` by default), implementing `DataStreamInPorts` and `DataStreamOutPorts`. Each `DataStreamIn` port also
+///   gets an associated constant holding the port's number (`DataStreamIn::continuous`).
+/// - `ValOutCmdIn`, if the node has such ports: a struct of the values the ports publish, implementing
+///   `ValOutCmdInPorts`. Each port also gets an associated constant holding the port's number (`ValOutCmdIn::files`),
+///   which `CommandSource::Port` compares against.
+/// - `CmdIn`: an enum with one variant for each command the `ValOutCmdIn` ports accept (`CmdIn::Detect(Detect)`),
+///   implementing `CommandSet`. Only one `ValOutCmdIn` port can accept a given command, so each command appears once.
+/// - `ValInCmdOut` and `ValIn`: unit structs holding a handle for each such port, as a constant named after the port
+///   (`ValInCmdOut::gains: ValInCmdOutPort<Gains, (SetGains, Detect)>`).
+/// - `Ports`, implementing `PortSet`.
+/// - `PortEdges`: a trait requiring `HasDataStream<T>`, `HasValue<V>` and `HasCommand<C>` for each type the ports
+///   carry, implemented for every `Edges` type that has them. The node implements
+///   `impl<E: PortEdges> Node<E> for MyNode`, so the node works in any program whose `edge_types!` lists those types.
 ///
-/// Saved graphs name each port by its field's name, with its role (`Port::id`), never by the text it's shown with, so
-/// renaming a field breaks existing files (unless a config patch renames the edges' ends), but reordering doesn't.
+/// Saved graphs name each port by its role and field name (see `Port::id`), never by the display name. Reordering
+/// ports therefore doesn't break existing files, but renaming a field does, unless a config patch renames the edges'
+/// ends too.
 #[macro_export]
 macro_rules! ports {
-    // Each port goes on a list of its role's: `DataStreamIn`, `DataStreamOut`, `ValOutCmdIn`, and `ValInCmdOut` with
-    // `ValIn` (which the node numbers together).
+    // Each port is added to one of four lists: `DataStreamIn`, `DataStreamOut`, `ValOutCmdIn`, and `ValInCmdOut`
+    // together with `ValIn` (because the node numbers those two roles together).
     (@munch [$($i:tt)*] [$($o:tt)*] [$($vo:tt)*] [$($vi:tt)*]
         $(#[$m:meta])* $field:ident : DataStreamIn < $ty:ty > $(= $name:literal)? take, $($rest:tt)*
     ) => {
@@ -130,7 +137,8 @@ macro_rules! ports {
             $($rest)*
         );
     };
-    // A comma left over (the declarations' own trailing one, as the macro adds one).
+    // Skips a leftover comma. The rules above consume one comma after each port, so a trailing comma in the
+    // declaration is left over.
     (@munch [$($i:tt)*] [$($o:tt)*] [$($vo:tt)*] [$($vi:tt)*] , $($rest:tt)*) => {
         $crate::ports!(@munch [$($i)*] [$($o)*] [$($vo)*] [$($vi)*] $($rest)*);
     };
@@ -142,7 +150,7 @@ macro_rules! ports {
         $crate::ports!(@val_in $($vi)*);
         $crate::ports!(@port_edges [$($i)*] [$($o)*] [$($vo)*] [$($vi)*]);
 
-        /// The node's ports (see `ephys_rs::engine::ports`), which it names as its `Node::Ports`.
+        /// All of the node's ports (see `ephys_rs::engine::ports`). The node names this type as its `Node::Ports`.
         pub struct Ports;
 
         impl<E: $crate::engine::Edges> $crate::engine::PortSet<E> for Ports
@@ -225,7 +233,7 @@ macro_rules! ports {
             }
 
             impl DataStreamIn {
-                /// Whether anything's connected to any of the node's `DataStreamIn` ports.
+                /// Whether any of the node's `DataStreamIn` ports is connected.
                 pub fn any_connected(&self) -> bool {
                     false $(|| self.$field.is_some())+
                 }
@@ -283,7 +291,8 @@ macro_rules! ports {
         }
 
         const _: () = {
-            // An output made in place of an input holds that input's data, so must be the same type.
+            // An output written in place of an input reuses that input's buffer, so the two must have the same type.
+            // This line fails to compile if they don't.
             $($(
                 const _: fn(DataStreamIn) -> Option<$ty> = |inputs| inputs.$input;
             )?)+
@@ -385,7 +394,7 @@ macro_rules! ports {
     };
 
     (@cmd_in $({ ($($m:tt)*) $field:ident ($value:ty) ($($command:ident),*) ($($name:literal)?) ($($side:ident)?) })*) => {
-        /// The commands the node takes, through its `ValOutCmdIn` ports (see `ephys_rs::engine::ports`).
+        /// The commands the node accepts through its `ValOutCmdIn` ports (see `ephys_rs::engine::ports`).
         #[derive(Debug)]
         pub enum CmdIn {
             $($($command($command),)*)*
@@ -425,10 +434,10 @@ macro_rules! ports {
         { ($($m:tt)*) $field:ident $role:ident ($value:ty) ($($command:ident),*) ($($name:literal)?) ($($side:ident)?) }
     )*) => {
         /// Handles to the node's `ValInCmdOut` ports (see `ephys_rs::engine::ports`).
-        #[allow(dead_code, reason = "a node without such ports has none")]
+        #[allow(dead_code, reason = "a node without ValInCmdOut ports never uses this struct")]
         pub struct ValInCmdOut;
         /// Handles to the node's `ValIn` ports (see `ephys_rs::engine::ports`).
-        #[allow(dead_code, reason = "a node without such ports has none")]
+        #[allow(dead_code, reason = "a node without ValIn ports never uses this struct")]
         pub struct ValIn;
 
         const _: () = {
@@ -469,8 +478,8 @@ macro_rules! ports {
         [$({ ($($vm:tt)*) $vfield:ident ($vty:ty) ($($vc:ident),*) ($($vname:literal)?) ($($vside:ident)?) })*]
         [$({ ($($wm:tt)*) $wfield:ident $wrole:ident ($wty:ty) ($($wc:ident),*) ($($wname:literal)?) ($($wside:ident)?) })*]
     ) => {
-        /// The edge types the node's ports carry, which a program's edges must have for the node (see
-        /// `ephys_rs::engine::ports`): the node's `Node` is implemented for any program's edges implementing this.
+        /// The edge types that the node's ports carry (see `ephys_rs::engine::ports`). The node's `Node` impl applies
+        /// to any program's edges that implement this trait, which means the program lists all of those types.
         pub trait PortEdges:
             $crate::engine::Edges
             $(+ $crate::engine::HasDataStream<$ity>)*

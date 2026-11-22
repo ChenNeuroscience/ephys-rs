@@ -448,8 +448,8 @@ mod tests {
         // Something needing the filter's output, so it runs (see `Node::evaluate_tree_shake`).
         let end = add(&mut graph, "Continuous Data Viewer");
         link(&mut graph, filter, 0, end, 0);
-        // The board's four outputs (headstages, digital, auxiliary and analogue), then gain and filter working in the
-        // board's headstages buffer.
+        // The buffers are the board's four outputs (headstages, digital, auxiliary and analogue). The gain and the
+        // filter then work in place, in the board's headstages buffer.
         let plan = Plan::new(&graph, false);
         assert_eq!(plan.buffers.len(), 4);
 

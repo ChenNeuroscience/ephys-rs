@@ -42,8 +42,8 @@ pub fn combo<T: PartialEq + Copy>(
         .response
 }
 
-/// A node that needs something connected warns until something is. This is that warning, asking for `what`, unless
-/// something's `connected` (see `DataStreamIn::any_connected`, which `ports!` makes).
+/// The warning a node gives until something is connected to it: "Connect `what`", or no warning if `connected`.
+/// Nodes usually pass `DataStreamIn::any_connected()`, which `ports!` generates, as `connected`.
 pub fn require_input(connected: bool, what: &str) -> Vec<String> {
     if connected { Vec::new() } else { vec![format!("Connect {what}")] }
 }

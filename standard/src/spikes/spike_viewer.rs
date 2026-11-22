@@ -36,7 +36,7 @@ use ephys_rs::gui::widgets::Icon;
 
 ephys_rs::ports! {
     spikes: DataStreamIn<Spikes>,
-    // The thresholds (a Spike Detector's) and the gains (a Spike Gain's) the viewer sets.
+    // The viewer reads and sets a Spike Detector's thresholds and a Spike Gain's gains.
     thresholds: ValInCmdOut<Thresholds, (SetThresholds, Detect)>,
     gains: ValInCmdOut<Gains, (SetGains, Detect)>,
 }
@@ -84,7 +84,7 @@ impl ToDetect {
         }
     }
 
-    /// What it starts auto-detecting: in order, each once the one before is done.
+    /// The settings to auto-detect, in order. Each starts once the one before it is done.
     fn detectors(self) -> &'static [Detector] {
         match self {
             ToDetect::Both => &[Detector::Thresholds, Detector::Gains],
@@ -94,8 +94,8 @@ impl ToDetect {
     }
 }
 
-/// The viewer can start what its two `ValInCmdOut` ports connect to auto-detecting (see `crate::standard::auto_detect`): a Spike
-/// Detector's thresholds, and a Spike Gain's gains. This is one of them.
+/// A setting that the viewer can have auto-detected, through one of its two `ValInCmdOut` ports (see
+/// `crate::standard::auto_detect`): a Spike Detector's thresholds, or a Spike Gain's gains.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Detector {
     Thresholds,
@@ -103,7 +103,7 @@ enum Detector {
 }
 
 impl Detector {
-    /// What it detects, and what does it.
+    /// The setting's name, and the name of the node type that detects the setting.
     fn what(self) -> (&'static str, &'static str) {
         match self {
             Detector::Thresholds => ("thresholds", "Spike Detector"),
@@ -111,7 +111,7 @@ impl Detector {
         }
     }
 
-    /// When its auto detect was started, if it's going, and how many seconds it samples for.
+    /// If the setting's auto detect is in progress, when it started and how many seconds it samples for.
     fn detecting<E: PortEdges>(self, context: &UiContext<E>) -> Option<(Instant, f32)> {
         match self {
             Detector::Thresholds => {
@@ -125,7 +125,7 @@ impl Detector {
         }
     }
 
-    /// The viewer asks it to start or stop its auto detect with this.
+    /// Asks the connected node to start or stop auto-detecting the setting.
     fn detect<E: PortEdges>(self, context: &mut UiContext<E>, request: DetectRequest) {
         match self {
             Detector::Thresholds => context.cmd_out(ValInCmdOut::thresholds, Detect(request)),
@@ -133,7 +133,7 @@ impl Detector {
         }
     }
 
-    /// Whether the viewer's port is connected to one.
+    /// Whether the viewer's port for the setting is connected.
     fn connected<E: PortEdges>(self, context: &UiContext<E>) -> bool {
         match self {
             Detector::Thresholds => context.val_in_connected(ValInCmdOut::thresholds),
@@ -146,7 +146,7 @@ impl Detector {
 /// chosen from (and their thresholds, which they can go by) depend on them.
 #[derive(Default)]
 pub struct AutoDetecting {
-    /// What's to auto-detect once what's running is done, in order.
+    /// The settings still to auto-detect after the current one is done, in order.
     next: Vec<Detector>,
 }
 

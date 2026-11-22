@@ -13,7 +13,7 @@ use ephys_rs::engine::{
 };
 
 ephys_rs::ports! {
-    /// The viewer takes the pass's frames, to show the last.
+    /// The viewer takes each pass's frames, and shows the most recent one.
     video: DataStreamIn<Video> take,
 }
 

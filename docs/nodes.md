@@ -36,10 +36,11 @@ The parts of the API are there for three different reasons, and it helps to know
 
 - `INFO`: its name, category (source, processing, visualisation, recording or other) and description. The category
   is only a label (see above).
-- Its ports, declared on its type with `ports!` (see [`ports`](../src/engine/ports.rs)), each named by its field (or
-  by text after it), of one of the five roles (`PortRole`), and typed by what it carries: a data stream, or a value and
-  the commands it takes or sends (see [Edges](edges.md)). The node names them as `type Ports = Ports;` (or `NoPorts`,
-  for none). Its ports are fixed by its type, whatever its settings; only the streams on them change.
+- Its ports, declared on its type with `ports!` (see [`ports`](../src/engine/ports.rs)). Each port is a field, shown
+  under the field's name (or under a string given after the type). Each port has one of the five roles (`PortRole`)
+  and is typed by what it carries: a data stream, or a value plus the commands the port accepts or sends (see
+  [Edges](edges.md)). The node names its ports with `type Ports = Ports;` (or `NoPorts`, for a node with none). A
+  node's ports are fixed by its type, whatever its settings; only the streams on them change.
 
   ```rust
   ephys_rs::ports! {
@@ -50,33 +51,39 @@ The parts of the API are there for three different reasons, and it helps to know
   }
   ```
 
-  The node's `Node` is for any build's edges with the types its ports carry: `impl<E: PortEdges> Node<E> for MyNode`
-  (`PortEdges` being one of what `ports!` makes). The macro makes, in the node's module, a struct of each role's ports (`DataStreamIn`, `DataStreamOut`,
-  `ValOutCmdIn`), an enum of the commands the `ValOutCmdIn` ports take (`CmdIn`), and a handle to each port reading a
-  value (`ValInCmdOut::gains`, `ValIn::...`). Saved graphs name each port by its field's name (its id), so reordering
-  them is fine, but renaming one needs a config patch to rename the saved edges' ends.
-- `output_streams(inputs)`: the data stream on each output, given those on the inputs (each `None` while it can't be
-  known: nothing connected, say), so a graph's streams are worked out before anything runs. In the structs' default
-  form, each field is the stream on its port (`Option<Continuous>`), so an output's stream is always of its type.
+  The macro generates these in the node's module: a struct of each role's ports (`DataStreamIn`, `DataStreamOut`,
+  `ValOutCmdIn`); an enum of the commands the `ValOutCmdIn` ports accept (`CmdIn`); a handle for each port that reads
+  a value (`ValInCmdOut::gains`, `ValIn::...`); and `PortEdges`, the edge types the ports carry. The node implements
+  `impl<E: PortEdges> Node<E> for MyNode`, so the node works with any build's edges that include those types. Saved
+  graphs identify each port by its field name (its id), so reordering ports is fine, but renaming one needs a config
+  patch to rename the saved edges' ends.
+- `output_streams(inputs)`: the data stream on each output, given the streams on the inputs (each `None` while it
+  can't be known, such as when nothing is connected). The graph uses this to work out every stream before anything
+  runs. In the structs' default form, each field is the stream on its port (such as `Option<Continuous>`), so an
+  output's stream always has the output's type.
 - `warnings(inputs)`: what's wrong (an input not connected, say), shown on the graph and in its window.
-- `val_out()`: the values at its `ValOutCmdIn` ports, now (a `ValOutCmdIn`, or `NoPorts`): usually copies of its
+- `val_out()`: the current values at its `ValOutCmdIn` ports (a `ValOutCmdIn`, or `NoPorts`), usually copies of its
   settings.
-- `on_command(from, command, context)`: what it does with a command sent to it, as its `CmdIn` (see
+- `on_command(from, command, context)`: how it handles a command sent to it, received as its `CmdIn` (see
   [Commands](#commands)).
 
-A node without ports of a role still says so: `output_streams(&self, _: &NoPorts) -> NoPorts` for a node with no
-inputs or outputs, `val_out(&self) -> NoPorts`, and `on_command(.., command: CmdIn, ..) { match command {} }` for one
-that takes no commands. None of these has a default, so a node can't forget them.
+A node must implement these even when it has no ports of the role: `output_streams(&self, _: &NoPorts) -> NoPorts`
+for a node with no inputs or outputs, `val_out(&self) -> NoPorts`, and
+`on_command(.., command: CmdIn, ..) { match command {} }` for a node that accepts no commands. None of the three has a
+default, so a node can't forget them.
 
 ## Running
 
-`process(pass, inputs, outputs, state, worker_state)` is called once a pass, on a worker thread. `inputs` and `outputs`
-are its own structs in the `Buffers` form: each input's buffer to read (`Option<&ContinuousBuffer>`, `None` if it isn't
-connected), and each output's to fill (`&mut SpikesBuffer`, already sized: nothing should be allocated per pass).
-[`PassContext`](../src/engine/pass_context.rs) has the rest: the values its ports read (`val_in(ValIn::gains)`), whether
-it's recording, what it shares with the GUI, and where to send itself commands (`cmd_self`). `self` is the snapshot's
-settings: the latest, as of the pass. Trying a node out, a test hands it its structs directly:
-`node.process(&mut PassContext::new(0, PASS_DURATION), Inputs { continuous: Some(&input) }, Outputs { spikes: &mut out }, ..)`.
+`process(pass, inputs, outputs, state, worker_state)` is called once a pass, on a worker thread. `inputs` and
+`outputs` are the node's own `DataStreamIn` and `DataStreamOut` structs in the `Buffers` form. Each input holds its
+buffer to read (`Option<&ContinuousBuffer>`, `None` if the input isn't connected), and each output holds its buffer to
+fill (`&mut SpikesBuffer`, already sized, so nothing should be allocated per pass).
+[`PassContext`](../src/engine/pass_context.rs) has the rest: the values the node's ports read
+(`val_in(ValIn::gains)`), whether the snapshot is recording, what the node shares with the GUI, and `cmd_self` for
+sending itself commands. `self` holds the snapshot's settings, which are the latest as of the pass. A test can call
+`process` with the structs directly:
+`Node::<Edges>::process(&node, &mut PassContext::new(0, PASS_DURATION), DataStreamIn { continuous: Some(&input) },
+DataStreamOut { spikes: &mut out }, ..)`.
 
 - **State.** A node has two kinds, each `()` for none:
   - `type State` is carried from pass to pass (a filter's history). Passes hand it on in order, so they wait for each
@@ -118,13 +125,14 @@ settings: the latest, as of the pass. Trying a node out, a test hands it its str
   that makes nothing new keeps what it was asked about before. A node that fails to prepare (it panics, or doesn't make
   state it needs) is asked about the same way, and doesn't run: its outputs are left empty. See the
   [board](../standard/src/ephys/board/node.rs) and the [camera](../standard/src/tracking/camera/node.rs).
-- **Buffer usage.** How the node uses its buffers follows from how it declares its data ports (gathered into a
-  `BufferUsage` for the plan):
-  - **In place.** An output declared `in_place_of` an input (of the same type: it won't compile otherwise) can be made
-    in that input's buffer, when nothing else needs that data after it. Then the input's `None` in the pass, and the
-    output already holds its data.
-  - **Taking.** An input declared `Take<T>` rather than `In<T>`: the node takes the input's buffer, to do as it likes
-    with (swap it for one of its own, say, to hand to its thread or window), and gets it as `Option<&mut T::Buffer>`.
+- **Buffer usage.** How the node uses its buffers follows from its data port declarations, which the engine gathers
+  into a `BufferUsage` for the plan:
+  - **In place.** An output declared `in_place_of` an input can be written into that input's buffer, when nothing else
+    needs the input's data afterwards. The output and input must have the same type, or the node doesn't compile.
+    When the plan allows this, the input is `None` in the pass, and the output's buffer already holds the input's data.
+  - **Taking.** An input declared `take` hands the node ownership of the input's buffer, to do with as it likes (for
+    example, swapping it for a buffer of its own to pass to its thread or window). The node receives the buffer as
+    `Option<&mut T::Buffer>`.
     Nodes don't copy their inputs; the plan decides when a copy's needed. A connected input the node takes always has a
     buffer: the input's own, if no one edits that data in place and every other reader can run first, otherwise a copy
     the plan makes as soon as the data's made (a copy point, in the dev tools). A node that only reads an input doesn't
@@ -245,12 +253,12 @@ Anything a node tells another to do is a command: setting a value it publishes (
 (`Detect`), processing files (`ProcessFiles`). Each is a type of its own, holding what it carries
 (`SetGains(pub Gains)`), and the program lists them in `edge_types!` (`commands:`), which makes its `Command` enum,
 with `CommandKind` naming them; every set is a command like any other, so the core knows nothing of settings. A command
-goes through a ValCmd edge, from the node's `ValInCmdOut` port to the node at the `ValOutCmdIn` end, each port saying
-which commands it sends or takes; or from a node to itself (`CommandSource::Itself`), from its passes
-(`PassContext::cmd_self`). It needs no pass, or even a run: the app delivers it on the GUI's thread, whatever's going
-on, to `Node::on_command(from, command, context)`, saying where it came from (`CommandSource::Port(n)` or `Itself`),
-as the node's `CmdIn`: an enum of the commands its `ValOutCmdIn` ports take, so the node matches every one, and none it
-doesn't take:
+travels either through a ValCmd edge, from a node's `ValInCmdOut` port to the node at the `ValOutCmdIn` end (each port
+declares which commands it sends or accepts), or from a node to itself (`CommandSource::Itself`), sent from its passes
+with `PassContext::cmd_self`. Commands don't need a pass, or even a run: the app delivers each command on the GUI's
+thread, whatever else is happening, to `Node::on_command(from, command, context)`. `from` says where the command came
+from (`CommandSource::Port(n)` or `Itself`). `command` is the node's `CmdIn`, an enum of the commands its `ValOutCmdIn`
+ports accept, so the node must match every command it accepts and can't receive any other:
 
 ```rust
 fn on_command(&mut self, from: CommandSource, command: CmdIn, _context: &mut CommandContext<Edges>) {

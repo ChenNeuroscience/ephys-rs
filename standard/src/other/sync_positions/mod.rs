@@ -37,8 +37,9 @@ use resample::Edits;
 pub use window::SyncState;
 
 ephys_rs::ports! {
-    // Where it's sent recordings' files to sync, on the left, as what sends them comes before it; and where it sends
-    // them on, once it's synced them, on the right, as what's sent them then comes after it.
+    // `files` receives a recording's files to sync. The port is on the left because whatever sends the files comes
+    // before this node. `after_syncing` sends the files on once they're synced. That port is on the right because
+    // whatever receives them next comes after this node.
     files: ValOutCmdIn<FileInput, (ProcessFiles,)> side: Left,
     after_syncing: ValInCmdOut<FileInput, (ProcessFiles,)> = "after syncing" side: Right,
 }

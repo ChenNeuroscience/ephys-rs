@@ -110,7 +110,8 @@ impl AcquisitionBoard {
         Config { sample_rate: self.sample_rate, bandwidth: self.bandwidth, headstages: self.headstages.clone() }
     }
 
-    /// The board's data streams, as its capture thread fills them, and as the node outputs them.
+    /// The board's data streams: the shape of the data its capture thread fills in, which is also what the node
+    /// outputs.
     fn shape(&self) -> Shape {
         let rate = self.sample_rate as f32;
         let continuous = |channels| Continuous { channels, sample_rate: rate };

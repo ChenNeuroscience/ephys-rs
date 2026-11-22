@@ -22,11 +22,11 @@ use crate::theme::Colours;
 #[serde(transparent)]
 pub struct NodeId(pub u64);
 
-/// An edge connects a `DataStreamOut` to a `DataStreamIn`, or a `ValInCmdOut` or `ValIn` to a `ValOutCmdIn`, each end
-/// the port's address (its node, role and index among the node's ports of that role; saved with the port's id in place
-/// of the index: see `SavedPort`). A `DataStreamIn` has
-/// at most one edge into it, and a `DataStreamOut` any number out of it; a `ValInCmdOut` or `ValIn` has at most one
-/// edge out of it, and a `ValOutCmdIn` any number into it.
+/// An edge connects a `DataStreamOut` to a `DataStreamIn`, or a `ValInCmdOut` or `ValIn` to a `ValOutCmdIn`. Each end
+/// is a port's address: its node, role, and number among the node's ports of that role. (Saved graphs use the port's
+/// id in place of the number: see `SavedPort`.) A `DataStreamIn` has at most one edge into it, and a `DataStreamOut`
+/// any number out of it; a `ValInCmdOut` or `ValIn` has at most one edge out of it, and a `ValOutCmdIn` any number
+/// into it.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub struct Edge {
     pub from: PortAddress,
@@ -271,7 +271,7 @@ pub fn edge_info<E: Edges>(kind: PortKind) -> &'static EdgeInfo {
 pub type Resolved<E> = HashMap<NodeId, NodeState<E>>;
 
 /// The app edits, saves and undoes the nodes and the edges between them, held in this. A run works from snapshots of it
-/// (see `Snapshot`), so the graph's never read from more than one thread. It's saved as a `GraphFile`.
+/// (see `Snapshot`), so the graph is never read from more than one thread. The graph is saved as a `GraphFile`.
 #[derive(Clone, PartialEq, Deserialize)]
 #[serde(bound = "N: NodesEnum", from = "GraphFile<N>")]
 pub struct Graph<N> {
@@ -283,8 +283,9 @@ pub struct Graph<N> {
     disabled_edges: Vec<Edge>,
 }
 
-/// Saved graphs name each end of an edge by its node, its role and its port's id (see `Port::id`: the field's name in
-/// the node's `ports!`), not the port's index, so a node's ports can be reordered without breaking files.
+/// One end of an edge in a saved graph: the node, the role, and the port's id (the port's field name in the node's
+/// `ports!`, see `Port::id`). Saving the id instead of the port's number means a node's ports can be reordered without
+/// breaking files.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct SavedPort {
     pub node: NodeId,
@@ -292,14 +293,14 @@ pub struct SavedPort {
     pub port: std::borrow::Cow<'static, str>,
 }
 
-/// An edge as it's saved (see `SavedPort`).
+/// An edge in a saved graph (see `SavedPort`).
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct SavedEdge {
     pub from: SavedPort,
     pub to: SavedPort,
 }
 
-/// A graph is saved as this: its edges' ends by their ports' ids (see `SavedPort`).
+/// The saved form of a graph, which identifies each edge's ends by port id (see `SavedPort`).
 #[derive(Serialize, Deserialize)]
 #[serde(bound = "N: NodesEnum")]
 pub struct GraphFile<N> {
@@ -310,7 +311,7 @@ pub struct GraphFile<N> {
     disabled_edges: Vec<SavedEdge>,
 }
 
-/// A graph's saved as a `GraphFile`, borrowed rather than copied.
+/// A `GraphFile` that borrows the graph's nodes rather than copying them, for saving.
 #[derive(Serialize)]
 #[serde(bound = "N: NodesEnum")]
 struct GraphFileRef<'a, N> {
@@ -335,8 +336,8 @@ impl<N: NodesEnum> Serialize for Graph<N> {
 }
 
 impl<N: NodesEnum> From<GraphFile<N>> for Graph<N> {
-    /// A saved graph's edges whose ends aren't among their nodes' ports (a port since renamed, without a config patch
-    /// saying so) are dropped, with a warning.
+    /// Converts a saved graph's port ids back to port numbers. An edge whose end names a port the node doesn't have
+    /// (because the port was renamed without a config patch, for example) is dropped, with a warning.
     fn from(file: GraphFile<N>) -> Self {
         let mut graph =
             Graph { next_id: file.next_id, nodes: file.nodes, edges: Vec::new(), disabled_edges: Vec::new() };
@@ -370,7 +371,8 @@ type PublishedValue<N> = <<N as NodesEnum>::Edges as Edges>::PublishedValue;
 type DataStream<N> = <<N as NodesEnum>::Edges as Edges>::DataStream;
 
 impl<N: NodesEnum> Graph<N> {
-    /// An edge's ends, by their ports' ids, as the graph saves it, if its nodes are in the graph and have those ports.
+    /// `edge` in its saved form, with its ends identified by port id. Returns `None` if either end's node or port
+    /// isn't in the graph.
     pub fn saved_edge(&self, edge: &Edge) -> Option<SavedEdge> {
         let saved = |end: PortAddress| {
             let port = *self.nodes.get(&end.node)?.node.port_ids(end.role).get(end.port_idx)?;
@@ -379,7 +381,8 @@ impl<N: NodesEnum> Graph<N> {
         Some(SavedEdge { from: saved(edge.from)?, to: saved(edge.to)? })
     }
 
-    /// A saved edge, by its ends' indices, if its nodes are in the graph and have those ports.
+    /// The edge that `saved` describes, with its ends identified by port number. Returns `None` if either end's node
+    /// or port isn't in the graph.
     pub fn edge_of(&self, saved: &SavedEdge) -> Option<Edge> {
         let end = |end: &SavedPort| {
             let ids = self.nodes.get(&end.node)?.node.port_ids(end.role);
@@ -416,8 +419,7 @@ impl<N: NodesEnum> Graph<N> {
         self.nodes.get(&id)
     }
 
-    /// The app has every node drop what it was asked to do only for now (see `Node::clear_transient_state`)
-    /// with this.
+    /// Clears every node's transient state (see `Node::clear_transient_state`).
     pub fn clear_transient_state(&mut self) {
         self.nodes.values_mut().for_each(clear_transient_state);
     }
@@ -502,13 +504,14 @@ impl<N: NodesEnum> Graph<N> {
         (0..count).map(labels).collect()
     }
 
-    /// The kind of what goes through `port` (see `PortKind`), if its node has it.
+    /// The kind of data stream or value that `port` carries (see `PortKind`), or `None` if the port's node doesn't
+    /// have that port.
     fn kind(&self, port: PortAddress) -> Option<PortKind> {
         Some(self.nodes.get(&port.node)?.node.ports_of(port.role).get(port.port_idx)?.kind())
     }
 
-    /// Two ports fit if their roles pair up and they're of the same kind. This says whether `a` and `b` do, if their
-    /// nodes have them.
+    /// Whether `a` and `b` can be connected: their roles must pair up and they must carry the same kind. Ports that
+    /// their nodes don't have never fit.
     fn fits(&self, a: PortAddress, b: PortAddress) -> bool {
         a.role.pairs_with(b.role) && self.kind(a).is_some() && self.kind(a) == self.kind(b)
     }
@@ -921,8 +924,8 @@ impl Recording {
     }
 }
 
-/// The app has a node drop what it was asked to do only for now (see `Node::clear_transient_state`) with this: when it
-/// duplicates the node, say. The node isn't edited otherwise.
+/// Clears one node's transient state (see `Node::clear_transient_state`), for example when the app duplicates the
+/// node. Nothing else about the node changes.
 pub fn clear_transient_state<N: NodesEnum>(entry: &mut NodeEntry<N>) {
     entry.node.clear_transient_state();
 }
@@ -999,8 +1002,8 @@ mod tests {
         PortAddress { node, role, port_idx: index }
     }
 
-    /// Each end of an edge is saved by its port's id, not its index, and read back the same; an end naming a port its
-    /// node hasn't got goes, with its edge, leaving the rest.
+    /// A saved edge identifies each end by port id rather than number, and loads back the same. An edge with an end
+    /// naming a port that the node doesn't have is dropped, and the other edges are kept.
     #[test]
     fn edges_are_saved_by_their_ports_ids() {
         let mut graph = Graph::default();
@@ -1173,8 +1176,8 @@ mod tests {
         assert_eq!(graph.get(second).unwrap().node.val_out(0), thresholds(55.0).into());
     }
 
-    /// An auto detect a viewer started carries on through its edits; it's done when the node's passes send what they
-    /// found, and forgotten when the node's told to clear its transient state.
+    /// An auto detect that a viewer started continues through edits to the node. The auto detect finishes when the
+    /// node's passes send their result, and is cancelled when the node clears its transient state.
     #[test]
     fn auto_detect_is_started_by_a_command_and_ended_by_the_nodes_own() {
         use crate::standard::auto_detect::DetectRequest;

@@ -124,8 +124,8 @@ use components::{
     PublishedValue, example_graph,
 };
 
-/// A build lists only the edge types its nodes need: this one has continuous data alone (no values, no commands), for
-/// the two standard node types it's made of, whose ports carry nothing else.
+/// A build only lists the edge types its nodes need. This build has two standard node types whose ports carry only
+/// continuous data, so it lists continuous data alone, with no values or commands.
 #[cfg(test)]
 mod minimal_build {
     use crate::engine::{Graph, PortAddress, PortRole};

@@ -198,12 +198,12 @@ impl<'a, E: Edges, N> PrepareContext<'a, E, N> {
         }
     }
 
-    /// The node reads the data streams on its `DataStreamIn` ports with this, as its own `DataStreamIn` (`I`).
+    /// The data streams on the node's `DataStreamIn` ports, as the node's own `DataStreamIn` struct (`I`).
     pub fn data_stream_in<I: DataStreamInPorts<E>>(&self) -> I {
         I::of(self.inputs)
     }
 
-    /// The node reads what `port` sees with this (see `UiContext::val_in`).
+    /// The value that `port` reads, or `None` if the port isn't connected (see `UiContext::val_in`).
     pub fn val_in<P: ReadsValIn>(&self, port: P) -> Option<&'a P::Value>
     where
         E: HasValue<P::Value>,
@@ -212,9 +212,9 @@ impl<'a, E: Edges, N> PrepareContext<'a, E, N> {
         E::from_value(self.val_ins.get(port.index())?.as_ref()?)
     }
 
-    /// A node keeps one of these to command, later, from any thread (a writer's, once its files are finished, say), the
-    /// node `port` connects to then (see `CmdSender`). There's none if the port isn't connected now, or there's
-    /// no queue.
+    /// A sender the node can keep, to send commands later, from any thread, to whichever node `port` connects to at
+    /// that time (see `CmdSender`). A writer uses one to send its files on once they're finished, for example. Returns
+    /// `None` if the port isn't connected now, or if there's no command queue.
     pub fn cmd_sender<V, S>(&self, port: ValInCmdOutPort<V, S>) -> Option<CmdSender<E, S>> {
         let val_in_idx = port.index();
         self.val_ins.get(val_in_idx)?.as_ref()?;

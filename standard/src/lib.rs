@@ -1,9 +1,9 @@
 //! ephys-rs-standard: the standard components of ephys-rs, which programs built on it pick from. They're grouped by
 //! what they're for: electrophysiology (`ephys`), spikes (`spikes`) and video tracking (`tracking`), each with its edge
 //! types and node types; alarms on them all (`alarms`); writers, which record them (`recording`); programs to run on
-//! what's recorded (`other`); annotation types (`annotations`); and themes (`themes`). A program lists the edge types
-//! it's built with in its own `edge_types!`: those its nodes need, standard or its own. Each standard node works in any
-//! program whose edges have the types its ports carry (its `PortEdges`).
+//! what's recorded (`other`); annotation types (`annotations`); and themes (`themes`). Each program lists the edge
+//! types it's built with in its own `edge_types!`: the types its nodes need, whether standard or its own. Each
+//! standard node works in any program whose edges include the types its ports carry (its `PortEdges`).
 //!
 //! Its tests are the framework's, which are of the whole program, and build this source as a module, `standard` (see
 //! the framework's src/lib.rs). So its code calls itself `crate::standard`, and its own test build is empty.

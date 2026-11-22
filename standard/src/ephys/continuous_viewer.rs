@@ -273,7 +273,8 @@ ephys_rs::ports! {
     continuous: DataStreamIn<Continuous>,
     spectra: DataStreamIn<Spectra>,
     reference: DataStreamIn<Continuous>,
-    // A Continuous Gain's gains, a Channel Selector's selection and a Reference's reference, which the viewer sets.
+    // The viewer reads and sets a Continuous Gain's gains, a Channel Selector's selection and a Reference's
+    // settings.
     gains: ValInCmdOut<Gains, (SetGains, Detect)>,
     selection: ValInCmdOut<ChannelSelection, (SetChannelSelection,)>,
     reference: ValInCmdOut<Reference, (SetReference,)>,

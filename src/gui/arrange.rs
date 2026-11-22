@@ -135,7 +135,7 @@ mod tests {
         let x = |id| placed[&id][0];
         assert!(x(board) < x(detector) && x(detector) < x(viewer), "{placed:?}");
         assert_eq!(x(board), 0.0, "where the graph was");
-        // The Continuous Data Viewer's just after the board, beside the detector, not overlapping it.
+        // The Continuous Data Viewer is placed just after the board, beside the detector, without overlapping it.
         let (d, l) = (placed[&detector], placed[&lfp]);
         assert_eq!(l[0], d[0]);
         let resolved = graph.resolve();

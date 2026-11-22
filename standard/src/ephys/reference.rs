@@ -75,7 +75,7 @@ pub struct Reference {
     pub next_id: u32,
 }
 
-/// A Reference publishes its settings, and is told new ones with this command, holding them.
+/// The command that gives a Reference new settings.
 #[derive(Debug)]
 pub struct SetReference(pub Reference);
 

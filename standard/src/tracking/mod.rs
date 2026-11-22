@@ -204,8 +204,7 @@ pub struct Detection {
     pub custom: BTreeMap<String, String>,
 }
 
-/// A node publishing how positions are found (a Position Detector's, say) is told new settings with this command,
-/// holding them.
+/// The command that gives a node publishing detection settings, such as a Position Detector, new settings.
 #[derive(Debug)]
 pub struct SetDetection(pub Detection);
 

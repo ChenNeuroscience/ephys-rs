@@ -228,7 +228,7 @@ pub struct Thresholds {
     pub detect: DetectThresholds,
 }
 
-/// A node publishing thresholds (a Spike Detector's) is told new ones with this command, holding them.
+/// The command that gives a node publishing thresholds, such as a Spike Detector, new thresholds.
 #[derive(Debug)]
 pub struct SetThresholds(pub Thresholds);
 
@@ -318,7 +318,7 @@ pub struct Gains {
     pub detect: DetectGains,
 }
 
-/// A node publishing gains (a Spike Gain's or Continuous Gain's) is told new ones with this command, holding them.
+/// The command that gives a node publishing gains, such as a Spike Gain or Continuous Gain, new gains.
 #[derive(Debug)]
 pub struct SetGains(pub Gains);
 

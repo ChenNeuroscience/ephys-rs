@@ -1,29 +1,31 @@
-//! A node declares its ValCmd ports on its type with `ports!` (see `crate::engine::ports`), as it does its data ports.
-//! This has what they're built on.
+//! The building blocks for ValCmd ports. A node declares its ValCmd ports with `ports!`, as it does its data ports
+//! (see `crate::engine::ports`).
 //!
-//! - **`ValOutCmdIn`** ports: the node publishes a value at each, and takes commands through it. `ports!` makes a
-//!   struct of the values (`ValOutCmdIn`), which the node gives with `Node::val_out`, and an enum of every command they
-//!   take (`CmdIn`), which the app hands the node each command as (see `Node::on_command`), so the node matches every
-//!   command it takes, and none it doesn't.
-//! - **`ValInCmdOut`** and **`ValIn`** ports: the node reads another node's value at each, and through a `ValInCmdOut`
-//!   sends it commands. `ports!` makes a handle to each (`ValInCmdOut::gains`, say, a `ValInCmdOutPort`; or a
-//!   `ValInPort`), which the contexts read and command through (`UiContext::val_in`, `UiContext::cmd_out`). A
-//!   `ValInCmdOut` port can send only the commands it's declared with.
+//! - **`ValOutCmdIn`** ports: the node publishes a value at each port and accepts commands through it. `ports!`
+//!   generates a struct of the values (`ValOutCmdIn`), which the node returns from `Node::val_out`. It also generates
+//!   an enum of every command those ports accept (`CmdIn`), which the app passes to `Node::on_command`. The node must
+//!   match every command it accepts, and can't receive any other.
+//! - **`ValInCmdOut`** and **`ValIn`** ports: the node reads another node's value through each port, and can send
+//!   that node commands through a `ValInCmdOut` port. `ports!` generates a handle for each port (such as
+//!   `ValInCmdOut::gains`, a `ValInCmdOutPort`, or a `ValInPort`). The contexts take the handle to read the value and
+//!   send commands (`UiContext::val_in`, `UiContext::cmd_out`). A `ValInCmdOut` port can send only the commands it's
+//!   declared with.
 //!
-//! Each port lists its commands as a tuple of their types: `(SetGains, Detect)`, or `()` for none.
+//! Each port lists its commands as a tuple of their types, such as `(SetGains, Detect)`, or `()` for none.
 
 use std::fmt::Debug;
 use std::marker::PhantomData;
 
 use super::{CommandKind, EdgeType, Edges, HasCommand, HasValue, NoPorts, Port, Side};
 
-/// Each command is a type of its own, holding what it carries (see `HasCommand`).
+/// Each command is a type of its own, holding the data the command carries (see `HasCommand`). Any `Debug + Send`
+/// type can be a command.
 pub trait Command: std::fmt::Debug + Send + 'static {}
 
 impl<T: std::fmt::Debug + Send + 'static> Command for T {}
 
-/// A port lists the commands it takes or sends as a tuple of their types. This lists their kinds, for the graph (see
-/// `Port::commands`).
+/// A tuple of command types, as a port declares the commands it accepts or sends. `kinds` converts the tuple to the
+/// program's command kinds, for the graph (see `Port::commands`).
 pub trait CommandList<E: Edges> {
     fn kinds() -> Vec<CommandKind<E>>;
 }
@@ -69,13 +71,15 @@ where
     }
 }
 
-/// Where a command is in a tuple of them (see `Includes`): the first.
+/// Marks a command's position in a tuple of commands (see `Includes`): the first element.
 pub struct Here;
-/// Where a command is in a tuple of them (see `Includes`): after the first, at `I` in the rest.
+/// Marks a command's position in a tuple of commands (see `Includes`): position `I` among the elements after the
+/// first.
 pub struct There<I>(PhantomData<I>);
 
-/// A `ValInCmdOut` port (or a sender kept for one) can only send the commands its tuple lists. A tuple of commands
-/// implements this for each it lists (`I` saying where, which the compiler works out).
+/// Restricts a `ValInCmdOut` port, and any sender made from the port, to the commands in the port's tuple. A tuple of
+/// commands implements `Includes<C, I>` for each command `C` it contains. `I` is the command's position (`Here` or
+/// `There<...>`), which the compiler infers, so callers never write it.
 #[diagnostic::on_unimplemented(
     message = "`{C}` isn't one of the commands `{Self}` lists",
     label = "this port doesn't send `{C}`",
@@ -94,16 +98,17 @@ impl<A, B, C, D> Includes<B, There<Here>> for (A, B, C, D) {}
 impl<A, B, C, D> Includes<C, There<There<Here>>> for (A, B, C, D) {}
 impl<A, B, C, D> Includes<D, There<There<There<Here>>>> for (A, B, C, D) {}
 
-/// `ports!` implements this for a node's enum of the commands it takes (`CmdIn`), which its `PortSet::CmdIn` names.
+/// Converts between a node's own enum of the commands it accepts (`CmdIn`, which `PortSet::CmdIn` names) and the
+/// program's enum of all commands. `ports!` implements this trait for each node's `CmdIn`.
 pub trait CommandSet<E: Edges>: Debug + Send + Sized + 'static {
-    /// `command` as one of the node's, if it is, or else `command` back.
+    /// Converts `command` to the node's enum if the node accepts it, or returns `command` unchanged if not.
     fn from_command(command: E::Command) -> Result<Self, E::Command>;
-    /// The command, as the program's enum of them.
+    /// Converts the command to the program's enum of all commands.
     fn wrap(self) -> E::Command;
 }
 
-/// A node that takes no commands (it has no `ValOutCmdIn` ports) has this for them: it can't be made, so its
-/// `on_command` is `match command {}`.
+/// The command enum of a node with no `ValOutCmdIn` ports, which accepts no commands. `NoCommands` has no variants,
+/// so no value of it can exist, and the node's `on_command` is just `match command {}`.
 #[derive(Debug)]
 pub enum NoCommands {}
 
@@ -117,43 +122,44 @@ impl<E: Edges> CommandSet<E> for NoCommands {
     }
 }
 
-/// A node reads another node's value, and sends it commands, through a `ValInCmdOut` port: this is the handle to one,
-/// reading a value of type `V` and sending the commands in the tuple `S`. `ports!` makes one for each such port, as a
-/// constant named as the port: `ValInCmdOut::gains`, say.
+/// A handle to a `ValInCmdOut` port, through which a node reads another node's value of type `V` and sends it the
+/// commands in the tuple `S`. `ports!` generates one handle for each such port, as a constant named after the port
+/// (for example, `ValInCmdOut::gains`).
 pub struct ValInCmdOutPort<V, S> {
     index: usize,
     types: PhantomData<fn() -> (V, S)>,
 }
 
-/// A node only reads another node's value through a `ValIn` port: this is the handle to one, reading a value of type
-/// `V`. `ports!` makes one for each such port, as a constant named as the port: `ValIn::gains`, say.
+/// A handle to a `ValIn` port, through which a node reads another node's value of type `V` but sends no commands.
+/// `ports!` generates one handle for each such port, as a constant named after the port (for example,
+/// `ValIn::gains`).
 pub struct ValInPort<V> {
     index: usize,
     types: PhantomData<fn() -> V>,
 }
 
 impl<V, S> ValInCmdOutPort<V, S> {
-    /// `ports!` makes a handle for the node's port `index`, as the node numbers them (its `ValInCmdOut` and `ValIn`
-    /// ports together, in the order declared).
+    /// Makes the handle for the node's port number `index`. The node numbers its `ValInCmdOut` and `ValIn` ports
+    /// together, in declaration order. Only `ports!` calls this.
     #[doc(hidden)]
     pub const fn new(index: usize) -> Self {
         ValInCmdOutPort { index, types: PhantomData }
     }
 
-    /// The port's number, as the node numbers them (see `new`).
+    /// The port's number among the node's `ValInCmdOut` and `ValIn` ports (see `new`).
     pub const fn index(self) -> usize {
         self.index
     }
 }
 
 impl<V> ValInPort<V> {
-    /// See `ValInCmdOutPort::new`.
+    /// Makes the handle for the node's port number `index` (see `ValInCmdOutPort::new`). Only `ports!` calls this.
     #[doc(hidden)]
     pub const fn new(index: usize) -> Self {
         ValInPort { index, types: PhantomData }
     }
 
-    /// The port's number, as the node numbers them (see `ValInCmdOutPort::new`).
+    /// The port's number among the node's `ValInCmdOut` and `ValIn` ports (see `ValInCmdOutPort::new`).
     pub const fn index(self) -> usize {
         self.index
     }
@@ -175,12 +181,12 @@ impl<V> Clone for ValInPort<V> {
 
 impl<V> Copy for ValInPort<V> {}
 
-/// The contexts read a value through a handle to either kind of port reading one (`ValInCmdOutPort` or `ValInPort`)
-/// with this.
+/// A handle to a port that reads a value: either a `ValInCmdOutPort` or a `ValInPort`. The contexts read values
+/// through any handle implementing this trait.
 pub trait ReadsValIn: Copy {
     /// The type of value the port reads.
     type Value: EdgeType;
-    /// The port's number, as the node numbers them (see `ValInCmdOutPort::new`).
+    /// The port's number among the node's `ValInCmdOut` and `ValIn` ports (see `ValInCmdOutPort::new`).
     fn index(self) -> usize;
 }
 
@@ -200,7 +206,8 @@ impl<V: EdgeType> ReadsValIn for ValInPort<V> {
     }
 }
 
-/// `ports!` makes each `ValInCmdOut` and `ValIn` port, for the graph, through this.
+/// Builds the graph's description (`Port`) of a `ValInCmdOut` or `ValIn` port from the port's handle type. Only
+/// `ports!` uses this.
 #[doc(hidden)]
 pub trait ValInPortOf<E: Edges> {
     fn port(id: &'static str, name: &'static str, side: Side) -> Port<E>;
@@ -218,12 +225,12 @@ impl<E: HasValue<V>, V: EdgeType> ValInPortOf<E> for ValInPort<V> {
     }
 }
 
-/// `ports!` implements this for a node's struct of the values at its `ValOutCmdIn` ports (`ValOutCmdIn`), which its
-/// `PortSet::ValOutCmdIn` names.
+/// A node's struct of the values it publishes at its `ValOutCmdIn` ports (`ValOutCmdIn`, which `PortSet::ValOutCmdIn`
+/// names). `ports!` implements this trait for each node's struct.
 pub trait ValOutCmdInPorts<E: Edges>: Sized {
-    /// The graph lists the node's `ValOutCmdIn` ports from this, in the order they're declared.
+    /// The node's `ValOutCmdIn` ports, in declaration order, for the graph.
     fn ports() -> Vec<Port<E>>;
-    /// The values, as the program's enum of them, in the order they're declared.
+    /// The values, each converted to the program's enum of values, in declaration order.
     fn values(self) -> Vec<E::PublishedValue>;
 }
 

@@ -1,13 +1,17 @@
-//! Choosing settings from the data ("auto detect"). The setting to choose (gains, or thresholds) has its auto detect's
-//! own settings in `detect`: how long it samples the data for (`seconds`), and when it was started (`started`), while
-//! it's going. `started` is the node's transient state, not saved: the node starts it from its window, or when it's
-//! sent `Detect` (holding a `DetectRequest`, from a viewer, through a ValCmd edge), and clears it when it's stopped, or
-//! told to clear its transient state (see `ephys_rs::engine::Node::clear_transient_state`). While it's started, the node runs, with room to
-//! sample into that it made as it prepared, which its passes sample the data into for that long, then send the node
-//! the setting they found (`PassContext::cmd_self`), which clears `started`. Whatever can see the setting (the node's
-//! window, or a viewer's, through the value the node publishes) can tell how far along it is from those two
-//! (`estimated_progress`). The Spike Gain, Continuous Gain and Spike Detector have one; these are the pieces they
-//! share.
+//! Choosing a setting from the data ("auto detect"). The Spike Gain, Continuous Gain and Spike Detector each have an
+//! auto detect, and this module has the pieces they share.
+//!
+//! The setting to choose (gains or thresholds) keeps its auto detect's own settings in `detect`: how long to sample
+//! the data for (`seconds`), and when the auto detect started (`started`), while it's in progress. `started` is the
+//! node's transient state, and isn't saved. The node sets `started` when someone starts the auto detect from the
+//! node's window, or when the node receives the `Detect` command (holding a `DetectRequest`) from a viewer through a
+//! ValCmd edge. The node clears `started` when the auto detect is stopped, or when the node clears its transient
+//! state (see `ephys_rs::engine::Node::clear_transient_state`).
+//!
+//! While `started` is set, the node runs. As the node prepares, it makes room to sample into; its passes sample the
+//! data for `seconds`, then send the node the setting they found (`PassContext::cmd_self`), which clears `started`.
+//! Anything that can see the setting, such as the node's window or a viewer reading the value the node publishes, can
+//! estimate the progress from `started` and `seconds` (`estimated_progress`).
 
 use std::time::Instant;
 
@@ -24,8 +28,7 @@ pub enum DetectRequest {
     Stop,
 }
 
-/// A node that can detect its setting from the data (see the module's docs) is asked to start or stop with this
-/// command.
+/// The command that asks a node to start or stop auto-detecting its setting from the data (see the module's docs).
 #[derive(Debug)]
 pub struct Detect(pub DetectRequest);
 

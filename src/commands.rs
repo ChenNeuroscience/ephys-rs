@@ -97,9 +97,9 @@ impl Drop for Commands {
     }
 }
 
-/// A node keeps one of these to send commands later, from any thread, through one of its controls (a writer's "after
-/// recording", say: see `crate::engine::Control`). It sends only the commands in the control's tuple of them, `S`, as
-/// the program's `E` has them.
+/// A sender a node keeps, to send commands later, from any thread, through one of its `ValInCmdOut` ports (such as a
+/// writer's "after recording" port). The sender can only send the commands in the port's tuple, `S`, and converts
+/// them to the program's command enum, from `E`.
 pub struct CmdSender<E, S> {
     commands: Arc<Commands>,
     address: Address,
@@ -118,8 +118,8 @@ impl<E: Edges, S> CmdSender<E, S> {
         CmdSender { commands, address, types: PhantomData }
     }
 
-    /// This sends `command`, one of those the control sends. The app delivers it as soon as it can, following the edge
-    /// then (see `Address`).
+    /// Sends `command`, which must be one of the commands the port declares. The app delivers the command as soon as
+    /// it can, to whichever node the port's edge leads to at that time (see `Address`).
     pub fn send<C: std::fmt::Debug + Send + 'static, I>(&self, command: C)
     where
         E: HasCommand<C>,

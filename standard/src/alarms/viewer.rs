@@ -167,7 +167,7 @@ pub struct AlarmsDisplay {
 
 ephys_rs::ports! {
     alarms: DataStreamIn<AlarmStates>,
-    // An Alarm Processor's alarms, which the viewer switches on and off.
+    // The viewer reads an Alarm Processor's alarms and switches them on and off.
     alarms: ValInCmdOut<Alarms, (SetAlarms,)>,
 }
 

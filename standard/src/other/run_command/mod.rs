@@ -30,8 +30,8 @@ mod terminal;
 
 use terminal::{Chain, Job, Outcome, Progress};
 
-/// A node can be sent files to process (Run Command, say, which runs its program on them) with this command, holding
-/// them. Whatever sends them, and whenever: a writer's are what it's just finished recording.
+/// The command that sends a node files to process, such as a Run Command, which runs its program on them. Any node
+/// can send this command at any time; a writer sends the files it has just finished recording.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProcessFiles(pub Vec<PathBuf>);
 
@@ -53,8 +53,9 @@ impl EdgeType for FileInput {
 }
 
 ephys_rs::ports! {
-    // Where it's sent files to run on, on the left, as what sends them comes before it; and where it sends them on,
-    // once it's done (see `Then`), on the right, as what runs then comes after it.
+    // `files` receives the files to run the program on. The port is on the left because whatever sends the files
+    // comes before this node. `after_running` sends the files on once the program has finished (see `Then`). That
+    // port is on the right because whatever runs next comes after this node.
     files: ValOutCmdIn<FileInput, (ProcessFiles,)> side: Left,
     after_running: ValInCmdOut<FileInput, (ProcessFiles,)> = "after running" side: Right,
 }

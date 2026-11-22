@@ -7,9 +7,10 @@
 //! point anywhere, including upstream.
 //!
 //! Each edge type is a struct implementing `EdgeType`: for data, a small `Copy` description of the data stream (its
-//! channel count and sample rate, say); for values, the value itself. `edge_types!` gathers each kind into an enum (one
-//! of data streams, one of values), with a matching fieldless kind enum that ports are declared with. It gathers the
-//! program's commands into an enum as well (see `CommandsEnum`).
+//! channel count and sample rate, say); for values, the value itself. Each program lists the edge types it
+//! uses with `edge_types!`, which gathers them into one enum of data streams and one of values, each with a matching
+//! fieldless enum of kinds that the graph matches ports by. `edge_types!` also gathers the program's commands into an
+//! enum (see `CommandsEnum`).
 
 use std::fmt::Debug;
 use std::hash::Hash;
@@ -80,46 +81,47 @@ pub trait DataStreamsEnum: EdgeTypesEnum + Copy {
     fn empty(buffer: &mut Self::Buffer);
 }
 
-/// A node declares its data ports by the types of their data streams (see `ports!`), and the engine holds streams
-/// and buffers as the program's enums of them. `edge_types!` implements this on the program's edges for each data
-/// stream type `T` it lists, to go between the two. Components written for any program say which they need as bounds
-/// on the program's edges (`E: HasDataStream<Continuous>`, or a trait gathering such bounds).
+/// Converts between a data stream type `T` and the program's enums of data streams and buffers. A node declares its
+/// data ports by their data stream types (see `ports!`), while the engine stores streams and buffers as the program's
+/// enums. `edge_types!` implements this trait on the program's `Edges` for each data stream type it lists. A node
+/// written for any program states the types it needs as bounds on the program's edges, such as
+/// `E: HasDataStream<Continuous>` (or the `PortEdges` trait that `ports!` generates).
 #[diagnostic::on_unimplemented(
     message = "the program's edges have no `{T}` data stream",
     note = "add it to the program's `edge_types!`"
 )]
 pub trait HasDataStream<T: DataStreamType>: Edges {
-    /// Ports are matched by kind: this is `T`'s.
+    /// The kind of `T`, by which the graph matches ports.
     const KIND: DataStreamKind<Self>;
-    /// `stream`, as the program's enum of them.
+    /// Converts `stream` to the program's enum of data streams.
     fn wrap(stream: T) -> Self::DataStream;
-    /// `stream` as a `T`, if that's the type it is.
+    /// Converts `stream` back to a `T`, or returns `None` if `stream` holds another type.
     fn from_stream(stream: &Self::DataStream) -> Option<T>;
-    /// `buffer` as a `T`'s, if that's whose it is.
+    /// Gives `buffer` as a `T`'s buffer, or `None` if `buffer` belongs to another type.
     fn from_buffer(buffer: &Buffer<Self>) -> Option<&T::Buffer>;
-    /// `buffer` as a `T`'s, to fill, if that's whose it is.
+    /// Gives `buffer` as a `T`'s buffer to fill, or `None` if `buffer` belongs to another type.
     fn from_buffer_mut(buffer: &mut Buffer<Self>) -> Option<&mut T::Buffer>;
 }
 
-/// A node declares its ValCmd ports by the types of their values (see `ports!`), and the engine holds values as the
-/// program's enum of them. `edge_types!` implements this on the program's edges for each type of value `T` it lists,
-/// to go between the two (see `HasDataStream`).
+/// Converts between a value type `T` and the program's enum of values. A node declares its ValCmd ports by their value
+/// types (see `ports!`), while the engine stores values as the program's enum. `edge_types!` implements this trait on
+/// the program's `Edges` for each value type it lists (see `HasDataStream`).
 #[diagnostic::on_unimplemented(
     message = "the program's edges have no `{T}` value",
     note = "add it to the program's `edge_types!`"
 )]
 pub trait HasValue<T: EdgeType>: Edges {
-    /// Ports are matched by kind: this is `T`'s.
+    /// The kind of `T`, by which the graph matches ports.
     const KIND: ValueKind<Self>;
-    /// `value`, as the program's enum of them.
+    /// Converts `value` to the program's enum of values.
     fn wrap(value: T) -> Self::PublishedValue;
-    /// `value` as a `T`, if that's the type it is.
+    /// Converts `value` back to a `T`, or returns `None` if `value` holds another type.
     fn from_value(value: &Self::PublishedValue) -> Option<&T>;
 }
 
 /// A node can command another through a ValCmd edge (or itself, from its passes or threads; see `Node::on_command`).
-/// Each command is a type of its own (`SetGains`, holding the gains, say), and the program lists them with
-/// `edge_types!`, which makes an enum of them, implementing this.
+/// The program's enum of all commands. Each command is a type of its own (such as `SetGains`, which holds the gains),
+/// and `edge_types!` generates this enum from the commands the program lists.
 pub trait CommandsEnum: Debug + Send + 'static {
     /// Ports say which commands they take or send by their kinds: which command, without what it carries.
     type Kind: Copy + Eq + Hash + Debug + Send + Sync + 'static;
@@ -127,19 +129,19 @@ pub trait CommandsEnum: Debug + Send + 'static {
     fn kind(&self) -> Self::Kind;
 }
 
-/// Nodes send and take commands as their own types, and the engine carries them as the program's enum of them.
-/// `edge_types!` implements this on the program's edges for each command `T` it lists, to go between the two (see
-/// `HasDataStream`).
+/// Converts between a command type `T` and the program's enum of commands. Nodes send and receive commands as their
+/// own types, while the engine carries them as the program's enum. `edge_types!` implements this trait on the
+/// program's `Edges` for each command it lists (see `HasDataStream`).
 #[diagnostic::on_unimplemented(
     message = "the program's edges have no `{T}` command",
     note = "add it to the program's `edge_types!`"
 )]
 pub trait HasCommand<T: Debug + Send + 'static>: Edges {
-    /// Ports say which commands they take or send by their kinds: this is `T`'s.
+    /// The kind of `T`, by which ports list the commands they accept or send.
     const KIND: CommandKind<Self>;
-    /// `command`, as the program's enum of them.
+    /// Converts `command` to the program's enum of commands.
     fn wrap(command: T) -> Self::Command;
-    /// `command` as a `T`, if that's the type it is, or else `command` back.
+    /// Converts `command` back to a `T`, or returns `command` unchanged if it holds another type.
     fn from_command(command: Self::Command) -> Result<T, Self::Command>;
 }
 
@@ -154,13 +156,13 @@ pub trait Edges: 'static {
     type Command: CommandsEnum;
 }
 
-/// Each of the program's data streams is of one kind (see `EdgeTypesEnum::Kind`).
+/// The program's enum of data stream kinds (see `EdgeTypesEnum::Kind`).
 pub type DataStreamKind<E> = <<E as Edges>::DataStream as EdgeTypesEnum>::Kind;
 
-/// Each of the program's values is of one kind (see `EdgeTypesEnum::Kind`).
+/// The program's enum of value kinds (see `EdgeTypesEnum::Kind`).
 pub type ValueKind<E> = <<E as Edges>::PublishedValue as EdgeTypesEnum>::Kind;
 
-/// Each of the program's commands is of one kind (see `CommandsEnum::Kind`).
+/// The program's enum of command kinds (see `CommandsEnum::Kind`).
 pub type CommandKind<E> = <<E as Edges>::Command as CommandsEnum>::Kind;
 
 /// A data edge holds a pass's worth of data in one of these.
@@ -183,10 +185,14 @@ pub type Buffer<E> = <<E as Edges>::DataStream as DataStreamsEnum>::Buffer;
 /// }
 /// ```
 ///
-/// This makes `Edges` (implementing `engine::Edges`), the `DataStream`, `PublishedValue` and `Command` enums, the
-/// `DataStreamKind`, `ValueKind` and `CommandKind` enums naming their variants, and the `Buffer` enum of the data streams'
-/// buffers; and `HasDataStream`, `HasValue` and `HasCommand` for each type listed, through which nodes use them as their own
-/// types.
+/// This generates:
+///
+/// - `Edges`, implementing `engine::Edges`;
+/// - the `DataStream`, `PublishedValue` and `Command` enums;
+/// - the `DataStreamKind`, `ValueKind` and `CommandKind` enums, naming the variants of those three;
+/// - the `Buffer` enum of the data streams' buffers;
+/// - `HasDataStream`, `HasValue` and `HasCommand` on `Edges` for each type listed, which nodes use to work with the
+///   types directly.
 #[macro_export]
 macro_rules! edge_types {
     (

@@ -35,7 +35,7 @@ ephys_rs::ports! {
     video: DataStreamIn<Video>,
     positions: DataStreamIn<Positions>,
     stats: DataStreamIn<CameraStats>,
-    // The camera's settings and the Position Detector's, which the view adjusts.
+    // The view reads and adjusts a Camera's settings and a Position Detector's settings.
     camera: ValInCmdOut<CameraConfig, (SetCamera,)>,
     detection: ValInCmdOut<Detection, (SetDetection,)>,
 }

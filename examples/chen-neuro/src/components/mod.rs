@@ -25,8 +25,9 @@ use ephys_rs::theme::Theme;
 use ephys_rs::{Components, build_version};
 use ephys_rs::{annotations_enum, nodes_enum};
 
-// The edge types chen-neuro's nodes need: all the standard ones, as it has every standard node type. A build lists only
-// those its nodes' ports carry (each node's `PortEdges`), and its own beside them.
+// The edge types that chen-neuro's nodes need. chen-neuro includes every standard node type, so this lists every
+// standard edge type. A build only needs to list the types its nodes' ports carry (each node's `PortEdges`), plus any
+// types of its own.
 ephys_rs::edge_types! {
     pub struct Edges;
     data_streams: pub enum DataStream, DataStreamKind, Buffer {

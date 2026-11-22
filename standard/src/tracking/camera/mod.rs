@@ -85,7 +85,7 @@ pub struct CameraConfig {
     pub gain: Control,
 }
 
-/// A Camera publishes its settings, and is told new ones with this command, holding them.
+/// The command that gives a Camera new settings.
 #[derive(Debug)]
 pub struct SetCamera(pub CameraConfig);
 

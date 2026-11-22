@@ -22,7 +22,7 @@ use ephys_rs::engine::{
 };
 
 ephys_rs::ports! {
-    // An input for each of the alarms' sources, in the order of `Source::ALL`.
+    // One input for each source an alarm can watch, in the order of `Source::ALL`.
     spikes: DataStreamIn<Spikes>,
     lfp: DataStreamIn<Continuous>,
     positions: DataStreamIn<Positions>,
@@ -207,7 +207,7 @@ fn judge(alarm: &Alarm, window: &Window, lfp_rate: f64, fps: f64) -> AlarmState 
     AlarmState { phase, value, item, ..off }
 }
 
-/// Whether the pass has data from the source an alarm of `kind` watches.
+/// Whether the pass has data from the source that an alarm of `kind` watches.
 fn given(kind: &AlarmKind, inputs: &DataStreamIn<Buffers>) -> bool {
     match kind.source() {
         Source::Spikes => inputs.spikes.is_some(),
@@ -217,7 +217,7 @@ fn given(kind: &AlarmKind, inputs: &DataStreamIn<Buffers>) -> bool {
     }
 }
 
-/// Adds a pass's data, from the source an alarm of `kind` watches, to `window`.
+/// Adds the pass's data from the source that an alarm of `kind` watches to `window`.
 fn count(kind: &AlarmKind, inputs: &DataStreamIn<Buffers>, window: &mut Window) {
     match (kind, inputs) {
         (AlarmKind::SpikeRate { .. }, DataStreamIn { spikes: Some(spikes), .. }) => {
@@ -393,7 +393,7 @@ mod tests {
     }
 
     impl<'a> Input<'a> {
-        /// The processor's inputs, with this on its own.
+        /// The processor's inputs with only this input connected.
         fn alone(self) -> DataStreamIn<Buffers<'a>> {
             let mut inputs = DataStreamIn { spikes: None, lfp: None, positions: None, ttl: None };
             match self {
@@ -413,7 +413,7 @@ mod tests {
             Run { processor, watching }
         }
 
-        /// Passes for `seconds`, each with `input`; how the alarms stand after.
+        /// Runs passes covering `seconds`, each with `input`, and returns the alarms' states afterwards.
         fn all(&mut self, input: Input, seconds: f64) -> Vec<AlarmState> {
             let mut output = AlarmStates::default().buffer(PASS_DURATION);
             for sequence in 0..(seconds / PASS_DURATION).round() as u64 {

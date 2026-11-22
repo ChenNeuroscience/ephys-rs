@@ -531,7 +531,8 @@ ephys_rs::ports! {
     positions: DataStreamOut<Positions>,
     pos_ttl: DataStreamOut<Events> = "pos ttl",
     log: DataStreamOut<LogLines>,
-    /// The task's settings, as a Position Detector's detection, for Write LTX to record with the positions.
+    /// The task's settings, published in the same form as a Position Detector's, so Write LTX can record them with
+    /// the positions.
     settings: ValOutCmdIn<Detection, (SetDetection,)>,
 }
 

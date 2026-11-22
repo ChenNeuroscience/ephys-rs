@@ -7,17 +7,17 @@ use super::{CommandKind, DataStreamKind, EdgeTypesEnum, Edges, NodeId, ValueKind
 
 /// Edges connect nodes at their ports, each named for what flows through it, which way (see `PortRole`, which names a
 /// port's role without what's in it). A node declares its ports on its type (see `crate::engine::ports`), and the graph
-/// lists them as these (see `NodesEnum::list_ports_data_stream_in`, `list_ports_data_stream_out` and
-/// `list_ports_val_cmd`). The graph numbers the ports of each role separately, in the order they're declared (see
-/// `PortAddress`). The node itself numbers its `ValInCmdOut` and `ValIn` ports together, in the order they're
-/// declared, as the ports it reads values through (see `ReadsValIn::index`).
+/// lists them as `Port`s (see `NodesEnum::list_ports_data_stream_in`, `list_ports_data_stream_out` and
+/// `list_ports_val_cmd`). The graph numbers each role's ports separately, in declaration order (see `PortAddress`).
+/// The node itself numbers its `ValInCmdOut` and `ValIn` ports together, in declaration order, because it reads
+/// values through both (see `ReadsValIn::index`).
 pub enum Port<E: Edges> {
     /// Data reaches the node here, each pass, from another node's `DataStreamOut`.
     DataStreamIn {
         /// What the graph and the node's window call the port.
         name: &'static str,
-        /// Saved graphs name the port by this: its field's name in its node's `ports!`, which never changes as its
-        /// `name` might.
+        /// The port's field name in its node's `ports!`, which saved graphs use to identify the port. Unlike `name`,
+        /// the id never changes when the display name does.
         id: &'static str,
         /// The kind of data stream the port takes.
         data_stream_kind: DataStreamKind<E>,
@@ -26,8 +26,8 @@ pub enum Port<E: Edges> {
     DataStreamOut {
         /// What the graph and the node's window call the port.
         name: &'static str,
-        /// Saved graphs name the port by this: its field's name in its node's `ports!`, which never changes as its
-        /// `name` might.
+        /// The port's field name in its node's `ports!`, which saved graphs use to identify the port. Unlike `name`,
+        /// the id never changes when the display name does.
         id: &'static str,
         /// The kind of data stream the port sends.
         data_stream_kind: DataStreamKind<E>,
@@ -40,8 +40,8 @@ pub enum Port<E: Edges> {
     ValOutCmdIn {
         /// What the graph and the node's window call the port.
         name: &'static str,
-        /// Saved graphs name the port by this: its field's name in its node's `ports!`, which never changes as its
-        /// `name` might.
+        /// The port's field name in its node's `ports!`, which saved graphs use to identify the port. Unlike `name`,
+        /// the id never changes when the display name does.
         id: &'static str,
         /// The kind of value the port has.
         value_kind: ValueKind<E>,
@@ -55,8 +55,8 @@ pub enum Port<E: Edges> {
     ValInCmdOut {
         /// What the graph and the node's window call the port.
         name: &'static str,
-        /// Saved graphs name the port by this: its field's name in its node's `ports!`, which never changes as its
-        /// `name` might.
+        /// The port's field name in its node's `ports!`, which saved graphs use to identify the port. Unlike `name`,
+        /// the id never changes when the display name does.
         id: &'static str,
         /// The kind of value the port reads.
         value_kind: ValueKind<E>,
@@ -70,8 +70,8 @@ pub enum Port<E: Edges> {
     ValIn {
         /// What the graph and the node's window call the port.
         name: &'static str,
-        /// Saved graphs name the port by this: its field's name in its node's `ports!`, which never changes as its
-        /// `name` might.
+        /// The port's field name in its node's `ports!`, which saved graphs use to identify the port. Unlike `name`,
+        /// the id never changes when the display name does.
         id: &'static str,
         /// The kind of value the port reads.
         value_kind: ValueKind<E>,
@@ -117,7 +117,7 @@ impl<E: Edges> Port<E> {
         }
     }
 
-    /// Saved graphs name the port by this (see `Port::DataStreamIn::id`).
+    /// The port's id, which saved graphs use to identify the port (see `Port::DataStreamIn::id`).
     pub fn id(&self) -> &'static str {
         match self {
             Port::DataStreamIn { id, .. }
@@ -149,7 +149,7 @@ impl<E: Edges> Port<E> {
         }
     }
 
-    /// The graph matches ports by kind (see `PortKind`): the port's kind of data stream, or of value.
+    /// The port's kind of data stream or value, by which the graph matches ports (see `PortKind`).
     pub fn kind(&self) -> PortKind {
         match self {
             Port::DataStreamIn { data_stream_kind, .. } | Port::DataStreamOut { data_stream_kind, .. } => {

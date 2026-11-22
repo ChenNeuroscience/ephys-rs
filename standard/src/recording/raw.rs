@@ -91,12 +91,12 @@ impl Chunk {
 }
 
 ephys_rs::ports! {
-    // The writer takes its inputs, swapping their buffers into the chunk for its thread (the plan copies them for it,
-    // if something else needs them after it).
+    // The writer takes all its inputs: each pass swaps the inputs' buffers into the chunk for the writer's thread. If
+    // another node needs an input's data after the writer, the plan gives the writer a copy.
     continuous: DataStreamIn<Continuous> take,
     events: DataStreamIn<Events> take,
-    /// Where the writer sends what it's recorded, once it's finished (see `after_recording`): on the right, as
-    /// what it sets off comes after it.
+    /// Sends the recorded files on once they're finished (see `after_recording`). The port is on the right because
+    /// whatever processes the files next comes after the writer.
     after_recording: ValInCmdOut<FileInput, (ProcessFiles,)> = "after recording" side: Right,
 }
 

@@ -717,8 +717,8 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         self.bake();
     }
 
-    /// The app has the nodes drop what they were asked to do only for now (see `Node::clear_transient_state`)
-    /// with this, as if they'd never been asked: not as an edit.
+    /// Clears every node's transient state (see `Node::clear_transient_state`), as if the nodes had never been asked
+    /// to do anything. This doesn't count as an edit.
     fn clear_transient(&mut self) {
         self.graph.clear_transient_state();
         self.history.clear_transient();
@@ -2065,8 +2065,8 @@ impl<N: NodesEnum, A: AnnotationsEnum> History<N, A> {
         !self.redo.is_empty()
     }
 
-    /// The history has the current item's nodes drop what they were asked to do only for now (see
-    /// `Node::clear_transient_state`) with this, as if they'd never been asked.
+    /// Clears the transient state of the current history item's nodes (see `Node::clear_transient_state`), as if the
+    /// nodes had never been asked to do anything.
     fn clear_transient(&mut self) {
         let mut graph = (*self.current.graph).clone();
         graph.clear_transient_state();
@@ -2075,8 +2075,9 @@ impl<N: NodesEnum, A: AnnotationsEnum> History<N, A> {
         }
     }
 
-    /// Undo and redo restore the current item, without what its nodes were asked to do only for now (see
-    /// `Node::clear_transient_state`), so bringing it back doesn't start anything again. The item's changed to match, so it isn't taken as an edit.
+    /// Restores the current item, for undo and redo, with its nodes' transient state cleared (see
+    /// `Node::clear_transient_state`), so restoring an item doesn't start anything again. The item itself is changed to
+    /// match, so the restored graph isn't taken as an edit.
     fn restored(&mut self) -> (Graph<N>, Annotations<A>) {
         self.clear_transient();
         ((*self.current.graph).clone(), (*self.current.annotations).clone())

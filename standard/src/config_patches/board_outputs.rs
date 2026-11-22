@@ -1,7 +1,8 @@
-//! The Acquisition Board's outputs, from 0.282.0: its auxiliary and analogue outputs were there only while its `aux` and
-//! `adc` settings were on, after its headstages (0) and digital (1) outputs, so with `aux` off, analogue was output 2.
-//! The four are always there now, in that order (auxiliary 2, analogue 3), and the settings are gone. So an edge from
-//! a board's output 2 where `aux` was off and `adc` on comes from output 3.
+//! The Acquisition Board's outputs, from 0.282.0. Before that version, the board's auxiliary and analogue outputs only
+//! existed while its `aux` and `adc` settings were on. They came after the headstages output (0) and the digital
+//! output (1), so with `aux` off, analogue was output 2. All four outputs now always exist, in that order (auxiliary is
+//! 2 and analogue is 3), and the two settings are gone. So this patch moves an edge from output 2 to output 3 on a
+//! board that had `aux` off and `adc` on, and removes the settings.
 
 use ephys_rs::config_patching::IncomingConfig;
 use serde_json::Value;
@@ -24,7 +25,7 @@ pub fn patch(config: &mut IncomingConfig) {
             moved.extend(id.parse::<u64>().ok());
         }
     }
-    // A disabled edge is listed among the edges too.
+    // Disabled edges are saved in a list of their own, so both lists are converted.
     for list in ["edges", "disabled_edges"] {
         let Some(edges) = graph.get_mut(list).and_then(Value::as_array_mut) else { continue };
         for from in edges.iter_mut().map(|edge| &mut edge["from"]) {
@@ -66,7 +67,8 @@ mod tests {
         edges.map(|e| (e["from"]["node"].as_u64().unwrap(), e["from"]["port_idx"].as_u64().unwrap())).collect()
     }
 
-    /// Analogue, where auxiliary was off, moves to output 3; the rest stay; the settings go.
+    /// An analogue edge from a board with auxiliary off moves to output 3. Other edges stay, and the settings are
+    /// removed.
     #[test]
     fn analogue_moves_past_auxiliary() {
         let mut config = IncomingConfig { versions: Versions::new(), json: project() };
@@ -77,7 +79,7 @@ mod tests {
         assert_eq!(settings, &json!({ "sample_rate": 30000 }));
     }
 
-    /// Settings copied to the clipboard have nodes but no edges: the settings still go.
+    /// Settings copied to the clipboard have nodes but no edges. The settings are still removed.
     #[test]
     fn copied_boards_lose_the_settings() {
         let json = json!({ "graph": { "nodes": { "1": board(true, false) } } });
@@ -86,7 +88,7 @@ mod tests {
         assert_eq!(config.json["graph"]["nodes"]["1"]["node"]["settings"], json!({ "sample_rate": 30000 }));
     }
 
-    /// Written since, as it is.
+    /// A config written since 0.282.0 is left as it is.
     #[test]
     fn written_since_is_left_as_it_is() {
         let versions = Versions::from([("std".to_string(), "0.282.0".to_string())]);
