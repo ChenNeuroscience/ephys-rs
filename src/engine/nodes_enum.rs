@@ -60,9 +60,15 @@ pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + S
         inputs: &[Option<<Self::Edges as Edges>::DataStream>],
     ) -> Vec<Port<Self::Edges>>;
     fn warnings(&self, inputs: &[Option<<Self::Edges as Edges>::DataStream>]) -> Vec<String>;
+    /// A node's ports are fixed by its type: these are its ports of `role`, in the order its type declares them (the
+    /// graph's numbering), without what's on them (no `DataStreamOut`'s stream). For what a port is (its kind, its id),
+    /// not what it carries now: see `NodeState` for that.
+    fn ports_of(&self, role: PortRole) -> Vec<Port<Self::Edges>>;
     /// Saved graphs name each of the node's ports by its id (see `Port::id`). These are the ids of the node's ports of
-    /// `role`, in the order its type declares them (the graph's numbering).
-    fn port_ids(&self, role: PortRole) -> Vec<&'static str>;
+    /// `role`, in order.
+    fn port_ids(&self, role: PortRole) -> Vec<&'static str> {
+        self.ports_of(role).iter().map(Port::id).collect()
+    }
     /// The graph lists the node's ValCmd ports from this: its `ValOutCmdIn` ports, then its `ValInCmdOut` and `ValIn`
     /// ports, each in the order its type declares them (see `Node::Ports`).
     fn list_ports_val_cmd(&self) -> Vec<Port<Self::Edges>>;
@@ -266,7 +272,7 @@ macro_rules! nodes_enum {
                 }
             }
 
-            fn port_ids(&self, role: $crate::engine::PortRole) -> Vec<&'static str> {
+            fn ports_of(&self, role: $crate::engine::PortRole) -> Vec<$crate::engine::Port<$edges>> {
                 use $crate::engine::PortRole;
                 match self {
                     $($name::$variant(_) => {
@@ -281,7 +287,7 @@ macro_rules! nodes_enum {
                             PortRole::ValInCmdOut | PortRole::ValIn => <<$ty as $crate::engine::Node<$edges>>::Ports
                                 as $crate::engine::PortSet<$edges>>::val_in_ports(),
                         };
-                        ports.iter().filter(|port| port.role() == role).map($crate::engine::Port::id).collect()
+                        ports.into_iter().filter(|port| port.role() == role).collect()
                     }),+
                 }
             }

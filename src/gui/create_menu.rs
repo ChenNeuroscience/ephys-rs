@@ -4,7 +4,7 @@
 
 use eframe::egui::{self, Id, Key, Order, Pos2, RichText};
 
-use crate::engine::{Category, Graph, NodeId, NodeState, NodeTypeEnum, NodesEnum, PortAddress, Resolved};
+use crate::engine::{Category, Graph, NodeId, NodeTypeEnum, NodesEnum, PortAddress, PortRole, Resolved};
 
 /// Someone chooses either a new node from the menu, of a type (`NodesEnum::Type`), or a port already in the graph.
 pub enum Choice<T> {
@@ -29,8 +29,13 @@ pub fn port_on_new<N: NodesEnum>(
     resolved: &Resolved<N::Edges>,
     node_type: N::Type,
 ) -> Option<PortAddress> {
-    let from_state = resolved.get(&from.node)?;
-    NodeState::unconnected(&N::create(node_type)).find(NodeId(0), from_state, (from.role, from.port_idx))
+    let kind = resolved.get(&from.node)?.kind(from.role, from.port_idx)?;
+    let node = N::create(node_type);
+    let fitting = |&role: &PortRole| {
+        let port_idx = node.ports_of(role).iter().position(|port| port.kind() == kind)?;
+        Some(PortAddress { node: NodeId(0), role, port_idx })
+    };
+    from.role.partners().iter().find_map(fitting)
 }
 
 impl CreateMenu {

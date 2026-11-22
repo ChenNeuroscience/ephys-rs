@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{CommandKind, Edges, Kind, NodeId};
+use super::{CommandKind, EdgeTypesEnum, Edges, Kind, NodeId};
 
 /// Edges connect nodes at their ports, each named for what flows through it, which way (see `PortRole`, which names a
 /// port's role without what's in it). A node declares its ports on its type (see `crate::engine::ports`), and the graph
@@ -136,6 +136,18 @@ impl<E: Edges> Port<E> {
                 *flipped
             }
             Port::DataStreamIn { .. } | Port::DataStreamOut { .. } => false,
+        }
+    }
+
+    /// The graph matches ports by kind (see `PortKind`): the port's kind of data stream, or of value.
+    pub fn kind(&self) -> PortKind {
+        match self {
+            Port::DataStreamIn { data_stream_kind, .. } | Port::DataStreamOut { data_stream_kind, .. } => {
+                PortKind::DataStream(E::DataStream::kind_index(*data_stream_kind))
+            }
+            Port::ValOutCmdIn { value_kind, .. }
+            | Port::ValInCmdOut { value_kind, .. }
+            | Port::ValIn { value_kind, .. } => PortKind::Value(E::PublishedValue::kind_index(*value_kind)),
         }
     }
 

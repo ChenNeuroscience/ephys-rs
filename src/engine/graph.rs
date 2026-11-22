@@ -503,8 +503,15 @@ impl<N: NodesEnum> Graph<N> {
         (0..count).map(labels).collect()
     }
 
+    /// The kind of what goes through `port` (see `PortKind`), if its node has it.
     fn kind(&self, port: PortAddress) -> Option<PortKind> {
-        NodeState::unconnected(&self.nodes.get(&port.node)?.node).kind(port.role, port.port_idx)
+        Some(self.nodes.get(&port.node)?.node.ports_of(port.role).get(port.port_idx)?.kind())
+    }
+
+    /// Two ports fit if their roles pair up and they're of the same kind. This says whether `a` and `b` do, if their
+    /// nodes have them.
+    fn fits(&self, a: PortAddress, b: PortAddress) -> bool {
+        a.role.pairs_with(b.role) && self.kind(a).is_some() && self.kind(a) == self.kind(b)
     }
 
     /// Before connecting two ports, the graph checks they can be. This returns the edge that would connect `a` and `b`
@@ -520,8 +527,7 @@ impl<N: NodesEnum> Graph<N> {
         if from.node == to.node {
             return Err(ConnectError::SameNode);
         }
-        let state = |port: PortAddress| NodeState::unconnected(&self.nodes[&port.node].node);
-        if !state(from).fits((from.role, from.port_idx), &state(to), (to.role, to.port_idx)) {
+        if !self.fits(from, to) {
             let name = |kind| edge_info::<N::Edges>(kind).name;
             let (from, to) = (name(from_kind), name(to_kind));
             let data_stream = from_kind.carries_data_stream();
@@ -560,9 +566,9 @@ impl<N: NodesEnum> Graph<N> {
     pub fn targets(&self, port: PortAddress) -> Vec<PortAddress> {
         let mut targets = Vec::new();
         for (&id, entry) in &self.nodes {
-            let state = NodeState::unconnected(&entry.node);
             for &role in port.role.partners() {
-                let ports = (0..state.count(role)).map(|port_idx| PortAddress { node: id, role, port_idx });
+                let count = entry.node.ports_of(role).len();
+                let ports = (0..count).map(|port_idx| PortAddress { node: id, role, port_idx });
                 targets.extend(ports.filter(|t| self.check(port, *t).is_ok()));
             }
         }
@@ -588,13 +594,7 @@ impl<N: NodesEnum> Graph<N> {
     /// A change of settings can remove a port, or change what it carries. The graph drops edges whose ports no longer
     /// exist or no longer match, with this.
     pub fn prune_edges(&mut self) {
-        let fits = |e: &Edge| {
-            let (from, to) = (e.from, e.to);
-            let (Some(a), Some(b)) = (self.nodes.get(&from.node), self.nodes.get(&to.node)) else { return false };
-            let (a, b) = (NodeState::unconnected(&a.node), NodeState::unconnected(&b.node));
-            a.fits((from.role, from.port_idx), &b, (to.role, to.port_idx))
-        };
-        let valid: Vec<bool> = self.edges.iter().map(fits).collect();
+        let valid: Vec<bool> = self.edges.iter().map(|e| self.fits(e.from, e.to)).collect();
         let mut valid = valid.into_iter();
         self.edges.retain(|_| valid.next().unwrap());
         let edges = &self.edges;
