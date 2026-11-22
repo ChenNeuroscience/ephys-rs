@@ -10,7 +10,8 @@ use crate::standard::alarms::{processor, viewer};
 use crate::standard::annotations::{arrow, group_box, heading, image, markdown, sticky_note};
 use crate::standard::base_directories::A_DIRECTORY;
 use crate::standard::ephys::{
-    band_pass, board, channel_selector, continuous_gain, continuous_viewer, downsample, reference, spectrum, ttl_viewer,
+    band_pass, board, channel_selector, continuous_gain, continuous_viewer, downsample, hilbert, phase_viewer,
+    reference, spectrum, ttl_viewer,
 };
 use crate::standard::logs::log_viewer;
 use crate::standard::other::{arduino, run_command, sync_positions, ttl_recording_control};
@@ -32,6 +33,7 @@ ephys_rs::edge_types! {
     pub struct Edges;
     data_streams: pub enum DataStream, DataStreamKind, Buffer {
         Continuous(crate::standard::ephys::Continuous),
+        ComplexContinuous(crate::standard::ephys::ComplexContinuous),
         Events(crate::standard::ephys::Events),
         Spikes(crate::standard::spikes::Spikes),
         Video(crate::standard::tracking::Video),
@@ -76,12 +78,14 @@ nodes_enum! {
         BandPassFilter(band_pass::BandPassFilter),
         Downsample(downsample::Downsample),
         Spectrum(spectrum::Spectrum),
+        HilbertTransform(hilbert::HilbertTransform),
         ContinuousGain(continuous_gain::ContinuousGain),
         SpikeDetector(spike_detector::SpikeDetector),
         SpikeGain(spike_gain::SpikeGain),
         PositionDetector(position_detector::PositionDetector),
         AlarmProcessor(processor::AlarmProcessor),
         ContinuousViewer(continuous_viewer::ContinuousViewer),
+        PhaseViewer(phase_viewer::PhaseViewer),
         SpikeViewer(spike_viewer::SpikeViewer),
         TtlViewer(ttl_viewer::TtlViewer),
         LogViewer(log_viewer::LogViewer),

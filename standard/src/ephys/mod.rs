@@ -7,6 +7,8 @@ pub mod channel_selector;
 pub mod continuous_gain;
 pub mod continuous_viewer;
 pub mod downsample;
+pub mod hilbert;
+pub mod phase_viewer;
 pub mod reference;
 pub mod spectrum;
 pub mod ttl_viewer;
@@ -126,6 +128,84 @@ impl DataStreamType for Continuous {
     }
 
     fn empty(buffer: &mut ContinuousBuffer) {
+        buffer.len = 0;
+    }
+}
+
+/// Regularly sampled complex values, such as the analytic signal that a Hilbert Transform makes from continuous data.
+/// Each sample's argument is the signal's phase and its magnitude is the signal's envelope.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct ComplexContinuous {
+    pub channels: u32,
+    pub sample_rate: f32,
+}
+
+impl EdgeType for ComplexContinuous {
+    const INFO: EdgeInfo = EdgeInfo {
+        name: "complex continuous",
+        colour: Color32::from_rgb(70, 205, 195),
+        description: "Regularly sampled complex values, on any number of channels: the analytic signal of continuous \
+                      data, say, whose phase and envelope a Phase Viewer shows.",
+    };
+
+    fn summary(&self) -> String {
+        format!("{} ch · {}", self.channels, format_rate(self.sample_rate))
+    }
+}
+
+/// A pass's worth of complex continuous data, laid out as `ContinuousBuffer` is, with the real and imaginary parts in
+/// separate arrays: for each channel, a row of up to `capacity` samples, of which the first `len` are this pass's.
+pub struct ComplexContinuousBuffer {
+    pub channels: usize,
+    pub capacity: usize,
+    pub len: usize,
+    /// The real parts, channel after channel, each `capacity` long.
+    pub re: Vec<f32>,
+    /// The imaginary parts, laid out as `re`.
+    pub im: Vec<f32>,
+}
+
+impl ComplexContinuousBuffer {
+    /// Channel `channel`'s real and imaginary parts for this pass.
+    pub fn channel(&self, channel: usize) -> (&[f32], &[f32]) {
+        let start = channel * self.capacity;
+        (&self.re[start..start + self.len], &self.im[start..start + self.len])
+    }
+
+    /// Channel `channel`'s real and imaginary parts for this pass, to fill.
+    pub fn channel_mut(&mut self, channel: usize) -> (&mut [f32], &mut [f32]) {
+        let start = channel * self.capacity;
+        (&mut self.re[start..start + self.len], &mut self.im[start..start + self.len])
+    }
+}
+
+impl DataStreamType for ComplexContinuous {
+    type Buffer = ComplexContinuousBuffer;
+
+    /// Room for a quarter more than a pass's worth, as `Continuous` has.
+    fn buffer(&self, duration: f64) -> ComplexContinuousBuffer {
+        let capacity = per_pass(self.sample_rate, duration) * 5 / 4;
+        let channels = self.channels as usize;
+        let size = channels * capacity;
+        ComplexContinuousBuffer { channels, capacity, len: 0, re: vec![0.0; size], im: vec![0.0; size] }
+    }
+
+    fn bytes(buffer: &ComplexContinuousBuffer) -> usize {
+        (buffer.re.capacity() + buffer.im.capacity()) * size_of::<f32>()
+    }
+
+    fn copy(from: &ComplexContinuousBuffer, to: &mut ComplexContinuousBuffer) {
+        to.len = from.len.min(to.capacity);
+        let len = to.len;
+        for channel in 0..from.channels.min(to.channels) {
+            let (re, im) = from.channel(channel);
+            let (to_re, to_im) = to.channel_mut(channel);
+            to_re.copy_from_slice(&re[..len]);
+            to_im.copy_from_slice(&im[..len]);
+        }
+    }
+
+    fn empty(buffer: &mut ComplexContinuousBuffer) {
         buffer.len = 0;
     }
 }

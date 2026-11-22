@@ -62,9 +62,9 @@ Nodes declare their data ports with these types, such as `continuous: DataStream
 Buffers are swapped between passes and threads (see the pools in [Architecture](architecture.md#threads-and-buffers)),
 so a buffer made for a stream must be interchangeable with any other made for it: make them only with `buffer`.
 
-The standard data streams are continuous data, digital events, spikes, video, positions, camera stats, spectra, alarm
-states and log lines; each is defined beside the nodes that make it (`ephys`, `spikes`, `tracking`, `alarms`), and log
-lines in `logs`.
+The standard data streams are continuous data, complex continuous data (a Hilbert Transform's analytic signal),
+digital events, spikes, video, positions, camera stats, spectra, alarm states and log lines. Each is defined beside
+the nodes that make it (`ephys`, `spikes`, `tracking`, `alarms`), and log lines in `logs`.
 
 ## Values and commands
 

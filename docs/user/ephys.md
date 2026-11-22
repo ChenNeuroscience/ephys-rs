@@ -13,7 +13,9 @@ settings ports are marked ◇.
 - [Downsample](#downsample)
 - [Continuous Gain](#continuous-gain)
 - [Spectrum](#spectrum)
+- [Hilbert Transform](#hilbert-transform)
 - [Continuous Data Viewer](#continuous-data-viewer)
+- [Phase Viewer](#phase-viewer)
 - [TTL Viewer](#ttl-viewer)
 
 ## Acquisition Board
@@ -116,6 +118,19 @@ starting to record leaves the gains as they were. Its result is an edit like any
 Each channel's power spectrum over a **Band** of interest (theta, 4–12 Hz, to begin with), updated every few passes,
 for a Continuous Data Viewer to show beside its traces. It only runs while the viewer's showing them.
 
+## Hilbert Transform
+
+> **Processing.** In: `continuous`. Out: `analytic` (complex continuous).
+
+Makes the analytic signal of each channel: complex values whose angle is the signal's phase and whose magnitude is its
+envelope, for a [Phase Viewer](#phase-viewer). Phase only means something for a narrow band, so band-pass the data
+first (to theta, say), then downsample it to about 1 kHz: Band-pass Filter → Downsample → Hilbert Transform.
+
+The transform has to work as the data arrives, so it uses a filter that needs some data after each sample, and its
+output comes that much later. The **Lowest frequency** (4 Hz, to begin with) sets how long the filter is: the lower the
+frequency, the longer the **Delay** (375 ms for 4 Hz). The filter's length grows with the sample rate, so at higher
+rates it's capped, and the node warns that it's only accurate above a higher frequency until the data's downsampled.
+
 ## Continuous Data Viewer
 
 > **Viewer.** In: `continuous`, `spectra` (from a Spectrum), `reference` (from a Reference's `reference` output).
@@ -143,6 +158,23 @@ otherwise for.
 keep, then **Apply selection**. **Disable selection** shows them all again.
 
 <img src="../../tests/snapshots/continuous_viewer_toggles.png" alt="Channels being chosen, before the selection's applied"> <img src="../../tests/snapshots/continuous_viewer_references_applied.png" alt="With the selection applied">
+
+## Phase Viewer
+
+> **Viewer.** In: `analytic` (complex continuous, from a Hilbert Transform).
+
+![Each channel's phase around the anchor's](../../tests/snapshots/phase_viewer.png)
+
+How each channel's oscillation relates to one channel, the **Anchor**, over the last few seconds (**Average over**).
+For each channel, it shows:
+
+- **Frequency**: how fast the channel's phase turns, on average.
+- **Phase**: the channel's phase minus the anchor's, on average. Positive means the channel leads the anchor.
+- **Consistency**: how steady that difference is, from 0% (none) to 100% (always the same).
+- **Envelope**: the channel's average amplitude.
+
+The polar plot shows them all at once: the anchor is at 0°, on the right, and each channel is at the angle of its
+phase (anticlockwise leads, clockwise lags), as far out as it's consistent.
 
 ## TTL Viewer
 
