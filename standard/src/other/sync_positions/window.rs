@@ -10,7 +10,7 @@ use super::files::{Plan, Recording};
 use super::{Job, Report, Status, SyncPositions, Synced, ValInCmdOut, ValOutCmdIn, file_name};
 use crate::standard::widgets::{setting, settings_grid};
 use ephys_rs::engine::UiContext;
-use ephys_rs::gui::widgets::help_link;
+use ephys_rs::gui::widgets::info_icon;
 use ephys_rs::theme::Colours;
 
 /// What a recording's `.set` file comes to: its files, whether they're there, and what syncing would do.
@@ -57,11 +57,8 @@ impl SyncPositions {
 
     fn body<E: super::PortEdges>(&mut self, ui: &mut egui::Ui, context: &mut UiContext<E>) {
         ui.horizontal_wrapped(|ui| {
-            ui.label(
-                "Puts a recording's positions on the board's clock, by the timing LED's pulses, which both the camera \
-                 and the board saw.",
-            );
-            help_link(ui, "How it works", how_it_works);
+            ui.label("Puts a recording's positions on the board's clock.");
+            info_icon(ui, HOW_IT_WORKS);
         });
         ui.add_space(6.0);
         let job = context.ui_state::<SyncState>().job.clone();
@@ -341,20 +338,13 @@ fn chart(ui: &mut egui::Ui, synced: &Synced, theme: &Colours) {
         });
 }
 
-/// The algorithm, in brief.
-fn how_it_works(ui: &mut egui::Ui) {
-    ui.set_max_width(420.0);
-    ui.label(
-        "Each change of the timing LED, as the camera saw it, is paired with the same change on the board's line, if \
-         it's the only one near it on either side. The clocks' offset is the median of the pairs' around every few \
-         seconds of the recording, changing steadily between, so the camera's times can be put on the board's clock.",
-    );
-    ui.add_space(4.0);
-    ui.label(
-        "Each position then goes in the nearest slot of its sample rate, from the start of recording: never \
-         interpolated, but dropped if another's nearer, and an empty slot is filled with a position not found.",
-    );
-}
+/// How syncing works, for the info icon beside the node's description.
+const HOW_IT_WORKS: &str = "The timing LED's pulses, which both the camera and the board saw, line the two clocks up. \
+     Each change of the LED, as the camera saw it, is paired with the same change on the board's line, if it's the only \
+     one near it on either side. The clocks' offset is the median of the pairs' around every few seconds of the \
+     recording, changing steadily between, so the camera's times can be put on the board's clock.\n\n\
+     Each position then goes in the nearest slot of its sample rate, from the start of recording: never interpolated, \
+     but dropped if another's nearer, and an empty slot is filled with a position not found.";
 
 /// `names`, as a list of alternatives.
 fn any_of(names: &[String]) -> String {

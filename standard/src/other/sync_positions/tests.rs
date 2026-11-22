@@ -297,7 +297,7 @@ fn window() {
     use egui_kittest::kittest::Queryable;
     let mut harness = window_harness(None);
     assert!(harness.query_by_label("session.pos · missing").is_some(), "the files it'll use, if they're there");
-    assert!(harness.query_by_label("How it works").is_some(), "the algorithm, in brief");
+    assert!(harness.query_by_label("What's this?").is_some(), "the algorithm, in brief, behind an info icon");
     harness.snapshot("sync_positions");
 }
 
