@@ -171,7 +171,9 @@ Each channel has a cell, in a grid with as many columns and rows as fit the wind
 many to show at a readable size). Each cell shows:
 
 - **Phase**: a marker on a ring at the channel's phase minus the anchor's, on average. The anchor is at 0°, on the
-  right; anticlockwise leads and clockwise lags. The angle is written below the ring.
+  right; anticlockwise leads and clockwise lags. The angle is written below the ring. The marker fades when the
+  difference isn't steady: a channel at a different frequency from the anchor's has a phase difference that keeps
+  turning, so its angle means nothing.
 - **Frequency**: a bar for how fast the channel's phase turns, on average. Every bar has the same scale, spanning the
   channels' frequencies, which the line above the grid gives.
 

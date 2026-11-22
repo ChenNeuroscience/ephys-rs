@@ -4,6 +4,8 @@
 //!
 //! - the **phase** relative to the anchor, as a marker on a ring: the average difference between the channel's phase
 //!   and the anchor's, with 0° to the right and leading anticlockwise, so the anchor's own marker is always at 0°;
+//!   The marker fades when the difference isn't steady (its **consistency** is low): a channel at another frequency
+//!   than the anchor's has a phase difference that keeps turning, so its average angle means nothing.
 //! - the **frequency**, as a bar: the average rate the channel's phase turns at, weighted by its envelope. Every
 //!   cell's bar has the same scale, which spans the channels' frequencies.
 //!
@@ -58,7 +60,7 @@ pub struct Phases {
     /// Whether `last` holds a sample yet.
     started: bool,
     /// For each channel, the decayed sum of its unit phasor times the conjugate of the anchor's: the sum's argument is
-    /// the average phase difference.
+    /// the average phase difference, and its magnitude over `weight` is the consistency.
     relative: Vec<Complex>,
     /// For each channel, the decayed sum of each sample times the conjugate of the sample before: the sum's argument is
     /// the average turn per sample, weighted by the envelope.
@@ -81,6 +83,9 @@ pub struct ChannelPhase {
     pub frequency_hz: f32,
     /// The channel's phase minus the anchor's, in radians, from -π to π: positive means the channel leads.
     pub phase: f32,
+    /// How steady the phase difference is, from 0 (it keeps turning, or there's no relationship) to 1 (always the
+    /// same): the magnitude of the average of the difference's unit phasors.
+    pub consistency: f32,
 }
 
 /// What the viewer shows: each channel's averages, which channel they're relative to, and how much data they cover.
@@ -275,6 +280,7 @@ impl Phases {
     /// The averages, as shown.
     fn display(&self) -> PhaseDisplay {
         let rate = self.stream.map_or(1.0, |s| s.sample_rate.max(1.0)) as f64;
+        let weight = self.weight.max(f64::MIN_POSITIVE);
         let channels = (0..self.relative.len())
             .map(|channel| {
                 let (rr, ri) = self.relative[channel];
@@ -282,6 +288,7 @@ impl Phases {
                 ChannelPhase {
                     frequency_hz: (ti.atan2(tr) * rate / std::f64::consts::TAU) as f32,
                     phase: ri.atan2(rr) as f32,
+                    consistency: (rr.hypot(ri) / weight).min(1.0) as f32,
                 }
             })
             .collect();
@@ -292,6 +299,17 @@ impl Phases {
 /// The phase as people read it: in degrees, signed, from -180° to 180°.
 fn degrees(phase: f32) -> String {
     format!("{:+.0}°", phase.to_degrees())
+}
+
+/// Below this consistency, a channel's phase marker starts to fade; at `UNSTEADY` and below, it's faint.
+const STEADY: f32 = 0.7;
+const UNSTEADY: f32 = 0.3;
+
+/// How opaque a phase marker is, for a channel whose phase difference has `consistency`: fully at `STEADY` and above,
+/// fading to faint at `UNSTEADY`.
+fn marker_opacity(consistency: f32) -> f32 {
+    let faint = 0.12;
+    faint + (1.0 - faint) * ((consistency - UNSTEADY) / (STEADY - UNSTEADY)).clamp(0.0, 1.0)
 }
 
 /// The smallest a cell can be, in points: with more channels than fit at this size, the grid scrolls.
@@ -372,6 +390,7 @@ fn cell_ui(
 ) {
     painter.rect_filled(cell, 4.0, theme.surface);
     let accent = if anchor { theme.accent } else { ComplexContinuous::INFO.colour };
+    let opacity = marker_opacity(phase.consistency);
     let number = if anchor { format!("{} · anchor", channel + 1) } else { format!("{}", channel + 1) };
     let text = if anchor { theme.accent } else { theme.text_secondary };
     painter.text(cell.left_top() + Vec2::new(6.0, 4.0), Align2::LEFT_TOP, number, FontId::proportional(11.0), text);
@@ -389,8 +408,8 @@ fn cell_ui(
         Stroke::new(1.0, theme.text_disabled.gamma_multiply(0.5)),
     );
     let at = centre + Vec2::new(phase.phase.cos(), -phase.phase.sin()) * radius;
-    painter.line_segment([centre, at], Stroke::new(1.5, accent.gamma_multiply(0.6)));
-    painter.circle_filled(at, (radius * 0.12).clamp(3.0, 7.0), accent);
+    painter.line_segment([centre, at], Stroke::new(1.5, accent.gamma_multiply(0.6 * opacity)));
+    painter.circle_filled(at, (radius * 0.12).clamp(3.0, 7.0), accent.gamma_multiply(opacity));
 
     // The bar, from the bottom up.
     let (low, high) = range;
@@ -401,13 +420,18 @@ fn cell_ui(
         egui::Rect::from_min_max(egui::pos2(track.left(), track.bottom() - fraction * track.height()), track.max);
     painter.rect_filled(filled, 2.0, ComplexContinuous::INFO.colour.gamma_multiply(0.8));
 
-    let readings = if anchor {
-        format!("{:.1} Hz", phase.frequency_hz)
-    } else {
-        format!("{} · {:.1} Hz", degrees(phase.phase), phase.frequency_hz)
-    };
-    let bottom = egui::pos2(cell.center().x, cell.bottom() - 4.0);
-    painter.text(bottom, Align2::CENTER_BOTTOM, readings, FontId::monospace(11.0), theme.text_primary);
+    // The angle, faded with the marker, then the frequency.
+    let font = FontId::monospace(11.0);
+    let frequency = format!("{:.1} Hz", phase.frequency_hz);
+    let mut job = egui::text::LayoutJob::default();
+    if !anchor {
+        let colour = theme.text_primary.gamma_multiply(opacity.max(0.35));
+        job.append(&format!("{} · ", degrees(phase.phase)), 0.0, egui::TextFormat::simple(font.clone(), colour));
+    }
+    job.append(&frequency, 0.0, egui::TextFormat::simple(font, theme.text_primary));
+    let galley = painter.layout_job(job);
+    let at = egui::pos2(cell.center().x - galley.size().x / 2.0, cell.bottom() - 4.0 - galley.size().y);
+    painter.galley(at, galley, theme.text_primary);
 }
 
 #[cfg(test)]
@@ -445,7 +469,7 @@ mod tests {
     }
 
     /// Two channels at 8 Hz, the second leading by 45° at twice the amplitude, and a third at 9 Hz: the second's phase
-    /// relative to the first is +45°, and each channel's frequency is its own.
+    /// relative to the first is +45°, steadily; the third's keeps turning, so it isn't consistent, and its marker fades.
     #[test]
     fn phases_are_relative_to_the_anchor() {
         let channels = [(1.0, 8.0, 0.0), (2.0, 8.0, std::f32::consts::FRAC_PI_4), (1.0, 9.0, 0.0)];
@@ -456,6 +480,10 @@ mod tests {
         near(display.channels[2].frequency_hz, 9.0, 0.01);
         near(display.channels[0].phase, 0.0, 1e-3);
         near(display.channels[1].phase.to_degrees(), 45.0, 0.1);
+        near(display.channels[1].consistency, 1.0, 1e-3);
+        assert!(display.channels[2].consistency < 0.3, "{}", display.channels[2].consistency);
+        assert!(marker_opacity(display.channels[2].consistency) < 0.2);
+        assert_eq!(marker_opacity(display.channels[1].consistency), 1.0);
         near(display.covered, 2.0, 0.01);
 
         // Relative to the second channel, the first lags by 45°.
@@ -488,7 +516,10 @@ mod tests {
     #[test]
     fn the_bars_span_the_frequencies() {
         let at = |hz: &[f32]| PhaseDisplay {
-            channels: hz.iter().map(|&frequency_hz| ChannelPhase { frequency_hz, phase: 0.0 }).collect(),
+            channels: hz
+                .iter()
+                .map(|&frequency_hz| ChannelPhase { frequency_hz, phase: 0.0, consistency: 1.0 })
+                .collect(),
             ..Default::default()
         };
         assert_eq!(frequency_range(&at(&[7.6, 8.3])), (7.0, 9.0));
@@ -497,7 +528,8 @@ mod tests {
         assert_eq!(frequency_range(&at(&[])), (0.0, 1.0));
     }
 
-    /// Sixteen channels, in a grid, each with its phase relative to the anchor and its frequency. See
+    /// Sixteen channels, in a grid, each with its phase relative to the anchor (faded for two at other frequencies)
+    /// and its frequency. See
     /// tests/snapshots/.
     #[test]
     fn the_window_shows_each_channel_around_the_anchor() {
@@ -506,11 +538,20 @@ mod tests {
         use ephys_rs::engine::{Graph, NodesEnum};
         let mut graph = Graph::<Nodes>::default();
         let viewer = graph.add(Nodes::create(crate::NodeType::PhaseViewer), [0.0, 0.0]);
-        // The anchor is channel 1, at 0°; the others spread either side of it.
+        // The anchor is channel 1, at 0°. The others share its frequency and spread either side of it, steadily,
+        // apart from channels 6 and 12, at other frequencies, whose phase differences keep turning.
         let channels = (0..16)
-            .map(|c| ChannelPhase {
-                frequency_hz: 7.6 + (c % 5) as f32 * 0.15,
-                phase: if c == 0 { 0.0 } else { (c as f32 * 22.5 - 170.0).to_radians() },
+            .map(|c| {
+                let off = c == 5 || c == 11;
+                ChannelPhase {
+                    frequency_hz: match c {
+                        5 => 7.4,
+                        11 => 8.7,
+                        _ => 8.0 + (c % 3) as f32 * 0.02,
+                    },
+                    phase: if c == 0 { 0.0 } else { (c as f32 * 22.5 - 170.0).to_radians() },
+                    consistency: if off { 0.1 } else { 0.95 - (c % 4) as f32 * 0.05 },
+                }
             })
             .collect();
         let display = PhaseDisplay { channels, anchor: 0, covered: 2.0 };
