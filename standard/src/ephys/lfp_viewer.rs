@@ -20,7 +20,7 @@
 //!   them.
 
 use eframe::egui::{self, Align2, FontId, Pos2, Rect, Sense, Shape, Stroke};
-use ephys_rs::engine::TreeShake;
+use ephys_rs::engine::{Buffers, InputPorts, NoPorts, TreeShake};
 use serde::{Deserialize, Serialize};
 
 use crate::standard::auto_detect::auto_detect_ui;
@@ -34,7 +34,7 @@ use crate::standard::plots::axis_ui;
 use crate::standard::pool::Pool;
 use crate::standard::spikes::{Channels, GainScope, Gains, gain_field};
 use crate::standard::widgets::{TIME_AXIS_HEIGHT, inline_block, open_settings_button, require_input, time_axis_ui};
-use crate::{Buffer, Command, CommandKind, DataStream, Edges, Kind, ValueKind};
+use crate::{Command, CommandKind, Edges, ValueKind};
 use ephys_rs::engine::{
     Category, EdgeType, Node, NodeInfo, PassContext, Port, Prepare, PrepareContext, Prepared, UiContext,
 };
@@ -274,7 +274,17 @@ struct Rows<'a> {
     selection_settings: Option<&'a mut dyn FnMut(&mut egui::Ui)>,
 }
 
+ephys_rs::data_ports! {
+    inputs: pub struct Inputs {
+        continuous: In<Continuous>,
+        spectra: In<Spectra>,
+        reference: In<Continuous>,
+    }
+}
+
 impl Node<Edges> for LfpViewer {
+    type Inputs = Inputs;
+    type Outputs = NoPorts;
     type State = Traces;
     type WorkerState = ();
     /// What the passes send its window: each pass's new columns (every one taken, in order).
@@ -293,56 +303,45 @@ impl Node<Edges> for LfpViewer {
     const WINDOW_SIZE: [f32; 2] = [820.0, 520.0];
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
-    fn list_ports_data_stream_in(&self) -> Vec<Port<Edges>> {
-        vec![
-            Port::DataStreamIn { name: "continuous", data_stream_kind: Kind::Continuous },
-            Port::DataStreamIn { name: "spectra", data_stream_kind: Kind::Spectra },
-            Port::DataStreamIn { name: "reference", data_stream_kind: Kind::Continuous },
-        ]
-    }
-
     /// The spectra only while they're shown: otherwise, the Spectrum node needn't run at all. It runs while it's
     /// given something it needs.
     fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool], _recording: bool) -> TreeShake {
-        let needs: Vec<bool> = (0..inputs.len()).map(|input| input != 1 || self.spectrum).collect();
+        let needs: Vec<bool> = (0..inputs.len()).map(|input| input != Inputs::spectra || self.spectrum).collect();
         let given = inputs.iter().zip(&needs).any(|(&used, &needed)| used && needed);
         TreeShake { runs: given, needs }
     }
 
-    fn list_ports_data_stream_out(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
-        Vec::new()
+    fn output_streams(&self, _inputs: &Inputs) -> NoPorts {
+        NoPorts
     }
 
     fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Traces, (), Self> {
-        let inputs = context.inputs;
         if context.same_streams() {
             return Prepared::nothing().into();
         }
-        let rate = match inputs[0] {
-            Some(DataStream::Continuous(c)) => c.sample_rate,
-            _ => 30000.0,
-        };
+        let rate = Inputs::of(context.inputs).continuous.map_or(30000.0, |c| c.sample_rate);
         Prepared::shared(Traces { rate, ..Default::default() }).into()
     }
 
-    fn process(&self, pass: &mut PassContext<Edges>, traces: &mut Traces, _: &mut ()) {
-        let Some(Some(Buffer::Continuous(input))) = pass.inputs.first() else { return };
+    fn process(
+        &self,
+        pass: &mut PassContext<Edges>,
+        inputs: Inputs<Buffers>,
+        _: NoPorts,
+        traces: &mut Traces,
+        _: &mut (),
+    ) {
+        let Some(input) = inputs.continuous else { return };
         let rate = traces.rate;
         // Every channel: the view scrolls through them.
         let (first, shown) = (0, input.channels);
         let per_column = ((self.span as f64 * rate as f64) / COLUMNS as f64).round().max(1.0) as usize;
-        let references = match pass.inputs.get(2) {
-            Some(Some(Buffer::Continuous(references))) => Some(references),
-            _ => None,
-        };
+        let references = inputs.reference;
         let count = references.map_or(0, |r| r.channels);
         traces.reshape((first, shown, count, per_column));
         traces.add(input, first, references);
         let column_seconds = per_column as f64 / rate as f64;
-        let spectra = match pass.inputs.get(1) {
-            Some(Some(Buffer::Spectra(spectra))) if self.spectrum => Some(spectra),
-            _ => None,
-        };
+        let spectra = inputs.spectra.filter(|_| self.spectrum);
         // What the window hasn't had: if there's no buffer to send it in (the GUI's held up), it waits for the next.
         let pool = pass.shared::<Pool<TracesUpdate>>();
         if let Some(mut update) = pool.empty() {
@@ -375,7 +374,8 @@ impl Node<Edges> for LfpViewer {
         self.take_updates(context);
         let Some(ui) = ui else { return };
         let locked = context.locked;
-        let Some(DataStream::Continuous(stream)) = context.inputs[0] else {
+        let inputs = Inputs::of(context.inputs);
+        let Some(stream) = inputs.continuous else {
             plots::unconnected(ui, context.theme, "Connect a continuous data stream to view it");
             return;
         };
@@ -385,7 +385,7 @@ impl Node<Edges> for LfpViewer {
         let kept = context.ui_state::<TracesDisplay>();
         let display = kept.received.then_some(&*kept);
         // The references are edited on the rows (an R for each), so only once there are rows, with data to show.
-        let reference_rows = display.is_some() && context.inputs[2].is_some();
+        let reference_rows = display.is_some() && inputs.reference.is_some();
         let applied = selection.as_ref().is_some_and(|s| s.apply);
         let shown_reference = reference.as_mut().filter(|_| reference_rows);
         self.toolbar(ui, context, stream, applied, shown_reference, gains.as_mut());
@@ -395,8 +395,8 @@ impl Node<Edges> for LfpViewer {
             plots::unconnected(ui, context.theme, &message);
             return;
         };
-        let spectra = match (&display.spectra, context.inputs[1]) {
-            (Some(buffer), Some(DataStream::Spectra(stream))) => Some((buffer, stream)),
+        let spectra = match (&display.spectra, inputs.spectra) {
+            (Some(buffer), Some(stream)) => Some((buffer, stream)),
             _ => None,
         };
         let advanced = context.advanced();
@@ -425,7 +425,7 @@ impl Node<Edges> for LfpViewer {
         }
     }
 
-    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
+    fn warnings(&self, inputs: &Inputs) -> Vec<String> {
         require_input(inputs, "a continuous data stream")
     }
 }
@@ -494,8 +494,8 @@ impl LfpViewer {
                         }
                     });
                 }
-                let tip = match context.inputs[1] {
-                    Some(DataStream::Spectra(s)) => format!("Show each channel's spectrum, {}", s.summary()),
+                let tip = match Inputs::of(context.inputs).spectra {
+                    Some(s) => format!("Show each channel's spectrum, {}", s.summary()),
                     _ => "Show each channel's spectrum: connect a Spectrum node's".into(),
                 };
                 let spectrum = &mut self.spectrum;

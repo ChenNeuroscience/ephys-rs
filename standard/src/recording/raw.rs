@@ -14,7 +14,7 @@
 //!
 //! Samples are numbered, and timed, from the start of recording.
 
-use ephys_rs::engine::{BufferUsage, Prepare, PrepareContext, Prepared, TreeShake};
+use ephys_rs::engine::{Buffers, InputPorts, NoPorts, Prepare, PrepareContext, Prepared, TreeShake};
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -30,7 +30,7 @@ use crate::standard::ephys::board::EPHYS_MICROVOLTS_PER_BIT;
 use crate::standard::ephys::{Continuous, ContinuousBuffer, Event, Events, EventsBuffer};
 use crate::standard::pool::Pool;
 use crate::standard::widgets::require_input;
-use crate::{Buffer, CommandKind, DataStream, Edges, Kind, ValueKind};
+use crate::{CommandKind, Edges, ValueKind};
 use ephys_rs::engine::{
     Category, DataStreamType, EdgeTypesEnum, Flow, Node, NodeInfo, NodeThread, PASS_DURATION, PassContext, PoolStatus,
     Port, ThreadContext, UiContext,
@@ -93,7 +93,18 @@ impl Chunk {
     }
 }
 
+ephys_rs::data_ports! {
+    /// The writer takes its inputs, swapping their buffers into the chunk for its thread (the plan copies them for it,
+    /// if something else needs them after it).
+    inputs: pub struct Inputs {
+        continuous: Take<Continuous>,
+        events: Take<Events>,
+    }
+}
+
 impl Node<Edges> for WriteRaw {
+    type Inputs = Inputs;
+    type Outputs = NoPorts;
     type State = Recorder;
     type WorkerState = ();
     /// What it shows, for its window.
@@ -113,21 +124,14 @@ impl Node<Edges> for WriteRaw {
         TreeShake::needing_all(recording && inputs.contains(&true), inputs.len())
     }
 
-    fn list_ports_data_stream_in(&self) -> Vec<Port<Edges>> {
-        vec![
-            Port::DataStreamIn { name: "continuous", data_stream_kind: Kind::Continuous },
-            Port::DataStreamIn { name: "events", data_stream_kind: Kind::Events },
-        ]
-    }
-
     /// On the right, as what it sets off comes after it: where it sends what it's recorded, once it's finished (see
     /// `after_recording`).
     fn list_ports_val_cmd(&self) -> Vec<Port<Edges>> {
         vec![Port::val_in_cmd_out("after recording", ValueKind::FileInput, &[CommandKind::ProcessFiles]).flipped()]
     }
 
-    fn list_ports_data_stream_out(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
-        Vec::new()
+    fn output_streams(&self, _inputs: &Inputs) -> NoPorts {
+        NoPorts
     }
 
     fn threads(&self) -> Vec<NodeThread> {
@@ -138,12 +142,6 @@ impl Node<Edges> for WriteRaw {
             why: super::WHY_A_THREAD,
             swapped_outputs: Vec::new(),
         }]
-    }
-
-    /// It takes its buffers, swapping them into the chunk for its thread (the plan copies them for it, if something
-    /// else needs them after it).
-    fn evaluate_buffer_usage(&self, inputs: usize, outputs: usize) -> BufferUsage {
-        BufferUsage { takes: vec![true; inputs], ..BufferUsage::none(inputs, outputs) }
     }
 
     fn thread_pool(&self, _thread_idx: usize, context: &ThreadContext) -> Option<PoolStatus> {
@@ -161,14 +159,7 @@ impl Node<Edges> for WriteRaw {
         if context.same_streams() && !context.recording_changed {
             return Prepared::nothing().into();
         }
-        let continuous = match context.inputs[0] {
-            Some(DataStream::Continuous(c)) => Some(c),
-            _ => None,
-        };
-        let events = match context.inputs[1] {
-            Some(DataStream::Events(e)) => Some(e),
-            _ => None,
-        };
+        let Inputs { continuous, events } = Inputs::of(context.inputs);
         let writing = context.recording.map(|recording| {
             let folder = recording_path(recording.base_directory(), recording.start_requested_date());
             let files = RawFiles::open(&folder, continuous, events);
@@ -179,7 +170,14 @@ impl Node<Edges> for WriteRaw {
     }
 
     /// While recording, hands the pass's data to the writer's thread, swapping the buffers it's in for a chunk's.
-    fn process(&self, pass: &mut PassContext<Edges>, recorder: &mut Recorder, _: &mut ()) {
+    fn process(
+        &self,
+        pass: &mut PassContext<Edges>,
+        inputs: Inputs<Buffers>,
+        _: NoPorts,
+        recorder: &mut Recorder,
+        _: &mut (),
+    ) {
         if !pass.recording() {
             recorder.writing = None; // finishes the files
         } else if recorder.writing.is_none() {
@@ -191,12 +189,12 @@ impl Node<Edges> for WriteRaw {
         {
             // Its inputs' buffers, swapped into the chunk (the plan copies them for it, if it must).
             chunk.continuous.len = 0;
-            if let Some(Buffer::Continuous(taken)) = pass.take_input(0) {
+            if let Some(taken) = inputs.continuous {
                 std::mem::swap(taken, &mut chunk.continuous);
             }
             chunk.events.events.clear();
             chunk.events.pass_samples = 0;
-            if let Some(Buffer::Events(taken)) = pass.take_input(1) {
+            if let Some(taken) = inputs.events {
                 std::mem::swap(taken, &mut chunk.events);
             }
             writing.send(chunk);
@@ -206,11 +204,10 @@ impl Node<Edges> for WriteRaw {
 
     fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
         let Some(ui) = ui else { return };
-        ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, context| {
+        ephys_rs::gui::node_window::standard(self, ui, context, |_, ui, context| {
             location_summary(ui, context.base_directory, "a folder");
             ui.add_space(4.0);
-            let recording: Vec<String> = node
-                .list_ports_data_stream_in()
+            let recording: Vec<String> = Inputs::ports()
                 .iter()
                 .zip(context.inputs)
                 .filter_map(|(input, stream)| stream.map(|s| format!("{}: {}", input.name(), s.summary())))
@@ -226,7 +223,7 @@ impl Node<Edges> for WriteRaw {
         });
     }
 
-    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
+    fn warnings(&self, inputs: &Inputs) -> Vec<String> {
         require_input(inputs, "something to record")
     }
 }

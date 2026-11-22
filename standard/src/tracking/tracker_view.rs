@@ -11,9 +11,9 @@ use serde::{Deserialize, Serialize};
 
 use std::sync::Arc;
 
-use super::camera::CaptureStats;
 use super::camera::capture::State;
 use super::camera::node::camera_settings_ui;
+use super::camera::{CameraStats, CaptureStats};
 use super::frame_gpu::{self, Upload};
 use super::led_chart::{self, History};
 use super::position_detector::{calibration_ui, crop_ui, detection_ui, timing_led_ui};
@@ -23,14 +23,22 @@ use crate::standard::tracking::VideoBuffer;
 use crate::standard::tracking::camera::CameraConfig;
 use crate::standard::tracking::overlay::{self, Drag, Overlay, Overlays, Xform};
 use crate::standard::tracking::pipeline::{Blob, RowSpans, row_spans};
-use crate::standard::tracking::{Crop, Detection, Positions};
+use crate::standard::tracking::{Crop, Detection, Positions, Video};
 use crate::standard::widgets::{named_settings_grid, section};
-use crate::{Buffer, Command, CommandKind, DataStream, Edges, Kind, ValueKind};
+use crate::{Command, CommandKind, Edges, ValueKind};
 use ephys_rs::engine::{
-    Category, EdgeType, Node, NodeInfo, PassContext, PoolStatus, Port, Prepare, PrepareContext, Prepared, Shared,
-    UiContext,
+    Buffers, Category, EdgeType, InputPorts, NoPorts, Node, NodeInfo, PassContext, PoolStatus, Port, Prepare,
+    PrepareContext, Prepared, Shared, UiContext,
 };
 use ephys_rs::theme::Colours;
+
+ephys_rs::data_ports! {
+    inputs: pub struct Inputs {
+        video: In<Video>,
+        positions: In<Positions>,
+        stats: In<CameraStats>,
+    }
+}
 
 /// Its ports: the camera's settings (a Camera's) and the detector's (a Position Detector's), which it adjusts.
 const CAMERA: usize = 0;
@@ -148,22 +156,16 @@ impl Node<Edges> for TrackerView {
     const WINDOW_SIZE: [f32; 2] = [820.0, 520.0];
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
+    type Inputs = Inputs;
+    type Outputs = NoPorts;
     type State = Tracking;
     type WorkerState = ();
     type Shared = TrackerShared;
     type UiState = TrackerUi;
     type GlobalSettings = ();
 
-    fn list_ports_data_stream_in(&self) -> Vec<Port<Edges>> {
-        vec![
-            Port::DataStreamIn { name: "video", data_stream_kind: Kind::Video },
-            Port::DataStreamIn { name: "positions", data_stream_kind: Kind::Positions },
-            Port::DataStreamIn { name: "stats", data_stream_kind: Kind::CameraStats },
-        ]
-    }
-
-    fn list_ports_data_stream_out(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
-        Vec::new()
+    fn output_streams(&self, _inputs: &Inputs) -> NoPorts {
+        NoPorts
     }
 
     fn list_ports_val_cmd(&self) -> Vec<Port<Edges>> {
@@ -175,21 +177,24 @@ impl Node<Edges> for TrackerView {
 
     /// Room for the LEDs' sizes over `led_chart::SECONDS`, so it isn't allocated while running.
     fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Tracking, (), Self> {
-        let inputs = context.inputs;
         if context.same_streams() {
             return Prepared::nothing().into();
         }
-        let fps = match inputs[1] {
-            Some(DataStream::Positions(positions)) => positions.fps as f64,
-            _ => 0.0,
-        };
+        let fps = Inputs::of(context.inputs).positions.map_or(0.0, |positions| positions.fps as f64);
         let history = History::with_capacity((fps * led_chart::SECONDS) as usize + 16);
         Prepared::shared(Tracking { history, ..Default::default() }).into()
     }
 
     /// Records the LEDs' sizes, and keeps the pass's last frame, the LEDs found in it and the camera's stats. A
     /// pass without a frame is only shown if the camera isn't running, to say why.
-    fn process(&self, pass: &mut PassContext<Edges>, tracking: &mut Tracking, _: &mut ()) {
+    fn process(
+        &self,
+        pass: &mut PassContext<Edges>,
+        inputs: Inputs<Buffers>,
+        _: NoPorts,
+        tracking: &mut Tracking,
+        _: &mut (),
+    ) {
         let Tracking { history, pending, recording, latest } = tracking;
         let TrackerShared { shown, path } = pass.shared::<TrackerShared>();
         if pass.recording() && !*recording {
@@ -197,7 +202,7 @@ impl Node<Edges> for TrackerView {
             pending.push(PathUpdate::Restart);
         }
         *recording = pass.recording();
-        if let Some(Buffer::Positions(positions)) = pass.inputs[1] {
+        if let Some(positions) = inputs.positions {
             for sample in &positions.samples {
                 let area = |led: Option<Blob>| led.map_or(0, |b| b.area);
                 let timing_on = sample.timing_led == Some(true);
@@ -209,22 +214,13 @@ impl Node<Edges> for TrackerView {
             }
         }
         path.send_pending(pending);
-        let video = match pass.inputs[0] {
-            Some(Buffer::Video(video)) if video.frames > 0 => Some(video),
-            _ => None,
-        };
-        let stats = match pass.inputs[2] {
-            Some(Buffer::CameraStats(stats)) => Some(stats),
-            _ => None,
-        };
-        let positions_only = pass.inputs[0].is_none() && pass.inputs[1].is_some();
+        let video = inputs.video.filter(|video| video.frames > 0);
+        let stats = inputs.stats;
+        let positions_only = inputs.video.is_none() && inputs.positions.is_some();
         if video.is_none() && !positions_only && !stats.is_some_and(|s| s.status.state != State::Running) {
             return;
         }
-        let positions = match pass.inputs[1] {
-            Some(Buffer::Positions(positions)) => Some(positions),
-            _ => None,
-        };
+        let positions = inputs.positions;
         shown.send_newest(pass.sequence, |display| {
             display.leds.clear();
             display.timing_led = None;
@@ -276,8 +272,12 @@ impl Node<Edges> for TrackerView {
         }
     }
 
-    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
-        if inputs[0].is_none() && inputs[1].is_none() { vec!["Connect video or positions".into()] } else { Vec::new() }
+    fn warnings(&self, inputs: &Inputs) -> Vec<String> {
+        if inputs.video.is_none() && inputs.positions.is_none() {
+            vec!["Connect video or positions".into()]
+        } else {
+            Vec::new()
+        }
     }
 }
 
@@ -394,11 +394,9 @@ impl TrackerView {
         let pool = context.shared::<TrackerShared>().map(|shared| &shared.shown);
         let reading = pool.and_then(Pool::newest);
         let stats = reading.as_deref().and_then(|d| d.stats.as_ref());
-        let declared = match context.inputs[0] {
-            Some(DataStream::Video(video)) => Some(video.fps as f64),
-            _ => None,
-        };
-        let connected = matches!(context.inputs[2], Some(DataStream::CameraStats(_)));
+        let inputs = Inputs::of(context.inputs);
+        let declared = inputs.video.map(|video| video.fps as f64);
+        let connected = inputs.stats.is_some();
         egui::CollapsingHeader::new(RichText::new("Stats").strong())
             .default_open(true)
             .show(ui, |ui| stats_ui(ui, stats, connected, declared, context.theme))
@@ -524,15 +522,16 @@ impl TrackerView {
 
 /// Whether it's only got positions to show, with no video.
 fn positions_only(context: &UiContext<Edges>) -> bool {
-    context.inputs[0].is_none() && context.inputs[1].is_some()
+    let inputs = Inputs::of(context.inputs);
+    inputs.video.is_none() && inputs.positions.is_some()
 }
 
 /// The window the positions range over: the crop's, if there's one, otherwise a frame's. Sized so it's never empty.
 fn positions_window(context: &UiContext<Edges>) -> [f32; 4] {
     let crop = context.val_in::<Detection>(DETECTION).and_then(|detection| detection.crop.bounds());
-    let size = match context.inputs[1] {
-        Some(DataStream::Positions(positions)) => [positions.width as f32, positions.height as f32],
-        _ => [1.0, 1.0],
+    let size = match Inputs::of(context.inputs).positions {
+        Some(positions) => [positions.width as f32, positions.height as f32],
+        None => [1.0, 1.0],
     };
     crop.unwrap_or([0.0, 0.0, size[0], size[1]])
 }
@@ -574,10 +573,7 @@ fn positions_ui(ui: &mut egui::Ui, context: &UiContext<Edges>, display: Option<&
 
 /// What's known of positions without video, which there's nothing to adjust of.
 fn positions_settings_ui(ui: &mut egui::Ui, context: &UiContext<Edges>) {
-    let source = match context.inputs[1] {
-        Some(DataStream::Positions(positions)) => positions.source,
-        _ => "",
-    };
+    let source = Inputs::of(context.inputs).positions.map_or("", |positions| positions.source);
     ui.label(RichText::new("Positions").strong());
     ui.weak(format!("From {}, without video: there's nothing to adjust here.", source.replace('_', " ")));
     let Some(detection) = context.val_in::<Detection>(DETECTION) else { return };
@@ -654,9 +650,9 @@ fn stats_ui(ui: &mut egui::Ui, stats: Option<&CaptureStats>, connected: bool, de
 
 /// The size of the frames coming in, or a likely one if none are.
 fn frame_size(context: &UiContext<Edges>) -> [f32; 2] {
-    match context.inputs[0] {
-        Some(DataStream::Video(video)) => [video.width as f32, video.height as f32],
-        _ => [640.0, 480.0],
+    match Inputs::of(context.inputs).video {
+        Some(video) => [video.width as f32, video.height as f32],
+        None => [640.0, 480.0],
     }
 }
 
@@ -941,12 +937,12 @@ mod tests {
         let mut run_pass = |recording: bool, x: f32| {
             let leds = [Some(Blob { x, y: 1.0, area: 9 }), None];
             let sample = PositionSample { frame: 0, time: 0.0, leds, timing_led: None, pixels_per_metre: f32::NAN };
-            let positions = Buffer::Positions(PositionsBuffer { samples: vec![sample] });
-            let inputs = [None, Some(&positions), None];
-            let mut pass = PassContext::new(0, 0.02, &inputs, &mut []);
+            let positions = PositionsBuffer { samples: vec![sample] };
+            let inputs = Inputs { video: None, positions: Some(&positions), stats: None };
+            let mut pass = PassContext::new(0, 0.02);
             (pass.shared, pass.node) = (shared, view);
             pass.set_recording(recording);
-            TrackerView::default().process(&mut pass, &mut tracking, &mut ());
+            TrackerView::default().process(&mut pass, inputs, NoPorts, &mut tracking, &mut ());
         };
         // What the GUI's side has, once it's taken what's been sent.
         let mut xs = || {

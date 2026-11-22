@@ -20,9 +20,9 @@ use eframe::egui;
 use serde::{Deserialize, Serialize};
 
 use crate::standard::other::run_command::{FileInput, Files};
-use crate::{Command, CommandKind, DataStream, Edges, PublishedValue, ValueKind};
+use crate::{Command, CommandKind, Edges, PublishedValue, ValueKind};
 use ephys_rs::commands::CmdSender;
-use ephys_rs::engine::{Category, CommandContext, CommandSource, Node, NodeInfo, Port, UiContext};
+use ephys_rs::engine::{Category, CommandContext, CommandSource, NoPorts, Node, NodeInfo, Port, UiContext};
 
 mod checks;
 pub mod files;
@@ -303,6 +303,8 @@ pub struct SyncPositions {
 }
 
 impl Node<Edges> for SyncPositions {
+    type Inputs = NoPorts;
+    type Outputs = NoPorts;
     type State = ();
     type WorkerState = ();
     type Shared = ();
@@ -319,8 +321,8 @@ impl Node<Edges> for SyncPositions {
     const WINDOW_SIZE: [f32; 2] = [680.0, 780.0];
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
-    fn list_ports_data_stream_out(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
-        Vec::new()
+    fn output_streams(&self, _inputs: &NoPorts) -> NoPorts {
+        NoPorts
     }
 
     /// Where it's sent recordings' files to sync, on the left, as what sends them comes before it; and where it sends

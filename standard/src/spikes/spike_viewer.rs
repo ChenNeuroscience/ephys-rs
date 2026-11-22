@@ -28,11 +28,18 @@ use crate::standard::spikes::{
     trimmed,
 };
 use crate::standard::widgets::{open_settings_button, require_input};
-use crate::{Buffer, Command, CommandKind, DataStream, Edges, Kind, ValueKind};
+use crate::{Command, CommandKind, Edges, ValueKind};
 use ephys_rs::engine::{
-    Category, EdgeType, Node, NodeInfo, PassContext, Port, Prepare, PrepareContext, Prepared, Shortcut, UiContext,
+    Buffers, Category, EdgeType, InputPorts, NoPorts, Node, NodeInfo, PassContext, Port, Prepare, PrepareContext,
+    Prepared, Shortcut, UiContext,
 };
 use ephys_rs::gui::widgets::Icon;
+
+ephys_rs::data_ports! {
+    inputs: pub struct Inputs {
+        spikes: In<Spikes>,
+    }
+}
 
 /// A channel's plot's width, for its height.
 const ASPECT: f32 = 0.75;
@@ -220,6 +227,8 @@ fn group_title(kind: &str, group: usize, channels: std::ops::Range<u32>) -> Stri
 }
 
 impl Node<Edges> for SpikeViewer {
+    type Inputs = Inputs;
+    type Outputs = NoPorts;
     type State = Recent;
     type WorkerState = ();
     /// What it shows, for its window.
@@ -243,12 +252,8 @@ impl Node<Edges> for SpikeViewer {
     const WINDOW_SIZE: [f32; 2] = [820.0, 520.0];
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
-    fn list_ports_data_stream_in(&self) -> Vec<Port<Edges>> {
-        vec![Port::DataStreamIn { name: "spikes", data_stream_kind: Kind::Spikes }]
-    }
-
-    fn list_ports_data_stream_out(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
-        Vec::new()
+    fn output_streams(&self, _inputs: &Inputs) -> NoPorts {
+        NoPorts
     }
 
     fn list_ports_val_cmd(&self) -> Vec<Port<Edges>> {
@@ -263,11 +268,10 @@ impl Node<Edges> for SpikeViewer {
     }
 
     fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Recent, (), Self> {
-        let inputs = context.inputs;
         if context.same_streams() {
             return Prepared::nothing().into();
         }
-        let Some(DataStream::Spikes(stream)) = inputs[0] else { return Prepared::shared(Recent::default()).into() };
+        let Some(stream) = Inputs::of(context.inputs).spikes else { return Prepared::shared(Recent::default()).into() };
         let groups = stream.groups() as usize;
         let keep = WAVEFORMS;
         let size = (stream.group_size * stream.waveform_samples()) as usize;
@@ -284,8 +288,15 @@ impl Node<Edges> for SpikeViewer {
         .into()
     }
 
-    fn process(&self, pass: &mut PassContext<Edges>, recent: &mut Recent, _: &mut ()) {
-        let Some(Some(Buffer::Spikes(input))) = pass.inputs.first() else { return };
+    fn process(
+        &self,
+        pass: &mut PassContext<Edges>,
+        inputs: Inputs<Buffers>,
+        _: NoPorts,
+        recent: &mut Recent,
+        _: &mut (),
+    ) {
+        let Some(input) = inputs.spikes else { return };
         let Some(stream) = recent.stream else { return };
         let size = input.group_size * input.samples;
         let keep = recent.keep;
@@ -330,7 +341,7 @@ impl Node<Edges> for SpikeViewer {
         self.take_updates(context);
         let Some(ui) = ui else { return };
         let locked = context.locked;
-        let Some(DataStream::Spikes(stream)) = context.inputs[0] else {
+        let Some(stream) = Inputs::of(context.inputs).spikes else {
             plots::unconnected(ui, context.theme, "Connect spikes to view them");
             return;
         };
@@ -358,7 +369,7 @@ impl Node<Edges> for SpikeViewer {
         }
     }
 
-    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
+    fn warnings(&self, inputs: &Inputs) -> Vec<String> {
         require_input(inputs, "spikes")
     }
 }

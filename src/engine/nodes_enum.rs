@@ -8,8 +8,8 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use super::{
-    BufferUsage, CommandContext, CommandSource, Edges, NodeInfo, NodeThread, PassContext, PoolStatus, Port, Prepare,
-    PrepareContext, Shared, ThreadContext, TreeShake, UiContext,
+    BufferUsage, CommandContext, CommandSource, Edges, NodeInfo, NodeThread, PassBuffers, PassContext, PoolStatus,
+    Port, Prepare, PrepareContext, Shared, ThreadContext, TreeShake, UiContext,
 };
 
 /// The app sometimes needs a node's type without the node: what the add-node menu offers, say. `nodes_enum!` makes a
@@ -51,7 +51,10 @@ pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + S
     /// Settings… has a tab for each type of global settings the program's node types read: each type once, in the order
     /// of the node types that first name them.
     fn global_settings_types() -> Vec<crate::global_settings::GlobalSettingsType>;
+    /// The graph lists the node's inputs from this, in the order its type declares them (see `Node::Inputs`).
     fn list_ports_data_stream_in(&self) -> Vec<Port<Self::Edges>>;
+    /// The graph lists the node's outputs from this, in the order its type declares them, with the streams on them
+    /// given the streams on the node's inputs (see `Node::output_streams`).
     fn list_ports_data_stream_out(
         &self,
         inputs: &[Option<<Self::Edges as Edges>::DataStream>],
@@ -69,7 +72,9 @@ pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + S
     /// The app keeps the node's `UiState`, starting from this.
     fn new_ui_state(&self) -> Box<dyn Any>;
     fn evaluate_tree_shake(&self, inputs: &[bool], outputs: &[bool], recording: bool) -> TreeShake;
-    fn evaluate_buffer_usage(&self, inputs: usize, outputs: usize) -> BufferUsage;
+    /// The plan asks how the node uses its buffers with this, which follows from how its type declares its data ports
+    /// (see `BufferUsage`).
+    fn buffer_usage(&self) -> BufferUsage;
     /// A node with state (other than `()`) carries it from one pass to the next, and passes wait for each other there.
     /// This says whether the node has state.
     fn has_state(&self) -> bool;
@@ -85,11 +90,13 @@ pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + S
     /// `state` and `proto_state` are the node's state, as its own type (see `Node::adopt_snapshot`).
     fn adopt_snapshot(&self, state: &mut (dyn Any + Send), proto_state: &mut (dyn Any + Send));
     fn shared(&self, inputs: &[Option<<Self::Edges as Edges>::DataStream>]) -> Box<dyn Shared>;
-    /// The pass runs the node with its state and the worker's, as `prepare_for_snapshot` made them (`None` for none).
-    /// If the node hasn't the state it needs (it failed to prepare), it does nothing, and this returns false.
+    /// The pass runs the node on its buffers (`buffers`), with its state and the worker's, as `prepare_for_snapshot`
+    /// made them (`None` for none). If the node hasn't the state it needs (it failed to prepare), it does nothing, and
+    /// this returns false.
     fn process(
         &self,
         pass: &mut PassContext<Self::Edges>,
+        buffers: PassBuffers<'_, Self::Edges>,
         state: Option<&mut (dyn Any + Send)>,
         worker_state: Option<&mut (dyn Any + Send)>,
     ) -> bool;
@@ -146,9 +153,9 @@ pub fn is_state<S: 'static>() -> bool {
 ///     type Edges = Edges;
 ///     type Type = NodeType;
 ///
-///     fn process(&self, pass: &mut PassContext<Edges>, state: Option<&mut (dyn Any + Send)>) {
+///     fn process(&self, pass: &mut PassContext<Edges>, buffers: PassBuffers<Edges>, state: Option<&mut (dyn Any + Send)>) {
 ///         match self {
-///             Nodes::Gain(n) => Node::process(n, pass, /* its state, as its own type */),
+///             Nodes::Gain(n) => Node::process(n, pass, /* its buffers and state, as its own types */),
 ///             Nodes::Writer(n) => Node::process(n, pass, /* … */),
 ///         }
 ///     }
@@ -220,18 +227,33 @@ macro_rules! nodes_enum {
             }
 
             fn list_ports_data_stream_in(&self) -> Vec<$crate::engine::Port<$edges>> {
-                match self { $($name::$variant(n) => $crate::engine::Node::list_ports_data_stream_in(n)),+ }
+                match self {
+                    $($name::$variant(_) => {
+                        <<$ty as $crate::engine::Node<$edges>>::Inputs as $crate::engine::InputPorts<$edges>>::ports()
+                    }),+
+                }
             }
 
             fn list_ports_data_stream_out(
                 &self,
                 inputs: &[Option<<$edges as $crate::engine::Edges>::DataStream>],
             ) -> Vec<$crate::engine::Port<$edges>> {
-                match self { $($name::$variant(n) => $crate::engine::Node::list_ports_data_stream_out(n, inputs)),+ }
+                match self {
+                    $($name::$variant(n) => {
+                        let inputs = $crate::engine::InputPorts::<$edges>::of(inputs);
+                        let outputs: <$ty as $crate::engine::Node<$edges>>::Outputs =
+                            $crate::engine::Node::<$edges>::output_streams(n, &inputs);
+                        $crate::engine::OutputPorts::<$edges>::ports(&outputs)
+                    }),+
+                }
             }
 
             fn warnings(&self, inputs: &[Option<<$edges as $crate::engine::Edges>::DataStream>]) -> Vec<String> {
-                match self { $($name::$variant(n) => $crate::engine::Node::warnings(n, inputs)),+ }
+                match self {
+                    $($name::$variant(n) => {
+                        $crate::engine::Node::<$edges>::warnings(n, &$crate::engine::InputPorts::<$edges>::of(inputs))
+                    }),+
+                }
             }
 
             fn list_ports_val_cmd(&self) -> Vec<$crate::engine::Port<$edges>> {
@@ -273,9 +295,14 @@ macro_rules! nodes_enum {
                 }
             }
 
-            fn evaluate_buffer_usage(&self, inputs: usize, outputs: usize) -> $crate::engine::BufferUsage {
+            fn buffer_usage(&self) -> $crate::engine::BufferUsage {
                 match self {
-                    $($name::$variant(n) => $crate::engine::Node::evaluate_buffer_usage(n, inputs, outputs)),+
+                    $($name::$variant(_) => $crate::engine::BufferUsage {
+                        in_place: <<$ty as $crate::engine::Node<$edges>>::Outputs
+                            as $crate::engine::OutputPorts<$edges>>::IN_PLACE.to_vec(),
+                        takes: <<$ty as $crate::engine::Node<$edges>>::Inputs
+                            as $crate::engine::InputPorts<$edges>>::TAKES.to_vec(),
+                    }),+
                 }
             }
 
@@ -344,12 +371,18 @@ macro_rules! nodes_enum {
                 &self,
                 inputs: &[Option<<$edges as $crate::engine::Edges>::DataStream>],
             ) -> Box<dyn $crate::engine::Shared> {
-                match self { $($name::$variant(n) => Box::new($crate::engine::Node::shared(n, inputs))),+ }
+                match self {
+                    $($name::$variant(n) => {
+                        let inputs = $crate::engine::InputPorts::<$edges>::of(inputs);
+                        Box::new($crate::engine::Node::<$edges>::shared(n, &inputs))
+                    }),+
+                }
             }
 
             fn process(
                 &self,
                 pass: &mut $crate::engine::PassContext<$edges>,
+                buffers: $crate::engine::PassBuffers<'_, $edges>,
                 state: Option<&mut (dyn std::any::Any + Send)>,
                 worker_state: Option<&mut (dyn std::any::Any + Send)>,
             ) -> bool {
@@ -363,7 +396,12 @@ macro_rules! nodes_enum {
                         let worker_state = worker_state.unwrap_or(&mut no_worker_state).downcast_mut::<WorkerState>();
                         match (state, worker_state) {
                             (Some(state), Some(worker_state)) => {
-                                $crate::engine::Node::process(n, pass, state, worker_state);
+                                let $crate::engine::PassBuffers { inputs, taken, outputs } = buffers;
+                                let inputs = <<$ty as $crate::engine::Node<$edges>>::Inputs
+                                    as $crate::engine::InputPorts<$edges>>::view(inputs, taken);
+                                let outputs = <<$ty as $crate::engine::Node<$edges>>::Outputs
+                                    as $crate::engine::OutputPorts<$edges>>::view(outputs);
+                                $crate::engine::Node::process(n, pass, inputs, outputs, state, worker_state);
                                 true
                             }
                             _ => false,

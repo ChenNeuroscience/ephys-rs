@@ -183,13 +183,8 @@ impl<N: NodesEnum> Plan<N> {
         let needs: HashMap<NodeId, Vec<bool>> = shaken.into_iter().collect();
         let needed = |node: NodeId, input: usize| needs.get(&node).is_some_and(|n| n[input]);
         // How each node that runs uses its buffers.
-        let usage: HashMap<NodeId, BufferUsage> = runs
-            .iter()
-            .filter_map(|&id| {
-                let (entry, state) = (graph.get(id)?, resolved.get(&id)?);
-                Some((id, entry.node.evaluate_buffer_usage(state.inputs.len(), state.outputs.len())))
-            })
-            .collect();
+        let usage: HashMap<NodeId, BufferUsage> =
+            runs.iter().filter_map(|&id| Some((id, graph.get(id)?.node.buffer_usage()))).collect();
         let data_edges: Vec<&super::Edge> =
             data.iter().copied().filter(|e| runs.contains(&e.from.node) && needed(e.to.node, e.to.port_idx)).collect();
         // Which nodes must run before which: those feeding them, and those reading data another edits in place.
@@ -453,15 +448,16 @@ mod tests {
         // Something needing the filter's output, so it runs (see `Node::evaluate_tree_shake`).
         let end = add(&mut graph, "LFP Viewer");
         link(&mut graph, filter, 0, end, 0);
-        // Board (continuous and events), then gain and filter working in the board's continuous buffer.
+        // The board's four outputs (headstages, digital, auxiliary and analogue), then gain and filter working in the
+        // board's headstages buffer.
         let plan = Plan::new(&graph, false);
-        assert_eq!(plan.buffers.len(), 2);
+        assert_eq!(plan.buffers.len(), 4);
 
         // A viewer also reading the board's data runs before the gain edits it, so the gain still works in place.
         let viewer = add(&mut graph, "LFP Viewer");
         link(&mut graph, board, 0, viewer, 0);
         let plan = Plan::new(&graph, false);
-        assert_eq!(plan.buffers.len(), 2);
+        assert_eq!(plan.buffers.len(), 4);
         assert!(position(&plan, viewer) < position(&plan, gain));
 
         // Two nodes that would edit the board's data in place: one does (last), the other gets its own buffer.
@@ -470,7 +466,7 @@ mod tests {
         let second_end = add(&mut graph, "LFP Viewer");
         link(&mut graph, second_gain, 0, second_end, 0);
         let plan = Plan::new(&graph, false);
-        assert_eq!(plan.buffers.len(), 3);
+        assert_eq!(plan.buffers.len(), 5);
         assert!(position(&plan, second_gain) < position(&plan, gain));
     }
 

@@ -15,12 +15,12 @@ use realfft::num_complex::Complex;
 use realfft::{RealFftPlanner, RealToComplex};
 use serde::{Deserialize, Serialize};
 
+use crate::Edges;
 use crate::standard::ephys::{Continuous, ContinuousBuffer};
 use crate::standard::widgets::{input_summary, require_input, setting, settings_grid};
-use crate::{Buffer, DataStream, Edges, Kind};
 use ephys_rs::engine::{
-    Category, DataStreamType, EdgeInfo, EdgeType, Node, NodeInfo, PassContext, Port, Prepare, PrepareContext, Prepared,
-    UiContext,
+    Buffers, Category, DataStreamType, EdgeInfo, EdgeType, InputPorts, Node, NodeInfo, PassContext, Prepare,
+    PrepareContext, Prepared, UiContext,
 };
 
 /// About how many samples a second the spectra are worked out from.
@@ -116,7 +116,18 @@ impl ephys_rs::engine::PassState for Analysis {
                                spectrum, smoothed over passes.";
 }
 
+ephys_rs::data_ports! {
+    inputs: pub struct Inputs {
+        continuous: In<Continuous>,
+    }
+    outputs: pub struct Outputs {
+        spectra: Out<Spectra>,
+    }
+}
+
 impl Node<Edges> for Spectrum {
+    type Inputs = Inputs;
+    type Outputs = Outputs;
     type State = Analysis;
     type WorkerState = ();
     type Shared = ();
@@ -135,49 +146,46 @@ impl Node<Edges> for Spectrum {
         TreeShake::needing_all(inputs.contains(&true) && outputs.contains(&true), inputs.len())
     }
 
-    fn list_ports_data_stream_in(&self) -> Vec<Port<Edges>> {
-        vec![Port::DataStreamIn { name: "continuous", data_stream_kind: Kind::Continuous }]
-    }
-
-    fn list_ports_data_stream_out(&self, inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
-        let stream = match inputs[0] {
-            Some(DataStream::Continuous(c)) => Some(DataStream::Spectra(Spectra::of(c, self.band))),
-            _ => None,
-        };
-        vec![Port::DataStreamOut { name: "spectra", data_stream_kind: Kind::Spectra, stream }]
+    fn output_streams(&self, inputs: &Inputs) -> Outputs {
+        Outputs { spectra: inputs.continuous.map(|c| Spectra::of(c, self.band)) }
     }
 
     fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Analysis, (), Self> {
-        let inputs = context.inputs;
         if context.same_streams() {
             return Prepared::nothing().into();
         }
         let mut analysis = Analysis::default();
-        if let Some(DataStream::Continuous(c)) = inputs[0] {
+        if let Some(c) = Inputs::of(context.inputs).continuous {
             analysis.reshape(c.channels as usize, c.sample_rate, self.band);
             analysis.rate = c.sample_rate;
         }
         Prepared::shared(analysis).into()
     }
 
-    fn process(&self, pass: &mut PassContext<Edges>, analysis: &mut Analysis, _: &mut ()) {
-        let Some(Some(Buffer::Continuous(input))) = pass.inputs.first() else { return };
+    fn process(
+        &self,
+        _pass: &mut PassContext<Edges>,
+        inputs: Inputs<Buffers>,
+        outputs: Outputs<Buffers>,
+        analysis: &mut Analysis,
+        _: &mut (),
+    ) {
+        let Some(input) = inputs.continuous else { return };
         let rate = analysis.rate;
         analysis.reshape(input.channels, rate, self.band);
         analysis.add(input, 0);
         analysis.work_out();
-        if let Some(Buffer::Spectra(out)) = pass.outputs.get_mut(0) {
-            out.power.clone_from(&analysis.power);
-            out.done.clone_from(&analysis.done);
-            out.bins = analysis.shape.2.len();
-        }
+        let out = outputs.spectra;
+        out.power.clone_from(&analysis.power);
+        out.done.clone_from(&analysis.done);
+        out.bins = analysis.shape.2.len();
     }
 
     fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
         let Some(ui) = ui else { return };
         ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, context| {
-            let rate = match context.inputs[0] {
-                Some(DataStream::Continuous(c)) => c.sample_rate,
+            let rate = match Inputs::of(context.inputs).continuous {
+                Some(c) => c.sample_rate,
                 _ => 30000.0,
             };
             let nyquist = rate / Analysis::factor(rate) as f32 / 2.0;
@@ -200,7 +208,7 @@ impl Node<Edges> for Spectrum {
         });
     }
 
-    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
+    fn warnings(&self, inputs: &Inputs) -> Vec<String> {
         require_input(inputs, "a continuous data stream")
     }
 }
@@ -342,7 +350,8 @@ mod tests {
     fn the_spectrum_peaks_at_the_rhythm() {
         let spectrum = Spectrum::default();
         let stream = Continuous { channels: 2, sample_rate: 30000.0 };
-        let mut analysis = ephys_rs::engine::fresh_state(&spectrum, &[Some(DataStream::Continuous(stream))]);
+        let mut analysis = ephys_rs::engine::fresh_state(&spectrum, &Inputs { continuous: Some(stream) });
+        let mut out = Spectra::of(stream, spectrum.band).buffer(PASS_DURATION);
         let mut input = stream.buffer(PASS_DURATION);
         let per_pass = 600;
         input.len = per_pass;
@@ -354,12 +363,8 @@ mod tests {
                     *x = 100.0 * (std::f32::consts::TAU * hz * t).sin();
                 }
             }
-            let buffer = Buffer::Continuous(input);
-            let inputs = [Some(&buffer)];
-            let mut pass = PassContext::new(sequence, PASS_DURATION, &inputs, &mut []);
-            spectrum.process(&mut pass, &mut analysis, &mut ());
-            let Buffer::Continuous(b) = buffer else { unreachable!() };
-            input = b;
+            let (inputs, outputs) = (Inputs { continuous: Some(&input) }, Outputs { spectra: &mut out });
+            spectrum.process(&mut PassContext::new(sequence, PASS_DURATION), inputs, outputs, &mut analysis, &mut ());
         }
         let spectra = &analysis;
         assert!(spectra.done.iter().all(|d| *d));

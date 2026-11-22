@@ -9,11 +9,18 @@ use super::{CameraConfig, CameraControls, CameraStats, CaptureStats, Control, Ra
 use crate::standard::pool::Pool;
 use crate::standard::tracking::Video;
 use crate::standard::widgets::{setting, settings_grid};
-use crate::{Buffer, Command, CommandKind, DataStream, Edges, Kind, PublishedValue, ValueKind};
+use crate::{Command, CommandKind, Edges, PublishedValue, ValueKind};
 use ephys_rs::engine::{
-    Category, CommandContext, CommandSource, Flow, Node, NodeInfo, NodeThread, PassContext, PoolStatus, Port, Prepare,
-    PrepareContext, Prepared, Suggestion, ThreadContext, UiContext, UserDecision,
+    Buffers, Category, CommandContext, CommandSource, Flow, NoPorts, Node, NodeInfo, NodeThread, PassContext,
+    PoolStatus, Port, Prepare, PrepareContext, Prepared, Suggestion, ThreadContext, UiContext, UserDecision,
 };
+
+ephys_rs::data_ports! {
+    outputs: pub struct Outputs {
+        video: Out<Video>,
+        stats: Out<CameraStats>,
+    }
+}
 
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -72,6 +79,8 @@ impl Node<Edges> for Camera {
                       synthetic_streams/.",
     };
 
+    type Inputs = NoPorts;
+    type Outputs = Outputs;
     type State = Capturing;
     type WorkerState = ();
     /// What it shows, for its window.
@@ -79,21 +88,9 @@ impl Node<Edges> for Camera {
     type UiState = ();
     type GlobalSettings = super::SpinnakerSettings;
 
-    fn list_ports_data_stream_out(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
+    fn output_streams(&self, _inputs: &NoPorts) -> Outputs {
         let [width, height] = self.settings.frame_size;
-        let stream = Video { width, height, fps: self.settings.frame_rate as f32 };
-        vec![
-            Port::DataStreamOut {
-                name: "video",
-                data_stream_kind: Kind::Video,
-                stream: Some(DataStream::Video(stream)),
-            },
-            Port::DataStreamOut {
-                name: "stats",
-                data_stream_kind: Kind::CameraStats,
-                stream: Some(DataStream::CameraStats(CameraStats)),
-            },
-        ]
+        Outputs { video: Some(Video { width, height, fps: self.settings.frame_rate as f32 }), stats: Some(CameraStats) }
     }
 
     fn list_ports_val_cmd(&self) -> Vec<Port<Edges>> {
@@ -166,17 +163,22 @@ impl Node<Edges> for Camera {
 
     /// Takes the frames that have arrived since the last pass, swapping the buffer they're in for the pass's own
     /// (which goes back to the capture thread's pool to fill), so nothing's copied.
-    fn process(&self, pass: &mut PassContext<Edges>, capturing: &mut Capturing, _: &mut ()) {
+    fn process(
+        &self,
+        pass: &mut PassContext<Edges>,
+        _inputs: NoPorts,
+        outputs: Outputs<Buffers>,
+        capturing: &mut Capturing,
+        _: &mut (),
+    ) {
         let Some(capture) = &capturing.capture else { return };
         capture.apply(&self.settings); // exposure and gain can change while running
-        if let Some(Buffer::Video(out)) = pass.outputs.get_mut(0) {
-            match capture.pool().take(|video| video.frames == 0) {
-                Some(mut video) => {
-                    std::mem::swap(out, &mut video);
-                    capture.pool().give_back(video);
-                }
-                None => out.frames = 0,
+        match capture.pool().take(|video| video.frames == 0) {
+            Some(mut video) => {
+                std::mem::swap(outputs.video, &mut video);
+                capture.pool().give_back(video);
             }
+            None => outputs.video.frames = 0,
         }
         // The stats, on their output and in the node's window: as last copied, if the capture thread's updating them
         // just then.
@@ -186,9 +188,7 @@ impl Node<Edges> for Camera {
         // Of the video, not the stats.
         capturing.stats.pool = PoolStatus { ports: 1, ..capture.pool().status() };
         let stats = &capturing.stats;
-        if let Some(Buffer::CameraStats(out)) = pass.outputs.get_mut(1) {
-            out.copy_from(stats);
-        }
+        outputs.stats.copy_from(stats);
         pass.shared::<Pool<CaptureStats>>().send_newest(pass.sequence, |shown| shown.copy_from(stats));
     }
 

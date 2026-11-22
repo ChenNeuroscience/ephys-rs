@@ -4,6 +4,7 @@
 use ephys_rs::config_patching::PatchSet;
 
 mod auto_detect_settings;
+mod board_outputs;
 mod example;
 mod gains_amplify;
 mod write_ltx_val_ins;
@@ -11,7 +12,13 @@ mod write_ltx_val_ins;
 pub const PATCHES: PatchSet = PatchSet {
     name: "std",
     version: env!("CARGO_PKG_VERSION"),
-    patches: &[example::patch, gains_amplify::patch, auto_detect_settings::patch, write_ltx_val_ins::patch],
+    patches: &[
+        example::patch,
+        gains_amplify::patch,
+        auto_detect_settings::patch,
+        write_ltx_val_ins::patch,
+        board_outputs::patch,
+    ],
 };
 
 #[cfg(test)]

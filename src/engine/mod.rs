@@ -5,6 +5,7 @@
 //! declares with `nodes_enum!` and `edge_types!`. The engine reaches a type through a plain `match` (enum dispatch),
 //! with no dynamic loading.
 
+mod data_ports;
 mod edge;
 mod graph;
 mod node;
@@ -19,6 +20,7 @@ mod shared;
 mod snapshot_lite;
 mod ui_context;
 
+pub use data_ports::*;
 pub use edge::*;
 pub use graph::*;
 pub use node::*;

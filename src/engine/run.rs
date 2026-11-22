@@ -52,8 +52,8 @@ use crate::console::{self, PassId};
 use super::pass_context::*;
 use super::plan::*;
 use super::{
-    Buffer, DataStreamsEnum, Edges, NodeId, NodesEnum, Prepare, PrepareContext, Prepared, Previous, SharedByNode,
-    Snapshot, SnapshotLite, UserDecision,
+    Buffer, DataStreamsEnum, Edges, NodeId, NodesEnum, PassBuffers, Prepare, PrepareContext, Prepared, Previous,
+    SharedByNode, Snapshot, SnapshotLite, UserDecision,
 };
 
 type DataStream<N> = <<N as NodesEnum>::Edges as Edges>::DataStream;
@@ -102,9 +102,6 @@ impl<N: NodesEnum> Plan<N> {
                     sequence,
                     duration: PASS_DURATION,
                     node: step.id,
-                    inputs: &inputs,
-                    taken: &mut taken,
-                    outputs: &mut outputs,
                     val_ins,
                     snapshot: &baked,
                     shared: run.shared.any(step.id).unwrap_or(&()),
@@ -114,6 +111,7 @@ impl<N: NodesEnum> Plan<N> {
                 // When the node's state is handed over, after waiting for it, if it has any.
                 let mut began = start;
                 let worker_state = worker_state.map(|state| state.as_mut());
+                let buffers = PassBuffers { inputs: &inputs, taken: &mut taken, outputs: &mut outputs };
                 let ran = console::in_pass(pass, || match step.state {
                     Some(slot) => {
                         let change = |state: &mut (dyn Any + Send), proto_state: &mut (dyn Any + Send)| {
@@ -121,10 +119,10 @@ impl<N: NodesEnum> Plan<N> {
                         };
                         run.states[slot].with(sequence, &change, |state| {
                             began = Instant::now();
-                            node.process(&mut pass_data, Some(state), worker_state)
+                            node.process(&mut pass_data, buffers, Some(state), worker_state)
                         })
                     }
-                    None => node.process(&mut pass_data, None, worker_state),
+                    None => node.process(&mut pass_data, buffers, None, worker_state),
                 });
                 (began.elapsed(), began - start, ran)
             };

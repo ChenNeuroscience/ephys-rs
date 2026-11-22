@@ -1,13 +1,16 @@
 //! Each node type implements the `Node` trait below, which says what the node is, what its ports and settings are, how
-//! the node gets ready for a snapshot, and what the node does in a pass. Its ports are described in `port`, the context
-//! a node's window gets in `ui_context`, the description of a node's own threads in `node_threads`, and the list of
-//! node types a program is built with in `nodes_enum`.
+//! the node gets ready for a snapshot, and what the node does in a pass. Its data ports are declared as described in
+//! `data_ports`, and its ValCmd ports in `port`; the context a node's window gets is in `ui_context`, the description
+//! of a node's own threads in `node_threads`, and the list of node types a program is built with in `nodes_enum`.
 
 use eframe::egui;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use super::{CommandContext, Edges, NodeThread, PassContext, PoolStatus, Port, Shared, ThreadContext, UiContext};
+use super::{
+    CommandContext, Edges, InputPorts, NodeThread, OutputPorts, PassContext, PoolStatus, Port, Shared, ThreadContext,
+    UiContext,
+};
 use crate::global_settings::GlobalSettingsSet;
 
 /// The graph colours each node by its type's category, and the add-node menu groups node types by category. Nothing
@@ -96,7 +99,8 @@ impl TreeShake {
 }
 
 /// The plan gives each node buffers to read and fill, and can save memory, or copying, if it knows how the node uses
-/// them (see `Node::evaluate_buffer_usage`). This is what a node says about that. `none` is always correct.
+/// them. The node says so in how it declares its data ports (`Take` inputs, and outputs `in_place_of` an input: see
+/// `data_ports!`), which the engine gathers into this. `none` is always correct.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BufferUsage {
     /// A node can sometimes make an output by editing one of its input's data where the data is, rather than filling a
@@ -107,8 +111,8 @@ pub struct BufferUsage {
     /// A node can take an input's buffer to do as the node likes with (swapping the buffer for another just as big,
     /// say, to hand to the node's thread or window), rather than only reading it. For each input, this says whether the
     /// node does. Nodes never copy their inputs; the plan does when it has to. The pass always has a buffer for the
-    /// node to take (see `PassContext::take_input`): the input's own, if nothing edits that data in place and every
-    /// other reader can run first, and otherwise a copy the plan makes as soon as the data's made.
+    /// node to take, if the input's connected: the input's own, if nothing edits that data in place and every other
+    /// reader can run first, and otherwise a copy the plan makes as soon as the data's made.
     pub takes: Vec<bool>,
 }
 
@@ -123,8 +127,9 @@ impl BufferUsage {
 /// Each kind of node on the graph (a filter, a viewer, a device) is a type implementing this trait. The type itself is
 /// a plain struct of the node's settings, which the app saves with the graph.
 ///
-/// A node's ports can depend on its settings, and its outputs' data streams on what's connected to its inputs: the
-/// graph works these out in order, from the sources down (see `Graph::resolve`).
+/// A node's ports are fixed by its type (see `Inputs` and `Outputs`), but its outputs' data streams can depend on its
+/// settings and on what's connected to its inputs: the graph works these out in order, from the sources down (see
+/// `Graph::resolve`).
 pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeOwned + Send + Sync + 'static {
     /// The add-node menu and the node's window describe the node's type with this (see `NodeInfo`).
     const INFO: NodeInfo;
@@ -172,14 +177,16 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     /// `NodeEntry::basic`), this decides. By convention, nodes with a view are listed, but each node type decides.
     const SHOW_IN_BASIC_DEFAULT: bool = false;
 
-    /// A node's inputs (see `Port`) can depend on its settings. By default, a node has none.
-    fn list_ports_data_stream_in(&self) -> Vec<Port<E>> {
-        Vec::new()
-    }
+    /// A node's data ports are declared on its type, with `data_ports!`, as a struct of its inputs and a struct of its
+    /// outputs (or `NoPorts`, for none). These name them. In the `Streams` form (as named here), each field holds the
+    /// data stream on its port; in a pass, the node gets them in the `Buffers` form (see `process`).
+    type Inputs: InputPorts<E>;
+    type Outputs: OutputPorts<E>;
 
-    /// A node's outputs (see `Port`) can depend on its settings and on what's connected to its inputs. `inputs` has
-    /// an entry for each of `self.list_ports_data_stream_in()`: the data stream connected to that input, if any.
-    fn list_ports_data_stream_out(&self, inputs: &[Option<E::DataStream>]) -> Vec<Port<E>>;
+    /// The graph works out the data stream on each of the node's outputs from this, given the streams on its inputs
+    /// (`inputs`, each `None` if nothing's connected). The node can only run once every output's stream is known, so a
+    /// node gives `None` for an output it can't make from what it has (an input it needs isn't connected, say).
+    fn output_streams(&self, inputs: &Self::Inputs) -> Self::Outputs;
 
     /// A node's ValCmd ports (see `Port`). Its `ValOutCmdIn` ports are numbered separately from its `ValInCmdOut`
     /// and `ValIn` ports (which are numbered together), each in the order they're listed here.
@@ -220,7 +227,7 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     /// The node's passes and the GUI share what's in `Self::Shared`. The engine asks the node for it here, for the
     /// node's input data streams (`inputs`), and asks again whenever those change, otherwise handing what it has on
     /// from snapshot to snapshot. By default, the node gives `Default`'s.
-    fn shared(&self, _inputs: &[Option<E::DataStream>]) -> Self::Shared {
+    fn shared(&self, _inputs: &Self::Inputs) -> Self::Shared {
         Self::Shared::default()
     }
 
@@ -284,19 +291,21 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
         TreeShake::needing_all(true, inputs.len())
     }
 
-    /// The plan gives each node buffers to read and fill, and can save memory, or copying, if it knows how the node
-    /// uses them. Once per plan, the plan asks the node here which of its outputs the node can make in place, and which
-    /// inputs the node takes (see `BufferUsage`), given how many of each the node has. By default, the node only reads
-    /// its inputs, and makes its outputs in buffers of their own.
-    fn evaluate_buffer_usage(&self, inputs: usize, outputs: usize) -> BufferUsage {
-        BufferUsage::none(inputs, outputs)
-    }
-
     /// The engine runs the graph in passes, each taking in a short stretch of data and sending it through every node
     /// that runs. In each pass, the node does its work here: the node reads its inputs and fills its outputs, which are
-    /// already sized for their data streams. An output the node makes in place (see `evaluate_buffer_usage`) already
-    /// holds its input's data to transform, and that input is `None` in the pass.
-    fn process(&self, _pass: &mut PassContext<E>, _state: &mut Self::State, _worker_state: &mut Self::WorkerState) {}
+    /// already sized for their data streams. The node gets its inputs' and outputs' buffers as the node's own `Inputs`
+    /// and `Outputs` structs, in the `Buffers` form. An output the node makes in place (`in_place_of` an input, as the
+    /// node declared it) already holds that input's data to transform, if the plan let the node make it in place, and
+    /// then that input is `None` in the pass.
+    fn process(
+        &self,
+        _pass: &mut PassContext<E>,
+        _inputs: <Self::Inputs as InputPorts<E>>::View<'_>,
+        _outputs: <Self::Outputs as OutputPorts<E>>::View<'_>,
+        _state: &mut Self::State,
+        _worker_state: &mut Self::WorkerState,
+    ) {
+    }
 
     /// Some nodes run threads of their own while running (started with their state, say). The dev tools list the
     /// threads a node gives here.
@@ -317,7 +326,7 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
 
     /// The graph and the node's window show any problems with how the node's set up, which the node lists here, given
     /// what's connected to its inputs.
-    fn warnings(&self, _inputs: &[Option<E::DataStream>]) -> Vec<String> {
+    fn warnings(&self, _inputs: &Self::Inputs) -> Vec<String> {
         Vec::new()
     }
 }

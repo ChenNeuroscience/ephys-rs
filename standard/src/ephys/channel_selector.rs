@@ -3,14 +3,23 @@
 //! downstream can choose: look through all the channels, click the numbers of the ones to keep, then apply it.
 
 use eframe::egui;
-use ephys_rs::engine::TreeShake;
+use ephys_rs::engine::{Buffers, TreeShake};
 use serde::{Deserialize, Serialize};
 
 use crate::standard::ephys::reference::{channels_ui, parse_channels};
 use crate::standard::ephys::{ChannelSelection, Continuous};
 use crate::standard::widgets::{inline_block, input_summary, power, require_input};
-use crate::{Buffer, Command, CommandKind, DataStream, Edges, Kind, PublishedValue, ValueKind};
+use crate::{Command, CommandKind, DataStream, Edges, PublishedValue, ValueKind};
 use ephys_rs::engine::{Category, CommandContext, CommandSource, Node, NodeInfo, PassContext, Port, UiContext};
+
+ephys_rs::data_ports! {
+    inputs: pub struct Inputs {
+        continuous: In<Continuous>,
+    }
+    outputs: pub struct Outputs {
+        selected: Out<Continuous>,
+    }
+}
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -57,30 +66,28 @@ impl Node<Edges> for ChannelSelector {
         TreeShake::needing_all(inputs.contains(&true) && outputs.contains(&true), inputs.len())
     }
 
+    type Inputs = Inputs;
+    type Outputs = Outputs;
     type State = ();
     type WorkerState = Passed;
     type Shared = ();
     type UiState = ();
     type GlobalSettings = ();
 
-    fn list_ports_data_stream_in(&self) -> Vec<Port<Edges>> {
-        vec![Port::DataStreamIn { name: "continuous", data_stream_kind: Kind::Continuous }]
+    fn output_streams(&self, inputs: &Inputs) -> Outputs {
+        let selected = inputs.continuous.map(|c| Continuous { channels: self.passed(c.channels).len() as u32, ..c });
+        Outputs { selected }
     }
 
-    fn list_ports_data_stream_out(&self, inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
-        let stream = match inputs[0] {
-            Some(DataStream::Continuous(c)) => {
-                let channels = self.passed(c.channels).len() as u32;
-                Some(DataStream::Continuous(Continuous { channels, ..c }))
-            }
-            _ => None,
-        };
-        vec![Port::DataStreamOut { name: "selected", data_stream_kind: Kind::Continuous, stream }]
-    }
-
-    fn process(&self, pass: &mut PassContext<Edges>, _: &mut (), passed: &mut Passed) {
-        let Some(Some(Buffer::Continuous(input))) = pass.inputs.first() else { return };
-        let Some(Buffer::Continuous(output)) = pass.outputs.get_mut(0) else { return };
+    fn process(
+        &self,
+        _pass: &mut PassContext<Edges>,
+        inputs: Inputs<Buffers>,
+        outputs: Outputs<Buffers>,
+        _: &mut (),
+        passed: &mut Passed,
+    ) {
+        let (Some(input), output) = (inputs.continuous, outputs.selected) else { return };
         // Worked out again only when the settings change.
         if passed.from.as_ref().is_none_or(|(apply, channels)| *apply != self.apply || *channels != self.channels) {
             passed.channels = self.passed(input.channels as u32);
@@ -132,9 +139,9 @@ impl Node<Edges> for ChannelSelector {
         });
     }
 
-    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
+    fn warnings(&self, inputs: &Inputs) -> Vec<String> {
         let mut warnings = require_input(inputs, "a continuous data stream");
-        if let Some(DataStream::Continuous(c)) = inputs[0]
+        if let Some(c) = inputs.continuous
             && let Err(e) = parse_channels(&self.channels, c.channels)
         {
             warnings.push(format!("{e}: passing on all the channels"));
@@ -153,22 +160,16 @@ mod tests {
         let stream = Continuous { channels: 4, sample_rate: 1000.0 };
         let mut selector = ChannelSelector { apply: false, channels: "2, 4".into() };
         let run = |selector: &ChannelSelector| {
-            let Some(DataStream::Continuous(out)) =
-                selector.list_ports_data_stream_out(&[Some(DataStream::Continuous(stream))])[0].stream()
-            else {
-                unreachable!()
-            };
+            let out = selector.output_streams(&Inputs { continuous: Some(stream) }).selected.unwrap();
             let mut input = stream.buffer(PASS_DURATION);
             input.len = 3;
             for c in 0..4 {
                 input.channel_mut(c).fill(c as f32);
             }
-            let input = Buffer::Continuous(input);
-            let mut outputs = [Buffer::Continuous(out.buffer(PASS_DURATION))];
-            let inputs = [Some(&input)];
-            let mut pass = PassContext::new(0, PASS_DURATION, &inputs, &mut outputs);
-            selector.process(&mut pass, &mut (), &mut Passed::default());
-            let Buffer::Continuous(output) = &outputs[0] else { unreachable!() };
+            let mut output = out.buffer(PASS_DURATION);
+            let (inputs, outputs) = (Inputs { continuous: Some(&input) }, Outputs { selected: &mut output });
+            let mut pass = PassContext::new(0, PASS_DURATION);
+            selector.process(&mut pass, inputs, outputs, &mut (), &mut Passed::default());
             (0..output.channels).map(|c| output.channel(c)[2]).collect::<Vec<_>>()
         };
         assert_eq!(run(&selector), vec![0.0, 1.0, 2.0, 3.0], "all, until applied");
@@ -176,7 +177,7 @@ mod tests {
         assert_eq!(run(&selector), vec![1.0, 3.0]);
         selector.channels = "none".into();
         assert_eq!(run(&selector), Vec::<f32>::new(), "nothing, if that's what's selected");
-        assert!(selector.warnings(&[Some(DataStream::Continuous(stream))]).is_empty());
+        assert!(selector.warnings(&Inputs { continuous: Some(stream) }).is_empty());
     }
 
     /// The rig with nothing selected, and every kind of node that takes continuous data taking that, and every kind
@@ -185,7 +186,7 @@ mod tests {
     fn nothing_selected_runs_records_and_draws_everything_after_it() {
         use crate::standard::ephys::board::{Source, serve_test_board};
         use crate::standard::themes::THEMES;
-        use crate::{Nodes, example_graph};
+        use crate::{Kind, Nodes, example_graph};
         use ephys_rs::base_directory::Place;
         use ephys_rs::engine::{Graph, NodesEnum, PortAddress, PortRole, Recording, Runner, Snapshot};
         use std::sync::Arc;

@@ -48,11 +48,11 @@ use crate::standard::pool::Pool;
 use crate::standard::tracking::pipeline::Blob;
 use crate::standard::tracking::{Crop, Detection, PositionSample, Positions, PositionsBuffer, Ruler, TimingLed};
 use crate::standard::widgets::{named_settings_grid, setting};
-use crate::standard::{Buffer, Command, CommandKind, DataStream, Edges, Kind, PublishedValue, ValueKind};
+use crate::standard::{Command, CommandKind, Edges, PublishedValue, ValueKind};
 use eframe::egui::{self, RichText};
 use ephys_rs::engine::{
-    Category, CommandContext, CommandSource, Flow, Node, NodeInfo, NodeThread, PassContext, Port, SnapshotLite,
-    ThreadContext, UiContext,
+    Buffers, Category, CommandContext, CommandSource, Flow, NoPorts, Node, NodeInfo, NodeThread, PassContext, Port,
+    SnapshotLite, ThreadContext, UiContext,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -526,6 +526,14 @@ impl ephys_rs::engine::PassState for Receiving {
                                the last, in order.";
 }
 
+ephys_rs::data_ports! {
+    outputs: pub struct Outputs {
+        positions: Out<Positions>,
+        pos_ttl: Out<Events> = "pos ttl",
+        log: Out<LogLines>,
+    }
+}
+
 impl Node<Edges> for VrComputer {
     const INFO: NodeInfo = NodeInfo {
         name: "VR Computer",
@@ -534,6 +542,8 @@ impl Node<Edges> for VrComputer {
                       object a line.",
     };
 
+    type Inputs = NoPorts;
+    type Outputs = Outputs;
     type State = Receiving;
     type WorkerState = ();
     /// What it shows, for its window.
@@ -541,28 +551,12 @@ impl Node<Edges> for VrComputer {
     type UiState = ();
     type GlobalSettings = ();
 
-    fn list_ports_data_stream_out(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
+    fn output_streams(&self, _inputs: &NoPorts) -> Outputs {
         let [_, _, width, height] = window(&self.custom).and_then(|crop| crop.bounds()).unwrap_or([0.0; 4]);
         let frame = |size: f32| if size > 0.0 { size.ceil() as u32 } else { FRAME_SIZE };
         let positions = Positions { fps: self.fps, width: frame(width), height: frame(height), source: SOURCE };
         let ttl = Events { lines: ttl_channels(&self.custom).unwrap_or(0), sample_rate: TTL_RATE as f32 };
-        vec![
-            Port::DataStreamOut {
-                name: "positions",
-                data_stream_kind: Kind::Positions,
-                stream: Some(DataStream::Positions(positions)),
-            },
-            Port::DataStreamOut {
-                name: "pos ttl",
-                data_stream_kind: Kind::Events,
-                stream: Some(DataStream::Events(ttl)),
-            },
-            Port::DataStreamOut {
-                name: "log",
-                data_stream_kind: Kind::LogLines,
-                stream: Some(DataStream::LogLines(LogLines { width: self.log_width })),
-            },
-        ]
+        Outputs { positions: Some(positions), pos_ttl: Some(ttl), log: Some(LogLines { width: self.log_width }) }
     }
 
     fn list_ports_val_cmd(&self) -> Vec<Port<Edges>> {
@@ -623,7 +617,14 @@ impl Node<Edges> for VrComputer {
         .into()
     }
 
-    fn process(&self, pass: &mut PassContext<Edges>, receiving: &mut Receiving, _: &mut ()) {
+    fn process(
+        &self,
+        pass: &mut PassContext<Edges>,
+        _inputs: NoPorts,
+        outputs: Outputs<Buffers>,
+        receiving: &mut Receiving,
+        _: &mut (),
+    ) {
         // Changing the address doesn't make the state afresh.
         if !receiving.connection.as_ref().is_some_and(|c| c.is_to(&self.ip, self.port)) {
             receiving.connection = Some(Connection::start((self.ip.clone(), self.port)));
@@ -632,9 +633,7 @@ impl Node<Edges> for VrComputer {
         let shared = &connection.running.shared;
         let recording = pass.recording();
         shared.keep_newest(pass.snapshot());
-        let [Buffer::Positions(positions), Buffer::Events(ttls), Buffer::LogLines(logs)] = &mut *pass.outputs else {
-            return;
-        };
+        let Outputs { positions, pos_ttl: ttls, log: logs } = outputs;
         positions.samples.clear();
         ttls.events.clear();
         ttls.pass_samples = (pass.duration * TTL_RATE).round() as usize;
@@ -705,7 +704,7 @@ impl Node<Edges> for VrComputer {
         });
     }
 
-    fn warnings(&self, _inputs: &[Option<DataStream>]) -> Vec<String> {
+    fn warnings(&self, _inputs: &NoPorts) -> Vec<String> {
         if complete(&self.custom) {
             return Vec::new();
         }
@@ -756,10 +755,7 @@ mod tests {
 
     /// A pass's buffers.
     fn buffers(node: &VrComputer) -> (PositionsBuffer, EventsBuffer, LogLinesBuffer) {
-        let outputs = node.list_ports_data_stream_out(&[]);
-        let (Some(DataStream::Positions(p)), Some(DataStream::Events(e)), Some(DataStream::LogLines(l))) =
-            (outputs[0].stream(), outputs[1].stream(), outputs[2].stream())
-        else {
+        let Outputs { positions: Some(p), pos_ttl: Some(e), log: Some(l) } = node.output_streams(&NoPorts) else {
             panic!("its streams")
         };
         (p.buffer(PASS_DURATION), e.buffer(PASS_DURATION), l.buffer(PASS_DURATION))
@@ -830,7 +826,7 @@ mod tests {
         assert_eq!(window(&keys(["5", "-5", "0", "1"])), None, "backwards");
 
         let node = VrComputer::default();
-        assert_eq!(node.warnings(&[]).len(), 1);
+        assert_eq!(node.warnings(&NoPorts).len(), 1);
         let mut custom = keys(["-5", "5", "-1", "3"]);
         assert!(!complete(&custom), "no calibration");
         custom.insert(CALIBRATION_KEY.into(), "0".into());
@@ -849,8 +845,8 @@ mod tests {
         custom.insert(TTL_CHANNELS_KEY.into(), "3".into());
         assert!(complete(&custom));
         let node = VrComputer { custom, ..node };
-        assert!(node.warnings(&[]).is_empty());
-        let Some(DataStream::Events(ttl)) = node.list_ports_data_stream_out(&[])[1].stream() else { panic!() };
+        assert!(node.warnings(&NoPorts).is_empty());
+        let ttl = node.output_streams(&NoPorts).pos_ttl.unwrap();
         assert_eq!(ttl.lines, 3, "a line a channel");
         let PublishedValue::Detection(detection) = &node.val_out(0) else { panic!() };
         assert_eq!(detection.crop, crop, "for Write LTX");

@@ -83,6 +83,22 @@ pub trait DataStreamsEnum: EdgeTypesEnum + Copy {
     fn empty(buffer: &mut Self::Buffer);
 }
 
+/// A node declares its data ports by the types of their data streams (see `data_ports!`), and the engine holds streams
+/// and buffers as the program's enums of them. `edge_types!` implements this for each data edge type the program
+/// lists, to go between the two.
+pub trait StreamOf<E: Edges>: DataStreamType {
+    /// Ports are matched by kind: this is the type's.
+    const KIND: Kind<E::DataStream>;
+    /// The stream, as the program's enum of them.
+    fn wrap(self) -> E::DataStream;
+    /// `stream` as this type, if that's the type it is.
+    fn from_stream(stream: &E::DataStream) -> Option<Self>;
+    /// `buffer` as this type's, if that's whose it is.
+    fn from_buffer(buffer: &Buffer<E>) -> Option<&Self::Buffer>;
+    /// `buffer` as this type's, to fill, if that's whose it is.
+    fn from_buffer_mut(buffer: &mut Buffer<E>) -> Option<&mut Self::Buffer>;
+}
+
 /// A node reading a published value (see `Node::list_ports_val_cmd`) finds it as its own type, rather than the
 /// program's enum of them, through this, which `edge_types!` implements for each type of value `V` holds.
 pub trait ValueType<V>: Sized {
@@ -215,6 +231,38 @@ macro_rules! edge_types {
         $svis enum $buffer {
             $($sv(<$st as $crate::engine::DataStreamType>::Buffer)),+
         }
+
+        $(
+            #[allow(unreachable_patterns)]
+            impl $crate::engine::StreamOf<$edges> for $st {
+                const KIND: $kind = $kind::$sv;
+
+                fn wrap(self) -> $data_stream {
+                    $data_stream::$sv(self)
+                }
+
+                fn from_stream(stream: &$data_stream) -> Option<Self> {
+                    match stream {
+                        $data_stream::$sv(s) => Some(*s),
+                        _ => None,
+                    }
+                }
+
+                fn from_buffer(buffer: &$buffer) -> Option<&Self::Buffer> {
+                    match buffer {
+                        $buffer::$sv(b) => Some(b),
+                        _ => None,
+                    }
+                }
+
+                fn from_buffer_mut(buffer: &mut $buffer) -> Option<&mut Self::Buffer> {
+                    match buffer {
+                        $buffer::$sv(b) => Some(b),
+                        _ => None,
+                    }
+                }
+            }
+        )+
 
         impl $crate::engine::DataStreamsEnum for $data_stream {
             type Buffer = $buffer;

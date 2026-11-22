@@ -5,13 +5,20 @@
 use eframe::egui::{self, RichText};
 use serde::{Deserialize, Serialize};
 
-use crate::standard::ephys::Event;
+use crate::Edges;
+use crate::standard::ephys::{Event, Events};
 use crate::standard::pool::Pool;
 use crate::standard::widgets::{named_settings_grid, require_input, setting};
-use crate::{Buffer, DataStream, Edges, Kind};
 use ephys_rs::engine::{
-    Category, Node, NodeInfo, PassContext, PassState, Port, Prepare, PrepareContext, Prepared, UiContext,
+    Buffers, Category, InputPorts, NoPorts, Node, NodeInfo, PassContext, PassState, Prepare, PrepareContext, Prepared,
+    UiContext,
 };
+
+ephys_rs::data_ports! {
+    inputs: pub struct Inputs {
+        events: In<Events>,
+    }
+}
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -65,6 +72,8 @@ impl Node<Edges> for TtlRecordingControl {
         description: "Starts recording when a line of its events goes up, and can stop it when it goes down.",
     };
 
+    type Inputs = Inputs;
+    type Outputs = NoPorts;
     type State = Seen;
     type WorkerState = ();
     /// What it's seen, for its window.
@@ -72,12 +81,8 @@ impl Node<Edges> for TtlRecordingControl {
     type UiState = ();
     type GlobalSettings = ();
 
-    fn list_ports_data_stream_in(&self) -> Vec<Port<Edges>> {
-        vec![Port::DataStreamIn { name: "events", data_stream_kind: Kind::Events }]
-    }
-
-    fn list_ports_data_stream_out(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
-        Vec::new()
+    fn output_streams(&self, _inputs: &Inputs) -> NoPorts {
+        NoPorts
     }
 
     fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Seen, (), Self> {
@@ -87,8 +92,8 @@ impl Node<Edges> for TtlRecordingControl {
         Prepared::shared(Seen::default()).into()
     }
 
-    fn process(&self, pass: &mut PassContext<Edges>, seen: &mut Seen, _: &mut ()) {
-        let Some(Some(Buffer::Events(events))) = pass.inputs.first() else { return };
+    fn process(&self, pass: &mut PassContext<Edges>, inputs: Inputs<Buffers>, _: NoPorts, seen: &mut Seen, _: &mut ()) {
+        let Some(events) = inputs.events else { return };
         if let Some(on) = self.wanted(&events.events, seen).filter(|on| *on != pass.recording()) {
             pass.request_recording(on);
             *if on { &mut seen.starts } else { &mut seen.stops } += 1;
@@ -99,10 +104,7 @@ impl Node<Edges> for TtlRecordingControl {
 
     fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
         let Some(ui) = ui else { return };
-        let lines = match context.inputs.first() {
-            Some(Some(DataStream::Events(stream))) => Some(stream.lines),
-            _ => None,
-        };
+        let lines = Inputs::of(context.inputs).events.map(|stream| stream.lines);
         let seen = context.shared::<Pool<Seen>>().and_then(Pool::newest).map(|seen| *seen);
         let warning = context.theme.warning;
         ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, _context| {
@@ -136,9 +138,9 @@ impl Node<Edges> for TtlRecordingControl {
         });
     }
 
-    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
+    fn warnings(&self, inputs: &Inputs) -> Vec<String> {
         let mut warnings = require_input(inputs, "events");
-        if let Some(Some(DataStream::Events(stream))) = inputs.first()
+        if let Some(stream) = inputs.events
             && self.line > stream.lines
         {
             let lines = if stream.lines == 1 { "line".to_string() } else { format!("{} lines", stream.lines) };
@@ -151,7 +153,7 @@ impl Node<Edges> for TtlRecordingControl {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::standard::ephys::{Events, EventsBuffer};
+    use crate::standard::ephys::EventsBuffer;
     use ephys_rs::commands::Sent;
 
     fn event(line: u8, high: bool) -> Event {
@@ -160,13 +162,12 @@ mod tests {
 
     /// What a pass of `events` asks for, recording or not.
     fn asks(node: &TtlRecordingControl, events: Vec<Event>, recording: bool, seen: &mut Seen) -> Vec<bool> {
-        let buffer = Buffer::Events(EventsBuffer { events, pass_samples: 0 });
-        let inputs = [Some(&buffer)];
-        let mut pass = PassContext::new(0, 0.02, &inputs, &mut []);
+        let buffer = EventsBuffer { events, pass_samples: 0 };
+        let mut pass = PassContext::new(0, 0.02);
         let shared = Pool::<Seen>::default();
         pass.shared = &shared;
         pass.set_recording(recording);
-        node.process(&mut pass, seen, &mut ());
+        node.process(&mut pass, Inputs { events: Some(&buffer) }, NoPorts, seen, &mut ());
         let asked = pass.commands.take().into_iter().map(|sent| match sent {
             Sent::Recording(_, on) => on,
             _ => panic!("recording"),
@@ -199,8 +200,8 @@ mod tests {
     #[test]
     fn it_warns_of_a_line_its_events_dont_have() {
         let node = TtlRecordingControl { line: 3, ..Default::default() };
-        assert_eq!(node.warnings(&[None]), ["Connect events"]);
-        let events = |lines| [Some(DataStream::Events(Events { lines, sample_rate: 1000.0 }))];
+        assert_eq!(node.warnings(&Inputs { events: None }), ["Connect events"]);
+        let events = |lines| Inputs { events: Some(Events { lines, sample_rate: 1000.0 }) };
         assert_eq!(node.warnings(&events(2)), ["Its events have 2 lines: there's no line 3"]);
         assert!(node.warnings(&events(3)).is_empty());
     }

@@ -9,8 +9,8 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    CommandContext, CommandSource, CommandsEnum, EdgeInfo, EdgeTypesEnum, Edges, Node, NodesEnum, Plan, Port,
-    PortAddress, PortKind, PortRole, UiContext,
+    CommandContext, CommandSource, CommandsEnum, EdgeInfo, EdgeTypesEnum, Edges, InputPorts, Node, NodesEnum,
+    OutputPorts, Plan, Port, PortAddress, PortKind, PortRole, UiContext,
 };
 use crate::commands::{Address, Commands};
 use crate::theme::Colours;
@@ -133,10 +133,11 @@ impl<E: Edges> NodeState<E> {
     pub fn of<N: Node<E>>(node: &N, input_streams: Vec<Option<E::DataStream>>) -> Self {
         let (val_outs, val_ins): (Vec<_>, Vec<_>) =
             node.list_ports_val_cmd().into_iter().partition(|p| p.role() == PortRole::ValOutCmdIn);
+        let inputs = N::Inputs::of(&input_streams);
         NodeState {
-            inputs: node.list_ports_data_stream_in(),
-            outputs: node.list_ports_data_stream_out(&input_streams),
-            warnings: node.warnings(&input_streams),
+            inputs: N::Inputs::ports(),
+            outputs: node.output_streams(&inputs).ports(),
+            warnings: node.warnings(&inputs),
             input_streams,
             values: (0..val_outs.len()).map(|port| node.val_out(port)).collect(),
             val_outs,

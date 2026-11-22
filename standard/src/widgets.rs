@@ -3,7 +3,7 @@
 use eframe::egui;
 
 use crate::{DataStream, Edges};
-use ephys_rs::engine::{EdgeTypesEnum, UiContext};
+use ephys_rs::engine::{EdgeTypesEnum, InputPorts, UiContext};
 use ephys_rs::gui::widgets::{Icon, small_icon_button, small_toggle_button};
 use ephys_rs::theme::Colours;
 
@@ -43,8 +43,10 @@ pub fn combo<T: PartialEq + Copy>(
         .response
 }
 
-pub fn require_input(inputs: &[Option<DataStream>], what: &str) -> Vec<String> {
-    if inputs.iter().all(|i| i.is_none()) { vec![format!("Connect {what}")] } else { Vec::new() }
+/// A node that needs something connected warns until something is. This is that warning, if none of `inputs` has a
+/// stream, asking for `what`.
+pub fn require_input(inputs: &impl InputPorts<Edges>, what: &str) -> Vec<String> {
+    if inputs.streams().iter().all(|i| i.is_none()) { vec![format!("Connect {what}")] } else { Vec::new() }
 }
 
 /// A round tick spacing (1, 2 or 5 times a power of ten) of at least `raw`.

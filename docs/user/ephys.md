@@ -18,8 +18,8 @@ settings ports are marked ◇.
 
 ## Acquisition Board
 
-> **Source.** Out: `headstages` (continuous, µV), `digital` (events), and, if they're on, `auxiliary` and `analogue`
-> (continuous).
+> **Source.** Out: `headstages` (continuous, µV), `digital` (events), `auxiliary` (each headstage's three auxiliary
+> inputs: accelerometers, say) and `analogue` (the board's 8 analogue inputs), both continuous.
 
 <img src="../../tests/snapshots/board_settings.png" alt="The Acquisition Board's settings">
 
@@ -42,8 +42,6 @@ the plugin's liboni as a library of its own, which it is up to version 1.1.
   only ever acquires the headstages set: if they aren't plugged in, Play asks what to do (see
   [Playing and recording](main-window.md#playing-and-recording)), and while running it acquires none of them, saying
   so, until **Use the board's headstages** fixes it.
-- **Auxiliary inputs**: each headstage's three auxiliary inputs (accelerometers, say), as an output of their own.
-- **Analogue inputs**: the board's 8 analogue inputs, likewise.
 - **Bandwidth**: the headstages' own analogue filters (low and high cut), and their DSP high-pass. The chips can only
   set them to certain values, which depend on the sample rate: as the board starts, if the settings aren't values
   it can do, Play asks whether to use the nearest it can.

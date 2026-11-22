@@ -3,20 +3,30 @@
 //! downs, timed by the camera's clock, as the positions are.
 
 use eframe::egui::{self, RichText};
-use ephys_rs::engine::TreeShake;
+use ephys_rs::engine::{Buffers, InputPorts, TreeShake};
 use serde::{Deserialize, Serialize};
 
 use crate::standard::ephys::{Event, Events};
 use crate::standard::tracking::pipeline::{Pipeline, timing_led_on};
-use crate::standard::tracking::{CAMERA_TRACKER, PositionSample, Positions};
+use crate::standard::tracking::{CAMERA_TRACKER, PositionSample, Positions, Video};
 use crate::standard::tracking::{Crop, Detection, Ruler, TimingLed};
 use crate::standard::widgets::{named_settings_grid, require_input, setting};
-use crate::{Buffer, Command, CommandKind, DataStream, Edges, Kind, PublishedValue, ValueKind};
+use crate::{Command, CommandKind, Edges, PublishedValue, ValueKind};
 use ephys_rs::engine::{
     Category, CommandContext, CommandSource, Node, NodeInfo, PassContext, Port, Prepare, PrepareContext, Prepared,
     UiContext,
 };
 use ephys_rs::gui::widgets::{Icon, small_icon_button};
+
+ephys_rs::data_ports! {
+    inputs: pub struct Inputs {
+        video: In<Video>,
+    }
+    outputs: pub struct Outputs {
+        positions: Out<Positions>,
+        pos_ttl: Out<Events> = "pos ttl",
+    }
+}
 
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -53,33 +63,25 @@ impl Node<Edges> for PositionDetector {
         TreeShake::needing_all(inputs.contains(&true) && outputs.contains(&true), inputs.len())
     }
 
+    type Inputs = Inputs;
+    type Outputs = Outputs;
     type State = Finding;
     type WorkerState = ();
     type Shared = ();
     type UiState = ();
     type GlobalSettings = ();
 
-    fn list_ports_data_stream_in(&self) -> Vec<Port<Edges>> {
-        vec![Port::DataStreamIn { name: "video", data_stream_kind: Kind::Video }]
-    }
-
-    fn list_ports_data_stream_out(&self, inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
-        let (positions, ttl) = match inputs[0] {
-            Some(DataStream::Video(video)) => (
-                Some(DataStream::Positions(Positions {
-                    fps: video.fps,
-                    width: video.width,
-                    height: video.height,
-                    source: CAMERA_TRACKER,
-                })),
-                Some(DataStream::Events(Events { lines: 1, sample_rate: video.fps })),
-            ),
-            _ => (None, None),
-        };
-        vec![
-            Port::DataStreamOut { name: "positions", data_stream_kind: Kind::Positions, stream: positions },
-            Port::DataStreamOut { name: "pos ttl", data_stream_kind: Kind::Events, stream: ttl },
-        ]
+    fn output_streams(&self, inputs: &Inputs) -> Outputs {
+        let video = inputs.video;
+        Outputs {
+            positions: video.map(|video| Positions {
+                fps: video.fps,
+                width: video.width,
+                height: video.height,
+                source: CAMERA_TRACKER,
+            }),
+            pos_ttl: video.map(|video| Events { lines: 1, sample_rate: video.fps }),
+        }
     }
 
     fn list_ports_val_cmd(&self) -> Vec<Port<Edges>> {
@@ -103,9 +105,16 @@ impl Node<Edges> for PositionDetector {
         Prepared::shared(Finding::default()).into()
     }
 
-    fn process(&self, pass: &mut PassContext<Edges>, finding: &mut Finding, _: &mut ()) {
-        let Some(Some(Buffer::Video(video))) = pass.inputs.first() else { return };
-        let [Buffer::Positions(output), Buffer::Events(ttl)] = &mut *pass.outputs else { return };
+    fn process(
+        &self,
+        _pass: &mut PassContext<Edges>,
+        inputs: Inputs<Buffers>,
+        outputs: Outputs<Buffers>,
+        finding: &mut Finding,
+        _: &mut (),
+    ) {
+        let Some(video) = inputs.video else { return };
+        let Outputs { positions: output, pos_ttl: ttl } = outputs;
         output.samples.clear();
         ttl.events.clear();
         ttl.pass_samples = video.frames;
@@ -137,15 +146,15 @@ impl Node<Edges> for PositionDetector {
     fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
         let Some(ui) = ui else { return };
         ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, context| {
-            let size = match context.inputs[0] {
-                Some(DataStream::Video(video)) => [video.width as f32, video.height as f32],
+            let size = match Inputs::of(context.inputs).video {
+                Some(video) => [video.width as f32, video.height as f32],
                 _ => [640.0, 480.0],
             };
             all_detection_ui(ui, &mut node.detection, size);
         });
     }
 
-    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
+    fn warnings(&self, inputs: &Inputs) -> Vec<String> {
         require_input(inputs, "video")
     }
 }
@@ -386,9 +395,10 @@ mod tests {
 
     #[test]
     fn says_what_it_outputs() {
-        let video = crate::standard::tracking::Video { width: 640, height: 480, fps: 50.0 };
-        let outputs = PositionDetector::default().list_ports_data_stream_out(&[Some(DataStream::Video(video))]);
-        assert_eq!(outputs[1].name(), "pos ttl");
-        assert!(matches!(outputs[1].stream(), Some(DataStream::Events(Events { lines: 1, .. }))), "a single line");
+        use ephys_rs::engine::OutputPorts;
+        let video = Video { width: 640, height: 480, fps: 50.0 };
+        let outputs = PositionDetector::default().output_streams(&Inputs { video: Some(video) });
+        assert_eq!(outputs.ports()[1].name(), "pos ttl");
+        assert!(matches!(outputs.pos_ttl, Some(Events { lines: 1, .. })), "a single line");
     }
 }

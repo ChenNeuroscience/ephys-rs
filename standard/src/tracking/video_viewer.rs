@@ -1,17 +1,24 @@
 use eframe::egui::{self, Align2, Color32, FontId, Stroke};
-use ephys_rs::engine::BufferUsage;
 use serde::{Deserialize, Serialize};
 
 use super::tracker_view::{FrameView, show_frame};
+use crate::Edges;
 use crate::standard::plots;
 use crate::standard::pool::{Pool, WINDOW_BUFFERS};
-use crate::standard::tracking::VideoBuffer;
 use crate::standard::tracking::overlay::Overlays;
+use crate::standard::tracking::{Video, VideoBuffer};
 use crate::standard::widgets::require_input;
-use crate::{Buffer, DataStream, Edges, Kind};
 use ephys_rs::engine::{
-    Category, DataStreamType, EdgeType, Node, NodeInfo, PASS_DURATION, PassContext, Port, UiContext,
+    Buffers, Category, DataStreamType, EdgeType, InputPorts, NoPorts, Node, NodeInfo, PASS_DURATION, PassContext,
+    UiContext,
 };
+
+ephys_rs::data_ports! {
+    inputs: pub struct Inputs {
+        /// The viewer takes the pass's frames, to show the last.
+        video: Take<Video>,
+    }
+}
 
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -25,6 +32,8 @@ impl Node<Edges> for VideoViewer {
     const WINDOW_SIZE: [f32; 2] = [820.0, 520.0];
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
+    type Inputs = Inputs;
+    type Outputs = NoPorts;
     type State = ();
     type WorkerState = ();
     /// The latest frames, for its window: their buffers, swapped in (so a pool of buffers like the pass's).
@@ -32,36 +41,25 @@ impl Node<Edges> for VideoViewer {
     type UiState = ();
     type GlobalSettings = ();
 
-    fn list_ports_data_stream_in(&self) -> Vec<Port<Edges>> {
-        vec![Port::DataStreamIn { name: "video", data_stream_kind: Kind::Video }]
-    }
-
-    fn list_ports_data_stream_out(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
-        Vec::new()
-    }
-
-    /// Takes the pass's frames, to show the last.
-    fn evaluate_buffer_usage(&self, inputs: usize, outputs: usize) -> BufferUsage {
-        BufferUsage { takes: vec![true; inputs], ..BufferUsage::none(inputs, outputs) }
+    fn output_streams(&self, _inputs: &Inputs) -> NoPorts {
+        NoPorts
     }
 
     /// Buffers like the pass's, to swap for them.
-    fn shared(&self, inputs: &[Option<DataStream>]) -> Pool<VideoBuffer> {
-        let Some(DataStream::Video(stream)) = inputs[0] else { return Pool::default() };
+    fn shared(&self, inputs: &Inputs) -> Pool<VideoBuffer> {
+        let Some(stream) = inputs.video else { return Pool::default() };
         Pool::new((0..WINDOW_BUFFERS).map(|_| stream.buffer(PASS_DURATION)), 0)
     }
 
     /// Swaps the pass's frames (if it has any) into the pool its window reads from: nothing's copied.
-    fn process(&self, pass: &mut PassContext<Edges>, _: &mut (), _: &mut ()) {
-        let Some(Buffer::Video(video)) = pass.input(0) else { return };
+    fn process(&self, pass: &mut PassContext<Edges>, inputs: Inputs<Buffers>, _: NoPorts, _: &mut (), _: &mut ()) {
+        let Some(video) = inputs.video else { return };
         if video.frames == 0 {
             return;
         }
         let (sequence, pool) = (pass.sequence, pass.shared::<Pool<VideoBuffer>>());
         let Some(mut frames) = pool.reuse() else { return };
-        if let Some(Buffer::Video(video)) = pass.take_input(0) {
-            std::mem::swap(video, &mut frames);
-        }
+        std::mem::swap(video, &mut frames);
         pool.send_as_of(sequence, frames);
     }
 
@@ -72,7 +70,7 @@ impl Node<Edges> for VideoViewer {
             ui.add_enabled_ui(!locked, |ui| ui.checkbox(&mut self.crosshair, "Crosshair"));
             context.node_toolbar(ui);
         });
-        let Some(DataStream::Video(stream)) = context.inputs[0] else {
+        let Some(stream) = Inputs::of(context.inputs).video else {
             plots::unconnected(ui, context.theme, "Connect video to view it");
             return;
         };
@@ -103,7 +101,7 @@ impl Node<Edges> for VideoViewer {
         );
     }
 
-    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
+    fn warnings(&self, inputs: &Inputs) -> Vec<String> {
         require_input(inputs, "video")
     }
 }

@@ -7,15 +7,24 @@ use serde::{Deserialize, Serialize};
 
 use super::capture::{self, Capture, Shape, State, Status};
 use super::{AUX_PER_HEADSTAGE, Bandwidth, BoardInfo, Config, Headstage, OpalKellyKind, PORTS, SAMPLE_RATES, Source};
+use crate::Edges;
 use crate::standard::ephys::{Continuous, Events};
 use crate::standard::pool::Pool;
 use crate::standard::widgets::{named_settings_grid, setting, settings_grid};
-use crate::{Buffer, DataStream, Edges, Kind};
 use ephys_rs::engine::{
-    Category, Flow, Node, NodeInfo, NodeThread, PassContext, PoolStatus, Port, Prepare, PrepareContext, Prepared,
-    Suggestion, ThreadContext, UiContext, UserDecision,
+    Buffers, Category, Flow, NoPorts, Node, NodeInfo, NodeThread, OutputPorts, PassContext, PoolStatus, Prepare,
+    PrepareContext, Prepared, Suggestion, ThreadContext, UiContext, UserDecision,
 };
 use ephys_rs::gui::widgets::{Icon, small_icon_button};
+
+ephys_rs::data_ports! {
+    outputs: pub struct Outputs {
+        headstages: Out<Continuous>,
+        digital: Out<Events>,
+        auxiliary: Out<Continuous>,
+        analogue: Out<Continuous>,
+    }
+}
 
 /// The board's analogue inputs.
 pub const ADC_CHANNELS: u32 = 8;
@@ -27,9 +36,6 @@ pub struct AcquisitionBoard {
     pub sample_rate: u32,
     /// The headstages expected: their channels are the headstage output's. Detect finds a board's.
     pub headstages: Vec<Headstage>,
-    /// Whether to output the headstages' auxiliary inputs, and the board's analogue inputs.
-    pub aux: bool,
-    pub adc: bool,
     pub bandwidth: Bandwidth,
 }
 
@@ -42,8 +48,6 @@ impl Default for AcquisitionBoard {
                 Headstage { port: "A1".into(), channels: 32 },
                 Headstage { port: "B1".into(), channels: 32 },
             ],
-            aux: false,
-            adc: false,
             bandwidth: Bandwidth::default(),
         }
     }
@@ -109,13 +113,16 @@ impl AcquisitionBoard {
         Config { sample_rate: self.sample_rate, bandwidth: self.bandwidth, headstages: self.headstages.clone() }
     }
 
-    /// The outputs' indices: headstages and digital inputs, then auxiliary and analogue inputs if they're on.
-    fn aux_output(&self) -> Option<usize> {
-        self.aux.then_some(2)
-    }
-
-    fn adc_output(&self) -> Option<usize> {
-        self.adc.then_some(2 + self.aux as usize)
+    /// The board's data streams, as its capture thread fills them, and as the node outputs them.
+    fn shape(&self) -> Shape {
+        let rate = self.sample_rate as f32;
+        let continuous = |channels| Continuous { channels, sample_rate: rate };
+        Shape {
+            ephys: continuous(Headstage::total(&self.headstages)),
+            aux: continuous(AUX_PER_HEADSTAGE * self.headstages.len() as u32),
+            adc: continuous(ADC_CHANNELS),
+            events: Events { lines: self.source.ttl_lines(), sample_rate: rate },
+        }
     }
 }
 
@@ -127,6 +134,8 @@ impl Node<Edges> for AcquisitionBoard {
                       an Open Ephys board, Intan's RHD USB board, or the fake board in synthetic_streams/.",
     };
 
+    type Inputs = NoPorts;
+    type Outputs = Outputs;
     type State = Acquiring;
     type WorkerState = ();
     /// What it shows, for its window.
@@ -134,37 +143,14 @@ impl Node<Edges> for AcquisitionBoard {
     type UiState = ();
     type GlobalSettings = super::OpenEphysSettings;
 
-    fn list_ports_data_stream_out(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
-        let rate = self.sample_rate as f32;
-        let continuous = |channels| Some(DataStream::Continuous(Continuous { channels, sample_rate: rate }));
-        let mut outputs = vec![
-            Port::DataStreamOut {
-                name: "headstages",
-                data_stream_kind: Kind::Continuous,
-                stream: continuous(Headstage::total(&self.headstages)),
-            },
-            Port::DataStreamOut {
-                name: "digital",
-                data_stream_kind: Kind::Events,
-                stream: Some(DataStream::Events(Events { lines: self.source.ttl_lines(), sample_rate: rate })),
-            },
-        ];
-        if self.aux {
-            let channels = AUX_PER_HEADSTAGE * self.headstages.len() as u32;
-            outputs.push(Port::DataStreamOut {
-                name: "auxiliary",
-                data_stream_kind: Kind::Continuous,
-                stream: continuous(channels),
-            });
+    fn output_streams(&self, _inputs: &NoPorts) -> Outputs {
+        let shape = self.shape();
+        Outputs {
+            headstages: Some(shape.ephys),
+            digital: Some(shape.events),
+            auxiliary: Some(shape.aux),
+            analogue: Some(shape.adc),
         }
-        if self.adc {
-            outputs.push(Port::DataStreamOut {
-                name: "analogue",
-                data_stream_kind: Kind::Continuous,
-                stream: continuous(ADC_CHANNELS),
-            });
-        }
-        outputs
     }
 
     fn threads(&self) -> Vec<NodeThread> {
@@ -174,7 +160,7 @@ impl Node<Edges> for AcquisitionBoard {
             flow: Flow::ToPasses,
             why: "On a thread of its own so samples are taken from the board as they come (before its buffer \
                   overflows), whatever the passes are doing.",
-            swapped_outputs: (0..self.list_ports_data_stream_out(&[]).len()).collect(),
+            swapped_outputs: (0..self.output_streams(&NoPorts).ports().len()).collect(),
         }]
     }
 
@@ -209,15 +195,7 @@ impl Node<Edges> for AcquisitionBoard {
         if context.unchanged(self) {
             return Prepared::nothing().into();
         }
-        let rate = self.sample_rate as f32;
-        let continuous = |channels| Continuous { channels, sample_rate: rate };
-        let shape = Shape {
-            ephys: continuous(Headstage::total(&self.headstages)),
-            aux: continuous(AUX_PER_HEADSTAGE * self.headstages.len() as u32),
-            adc: continuous(ADC_CHANNELS),
-            events: Events { lines: self.source.ttl_lines(), sample_rate: rate },
-        };
-        let capture = Capture::start(self.source.clone(), self.config(), shape);
+        let capture = Capture::start(self.source.clone(), self.config(), self.shape());
         let board = self.clone();
         Prepare::Wait(Box::new(move || {
             let decisions = board.decisions(&capture.started(START_TIMEOUT));
@@ -227,34 +205,31 @@ impl Node<Edges> for AcquisitionBoard {
 
     /// Takes the samples that have arrived since the last pass, swapping the buffers they're in for the pass's
     /// own (which go back to the capture thread's pool to fill), so nothing's copied.
-    fn process(&self, pass: &mut PassContext<Edges>, acquiring: &mut Acquiring, _: &mut ()) {
+    fn process(
+        &self,
+        pass: &mut PassContext<Edges>,
+        _inputs: NoPorts,
+        outputs: Outputs<Buffers>,
+        acquiring: &mut Acquiring,
+        _: &mut (),
+    ) {
         let Some(capture) = &acquiring.capture else { return };
-        // The headstages', auxiliary and analogue inputs' outputs, if they're on.
-        let outputs = [Some(0), self.aux_output(), self.adc_output()];
+        let Outputs { headstages, digital, auxiliary, analogue } = outputs;
         match capture.pool().take(|samples| samples.is_empty()) {
             Some(mut samples) => {
-                let buffers = [&mut samples.ephys, &mut samples.aux, &mut samples.adc];
-                for (buffer, output) in buffers.into_iter().zip(outputs) {
-                    if let Some(Some(Buffer::Continuous(out))) = output.map(|o| pass.outputs.get_mut(o)) {
-                        std::mem::swap(out, buffer);
-                    }
-                }
-                if let Some(Buffer::Events(out)) = pass.outputs.get_mut(1) {
-                    std::mem::swap(out, &mut samples.events);
-                }
+                std::mem::swap(headstages, &mut samples.ephys);
+                std::mem::swap(auxiliary, &mut samples.aux);
+                std::mem::swap(analogue, &mut samples.adc);
+                std::mem::swap(digital, &mut samples.events);
                 capture.pool().give_back(samples);
             }
             // Nothing's come since the last pass.
             None => {
-                for output in outputs.into_iter().flatten() {
-                    if let Some(Buffer::Continuous(out)) = pass.outputs.get_mut(output) {
-                        out.len = 0;
-                    }
+                for out in [headstages, auxiliary, analogue] {
+                    out.len = 0;
                 }
-                if let Some(Buffer::Events(out)) = pass.outputs.get_mut(1) {
-                    out.events.clear();
-                    out.pass_samples = 0;
-                }
+                digital.events.clear();
+                digital.pass_samples = 0;
             }
         }
         // Not if the capture thread's updating the status just then: the next pass shows it.
@@ -306,10 +281,6 @@ impl Node<Edges> for AcquisitionBoard {
             ui.label(RichText::new("Headstages").strong());
             headstages_ui(ui, &mut node.headstages);
             detect_ui(ui, node, theme);
-
-            ui.add_space(6.0);
-            ui.checkbox(&mut node.aux, format!("Auxiliary inputs ({AUX_PER_HEADSTAGE} per headstage)"));
-            ui.checkbox(&mut node.adc, format!("Analogue inputs ({ADC_CHANNELS})"));
 
             ui.add_space(6.0);
             ui.label(RichText::new("Bandwidth").strong());
@@ -379,7 +350,7 @@ impl Node<Edges> for AcquisitionBoard {
         });
     }
 
-    fn warnings(&self, _inputs: &[Option<DataStream>]) -> Vec<String> {
+    fn warnings(&self, _inputs: &NoPorts) -> Vec<String> {
         if self.headstages.is_empty() {
             vec!["No headstages: add some, or detect the board's".into()]
         } else {

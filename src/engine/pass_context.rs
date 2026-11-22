@@ -1,7 +1,8 @@
 //! The engine runs the graph in passes, each covering `PASS_DURATION` of time, which a worker runs through every node
-//! in the plan's order (see `run`). As a pass reaches a node, the node's `process` is given its context in the pass
-//! (`PassContext`): its inputs, buffers for its outputs, the values its ports read, the snapshot the pass runs against
-//! (as nodes see it: whether it's recording, say), what it shares with the GUI, and where it sends commands.
+//! in the plan's order (see `run`). As a pass reaches a node, the node's `process` is given its inputs' and outputs'
+//! buffers (as the node declared them: see `crate::engine::data_ports`), and its context in the pass (`PassContext`):
+//! the values its ports read, the snapshot the pass runs against (as nodes see it: whether it's recording, say), what
+//! it shares with the GUI, and where it sends commands.
 
 use std::any::Any;
 use std::sync::Arc;
@@ -12,7 +13,20 @@ use crate::commands::{Address, Commands};
 /// Each pass covers this many seconds of data.
 pub const PASS_DURATION: f64 = 0.02;
 
-/// As a pass reaches a node, the engine makes this for it, and gives it to the node's `process`.
+/// As a pass reaches a node, the engine takes the node's buffers out of the worker's, as the plan says, in the order the
+/// node's ports are declared. The engine hands these to the program's `NodesEnum::process`, which gives them to the
+/// node's `process` as the node's own types (see `InputPorts::view` and `OutputPorts::view`).
+pub struct PassBuffers<'a, E: Edges> {
+    /// For each input, the pass's data on it, if it's connected (and the node isn't taking it).
+    pub inputs: &'a [Option<&'a Buffer<E>>],
+    /// For each input the node takes (see `BufferUsage::takes`), the input's buffer.
+    pub taken: &'a mut [Option<Buffer<E>>],
+    /// For each output, a buffer for the node to fill.
+    pub outputs: &'a mut [Buffer<E>],
+}
+
+/// As a pass reaches a node, the engine makes this for it, and gives it to the node's `process`, besides the node's
+/// buffers.
 pub struct PassContext<'a, E: Edges> {
     /// The engine numbers passes from 0, each covering the next `duration` seconds. (No node needs the number just
     /// now.)
@@ -20,12 +34,6 @@ pub struct PassContext<'a, E: Edges> {
     pub duration: f64,
     /// The node the pass is running.
     pub node: NodeId,
-    /// For each input, the pass's data on it, if it's connected (and the node isn't taking it: see `take_input`).
-    pub inputs: &'a [Option<&'a Buffer<E>>],
-    /// For each input the node takes (see `BufferUsage::takes`), the input's buffer.
-    pub(super) taken: &'a mut [Option<Buffer<E>>],
-    /// For each output, a buffer for the node to fill.
-    pub outputs: &'a mut [Buffer<E>],
     /// For each of the node's `ValInCmdOut` and `ValIn` ports, what the node at the other end published as the snapshot
     /// was made, if it's connected (which a writer records, say: see `val_in`).
     pub val_ins: &'a [Option<E::PublishedValue>],
@@ -40,17 +48,11 @@ pub struct PassContext<'a, E: Edges> {
 impl<'a, E: Edges> PassContext<'a, E> {
     /// Tests try nodes out on a pass like this: not recording, with no `ValInCmdOut` or `ValIn` ports connected.
     #[cfg(test)]
-    pub fn new(
-        sequence: u64,
-        duration: f64,
-        inputs: &'a [Option<&'a Buffer<E>>],
-        outputs: &'a mut [Buffer<E>],
-    ) -> Self {
-        let taken: &'a mut [Option<Buffer<E>>] = Box::leak(Box::new([]));
+    pub fn new(sequence: u64, duration: f64) -> Self {
         let commands = Box::leak(Box::default());
         let (node, val_ins, shared) = (NodeId(0), &[], &());
         let snapshot = Self::trying(false);
-        PassContext { sequence, duration, node, inputs, taken, outputs, val_ins, snapshot, shared, commands }
+        PassContext { sequence, duration, node, val_ins, snapshot, shared, commands }
     }
 
     /// Tests try nodes out against a snapshot like this: running as of now, and recording or not.
@@ -106,21 +108,6 @@ impl<'a, E: Edges> PassContext<'a, E> {
     /// Whatever any node asks last is what happens. See `crate::commands`.
     pub fn request_recording(&self, on: bool) {
         self.commands.request_recording(self.node, on);
-    }
-
-    /// The node reads an input's data with this, whether the node takes the input (see `take_input`) or not.
-    pub fn input(&self, input_idx: usize) -> Option<&Buffer<E>> {
-        match self.taken.get(input_idx) {
-            Some(Some(buffer)) => Some(buffer),
-            _ => self.inputs.get(input_idx).copied().flatten(),
-        }
-    }
-
-    /// A node that takes an input (see `BufferUsage::takes`) gets the input's buffer here, if it's connected, to swap
-    /// for another just as big (of the same data stream), which the pass carries on with. The data's the node's to do
-    /// as it likes with.
-    pub fn take_input(&mut self, input_idx: usize) -> Option<&mut Buffer<E>> {
-        self.taken.get_mut(input_idx)?.as_mut()
     }
 
     /// While recording, a writer finds here the base directory the recording goes in (see `crate::base_directory`), if

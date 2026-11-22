@@ -246,11 +246,9 @@ impl<'a, E: Edges, N> PrepareContext<'a, E, N> {
 
 /// Tests try nodes out with the state a node makes for `inputs` when it's new to the run, not recording, on one worker.
 /// This returns the node's shared state and its worker's.
-pub fn fresh_states<E: Edges, N: super::Node<E>>(
-    node: &N,
-    inputs: &[Option<E::DataStream>],
-) -> (N::State, N::WorkerState) {
-    let context = PrepareContext::trying(inputs, None);
+pub fn fresh_states<E: Edges, N: super::Node<E>>(node: &N, inputs: &N::Inputs) -> (N::State, N::WorkerState) {
+    let inputs = super::InputPorts::<E>::streams(inputs);
+    let context = PrepareContext::trying(&inputs, None);
     let prepared = node.prepare_for_snapshot(&context).wait();
     let shared = or_unit(prepared.proto_shared_state).expect("a node with state makes it when it's new");
     let worker = prepared.proto_worker_state.and_then(|mut states| states.pop()).unwrap_or_default();
@@ -258,7 +256,7 @@ pub fn fresh_states<E: Edges, N: super::Node<E>>(
 }
 
 /// Tests mostly need only the shared state a node makes for `inputs` (see `fresh_states`).
-pub fn fresh_state<E: Edges, N: super::Node<E>>(node: &N, inputs: &[Option<E::DataStream>]) -> N::State {
+pub fn fresh_state<E: Edges, N: super::Node<E>>(node: &N, inputs: &N::Inputs) -> N::State {
     fresh_states(node, inputs).0
 }
 

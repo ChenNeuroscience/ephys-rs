@@ -4,7 +4,7 @@
 //! small size, and what's selected can change without waiting for a new period. An alarm doesn't go off until it's seen
 //! a whole period.
 
-use ephys_rs::engine::TreeShake;
+use ephys_rs::engine::{Buffers, InputPorts, TreeShake};
 use std::collections::VecDeque;
 
 use eframe::egui;
@@ -12,12 +12,28 @@ use serde::{Deserialize, Serialize};
 
 use super::settings::alarms_ui;
 use super::{Alarm, AlarmKind, AlarmState, AlarmStates, Alarms, Phase, Source};
+use crate::standard::ephys::{Continuous, Events};
+use crate::standard::spikes::Spikes;
+use crate::standard::tracking::Positions;
 use crate::standard::widgets::require_input;
-use crate::{Buffer, Command, CommandKind, DataStream, Edges, Kind, PublishedValue, ValueKind};
+use crate::{Command, CommandKind, Edges, PublishedValue, ValueKind};
 use ephys_rs::engine::{
     Category, CommandContext, CommandSource, Node, NodeInfo, PassContext, PassState, Port, Prepare, PrepareContext,
     Prepared, UiContext,
 };
+
+ephys_rs::data_ports! {
+    /// An input for each of the alarms' sources, in the order of `Source::ALL`.
+    inputs: pub struct Inputs {
+        spikes: In<Spikes>,
+        lfp: In<Continuous>,
+        positions: In<Positions>,
+        ttl: In<Events>,
+    }
+    outputs: pub struct Outputs {
+        alarms: Out<AlarmStates>,
+    }
+}
 
 /// How many bins a period's cut into. At the shortest period, that's a bin a pass.
 const BINS: usize = 50;
@@ -195,25 +211,35 @@ fn judge(alarm: &Alarm, window: &Window, lfp_rate: f64, fps: f64) -> AlarmState 
     AlarmState { phase, value, item, ..off }
 }
 
-/// Adds a pass's data to `window`.
-fn count(kind: &AlarmKind, input: &Buffer, window: &mut Window) {
-    match (kind, input) {
-        (AlarmKind::SpikeRate { .. }, Buffer::Spikes(spikes)) => {
+/// Whether the pass has data from the source an alarm of `kind` watches.
+fn given(kind: &AlarmKind, inputs: &Inputs<Buffers>) -> bool {
+    match kind.source() {
+        Source::Spikes => inputs.spikes.is_some(),
+        Source::Lfp => inputs.lfp.is_some(),
+        Source::Positions => inputs.positions.is_some(),
+        Source::Ttl => inputs.ttl.is_some(),
+    }
+}
+
+/// Adds a pass's data, from the source an alarm of `kind` watches, to `window`.
+fn count(kind: &AlarmKind, inputs: &Inputs<Buffers>, window: &mut Window) {
+    match (kind, inputs) {
+        (AlarmKind::SpikeRate { .. }, Inputs { spikes: Some(spikes), .. }) => {
             for spike in &spikes.spikes {
                 window.count(spike.group as usize, 1);
             }
         }
-        (AlarmKind::LfpSaturation { level_uv, .. }, Buffer::Continuous(continuous)) => {
+        (AlarmKind::LfpSaturation { level_uv, .. }, Inputs { lfp: Some(continuous), .. }) => {
             for channel in 0..continuous.channels {
                 let saturated = continuous.channel(channel).iter().filter(|x| x.abs() >= *level_uv).count();
                 window.count(channel, saturated as u32);
             }
         }
-        (AlarmKind::MissingPositions { .. }, Buffer::Positions(positions)) => {
+        (AlarmKind::MissingPositions { .. }, Inputs { positions: Some(positions), .. }) => {
             let found = positions.samples.iter().filter(|s| s.leds[0].is_some()).count();
             window.count(0, found as u32);
         }
-        (AlarmKind::TtlCount { .. }, Buffer::Events(events)) => {
+        (AlarmKind::TtlCount { .. }, Inputs { ttl: Some(events), .. }) => {
             for event in events.events.iter().filter(|e| e.high) {
                 window.count(event.line as usize, 1);
             }
@@ -223,18 +249,17 @@ fn count(kind: &AlarmKind, input: &Buffer, window: &mut Window) {
 }
 
 /// What the alarms have to choose from, given the processor's inputs.
-pub fn streams(inputs: &[Option<DataStream>]) -> AlarmStates {
+pub fn streams(inputs: &Inputs) -> AlarmStates {
     let mut states = AlarmStates::default();
-    for input in inputs {
-        match input {
-            Some(DataStream::Spikes(spikes)) => {
-                (states.groups, states.group_size) = (spikes.groups(), spikes.group_size)
-            }
-            Some(DataStream::Continuous(continuous)) => states.channels = continuous.channels,
-            Some(DataStream::Positions(_)) => states.positions = true,
-            Some(DataStream::Events(events)) => states.lines = events.lines,
-            _ => {}
-        }
+    if let Some(spikes) = inputs.spikes {
+        (states.groups, states.group_size) = (spikes.groups(), spikes.group_size);
+    }
+    if let Some(continuous) = inputs.lfp {
+        states.channels = continuous.channels;
+    }
+    states.positions = inputs.positions.is_some();
+    if let Some(events) = inputs.ttl {
+        states.lines = events.lines;
     }
     states
 }
@@ -247,6 +272,8 @@ impl AlarmProcessor {
 }
 
 impl Node<Edges> for AlarmProcessor {
+    type Inputs = Inputs;
+    type Outputs = Outputs;
     type State = Watching;
     type WorkerState = ();
     type Shared = ();
@@ -268,18 +295,8 @@ impl Node<Edges> for AlarmProcessor {
         TreeShake { runs: given && outputs.contains(&true), needs }
     }
 
-    fn list_ports_data_stream_in(&self) -> Vec<Port<Edges>> {
-        vec![
-            Port::DataStreamIn { name: "spikes", data_stream_kind: Kind::Spikes },
-            Port::DataStreamIn { name: "lfp", data_stream_kind: Kind::Continuous },
-            Port::DataStreamIn { name: "positions", data_stream_kind: Kind::Positions },
-            Port::DataStreamIn { name: "ttl", data_stream_kind: Kind::Events },
-        ]
-    }
-
-    fn list_ports_data_stream_out(&self, inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
-        let stream = Some(DataStream::AlarmStates(streams(inputs)));
-        vec![Port::DataStreamOut { name: "alarms", data_stream_kind: Kind::AlarmStates, stream }]
+    fn output_streams(&self, inputs: &Inputs) -> Outputs {
+        Outputs { alarms: Some(streams(inputs)) }
     }
 
     fn list_ports_val_cmd(&self) -> Vec<Port<Edges>> {
@@ -297,19 +314,13 @@ impl Node<Edges> for AlarmProcessor {
     }
 
     fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Watching, (), Self> {
-        let inputs = context.inputs;
         if context.same_streams() {
             return Prepared::nothing().into();
         }
-        let stream = streams(inputs);
-        let lfp_rate = inputs.iter().find_map(|input| match input {
-            Some(DataStream::Continuous(continuous)) => Some(continuous.sample_rate as f64),
-            _ => None,
-        });
-        let fps = inputs.iter().find_map(|input| match input {
-            Some(DataStream::Positions(positions)) => Some(positions.fps as f64),
-            _ => None,
-        });
+        let inputs = Inputs::of(context.inputs);
+        let stream = streams(&inputs);
+        let lfp_rate = inputs.lfp.map(|continuous| continuous.sample_rate as f64);
+        let fps = inputs.positions.map(|positions| positions.fps as f64);
         let mut watching = Watching {
             windows: Vec::new(),
             stream,
@@ -320,25 +331,31 @@ impl Node<Edges> for AlarmProcessor {
         Prepared::shared(watching).into()
     }
 
-    fn process(&self, pass: &mut PassContext<Edges>, watching: &mut Watching, _: &mut ()) {
+    fn process(
+        &self,
+        pass: &mut PassContext<Edges>,
+        inputs: Inputs<Buffers>,
+        outputs: Outputs<Buffers>,
+        watching: &mut Watching,
+        _: &mut (),
+    ) {
         watching.keep_up(&self.alarms.list);
-        let Some(Buffer::AlarmStates(output)) = pass.outputs.first_mut() else { return };
+        let output = outputs.alarms;
         output.states.clear();
         for (alarm, (_, window)) in self.alarms.list.iter().zip(&mut watching.windows) {
             let source = alarm.kind.source();
-            let input = pass.inputs.get(source.index()).copied().flatten();
             // Whether it's on or not: the line stays where it is, and it's only its changes that come.
-            if let (AlarmKind::TtlUp { line }, Some(Buffer::Events(events))) = (&alarm.kind, input) {
+            if let (AlarmKind::TtlUp { line }, Some(events)) = (&alarm.kind, inputs.ttl) {
                 let mut changes = events.events.iter().filter(|event| event.line as u32 == *line);
                 window.up = changes.next_back().map_or(window.up, |event| event.high);
             }
-            let Some(input) = input.filter(|_| alarm.on) else {
+            if !(alarm.on && given(&alarm.kind, &inputs)) {
                 window.clear();
                 output.states.push(AlarmState { id: alarm.id, source, ..Default::default() });
                 continue;
-            };
+            }
             window.advance(alarm.period(), pass.duration);
-            count(&alarm.kind, input, window);
+            count(&alarm.kind, &inputs, window);
             output.states.push(judge(alarm, window, watching.lfp_rate, watching.fps));
         }
     }
@@ -346,11 +363,11 @@ impl Node<Edges> for AlarmProcessor {
     fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
         let Some(ui) = ui else { return };
         ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, context| {
-            alarms_ui(ui, &mut node.alarms, streams(context.inputs));
+            alarms_ui(ui, &mut node.alarms, streams(&Inputs::of(context.inputs)));
         });
     }
 
-    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
+    fn warnings(&self, inputs: &Inputs) -> Vec<String> {
         require_input(inputs, "something to watch")
     }
 }
@@ -359,10 +376,11 @@ impl Node<Edges> for AlarmProcessor {
 mod tests {
     use super::*;
     use crate::standard::alarms::Selection;
-    use crate::standard::ephys::{Continuous, Event, Events, EventsBuffer};
-    use crate::standard::spikes::{Spike, Spikes};
+    use crate::standard::ephys::{ContinuousBuffer, Event, EventsBuffer};
+    use crate::standard::spikes::{Spike, SpikesBuffer};
     use crate::standard::tracking::pipeline::Blob;
-    use crate::standard::tracking::{PositionSample, Positions, PositionsBuffer};
+    use crate::standard::tracking::{PositionSample, PositionsBuffer};
+    use Input::{Lfp, Ttl};
     use ephys_rs::engine::{DataStreamType, PASS_DURATION};
 
     const SPIKES: Spikes = Spikes { channels: 8, sample_rate: 1000.0, group_size: 4, pre: 2, post: 2 };
@@ -373,29 +391,50 @@ mod tests {
         watching: Watching,
     }
 
+    /// A pass's data on one of the processor's inputs.
+    #[derive(Clone, Copy)]
+    enum Input<'a> {
+        Spikes(&'a SpikesBuffer),
+        Lfp(&'a ContinuousBuffer),
+        Positions(&'a PositionsBuffer),
+        Ttl(&'a EventsBuffer),
+    }
+
+    impl<'a> Input<'a> {
+        /// The processor's inputs, with this on its own.
+        fn alone(self) -> Inputs<Buffers<'a>> {
+            let mut inputs = Inputs { spikes: None, lfp: None, positions: None, ttl: None };
+            match self {
+                Input::Spikes(spikes) => inputs.spikes = Some(spikes),
+                Input::Lfp(lfp) => inputs.lfp = Some(lfp),
+                Input::Positions(positions) => inputs.positions = Some(positions),
+                Input::Ttl(ttl) => inputs.ttl = Some(ttl),
+            }
+            inputs
+        }
+    }
+
     impl Run {
-        fn new(alarms: Alarms, inputs: [Option<DataStream>; 4]) -> Self {
+        fn new(alarms: Alarms, inputs: Inputs) -> Self {
             let processor = AlarmProcessor { alarms };
             let watching = ephys_rs::engine::fresh_state(&processor, &inputs);
             Run { processor, watching }
         }
 
-        /// Passes for `seconds`, each with `input` as input `index`; how the alarms stand after.
-        fn all(&mut self, index: usize, input: &Buffer, seconds: f64) -> Vec<AlarmState> {
-            let mut outputs = [Buffer::AlarmStates(AlarmStates::default().buffer(PASS_DURATION))];
+        /// Passes for `seconds`, each with `input`; how the alarms stand after.
+        fn all(&mut self, input: Input, seconds: f64) -> Vec<AlarmState> {
+            let mut output = AlarmStates::default().buffer(PASS_DURATION);
             for sequence in 0..(seconds / PASS_DURATION).round() as u64 {
-                let mut inputs = [None; 4];
-                inputs[index] = Some(input);
-                let mut pass = PassContext::new(sequence, PASS_DURATION, &inputs, &mut outputs);
-                self.processor.process(&mut pass, &mut self.watching, &mut ());
+                let mut pass = PassContext::new(sequence, PASS_DURATION);
+                let outputs = Outputs { alarms: &mut output };
+                self.processor.process(&mut pass, input.alone(), outputs, &mut self.watching, &mut ());
             }
-            let Buffer::AlarmStates(output) = &outputs[0] else { unreachable!() };
             output.states.clone()
         }
 
         /// The same, for the first alarm.
-        fn run(&mut self, index: usize, input: &Buffer, seconds: f64) -> AlarmState {
-            self.all(index, input, seconds)[0]
+        fn run(&mut self, input: Input, seconds: f64) -> AlarmState {
+            self.all(input, seconds)[0]
         }
 
         fn alarm(&mut self) -> &mut Alarm {
@@ -424,60 +463,60 @@ mod tests {
     }
 
     /// `per_pass` spikes on each group of `groups`.
-    fn spikes(groups: &[u32], per_pass: usize) -> Buffer {
+    fn spikes(groups: &[u32], per_pass: usize) -> SpikesBuffer {
         let mut buffer = SPIKES.buffer(PASS_DURATION);
         for &group in groups {
             for _ in 0..per_pass {
                 buffer.push(Spike { sample: 0, group, channel: group * 4 });
             }
         }
-        Buffer::Spikes(buffer)
+        buffer
     }
 
-    fn spike_input() -> [Option<DataStream>; 4] {
-        [Some(DataStream::Spikes(SPIKES)), None, None, None]
+    fn spike_input() -> Inputs {
+        Inputs { spikes: Some(SPIKES), ..Default::default() }
     }
 
     #[test]
     fn nothing_goes_off_until_a_whole_period_is_seen() {
         let mut run = Run::new(one(spike_rate(5.0, 400.0, true), 2.0), spike_input());
         let silent = spikes(&[], 0);
-        let state = run.run(0, &silent, 1.0);
+        let state = run.run(Input::Spikes(&silent), 1.0);
         assert!(matches!(state.phase, Phase::Waiting(w) if (w - 0.5).abs() < 0.01), "{state:?}");
-        assert_eq!(run.run(0, &silent, 1.0).phase, Phase::Alarm, "too few, once there's a period of it");
+        assert_eq!(run.run(Input::Spikes(&silent), 1.0).phase, Phase::Alarm, "too few, once there's a period of it");
     }
 
     #[test]
     fn total_rate_is_of_the_groups_selected() {
         let mut run = Run::new(one(spike_rate(5.0, 60.0, true), 1.0), spike_input());
         // A spike a pass on each of two groups: 50 Hz each.
-        let state = run.run(0, &spikes(&[0, 1], 1), 2.0);
+        let state = run.run(Input::Spikes(&spikes(&[0, 1], 1)), 2.0);
         assert_eq!((state.phase, state.value.round()), (Phase::Alarm, 100.0), "together they're too many");
         run.left_out(vec![1]);
-        let state = run.run(0, &spikes(&[0, 1], 1), 0.02);
+        let state = run.run(Input::Spikes(&spikes(&[0, 1], 1)), 0.02);
         assert_eq!((state.phase, state.value.round()), (Phase::Clear, 50.0), "at once, without a new period");
     }
 
     #[test]
     fn any_one_group_outside_the_range_sets_it_off() {
         let mut run = Run::new(one(spike_rate(10.0, 400.0, false), 1.0), spike_input());
-        let state = run.run(0, &spikes(&[0], 1), 2.0);
+        let state = run.run(Input::Spikes(&spikes(&[0], 1)), 2.0);
         assert_eq!((state.phase, state.item, state.value), (Phase::Alarm, Some(1), 0.0), "the second has none");
-        assert_eq!(run.run(0, &spikes(&[0, 1], 1), 2.0).phase, Phase::Clear);
+        assert_eq!(run.run(Input::Spikes(&spikes(&[0, 1], 1)), 2.0).phase, Phase::Clear);
     }
 
     #[test]
     fn lfp_is_the_fraction_of_time_in_range() {
         let stream = Continuous { channels: 2, sample_rate: 1000.0 };
         let kind = AlarmKind::LfpSaturation { level_uv: 100.0, low: 90.0, selection: Selection::default() };
-        let mut run = Run::new(one(kind, 1.0), [None, Some(DataStream::Continuous(stream)), None, None]);
+        let mut run = Run::new(one(kind, 1.0), Inputs { lfp: Some(stream), ..Default::default() });
         let mut buffer = stream.buffer(PASS_DURATION);
         buffer.len = 20;
         // A quarter of each pass on the second channel, either side of zero.
         for (i, x) in buffer.channel_mut(1).iter_mut().take(5).enumerate() {
             *x = if i % 2 == 0 { 100.0 } else { -150.0 };
         }
-        let state = run.run(1, &Buffer::Continuous(buffer), 2.0);
+        let state = run.run(Lfp(&buffer), 2.0);
         assert_eq!((state.phase, state.item, state.value.round()), (Phase::Alarm, Some(1), 75.0));
     }
 
@@ -485,18 +524,16 @@ mod tests {
     fn positions_are_the_fraction_of_samples_with_leds() {
         let stream = Positions { fps: 50.0, width: 100, height: 100, source: "test" };
         let alarms = one(AlarmKind::MissingPositions { low: 80.0 }, 1.0);
-        let mut run = Run::new(alarms, [None, None, Some(DataStream::Positions(stream)), None]);
+        let mut run = Run::new(alarms, Inputs { positions: Some(stream), ..Default::default() });
         let sample = |leds| PositionSample { frame: 0, time: 0.0, leds, timing_led: None, pixels_per_metre: f32::NAN };
-        let found = Buffer::Positions(PositionsBuffer {
-            samples: vec![sample([Some(Blob { x: 1.0, y: 1.0, area: 1 }), None])],
-        });
-        let state = run.run(2, &found, 2.0);
+        let found = PositionsBuffer { samples: vec![sample([Some(Blob { x: 1.0, y: 1.0, area: 1 }), None])] };
+        let state = run.run(Input::Positions(&found), 2.0);
         assert_eq!((state.phase, state.value.round()), (Phase::Clear, 100.0));
-        let lost = Buffer::Positions(PositionsBuffer { samples: vec![sample([None, None])] });
-        let state = run.run(2, &lost, 2.0);
+        let lost = PositionsBuffer { samples: vec![sample([None, None])] };
+        let state = run.run(Input::Positions(&lost), 2.0);
         assert_eq!((state.phase, state.value), (Phase::Alarm, 0.0), "frames, but no LED");
-        let stopped = Buffer::Positions(PositionsBuffer { samples: Vec::new() });
-        assert_eq!(run.run(2, &stopped, 2.0).value, 0.0, "no frames at all");
+        let stopped = PositionsBuffer { samples: Vec::new() };
+        assert_eq!(run.run(Input::Positions(&stopped), 2.0).value, 0.0, "no frames at all");
     }
 
     #[test]
@@ -504,37 +541,37 @@ mod tests {
         let stream = Events { lines: 2, sample_rate: 1000.0 };
         let selection = Selection { together: true, ..Default::default() };
         let alarms = one(AlarmKind::TtlCount { low: 40.0, high: 60.0, selection }, 1.0);
-        let mut run = Run::new(alarms, [None, None, None, Some(DataStream::Events(stream))]);
+        let mut run = Run::new(alarms, Inputs { ttl: Some(stream), ..Default::default() });
         let change = |high| Event { sample: 0, line: 0, high, time: None };
         let events = EventsBuffer { events: vec![change(true), change(false)], pass_samples: 20 };
-        let state = run.run(3, &Buffer::Events(events), 2.0);
+        let state = run.run(Ttl(&events), 2.0);
         assert_eq!((state.phase, state.value), (Phase::Clear, 50.0), "a pass's up, and not its down");
         run.left_out(vec![0]);
         let events = EventsBuffer { events: Vec::new(), pass_samples: 20 };
-        assert_eq!(run.run(3, &Buffer::Events(events), 0.02).phase, Phase::Alarm, "the other line has none");
+        assert_eq!(run.run(Ttl(&events), 0.02).phase, Phase::Alarm, "the other line has none");
     }
 
     #[test]
     fn a_ttl_up_alarm_follows_its_line_at_once() {
         let stream = Events { lines: 2, sample_rate: 1000.0 };
         let mut run =
-            Run::new(one(AlarmKind::TtlUp { line: 1 }, 1.0), [None, None, None, Some(DataStream::Events(stream))]);
-        let pass = |events: Vec<Event>| Buffer::Events(EventsBuffer { events, pass_samples: 20 });
+            Run::new(one(AlarmKind::TtlUp { line: 1 }, 1.0), Inputs { ttl: Some(stream), ..Default::default() });
+        let pass = |events: Vec<Event>| EventsBuffer { events, pass_samples: 20 };
         let change = |line, high| Event { sample: 0, line, high, time: None };
-        assert_eq!(run.run(3, &pass(Vec::new()), 0.02).phase, Phase::Clear, "with no period to wait for");
-        assert_eq!(run.run(3, &pass(vec![change(0, true)]), 0.02).phase, Phase::Clear, "the other line");
-        let state = run.run(3, &pass(vec![change(1, true)]), 0.02);
+        assert_eq!(run.run(Ttl(&pass(Vec::new())), 0.02).phase, Phase::Clear, "with no period to wait for");
+        assert_eq!(run.run(Ttl(&pass(vec![change(0, true)])), 0.02).phase, Phase::Clear, "the other line");
+        let state = run.run(Ttl(&pass(vec![change(1, true)])), 0.02);
         assert_eq!((state.phase, state.value), (Phase::Alarm, 1.0));
-        assert_eq!(run.run(3, &pass(Vec::new()), 5.0).phase, Phase::Alarm, "for as long as it's up");
+        assert_eq!(run.run(Ttl(&pass(Vec::new())), 5.0).phase, Phase::Alarm, "for as long as it's up");
 
         // It goes down while the alarm's off, which it still sees.
         run.alarm().on = false;
-        assert_eq!(run.run(3, &pass(vec![change(1, false)]), 0.02).phase, Phase::Off);
+        assert_eq!(run.run(Ttl(&pass(vec![change(1, false)])), 0.02).phase, Phase::Off);
         run.alarm().on = true;
-        assert_eq!(run.run(3, &pass(Vec::new()), 0.02).phase, Phase::Clear);
+        assert_eq!(run.run(Ttl(&pass(Vec::new())), 0.02).phase, Phase::Clear);
 
         let pulse = pass(vec![change(1, true), change(1, false)]);
-        assert_eq!(run.run(3, &pulse, 0.02).phase, Phase::Clear, "the last change in a pass is where it's left");
+        assert_eq!(run.run(Ttl(&pulse), 0.02).phase, Phase::Clear, "the last change in a pass is where it's left");
     }
 
     #[test]
@@ -556,31 +593,31 @@ mod tests {
     #[test]
     fn a_changed_period_starts_again() {
         let mut run = Run::new(one(spike_rate(5.0, 400.0, true), 1.0), spike_input());
-        assert_eq!(run.run(0, &spikes(&[], 0), 1.0).phase, Phase::Alarm);
+        assert_eq!(run.run(Input::Spikes(&spikes(&[], 0)), 1.0).phase, Phase::Alarm);
         run.alarm().seconds = 2.0;
-        assert!(matches!(run.run(0, &spikes(&[], 0), 1.0).phase, Phase::Waiting(_)));
+        assert!(matches!(run.run(Input::Spikes(&spikes(&[], 0)), 1.0).phase, Phase::Waiting(_)));
     }
 
     #[test]
     fn alarms_can_come_and_go_in_a_run_and_the_rest_carry_on() {
         let mut run = Run::new(one(spike_rate(5.0, 400.0, true), 1.0), spike_input());
         let silent = spikes(&[], 0);
-        assert_eq!(run.run(0, &silent, 1.0).phase, Phase::Alarm);
+        assert_eq!(run.run(Input::Spikes(&silent), 1.0).phase, Phase::Alarm);
 
         // Two of a kind, each with its own settings.
         let added = run.processor.alarms.add(spike_rate(0.0, 400.0, true));
         added.seconds = 1.0;
         let added = added.id;
-        let states = run.all(0, &silent, 0.5);
+        let states = run.all(Input::Spikes(&silent), 0.5);
         assert_eq!(states[0].phase, Phase::Alarm, "without starting again");
         assert!(matches!(states[1].phase, Phase::Waiting(_)));
         assert_eq!(states[1].id, added);
-        assert_eq!(run.all(0, &silent, 0.5)[1].phase, Phase::Clear);
+        assert_eq!(run.all(Input::Spikes(&silent), 0.5)[1].phase, Phase::Clear);
 
         // The first goes, the second keeps what it's counted, and its id is its own.
         let first = run.processor.alarms.list[0].id;
         run.processor.alarms.remove(first);
-        let states = run.all(0, &silent, 0.02);
+        let states = run.all(Input::Spikes(&silent), 0.02);
         assert_eq!((states.len(), states[0].id, states[0].phase), (1, added, Phase::Clear));
         assert_ne!(run.processor.alarms.add(spike_rate(0.0, 1.0, true)).id, first, "ids aren't reused");
     }
@@ -588,12 +625,15 @@ mod tests {
     #[test]
     fn an_alarm_off_stays_on_the_list_with_nothing_to_say() {
         let mut run = Run::new(one(spike_rate(5.0, 400.0, true), 1.0), spike_input());
-        assert_eq!(run.run(0, &spikes(&[], 0), 1.0).phase, Phase::Alarm);
+        assert_eq!(run.run(Input::Spikes(&spikes(&[], 0)), 1.0).phase, Phase::Alarm);
         run.alarm().on = false;
-        let state = run.run(0, &spikes(&[], 0), 0.02);
+        let state = run.run(Input::Spikes(&spikes(&[], 0)), 0.02);
         assert_eq!((state.id, state.source, state.phase), (0, Source::Spikes, Phase::Off));
         run.alarm().on = true;
-        assert!(matches!(run.run(0, &spikes(&[], 0), 0.02).phase, Phase::Waiting(_)), "from the start of a period");
+        assert!(
+            matches!(run.run(Input::Spikes(&spikes(&[], 0)), 0.02).phase, Phase::Waiting(_)),
+            "from the start of a period"
+        );
     }
 
     #[test]
@@ -739,7 +779,7 @@ mod tests {
     #[test]
     fn a_long_run_keeps_to_the_bins_it_was_given() {
         let mut run = Run::new(one(spike_rate(5.0, 400.0, true), 1.0), spike_input());
-        run.run(0, &spikes(&[0], 1), 30.0);
+        run.run(Input::Spikes(&spikes(&[0], 1)), 30.0);
         let window = &run.watching.windows[0].1;
         assert!(window.bins.len() + window.spare.len() == BINS + 2, "none made, none lost");
         assert!((window.seconds - 1.0).abs() < 0.05, "{}", window.seconds);

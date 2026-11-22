@@ -29,7 +29,7 @@
 //! reader makes of a key with a space in it, or one that's the same as another header), except that line breaks are
 //! written as spaces, as a header's a line.
 
-use ephys_rs::engine::{BufferUsage, DataStreamsEnum, Prepare, PrepareContext, Prepared, TreeShake};
+use ephys_rs::engine::{Buffers, InputPorts, NoPorts, PortForm, Prepare, PrepareContext, Prepared, TreeShake};
 use std::fs::File;
 use std::io::{self, BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -48,11 +48,25 @@ use crate::standard::pool::Pool;
 use crate::standard::spikes::{Gains, RECORDED_FULL_SCALE_UV, Spikes, trimmed};
 use crate::standard::tracking::{Crop, Detection, Positions};
 use crate::standard::widgets::{require_input, setting, settings_grid};
-use crate::{Buffer, CommandKind, DataStream, Edges, Kind, PublishedValue, ValueKind};
+use crate::{CommandKind, Edges, PublishedValue, ValueKind};
 use ephys_rs::engine::{
-    Category, EdgeTypesEnum, Flow, Node, NodeInfo, NodeThread, PASS_DURATION, PassContext, PoolStatus, Port,
-    ThreadContext, UiContext,
+    Category, DataStreamType, EdgeTypesEnum, Flow, Node, NodeInfo, NodeThread, PASS_DURATION, PassContext, PoolStatus,
+    Port, ThreadContext, UiContext,
 };
+
+ephys_rs::data_ports! {
+    /// The writer takes its inputs, swapping their buffers into a chunk for its thread, which makes what it writes of
+    /// them (the plan copies them for it, if something else needs them after it). As streams, these are the inputs'
+    /// as the run started.
+    inputs: pub struct Inputs {
+        spikes: Take<Spikes>,
+        continuous: Take<Continuous> = "eeg",
+        positions: Take<Positions>,
+        events: Take<Events>,
+        position_events: Take<Events> = "pos ttl",
+        log: Take<LogLines>,
+    }
+}
 
 /// Ticks a second, for timestamps.
 /// Its port sending what it recorded to what's to process it, once it's finished (see `after_recording`).
@@ -92,17 +106,6 @@ impl Default for Scales {
     }
 }
 
-/// The inputs' data streams, as the run started.
-#[derive(Clone, Copy, Default)]
-struct Streams {
-    spikes: Option<Spikes>,
-    continuous: Option<Continuous>,
-    positions: Option<Positions>,
-    events: Option<Events>,
-    position_events: Option<Events>,
-    log: Option<LogLines>,
-}
-
 /// While running: the writer's thread while recording, and its status for the window.
 #[derive(Default)]
 pub struct Recorder {
@@ -114,38 +117,80 @@ impl ephys_rs::engine::PassState for Recorder {
                                so the files are written in order.";
 }
 
-/// A pass's data, for the writer's thread: in buffers like the passes' own, to swap with them. For each input, its
-/// buffer if it's connected, and whether the pass gave it any data; and when the recording took effect.
+/// A chunk holds the writer's inputs in this form (see `ephys_rs::engine::PortForm`): for each, a buffer like the
+/// passes' own, if the input's connected, and whether the pass gave it any data.
+struct Held;
+
+impl PortForm for Held {
+    type In<T: DataStreamType> = Slot<T>;
+    type Take<T: DataStreamType> = Slot<T>;
+    type Out<T: DataStreamType> = ();
+}
+
+/// A chunk holds each input's buffer, if it's connected, and whether the pass gave it any data.
+struct Slot<T: DataStreamType> {
+    buffer: Option<T::Buffer>,
+    given: bool,
+}
+
+impl<T: DataStreamType> Slot<T> {
+    /// Empty, with a buffer for `stream`, if the input's connected.
+    fn new(stream: Option<T>) -> Self {
+        Slot { buffer: stream.map(|s| s.buffer(PASS_DURATION)), given: false }
+    }
+
+    /// The input's data, if the pass gave it any.
+    fn get(&self) -> Option<&T::Buffer> {
+        self.buffer.as_ref().filter(|_| self.given)
+    }
+
+    /// The pass gives the chunk what it took of the input (`taken`), if anything, swapping it for the chunk's buffer.
+    fn swap(&mut self, taken: Option<&mut T::Buffer>) {
+        self.given = false;
+        if let (Some(buffer), Some(taken)) = (&mut self.buffer, taken) {
+            std::mem::swap(taken, buffer);
+            self.given = true;
+        }
+    }
+
+    /// The memory the buffer takes.
+    fn bytes(&self) -> usize {
+        self.buffer.as_ref().map_or(0, T::bytes)
+    }
+}
+
+/// A pass's data, for the writer's thread: in buffers like the passes' own, to swap with them (see `Held`); and when
+/// the recording took effect.
 pub struct Chunk {
-    inputs: [Option<Buffer>; INPUTS],
-    given: [bool; INPUTS],
+    inputs: Inputs<Held>,
     effective: Option<DateTime<Local>>,
 }
 
-/// Its inputs: spikes, eeg, positions, events, pos ttl and log.
-const INPUTS: usize = 6;
-
 impl Chunk {
     /// Empty, with a buffer for each of `streams`.
-    fn new(streams: Streams) -> Self {
-        let inputs = streams.inputs().map(|stream| stream.map(|s| s.buffer(PASS_DURATION)));
-        Chunk { inputs, given: [false; INPUTS], effective: None }
-    }
-
-    /// Input `index`'s data, if the pass gave it any.
-    fn input(&self, index: usize) -> Option<&Buffer> {
-        self.inputs[index].as_ref().filter(|_| self.given[index])
+    fn new(streams: Inputs) -> Self {
+        let inputs = Inputs {
+            spikes: Slot::new(streams.spikes),
+            continuous: Slot::new(streams.continuous),
+            positions: Slot::new(streams.positions),
+            events: Slot::new(streams.events),
+            position_events: Slot::new(streams.position_events),
+            log: Slot::new(streams.log),
+        };
+        Chunk { inputs, effective: None }
     }
 
     /// The memory one takes.
     fn bytes(&self) -> usize {
-        self.inputs.iter().flatten().map(<DataStream as DataStreamsEnum>::bytes).sum()
+        let i = &self.inputs;
+        let held = [i.spikes.bytes(), i.continuous.bytes(), i.positions.bytes(), i.events.bytes()];
+        held.iter().sum::<usize>() + i.position_events.bytes() + i.log.bytes()
     }
 
     /// The writer's thread, with a pool of chunks for `streams`, writing to `files`.
     fn writing(
         base: &Path,
-        streams: Streams,
+        streams: Inputs,
         files: io::Result<LtxFiles>,
         on_finished: Option<OnFinished>,
     ) -> Writing<Chunk> {
@@ -156,6 +201,8 @@ impl Chunk {
 }
 
 impl Node<Edges> for WriteLtx {
+    type Inputs = Inputs;
+    type Outputs = NoPorts;
     type State = Recorder;
     type WorkerState = ();
     /// What it shows, for its window.
@@ -176,19 +223,8 @@ impl Node<Edges> for WriteLtx {
         TreeShake::needing_all(recording && inputs.contains(&true), inputs.len())
     }
 
-    fn list_ports_data_stream_in(&self) -> Vec<Port<Edges>> {
-        vec![
-            Port::DataStreamIn { name: "spikes", data_stream_kind: Kind::Spikes },
-            Port::DataStreamIn { name: "eeg", data_stream_kind: Kind::Continuous },
-            Port::DataStreamIn { name: "positions", data_stream_kind: Kind::Positions },
-            Port::DataStreamIn { name: "events", data_stream_kind: Kind::Events },
-            Port::DataStreamIn { name: "pos ttl", data_stream_kind: Kind::Events },
-            Port::DataStreamIn { name: "log", data_stream_kind: Kind::LogLines },
-        ]
-    }
-
-    fn list_ports_data_stream_out(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
-        Vec::new()
+    fn output_streams(&self, _inputs: &Inputs) -> NoPorts {
+        NoPorts
     }
 
     /// The settings it records with the data, which it only reads; and, on the right, as what it sets off comes after
@@ -213,12 +249,6 @@ impl Node<Edges> for WriteLtx {
         }]
     }
 
-    /// It takes its buffers, swapping them into the chunk for its thread, which makes what it writes of them (the
-    /// plan copies them for it, if something else needs them after it).
-    fn evaluate_buffer_usage(&self, inputs: usize, outputs: usize) -> BufferUsage {
-        BufferUsage { takes: vec![true; inputs], ..BufferUsage::none(inputs, outputs) }
-    }
-
     fn thread_pool(&self, _thread_idx: usize, context: &ThreadContext) -> Option<PoolStatus> {
         context.shared::<Pool<Status>>().and_then(|l| l.newest().map(|s| s.pool))
     }
@@ -237,7 +267,7 @@ impl Node<Edges> for WriteLtx {
         let writing = context.recording.map(|recording| {
             let date = recording.start_requested_date();
             let base = recording_path(recording.base_directory(), date);
-            let (streams, recorded) = (Streams::of(context.inputs), Recorded::of(context.val_ins, self.scales));
+            let (streams, recorded) = (Inputs::of(context.inputs), Recorded::of(context.val_ins, self.scales));
             let files = LtxFiles::open(&base, *date, streams, recorded);
             Chunk::writing(&base, streams, files, after_recording(context.cmd_sender(AFTER_RECORDING)))
         });
@@ -245,7 +275,14 @@ impl Node<Edges> for WriteLtx {
     }
 
     /// While recording, hands the pass's data to the writer's thread, swapping the buffers it's in for a chunk's.
-    fn process(&self, pass: &mut PassContext<Edges>, recorder: &mut Recorder, _: &mut ()) {
+    fn process(
+        &self,
+        pass: &mut PassContext<Edges>,
+        inputs: Inputs<Buffers>,
+        _: NoPorts,
+        recorder: &mut Recorder,
+        _: &mut (),
+    ) {
         if !pass.recording() {
             recorder.writing = None; // finishes the files
         } else if recorder.writing.is_none() {
@@ -256,14 +293,13 @@ impl Node<Edges> for WriteLtx {
             && let Some(mut chunk) = writing.chunk()
         {
             chunk.effective = pass.snapshot().recording().and_then(|r| r.effective()).map(|e| e.date);
-            let Chunk { inputs, given, .. } = &mut chunk;
-            for (index, (buffer, given)) in inputs.iter_mut().zip(given).enumerate() {
-                *given = false;
-                if let (Some(buffer), Some(taken)) = (buffer, pass.take_input(index)) {
-                    std::mem::swap(taken, buffer);
-                    *given = true;
-                }
-            }
+            let held = &mut chunk.inputs;
+            held.spikes.swap(inputs.spikes);
+            held.continuous.swap(inputs.continuous);
+            held.positions.swap(inputs.positions);
+            held.events.swap(inputs.events);
+            held.position_events.swap(inputs.position_events);
+            held.log.swap(inputs.log);
             writing.send(chunk);
         }
         show_status(recorder.writing.as_ref(), pass.shared::<Pool<Status>>(), pass.sequence);
@@ -282,8 +318,7 @@ impl Node<Edges> for WriteLtx {
             });
             location_summary(ui, context.base_directory, "files");
             ui.add_space(4.0);
-            let recording: Vec<String> = node
-                .list_ports_data_stream_in()
+            let recording: Vec<String> = Inputs::ports()
                 .iter()
                 .zip(context.inputs)
                 .filter_map(|(input, stream)| stream.map(|s| format!("{}: {}", input.name(), s.summary())))
@@ -293,13 +328,14 @@ impl Node<Edges> for WriteLtx {
             } else {
                 ui.label(format!("Records {}.", recording.join(", ")));
             }
-            if context.val_ins[0].is_none() && context.inputs[2].is_some() {
+            let inputs = Inputs::of(context.inputs);
+            if context.val_ins[0].is_none() && inputs.positions.is_some() {
                 ui.weak("Connect the detection to record the crop and calibration with the positions.");
             }
-            if context.val_ins[1].is_none() && context.inputs[0].is_some() {
+            if context.val_ins[1].is_none() && inputs.spikes.is_some() {
                 ui.weak("Connect the Spike Gain's gains, to record them with the spikes.");
             }
-            if (context.val_ins[2].is_none() || context.val_ins[3].is_none()) && context.inputs[1].is_some() {
+            if (context.val_ins[2].is_none() || context.val_ins[3].is_none()) && inputs.continuous.is_some() {
                 ui.weak("Connect the Channel Selector's selection and the Continuous Gain's gains, to record them with the EEG.");
             }
             ui.separator();
@@ -308,19 +344,19 @@ impl Node<Edges> for WriteLtx {
         });
     }
 
-    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
+    fn warnings(&self, inputs: &Inputs) -> Vec<String> {
         let mut warnings = require_input(inputs, "something to record");
-        if let Some(DataStream::Spikes(spikes)) = inputs[0]
+        if let Some(spikes) = inputs.spikes
             && spikes.group_size != SPIKE_CHANNELS as u32
         {
             warnings.push(format!("LTX spikes are in tetrodes: groups of 4, not {}", spikes.group_size));
         }
-        if let Some(DataStream::Continuous(continuous)) = inputs[1]
+        if let Some(continuous) = inputs.continuous
             && continuous.sample_rate != EGF_RATE
         {
             warnings.push(format!("LTX's EEG is {EGF_RATE} Hz: downsample it first (with a Downsample)"));
         }
-        if inputs[4].is_some() && inputs[2].is_none() {
+        if inputs.position_events.is_some() && inputs.positions.is_none() {
             warnings.push("Connect the positions too, so the pos ttl's times can be compared with them".into());
         }
         warnings
@@ -347,38 +383,6 @@ fn scale_ui(ui: &mut egui::Ui, uv: &mut f32, what: &str) -> egui::Response {
         );
     })
     .response
-}
-
-impl Streams {
-    /// Each input's, in order.
-    fn inputs(self) -> [Option<DataStream>; INPUTS] {
-        [
-            self.spikes.map(DataStream::Spikes),
-            self.continuous.map(DataStream::Continuous),
-            self.positions.map(DataStream::Positions),
-            self.events.map(DataStream::Events),
-            self.position_events.map(DataStream::Events),
-            self.log.map(DataStream::LogLines),
-        ]
-    }
-
-    fn of(inputs: &[Option<DataStream>]) -> Self {
-        let events = |index: usize| match inputs.get(index) {
-            Some(Some(DataStream::Events(events))) => Some(*events),
-            _ => None,
-        };
-        let mut streams = Streams { events: events(3), position_events: events(4), ..Default::default() };
-        for input in inputs.iter().flatten() {
-            match *input {
-                DataStream::Spikes(s) => streams.spikes = Some(s),
-                DataStream::Continuous(c) => streams.continuous = Some(c),
-                DataStream::Positions(p) => streams.positions = Some(p),
-                DataStream::LogLines(l) => streams.log = Some(l),
-                _ => {}
-            }
-        }
-        streams
-    }
 }
 
 /// The settings recorded with the data, from the controls.
@@ -559,7 +563,7 @@ struct LtxFiles {
     /// When recording was asked for, and when it took effect (its first pass), once a chunk's said.
     start: DateTime<Local>,
     effective: Option<DateTime<Local>>,
-    streams: Streams,
+    streams: Inputs,
     set: LtxFile,
     tetrodes: Vec<Tetrode>,
     egf: Vec<Egf>,
@@ -581,7 +585,7 @@ struct LtxFiles {
 }
 
 impl LtxFiles {
-    fn open(base: &Path, start: DateTime<Local>, streams: Streams, recorded: Recorded) -> io::Result<Self> {
+    fn open(base: &Path, start: DateTime<Local>, streams: Inputs, recorded: Recorded) -> io::Result<Self> {
         if let Some(parent) = base.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -768,7 +772,7 @@ impl Files<Chunk> for LtxFiles {
     fn write(&mut self, chunk: &Chunk) -> io::Result<u64> {
         self.effective = self.effective.or(chunk.effective);
         let mut bytes = 0;
-        if let (Some(spikes), Some(Buffer::Spikes(buffer))) = (self.streams.spikes, chunk.input(0)) {
+        if let (Some(spikes), Some(buffer)) = (self.streams.spikes, chunk.inputs.spikes.get()) {
             let (k, samples) = (spikes.group_size as usize, spikes.waveform_samples() as usize);
             for (i, spike) in buffer.spikes.iter().enumerate() {
                 let Some(tetrode) = self.tetrodes.get_mut(spike.group as usize) else { continue };
@@ -791,7 +795,7 @@ impl Files<Chunk> for LtxFiles {
             self.spike_samples += buffer.pass_samples as i64;
         }
 
-        if let Some(Buffer::Continuous(continuous)) = chunk.input(1).filter(|_| !self.egf.is_empty()) {
+        if let Some(continuous) = chunk.inputs.continuous.get().filter(|_| !self.egf.is_empty()) {
             for (channel, egf) in self.egf.iter_mut().enumerate() {
                 let values = continuous.channel(channel);
                 if values.is_empty() {
@@ -806,7 +810,7 @@ impl Files<Chunk> for LtxFiles {
             }
         }
 
-        if let (Some(pos), Some(Buffer::Positions(positions))) = (&mut self.pos, chunk.input(2)) {
+        if let (Some(pos), Some(positions)) = (&mut self.pos, chunk.inputs.positions.get()) {
             for sample in &positions.samples {
                 let first = *self.first_position.get_or_insert(sample.time);
                 self.record.clear();
@@ -832,8 +836,7 @@ impl Files<Chunk> for LtxFiles {
             }
         }
 
-        if let (Some(ttl), Some(events), Some(Buffer::Events(buffer))) =
-            (&mut self.ttl, self.streams.events, chunk.input(3))
+        if let (Some(ttl), Some(events), Some(buffer)) = (&mut self.ttl, self.streams.events, chunk.inputs.events.get())
         {
             for event in &buffer.events {
                 let seconds = (self.event_samples + event.sample as u64) as f64 / events.sample_rate as f64;
@@ -844,8 +847,8 @@ impl Files<Chunk> for LtxFiles {
             self.event_samples += buffer.pass_samples as u64;
         }
 
-        let position_events = (&mut self.pos_ttl, self.streams.position_events, chunk.input(4));
-        if let (Some(ttl), Some(events), Some(Buffer::Events(buffer))) = position_events {
+        let position_events = (&mut self.pos_ttl, self.streams.position_events, chunk.inputs.position_events.get());
+        if let (Some(ttl), Some(events), Some(buffer)) = position_events {
             for event in &buffer.events {
                 let seconds = match event.time {
                     Some(time) => time - *self.first_position.get_or_insert(time),
@@ -858,7 +861,7 @@ impl Files<Chunk> for LtxFiles {
             self.position_event_samples += buffer.pass_samples as u64;
         }
 
-        if let (Some(log), Some(Buffer::LogLines(lines))) = (&mut self.log, chunk.input(5)) {
+        if let (Some(log), Some(lines)) = (&mut self.log, chunk.inputs.log.get()) {
             for (time, line) in lines.lines() {
                 let seconds = time - *self.first_position.get_or_insert(time);
                 self.record.clear();
@@ -908,11 +911,11 @@ mod tests {
     use crate::standard::spikes::Spike;
     use crate::standard::tracking::PositionSample;
 
-    impl Chunk {
-        /// Input `index`'s buffer, as given data by a pass.
-        fn give(&mut self, index: usize) -> &mut Buffer {
-            self.given[index] = true;
-            self.inputs[index].as_mut().expect("connected")
+    impl<T: DataStreamType> Slot<T> {
+        /// The input's buffer, as given data by a pass.
+        fn give(&mut self) -> &mut T::Buffer {
+            self.given = true;
+            self.buffer.as_mut().expect("connected")
         }
     }
     use crate::standard::tracking::pipeline::Blob;
@@ -942,7 +945,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ephys-rs-ltx-ttl-{}", std::process::id()));
         let base = dir.join("test");
         let events = Events { lines: 8, sample_rate: 1000.0 };
-        let streams = Streams {
+        let streams = Inputs {
             positions: Some(Positions { fps: 50.0, width: 640, height: 480, source: CAMERA_TRACKER }),
             events: Some(events),
             position_events: Some(Events { lines: 1, sample_rate: 50.0 }),
@@ -963,16 +966,16 @@ mod tests {
         let event = |sample, line, high, time| Event { sample, line, high, time };
         // Positions start at 100 s by the camera's clock; the LED comes on 0.25 s later, and goes off 0.3 s after that.
         let mut chunk = Chunk::new(streams);
-        let Buffer::Positions(positions) = chunk.give(2) else { unreachable!() };
+        let positions = chunk.inputs.positions.give();
         positions.samples.push(sample(100.0));
-        let Buffer::Events(events) = chunk.give(3) else { unreachable!() };
+        let events = chunk.inputs.events.give();
         events.pass_samples = 20;
         events.events.extend([event(10, 1, true, None), event(15, 1, false, None)]);
         files.write(&chunk).unwrap();
-        chunk.given[3] = false;
-        let Buffer::Positions(positions) = chunk.give(2) else { unreachable!() };
+        chunk.inputs.events.given = false;
+        let positions = chunk.inputs.positions.give();
         positions.samples[0] = sample(100.25);
-        let Buffer::Events(events) = chunk.give(4) else { unreachable!() };
+        let events = chunk.inputs.position_events.give();
         events.events.extend([event(0, 0, true, Some(100.25)), event(0, 0, false, Some(100.55))]);
         files.write(&chunk).unwrap();
         files.finish().unwrap();
@@ -1003,7 +1006,7 @@ mod tests {
     fn positions_from_elsewhere_say_so_with_their_custom_settings_ttls_and_log() {
         let dir = std::env::temp_dir().join(format!("ephys-rs-ltx-elsewhere-{}", std::process::id()));
         let base = dir.join("test");
-        let streams = Streams {
+        let streams = Inputs {
             positions: Some(Positions { fps: 50.0, width: 1000, height: 1000, source: "vr_computer" }),
             position_events: Some(Events { lines: 1, sample_rate: 1000.0 }),
             log: Some(LogLines { width: 32 }),
@@ -1016,7 +1019,7 @@ mod tests {
         let recorded = Recorded { detection: Some(detection.clone()), ..Default::default() };
         let mut files = Box::new(LtxFiles::open(&base, Local::now(), streams, recorded).unwrap());
         let mut chunk = Chunk::new(streams);
-        let Buffer::Positions(positions) = chunk.give(2) else { unreachable!() };
+        let positions = chunk.inputs.positions.give();
         positions.samples.push(PositionSample {
             frame: 0,
             time: 1.5,
@@ -1024,9 +1027,9 @@ mod tests {
             timing_led: None,
             pixels_per_metre: f32::NAN,
         });
-        let Buffer::Events(events) = chunk.give(4) else { unreachable!() };
+        let events = chunk.inputs.position_events.give();
         events.events.push(Event { sample: 0, line: 0, high: true, time: Some(2.0) });
-        let Buffer::LogLines(log) = chunk.give(5) else { unreachable!() };
+        let log = chunk.inputs.log.give();
         assert!(log.push(1.75, "first line") && log.push(4.0, "second"));
         files.write(&chunk).unwrap();
         files.finish().unwrap();
@@ -1063,7 +1066,7 @@ mod tests {
         use ephys_rs::engine::{Graph, NodesEnum};
         let mut graph = Graph::<Nodes>::default();
         let id = graph.add(Nodes::create(NodeType::WriteLtx), [0.0, 0.0]);
-        let inputs: Vec<Option<DataStream>> = vec![None; WriteLtx::default().list_ports_data_stream_in().len()];
+        let inputs = Inputs::default().streams();
         let mut harness = egui_kittest::Harness::builder().with_size([460.0, 300.0]).wgpu().build_ui_state(
             |ui, graph: &mut Graph<Nodes>| {
                 graph.edit(id, &inputs, &THEMES[0].colours, None, None, None, false, false, None, |node, context| {
@@ -1107,7 +1110,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ephys-rs-ltx-{}", std::process::id()));
         let base = dir.join("test");
         let spikes = Spikes { channels: 4, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32 };
-        let streams = Streams {
+        let streams = Inputs {
             spikes: Some(spikes),
             continuous: Some(Continuous { channels: 2, sample_rate: EGF_RATE }),
             positions: Some(Positions { fps: 50.0, width: 640, height: 480, source: CAMERA_TRACKER }),
@@ -1132,22 +1135,22 @@ mod tests {
         let mut chunk = Chunk::new(streams);
         let effective = requested + chrono::Duration::milliseconds(40);
         chunk.effective = Some(effective);
-        let Buffer::Spikes(buffer) = chunk.give(0) else { unreachable!() };
+        let buffer = chunk.inputs.spikes.give();
         buffer.pass_samples = 600;
         files.write(&chunk).unwrap();
-        let Buffer::Spikes(buffer) = chunk.give(0) else { unreachable!() };
+        let buffer = chunk.inputs.spikes.give();
         buffer.spikes.push(Spike { sample: 300, group: 0, channel: 0 });
         // Amplified µV (by a Spike Gain): what are, over the scale, int8 values from -80.
         let full_scale = Scales::default().spikes_uv;
         let step = full_scale / 128.0;
         buffer.waveforms = (0..160).map(|i| (i as f32 - 80.0) * step).collect();
         // Two samples on each channel (at 5 kHz), amplified likewise; one beyond the full scale, clipped.
-        let Buffer::Continuous(continuous) = chunk.give(1) else { unreachable!() };
+        let continuous = chunk.inputs.continuous.give();
         continuous.len = 2;
         continuous.channel_mut(0).copy_from_slice(&[0.0, 30.0 * step]);
         continuous.channel_mut(1).copy_from_slice(&[60.0 * step, 2.0 * full_scale]);
         let blob = Blob { x: 100.0, y: 50.0, area: 30 };
-        let Buffer::Positions(positions) = chunk.give(2) else { unreachable!() };
+        let positions = chunk.inputs.positions.give();
         positions.samples.push(PositionSample {
             frame: 1,
             time: 5.0,

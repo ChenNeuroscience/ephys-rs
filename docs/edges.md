@@ -42,6 +42,10 @@ the legend, and a short summary: "64 ch · 30 kHz") and `DataStreamType`:
   has room for a quarter more, so a source can catch up after a hiccup.
 - `bytes(buffer)`: its memory, for the dev tools.
 
+Nodes declare their data ports by these types (`continuous: In<Continuous>`: see [Nodes](nodes.md#describing-it)),
+and `edge_types!` implements `StreamOf` for each, which goes between a type and the program's enums of streams and
+buffers, so a node never names those enums for its data.
+
 Buffers are swapped between passes and threads (see the pools in [Architecture](architecture.md#threads-and-buffers)),
 so a buffer made for a stream must be interchangeable with any other made for it: make them only with `buffer`.
 

@@ -19,9 +19,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::standard::recording::expand;
 use crate::standard::widgets::{combo, setting, settings_grid};
-use crate::{Command, CommandKind, DataStream, Edges, PublishedValue, ValueKind};
+use crate::{Command, CommandKind, Edges, PublishedValue, ValueKind};
 use ephys_rs::commands::CmdSender;
-use ephys_rs::engine::{Category, CommandContext, CommandSource, EdgeInfo, EdgeType, Node, NodeInfo, Port, UiContext};
+use ephys_rs::engine::{
+    Category, CommandContext, CommandSource, EdgeInfo, EdgeType, NoPorts, Node, NodeInfo, Port, UiContext,
+};
 use ephys_rs::gui::widgets::{Icon, help_link, small_icon_button};
 use ephys_rs::theme::Colours;
 
@@ -599,6 +601,8 @@ fn files_help(senders: &[String]) -> String {
 }
 
 impl Node<Edges> for RunCommand {
+    type Inputs = NoPorts;
+    type Outputs = NoPorts;
     type State = ();
     type WorkerState = ();
     type Shared = ();
@@ -614,8 +618,8 @@ impl Node<Edges> for RunCommand {
     const WINDOW_SIZE: [f32; 2] = [820.0, 520.0];
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
-    fn list_ports_data_stream_out(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
-        Vec::new()
+    fn output_streams(&self, _inputs: &NoPorts) -> NoPorts {
+        NoPorts
     }
 
     /// Where it's sent files to run on, on the left, as what sends them comes before it; and where it sends them on,
@@ -1280,7 +1284,7 @@ mod tests {
             let from = PortAddress { node: writer, role: PortRole::ValInCmdOut, port_idx: 0 };
             graph.connect(from, PortAddress { node: id, role: PortRole::ValOutCmdIn, port_idx: 0 }).unwrap();
         }
-        let inputs: [Option<DataStream>; 0] = [];
+        let inputs = Vec::new();
         // Kept, as the app keeps it.
         let state: ephys_rs::engine::UiStateCell =
             std::cell::RefCell::new(Box::new(CommandState { job, ..Default::default() }));
@@ -1357,7 +1361,7 @@ mod tests {
                 let from = PortAddress { node: id, role: PortRole::ValInCmdOut, port_idx: AFTER_RUNNING };
                 graph.connect(from, PortAddress { node: after, role: PortRole::ValOutCmdIn, port_idx: 0 }).unwrap();
             }
-            let inputs: [Option<DataStream>; 0] = [];
+            let inputs = Vec::new();
             let mut harness = egui_kittest::Harness::builder().with_size([560.0, 560.0]).wgpu().build_ui_state(
                 move |ui, graph: &mut Graph<Nodes>| {
                     graph.edit(

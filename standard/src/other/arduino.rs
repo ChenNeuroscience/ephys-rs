@@ -21,11 +21,11 @@ use eframe::egui::{self, RichText};
 use serde::{Deserialize, Serialize};
 use serialport::SerialPortType;
 
+use crate::Edges;
 use crate::standard::pool::Pool;
 use crate::standard::widgets::{combo, named_settings_grid, setting};
-use crate::{DataStream, Edges};
 use ephys_rs::engine::{
-    Category, Flow, Node, NodeInfo, NodeThread, PassContext, PassState, Port, Prepare, PrepareContext, Prepared,
+    Category, Flow, NoPorts, Node, NodeInfo, NodeThread, PassContext, PassState, Prepare, PrepareContext, Prepared,
     ThreadContext, UiContext,
 };
 use ephys_rs::gui::widgets::{Icon, small_icon_button};
@@ -349,6 +349,8 @@ impl Node<Edges> for Arduino {
         description: "Sets an Arduino's pins while acquiring, while recording, or by hand, over Firmata.",
     };
 
+    type Inputs = NoPorts;
+    type Outputs = NoPorts;
     type State = Connected;
     type WorkerState = ();
     /// How it's getting on, for its window.
@@ -356,8 +358,8 @@ impl Node<Edges> for Arduino {
     type UiState = ();
     type GlobalSettings = ();
 
-    fn list_ports_data_stream_out(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
-        Vec::new()
+    fn output_streams(&self, _inputs: &NoPorts) -> NoPorts {
+        NoPorts
     }
 
     fn threads(&self) -> Vec<NodeThread> {
@@ -386,7 +388,7 @@ impl Node<Edges> for Arduino {
             .into()
     }
 
-    fn process(&self, pass: &mut PassContext<Edges>, connected: &mut Connected, _: &mut ()) {
+    fn process(&self, pass: &mut PassContext<Edges>, _: NoPorts, _: NoPorts, connected: &mut Connected, _: &mut ()) {
         let key = (self.port.clone(), self.baud);
         if connected.connection.as_ref().is_none_or(|c| c.key != key) {
             connected.connection = Some(Connection::start(key));
@@ -461,7 +463,7 @@ impl Node<Edges> for Arduino {
         });
     }
 
-    fn warnings(&self, _inputs: &[Option<DataStream>]) -> Vec<String> {
+    fn warnings(&self, _inputs: &NoPorts) -> Vec<String> {
         if self.pins.is_empty() { vec!["No pins to set".into()] } else { Vec::new() }
     }
 }
@@ -513,13 +515,13 @@ mod tests {
     #[test]
     fn the_pins_wanted_are_worked_out_again_only_when_they_could_change() {
         let mut node = Arduino::default();
-        let mut connected = ephys_rs::engine::fresh_state(&node, &[]);
+        let mut connected = ephys_rs::engine::fresh_state(&node, &NoPorts);
         let shown = Pool::<Status>::default();
         let handed = |node: &Arduino, connected: &mut Connected, recording: bool| {
-            let mut pass = PassContext::new(0, 0.02, &[], &mut []);
+            let mut pass = PassContext::new(0, 0.02);
             pass.shared = &shown;
             pass.set_recording(recording);
-            node.process(&mut pass, connected, &mut ());
+            node.process(&mut pass, NoPorts, NoPorts, connected, &mut ());
             connected.connection.as_ref().unwrap().running.shared.wanted.load_full()
         };
         let first = handed(&node, &mut connected, false);

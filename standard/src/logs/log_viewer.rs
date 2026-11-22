@@ -8,14 +8,21 @@ use std::collections::VecDeque;
 use eframe::egui::{self, RichText};
 use serde::{Deserialize, Serialize};
 
+use crate::Edges;
+use crate::standard::logs::LogLines;
 use crate::standard::plots;
 use crate::standard::pool::Pool;
 use crate::standard::widgets::require_input;
-use crate::{Buffer, DataStream, Edges, Kind};
 use ephys_rs::engine::{
-    Category, Node, NodeInfo, PassContext, PassState, PoolStatus, Port, Prepare, PrepareContext, Prepared, Shared,
-    UiContext,
+    Buffers, Category, NoPorts, Node, NodeInfo, PassContext, PassState, PoolStatus, Prepare, PrepareContext, Prepared,
+    Shared, UiContext,
 };
+
+ephys_rs::data_ports! {
+    inputs: pub struct Inputs {
+        log: In<LogLines>,
+    }
+}
 
 /// The most lines kept: the oldest go.
 const KEPT: usize = 10_000;
@@ -63,6 +70,8 @@ impl PassState for Viewing {
 }
 
 impl Node<Edges> for LogViewer {
+    type Inputs = Inputs;
+    type Outputs = NoPorts;
     type State = Viewing;
     type WorkerState = ();
     type Shared = SentLines;
@@ -77,12 +86,8 @@ impl Node<Edges> for LogViewer {
     const WINDOW_SIZE: [f32; 2] = [820.0, 520.0];
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
-    fn list_ports_data_stream_in(&self) -> Vec<Port<Edges>> {
-        vec![Port::DataStreamIn { name: "log", data_stream_kind: Kind::LogLines }]
-    }
-
-    fn list_ports_data_stream_out(&self, _inputs: &[Option<DataStream>]) -> Vec<Port<Edges>> {
-        Vec::new()
+    fn output_streams(&self, _inputs: &Inputs) -> NoPorts {
+        NoPorts
     }
 
     fn prepare_for_snapshot(&self, context: &PrepareContext<Edges, Self>) -> Prepare<Viewing, (), Self> {
@@ -92,9 +97,16 @@ impl Node<Edges> for LogViewer {
         Prepared::shared(Viewing::default()).into()
     }
 
-    fn process(&self, pass: &mut PassContext<Edges>, viewing: &mut Viewing, _: &mut ()) {
+    fn process(
+        &self,
+        pass: &mut PassContext<Edges>,
+        inputs: Inputs<Buffers>,
+        _: NoPorts,
+        viewing: &mut Viewing,
+        _: &mut (),
+    ) {
         let pending = &mut viewing.pending;
-        if let Some(Some(Buffer::LogLines(log))) = pass.inputs.first() {
+        if let Some(log) = inputs.log {
             pending.extend(
                 log.lines().map(|(time, line)| Entry { time, line: String::from_utf8_lossy(line).into_owned() }),
             );
@@ -137,7 +149,7 @@ impl Node<Edges> for LogViewer {
         });
     }
 
-    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
+    fn warnings(&self, inputs: &Inputs) -> Vec<String> {
         require_input(inputs, "log lines")
     }
 }
@@ -170,15 +182,13 @@ mod tests {
     /// Runs a pass of the viewer, sending `lines` to `sent`.
     fn pass(viewing: &mut Viewing, sent: &SentLines, lines: &[(f64, String)]) {
         use ephys_rs::engine::DataStreamType;
-        let mut log = crate::standard::logs::LogLines { width: 64 }.buffer(0.02);
+        let mut log = LogLines { width: 64 }.buffer(0.02);
         for (time, line) in lines {
             assert!(log.push(*time, line));
         }
-        let input = Buffer::LogLines(log);
-        let inputs = [Some(&input)];
-        let mut pass = PassContext::new(0, 0.02, &inputs, &mut []);
+        let mut pass = PassContext::new(0, 0.02);
         pass.shared = sent;
-        LogViewer::default().process(&mut pass, viewing, &mut ());
+        LogViewer::default().process(&mut pass, Inputs { log: Some(&log) }, NoPorts, viewing, &mut ());
     }
 
     /// A viewer on the GUI's side: its graph, what its passes share, and its state.

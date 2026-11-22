@@ -265,7 +265,7 @@ fn window_harness(ran: Option<&Path>) -> egui_kittest::Harness<'static, Graph<No
         None => Job::default(),
     };
     let state: ephys_rs::engine::UiStateCell = std::cell::RefCell::new(Box::new(SyncState::with(job)));
-    let inputs: [Option<DataStream>; 0] = [];
+    let inputs = Vec::new();
     let mut harness = egui_kittest::Harness::builder().with_size([680.0, 780.0]).wgpu().build_ui_state(
         move |ui, graph: &mut Graph<Nodes>| {
             graph.edit(

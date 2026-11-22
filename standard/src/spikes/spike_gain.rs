@@ -10,17 +10,27 @@
 //! Spike Viewer detects the thresholds first, then the gains.
 
 use eframe::egui;
-use ephys_rs::engine::{BufferUsage, Prepare, PrepareContext, Prepared, TreeShake};
+use ephys_rs::engine::{Buffers, InputPorts, Prepare, PrepareContext, Prepared, TreeShake};
 use serde::{Deserialize, Serialize};
 
 use crate::standard::auto_detect::{Distribution, SAMPLING, auto_detect_ui, detect_changed};
+use crate::standard::spikes::Spikes;
 use crate::standard::spikes::{
     Channels, DEFAULT_RANGE_UV, GainScope, Gains, RANGES_UV, SpikesBuffer, fill_field, gain_field,
 };
 use crate::standard::widgets::{input_summary, named_settings_grid, require_input, setting};
-use crate::{Buffer, Command, CommandKind, DataStream, Edges, Kind, PublishedValue, ValueKind};
+use crate::{Command, CommandKind, Edges, PublishedValue, ValueKind};
 use ephys_rs::engine::{Category, CommandContext, CommandSource, Node, NodeInfo, PassContext, Port, UiContext};
 use ephys_rs::gui::widgets::info_icon;
+
+ephys_rs::data_ports! {
+    inputs: pub struct Inputs {
+        spikes: In<Spikes>,
+    }
+    outputs: pub struct Outputs {
+        spikes: Out<Spikes> in_place_of spikes,
+    }
+}
 
 #[derive(Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -176,6 +186,8 @@ struct Sampling {
 }
 
 impl Node<Edges> for SpikeGain {
+    type Inputs = Inputs;
+    type Outputs = Outputs;
     type State = Gaining;
     type WorkerState = ();
     type Shared = ();
@@ -196,17 +208,8 @@ impl Node<Edges> for SpikeGain {
         TreeShake::needing_all(inputs.contains(&true) && wanted, inputs.len())
     }
 
-    fn list_ports_data_stream_in(&self) -> Vec<Port<Edges>> {
-        vec![Port::DataStreamIn { name: "spikes", data_stream_kind: Kind::Spikes }]
-    }
-
-    fn list_ports_data_stream_out(&self, inputs: &[Option<DataStream>]) -> Vec<ephys_rs::engine::Port<Edges>> {
-        vec![Port::DataStreamOut { name: "spikes", data_stream_kind: Kind::Spikes, stream: inputs[0] }]
-    }
-
-    /// Its output's made in place, from its input.
-    fn evaluate_buffer_usage(&self, inputs: usize, outputs: usize) -> BufferUsage {
-        BufferUsage { in_place: vec![Some(0); outputs], ..BufferUsage::none(inputs, outputs) }
+    fn output_streams(&self, inputs: &Inputs) -> Outputs {
+        Outputs { spikes: inputs.spikes }
     }
 
     fn list_ports_val_cmd(&self) -> Vec<Port<Edges>> {
@@ -240,10 +243,7 @@ impl Node<Edges> for SpikeGain {
         if context.same_streams() && !detect_changed(self.gains.detect.started, before) {
             return Prepared::nothing().into();
         }
-        let channels = match context.inputs[0] {
-            Some(DataStream::Spikes(stream)) => stream.channels as usize,
-            _ => 0,
-        };
+        let channels = Inputs::of(context.inputs).spikes.map_or(0, |stream| stream.channels as usize);
         let seconds = self.gains.detect.seconds.clamp(*SAMPLING.start(), *SAMPLING.end()) as f64;
         let sampling = self.gains.detect.started.map(|_| Sampling::new(seconds, channels));
         Prepared::shared(Gaining { sampling }).into()
@@ -252,13 +252,18 @@ impl Node<Edges> for SpikeGain {
     /// Multiplies each channel's waveforms by its gain (saying so on the spikes); and, while the gains are being
     /// detected, samples the spikes (in µV, before that) for a while, then sends itself gains chosen from them, with
     /// `detect` cleared.
-    fn process(&self, pass: &mut PassContext<Edges>, gaining: &mut Gaining, _: &mut ()) {
-        if let Some(Some(Buffer::Spikes(input))) = pass.inputs.first()
-            && let Some(Buffer::Spikes(output)) = pass.outputs.get_mut(0)
-        {
-            copy(input, output);
+    fn process(
+        &self,
+        pass: &mut PassContext<Edges>,
+        inputs: Inputs<Buffers>,
+        outputs: Outputs<Buffers>,
+        gaining: &mut Gaining,
+        _: &mut (),
+    ) {
+        let spikes = outputs.spikes;
+        if let Some(input) = inputs.spikes {
+            copy(input, spikes);
         }
-        let Some(Buffer::Spikes(spikes)) = pass.outputs.first() else { return };
         let channels = spikes.gains.len();
         let layout = Channels { count: channels, group_size: spikes.group_size };
         if let Some(sampling) = gaining.sampling.as_mut().filter(|s| !s.done) {
@@ -281,7 +286,6 @@ impl Node<Edges> for SpikeGain {
         }
 
         // The gains, applied: amplified µV.
-        let Some(Buffer::Spikes(spikes)) = pass.outputs.first_mut() else { return };
         for (channel, gain) in spikes.gains.iter_mut().enumerate() {
             *gain = self.gains.get(channel);
         }
@@ -298,11 +302,9 @@ impl Node<Edges> for SpikeGain {
     fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<Edges>) {
         let Some(ui) = ui else { return };
         ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, context| {
-            let channels = match context.inputs[0] {
-                Some(DataStream::Spikes(s)) => {
-                    Channels { count: s.channels as usize, group_size: s.group_size as usize }
-                }
-                _ => Channels { count: 0, group_size: 4 },
+            let channels = match Inputs::of(context.inputs).spikes {
+                Some(s) => Channels { count: s.channels as usize, group_size: s.group_size as usize },
+                None => Channels { count: 0, group_size: 4 },
             };
             // The gains: how they're shared out, then each one.
             ui.strong("Gains");
@@ -454,7 +456,7 @@ impl Node<Edges> for SpikeGain {
         });
     }
 
-    fn warnings(&self, inputs: &[Option<DataStream>]) -> Vec<String> {
+    fn warnings(&self, inputs: &Inputs) -> Vec<String> {
         require_input(inputs, "spikes")
     }
 }
@@ -560,16 +562,14 @@ mod tests {
         let stream =
             crate::standard::spikes::Spikes { channels: 4, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32 };
         let started = std::time::Instant::now();
-        let inputs = [Some(DataStream::Spikes(stream))];
+        let inputs = Inputs { spikes: Some(stream) };
         gain.gains.detect.started = Some(started);
         let mut state = ephys_rs::engine::fresh_state(&gain, &inputs);
-        let mut buffer = stream.buffer(PASS_DURATION);
-        buffer.thresholds = vec![DEFAULT_THRESHOLD_UV, DEFAULT_THRESHOLD_UV, 80.0, DEFAULT_THRESHOLD_UV];
+        let mut spikes = stream.buffer(PASS_DURATION);
+        spikes.thresholds = vec![DEFAULT_THRESHOLD_UV, DEFAULT_THRESHOLD_UV, 80.0, DEFAULT_THRESHOLD_UV];
         let passes = (4.0 / PASS_DURATION).round() as u64;
-        let mut outputs = [Buffer::Spikes(buffer)];
         let commands = ephys_rs::commands::Commands::default();
         for sequence in 0..passes {
-            let Buffer::Spikes(spikes) = &mut outputs[0] else { unreachable!() };
             spikes.clear();
             // Going down to 100 µV on the first channel (and back up past zero, not as far), and up to 300 on the
             // second (now and then).
@@ -577,9 +577,10 @@ mod tests {
                 (waveform[8], waveform[9]) = (-100.0, 50.0);
                 waveform[40 + 8] = if sequence % 4 == 0 { 300.0 } else { 50.0 };
             }
-            let mut pass = PassContext::new(sequence, PASS_DURATION, &[], &mut outputs);
+            let mut pass = PassContext::new(sequence, PASS_DURATION);
             pass.commands = &commands;
-            gain.process(&mut pass, &mut state, &mut ());
+            // Made in place: the output already holds the spikes.
+            gain.process(&mut pass, Inputs { spikes: None }, Outputs { spikes: &mut spikes }, &mut state, &mut ());
             let sampling = state.sampling.as_ref().is_some_and(|s| !s.done);
             assert_eq!(sampling, sequence + 1 < passes, "samples for 4 s, at pass {sequence}");
         }
@@ -599,13 +600,12 @@ mod tests {
         // A percentile of them leaves out the second channel's few big ones: 3 in 4 are 50 µV.
         let mut sampling = Sampling::new(4.0, 4);
         sampling.restart(&[50.0; 4]);
-        let Buffer::Spikes(spikes) = &mut outputs[0] else { unreachable!() };
         for sequence in 0..8 {
             spikes.clear();
             if let Some(waveform) = spikes.push(Spike { sample: 0, group: 0, channel: 0 }) {
                 waveform[40 + 8] = if sequence % 4 == 0 { -300.0 } else { -50.0 };
             }
-            sampling.add(spikes, PASS_DURATION);
+            sampling.add(&spikes, PASS_DURATION);
         }
         let range = sampling.choose(Fit { peak_percent: 50.0, ..fit })[1];
         assert!(close(range, 100.0), "half of them are at or below 50 µV: {range}");
@@ -618,32 +618,30 @@ mod tests {
         let stream =
             crate::standard::spikes::Spikes { channels: 4, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32 };
         let started = std::time::Instant::now();
-        let inputs = [Some(DataStream::Spikes(stream))];
+        let inputs = Inputs { spikes: Some(stream) };
         gain.gains.detect.started = Some(started);
         let mut state = ephys_rs::engine::fresh_state(&gain, &inputs);
-        let mut buffer = stream.buffer(PASS_DURATION);
-        buffer.thresholds = vec![DEFAULT_THRESHOLD_UV; 4];
-        let mut outputs = [Buffer::Spikes(buffer)];
+        let mut spikes = stream.buffer(PASS_DURATION);
+        spikes.thresholds = vec![DEFAULT_THRESHOLD_UV; 4];
         let commands = ephys_rs::commands::Commands::default();
         let passes = (4.0 / PASS_DURATION).round() as u64;
-        let mut run = |sequence, outputs: &mut [Buffer]| {
-            let mut pass = PassContext::new(sequence, PASS_DURATION, &[], outputs);
+        let mut run = |sequence, spikes: &mut SpikesBuffer| {
+            let mut pass = PassContext::new(sequence, PASS_DURATION);
             pass.commands = &commands;
-            gain.process(&mut pass, &mut state, &mut ());
+            gain.process(&mut pass, Inputs { spikes: None }, Outputs { spikes }, &mut state, &mut ());
         };
         for sequence in 0..passes / 2 {
-            run(sequence, &mut outputs);
+            run(sequence, &mut spikes);
         }
         // The detector's chosen its thresholds.
-        let Buffer::Spikes(spikes) = &mut outputs[0] else { unreachable!() };
         spikes.thresholds = vec![30.0, 40.0, 60.0, 70.0];
         // From the pass the thresholds changed on, it samples for 4 s again.
         let done = passes / 2 + passes - 1;
         for sequence in passes / 2..done {
-            run(sequence, &mut outputs);
+            run(sequence, &mut spikes);
             assert!(commands.take_commands::<Command>().is_empty(), "sampling again, at pass {sequence}");
         }
-        run(done, &mut outputs);
+        run(done, &mut spikes);
         let updates = commands.take_commands::<Command>();
         let [(_, Command::SetGains(gains))] = &updates[..] else { panic!("{updates:?}") };
         // No spikes: each by its new threshold, times the factor.
@@ -659,29 +657,30 @@ mod tests {
         let stream =
             crate::standard::spikes::Spikes { channels: 4, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32 };
         let started = std::time::Instant::now();
-        let inputs = [Some(DataStream::Spikes(stream))];
+        let inputs = Inputs { spikes: Some(stream) };
         gain.gains.detect.started = Some(started);
         let mut state = ephys_rs::engine::fresh_state(&gain, &inputs);
-        let mut outputs = [Buffer::Spikes(stream.buffer(PASS_DURATION))];
+        let mut spikes = stream.buffer(PASS_DURATION);
         let commands = ephys_rs::commands::Commands::default();
         for sequence in 0..2 {
-            let mut pass = PassContext::new(sequence, PASS_DURATION, &[], &mut outputs);
+            let mut pass = PassContext::new(sequence, PASS_DURATION);
             pass.commands = &commands;
-            gain.process(&mut pass, &mut state, &mut ());
+            gain.process(&mut pass, Inputs { spikes: None }, Outputs { spikes: &mut spikes }, &mut state, &mut ());
         }
         assert!(state.sampling.as_ref().is_some_and(|s| s.elapsed > 0.0), "sampling");
         // Stopped: auto detect cleared, the node makes its state without the sampling.
         let was = gain.clone();
         gain.gains.detect.started = None;
-        let previous = Previous { node: &was, inputs: &inputs, same_streams: true };
-        let context = PrepareContext { previous: Some(previous), ..PrepareContext::trying(&inputs, None) };
+        let streams = inputs.streams();
+        let previous = Previous { node: &was, inputs: &streams, same_streams: true };
+        let context = PrepareContext { previous: Some(previous), ..PrepareContext::trying(&streams, None) };
         let mut proto = gain.prepare_for_snapshot(&context).wait().proto_shared_state.expect("made afresh");
         gain.adopt_snapshot(&mut state, &mut proto);
         assert!(state.sampling.is_none(), "let go of");
         for sequence in 2..600 {
-            let mut pass = PassContext::new(sequence, PASS_DURATION, &[], &mut outputs);
+            let mut pass = PassContext::new(sequence, PASS_DURATION);
             pass.commands = &commands;
-            gain.process(&mut pass, &mut state, &mut ());
+            gain.process(&mut pass, Inputs { spikes: None }, Outputs { spikes: &mut spikes }, &mut state, &mut ());
         }
         assert!(commands.take_commands::<Command>().is_empty(), "nothing chosen");
     }
@@ -733,7 +732,6 @@ mod tests {
     #[test]
     fn settings_window() {
         use crate::Nodes;
-        use crate::standard::spikes::Spikes;
         use crate::standard::themes::THEMES;
         use ephys_rs::engine::{Graph, NodesEnum};
         let mut graph = Graph::<Nodes>::default();
@@ -745,7 +743,7 @@ mod tests {
             gain.gains.set_scope(GainScope::Group, channels);
             gain.gains.set_range(5, 120.0, channels);
         }
-        let inputs = [Some(DataStream::Spikes(spikes))];
+        let inputs = Inputs { spikes: Some(spikes) }.streams();
         let mut harness = egui_kittest::Harness::builder().with_size([420.0, 440.0]).wgpu().build_ui_state(
             |ui, graph: &mut Graph<Nodes>| {
                 graph.edit(id, &inputs, &THEMES[0].colours, None, None, None, false, false, None, |node, context| {

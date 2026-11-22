@@ -20,11 +20,12 @@ else.
 
 The parts of the API are there for three different reasons, and it helps to know which is which:
 
-- **The data model: what the node is and does.** These have to be right for the node to work: its data ports (`list_ports_data_stream_in`,
-  `list_ports_data_stream_out`), its ValCmd ports (`list_ports_val_cmd`: the values it publishes, `val_out`, and those of others it reads),
-  the commands it takes (`on_command`), `process` and its state (prepared for each snapshot: `prepare_for_snapshot`).
+- **The data model: what the node is and does.** These have to be right for the node to work: its data ports (declared
+  with `data_ports!`, and `output_streams`), its ValCmd ports (`list_ports_val_cmd`: the values it publishes, `val_out`,
+  and those of others it reads), the commands it takes (`on_command`), `process` and its state (prepared for each
+  snapshot: `prepare_for_snapshot`).
 - **Optimisation: how cheaply it runs.** Leaving these at their defaults is always correct, only slower or using more
-  memory: `evaluate_buffer_usage`, `evaluate_tree_shake` (one exception: a writer says it only runs while recording,
+  memory: inputs it takes and outputs it makes in place (in its `data_ports!`), `evaluate_tree_shake` (one exception: a writer says it only runs while recording,
   with something to record, or it would write empty files), worker state instead of shared state where nothing's carried over (`WorkerState`), and pools for buffers its threads
   swap.
 - **The experience of using it: how it looks and behaves for people.** These change nothing it computes: its category,
@@ -36,8 +37,26 @@ The parts of the API are there for three different reasons, and it helps to know
 
 - `INFO`: its name, category (source, processing, visualisation, recording or other) and description. The category
   is only a label (see above).
-- `list_ports_data_stream_in()` and `list_ports_data_stream_out(inputs)`: its data ports. An output says what data stream it produces, given what's on the
-  inputs (or `None` while that can't be known), so a graph's streams are worked out before anything runs.
+- Its data ports, declared on its type with `data_ports!` (see [`data_ports`](../src/engine/data_ports.rs)): a struct
+  of its inputs and a struct of its outputs, each field a port typed by its data stream, named by the field (or by text
+  after it). The node names them as `type Inputs` and `type Outputs` (or `NoPorts`, for none). Its ports are fixed by
+  its type, whatever its settings; only the streams on them change.
+
+  ```rust
+  ephys_rs::data_ports! {
+      inputs: pub struct Inputs {
+          continuous: In<Continuous>,
+      }
+      outputs: pub struct Outputs {
+          spikes: Out<Spikes>,
+      }
+  }
+  ```
+
+  Saved graphs number a node's ports in the order they're declared, so reordering them needs a config patch.
+- `output_streams(inputs)`: the data stream on each output, given those on the inputs (each `None` while it can't be
+  known: nothing connected, say), so a graph's streams are worked out before anything runs. In the structs' default
+  form, each field is the stream on its port (`Option<Continuous>`), so an output's stream is always of its type.
 - `warnings(inputs)`: what's wrong (an input not connected, say), shown on the graph and in its window.
 - `list_ports_val_cmd()`: its ValCmd ports (see [Edges](edges.md#values-and-commands)), each a `Port`: where it publishes a value
   (`ValOutCmdIn`, with `val_out` saying what it is now), and where it reads another node's, sending it commands
@@ -47,10 +66,13 @@ The parts of the API are there for three different reasons, and it helps to know
 
 ## Running
 
-`process(pass, state, worker_state)` is called once a pass, on a worker thread, with the pass's buffers (see
-[`PassContext`](../src/engine/pass_context.rs)): `inputs` to read, `outputs` to fill (already sized: nothing should be
-allocated per pass), the values its ports read (`val_in::<T>(port)`), whether it's recording, what it shares with the
-GUI, and where to send itself commands (`cmd_self`). `self` is the snapshot's settings: the latest, as of the pass.
+`process(pass, inputs, outputs, state, worker_state)` is called once a pass, on a worker thread. `inputs` and `outputs`
+are its own structs in the `Buffers` form: each input's buffer to read (`Option<&ContinuousBuffer>`, `None` if it isn't
+connected), and each output's to fill (`&mut SpikesBuffer`, already sized: nothing should be allocated per pass).
+[`PassContext`](../src/engine/pass_context.rs) has the rest: the values its ports read (`val_in::<T>(port)`), whether
+it's recording, what it shares with the GUI, and where to send itself commands (`cmd_self`). `self` is the snapshot's
+settings: the latest, as of the pass. Trying a node out, a test hands it its structs directly:
+`node.process(&mut PassContext::new(0, PASS_DURATION), Inputs { continuous: Some(&input) }, Outputs { spikes: &mut out }, ..)`.
 
 - **State.** A node has two kinds, each `()` for none:
   - `type State` is carried from pass to pass (a filter's history). Passes hand it on in order, so they wait for each
@@ -92,15 +114,17 @@ GUI, and where to send itself commands (`cmd_self`). `self` is the snapshot's se
   that makes nothing new keeps what it was asked about before. A node that fails to prepare (it panics, or doesn't make
   state it needs) is asked about the same way, and doesn't run: its outputs are left empty. See the
   [board](../standard/src/ephys/board/node.rs) and the [camera](../standard/src/tracking/camera/node.rs).
-- **Buffer usage.** `evaluate_buffer_usage(inputs, outputs)`, asked once per plan, says how the node uses its buffers
-  (a `BufferUsage`):
-  - **In place.** `in_place[output]` names an input whose buffer the output can be made in, when nothing else needs
-    that data after it. Then the input's `None` in the pass, and the output already holds its data.
-  - **Taking.** `takes[input]`: the node takes the input's buffer, to do as it likes with (swap it for one of its own,
-    say, to hand to its thread or window). Nodes don't copy their inputs; the plan decides when a copy's needed.
-    `PassContext::take_input` always gives the node a buffer: the input's own, if no one edits that data in place and
-    every other reader can run first, otherwise a copy the plan makes as soon as the data's made (a copy point, in the
-    dev tools). A node that only reads an input doesn't take it.
+- **Buffer usage.** How the node uses its buffers follows from how it declares its data ports (gathered into a
+  `BufferUsage` for the plan):
+  - **In place.** An output declared `in_place_of` an input (of the same type: it won't compile otherwise) can be made
+    in that input's buffer, when nothing else needs that data after it. Then the input's `None` in the pass, and the
+    output already holds its data.
+  - **Taking.** An input declared `Take<T>` rather than `In<T>`: the node takes the input's buffer, to do as it likes
+    with (swap it for one of its own, say, to hand to its thread or window), and gets it as `Option<&mut T::Buffer>`.
+    Nodes don't copy their inputs; the plan decides when a copy's needed. A connected input the node takes always has a
+    buffer: the input's own, if no one edits that data in place and every other reader can run first, otherwise a copy
+    the plan makes as soon as the data's made (a copy point, in the dev tools). A node that only reads an input doesn't
+    take it.
 - **The tree shake: whether it runs, and what it needs.** It's up to the node: `evaluate_tree_shake(inputs, outputs,
   recording)`, given which of its inputs have something running into them, which of its outputs have something running
   that needs them, and whether the snapshot's recording, as well as its settings (`self`), says whether it runs, and which inputs it needs (a `TreeShake`). An input it doesn't need isn't passed,
