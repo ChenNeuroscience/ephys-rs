@@ -3,13 +3,12 @@
 //! started, as `detect.seconds`, so whatever sees the setting (a viewer, through a control) sees it too. The Spike
 //! Detector's thresholds were just their values, a list; they're now `values`, beside `detect`.
 
-use ephys_rs::config_patching::IncomingConfig;
+use ephys_rs::config_patching::{IncomingConfig, Patch};
 use serde_json::{Value, json};
 
-pub fn patch(config: &mut IncomingConfig) {
-    if !config.written_before("std", "0.263.0") {
-        return;
-    }
+pub const PATCH: Patch = Patch::new("0.263.0", patch);
+
+fn patch(config: &mut IncomingConfig) {
     for node in config.nodes() {
         let setting = match node["type"].as_str() {
             Some("SpikeGain" | "ContinuousGain") => "gains",
@@ -40,7 +39,7 @@ mod tests {
     fn patched(versions: Versions, kind: &str, settings: Value) -> Value {
         let node = json!({ "type": kind, "settings": settings });
         let mut config = IncomingConfig { versions, json: json!({ "graph": { "nodes": { "1": { "node": node } } } }) };
-        super::patch(&mut config);
+        super::PATCH.apply_to("std", &mut config);
         config.json["graph"]["nodes"]["1"]["node"]["settings"].clone()
     }
 

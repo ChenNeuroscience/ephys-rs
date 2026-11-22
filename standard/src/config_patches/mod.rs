@@ -1,5 +1,6 @@
-//! The standard components' config patches: to their node types' settings, and the base directories', in the order they were added (see `ephys_rs::config_patching`). A patch is a file of its own,
-//! never changed once released.
+//! The standard components' config patches, which change the standard node types' settings and the base directories'
+//! (see `ephys_rs::config_patching`). Each patch is a file of its own, listed in `PATCHES` in the order the patches
+//! were added, and never changed once released. `example` shows the shape of a patch.
 
 use ephys_rs::config_patching::PatchSet;
 
@@ -15,13 +16,12 @@ pub const PATCHES: PatchSet = PatchSet {
     name: "std",
     version: env!("CARGO_PKG_VERSION"),
     patches: &[
-        example::patch,
-        gains_amplify::patch,
-        auto_detect_settings::patch,
-        write_ltx_val_ins::patch,
-        board_outputs::patch,
-        edge_port_ids::patch,
-        continuous_viewer::patch,
+        gains_amplify::PATCH,
+        auto_detect_settings::PATCH,
+        write_ltx_val_ins::PATCH,
+        board_outputs::PATCH,
+        edge_port_ids::PATCH,
+        continuous_viewer::PATCH,
     ],
 };
 
@@ -31,9 +31,10 @@ mod tests {
 
     use ephys_rs::config_patching::{PatchSet, PatchSets, Versions};
 
-    /// Something saved before there were versions is patched through the example, unchanged.
+    /// A Spike Detector saved before there were versions comes through every patch unchanged, as none of them
+    /// touches its settings.
     #[test]
-    fn the_example_patch_changes_nothing() {
+    fn a_spike_detector_saved_before_versions_is_unchanged() {
         static SETS: [PatchSet; 2] = [ephys_rs::config_patches::PATCHES, super::PATCHES];
         let sets = PatchSets::new(&SETS);
         assert_eq!(sets.versions().keys().collect::<Vec<_>>(), ["core", "std"]);

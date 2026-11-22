@@ -5,7 +5,7 @@
 //! ±`fill_uv`. So each gain is made what fits the same range as it did (0.512 is ×1), and auto detect fills ±250 µV:
 //! what's recorded is the same.
 
-use ephys_rs::config_patching::IncomingConfig;
+use ephys_rs::config_patching::{IncomingConfig, Patch};
 use serde_json::{Value, json};
 
 /// What a channel without a gain of its own fit, and what Write LTX records (×1 fitting it).
@@ -13,10 +13,9 @@ const FULL_SCALE_UV: f64 = 250.0;
 /// The output range, unless it was set.
 const OUTPUT_RANGE: f64 = 128.0;
 
-pub fn patch(config: &mut IncomingConfig) {
-    if !config.written_before("std", "0.232.0") {
-        return;
-    }
+pub const PATCH: Patch = Patch::new("0.232.0", patch);
+
+fn patch(config: &mut IncomingConfig) {
     let gain_nodes = config.nodes().filter(|node| node["type"] == "SpikeGain" || node["type"] == "ContinuousGain");
     for gains in gain_nodes.filter_map(|node| node.pointer_mut("/settings/gains").and_then(Value::as_object_mut)) {
         if gains.contains_key("fill_uv") {
@@ -45,7 +44,7 @@ mod tests {
     fn patched(versions: Versions, kind: &str, gains: serde_json::Value) -> serde_json::Value {
         let node = json!({ "type": kind, "settings": { "gains": gains } });
         let mut config = IncomingConfig { versions, json: json!({ "graph": { "nodes": { "1": { "node": node } } } }) };
-        super::patch(&mut config);
+        super::PATCH.apply_to("std", &mut config);
         config.json["graph"]["nodes"]["1"]["node"]["settings"]["gains"].clone()
     }
 

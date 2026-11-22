@@ -7,7 +7,7 @@
 //! (`PORTS`). An end with a number its node type didn't have could never have been connected, so the patch drops its
 //! edge. Each build's own patches convert the ends on the build's own node types.
 
-use ephys_rs::config_patching::IncomingConfig;
+use ephys_rs::config_patching::{IncomingConfig, Patch};
 use serde_json::{Value, json};
 
 /// A role and the ids of its ports, in order, such as `("DataStreamOut", &["video", "stats"])`.
@@ -80,10 +80,9 @@ const PORTS: &[(&str, &[RolePorts])] = &[
     ("TtlRecordingControl", &[("DataStreamIn", &["events"])]),
 ];
 
-pub fn patch(config: &mut IncomingConfig) {
-    if !config.written_before("std", "0.284.0") {
-        return;
-    }
+pub const PATCH: Patch = Patch::new("0.284.0", patch);
+
+fn patch(config: &mut IncomingConfig) {
     let Some(graph) = config.json.get_mut("graph") else { return };
     let types: Vec<(u64, String)> = (graph.get("nodes").and_then(Value::as_object).into_iter().flatten())
         .filter_map(|(id, entry)| Some((id.parse().ok()?, entry.pointer("/node/type")?.as_str()?.to_string())))
@@ -149,7 +148,7 @@ mod tests {
     #[test]
     fn standard_nodes_ends_are_named_by_their_ports_ids() {
         let mut config = IncomingConfig { versions: Versions::new(), json: project() };
-        super::patch(&mut config);
+        super::PATCH.apply_to("std", &mut config);
         let named = |node: u64, role: &str, port: &str| json!({ "node": node, "role": role, "port": port });
         let expected = json!([
             { "from": named(1, "DataStreamOut", "headstages"), "to": named(2, "DataStreamIn", "eeg") },
@@ -165,7 +164,7 @@ mod tests {
     fn written_since_is_left_as_it_is() {
         let versions = Versions::from([("std".to_string(), "0.284.0".to_string())]);
         let mut config = IncomingConfig { versions, json: project() };
-        super::patch(&mut config);
+        super::PATCH.apply_to("std", &mut config);
         assert_eq!(config.json, project());
     }
 }

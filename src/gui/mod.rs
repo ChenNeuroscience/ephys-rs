@@ -3525,17 +3525,19 @@ mod tests {
     /// The test's patch set has one patch, which changes a Spike Detector's waveform, as a node type's patch would, if
     /// it was saved before version 1.
     fn pre_was_8(config: &mut config_patching::IncomingConfig) {
-        if config.written_before("test", "1.0.0") {
-            for node in config.nodes().filter(|node| node["type"] == "SpikeDetector") {
-                node["settings"]["pre"] = 12.into();
-            }
+        for node in config.nodes().filter(|node| node["type"] == "SpikeDetector") {
+            node["settings"]["pre"] = 12.into();
         }
     }
     /// The core's and the standard components' patches (so the example loads), and one of the test's own.
     static WITH_A_PATCH: [config_patching::PatchSet; 3] = [
         crate::config_patches::PATCHES,
         crate::standard::config_patches::PATCHES,
-        config_patching::PatchSet { name: "test", version: "1.0.0", patches: &[pre_was_8] },
+        config_patching::PatchSet {
+            name: "test",
+            version: "1.0.0",
+            patches: &[config_patching::Patch::build("1.0.0", "0.0.0", pre_was_8)],
+        },
     ];
 
     fn pre(graph: &Graph<Nodes>) -> u32 {

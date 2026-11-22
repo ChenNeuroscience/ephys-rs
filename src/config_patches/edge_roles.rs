@@ -6,12 +6,11 @@
 
 use serde_json::{Value, json};
 
-use crate::config_patching::IncomingConfig;
+use crate::config_patching::{IncomingConfig, Patch};
 
-pub fn patch(config: &mut IncomingConfig) {
-    if !config.written_before("core", "0.270.0") {
-        return;
-    }
+pub const PATCH: Patch = Patch::new("0.270.0", patch);
+
+fn patch(config: &mut IncomingConfig) {
     let Some(graph) = config.json.get_mut("graph") else { return };
     // A disabled edge is listed among the edges too.
     for list in ["edges", "disabled_edges"] {
@@ -52,7 +51,7 @@ mod tests {
     #[test]
     fn edges_ends_become_ports_addresses() {
         let mut config = IncomingConfig { versions: Versions::new(), json: project() };
-        super::patch(&mut config);
+        super::PATCH.apply_to("core", &mut config);
         let addressed = |from: &str, to: &str| {
             json!({
                 "from": { "node": 1, "role": from, "port_idx": 2 },
@@ -72,7 +71,7 @@ mod tests {
     fn edges_written_since_are_left_as_they_are() {
         let versions = Versions::from([("core".to_string(), "0.270.0".to_string())]);
         let mut config = IncomingConfig { versions, json: project() };
-        super::patch(&mut config);
+        super::PATCH.apply_to("core", &mut config);
         assert_eq!(config.json, project());
     }
 }

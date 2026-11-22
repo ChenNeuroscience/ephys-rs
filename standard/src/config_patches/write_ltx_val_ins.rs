@@ -4,16 +4,15 @@
 //! (`ValInCmdOut`). So, after the core's patch has given each edge's end its role (as a `ValInCmdOut`), the first four
 //! are its `ValIn` ports 0 to 3, and after recording is its `ValInCmdOut` port 0. No other standard node had both.
 
-use ephys_rs::config_patching::IncomingConfig;
+use ephys_rs::config_patching::{IncomingConfig, Patch};
 use serde_json::Value;
 
 /// Write LTX's controls that only read: those numbered below this.
 const READ_ONLY: u64 = 4;
 
-pub fn patch(config: &mut IncomingConfig) {
-    if !config.written_before("std", "0.270.0") {
-        return;
-    }
+pub const PATCH: Patch = Patch::new("0.270.0", patch);
+
+fn patch(config: &mut IncomingConfig) {
     let Some(graph) = config.json.get_mut("graph") else { return };
     let nodes = graph.get("nodes").and_then(Value::as_object);
     let writers: Vec<u64> = nodes
@@ -70,7 +69,7 @@ mod tests {
     #[test]
     fn write_ltxs_read_only_controls_are_val_in_ports() {
         let mut config = IncomingConfig { versions: Versions::new(), json: project() };
-        super::patch(&mut config);
+        super::PATCH.apply_to("std", &mut config);
         let (val_in, val_in_cmd_out) = ("ValIn".to_string(), "ValInCmdOut".to_string());
         assert_eq!(froms(&config, "edges"), [(val_in.clone(), 1), (val_in_cmd_out.clone(), 0), (val_in_cmd_out, 1)]);
         assert_eq!(froms(&config, "disabled_edges"), [(val_in, 3)]);
@@ -81,7 +80,7 @@ mod tests {
     fn edges_written_since_are_left_as_they_are() {
         let versions = Versions::from([("std".to_string(), "0.270.0".to_string())]);
         let mut config = IncomingConfig { versions, json: project() };
-        super::patch(&mut config);
+        super::PATCH.apply_to("std", &mut config);
         assert_eq!(config.json, project());
     }
 }

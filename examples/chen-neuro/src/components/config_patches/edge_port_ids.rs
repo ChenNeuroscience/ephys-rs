@@ -4,7 +4,7 @@
 //! node's `ports!`. An end with a number its node type didn't have could never have been connected, so the patch drops
 //! its edge.
 
-use ephys_rs::config_patching::IncomingConfig;
+use ephys_rs::config_patching::{IncomingConfig, Patch};
 use serde_json::{Value, json};
 
 /// A role and the ids of its ports, in order, such as `("DataStreamOut", &["video", "stats"])`.
@@ -14,10 +14,9 @@ type RolePorts = (&'static str, &'static [&'static str]);
 const PORTS: &[(&str, &[RolePorts])] =
     &[("VrComputer", &[("DataStreamOut", &["positions", "pos_ttl", "log"]), ("ValOutCmdIn", &["settings"])])];
 
-pub fn patch(config: &mut IncomingConfig) {
-    if !config.written_before("chen-neuro", "0.1134.0") {
-        return;
-    }
+pub const PATCH: Patch = Patch::build("0.1134.0", "0.284.0", patch);
+
+fn patch(config: &mut IncomingConfig) {
     let Some(graph) = config.json.get_mut("graph") else { return };
     let types: Vec<(u64, String)> = (graph.get("nodes").and_then(Value::as_object).into_iter().flatten())
         .filter_map(|(id, entry)| Some((id.parse().ok()?, entry.pointer("/node/type")?.as_str()?.to_string())))
@@ -67,7 +66,7 @@ mod tests {
             }],
         } });
         let mut config = IncomingConfig { versions: Versions::new(), json };
-        super::patch(&mut config);
+        super::PATCH.apply_to("chen-neuro", &mut config);
         let expected = json!([{
             "from": { "node": 1, "role": "DataStreamOut", "port": "pos_ttl" },
             "to": { "node": 2, "role": "DataStreamIn", "port_idx": 4 },

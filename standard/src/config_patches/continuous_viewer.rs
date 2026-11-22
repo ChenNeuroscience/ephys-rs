@@ -4,16 +4,15 @@
 //! it's still the default that the graph gave it ("LFP Viewer", or "LFP Viewer 2" and so on); a label someone chose is
 //! kept.
 
-use ephys_rs::config_patching::IncomingConfig;
+use ephys_rs::config_patching::{IncomingConfig, Patch};
 use serde_json::Value;
 
 const OLD_NAME: &str = "LFP Viewer";
 const NEW_NAME: &str = "Continuous Data Viewer";
 
-pub fn patch(config: &mut IncomingConfig) {
-    if !config.written_before("std", "0.288.0") {
-        return;
-    }
+pub const PATCH: Patch = Patch::new("0.288.0", patch);
+
+fn patch(config: &mut IncomingConfig) {
     let entries = config.json.pointer_mut("/graph/nodes").and_then(Value::as_object_mut);
     for entry in entries.into_iter().flat_map(|nodes| nodes.values_mut()) {
         if entry.pointer("/node/type").is_none_or(|kind| kind != "LfpViewer") {
@@ -56,7 +55,7 @@ mod tests {
     #[test]
     fn lfp_viewers_become_continuous_data_viewers() {
         let mut config = IncomingConfig { versions: Versions::new(), json: project() };
-        super::patch(&mut config);
+        super::PATCH.apply_to("std", &mut config);
         let expected = json!({ "graph": { "nodes": {
             "1": { "label": "Continuous Data Viewer", "node": { "type": "ContinuousViewer", "span": 2.0 } },
             "2": { "label": "Continuous Data Viewer 2", "node": { "type": "ContinuousViewer" } },
@@ -71,7 +70,7 @@ mod tests {
     fn written_since_is_left_as_it_is() {
         let versions = Versions::from([("std".to_string(), "0.288.0".to_string())]);
         let mut config = IncomingConfig { versions, json: project() };
-        super::patch(&mut config);
+        super::PATCH.apply_to("std", &mut config);
         assert_eq!(config.json, project());
     }
 

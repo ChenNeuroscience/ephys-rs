@@ -78,20 +78,30 @@ Each part has a set of patches, saving its crate's version: the core's
 ([`config_patches`](../src/config_patches): the project's structure), the standard components'
 ([`standard/config_patches`](../standard/src/config_patches): their node types and base
 directories), and a build's own (as [chen-neuro's](../examples/chen-neuro/src/components/config_patches)). Each is a
-folder with a patch in each file, listed in order in its `mod.rs` as `PATCHES`, starting with an example that does
-nothing (`example.rs`, to copy). Which sets a build has, and the order they're applied in, is up to it
-(`Components::CONFIG_PATCHES`, as [chen-neuro's](../examples/chen-neuro/src/components/mod.rs) lists them: the core's,
-the standard components', then its own).
+folder with a patch in each file, listed in order in its `mod.rs` as `PATCHES`, with an example to copy (`example.rs`).
+Which sets a build has is up to the build (`Components::CONFIG_PATCHES`, as
+[chen-neuro's](../examples/chen-neuro/src/components/mod.rs) lists them: the core's, the standard components', then
+its own).
 
-To change what a part saves, add a patch to its set: a file with a function changing what was saved before to what's
-saved now, as JSON (`serde_json::Value`), before anything's read into types, and add it to the end of `PATCHES`. Every
-patch is applied to everything read, and whether it does anything is entirely up to it: think of it as a script more
-than typical Rust. It's given config coming in (`IncomingConfig`): a saved file, settings pasted from the clipboard
-(copied to lab notes, maybe, and back much later), or the base directory's settings from the app's preferences: the versions that wrote it (`config.written_before("std", "0.158.0")`
-is the usual test: true too for what doesn't say), and the JSON, always shaped as a project. What isn't one (copied
-nodes, the base directory's settings) is put in one for it, with nothing else. `config.nodes()` goes through its
-nodes. So pasting is patched just as opening is. Test it with something saved before the change, as the patching tests do. A patch is never changed once
-released.
+To change what a part saves, add a patch to its set and add it to the end of `PATCHES`. A patch is a file with a
+function that converts what was saved before into what's saved now, as JSON (`serde_json::Value`), before anything is
+read into types. Think of it as a script more than typical Rust. The function receives the incoming config
+(`IncomingConfig`): a saved file, settings pasted from the clipboard (perhaps copied to lab notes and back much
+later), or the base directory's settings from the app's preferences. The JSON is always shaped as a project; what
+isn't one (copied nodes, the base directory's settings) is put in one, with nothing else. `config.nodes()` iterates
+over its nodes. So pasting is patched just as opening is.
+
+Each patch declares the version it was added in, as a `PATCH` constant, and the app only applies the patch to config
+written before that version (or by a program that didn't record one):
+
+- A core or standard patch uses `Patch::new("0.288.0", patch)`, with the ephys-rs version.
+- A build's patch uses `Patch::build("0.1134.0", "0.284.0", patch)`: the build's own version, then the ephys-rs
+  version the build used when the patch was written. Both are literals and never change.
+
+The app applies the patches in the order they were written, across all the sets, so each patch sees the config in the
+shape it was written for: by ephys-rs version, then the core's before the standard components' before the build's,
+then in the order each set lists them. Test a patch with something saved before the change, as the patching tests do.
+A patch is never changed once released.
 
 ## Performance
 

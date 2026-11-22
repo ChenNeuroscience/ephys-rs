@@ -1,16 +1,22 @@
-//! All the config the app reads back says which version of each part of the program wrote it, so later versions can
-//! patch it up to date: saved files (projects, and the settings saved beside recordings), settings pasted
-//! from the clipboard, and the base directory's settings in the app's stored preferences.
+//! Every piece of config the app reads back records which version of each part of the program wrote it, so later
+//! versions can patch it up to date. That covers saved files (projects, and the settings saved beside recordings),
+//! settings pasted from the clipboard, and the base directory's settings in the app's stored preferences.
 //!
-//! Each part has a `PatchSet`: the core's (`crate::config_patches`), the standard components'
-//! (`crate::standard::config_patches`), a build's own. When a part changes what it saves, it adds a `Patch`, which
-//! changes what was saved before to what's saved now, as JSON, before anything's read into types. Think of a patch as a
-//! script: it's given the config coming in (`IncomingConfig`): the versions that wrote it (`written_before` is the
-//! usual test), and the JSON, always shaped as a project (`{"graph": {"nodes": {...}}, "base_directory": ...}`), and
-//! does as it likes. What isn't a project is put in one for it: copied nodes in its graph, the base directory's
-//! settings from the app's preferences as its base directory, with nothing else. Every patch is applied to everything
-//! read. Patches never need changing after, as they don't depend on the types as they are now. Which sets there are,
-//! and in what order they're applied, is up to the build (`Components::CONFIG_PATCHES`).
+//! Each part of the program has a `PatchSet`: the core's (`crate::config_patches`), the standard components'
+//! (`crate::standard::config_patches`), and a build's own. When a part changes what it saves, it adds a `Patch`, which
+//! converts what was saved before into what's saved now, as JSON, before anything is read into types. A patch is a
+//! script: it receives the incoming config (`IncomingConfig`), always shaped as a project
+//! (`{"graph": {"nodes": {...}}, "base_directory": ...}`), and changes it however it needs to. Config that isn't a
+//! project is wrapped in one: copied nodes go in its graph, and the base directory's settings from the app's
+//! preferences become its base directory, with nothing else. Patches never need changing afterwards, because they
+//! don't depend on the program's types as they are now.
+//!
+//! Each patch declares the version it was added in (`Patch::since`). The app only applies a patch to config written
+//! before that version of the patch's part (or written without saying). The app applies patches in the order they
+//! were written, across all the sets, so each patch sees the config in the shape it was written for: by ephys-rs
+//! version, then core before std before the build, then in the order each set lists them (see `Patch::build` for how
+//! a build's patches are placed). Which sets there are, and their order, is up to the build
+//! (`Components::CONFIG_PATCHES`).
 
 use std::collections::BTreeMap;
 
@@ -30,12 +36,15 @@ pub struct IncomingConfig {
     pub json: Value,
 }
 
+/// A version's numbers, for comparing versions a number at a time: "0.99.0" is before "0.100.0".
+fn numbers(version: &str) -> Vec<u64> {
+    version.split('.').map(|n| n.parse().unwrap_or(0)).collect()
+}
+
 impl IncomingConfig {
-    /// A patch usually checks whether part `name` of the program that wrote the config was older than `version` (or
-    /// didn't say: written before versions were, or without that part). Versions are compared a number at a time:
-    /// "0.99.0" is before "0.100.0".
-    pub fn written_before(&self, name: &str, version: &str) -> bool {
-        let numbers = |v: &str| v.split('.').map(|n| n.parse::<u64>().unwrap_or(0)).collect::<Vec<_>>();
+    /// Whether part `name` of the program that wrote the config was older than `version`. Config that doesn't say
+    /// (written before versions were recorded, or without that part) counts as older.
+    fn written_before(&self, name: &str, version: &str) -> bool {
         self.versions.get(name).is_none_or(|written| numbers(written) < numbers(version))
     }
 
@@ -46,49 +55,99 @@ impl IncomingConfig {
     }
 }
 
-/// A patch changes config coming in from what was written before to what's written now, if it needs to.
-pub type Patch = fn(&mut IncomingConfig);
+/// A change to incoming config, converting what one part of the program wrote before version `since` into what the
+/// part writes now.
+pub struct Patch {
+    /// The first version of the patch's part that writes config in the new form. The app applies the patch only to
+    /// config written by an earlier version of the part, or by a program that didn't record the part's version.
+    pub since: &'static str,
+    /// The ephys-rs version that places the patch in the order patches are applied.
+    pub ephys_rs: &'static str,
+    /// Converts the config.
+    pub apply: fn(&mut IncomingConfig),
+}
 
-/// Each part of the program has a set of patches.
+impl Patch {
+    /// A core or standard patch. The core and the standard components share ephys-rs's version, so `since` also
+    /// places the patch in the order.
+    pub const fn new(since: &'static str, apply: fn(&mut IncomingConfig)) -> Self {
+        Patch { since, ephys_rs: since, apply }
+    }
+
+    /// A build's patch. `since` is a version of the build. A build's versions can't be compared with ephys-rs's, so
+    /// `ephys_rs` is the version of ephys-rs the build used when the patch was written, as a literal that never
+    /// changes. The patch runs after every core and standard patch up to that version, and before any later ones.
+    pub const fn build(since: &'static str, ephys_rs: &'static str, apply: fn(&mut IncomingConfig)) -> Self {
+        Patch { since, ephys_rs, apply }
+    }
+
+    /// Applies the patch to `config` if part `set` (the name of the patch's set) of the program that wrote the config
+    /// was older than `since`.
+    pub fn apply_to(&self, set: &str, config: &mut IncomingConfig) {
+        if config.written_before(set, self.since) {
+            (self.apply)(config);
+        }
+    }
+}
+
+/// The patches of one part of the program.
 pub struct PatchSet {
-    /// What's written names the part this: "core", "std", a build's name.
+    /// The part's name, which written config records its version under: "core", "std", or a build's name.
     pub name: &'static str,
-    /// The part's version, written with what's written: its crate's (`env!("CARGO_PKG_VERSION")`).
+    /// The part's version, which the app records with what it writes: the crate's (`env!("CARGO_PKG_VERSION")`).
     pub version: &'static str,
     /// The part's patches, in the order they were added.
     pub patches: &'static [Patch],
 }
 
-/// The app applies a program's patch sets in this order.
+/// A program's patch sets, and every patch in the order the app applies them: by ephys-rs version (`Patch::ephys_rs`),
+/// then by the sets' order (core, std, then the build, as `Components::CONFIG_PATCHES` lists them), then in the order
+/// each set lists them.
 #[derive(Clone, Default)]
-pub struct PatchSets(Vec<&'static PatchSet>);
+pub struct PatchSets {
+    sets: Vec<&'static PatchSet>,
+    /// Each patch with the name of its set, in the order the app applies them.
+    ordered: Vec<(&'static str, &'static Patch)>,
+}
 
 impl PatchSets {
     pub fn new(sets: &'static [PatchSet]) -> Self {
-        PatchSets(sets.iter().collect())
+        for set in sets {
+            let in_order = set.patches.windows(2).all(|pair| {
+                let [a, b] = pair else { return true };
+                numbers(a.since) <= numbers(b.since) && numbers(a.ephys_rs) <= numbers(b.ephys_rs)
+            });
+            assert!(in_order, "the {} patches must be listed in the order they were added", set.name);
+        }
+        let mut ordered: Vec<(usize, &'static str, &'static Patch)> =
+            (sets.iter().enumerate()).flat_map(|(i, set)| set.patches.iter().map(move |p| (i, set.name, p))).collect();
+        // A stable sort, so patches of the same set and version stay in the order the set lists them.
+        ordered.sort_by(|a, b| numbers(a.2.ephys_rs).cmp(&numbers(b.2.ephys_rs)).then(a.0.cmp(&b.0)));
+        let ordered = ordered.into_iter().map(|(_, name, patch)| (name, patch)).collect();
+        PatchSets { sets: sets.iter().collect(), ordered }
     }
 
-    /// The app writes the versions of the program's parts with what it writes, from this.
+    /// The versions of the program's parts, which the app records with what it writes.
     pub fn versions(&self) -> Versions {
-        self.0.iter().map(|set| (set.name.to_string(), set.version.to_string())).collect()
+        self.sets.iter().map(|set| (set.name.to_string(), set.version.to_string())).collect()
     }
 
-    /// The app applies every patch, set by set, to `config` with this.
+    /// Applies, in order, every patch for a version of its part later than the one that wrote `config`.
     pub fn apply(&self, config: &mut IncomingConfig) {
-        for patch in self.0.iter().flat_map(|set| set.patches) {
-            patch(config);
+        for (set, patch) in &self.ordered {
+            patch.apply_to(set, config);
         }
     }
 
-    /// The app applies every patch to `project`, written by `versions`, with this.
+    /// Applies the patches (see `apply`) to `project`, which was written by `versions`.
     pub fn apply_to_project(&self, versions: &Versions, project: &mut Value) {
         let mut config = IncomingConfig { versions: versions.clone(), json: project.take() };
         self.apply(&mut config);
         *project = config.json;
     }
 
-    /// The app applies every patch to `nodes` (each as saved: `{"type": ...}`), written by `versions`, with this, put
-    /// in a project's graph for them.
+    /// Applies the patches (see `apply`) to `nodes`, each as saved (`{"type": ...}`) and written by `versions`. The
+    /// nodes are put in a project's graph for the patches.
     pub fn apply_to_nodes(&self, versions: &Versions, nodes: &mut [Value]) {
         let entries: serde_json::Map<String, Value> = nodes
             .iter_mut()
@@ -104,7 +163,8 @@ impl PatchSets {
         }
     }
 
-    /// The app applies every patch to `base_directory`, written by `versions`, with this, put in a project for them.
+    /// Applies the patches (see `apply`) to `base_directory`, which was written by `versions`. The base directory's
+    /// settings are put in a project for the patches.
     pub fn apply_to_base_directory(&self, versions: &Versions, base_directory: &mut Value) {
         let mut project = serde_json::json!({ "base_directory": base_directory.take() });
         self.apply_to_project(versions, &mut project);
@@ -118,34 +178,35 @@ mod tests {
 
     use super::*;
 
-    /// The test's patch notes what it was given, as a patch would change it.
+    /// Records that the patch `mark` ran, in `value`'s list of what has.
     fn note(value: &mut Value, mark: &str) {
         if let Some(seen) = value.get_mut("seen").and_then(Value::as_array_mut) {
             seen.push(mark.into());
         }
     }
 
-    fn core_project(config: &mut IncomingConfig) {
-        if config.written_before("core", "1.0.0") {
-            note(&mut config.json, "core");
-        }
+    fn core_tie(config: &mut IncomingConfig) {
+        note(&mut config.json, "core 0.200");
+    }
+
+    fn core_late(config: &mut IncomingConfig) {
+        note(&mut config.json, "core 0.250");
     }
 
     fn std_writer(config: &mut IncomingConfig) {
-        if config.written_before("std", "0.100.0") {
-            for node in config.nodes().filter(|n| n["type"] == "WriteLtx") {
-                note(node, "std writer");
-            }
+        note(&mut config.json, "std 0.100");
+        for node in config.nodes().filter(|n| n["type"] == "WriteLtx") {
+            note(node, "std writer");
         }
     }
 
     fn std_base_directory(config: &mut IncomingConfig) {
-        if config.written_before("std", "0.200.0") {
-            note(&mut config.json["base_directory"], "std base directory");
-        }
+        note(&mut config.json, "std 0.200");
+        note(&mut config.json["base_directory"], "std base directory");
     }
 
     fn build_any_node(config: &mut IncomingConfig) {
+        note(&mut config.json, "build 2.0");
         for node in config.nodes() {
             let kind = node["type"].as_str().unwrap_or_default().to_string();
             note(node, &format!("build {kind}"));
@@ -153,9 +214,17 @@ mod tests {
     }
 
     static SETS: [PatchSet; 3] = [
-        PatchSet { name: "core", version: "1.0.0", patches: &[core_project] },
-        PatchSet { name: "std", version: "0.200.0", patches: &[std_writer, std_base_directory] },
-        PatchSet { name: "build", version: "2.0.0", patches: &[build_any_node] },
+        PatchSet {
+            name: "core",
+            version: "0.300.0",
+            patches: &[Patch::new("0.200.0", core_tie), Patch::new("0.250.0", core_late)],
+        },
+        PatchSet {
+            name: "std",
+            version: "0.300.0",
+            patches: &[Patch::new("0.100.0", std_writer), Patch::new("0.200.0", std_base_directory)],
+        },
+        PatchSet { name: "build", version: "2.0.0", patches: &[Patch::build("2.0.0", "0.200.0", build_any_node)] },
     ];
 
     fn sets() -> PatchSets {
@@ -171,7 +240,7 @@ mod tests {
             "seen": [],
             "graph": {"nodes": {
                 "1": {"label": "a", "node": {"type": "WriteLtx", "seen": []}},
-                "2": {"label": "b", "node": {"type": "LfpViewer", "seen": []}},
+                "2": {"label": "b", "node": {"type": "ContinuousViewer", "seen": []}},
             }},
             "base_directory": {"seen": []},
         })
@@ -179,7 +248,7 @@ mod tests {
 
     #[test]
     fn what_is_saved_says_the_version_of_each_part() {
-        assert_eq!(sets().versions(), versions(&[("core", "1.0.0"), ("std", "0.200.0"), ("build", "2.0.0")]));
+        assert_eq!(sets().versions(), versions(&[("core", "0.300.0"), ("std", "0.300.0"), ("build", "2.0.0")]));
         assert_eq!(PatchSets::default().versions(), versions(&[]), "only what the build says");
     }
 
@@ -191,28 +260,36 @@ mod tests {
         assert!(config.written_before("core", "0.0.1"), "not saying is older than anything");
     }
 
+    /// Patches run in the order they were written, across the sets: by ephys-rs version, then core before std before
+    /// the build. The build's patch was written against ephys-rs 0.200, so it runs after the core and standard patches
+    /// up to 0.200, and before the core's 0.250 patch.
     #[test]
-    fn every_patch_is_applied_to_a_project_and_decides_for_itself() {
+    fn patches_are_applied_in_the_order_they_were_written() {
         let mut old = project();
         sets().apply_to_project(&versions(&[]), &mut old);
-        assert_eq!(old["seen"], json!(["core"]));
-        assert_eq!(old["graph"]["nodes"]["1"]["node"]["seen"], json!(["std writer", "build WriteLtx"]), "in order");
-        assert_eq!(old["graph"]["nodes"]["2"]["node"]["seen"], json!(["build LfpViewer"]));
+        assert_eq!(old["seen"], json!(["std 0.100", "core 0.200", "std 0.200", "build 2.0", "core 0.250"]));
+        assert_eq!(old["graph"]["nodes"]["1"]["node"]["seen"], json!(["std writer", "build WriteLtx"]));
+        assert_eq!(old["graph"]["nodes"]["2"]["node"]["seen"], json!(["build ContinuousViewer"]));
         assert_eq!(old["base_directory"]["seen"], json!(["std base directory"]));
+    }
 
+    /// A patch only applies to config written before the version of its own part that added it.
+    #[test]
+    fn only_patches_since_what_wrote_the_config_apply() {
         let mut part_way = project();
-        sets().apply_to_project(&versions(&[("core", "1.0.0"), ("std", "0.150.0")]), &mut part_way);
-        assert_eq!(part_way["seen"], json!([]));
-        assert_eq!(part_way["graph"]["nodes"]["1"]["node"]["seen"], json!(["build WriteLtx"]));
-        assert_eq!(part_way["base_directory"]["seen"], json!(["std base directory"]), "only what's after");
+        let written = versions(&[("core", "0.250.0"), ("std", "0.150.0"), ("build", "2.0.0")]);
+        sets().apply_to_project(&written, &mut part_way);
+        assert_eq!(part_way["seen"], json!(["std 0.200"]));
+        assert_eq!(part_way["base_directory"]["seen"], json!(["std base directory"]));
+        assert_eq!(part_way["graph"]["nodes"]["1"]["node"]["seen"], json!([]));
     }
 
     #[test]
     fn nodes_and_a_base_directory_on_their_own_are_patched_in_a_project() {
-        let mut nodes = [json!({"type": "WriteLtx", "seen": []}), json!({"type": "LfpViewer", "seen": []})];
-        sets().apply_to_nodes(&versions(&[("std", "0.1.0")]), &mut nodes);
-        assert_eq!(nodes[0]["seen"], json!(["std writer", "build WriteLtx"]));
-        assert_eq!(nodes[1]["seen"], json!(["build LfpViewer"]));
+        let mut nodes = [json!({"type": "WriteLtx", "seen": []}), json!({"type": "ContinuousViewer", "seen": []})];
+        sets().apply_to_nodes(&versions(&[("std", "0.100.0")]), &mut nodes);
+        assert_eq!(nodes[0]["seen"], json!(["build WriteLtx"]));
+        assert_eq!(nodes[1]["seen"], json!(["build ContinuousViewer"]));
         let mut base_directory = json!({"seen": []});
         sets().apply_to_base_directory(&versions(&[]), &mut base_directory);
         assert_eq!(base_directory["seen"], json!(["std base directory"]));

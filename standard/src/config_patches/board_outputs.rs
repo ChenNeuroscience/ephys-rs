@@ -4,13 +4,12 @@
 //! 2 and analogue is 3), and the two settings are gone. So this patch moves an edge from output 2 to output 3 on a
 //! board that had `aux` off and `adc` on, and removes the settings.
 
-use ephys_rs::config_patching::IncomingConfig;
+use ephys_rs::config_patching::{IncomingConfig, Patch};
 use serde_json::Value;
 
-pub fn patch(config: &mut IncomingConfig) {
-    if !config.written_before("std", "0.282.0") {
-        return;
-    }
+pub const PATCH: Patch = Patch::new("0.282.0", patch);
+
+fn patch(config: &mut IncomingConfig) {
     let Some(graph) = config.json.get_mut("graph") else { return };
     let mut moved: Vec<u64> = Vec::new();
     for (id, entry) in graph.get_mut("nodes").and_then(Value::as_object_mut).into_iter().flatten() {
@@ -72,7 +71,7 @@ mod tests {
     #[test]
     fn analogue_moves_past_auxiliary() {
         let mut config = IncomingConfig { versions: Versions::new(), json: project() };
-        super::patch(&mut config);
+        super::PATCH.apply_to("std", &mut config);
         assert_eq!(ports(&config, "edges"), [(1, 3), (1, 1), (2, 2), (2, 3), (3, 0)]);
         assert_eq!(ports(&config, "disabled_edges"), [(1, 3)]);
         let settings = &config.json["graph"]["nodes"]["1"]["node"]["settings"];
@@ -84,7 +83,7 @@ mod tests {
     fn copied_boards_lose_the_settings() {
         let json = json!({ "graph": { "nodes": { "1": board(true, false) } } });
         let mut config = IncomingConfig { versions: Versions::new(), json };
-        super::patch(&mut config);
+        super::PATCH.apply_to("std", &mut config);
         assert_eq!(config.json["graph"]["nodes"]["1"]["node"]["settings"], json!({ "sample_rate": 30000 }));
     }
 
@@ -93,7 +92,7 @@ mod tests {
     fn written_since_is_left_as_it_is() {
         let versions = Versions::from([("std".to_string(), "0.282.0".to_string())]);
         let mut config = IncomingConfig { versions, json: project() };
-        super::patch(&mut config);
+        super::PATCH.apply_to("std", &mut config);
         assert_eq!(config.json, project());
     }
 }
