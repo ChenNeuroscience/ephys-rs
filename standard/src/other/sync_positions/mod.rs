@@ -323,8 +323,9 @@ impl<E: PortEdges> Node<E> for SyncPositions {
     const INFO: NodeInfo = NodeInfo {
         name: "Post-Process Positions LTX",
         category: Category::Other,
-        description: "Puts a recording's positions on the board's clock, by the timing LED's pulses: by hand, or on \
-                      recordings sent to it (by Write LTX, after recording).",
+        description: "Adds or drops a recording's position samples so their timing lines up with the ephys board's \
+                      clock, using the timing LED's pulses: by hand, or on recordings sent to it (by Write LTX, after \
+                      recording).",
     };
 
     const WINDOW_SIZE: [f32; 2] = [680.0, 780.0];

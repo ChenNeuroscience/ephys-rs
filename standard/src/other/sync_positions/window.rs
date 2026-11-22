@@ -57,7 +57,7 @@ impl SyncPositions {
 
     fn body<E: super::PortEdges>(&mut self, ui: &mut egui::Ui, context: &mut UiContext<E>) {
         ui.horizontal_wrapped(|ui| {
-            ui.label("Puts a recording's positions on the board's clock.");
+            ui.label("Adds or drops position samples so their timing lines up with the ephys board's clock.");
             info_icon(ui, HOW_IT_WORKS);
         });
         ui.add_space(6.0);

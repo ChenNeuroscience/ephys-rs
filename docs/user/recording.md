@@ -87,8 +87,8 @@ The terminal runs apart from ephys-rs, so it carries on if ephys-rs quits.
 
 <img src="../../tests/snapshots/sync_positions_synced.png" alt="Post-Process Positions LTX, having synced a recording">
 
-Puts an LTX recording's positions on the board's clock, using the timing LED's pulses, which both the camera and one of
-the board's digital inputs saw. The standard LTX quick action connects it to Write LTX, so it runs on each recording
+Adds or drops an LTX recording's position samples so their timing lines up with the ephys board's clock, using the
+timing LED's pulses, which both the camera and one of the board's digital inputs saw. The standard LTX quick action connects it to Write LTX, so it runs on each recording
 once it's written. It runs inside ephys-rs, not in a terminal. The ⓘ icon beside its description explains the algorithm in brief.
 
 Once it's synced a recording, it sends the files it was sent, with the synced positions and the original, on to what's
