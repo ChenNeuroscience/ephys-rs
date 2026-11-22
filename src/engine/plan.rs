@@ -446,7 +446,7 @@ mod tests {
         link(&mut graph, board, 0, gain, 0);
         link(&mut graph, gain, 0, filter, 0);
         // Something needing the filter's output, so it runs (see `Node::evaluate_tree_shake`).
-        let end = add(&mut graph, "LFP Viewer");
+        let end = add(&mut graph, "Continuous Data Viewer");
         link(&mut graph, filter, 0, end, 0);
         // The board's four outputs (headstages, digital, auxiliary and analogue), then gain and filter working in the
         // board's headstages buffer.
@@ -454,7 +454,7 @@ mod tests {
         assert_eq!(plan.buffers.len(), 4);
 
         // A viewer also reading the board's data runs before the gain edits it, so the gain still works in place.
-        let viewer = add(&mut graph, "LFP Viewer");
+        let viewer = add(&mut graph, "Continuous Data Viewer");
         link(&mut graph, board, 0, viewer, 0);
         let plan = Plan::new(&graph, false);
         assert_eq!(plan.buffers.len(), 4);
@@ -463,7 +463,7 @@ mod tests {
         // Two nodes that would edit the board's data in place: one does (last), the other gets its own buffer.
         let second_gain = add(&mut graph, "Continuous Gain");
         link(&mut graph, board, 0, second_gain, 0);
-        let second_end = add(&mut graph, "LFP Viewer");
+        let second_end = add(&mut graph, "Continuous Data Viewer");
         link(&mut graph, second_gain, 0, second_end, 0);
         let plan = Plan::new(&graph, false);
         assert_eq!(plan.buffers.len(), 5);
@@ -475,7 +475,7 @@ mod tests {
         let mut graph = Graph::default();
         let board = add(&mut graph, "Acquisition Board");
         let writer = add(&mut graph, "Write Raw");
-        let viewer = add(&mut graph, "LFP Viewer");
+        let viewer = add(&mut graph, "Continuous Data Viewer");
         link(&mut graph, board, 0, writer, 0);
         link(&mut graph, board, 1, writer, 1);
         link(&mut graph, board, 0, viewer, 0);
@@ -490,7 +490,7 @@ mod tests {
         // A filter editing the board's data in place: the plan copies it for the writer, once the board's run.
         let filter = add(&mut graph, "Band-pass Filter");
         link(&mut graph, board, 0, filter, 0);
-        let end = add(&mut graph, "LFP Viewer");
+        let end = add(&mut graph, "Continuous Data Viewer");
         link(&mut graph, filter, 0, end, 0);
         let plan = Plan::new(&graph, true);
         assert_eq!(step(&plan, writer), vec![true, true], "it's always given buffers to take");
@@ -507,13 +507,13 @@ mod tests {
         let mut graph = Graph::default();
         let board = add(&mut graph, "Acquisition Board");
         let spectrum = add(&mut graph, "Spectrum");
-        let viewer = add(&mut graph, "LFP Viewer");
+        let viewer = add(&mut graph, "Continuous Data Viewer");
         link(&mut graph, board, 0, spectrum, 0);
         link(&mut graph, board, 0, viewer, 0);
         link(&mut graph, spectrum, 0, viewer, 1);
         let runs = |graph: &Graph<Nodes>, id| Plan::new(graph, false).steps.iter().any(|s| s.id == id);
         assert!(runs(&graph, spectrum), "the viewer shows the spectra");
-        if let Some(Nodes::LfpViewer(v)) = graph.get_mut(viewer).map(|e| &mut e.node) {
+        if let Some(Nodes::ContinuousViewer(v)) = graph.get_mut(viewer).map(|e| &mut e.node) {
             v.spectrum = false;
         }
         assert!(!runs(&graph, spectrum), "nothing needs them");
@@ -526,7 +526,7 @@ mod tests {
     fn a_node_runs_if_it_would_given_what_runs_upstream() {
         let mut graph = Graph::default();
         let board = add(&mut graph, "Acquisition Board");
-        let viewer = add(&mut graph, "LFP Viewer");
+        let viewer = add(&mut graph, "Continuous Data Viewer");
         let alone = add(&mut graph, "TTL Viewer");
         let writer = add(&mut graph, "Write Raw");
         link(&mut graph, board, 0, viewer, 0);
@@ -540,7 +540,7 @@ mod tests {
         graph.get_mut(board).unwrap().disabled = true;
         assert!(!runs(&graph, viewer), "what feeds it isn't running");
         let filter = add(&mut graph, "Band-pass Filter");
-        let fed = add(&mut graph, "LFP Viewer");
+        let fed = add(&mut graph, "Continuous Data Viewer");
         link(&mut graph, filter, 0, fed, 0);
         assert!(!runs(&graph, filter) && !runs(&graph, fed), "connected, but to nothing running");
     }
@@ -589,12 +589,12 @@ mod tests {
         let mut graph = Graph::default();
         let board = add(&mut graph, "Acquisition Board");
         let spectrum = add(&mut graph, "Spectrum");
-        let viewer = add(&mut graph, "LFP Viewer");
+        let viewer = add(&mut graph, "Continuous Data Viewer");
         link(&mut graph, board, 0, spectrum, 0);
         link(&mut graph, spectrum, 0, viewer, 1);
         let runs = |graph: &Graph<Nodes>, id| Plan::new(graph, false).steps.iter().any(|s| s.id == id);
         assert!(runs(&graph, spectrum) && runs(&graph, viewer), "it shows the spectra");
-        if let Some(Nodes::LfpViewer(v)) = graph.get_mut(viewer).map(|e| &mut e.node) {
+        if let Some(Nodes::ContinuousViewer(v)) = graph.get_mut(viewer).map(|e| &mut e.node) {
             v.spectrum = false;
         }
         assert!(!runs(&graph, viewer), "the spectra are all it's given, and it doesn't need them");

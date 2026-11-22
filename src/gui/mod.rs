@@ -2314,7 +2314,7 @@ mod tests {
     #[test]
     fn windows_dock_and_come_back() {
         let mut harness = harness();
-        let lfp = node_named(harness.state(), "LFP Viewer");
+        let lfp = node_named(harness.state(), "Continuous Data Viewer");
         let spikes = node_named(harness.state(), "Spike Viewer");
         let detector = node_named(harness.state(), "Spike Detector");
         let app = harness.state_mut();
@@ -3267,7 +3267,7 @@ mod tests {
         harness.run_steps(3);
         let chosen = harness.state().base_directories.chosen().map(|i| types[i].name);
         assert_eq!(chosen, Some("Subject, date and trial"), "recording subjects' trials");
-        for viewer in ["Spike Viewer", "LFP Viewer", "TTL Viewer", "Tracker View"] {
+        for viewer in ["Spike Viewer", "Continuous Data Viewer", "TTL Viewer", "Tracker View"] {
             let id = node_named(harness.state(), viewer);
             assert_eq!(harness.state().layout.window(id), WindowState::Docked, "the {viewer} opens");
         }
@@ -3276,8 +3276,11 @@ mod tests {
             h.state().layout.tab_group(Pane::Node(id)).unwrap()
         };
         let layout = &harness.state().layout;
-        let (tracker, spikes, eeg) =
-            (group(&harness, "Tracker View"), group(&harness, "Spike Viewer"), group(&harness, "LFP Viewer"));
+        let (tracker, spikes, eeg) = (
+            group(&harness, "Tracker View"),
+            group(&harness, "Spike Viewer"),
+            group(&harness, "Continuous Data Viewer"),
+        );
         assert!(tracker.1 && spikes.1 && eeg.1, "the viewers in front");
         assert_eq!(layout.tab_group(Pane::Home), Some((tracker.0, false)), "home behind the tracker");
         assert_eq!(layout.tab_group(Pane::DevTools), Some((spikes.0, false)), "the dev tools behind the spikes");

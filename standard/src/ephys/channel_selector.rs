@@ -1,6 +1,7 @@
-//! The Channel Selector: selects some of a continuous stream's channels (such as "1-4, 9"), perhaps none, and passes on
-//! those while the selection's on, or all of them while it's off. The selection's a setting, which an LFP Viewer
-//! downstream can choose: look through all the channels, click the numbers of the ones to keep, then apply it.
+//! The Channel Selector selects some of a continuous stream's channels (such as "1-4, 9"), perhaps none. While the
+//! selection is on, the node passes on only those channels; while it's off, the node passes on all of them. The
+//! selection is a setting, which a Continuous Data Viewer downstream can choose: look through all the channels, click
+//! the numbers of the ones to keep, then apply the selection.
 
 use eframe::egui;
 use ephys_rs::engine::{Buffers, TreeShake};

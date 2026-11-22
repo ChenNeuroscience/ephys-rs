@@ -1393,7 +1393,7 @@ pub mod tests {
             b.source = Source::Fake { address: serve_test_board() };
         }
         let filter = add(&mut graph, "Band-pass Filter");
-        let viewer = add(&mut graph, "LFP Viewer");
+        let viewer = add(&mut graph, "Continuous Data Viewer");
         let writer = add(&mut graph, "Write Raw");
         link(&mut graph, board, 0, filter, 0);
         link(&mut graph, filter, 0, viewer, 0);
@@ -1472,7 +1472,7 @@ pub mod tests {
         let board = add_board(&mut graph);
         let reference = add(&mut graph, "Reference");
         let filter = add(&mut graph, "Band-pass Filter");
-        let viewer = add(&mut graph, "LFP Viewer");
+        let viewer = add(&mut graph, "Continuous Data Viewer");
         link(&mut graph, board, 0, reference, 0);
         link(&mut graph, reference, 0, filter, 0);
         link(&mut graph, filter, 0, viewer, 0);
@@ -1611,7 +1611,7 @@ pub mod tests {
         let mut graph = Graph::default();
         let board = add_board(&mut graph);
         let filter = add(&mut graph, "Band-pass Filter");
-        let viewer = add(&mut graph, "LFP Viewer");
+        let viewer = add(&mut graph, "Continuous Data Viewer");
         link(&mut graph, board, 0, filter, 0);
         link(&mut graph, filter, 0, viewer, 0);
         let mut snapshot = Snapshot::new(0, graph.clone());
@@ -1636,7 +1636,7 @@ pub mod tests {
 
         // Another viewer needs new buffers: it runs once they're made, everything that was there handed on.
         let gain = add(&mut graph, "Continuous Gain");
-        let second = add(&mut graph, "LFP Viewer");
+        let second = add(&mut graph, "Continuous Data Viewer");
         link(&mut graph, board, 0, gain, 0);
         link(&mut graph, gain, 0, second, 0);
         let more = next(&graph);

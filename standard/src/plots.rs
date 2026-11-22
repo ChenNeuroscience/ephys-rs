@@ -124,7 +124,8 @@ pub fn axis_ticks(height: f32, scale_uv: f32) -> Vec<(f32, String)> {
     }
 }
 
-/// A plot's y axis (the LFP Viewer's rows', the Spike Viewer's), at the left of `plot`, and a faint line along it at zero. The row's `height` high, from `top`.
+/// Draws a plot's y axis at the left of `plot`, with a faint line across the plot at zero. The axis is `height` high,
+/// starting at `top`. The Continuous Data Viewer's rows and the Spike Viewer's plots use this.
 pub fn axis_ui(
     painter: &egui::Painter,
     plot: egui::Rangef,

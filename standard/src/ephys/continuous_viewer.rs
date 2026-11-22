@@ -1,13 +1,13 @@
-//! The LFP Viewer: scrolling traces of continuous data, a row per channel, each at a fixed height (scrolled through),
-//! each with a y axis of the scale chosen, and beside each, its spectrum over a band of interest (from a Spectrum node,
-//! which only runs while the spectrum's on: see `Node::evaluate_tree_shake`). The time's along the bottom, after the
-//! last channel.
+//! The Continuous Data Viewer shows scrolling traces of continuous data, band-passed or not. Each channel has a row of
+//! fixed height (the rows scroll), with a y axis at the chosen scale. Beside each row is the channel's spectrum over a
+//! band of interest, from a Spectrum node, which only runs while the spectrum is shown (see
+//! `Node::evaluate_tree_shake`). Time runs along the bottom, below the last channel.
 //!
 //! Each pass adds its samples to a few seconds' worth for each channel shown, kept as the lowest and highest sample in
 //! each of the view's columns (so spikes show however far it's zoomed out).
 //!
 //! It sets what's upstream of it and beside it, through its controls (as the Spike Viewer does the spikes'):
-//! - an Continuous Gain's gains (what the continuous data's amplified by, as it's recorded): one for all can be set
+//! - a Continuous Gain's gains (what the continuous data's amplified by, as it's recorded): one for all can be set
 //!   here, and their auto-detect run;
 //! - a Channel Selector's selection, upstream: click the numbers of the channels to keep, while all are shown, then
 //!   apply it, from above the first channel;
@@ -49,7 +49,7 @@ const AXIS_WIDTH: f32 = 44.0;
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct LfpViewer {
+pub struct ContinuousViewer {
     /// Seconds across the view.
     pub span: f32,
     /// Microvolts from a trace's centre line to the edge of its row.
@@ -60,9 +60,9 @@ pub struct LfpViewer {
     pub spectrum: bool,
 }
 
-impl Default for LfpViewer {
+impl Default for ContinuousViewer {
     fn default() -> Self {
-        LfpViewer { span: 2.0, scale_uv: 200.0, row_height: 40.0, spectrum: true }
+        ContinuousViewer { span: 2.0, scale_uv: 200.0, row_height: 40.0, spectrum: true }
     }
 }
 
@@ -279,7 +279,7 @@ ephys_rs::ports! {
     reference: ValInCmdOut<Reference, (SetReference,)>,
 }
 
-impl<E: PortEdges> Node<E> for LfpViewer {
+impl<E: PortEdges> Node<E> for ContinuousViewer {
     type Ports = Ports;
     type State = Traces;
     type WorkerState = ();
@@ -290,10 +290,10 @@ impl<E: PortEdges> Node<E> for LfpViewer {
     type GlobalSettings = ();
 
     const INFO: NodeInfo = NodeInfo {
-        name: "LFP Viewer",
+        name: "Continuous Data Viewer",
         category: Category::Visualisation,
         description: "Scrolling traces of continuous data, one row per channel, each with its spectrum over a band \
-                      (theta, say). Sets an Continuous Gain's gains, a Channel Selector's channels and a Reference's \
+                      (theta, say). Sets a Continuous Gain's gains, a Channel Selector's channels and a Reference's \
                       reference channels.",
     };
     const WINDOW_SIZE: [f32; 2] = [820.0, 520.0];
@@ -427,7 +427,7 @@ impl<E: PortEdges> Node<E> for LfpViewer {
     }
 }
 
-impl LfpViewer {
+impl ContinuousViewer {
     /// The viewer takes what its passes have sent, every update in order, whether or not its window's shown.
     fn take_updates<E: PortEdges>(&mut self, context: &mut UiContext<E>) {
         let Some(pool) = context.shared::<Pool<TracesUpdate>>() else { return };
@@ -439,7 +439,7 @@ impl LfpViewer {
     }
 }
 
-impl LfpViewer {
+impl ContinuousViewer {
     fn span_field(&mut self) -> egui::DragValue<'_> {
         egui::DragValue::new(&mut self.span).range(0.1..=30.0).speed(0.05).suffix(" s")
     }
@@ -1215,7 +1215,7 @@ mod tests {
         };
         let stream = Continuous { channels: 3, sample_rate: 30000.0 };
         let mut harness = egui_kittest::Harness::builder().with_size([700.0, 280.0]).wgpu().build_ui(|ui| {
-            let viewer = LfpViewer { row_height: 60.0, ..Default::default() };
+            let viewer = ContinuousViewer { row_height: 60.0, ..Default::default() };
             let rows = Rows {
                 display: &display,
                 stream,
@@ -1228,7 +1228,7 @@ mod tests {
         });
         THEMES[0].apply(&harness.ctx);
         harness.run_steps(3);
-        harness.snapshot("lfp_viewer_rows");
+        harness.snapshot("continuous_viewer_rows");
     }
 
     /// The toggles for the columns, in the body of the pane, above the rows' Rs and numbers, and the selection beside
@@ -1243,7 +1243,7 @@ mod tests {
         let reference = reference_of("1");
         let mut selection = ChannelSelection { apply: false, channels: "1-2".into() };
         let mut harness = egui_kittest::Harness::builder().with_size([400.0, 160.0]).wgpu().build_ui(|ui| {
-            let viewer = LfpViewer { row_height: 40.0, ..Default::default() };
+            let viewer = ContinuousViewer { row_height: 40.0, ..Default::default() };
             let rows = Rows {
                 display: &display,
                 stream,
@@ -1256,7 +1256,7 @@ mod tests {
         });
         THEMES[0].apply(&harness.ctx);
         harness.run_steps(3);
-        harness.snapshot("lfp_viewer_toggles");
+        harness.snapshot("continuous_viewer_toggles");
     }
 
     #[test]
@@ -1269,7 +1269,7 @@ mod tests {
         let reference = reference_of("1");
         let mut selection = ChannelSelection { apply: true, channels: "1, 3".into() };
         let mut harness = egui_kittest::Harness::builder().with_size([400.0, 160.0]).wgpu().build_ui(|ui| {
-            let viewer = LfpViewer { row_height: 40.0, ..Default::default() };
+            let viewer = ContinuousViewer { row_height: 40.0, ..Default::default() };
             let rows = Rows {
                 display: &display,
                 stream,
@@ -1302,7 +1302,7 @@ mod tests {
         let selection = ChannelSelection { apply: true, channels: "none".into() };
         let mut harness = egui_kittest::Harness::builder().with_size([400.0, 100.0]).wgpu().build_ui_state(
             move |ui, selection: &mut ChannelSelection| {
-                let viewer = LfpViewer::default();
+                let viewer = ContinuousViewer::default();
                 let rows = Rows {
                     display: &display,
                     stream,
@@ -1337,7 +1337,7 @@ mod tests {
         let selection = ChannelSelection { apply: false, channels: "all".into() };
         let mut harness = egui_kittest::Harness::builder().with_size([500.0, 200.0]).wgpu().build_ui_state(
             move |ui, selection: &mut ChannelSelection| {
-                let viewer = LfpViewer { row_height: 40.0, ..Default::default() };
+                let viewer = ContinuousViewer { row_height: 40.0, ..Default::default() };
                 let mut settings = |ui: &mut egui::Ui| {
                     let _ = ui.button("Settings");
                 };
@@ -1443,7 +1443,7 @@ mod tests {
         };
         let mut harness = egui_kittest::Harness::builder().with_size([700.0, 330.0]).wgpu().build_ui_state(
             move |ui, reference: &mut Reference| {
-                let viewer = LfpViewer { row_height: 24.0, ..Default::default() };
+                let viewer = ContinuousViewer { row_height: 24.0, ..Default::default() };
                 let reference_shown = Some(&*reference);
                 let rows = Rows {
                     display: &display,
@@ -1461,7 +1461,7 @@ mod tests {
         );
         THEMES[0].apply(&harness.ctx);
         harness.run_steps(3);
-        harness.snapshot("lfp_viewer_references");
+        harness.snapshot("continuous_viewer_references");
         harness.get_by_label("Channel 5 in reference 3").click();
         harness.run_steps(3);
         assert_eq!(harness.state().used_by(4), Some(2));
@@ -1517,7 +1517,7 @@ mod tests {
         reference.add(2);
         let mut selection = ChannelSelection { apply: true, channels: "1-2".into() };
         let mut harness = egui_kittest::Harness::builder().with_size([500.0, 200.0]).wgpu().build_ui(|ui| {
-            let viewer = LfpViewer { row_height: 40.0, ..Default::default() };
+            let viewer = ContinuousViewer { row_height: 40.0, ..Default::default() };
             let rows = Rows {
                 display: &display,
                 stream,
@@ -1530,7 +1530,7 @@ mod tests {
         });
         THEMES[0].apply(&harness.ctx);
         harness.run_steps(3);
-        harness.snapshot("lfp_viewer_references_applied");
+        harness.snapshot("continuous_viewer_references_applied");
     }
 
     #[test]
@@ -1600,7 +1600,7 @@ mod tests {
         let selection = ChannelSelection { apply: false, channels: "1-3".into() };
         let mut harness = toggles(selection, reference_of("1-2"));
         harness.get_by_label("Selection pending");
-        harness.snapshot("lfp_viewer_column_toggles");
+        harness.snapshot("continuous_viewer_column_toggles");
         // All and the R are level.
         use egui_kittest::kittest::NodeT as _;
         let middle = |node: egui_kittest::Node| {
@@ -1614,7 +1614,7 @@ mod tests {
         assert_eq!(harness.state().0.channels, "all", "some selected, so it's all");
         assert!(harness.query_by_label("Selection pending").is_none(), "nothing left out");
         assert!(harness.query_by_label("Apply selection").is_none(), "so nothing to apply");
-        harness.snapshot("lfp_viewer_all_selected");
+        harness.snapshot("continuous_viewer_all_selected");
         harness.get_by_label("All").click();
         harness.run_steps(3);
         assert_eq!(selected(&harness.state().0, 8), Vec::<u32>::new());

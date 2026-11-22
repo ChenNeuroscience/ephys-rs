@@ -6,7 +6,7 @@
 //!   acquiring (which has the rig's sketch pulse pin 6, for syncing). It reuses what the graph already has, adding only
 //!   what's missing (and connecting only ports that are free), so it's offered until the graph has it all. It arranges
 //!   the panes: the tracker view in a column at the left (with home as a tab behind it); the spike viewer filling the
-//!   rest above (with any panes open before as tabs behind it), and the LFP viewer below that (with the TTL viewer and
+//!   rest above (with any panes open before as tabs behind it), and the Continuous Data Viewer below that (with the TTL viewer and
 //!   the alarms as tabs behind it).
 //! - Swapping the positions' source between the camera (with its position detector) and the VR Computer. What's unused
 //!   is disabled, and whatever took the positions, their TTLs and the settings (the tracker view among them, which
@@ -167,7 +167,7 @@ fn real_camera() -> camera::Source {
 }
 
 /// Board → Reference → Band-pass (spikes' band) → Spike Detector → Spike Gain → Spike Viewer (setting the detector's
-/// thresholds and the gain's gains); Board → Channel Selector → Band-pass (LFP's band) → LFP Viewer (choosing the
+/// thresholds and the gain's gains); Board → Channel Selector → Band-pass (LFP's band) → Continuous Data Viewer (choosing the
 /// selector's channels, which only the LFP branch is, the Continuous Gain's gains, and the spikes' Reference's
 /// reference channels, and showing the reference), with a Spectrum of it too; the board's digital inputs → TTL Viewer;
 /// Camera → Position Detector → Tracker View (setting the camera's and detector's settings). Write LTX records the
@@ -205,7 +205,7 @@ fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
     change.link((spike_viewer, ValInCmdOut, 0), (detector, ValOutCmdIn, 0));
     change.link((spike_viewer, ValInCmdOut, 1), (gain, ValOutCmdIn, 0));
 
-    // EEG: only some channels, chosen in the LFP Viewer.
+    // EEG: only some channels, chosen in the Continuous Data Viewer.
     let selector = change.upsert(NodeType::ChannelSelector, Some(board));
     change.link((board, DataStreamOut, 0), (selector, DataStreamIn, 0));
     let lfp = match change.find(|n| matches!(n, Nodes::BandPassFilter(f) if f.high_hz <= 500.0)) {
@@ -218,10 +218,10 @@ fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
     change.link((selector, DataStreamOut, 0), (lfp, DataStreamIn, 0));
     let spectrum = change.upsert(NodeType::Spectrum, Some(lfp));
     change.link((lfp, DataStreamOut, 0), (spectrum, DataStreamIn, 0));
-    let lfp_viewer = change.upsert(NodeType::LfpViewer, Some(spectrum));
-    change.link((lfp, DataStreamOut, 0), (lfp_viewer, DataStreamIn, 0));
-    change.link((spectrum, DataStreamOut, 0), (lfp_viewer, DataStreamIn, 1));
-    change.link((lfp_viewer, ValInCmdOut, 1), (selector, ValOutCmdIn, 0));
+    let continuous_viewer = change.upsert(NodeType::ContinuousViewer, Some(spectrum));
+    change.link((lfp, DataStreamOut, 0), (continuous_viewer, DataStreamIn, 0));
+    change.link((spectrum, DataStreamOut, 0), (continuous_viewer, DataStreamIn, 1));
+    change.link((continuous_viewer, ValInCmdOut, 1), (selector, ValOutCmdIn, 0));
 
     // Digital inputs.
     let ttl_viewer = change.upsert(NodeType::TtlViewer, Some(board));
@@ -253,9 +253,9 @@ fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
     let continuous_gain = change.upsert(NodeType::ContinuousGain, Some(downsample));
     change.link((downsample, DataStreamOut, 0), (continuous_gain, DataStreamIn, 0));
     change.link((continuous_gain, DataStreamOut, 0), (ltx, DataStreamIn, 1));
-    change.link((lfp_viewer, ValInCmdOut, 0), (continuous_gain, ValOutCmdIn, 0));
-    change.link((lfp_viewer, ValInCmdOut, 2), (reference, ValOutCmdIn, 0));
-    change.link((reference, DataStreamOut, 1), (lfp_viewer, DataStreamIn, 2));
+    change.link((continuous_viewer, ValInCmdOut, 0), (continuous_gain, ValOutCmdIn, 0));
+    change.link((continuous_viewer, ValInCmdOut, 2), (reference, ValOutCmdIn, 0));
+    change.link((reference, DataStreamOut, 1), (continuous_viewer, DataStreamIn, 2));
     change.link((positions, DataStreamOut, 0), (ltx, DataStreamIn, 2));
     change.link((board, DataStreamOut, 1), (ltx, DataStreamIn, 3));
     change.link((positions, DataStreamOut, 1), (ltx, DataStreamIn, 4));
@@ -300,7 +300,7 @@ fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
     change.link((alarm_processor, DataStreamOut, 0), (alarm_viewer, DataStreamIn, 0));
     change.link((alarm_viewer, ValInCmdOut, 0), (alarm_processor, ValOutCmdIn, 0));
 
-    let mut result = change.finish(state, &[spike_viewer, lfp_viewer, ttl_viewer, tracker, alarm_viewer])?;
+    let mut result = change.finish(state, &[spike_viewer, continuous_viewer, ttl_viewer, tracker, alarm_viewer])?;
     // A new graph, laid out tidily; recording each subject's trials.
     result.arrange = empty;
     result.base_directory = Some("Subject, date and trial");
@@ -309,7 +309,7 @@ fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
     result.layout.arrange(&Arrangement::default_layout(
         Arrangement::Tabs { tabs: vec![Tab::Home, Tab::Window(tracker)], active: 1 },
         Arrangement::tabs(vec![Tab::Window(spike_viewer), Tab::Others]),
-        Arrangement::tabs(vec![Tab::Window(lfp_viewer), Tab::Window(ttl_viewer), Tab::Window(alarm_viewer)]),
+        Arrangement::tabs(vec![Tab::Window(continuous_viewer), Tab::Window(ttl_viewer), Tab::Window(alarm_viewer)]),
     ));
     Some(result)
 }
@@ -531,8 +531,8 @@ mod tests {
         let sources: Vec<_> = alarms.alarms.list.iter().map(|a| a.kind.source()).collect();
         assert_eq!(sources, vec![Source::Spikes, Source::Lfp, Source::Positions]);
         assert!(alarms.alarms.all_on(), "none added just to be off");
-        // The LFP Viewer sets the EEG's gains, the selection and the spikes' reference.
-        let lfp_viewer = named("LFP Viewer");
+        // The Continuous Data Viewer sets the EEG's gains, the selection and the spikes' reference.
+        let continuous_viewer = named("Continuous Data Viewer");
         // A node's port it reads a value through, by the node's own numbering (see `val_in_address`).
         let reading = |node: NodeId, val_in_idx| {
             let ports = graph.get(node).unwrap().node.list_ports_val_cmd();
@@ -540,13 +540,13 @@ mod tests {
             PortAddress { node, role, port_idx }
         };
         let controls = |val_in_idx| {
-            let from = reading(lfp_viewer, val_in_idx);
+            let from = reading(continuous_viewer, val_in_idx);
             graph.edges().iter().find(|e| e.from == from).map(|e| e.to.node)
         };
         assert_eq!(controls(0), Some(named("Continuous Gain")));
         assert_eq!(controls(1), Some(selector));
         assert_eq!(controls(2), Some(named("Reference")));
-        let reference_shown = PortAddress { node: lfp_viewer, role: DataStreamIn, port_idx: 2 };
+        let reference_shown = PortAddress { node: continuous_viewer, role: DataStreamIn, port_idx: 2 };
         assert_eq!(
             graph.edge_into(reference_shown).map(|e| (e.from.node, e.from.port_idx)),
             Some((named("Reference"), 1))

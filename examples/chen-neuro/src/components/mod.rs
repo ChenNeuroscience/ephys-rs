@@ -10,7 +10,7 @@ use crate::standard::alarms::{processor, viewer};
 use crate::standard::annotations::{arrow, group_box, heading, image, markdown, sticky_note};
 use crate::standard::base_directories::A_DIRECTORY;
 use crate::standard::ephys::{
-    band_pass, board, channel_selector, continuous_gain, downsample, lfp_viewer, reference, spectrum, ttl_viewer,
+    band_pass, board, channel_selector, continuous_gain, continuous_viewer, downsample, reference, spectrum, ttl_viewer,
 };
 use crate::standard::logs::log_viewer;
 use crate::standard::other::{arduino, run_command, sync_positions, ttl_recording_control};
@@ -80,7 +80,7 @@ nodes_enum! {
         SpikeGain(spike_gain::SpikeGain),
         PositionDetector(position_detector::PositionDetector),
         AlarmProcessor(processor::AlarmProcessor),
-        LfpViewer(lfp_viewer::LfpViewer),
+        ContinuousViewer(continuous_viewer::ContinuousViewer),
         SpikeViewer(spike_viewer::SpikeViewer),
         TtlViewer(ttl_viewer::TtlViewer),
         LogViewer(log_viewer::LogViewer),

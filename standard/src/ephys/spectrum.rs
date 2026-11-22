@@ -131,7 +131,7 @@ impl<E: PortEdges> Node<E> for Spectrum {
     const INFO: NodeInfo = NodeInfo {
         name: "Spectrum",
         category: Category::Processing,
-        description: "Each channel's power spectrum over a band (theta, say), for the LFP Viewer to show: worked out \
+        description: "Each channel's power spectrum over a band (theta, say), for the Continuous Data Viewer to show: worked out \
                       only while something needs it.",
     };
 

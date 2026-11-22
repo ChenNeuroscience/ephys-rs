@@ -13,7 +13,7 @@ settings ports are marked ◇.
 - [Downsample](#downsample)
 - [Continuous Gain](#continuous-gain)
 - [Spectrum](#spectrum)
-- [LFP Viewer](#lfp-viewer)
+- [Continuous Data Viewer](#continuous-data-viewer)
 - [TTL Viewer](#ttl-viewer)
 
 ## Acquisition Board
@@ -65,7 +65,7 @@ channel then has subtracted from it the reference it uses, if any. A reference m
 - For each reference: mean or median, and which channels it's made from.
 - **Which each channel uses**: a reference, or none.
 
-The references can also be chosen from an [LFP Viewer](#lfp-viewer), connected to the ◇ `reference` setting, while
+The references can also be chosen from an [Continuous Data Viewer](#continuous-data-viewer), connected to the ◇ `reference` setting, while
 looking at the traces.
 
 ## Channel Selector
@@ -76,7 +76,7 @@ looking at the traces.
 
 Passes on some of a stream's channels (which channels are kept for the EEG, say). It passes on all of them while the
 selection's off (the power button), so you can look through them all, then choose. The selection can be chosen from an
-[LFP Viewer](#lfp-viewer) connected to ◇ `selection`.
+[Continuous Data Viewer](#continuous-data-viewer) connected to ◇ `selection`.
 
 ## Band-pass Filter
 
@@ -105,7 +105,7 @@ to 127, to begin with). Gains go from ×¼ to ×4, and can be **one for** all ch
 
 **Auto detect** chooses gains from the data: it samples each channel **for** a while, then sets each gain so that the
 mean plus a multiple of a percentile's distance from it (the **Level**) maps to the upper limit of the **Fit range**
-(what's recorded: ±250 µV, Write LTX's EEG scale, to begin with). Run it from here, or from an [LFP Viewer](#lfp-viewer) connected to ◇ `gains`.
+(what's recorded: ±250 µV, Write LTX's EEG scale, to begin with). Run it from here, or from an [Continuous Data Viewer](#continuous-data-viewer) connected to ◇ `gains`.
 It needs data, so it only runs while acquiring, and not while recording: **Stop**, undoing it, stopping acquisition or
 starting to record leaves the gains as they were. Its result is an edit like any other, which undo takes back.
 
@@ -114,14 +114,14 @@ starting to record leaves the gains as they were. Its result is an edit like any
 > **Processing.** In: `continuous`. Out: `spectra`.
 
 Each channel's power spectrum over a **Band** of interest (theta, 4–12 Hz, to begin with), updated every few passes,
-for an LFP Viewer to show beside its traces. It only runs while the viewer's showing them.
+for a Continuous Data Viewer to show beside its traces. It only runs while the viewer's showing them.
 
-## LFP Viewer
+## Continuous Data Viewer
 
 > **Viewer.** In: `continuous`, `spectra` (from a Spectrum), `reference` (from a Reference's `reference` output).
 > ◇ `gains` (a Continuous Gain's), ◇ `selection` (a Channel Selector's), ◇ `reference` (a Reference's).
 
-![Traces, with the references in rows of their own](../../tests/snapshots/lfp_viewer_rows.png)
+![Traces, with the references in rows of their own](../../tests/snapshots/continuous_viewer_rows.png)
 
 Scrolling traces of continuous data, a row per channel, with the time along the bottom. Each row keeps the highest and
 lowest sample in each pixel's worth of time, so spikes show however far it's zoomed out.
@@ -137,12 +137,12 @@ Click a channel's R to put it in that reference and have it use it. Connected to
 it shows each reference's own trace, in its colour, at the top. A dimmed row of Rs is a channel that settings say
 otherwise for.
 
-![Choosing references](../../tests/snapshots/lfp_viewer_references.png)
+![Choosing references](../../tests/snapshots/continuous_viewer_references.png)
 
 **Choosing channels** (◇ `selection`): while the selection's off, all channels show. Click the numbers of those to
 keep, then **Apply selection**. **Disable selection** shows them all again.
 
-<img src="../../tests/snapshots/lfp_viewer_toggles.png" alt="Channels being chosen, before the selection's applied"> <img src="../../tests/snapshots/lfp_viewer_references_applied.png" alt="With the selection applied">
+<img src="../../tests/snapshots/continuous_viewer_toggles.png" alt="Channels being chosen, before the selection's applied"> <img src="../../tests/snapshots/continuous_viewer_references_applied.png" alt="With the selection applied">
 
 ## TTL Viewer
 

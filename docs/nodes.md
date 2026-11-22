@@ -132,7 +132,7 @@ settings: the latest, as of the pass. Trying a node out, a test hands it its str
 - **The tree shake: whether it runs, and what it needs.** It's up to the node: `evaluate_tree_shake(inputs, outputs,
   recording)`, given which of its inputs have something running into them, which of its outputs have something running
   that needs them, and whether the snapshot's recording, as well as its settings (`self`), says whether it runs, and which inputs it needs (a `TreeShake`). An input it doesn't need isn't passed,
-  and doesn't count as in use for what feeds it (the LFP viewer's spectrum, switched off, stops the
+  and doesn't count as in use for what feeds it (the Continuous Data Viewer's spectrum, switched off, stops the
   [Spectrum](../standard/src/ephys/spectrum.rs) node). The plan starts with everything that can run running
   and needing everything, asks each node in turn, upstream first, and whenever one's answer changes, asks its
   neighbours again, if what they're told has changed, until nothing does. So the answer must depend only on what it's
@@ -187,7 +187,7 @@ does the same for something else, such as an icon.
 The standard components' [`widgets`](../standard/src/widgets.rs) has what their windows share, for a build's
 nodes too: a grid of settings (`settings_grid`, with a row each from `setting`), sections, toggles and the like.
 
-The [Spike Viewer](../standard/src/spikes/spike_viewer.rs) and [LFP Viewer](../standard/src/ephys/lfp_viewer.rs)
+The [Spike Viewer](../standard/src/spikes/spike_viewer.rs) and [Continuous Data Viewer](../standard/src/ephys/continuous_viewer.rs)
 are full examples.
 
 ## Sharing with its window

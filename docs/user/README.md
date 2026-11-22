@@ -30,7 +30,7 @@ The same setup runs either way: basic mode is just a simpler view of it.
   settings; windows; and notes on the canvas.
 - Components, by what they're for:
   - [Electrophysiology](ephys.md): the Acquisition Board, Reference, Channel Selector, Band-pass Filter, Downsample,
-    Continuous Gain and Spectrum; the LFP Viewer and TTL Viewer.
+    Continuous Gain and Spectrum; the Continuous Data Viewer and TTL Viewer.
   - [Spikes](spikes.md): the Spike Detector, Spike Gain and Spike Viewer.
   - [Tracking](tracking.md): the Camera, Position Detector, Tracker View and Video Viewer.
   - [Alarms and logs](alarms-and-logs.md): the Alarm Processor and Alarm Viewer, and the Log Viewer.

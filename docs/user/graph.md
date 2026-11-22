@@ -13,7 +13,7 @@ Each node does one thing, and its header's colour says what kind of thing:
 | --- | --- | --- |
 | Orange | Sources: where data comes from | Acquisition Board, Camera |
 | Blue | Processing | Reference, Band-pass Filter, Spike Detector |
-| Green | Viewers | LFP Viewer, Spike Viewer, Tracker View |
+| Green | Viewers | Continuous Data Viewer, Spike Viewer, Tracker View |
 | Red | Writers: what records | Write LTX, Write Raw |
 
 Under its name, a node summarises what it's handling ("64 ch · 30 kHz", "16 tetrodes · 30 kHz") and its main

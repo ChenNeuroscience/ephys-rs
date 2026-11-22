@@ -125,7 +125,7 @@ mod tests {
         let viewer = add(&mut graph, "Spike Viewer", [0.0, 0.0]);
         let board = add(&mut graph, "Acquisition Board", [10.0, 0.0]);
         let detector = add(&mut graph, "Spike Detector", [20.0, 0.0]);
-        let lfp = add(&mut graph, "LFP Viewer", [30.0, 0.0]);
+        let lfp = add(&mut graph, "Continuous Data Viewer", [30.0, 0.0]);
         let port = |node, role, index| PortAddress { node, role, port_idx: index };
         graph.connect(port(board, PortRole::DataStreamOut, 0), port(detector, PortRole::DataStreamIn, 0)).unwrap();
         graph.connect(port(detector, PortRole::DataStreamOut, 0), port(viewer, PortRole::DataStreamIn, 0)).unwrap();
@@ -135,7 +135,7 @@ mod tests {
         let x = |id| placed[&id][0];
         assert!(x(board) < x(detector) && x(detector) < x(viewer), "{placed:?}");
         assert_eq!(x(board), 0.0, "where the graph was");
-        // The LFP Viewer's just after the board, beside the detector, not overlapping it.
+        // The Continuous Data Viewer's just after the board, beside the detector, not overlapping it.
         let (d, l) = (placed[&detector], placed[&lfp]);
         assert_eq!(l[0], d[0]);
         let resolved = graph.resolve();

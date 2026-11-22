@@ -212,14 +212,14 @@ fn make_tour() {
     tour.app().perform(&ctx, Action::Play);
     tour.wait(5.0);
     tour.harness.get_all_by_label("Run").last().expect("the Spike Viewer's Run").click();
-    tour.harness.get_all_by_label("Auto detect").last().expect("the LFP Viewer's").click();
+    tour.harness.get_all_by_label("Auto detect").last().expect("the Continuous Data Viewer's").click();
     tour.wait(12.0);
     tour.park_pointer();
     tour.shot("Spikes, LFP and tracking, live");
 
     // The viewers.
     let layout = tour.app().layout.clone();
-    let (spikes, lfp) = (tour.id("Spike Viewer"), tour.id("LFP Viewer"));
+    let (spikes, lfp) = (tour.id("Spike Viewer"), tour.id("Continuous Data Viewer"));
     tour.only(spikes);
     tour.wait(2.0);
     tour.shot("Tetrode spikes, overlaid live");
