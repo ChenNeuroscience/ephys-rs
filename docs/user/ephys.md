@@ -167,15 +167,13 @@ keep, then **Apply selection**. **Disable selection** shows them all again.
 ![Each channel's phase around the anchor's](../../tests/snapshots/phase_viewer.png)
 
 How each channel's oscillation relates to one channel, the **Anchor**, over the last few seconds (**Average over**).
-For each channel, it shows:
+Each channel has a cell, in a grid with as many columns and rows as fit the window best (scrolling when there are too
+many to show at a readable size). Each cell shows:
 
-- **Frequency**: how fast the channel's phase turns, on average.
-- **Phase**: the channel's phase minus the anchor's, on average. Positive means the channel leads the anchor.
-- **Consistency**: how steady that difference is, from 0% (none) to 100% (always the same).
-- **Envelope**: the channel's average amplitude.
-
-The polar plot shows them all at once: the anchor is at 0°, on the right, and each channel is at the angle of its
-phase (anticlockwise leads, clockwise lags), as far out as it's consistent.
+- **Phase**: a marker on a ring at the channel's phase minus the anchor's, on average. The anchor is at 0°, on the
+  right; anticlockwise leads and clockwise lags. The angle is written below the ring.
+- **Frequency**: a bar for how fast the channel's phase turns, on average. Every bar has the same scale, spanning the
+  channels' frequencies, which the line above the grid gives.
 
 ## TTL Viewer
 

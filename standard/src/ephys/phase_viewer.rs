@@ -1,18 +1,15 @@
 //! The Phase Viewer shows how each channel's oscillation relates to one chosen channel, the anchor, over recent data.
-//! It reads complex continuous data, usually the analytic signal from a Hilbert Transform of band-passed data, and for
-//! each channel shows:
+//! It reads complex continuous data, usually the analytic signal from a Hilbert Transform of band-passed data. The
+//! window has a cell for each channel, in a grid with as many columns and rows as fit the pane best. Each cell shows:
 //!
-//! - the **frequency**: the average rate the channel's phase turns at, weighted by its envelope;
-//! - the **phase** relative to the anchor: the average difference between the channel's phase and the anchor's, so a
-//!   positive phase means the channel leads the anchor;
-//! - the **consistency** of that difference, from 0 (no steady relationship) to 1 (always the same difference);
-//! - the **envelope**: the channel's average amplitude.
+//! - the **phase** relative to the anchor, as a marker on a ring: the average difference between the channel's phase
+//!   and the anchor's, with 0° to the right and leading anticlockwise, so the anchor's own marker is always at 0°;
+//! - the **frequency**, as a bar: the average rate the channel's phase turns at, weighted by its envelope. Every
+//!   cell's bar has the same scale, which spans the channels' frequencies.
 //!
-//! The averages are exponential, over roughly the last few seconds (the **Average over** setting). A polar plot shows
-//! every channel at once: each channel's angle is its phase relative to the anchor, and its distance from the centre is
-//! its consistency.
+//! The averages are exponential, over roughly the last few seconds (the **Average over** setting).
 
-use eframe::egui::{self, Align2, FontId, Pos2, Stroke, Vec2};
+use eframe::egui::{self, Align2, FontId, Stroke, Vec2};
 use serde::{Deserialize, Serialize};
 
 use crate::standard::ephys::ComplexContinuous;
@@ -61,13 +58,11 @@ pub struct Phases {
     /// Whether `last` holds a sample yet.
     started: bool,
     /// For each channel, the decayed sum of its unit phasor times the conjugate of the anchor's: the sum's argument is
-    /// the average phase difference, and its magnitude over `weight` is the consistency.
+    /// the average phase difference.
     relative: Vec<Complex>,
     /// For each channel, the decayed sum of each sample times the conjugate of the sample before: the sum's argument is
     /// the average turn per sample, weighted by the envelope.
     turning: Vec<Complex>,
-    /// For each channel, the decayed sum of its samples' magnitudes.
-    envelope: Vec<f64>,
     /// The decayed count of samples, which the sums are averages over.
     weight: f64,
     /// The anchor's unit phasor at each of the pass's samples. This is room the passes reuse.
@@ -75,8 +70,8 @@ pub struct Phases {
 }
 
 impl PassState for Phases {
-    const WHY: &'static str = "Each channel's running averages of its phase relative to the anchor, its frequency and \
-                               its envelope, which each pass decays and adds to; and each channel's last sample, so \
+    const WHY: &'static str = "Each channel's running averages of its phase relative to the anchor and its frequency, \
+                               which each pass decays and adds to; and each channel's last sample, so \
                                the frequency counts the turn from one pass to the next.";
 }
 
@@ -86,9 +81,6 @@ pub struct ChannelPhase {
     pub frequency_hz: f32,
     /// The channel's phase minus the anchor's, in radians, from -π to π: positive means the channel leads.
     pub phase: f32,
-    /// How steady the phase difference is, from 0 to 1.
-    pub consistency: f32,
-    pub envelope: f32,
 }
 
 /// What the viewer shows: each channel's averages, which channel they're relative to, and how much data they cover.
@@ -192,14 +184,7 @@ impl<E: PortEdges> Node<E> for PhaseViewer {
         let theme = context.theme;
         let area = ui.available_rect_before_wrap();
         ui.painter().rect_filled(area, 2.0, theme.surface_sunken);
-        ui.horizontal_top(|ui| {
-            let side = area.height().min(area.width() * 0.45).max(120.0);
-            polar_ui(ui, &display, side, theme);
-            ui.add_space(12.0);
-            egui::ScrollArea::vertical()
-                .auto_shrink(false)
-                .show(ui, |ui| ui.vertical(|ui| table_ui(ui, &display, theme)));
-        });
+        grid_ui(ui, &display, theme);
     }
 
     fn warnings(&self, inputs: &DataStreamIn) -> Vec<String> {
@@ -236,7 +221,6 @@ impl Phases {
             last: vec![(0.0, 0.0); channels],
             relative: vec![(0.0, 0.0); channels],
             turning: vec![(0.0, 0.0); channels],
-            envelope: vec![0.0; channels],
             anchor_units: Vec::with_capacity(pass),
             ..Default::default()
         }
@@ -265,7 +249,7 @@ impl Phases {
         let channels = input.channels.min(self.relative.len());
         for channel in 0..channels {
             let (re, im) = input.channel(channel);
-            let (mut relative, mut turning, mut envelope) = ((0.0f32, 0.0f32), (0.0f32, 0.0f32), 0.0f32);
+            let (mut relative, mut turning) = ((0.0f32, 0.0f32), (0.0f32, 0.0f32));
             let mut previous = if self.started { self.last[channel] } else { (re[0], im[0]) };
             for ((&zr, &zi), &(ar, ai)) in re.iter().zip(im).zip(&self.anchor_units) {
                 let (ur, ui) = unit(zr, zi);
@@ -276,7 +260,6 @@ impl Phases {
                 let (pr, pi) = previous;
                 turning.0 += zr * pr + zi * pi;
                 turning.1 += zi * pr - zr * pi;
-                envelope += zr.hypot(zi);
                 previous = (zr, zi);
             }
             self.last[channel] = previous;
@@ -285,7 +268,6 @@ impl Phases {
             };
             decayed(&mut self.relative[channel], relative);
             decayed(&mut self.turning[channel], turning);
-            self.envelope[channel] = self.envelope[channel] * decay + envelope as f64;
         }
         self.started = true;
     }
@@ -293,7 +275,6 @@ impl Phases {
     /// The averages, as shown.
     fn display(&self) -> PhaseDisplay {
         let rate = self.stream.map_or(1.0, |s| s.sample_rate.max(1.0)) as f64;
-        let weight = self.weight.max(f64::MIN_POSITIVE);
         let channels = (0..self.relative.len())
             .map(|channel| {
                 let (rr, ri) = self.relative[channel];
@@ -301,8 +282,6 @@ impl Phases {
                 ChannelPhase {
                     frequency_hz: (ti.atan2(tr) * rate / std::f64::consts::TAU) as f32,
                     phase: ri.atan2(rr) as f32,
-                    consistency: (rr.hypot(ri) / weight).min(1.0) as f32,
-                    envelope: (self.envelope[channel] / weight) as f32,
                 }
             })
             .collect();
@@ -315,73 +294,120 @@ fn degrees(phase: f32) -> String {
     format!("{:+.0}°", phase.to_degrees())
 }
 
-/// A polar plot, `side` points square: each channel at the angle of its phase relative to the anchor (0° to the right,
-/// leading anticlockwise), as far out as it's consistent. The anchor is always at 0°, on the edge.
-fn polar_ui(ui: &mut egui::Ui, display: &PhaseDisplay, side: f32, theme: &Colours) {
-    let (rect, response) = ui.allocate_exact_size(Vec2::splat(side), egui::Sense::hover());
-    let painter = ui.painter_at(rect);
-    let centre = rect.center();
-    let radius = side / 2.0 - 40.0;
-    let grid = Stroke::new(1.0, theme.grid);
-    for fraction in [0.5, 1.0] {
-        painter.circle_stroke(centre, radius * fraction, grid);
-    }
-    painter.hline(centre.x - radius..=centre.x + radius, centre.y, grid);
-    painter.vline(centre.x, centre.y - radius..=centre.y + radius, grid);
-    let font = FontId::proportional(11.0);
-    let gap = radius + 6.0;
-    for (text, at, align) in [
-        ("0°", Vec2::new(gap, 0.0), Align2::LEFT_CENTER),
-        ("+90°", Vec2::new(0.0, -gap), Align2::CENTER_BOTTOM),
-        ("±180°", Vec2::new(-gap, 0.0), Align2::RIGHT_CENTER),
-        ("−90°", Vec2::new(0.0, gap), Align2::CENTER_TOP),
-    ] {
-        painter.text(centre + at, align, text, font.clone(), theme.text_secondary);
-    }
-    let colour = ComplexContinuous::INFO.colour;
-    let point = |channel: &ChannelPhase| {
-        let distance = radius * channel.consistency.clamp(0.0, 1.0);
-        centre + Vec2::new(channel.phase.cos(), -channel.phase.sin()) * distance
-    };
-    // The anchor last, so it's on top.
-    let order = (0..display.channels.len()).filter(|&c| c != display.anchor).chain([display.anchor]);
-    for channel in order {
-        let Some(phase) = display.channels.get(channel) else { continue };
-        let at = point(phase);
-        let anchor = channel == display.anchor;
-        let fill = if anchor { theme.accent } else { colour };
-        painter.circle_filled(at, if anchor { 5.0 } else { 4.0 }, fill);
-        let label = Pos2::new(at.x + 6.0, at.y - 6.0);
-        painter.text(label, Align2::LEFT_BOTTOM, channel + 1, FontId::monospace(10.0), theme.text_secondary);
-    }
-    response.on_hover_text(
-        "Each channel's phase relative to the anchor (0°, highlighted): anticlockwise leads, clockwise lags. The \
-         further out, the steadier the difference.",
-    );
+/// The smallest a cell can be, in points: with more channels than fit at this size, the grid scrolls.
+const SMALLEST_CELL: f32 = 90.0;
+/// The widest a cell's frequency bar is, as a fraction of the cell.
+const BAR_WIDTH: f32 = 0.12;
+
+/// How many columns to lay `cells` out in, in an area `width` by `height`: whichever makes the cells biggest, if
+/// they're all to fit. With cells of at least `SMALLEST_CELL`, more columns than fit across never help.
+fn columns(cells: usize, width: f32, height: f32) -> usize {
+    let cells = cells.max(1);
+    let most = ((width / SMALLEST_CELL).floor() as usize).clamp(1, cells);
+    let side = |columns: usize| (width / columns as f32).min(height / cells.div_ceil(columns) as f32);
+    (1..=most).max_by(|&a, &b| side(a).total_cmp(&side(b))).unwrap_or(1)
 }
 
-/// A row for each channel: its frequency, phase relative to the anchor, consistency and envelope.
-fn table_ui(ui: &mut egui::Ui, display: &PhaseDisplay, theme: &Colours) {
-    ui.add_space(6.0);
-    ui.label(egui::RichText::new(format!("Averaged over the last {:.1} s", display.covered)).weak());
-    ui.add_space(4.0);
-    egui::Grid::new("phases").num_columns(5).spacing([12.0, 4.0]).striped(true).show(ui, |ui| {
-        for heading in ["Ch", "Frequency", "Phase", "Consistency", "Envelope"] {
-            ui.label(egui::RichText::new(heading).strong());
-        }
-        ui.end_row();
-        for (channel, phase) in display.channels.iter().enumerate() {
-            let anchor = channel == display.anchor;
-            let colour = if anchor { theme.accent } else { theme.text_primary };
-            ui.label(egui::RichText::new(format!("{}", channel + 1)).monospace().color(colour));
-            ui.label(egui::RichText::new(format!("{:.1} Hz", phase.frequency_hz)).monospace());
-            let relative = if anchor { "anchor".to_string() } else { degrees(phase.phase) };
-            ui.label(egui::RichText::new(relative).monospace().color(colour));
-            ui.label(egui::RichText::new(format!("{:.0}%", phase.consistency * 100.0)).monospace());
-            ui.label(egui::RichText::new(format!("{:.1} µV", phase.envelope)).monospace());
-            ui.end_row();
-        }
+/// The frequencies the bars span: the channels' lowest to highest, padded, at least 2 Hz wide, in whole hertz.
+fn frequency_range(display: &PhaseDisplay) -> (f32, f32) {
+    let frequencies = display.channels.iter().map(|c| c.frequency_hz).filter(|f| f.is_finite());
+    let (low, high) = frequencies.fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), f| (lo.min(f), hi.max(f)));
+    if low > high {
+        return (0.0, 1.0);
+    }
+    let (mut low, mut high) = ((low - 0.5).floor().max(0.0), (high + 0.5).ceil());
+    if high - low < 2.0 {
+        let middle = (low + high) / 2.0;
+        (low, high) = ((middle - 1.0).max(0.0), (middle - 1.0).max(0.0) + 2.0);
+    }
+    (low, high)
+}
+
+/// A cell for each channel, in as many columns as make the cells biggest (see `columns`), scrolling if there are too
+/// many to fit at `SMALLEST_CELL`. Above them, how much data the averages cover and the frequency bars' range.
+fn grid_ui(ui: &mut egui::Ui, display: &PhaseDisplay, theme: &Colours) {
+    let (low_hz, high_hz) = frequency_range(display);
+    ui.horizontal(|ui| {
+        ui.add_space(6.0);
+        let note = format!(
+            "Averaged over the last {:.1} s · frequency bars from {low_hz:.0} to {high_hz:.0} Hz",
+            display.covered
+        );
+        ui.label(egui::RichText::new(note).weak());
     });
+    let area = ui.available_rect_before_wrap();
+    let cells = display.channels.len();
+    let columns = columns(cells, area.width(), area.height());
+    let rows = cells.div_ceil(columns);
+    let width = area.width() / columns as f32;
+    let side = width.min(area.height() / rows as f32).max(SMALLEST_CELL.min(width));
+    egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+        let (rect, response) =
+            ui.allocate_exact_size(Vec2::new(area.width(), side * rows as f32), egui::Sense::hover());
+        let painter = ui.painter_at(rect);
+        for (channel, phase) in display.channels.iter().enumerate() {
+            let (row, column) = (channel / columns, channel % columns);
+            let min = rect.min + Vec2::new(column as f32 * width, row as f32 * side);
+            let cell = egui::Rect::from_min_size(min, Vec2::new(width, side)).shrink(4.0);
+            let anchor = channel == display.anchor;
+            cell_ui(&painter, cell, channel, phase, anchor, (low_hz, high_hz), theme);
+        }
+        response.on_hover_text(
+            "Each channel's phase relative to the anchor, as a marker on its ring (0° to the right, leading \
+             anticlockwise), and its frequency, as a bar",
+        );
+    });
+}
+
+/// One channel's cell, in `cell`: its number, a ring with a marker at its phase relative to the anchor, and beside
+/// the ring a bar for its frequency, on the scale `range` (in Hz) every cell shares.
+fn cell_ui(
+    painter: &egui::Painter,
+    cell: egui::Rect,
+    channel: usize,
+    phase: &ChannelPhase,
+    anchor: bool,
+    range: (f32, f32),
+    theme: &Colours,
+) {
+    painter.rect_filled(cell, 4.0, theme.surface);
+    let accent = if anchor { theme.accent } else { ComplexContinuous::INFO.colour };
+    let number = if anchor { format!("{} · anchor", channel + 1) } else { format!("{}", channel + 1) };
+    let text = if anchor { theme.accent } else { theme.text_secondary };
+    painter.text(cell.left_top() + Vec2::new(6.0, 4.0), Align2::LEFT_TOP, number, FontId::proportional(11.0), text);
+
+    // The ring, left of the bar, below the number and above the readings.
+    let bar_width = (cell.width() * BAR_WIDTH).max(6.0);
+    let body = egui::Rect::from_min_max(cell.min + Vec2::new(6.0, 18.0), cell.max - Vec2::new(6.0, 18.0));
+    let ring_area = egui::Rect::from_min_max(body.min, egui::pos2(body.right() - bar_width - 8.0, body.bottom()));
+    let radius = (ring_area.width().min(ring_area.height()) / 2.0 - 4.0).max(4.0);
+    let centre = ring_area.center();
+    painter.circle_stroke(centre, radius, Stroke::new(1.5, theme.text_disabled));
+    // 0°, where the anchor is.
+    painter.line_segment(
+        [centre, centre + Vec2::new(radius, 0.0)],
+        Stroke::new(1.0, theme.text_disabled.gamma_multiply(0.5)),
+    );
+    let at = centre + Vec2::new(phase.phase.cos(), -phase.phase.sin()) * radius;
+    painter.line_segment([centre, at], Stroke::new(1.5, accent.gamma_multiply(0.6)));
+    painter.circle_filled(at, (radius * 0.12).clamp(3.0, 7.0), accent);
+
+    // The bar, from the bottom up.
+    let (low, high) = range;
+    let fraction = ((phase.frequency_hz - low) / (high - low)).clamp(0.0, 1.0);
+    let track = egui::Rect::from_min_max(egui::pos2(body.right() - bar_width, body.top()), body.max);
+    painter.rect_filled(track, 2.0, theme.surface_sunken);
+    let filled =
+        egui::Rect::from_min_max(egui::pos2(track.left(), track.bottom() - fraction * track.height()), track.max);
+    painter.rect_filled(filled, 2.0, ComplexContinuous::INFO.colour.gamma_multiply(0.8));
+
+    let readings = if anchor {
+        format!("{:.1} Hz", phase.frequency_hz)
+    } else {
+        format!("{} · {:.1} Hz", degrees(phase.phase), phase.frequency_hz)
+    };
+    let bottom = egui::pos2(cell.center().x, cell.bottom() - 4.0);
+    painter.text(bottom, Align2::CENTER_BOTTOM, readings, FontId::monospace(11.0), theme.text_primary);
 }
 
 #[cfg(test)]
@@ -419,7 +445,7 @@ mod tests {
     }
 
     /// Two channels at 8 Hz, the second leading by 45° at twice the amplitude, and a third at 9 Hz: the second's phase
-    /// relative to the first is +45°, steadily; the third's drifts, so it isn't consistent.
+    /// relative to the first is +45°, and each channel's frequency is its own.
     #[test]
     fn phases_are_relative_to_the_anchor() {
         let channels = [(1.0, 8.0, 0.0), (2.0, 8.0, std::f32::consts::FRAC_PI_4), (1.0, 9.0, 0.0)];
@@ -429,11 +455,7 @@ mod tests {
         near(display.channels[0].frequency_hz, 8.0, 0.01);
         near(display.channels[2].frequency_hz, 9.0, 0.01);
         near(display.channels[0].phase, 0.0, 1e-3);
-        near(display.channels[0].consistency, 1.0, 1e-3);
         near(display.channels[1].phase.to_degrees(), 45.0, 0.1);
-        near(display.channels[1].consistency, 1.0, 1e-3);
-        near(display.channels[1].envelope, 2.0, 1e-3);
-        assert!(display.channels[2].consistency < 0.3, "{}", display.channels[2].consistency);
         near(display.covered, 2.0, 0.01);
 
         // Relative to the second channel, the first lags by 45°.
@@ -452,7 +474,31 @@ mod tests {
         assert_eq!(Node::<Edges>::warnings(&viewer, &inputs).len(), 1);
     }
 
-    /// Eight channels around the anchor, some steadier than others. See tests/snapshots/.
+    /// The grid's columns make the cells as big as they can be while all fit, and the grid scrolls once cells would be
+    /// smaller than `SMALLEST_CELL`.
+    #[test]
+    fn the_grid_fits_the_pane() {
+        assert_eq!(columns(16, 800.0, 400.0), 6, "three rows of six: cells 133 square");
+        assert_eq!(columns(16, 400.0, 800.0), 3, "six rows of three: cells 133 square");
+        assert_eq!(columns(4, 800.0, 200.0), 4);
+        assert_eq!(columns(64, 400.0, 300.0), 4, "as many as fit across, then scrolling");
+        assert_eq!(columns(1, 300.0, 300.0), 1);
+    }
+
+    #[test]
+    fn the_bars_span_the_frequencies() {
+        let at = |hz: &[f32]| PhaseDisplay {
+            channels: hz.iter().map(|&frequency_hz| ChannelPhase { frequency_hz, phase: 0.0 }).collect(),
+            ..Default::default()
+        };
+        assert_eq!(frequency_range(&at(&[7.6, 8.3])), (7.0, 9.0));
+        assert_eq!(frequency_range(&at(&[8.0, 8.0])), (7.0, 9.0), "at least 2 Hz");
+        assert_eq!(frequency_range(&at(&[4.2, 11.9])), (3.0, 13.0));
+        assert_eq!(frequency_range(&at(&[])), (0.0, 1.0));
+    }
+
+    /// Sixteen channels, in a grid, each with its phase relative to the anchor and its frequency. See
+    /// tests/snapshots/.
     #[test]
     fn the_window_shows_each_channel_around_the_anchor() {
         use crate::Nodes;
@@ -460,13 +506,11 @@ mod tests {
         use ephys_rs::engine::{Graph, NodesEnum};
         let mut graph = Graph::<Nodes>::default();
         let viewer = graph.add(Nodes::create(crate::NodeType::PhaseViewer), [0.0, 0.0]);
-        // The anchor is channel 1, at 0° and always steady; the others spread either side of it.
-        let channels = (0..8)
+        // The anchor is channel 1, at 0°; the others spread either side of it.
+        let channels = (0..16)
             .map(|c| ChannelPhase {
-                frequency_hz: 7.8 + c as f32 * 0.05,
-                phase: if c == 0 { 0.0 } else { (c as f32 * 30.0 - 120.0).to_radians() },
-                consistency: if c == 0 { 1.0 } else { 0.95 - c as f32 * 0.1 },
-                envelope: 40.0 + c as f32 * 5.0,
+                frequency_hz: 7.6 + (c % 5) as f32 * 0.15,
+                phase: if c == 0 { 0.0 } else { (c as f32 * 22.5 - 170.0).to_radians() },
             })
             .collect();
         let display = PhaseDisplay { channels, anchor: 0, covered: 2.0 };
