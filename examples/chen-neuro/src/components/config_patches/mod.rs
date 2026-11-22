@@ -3,7 +3,11 @@
 
 use ephys_rs::config_patching::PatchSet;
 
+mod edge_port_ids;
 mod example;
 
-pub const PATCHES: PatchSet =
-    PatchSet { name: "chen-neuro", version: env!("CARGO_PKG_VERSION"), patches: &[example::patch] };
+pub const PATCHES: PatchSet = PatchSet {
+    name: "chen-neuro",
+    version: env!("CARGO_PKG_VERSION"),
+    patches: &[example::patch, edge_port_ids::patch],
+};

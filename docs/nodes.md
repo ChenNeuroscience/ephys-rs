@@ -52,8 +52,8 @@ The parts of the API are there for three different reasons, and it helps to know
 
   The macro makes, in the node's module, a struct of each role's ports (`DataStreamIn`, `DataStreamOut`,
   `ValOutCmdIn`), an enum of the commands the `ValOutCmdIn` ports take (`CmdIn`), and a handle to each port reading a
-  value (`ValInCmdOut::gains`, `ValIn::...`). Saved graphs number a node's ports in the order they're declared (each
-  role's apart), so reordering them needs a config patch.
+  value (`ValInCmdOut::gains`, `ValIn::...`). Saved graphs name each port by its field's name (its id), so reordering
+  them is fine, but renaming one needs a config patch to rename the saved edges' ends.
 - `output_streams(inputs)`: the data stream on each output, given those on the inputs (each `None` while it can't be
   known: nothing connected, say), so a graph's streams are worked out before anything runs. In the structs' default
   form, each field is the stream on its port (`Option<Continuous>`), so an output's stream is always of its type.

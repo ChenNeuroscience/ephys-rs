@@ -9,8 +9,9 @@
 //!   contexts to read and command through.
 //! - `Ports`, which the node names as its `Node::Ports`, gathering them for the engine (`PortSet`).
 //!
-//! The graph still numbers each role's ports, in the order they're declared (`ValInCmdOut` and `ValIn` together, as the
-//! node reads values through them), and saved graphs name ports by those numbers.
+//! The graph numbers each role's ports, in the order they're declared (and the node numbers its `ValInCmdOut` and
+//! `ValIn` ports together, as it reads values through them); saved graphs name ports by their fields' names instead
+//! (see `Port::id`).
 
 use super::{
     CommandSet, DataStreamInPorts, DataStreamOutPorts, Edges, NoCommands, NoPorts, Node, Port, ValOutCmdInPorts,
@@ -76,9 +77,8 @@ impl<E: Edges> PortSet<E> for NoPorts {
 ///   (`ValInCmdOut::gains: ValInCmdOutPort<Gains, (SetGains, Detect)>`);
 /// - `Ports`, implementing `PortSet`.
 ///
-/// Saved graphs name ports by their number among their role's (`ValInCmdOut` and `ValIn` apart, though the node numbers
-/// them together), in the order they're declared, so reordering them breaks existing files (unless a config patch moves
-/// the edges).
+/// Saved graphs name each port by its field's name, with its role (`Port::id`), never by the text it's shown with, so
+/// renaming a field breaks existing files (unless a config patch renames the edges' ends), but reordering doesn't.
 #[macro_export]
 macro_rules! ports {
     // Each port goes on a list of its role's: `DataStreamIn`, `DataStreamOut`, `ValOutCmdIn`, and `ValInCmdOut` with
@@ -229,6 +229,7 @@ macro_rules! ports {
                 fn ports() -> Vec<$crate::engine::Port<E>> {
                     vec![$(
                         $crate::engine::Port::data_stream_in(
+                            stringify!($field),
                             $crate::ports!(@name $field $($name)?),
                             <$ty as $crate::engine::StreamOf<E>>::KIND,
                         )
@@ -311,6 +312,7 @@ macro_rules! ports {
                 fn ports(&self) -> Vec<$crate::engine::Port<E>> {
                     vec![$(
                         $crate::engine::Port::data_stream_out(
+                            stringify!($field),
                             $crate::ports!(@name $field $($name)?),
                             <$ty as $crate::engine::StreamOf<E>>::KIND,
                             self.$field.map($crate::engine::StreamOf::<E>::wrap),
@@ -356,6 +358,7 @@ macro_rules! ports {
                 vec![$(
                     $crate::engine::Port::ValOutCmdIn {
                         name: $crate::ports!(@name $field $($name)?),
+                        id: stringify!($field),
                         value_kind: <$value as $crate::engine::ValueOf<E>>::KIND,
                         commands: <($($command,)*) as $crate::engine::CommandList<E>>::kinds(),
                         flipped: $crate::ports!(@flipped $($flipped)?),
@@ -433,6 +436,7 @@ macro_rules! ports {
                 fn ports() -> Vec<$crate::engine::Port<E>> {
                     vec![$(
                         <$handle as $crate::engine::ValInPortOf<E>>::port(
+                            stringify!($field),
                             $crate::ports!(@name $field $($name)?),
                             $crate::ports!(@flipped $($flipped)?),
                         )

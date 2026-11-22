@@ -23,7 +23,8 @@ use crate::theme::Colours;
 pub struct NodeId(pub u64);
 
 /// An edge connects a `DataStreamOut` to a `DataStreamIn`, or a `ValInCmdOut` or `ValIn` to a `ValOutCmdIn`, each end
-/// saved as the port's address (its node, role and index among the node's ports of that role). A `DataStreamIn` has
+/// the port's address (its node, role and index among the node's ports of that role; saved with the port's id in place
+/// of the index: see `SavedPort`). A `DataStreamIn` has
 /// at most one edge into it, and a `DataStreamOut` any number out of it; a `ValInCmdOut` or `ValIn` has at most one
 /// edge out of it, and a `ValOutCmdIn` any number into it.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
@@ -271,9 +272,9 @@ pub fn edge_info<E: Edges>(kind: PortKind) -> &'static EdgeInfo {
 pub type Resolved<E> = HashMap<NodeId, NodeState<E>>;
 
 /// The app edits, saves and undoes the nodes and the edges between them, held in this. A run works from snapshots of it
-/// (see `Snapshot`), so the graph's never read from more than one thread.
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
-#[serde(bound = "N: NodesEnum")]
+/// (see `Snapshot`), so the graph's never read from more than one thread. It's saved as a `GraphFile`.
+#[derive(Clone, PartialEq, Deserialize)]
+#[serde(bound = "N: NodesEnum", from = "GraphFile<N>")]
 pub struct Graph<N> {
     next_id: u64,
     nodes: BTreeMap<NodeId, NodeEntry<N>>,
@@ -281,6 +282,83 @@ pub struct Graph<N> {
     /// A disabled edge is kept, but runs as if it weren't there; these are the disabled edges.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     disabled_edges: Vec<Edge>,
+}
+
+/// Saved graphs name each end of an edge by its node, its role and its port's id (see `Port::id`: the field's name in
+/// the node's `ports!`), not the port's index, so a node's ports can be reordered without breaking files.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct SavedPort {
+    pub node: NodeId,
+    pub role: PortRole,
+    pub port: std::borrow::Cow<'static, str>,
+}
+
+/// An edge as it's saved (see `SavedPort`).
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct SavedEdge {
+    pub from: SavedPort,
+    pub to: SavedPort,
+}
+
+/// A graph is saved as this: its edges' ends by their ports' ids (see `SavedPort`).
+#[derive(Serialize, Deserialize)]
+#[serde(bound = "N: NodesEnum")]
+pub struct GraphFile<N> {
+    next_id: u64,
+    nodes: BTreeMap<NodeId, NodeEntry<N>>,
+    edges: Vec<SavedEdge>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    disabled_edges: Vec<SavedEdge>,
+}
+
+/// A graph's saved as a `GraphFile`, borrowed rather than copied.
+#[derive(Serialize)]
+#[serde(bound = "N: NodesEnum")]
+struct GraphFileRef<'a, N> {
+    next_id: u64,
+    nodes: &'a BTreeMap<NodeId, NodeEntry<N>>,
+    edges: Vec<SavedEdge>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    disabled_edges: Vec<SavedEdge>,
+}
+
+impl<N: NodesEnum> Serialize for Graph<N> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let saved = |edges: &[Edge]| edges.iter().filter_map(|edge| self.saved_edge(edge)).collect();
+        let file = GraphFileRef {
+            next_id: self.next_id,
+            nodes: &self.nodes,
+            edges: saved(&self.edges),
+            disabled_edges: saved(&self.disabled_edges),
+        };
+        file.serialize(serializer)
+    }
+}
+
+impl<N: NodesEnum> From<GraphFile<N>> for Graph<N> {
+    /// A saved graph's edges whose ends aren't among their nodes' ports (a port since renamed, without a config patch
+    /// saying so) are dropped, with a warning.
+    fn from(file: GraphFile<N>) -> Self {
+        let mut graph =
+            Graph { next_id: file.next_id, nodes: file.nodes, edges: Vec::new(), disabled_edges: Vec::new() };
+        let edges = |saved: Vec<SavedEdge>| -> Vec<Edge> {
+            let found = saved.into_iter().filter_map(|edge| {
+                let found = graph.edge_of(&edge);
+                if found.is_none() {
+                    log::warn!(
+                        "An edge from {:?} to {:?} isn't between ports its nodes have: dropped",
+                        edge.from,
+                        edge.to
+                    );
+                }
+                found
+            });
+            found.collect()
+        };
+        let (live, disabled) = (edges(file.edges), edges(file.disabled_edges));
+        (graph.edges, graph.disabled_edges) = (live, disabled);
+        graph
+    }
 }
 
 impl<N> Default for Graph<N> {
@@ -293,6 +371,25 @@ type PublishedValue<N> = <<N as NodesEnum>::Edges as Edges>::PublishedValue;
 type DataStream<N> = <<N as NodesEnum>::Edges as Edges>::DataStream;
 
 impl<N: NodesEnum> Graph<N> {
+    /// An edge's ends, by their ports' ids, as the graph saves it, if its nodes are in the graph and have those ports.
+    pub fn saved_edge(&self, edge: &Edge) -> Option<SavedEdge> {
+        let saved = |end: PortAddress| {
+            let port = *self.nodes.get(&end.node)?.node.port_ids(end.role).get(end.port_idx)?;
+            Some(SavedPort { node: end.node, role: end.role, port: port.into() })
+        };
+        Some(SavedEdge { from: saved(edge.from)?, to: saved(edge.to)? })
+    }
+
+    /// A saved edge, by its ends' indices, if its nodes are in the graph and have those ports.
+    pub fn edge_of(&self, saved: &SavedEdge) -> Option<Edge> {
+        let end = |end: &SavedPort| {
+            let ids = self.nodes.get(&end.node)?.node.port_ids(end.role);
+            let port_idx = ids.iter().position(|id| *id == end.port)?;
+            Some(PortAddress { node: end.node, role: end.role, port_idx })
+        };
+        Some(Edge { from: end(&saved.from)?, to: end(&saved.to)? })
+    }
+
     pub fn add(&mut self, node: N, pos: [f32; 2]) -> NodeId {
         let id = NodeId(self.next_id);
         self.next_id += 1;
@@ -901,6 +998,32 @@ mod tests {
 
     fn port(node: NodeId, role: PortRole, index: usize) -> PortAddress {
         PortAddress { node, role, port_idx: index }
+    }
+
+    /// Each end of an edge is saved by its port's id, not its index, and read back the same; an end naming a port its
+    /// node hasn't got goes, with its edge, leaving the rest.
+    #[test]
+    fn edges_are_saved_by_their_ports_ids() {
+        let mut graph = Graph::default();
+        let board = graph.add(create("Acquisition Board"), [0.0, 0.0]);
+        let writer = graph.add(create("Write LTX"), [0.0, 0.0]);
+        let gain = graph.add(create("Spike Gain"), [0.0, 0.0]);
+        let analogue = graph.connect(port(board, PortRole::DataStreamOut, 3), port(writer, PortRole::DataStreamIn, 1));
+        graph.connect(port(writer, PortRole::ValIn, 1), port(gain, PortRole::ValOutCmdIn, 0)).unwrap();
+        graph.set_edge_disabled(analogue.unwrap(), true);
+        let mut saved = serde_json::to_value(&graph).unwrap();
+        let end =
+            |node: NodeId, role: &str, port: &str| serde_json::json!({ "node": node.0, "role": role, "port": port });
+        let first = serde_json::json!({ "from": end(board, "DataStreamOut", "analogue"), "to": end(writer, "DataStreamIn", "eeg") });
+        assert_eq!(saved["edges"][0], first);
+        assert_eq!(saved["edges"][1]["from"], end(writer, "ValIn", "gains"));
+        assert_eq!(saved["disabled_edges"], serde_json::json!([first]));
+        let back: Graph<Nodes> = serde_json::from_value(saved.clone()).unwrap();
+        assert!(back == graph, "read back the same");
+
+        saved["edges"][1]["from"]["port"] = "renamed since".into();
+        let back: Graph<Nodes> = serde_json::from_value(saved).unwrap();
+        assert_eq!(back.edges().len(), 1, "the edge from a port it hasn't got goes");
     }
 
     #[test]

@@ -78,8 +78,11 @@ tuple of their types (`ValOutCmdIn<Gains, (SetGains, Detect)>`): a window can't 
 list, and a node is handed only the commands its ports take. Settings stay a node's own: what it saves and loads, and
 what's copied and pasted; what values it gives its `ValOutCmdIn` ports and what it does with commands are up to it.
 
-Each end of an edge is a port's address (`PortAddress`: its node, role and index among the node's ports of that role),
-and that's how edges are saved; whether an edge carries data or a value (`Edge::dimension`) follows from the roles. A
+Each end of an edge is a port's address (`PortAddress`: its node, role and index among the node's ports of that role).
+Saved, each end names its port by its id instead (`SavedPort`: `{"node": 1, "role": "DataStreamOut", "port":
+"headstages"}`), the field's name in the node's `ports!`, so a node's ports can be reordered without breaking files,
+but renaming one needs a config patch; an end naming a port its node hasn't got is dropped, with a warning, as the file's
+read. Whether an edge carries data or a value (`Edge::carries_data_stream`) follows from the roles. A
 node itself numbers the ports it reads values through (`ValInCmdOut` and `ValIn`) together, in the order it declares
 them, and reads and commands through handles to them (`UiContext::val_in(ValIn::gains)`,
 `UiContext::cmd_out(ValInCmdOut::gains, SetGains(gains))`), each holding that number (see `val_in_address`).

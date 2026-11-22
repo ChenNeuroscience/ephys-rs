@@ -60,10 +60,10 @@ ephys_rs::ports! {
     // them (the plan copies them for it, if something else needs them after it). As streams, these are the inputs'
     // as the run started.
     spikes: DataStreamIn<Spikes> take,
-    continuous: DataStreamIn<Continuous> = "eeg" take,
+    eeg: DataStreamIn<Continuous> take,
     positions: DataStreamIn<Positions> take,
     events: DataStreamIn<Events> take,
-    position_events: DataStreamIn<Events> = "pos ttl" take,
+    pos_ttl: DataStreamIn<Events> = "pos ttl" take,
     log: DataStreamIn<LogLines> take,
     /// The settings the writer records with the data, which it only reads.
     detection: ValIn<Detection>,
@@ -175,10 +175,10 @@ impl Chunk {
     fn new(streams: DataStreamIn) -> Self {
         let inputs = DataStreamIn {
             spikes: Slot::new(streams.spikes),
-            continuous: Slot::new(streams.continuous),
+            eeg: Slot::new(streams.eeg),
             positions: Slot::new(streams.positions),
             events: Slot::new(streams.events),
-            position_events: Slot::new(streams.position_events),
+            pos_ttl: Slot::new(streams.pos_ttl),
             log: Slot::new(streams.log),
         };
         Chunk { inputs, effective: None }
@@ -187,8 +187,8 @@ impl Chunk {
     /// The memory one takes.
     fn bytes(&self) -> usize {
         let i = &self.inputs;
-        let held = [i.spikes.bytes(), i.continuous.bytes(), i.positions.bytes(), i.events.bytes()];
-        held.iter().sum::<usize>() + i.position_events.bytes() + i.log.bytes()
+        let held = [i.spikes.bytes(), i.eeg.bytes(), i.positions.bytes(), i.events.bytes()];
+        held.iter().sum::<usize>() + i.pos_ttl.bytes() + i.log.bytes()
     }
 
     /// The writer's thread, with a pool of chunks for `streams`, writing to `files`.
@@ -294,10 +294,10 @@ impl Node<Edges> for WriteLtx {
             chunk.effective = pass.snapshot().recording().and_then(|r| r.effective()).map(|e| e.date);
             let held = &mut chunk.inputs;
             held.spikes.swap(inputs.spikes);
-            held.continuous.swap(inputs.continuous);
+            held.eeg.swap(inputs.eeg);
             held.positions.swap(inputs.positions);
             held.events.swap(inputs.events);
-            held.position_events.swap(inputs.position_events);
+            held.pos_ttl.swap(inputs.pos_ttl);
             held.log.swap(inputs.log);
             writing.send(chunk);
         }
@@ -335,7 +335,7 @@ impl Node<Edges> for WriteLtx {
                 ui.weak("Connect the Spike Gain's gains, to record them with the spikes.");
             }
             let eeg = [context.val_in_connected(ValIn::eeg_selection), context.val_in_connected(ValIn::eeg_gains)];
-            if eeg.contains(&false) && inputs.continuous.is_some() {
+            if eeg.contains(&false) && inputs.eeg.is_some() {
                 ui.weak("Connect the Channel Selector's selection and the Continuous Gain's gains, to record them with the EEG.");
             }
             ui.separator();
@@ -351,12 +351,12 @@ impl Node<Edges> for WriteLtx {
         {
             warnings.push(format!("LTX spikes are in tetrodes: groups of 4, not {}", spikes.group_size));
         }
-        if let Some(continuous) = inputs.continuous
+        if let Some(continuous) = inputs.eeg
             && continuous.sample_rate != EGF_RATE
         {
             warnings.push(format!("LTX's EEG is {EGF_RATE} Hz: downsample it first (with a Downsample)"));
         }
-        if inputs.position_events.is_some() && inputs.positions.is_none() {
+        if inputs.pos_ttl.is_some() && inputs.positions.is_none() {
             warnings.push("Connect the positions too, so the pos ttl's times can be compared with them".into());
         }
         warnings
@@ -600,7 +600,7 @@ impl LtxFiles {
         let mut tetrodes = Vec::new();
         // The full scale the samples cover: the spikes' gains', which the EEG's are taken relative to (the format has one).
         let Scales { spikes_uv: full_scale_uv, eeg_uv: eeg_full_scale_uv } = recorded.scales;
-        if streams.spikes.is_some() || streams.continuous.is_some_and(|c| c.sample_rate == EGF_RATE) {
+        if streams.spikes.is_some() || streams.eeg.is_some_and(|c| c.sample_rate == EGF_RATE) {
             set.header("ADC_fullscale_mv", AXONA_FULL_SCALE_UV / 1000.0)?;
         }
         if let Some(spikes) = streams.spikes {
@@ -622,7 +622,7 @@ impl LtxFiles {
         }
 
         let mut egf = Vec::new();
-        if let Some(continuous) = streams.continuous.filter(|c| c.sample_rate == EGF_RATE) {
+        if let Some(continuous) = streams.eeg.filter(|c| c.sample_rate == EGF_RATE) {
             let numbers = recorded.eeg_channels(continuous.channels);
             for channel in 0..continuous.channels {
                 let number = numbers[channel as usize];
@@ -652,7 +652,7 @@ impl LtxFiles {
         };
         // Connected, it only has anything to say if there's a timing LED, as far as we can tell.
         let timing_led = recorded.detection.as_ref().map(|d| d.timing_led);
-        let pos_ttl = match streams.position_events {
+        let pos_ttl = match streams.pos_ttl {
             Some(_) if timing_led.is_none_or(|led| led.enabled) => {
                 let mut f = open_ttl(file(".pos.ttl")?, "timing_led", "first_position")?;
                 if let Some(detection) = recorded.detection.as_ref().filter(|_| timing_led.is_some()) {
@@ -789,7 +789,7 @@ impl Files<Chunk> for LtxFiles {
             self.spike_samples += buffer.pass_samples as i64;
         }
 
-        if let Some(continuous) = chunk.inputs.continuous.get().filter(|_| !self.egf.is_empty()) {
+        if let Some(continuous) = chunk.inputs.eeg.get().filter(|_| !self.egf.is_empty()) {
             for (channel, egf) in self.egf.iter_mut().enumerate() {
                 let values = continuous.channel(channel);
                 if values.is_empty() {
@@ -841,7 +841,7 @@ impl Files<Chunk> for LtxFiles {
             self.event_samples += buffer.pass_samples as u64;
         }
 
-        let position_events = (&mut self.pos_ttl, self.streams.position_events, chunk.inputs.position_events.get());
+        let position_events = (&mut self.pos_ttl, self.streams.pos_ttl, chunk.inputs.pos_ttl.get());
         if let (Some(ttl), Some(events), Some(buffer)) = position_events {
             for event in &buffer.events {
                 let seconds = match event.time {
@@ -942,7 +942,7 @@ mod tests {
         let streams = DataStreamIn {
             positions: Some(Positions { fps: 50.0, width: 640, height: 480, source: CAMERA_TRACKER }),
             events: Some(events),
-            position_events: Some(Events { lines: 1, sample_rate: 50.0 }),
+            pos_ttl: Some(Events { lines: 1, sample_rate: 50.0 }),
             ..Default::default()
         };
         let timing_led = TimingLed { enabled: true, center: [600.0, 30.0], radius: 8.0, ..Default::default() };
@@ -969,7 +969,7 @@ mod tests {
         chunk.inputs.events.given = false;
         let positions = chunk.inputs.positions.give();
         positions.samples[0] = sample(100.25);
-        let events = chunk.inputs.position_events.give();
+        let events = chunk.inputs.pos_ttl.give();
         events.events.extend([event(0, 0, true, Some(100.25)), event(0, 0, false, Some(100.55))]);
         files.write(&chunk).unwrap();
         files.finish().unwrap();
@@ -1002,7 +1002,7 @@ mod tests {
         let base = dir.join("test");
         let streams = DataStreamIn {
             positions: Some(Positions { fps: 50.0, width: 1000, height: 1000, source: "vr_computer" }),
-            position_events: Some(Events { lines: 1, sample_rate: 1000.0 }),
+            pos_ttl: Some(Events { lines: 1, sample_rate: 1000.0 }),
             log: Some(LogLines { width: 32 }),
             ..Default::default()
         };
@@ -1021,7 +1021,7 @@ mod tests {
             timing_led: None,
             pixels_per_metre: f32::NAN,
         });
-        let events = chunk.inputs.position_events.give();
+        let events = chunk.inputs.pos_ttl.give();
         events.events.push(Event { sample: 0, line: 0, high: true, time: Some(2.0) });
         let log = chunk.inputs.log.give();
         assert!(log.push(1.75, "first line") && log.push(4.0, "second"));
@@ -1106,10 +1106,10 @@ mod tests {
         let spikes = Spikes { channels: 4, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32 };
         let streams = DataStreamIn {
             spikes: Some(spikes),
-            continuous: Some(Continuous { channels: 2, sample_rate: EGF_RATE }),
+            eeg: Some(Continuous { channels: 2, sample_rate: EGF_RATE }),
             positions: Some(Positions { fps: 50.0, width: 640, height: 480, source: CAMERA_TRACKER }),
             events: None,
-            position_events: None,
+            pos_ttl: None,
             log: None,
         };
         // Gains recorded: a µV a step on the first channel, half a µV on the second.
@@ -1139,7 +1139,7 @@ mod tests {
         let step = full_scale / 128.0;
         buffer.waveforms = (0..160).map(|i| (i as f32 - 80.0) * step).collect();
         // Two samples on each channel (at 5 kHz), amplified likewise; one beyond the full scale, clipped.
-        let continuous = chunk.inputs.continuous.give();
+        let continuous = chunk.inputs.eeg.give();
         continuous.len = 2;
         continuous.channel_mut(0).copy_from_slice(&[0.0, 30.0 * step]);
         continuous.channel_mut(1).copy_from_slice(&[60.0 * step, 2.0 * full_scale]);

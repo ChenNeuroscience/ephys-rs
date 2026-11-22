@@ -5,6 +5,7 @@ use ephys_rs::config_patching::PatchSet;
 
 mod auto_detect_settings;
 mod board_outputs;
+mod edge_port_ids;
 mod example;
 mod gains_amplify;
 mod write_ltx_val_ins;
@@ -18,6 +19,7 @@ pub const PATCHES: PatchSet = PatchSet {
         auto_detect_settings::patch,
         write_ltx_val_ins::patch,
         board_outputs::patch,
+        edge_port_ids::patch,
     ],
 };
 

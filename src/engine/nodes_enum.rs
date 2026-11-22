@@ -9,7 +9,7 @@ use serde::de::DeserializeOwned;
 
 use super::{
     BufferUsage, CommandContext, CommandSource, Edges, NodeInfo, NodeThread, PassBuffers, PassContext, PoolStatus,
-    Port, Prepare, PrepareContext, Shared, ThreadContext, TreeShake, UiContext,
+    Port, PortRole, Prepare, PrepareContext, Shared, ThreadContext, TreeShake, UiContext,
 };
 
 /// The app sometimes needs a node's type without the node: what the add-node menu offers, say. `nodes_enum!` makes a
@@ -60,6 +60,9 @@ pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + S
         inputs: &[Option<<Self::Edges as Edges>::DataStream>],
     ) -> Vec<Port<Self::Edges>>;
     fn warnings(&self, inputs: &[Option<<Self::Edges as Edges>::DataStream>]) -> Vec<String>;
+    /// Saved graphs name each of the node's ports by its id (see `Port::id`). These are the ids of the node's ports of
+    /// `role`, in the order its type declares them (the graph's numbering).
+    fn port_ids(&self, role: PortRole) -> Vec<&'static str>;
     /// The graph lists the node's ValCmd ports from this: its `ValOutCmdIn` ports, then its `ValInCmdOut` and `ValIn`
     /// ports, each in the order its type declares them (see `Node::Ports`).
     fn list_ports_val_cmd(&self) -> Vec<Port<Self::Edges>>;
@@ -259,6 +262,26 @@ macro_rules! nodes_enum {
                 match self {
                     $($name::$variant(n) => {
                         $crate::engine::Node::<$edges>::warnings(n, &<$crate::engine::DataStreamInOf<$ty, $edges> as $crate::engine::DataStreamInPorts<$edges>>::of(inputs))
+                    }),+
+                }
+            }
+
+            fn port_ids(&self, role: $crate::engine::PortRole) -> Vec<&'static str> {
+                use $crate::engine::PortRole;
+                match self {
+                    $($name::$variant(_) => {
+                        let ports = match role {
+                            PortRole::DataStreamIn => <$crate::engine::DataStreamInOf<$ty, $edges>
+                                as $crate::engine::DataStreamInPorts<$edges>>::ports(),
+                            PortRole::DataStreamOut => $crate::engine::DataStreamOutPorts::<$edges>::ports(
+                                &<$crate::engine::DataStreamOutOf<$ty, $edges> as Default>::default(),
+                            ),
+                            PortRole::ValOutCmdIn => <$crate::engine::ValOutCmdInOf<$ty, $edges>
+                                as $crate::engine::ValOutCmdInPorts<$edges>>::ports(),
+                            PortRole::ValInCmdOut | PortRole::ValIn => <<$ty as $crate::engine::Node<$edges>>::Ports
+                                as $crate::engine::PortSet<$edges>>::val_in_ports(),
+                        };
+                        ports.iter().filter(|port| port.role() == role).map($crate::engine::Port::id).collect()
                     }),+
                 }
             }

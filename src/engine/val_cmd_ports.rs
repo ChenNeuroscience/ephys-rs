@@ -177,18 +177,18 @@ impl<V> ReadsValIn for ValInPort<V> {
 /// `ports!` makes each `ValInCmdOut` and `ValIn` port, for the graph, through this.
 #[doc(hidden)]
 pub trait ValInPortOf<E: Edges> {
-    fn port(name: &'static str, flipped: bool) -> Port<E>;
+    fn port(id: &'static str, name: &'static str, flipped: bool) -> Port<E>;
 }
 
 impl<E: Edges, V: ValueOf<E>, S: CommandList<E>> ValInPortOf<E> for ValInCmdOutPort<V, S> {
-    fn port(name: &'static str, flipped: bool) -> Port<E> {
-        Port::ValInCmdOut { name, value_kind: V::KIND, commands: S::kinds(), flipped }
+    fn port(id: &'static str, name: &'static str, flipped: bool) -> Port<E> {
+        Port::ValInCmdOut { name, id, value_kind: V::KIND, commands: S::kinds(), flipped }
     }
 }
 
 impl<E: Edges, V: ValueOf<E>> ValInPortOf<E> for ValInPort<V> {
-    fn port(name: &'static str, flipped: bool) -> Port<E> {
-        Port::ValIn { name, value_kind: V::KIND, flipped }
+    fn port(id: &'static str, name: &'static str, flipped: bool) -> Port<E> {
+        Port::ValIn { name, id, value_kind: V::KIND, flipped }
     }
 }
 
