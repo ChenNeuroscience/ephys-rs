@@ -39,8 +39,8 @@ pub use window::SyncState;
 ephys_rs::ports! {
     // Where it's sent recordings' files to sync, on the left, as what sends them comes before it; and where it sends
     // them on, once it's synced them, on the right, as what's sent them then comes after it.
-    files: ValOutCmdIn<FileInput, (ProcessFiles,)> flipped,
-    after_syncing: ValInCmdOut<FileInput, (ProcessFiles,)> = "after syncing" flipped,
+    files: ValOutCmdIn<FileInput, (ProcessFiles,)> side: Left,
+    after_syncing: ValInCmdOut<FileInput, (ProcessFiles,)> = "after syncing" side: Right,
 }
 
 /// How it syncs, and the recording to sync by hand. Times are in seconds.

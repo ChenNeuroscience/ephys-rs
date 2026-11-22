@@ -55,8 +55,8 @@ impl EdgeType for FileInput {
 ephys_rs::ports! {
     // Where it's sent files to run on, on the left, as what sends them comes before it; and where it sends them on,
     // once it's done (see `Then`), on the right, as what runs then comes after it.
-    files: ValOutCmdIn<FileInput, (ProcessFiles,)> flipped,
-    after_running: ValInCmdOut<FileInput, (ProcessFiles,)> = "after running" flipped,
+    files: ValOutCmdIn<FileInput, (ProcessFiles,)> side: Left,
+    after_running: ValInCmdOut<FileInput, (ProcessFiles,)> = "after running" side: Right,
 }
 
 /// In the arguments: replaced by a file, running the program once for each.

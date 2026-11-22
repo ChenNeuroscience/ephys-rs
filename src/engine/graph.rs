@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     CommandContext, CommandSource, CommandsEnum, DataStreamInOf, DataStreamInPorts, DataStreamOutPorts, EdgeInfo,
-    EdgeTypesEnum, Edges, Node, NodesEnum, Plan, Port, PortAddress, PortKind, PortRole, PortSet, UiContext,
+    EdgeTypesEnum, Edges, Node, NodesEnum, Plan, Port, PortAddress, PortKind, PortRole, PortSet, Side, UiContext,
     ValOutCmdInOf, ValOutCmdInPorts,
 };
 use crate::commands::{Address, Commands};
@@ -159,14 +159,13 @@ impl<E: Edges> NodeState<E> {
         }
     }
 
-    /// The graph draws each port on one side of the node, so wires leave it that way. This says whether it's the
-    /// right.
-    pub fn on_right(&self, role: PortRole, port_idx: usize) -> bool {
+    /// Which side of the node the graph draws the port at `role` and `port_idx` on (see `Side`).
+    pub fn side(&self, role: PortRole, port_idx: usize) -> Side {
         match role {
-            PortRole::DataStreamOut => true,
-            PortRole::DataStreamIn => false,
-            PortRole::ValOutCmdIn => self.val_outs.get(port_idx).is_some_and(|p| !p.is_flipped()),
-            PortRole::ValInCmdOut | PortRole::ValIn => self.val_port(role, port_idx).is_some_and(|p| p.is_flipped()),
+            PortRole::DataStreamIn => Side::Left,
+            PortRole::DataStreamOut => Side::Right,
+            PortRole::ValOutCmdIn => self.val_port(role, port_idx).map_or(Side::Right, Port::side),
+            PortRole::ValInCmdOut | PortRole::ValIn => self.val_port(role, port_idx).map_or(Side::Left, Port::side),
         }
     }
 

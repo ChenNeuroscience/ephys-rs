@@ -120,8 +120,8 @@ mod components;
 mod standard;
 #[cfg(test)]
 use components::{
-    AnnotationKind, AnnotationTypes, Buffer, Command, DataStream, Edges, Kind, NodeType, Nodes, PublishedValue,
-    example_graph,
+    AnnotationKind, AnnotationTypes, Buffer, Command, DataStream, DataStreamKind, Edges, NodeType, Nodes,
+    PublishedValue, example_graph,
 };
 
 /// A build lists only the edge types its nodes need: this one has continuous data alone (no values, no commands), for
@@ -133,7 +133,7 @@ mod minimal_build {
 
     ephys_rs::edge_types! {
         pub struct Edges;
-        data_streams: pub enum DataStream, Kind, Buffer {
+        data_streams: pub enum DataStream, DataStreamKind, Buffer {
             Continuous(Continuous),
         }
         values: pub enum PublishedValue, ValueKind {}

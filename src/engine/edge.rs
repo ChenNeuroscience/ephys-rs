@@ -8,7 +8,7 @@
 //!
 //! Each edge type is a struct implementing `EdgeType`: for data, a small `Copy` description of the data stream (its
 //! channel count and sample rate, say); for values, the value itself. `edge_types!` gathers each kind into an enum (one
-//! of data streams, one of values), with a matching fieldless `Kind` enum that ports are declared with. It gathers the
+//! of data streams, one of values), with a matching fieldless kind enum that ports are declared with. It gathers the
 //! program's commands into an enum as well (see `CommandsEnum`).
 
 use std::fmt::Debug;
@@ -44,9 +44,6 @@ pub trait EdgeTypesEnum: Clone + PartialEq + Debug + Send + Sync + 'static {
     fn kind_index(kind: Self::Kind) -> usize;
     fn summary(&self) -> String;
 }
-
-/// A value of `S` is of one edge type, named by its kind (see `EdgeTypesEnum::Kind`).
-pub type Kind<S> = <S as EdgeTypesEnum>::Kind;
 
 /// Each data edge type implements this as well: besides describing a data stream, a data edge type says how a pass's
 /// worth of the stream is held. Data streams are small descriptions, so `Copy`; settings may hold more (a list, say),
@@ -93,7 +90,7 @@ pub trait DataStreamsEnum: EdgeTypesEnum + Copy {
 )]
 pub trait HasDataStream<T: DataStreamType>: Edges {
     /// Ports are matched by kind: this is `T`'s.
-    const KIND: Kind<Self::DataStream>;
+    const KIND: DataStreamKind<Self>;
     /// `stream`, as the program's enum of them.
     fn wrap(stream: T) -> Self::DataStream;
     /// `stream` as a `T`, if that's the type it is.
@@ -113,7 +110,7 @@ pub trait HasDataStream<T: DataStreamType>: Edges {
 )]
 pub trait HasValue<T: EdgeType>: Edges {
     /// Ports are matched by kind: this is `T`'s.
-    const KIND: Kind<Self::PublishedValue>;
+    const KIND: ValueKind<Self>;
     /// `value`, as the program's enum of them.
     fn wrap(value: T) -> Self::PublishedValue;
     /// `value` as a `T`, if that's the type it is.
@@ -157,6 +154,12 @@ pub trait Edges: 'static {
     type Command: CommandsEnum;
 }
 
+/// Each of the program's data streams is of one kind (see `EdgeTypesEnum::Kind`).
+pub type DataStreamKind<E> = <<E as Edges>::DataStream as EdgeTypesEnum>::Kind;
+
+/// Each of the program's values is of one kind (see `EdgeTypesEnum::Kind`).
+pub type ValueKind<E> = <<E as Edges>::PublishedValue as EdgeTypesEnum>::Kind;
+
 /// Each of the program's commands is of one kind (see `CommandsEnum::Kind`).
 pub type CommandKind<E> = <<E as Edges>::Command as CommandsEnum>::Kind;
 
@@ -168,7 +171,7 @@ pub type Buffer<E> = <<E as Edges>::DataStream as DataStreamsEnum>::Buffer;
 /// ```ignore
 /// edge_types! {
 ///     pub struct Edges;
-///     data_streams: pub enum DataStream, Kind, Buffer {
+///     data_streams: pub enum DataStream, DataStreamKind, Buffer {
 ///         Continuous(ephys::Continuous),
 ///     }
 ///     values: pub enum PublishedValue, ValueKind {
@@ -181,7 +184,7 @@ pub type Buffer<E> = <<E as Edges>::DataStream as DataStreamsEnum>::Buffer;
 /// ```
 ///
 /// This makes `Edges` (implementing `engine::Edges`), the `DataStream`, `PublishedValue` and `Command` enums, the
-/// `Kind`, `ValueKind` and `CommandKind` enums naming their variants, and the `Buffer` enum of the data streams'
+/// `DataStreamKind`, `ValueKind` and `CommandKind` enums naming their variants, and the `Buffer` enum of the data streams'
 /// buffers; and `HasDataStream`, `HasValue` and `HasCommand` for each type listed, through which nodes use them as their own
 /// types.
 #[macro_export]

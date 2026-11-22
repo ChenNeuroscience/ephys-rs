@@ -15,7 +15,7 @@
 use std::fmt::Debug;
 use std::marker::PhantomData;
 
-use super::{CommandKind, EdgeType, Edges, HasCommand, HasValue, NoPorts, Port};
+use super::{CommandKind, EdgeType, Edges, HasCommand, HasValue, NoPorts, Port, Side};
 
 /// Each command is a type of its own, holding what it carries (see `HasCommand`).
 pub trait Command: std::fmt::Debug + Send + 'static {}
@@ -203,18 +203,18 @@ impl<V: EdgeType> ReadsValIn for ValInPort<V> {
 /// `ports!` makes each `ValInCmdOut` and `ValIn` port, for the graph, through this.
 #[doc(hidden)]
 pub trait ValInPortOf<E: Edges> {
-    fn port(id: &'static str, name: &'static str, flipped: bool) -> Port<E>;
+    fn port(id: &'static str, name: &'static str, side: Side) -> Port<E>;
 }
 
 impl<E: HasValue<V>, V: EdgeType, S: CommandList<E>> ValInPortOf<E> for ValInCmdOutPort<V, S> {
-    fn port(id: &'static str, name: &'static str, flipped: bool) -> Port<E> {
-        Port::ValInCmdOut { name, id, value_kind: <E as HasValue<V>>::KIND, commands: S::kinds(), flipped }
+    fn port(id: &'static str, name: &'static str, side: Side) -> Port<E> {
+        Port::ValInCmdOut { name, id, value_kind: <E as HasValue<V>>::KIND, commands: S::kinds(), side }
     }
 }
 
 impl<E: HasValue<V>, V: EdgeType> ValInPortOf<E> for ValInPort<V> {
-    fn port(id: &'static str, name: &'static str, flipped: bool) -> Port<E> {
-        Port::ValIn { name, id, value_kind: <E as HasValue<V>>::KIND, flipped }
+    fn port(id: &'static str, name: &'static str, side: Side) -> Port<E> {
+        Port::ValIn { name, id, value_kind: <E as HasValue<V>>::KIND, side }
     }
 }
 

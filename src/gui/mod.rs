@@ -1599,7 +1599,11 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             Some(Choice::New(node_type)) => {
                 // Beside the port it's connected to, on the side its edge leaves from.
                 let pos = match from {
-                    Some(port) if resolved.get(&port.node).is_some_and(|s| s.on_right(port.role, port.port_idx)) => {
+                    Some(port)
+                        if resolved
+                            .get(&port.node)
+                            .is_some_and(|s| s.side(port.role, port.port_idx) == crate::engine::Side::Right) =>
+                    {
                         [scene.x + 40.0, scene.y - HEADER]
                     }
                     Some(_) => [scene.x - NODE_WIDTH - 40.0, scene.y - HEADER],

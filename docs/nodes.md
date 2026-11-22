@@ -316,9 +316,10 @@ with files sent, so it's the same either way. A loop of ValCmd edges carrying co
 round to the first) could go on for ever: the graph warns of it on each node in the loop (see
 `Graph::command_loops`), and Stop ends it.
 
-`ValOutCmdIn` ports sit on the right of a node on the graph and the others on the left, unless a port's `flipped`: the
-"after recording" port's on the right, and Run Command's "files" on the left, as what passes between them flows onward,
-like data.
+By default, the graph draws `ValOutCmdIn` ports on the right of a node and `ValInCmdOut` and `ValIn` ports on the
+left. A port's declaration can say otherwise with `side: Left` or `side: Right`. The "after recording" port is declared
+`side: Right`, and Run Command's "files" port `side: Left`, because the files passing between them flow onward the way
+data does.
 
 ## Global settings
 

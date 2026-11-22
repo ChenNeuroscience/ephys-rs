@@ -71,7 +71,7 @@ ephys_rs::ports! {
     eeg_gains: ValIn<Gains> = "eeg gains",
     /// Where the writer sends what it's recorded, once it's finished (see `after_recording`): on the right, as
     /// what it sets off comes after it.
-    after_recording: ValInCmdOut<FileInput, (ProcessFiles,)> = "after recording" flipped,
+    after_recording: ValInCmdOut<FileInput, (ProcessFiles,)> = "after recording" side: Right,
 }
 
 /// Ticks a second, for timestamps.

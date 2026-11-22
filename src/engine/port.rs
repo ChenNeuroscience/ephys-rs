@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{CommandKind, EdgeTypesEnum, Edges, Kind, NodeId};
+use super::{CommandKind, DataStreamKind, EdgeTypesEnum, Edges, NodeId, ValueKind};
 
 /// Edges connect nodes at their ports, each named for what flows through it, which way (see `PortRole`, which names a
 /// port's role without what's in it). A node declares its ports on its type (see `crate::engine::ports`), and the graph
@@ -20,7 +20,7 @@ pub enum Port<E: Edges> {
         /// `name` might.
         id: &'static str,
         /// The kind of data stream the port takes.
-        data_stream_kind: Kind<E::DataStream>,
+        data_stream_kind: DataStreamKind<E>,
     },
     /// The node sends data on from here, each pass.
     DataStreamOut {
@@ -30,7 +30,7 @@ pub enum Port<E: Edges> {
         /// `name` might.
         id: &'static str,
         /// The kind of data stream the port sends.
-        data_stream_kind: Kind<E::DataStream>,
+        data_stream_kind: DataStreamKind<E>,
         /// The stream itself, which the graph can't always know (while the node's input isn't connected, say), and
         /// then this is `None`.
         stream: Option<E::DataStream>,
@@ -44,11 +44,11 @@ pub enum Port<E: Edges> {
         /// `name` might.
         id: &'static str,
         /// The kind of value the port has.
-        value_kind: Kind<E::PublishedValue>,
+        value_kind: ValueKind<E>,
         /// The commands the port accepts.
         commands: Vec<CommandKind<E>>,
-        /// Whether it's drawn on the left of the node, rather than the right (as `ports!` declares it: `flipped`).
-        flipped: bool,
+        /// Which side of the node the graph draws the port on (see `Side`).
+        side: Side,
     },
     /// The node reads the value at the `ValOutCmdIn` this connects to, and sends that node commands (usually the one
     /// setting the value, `SetGains`, say; sometimes others, such as auto detect's `Detect`).
@@ -59,11 +59,11 @@ pub enum Port<E: Edges> {
         /// `name` might.
         id: &'static str,
         /// The kind of value the port reads.
-        value_kind: Kind<E::PublishedValue>,
+        value_kind: ValueKind<E>,
         /// The commands the port sends.
         commands: Vec<CommandKind<E>>,
-        /// Whether it's drawn on the right of the node, rather than the left (as `ports!` declares it: `flipped`).
-        flipped: bool,
+        /// Which side of the node the graph draws the port on (see `Side`).
+        side: Side,
     },
     /// Val-only: the node only reads the value at the `ValOutCmdIn` this connects to (a writer recording the gains).
     /// The GUI calls it read-only.
@@ -74,15 +74,26 @@ pub enum Port<E: Edges> {
         /// `name` might.
         id: &'static str,
         /// The kind of value the port reads.
-        value_kind: Kind<E::PublishedValue>,
-        /// Whether it's drawn on the right of the node, rather than the left (as `ports!` declares it: `flipped`).
-        flipped: bool,
+        value_kind: ValueKind<E>,
+        /// Which side of the node the graph draws the port on (see `Side`).
+        side: Side,
     },
+}
+
+/// The side of a node that the graph draws a port on, so that the port's wires leave the node that way.
+///
+/// A `ports!` declaration can give a ValCmd port's side with `side: Left` or `side: Right`. Without one, a
+/// `ValOutCmdIn` port is on the right and a `ValInCmdOut` or `ValIn` port is on the left. A writer's "after recording"
+/// port is declared `side: Right`, for example, because the files it sends go on to later steps, the way data does.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Side {
+    Left,
+    Right,
 }
 
 impl<E: Edges> Port<E> {
     /// A `DataStreamIn` port taking `data_stream_kind`.
-    pub fn data_stream_in(id: &'static str, name: &'static str, data_stream_kind: Kind<E::DataStream>) -> Self {
+    pub fn data_stream_in(id: &'static str, name: &'static str, data_stream_kind: DataStreamKind<E>) -> Self {
         Port::DataStreamIn { name, id, data_stream_kind }
     }
 
@@ -90,7 +101,7 @@ impl<E: Edges> Port<E> {
     pub fn data_stream_out(
         id: &'static str,
         name: &'static str,
-        data_stream_kind: Kind<E::DataStream>,
+        data_stream_kind: DataStreamKind<E>,
         stream: Option<E::DataStream>,
     ) -> Self {
         Port::DataStreamOut { name, id, data_stream_kind, stream }
@@ -127,15 +138,14 @@ impl<E: Edges> Port<E> {
         }
     }
 
-    /// The graph draws `DataStreamOut` and `ValOutCmdIn` ports on the right of the node, and the others on the left,
-    /// unless a ValCmd port's flipped (a writer's "after recording" is on the right, as what it sets off comes after
-    /// it). This says whether it is; data ports never are.
-    pub fn is_flipped(&self) -> bool {
+    /// Which side of the node the graph draws the port on. Data ports have fixed sides: a `DataStreamIn` port is on
+    /// the left and a `DataStreamOut` port is on the right. A ValCmd port is on the side its `ports!` declaration
+    /// gives (see `Side`).
+    pub fn side(&self) -> Side {
         match self {
-            Port::ValOutCmdIn { flipped, .. } | Port::ValInCmdOut { flipped, .. } | Port::ValIn { flipped, .. } => {
-                *flipped
-            }
-            Port::DataStreamIn { .. } | Port::DataStreamOut { .. } => false,
+            Port::DataStreamIn { .. } => Side::Left,
+            Port::DataStreamOut { .. } => Side::Right,
+            Port::ValOutCmdIn { side, .. } | Port::ValInCmdOut { side, .. } | Port::ValIn { side, .. } => *side,
         }
     }
 
@@ -152,7 +162,7 @@ impl<E: Edges> Port<E> {
     }
 
     /// A data port's kind of data stream.
-    pub fn data_stream_kind(&self) -> Option<Kind<E::DataStream>> {
+    pub fn data_stream_kind(&self) -> Option<DataStreamKind<E>> {
         match self {
             Port::DataStreamIn { data_stream_kind, .. } | Port::DataStreamOut { data_stream_kind, .. } => {
                 Some(*data_stream_kind)
@@ -170,7 +180,7 @@ impl<E: Edges> Port<E> {
     }
 
     /// A ValCmd port's kind of value.
-    pub fn value_kind(&self) -> Option<Kind<E::PublishedValue>> {
+    pub fn value_kind(&self) -> Option<ValueKind<E>> {
         match self {
             Port::ValOutCmdIn { value_kind, .. }
             | Port::ValInCmdOut { value_kind, .. }

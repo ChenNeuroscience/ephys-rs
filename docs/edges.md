@@ -7,7 +7,7 @@ those its nodes need, standard or its own, with `edge_types!` (as chen-neuro doe
 ```rust
 edge_types! {
     pub struct Edges;
-    data_streams: pub enum DataStream, Kind, Buffer {
+    data_streams: pub enum DataStream, DataStreamKind, Buffer {
         Continuous(ephys::Continuous),
         // ...
     }
@@ -23,7 +23,7 @@ edge_types! {
 }
 ```
 
-That makes the `DataStream` and `PublishedValue` enums of values, the `Kind` and `ValueKind` enums that ports are declared
+That makes the `DataStream` and `PublishedValue` enums of values, the `DataStreamKind` and `ValueKind` enums that ports are declared
 with, and the `Buffer` enum of the data streams' buffers; and the `Command` enum of what nodes can tell each other to
 do, through ValCmd edges (or themselves, from their passes and threads), with `CommandKind` naming them (see
 [Nodes](nodes.md#commands)). Each command is a type of its own (`SetThresholds(pub Thresholds)`). For each type listed,

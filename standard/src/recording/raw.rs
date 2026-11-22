@@ -97,7 +97,7 @@ ephys_rs::ports! {
     events: DataStreamIn<Events> take,
     /// Where the writer sends what it's recorded, once it's finished (see `after_recording`): on the right, as
     /// what it sets off comes after it.
-    after_recording: ValInCmdOut<FileInput, (ProcessFiles,)> = "after recording" flipped,
+    after_recording: ValInCmdOut<FileInput, (ProcessFiles,)> = "after recording" side: Right,
 }
 
 impl<E: PortEdges> Node<E> for WriteRaw {

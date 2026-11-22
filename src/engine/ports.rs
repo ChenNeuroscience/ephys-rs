@@ -53,7 +53,7 @@ impl<E: Edges> PortSet<E> for NoPorts {
 ///     thresholds: ValOutCmdIn<Thresholds, (SetThresholds, Detect)>,
 ///     gains: ValInCmdOut<Gains, (SetGains, Detect)>,
 ///     recorded: ValIn<Gains> = "recorded gains",
-///     after_recording: ValInCmdOut<FileInput, (ProcessFiles,)> = "after recording" flipped,
+///     after_recording: ValInCmdOut<FileInput, (ProcessFiles,)> = "after recording" side: Right,
 /// }
 /// ```
 ///
@@ -64,7 +64,7 @@ impl<E: Edges> PortSet<E> for NoPorts {
 /// - `take`: the node takes a `DataStreamIn` port's buffer (see `BufferUsage::takes`);
 /// - `in_place_of`: the node makes a `DataStreamOut` port in place of a `DataStreamIn` port of the same type (see
 ///   `BufferUsage::in_place`);
-/// - `flipped`: a ValCmd port's drawn on the other side of the node (see `Port::flipped`).
+/// - `side: Left` or `side: Right`: the side of the node the graph draws a ValCmd port on (see `Side`).
 ///
 /// The macro makes, in the node's module:
 ///
@@ -108,25 +108,25 @@ macro_rules! ports {
     };
     (@munch [$($i:tt)*] [$($o:tt)*] [$($vo:tt)*] [$($vi:tt)*]
         $(#[$m:meta])* $field:ident : ValOutCmdIn < $value:ty , ($($command:ident),* $(,)?) >
-        $(= $name:literal)? $($flipped:ident)?, $($rest:tt)*
+        $(= $name:literal)? $(side: $side:ident)?, $($rest:tt)*
     ) => {
         $crate::ports!(@munch [$($i)*] [$($o)*]
-            [$($vo)* { ($(#[$m])*) $field ($value) ($($command),*) ($($name)?) ($($flipped)?) }] [$($vi)*] $($rest)*
+            [$($vo)* { ($(#[$m])*) $field ($value) ($($command),*) ($($name)?) ($($side)?) }] [$($vi)*] $($rest)*
         );
     };
     (@munch [$($i:tt)*] [$($o:tt)*] [$($vo:tt)*] [$($vi:tt)*]
         $(#[$m:meta])* $field:ident : ValInCmdOut < $value:ty , ($($command:ident),* $(,)?) >
-        $(= $name:literal)? $($flipped:ident)?, $($rest:tt)*
+        $(= $name:literal)? $(side: $side:ident)?, $($rest:tt)*
     ) => {
         $crate::ports!(@munch [$($i)*] [$($o)*] [$($vo)*]
-            [$($vi)* { ($(#[$m])*) $field ValInCmdOut ($value) ($($command),*) ($($name)?) ($($flipped)?) }] $($rest)*
+            [$($vi)* { ($(#[$m])*) $field ValInCmdOut ($value) ($($command),*) ($($name)?) ($($side)?) }] $($rest)*
         );
     };
     (@munch [$($i:tt)*] [$($o:tt)*] [$($vo:tt)*] [$($vi:tt)*]
-        $(#[$m:meta])* $field:ident : ValIn < $value:ty > $(= $name:literal)? $($flipped:ident)?, $($rest:tt)*
+        $(#[$m:meta])* $field:ident : ValIn < $value:ty > $(= $name:literal)? $(side: $side:ident)?, $($rest:tt)*
     ) => {
         $crate::ports!(@munch [$($i)*] [$($o)*] [$($vo)*]
-            [$($vi)* { ($(#[$m])*) $field ValIn ($value) () ($($name)?) ($($flipped)?) }]
+            [$($vi)* { ($(#[$m])*) $field ValIn ($value) () ($($name)?) ($($side)?) }]
             $($rest)*
         );
     };
@@ -342,7 +342,7 @@ macro_rules! ports {
 
     (@val_out_cmd_in) => {};
     (@val_out_cmd_in $(
-        { ($($m:tt)*) $field:ident ($value:ty) ($($command:ident),*) ($($name:literal)?) ($($flipped:ident)?) }
+        { ($($m:tt)*) $field:ident ($value:ty) ($($command:ident),*) ($($name:literal)?) ($($side:ident)?) }
     )+) => {
         /// The values the node publishes at its `ValOutCmdIn` ports (see `ephys_rs::engine::ports`).
         pub struct ValOutCmdIn {
@@ -373,7 +373,7 @@ macro_rules! ports {
                         id: stringify!($field),
                         value_kind: <E as $crate::engine::HasValue<$value>>::KIND,
                         commands: <($($command,)*) as $crate::engine::CommandList<E>>::kinds(),
-                        flipped: $crate::ports!(@flipped $($flipped)?),
+                        side: $crate::ports!(@side Right $($side)?),
                     }
                 ),+]
             }
@@ -384,7 +384,7 @@ macro_rules! ports {
         }
     };
 
-    (@cmd_in $({ ($($m:tt)*) $field:ident ($value:ty) ($($command:ident),*) ($($name:literal)?) ($($flipped:ident)?) })*) => {
+    (@cmd_in $({ ($($m:tt)*) $field:ident ($value:ty) ($($command:ident),*) ($($name:literal)?) ($($side:ident)?) })*) => {
         /// The commands the node takes, through its `ValOutCmdIn` ports (see `ephys_rs::engine::ports`).
         #[derive(Debug)]
         pub enum CmdIn {
@@ -422,7 +422,7 @@ macro_rules! ports {
     };
 
     (@val_in $(
-        { ($($m:tt)*) $field:ident $role:ident ($value:ty) ($($command:ident),*) ($($name:literal)?) ($($flipped:ident)?) }
+        { ($($m:tt)*) $field:ident $role:ident ($value:ty) ($($command:ident),*) ($($name:literal)?) ($($side:ident)?) }
     )*) => {
         /// Handles to the node's `ValInCmdOut` ports (see `ephys_rs::engine::ports`).
         #[allow(dead_code, reason = "a node without such ports has none")]
@@ -453,7 +453,7 @@ macro_rules! ports {
                         <$crate::ports!(@handle $role $value, $($command),*) as $crate::engine::ValInPortOf<E>>::port(
                             stringify!($field),
                             $crate::ports!(@name $field $($name)?),
-                            $crate::ports!(@flipped $($flipped)?),
+                            $crate::ports!(@side Left $($side)?),
                         )
                     ),*]
                 }
@@ -466,8 +466,8 @@ macro_rules! ports {
     (@port_edges
         [$({ ($($im:tt)*) $ifield:ident ($ity:ty) ($($iname:literal)?) $irole:ident })*]
         [$({ ($($om:tt)*) $ofield:ident ($oty:ty) ($($oname:literal)?) ($($oinput:ident)?) })*]
-        [$({ ($($vm:tt)*) $vfield:ident ($vty:ty) ($($vc:ident),*) ($($vname:literal)?) ($($vfl:ident)?) })*]
-        [$({ ($($wm:tt)*) $wfield:ident $wrole:ident ($wty:ty) ($($wc:ident),*) ($($wname:literal)?) ($($wfl:ident)?) })*]
+        [$({ ($($vm:tt)*) $vfield:ident ($vty:ty) ($($vc:ident),*) ($($vname:literal)?) ($($vside:ident)?) })*]
+        [$({ ($($wm:tt)*) $wfield:ident $wrole:ident ($wty:ty) ($($wc:ident),*) ($($wname:literal)?) ($($wside:ident)?) })*]
     ) => {
         /// The edge types the node's ports carry, which a program's edges must have for the node (see
         /// `ephys_rs::engine::ports`): the node's `Node` is implemented for any program's edges implementing this.
@@ -491,8 +491,8 @@ macro_rules! ports {
     };
     (@name $field:ident $name:literal) => { $name };
     (@name $field:ident) => { stringify!($field) };
-    (@flipped flipped) => { true };
-    (@flipped) => { false };
+    (@side $default:ident $side:ident) => { $crate::engine::Side::$side };
+    (@side $default:ident) => { $crate::engine::Side::$default };
     (@takes In) => { false };
     (@takes Take) => { true };
     (@view In $e:ident $ty:ty, $shared:expr, $taken:expr) => { $crate::engine::read_input::<$e, $ty>($shared, $taken) };

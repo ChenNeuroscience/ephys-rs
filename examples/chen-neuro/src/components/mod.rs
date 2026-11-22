@@ -29,7 +29,7 @@ use ephys_rs::{annotations_enum, nodes_enum};
 // those its nodes' ports carry (each node's `PortEdges`), and its own beside them.
 ephys_rs::edge_types! {
     pub struct Edges;
-    data_streams: pub enum DataStream, Kind, Buffer {
+    data_streams: pub enum DataStream, DataStreamKind, Buffer {
         Continuous(crate::standard::ephys::Continuous),
         Events(crate::standard::ephys::Events),
         Spikes(crate::standard::spikes::Spikes),

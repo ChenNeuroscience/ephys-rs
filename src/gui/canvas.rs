@@ -28,7 +28,7 @@ use crate::annotation::{
 };
 use crate::engine::{
     Edge, EdgeInfo, EdgeTypesEnum, Edges, Graph, NodeEntry, NodeId, NodeState, NodesEnum, PortAddress, PortKind,
-    PortRole, Resolved,
+    PortRole, Resolved, Side,
 };
 use crate::layout::Pane;
 use crate::theme::Colours;
@@ -162,7 +162,7 @@ impl Layout {
                 break;
             }
             let extra = if role.carries_data_stream() { 0.0 } else { divider };
-            let on_right = state.on_right(role, port_idx);
+            let on_right = state.side(role, port_idx) == Side::Right;
             let x = if on_right { rect.right() } else { rect.left() };
             ports.insert((role, port_idx), (egui::pos2(x, row_y(row, extra)), on_right));
         }

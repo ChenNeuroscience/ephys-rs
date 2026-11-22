@@ -179,7 +179,7 @@ mod tests {
     fn nothing_selected_runs_records_and_draws_everything_after_it() {
         use crate::standard::ephys::board::{Source, serve_test_board};
         use crate::standard::themes::THEMES;
-        use crate::{Kind, Nodes, example_graph};
+        use crate::{DataStreamKind, Nodes, example_graph};
         use ephys_rs::base_directory::Place;
         use ephys_rs::engine::{Graph, NodesEnum, PortAddress, PortRole, Recording, Runner, Snapshot};
         use std::sync::Arc;
@@ -199,7 +199,7 @@ mod tests {
             b.source = Source::Fake { address: serve_test_board() };
         }
         // A node of each type taking what `from` has, of the kinds in `kinds`.
-        let takers = |graph: &mut Graph<Nodes>, from: &[(Kind, PortAddress)]| {
+        let takers = |graph: &mut Graph<Nodes>, from: &[(DataStreamKind, PortAddress)]| {
             let mut added = Vec::new();
             for &node_type in <crate::NodeType as ephys_rs::engine::NodeTypeEnum>::ALL {
                 let node = Nodes::create(node_type);
@@ -221,9 +221,9 @@ mod tests {
             added
         };
         let selected = PortAddress { node: selector, role: PortRole::DataStreamOut, port_idx: 0 };
-        let first = takers(&mut graph, &[(Kind::Continuous, selected)]);
+        let first = takers(&mut graph, &[(DataStreamKind::Continuous, selected)]);
         let resolved = graph.resolve();
-        let made: Vec<(Kind, PortAddress)> = (first.iter())
+        let made: Vec<(DataStreamKind, PortAddress)> = (first.iter())
             .flat_map(|&node| {
                 let outputs = resolved[&node].outputs.iter().enumerate();
                 outputs.map(move |(index, o)| {
@@ -233,7 +233,7 @@ mod tests {
                     )
                 })
             })
-            .filter(|(kind, _)| matches!(kind, Kind::Spikes | Kind::Spectra))
+            .filter(|(kind, _)| matches!(kind, DataStreamKind::Spikes | DataStreamKind::Spectra))
             .collect();
         assert!(made.len() >= 2, "some spikes and spectra, of no channels");
         takers(&mut graph, &made);
