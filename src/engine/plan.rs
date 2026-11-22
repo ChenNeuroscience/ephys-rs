@@ -502,24 +502,39 @@ mod tests {
         assert_eq!(plan.buffers[writer_step.inputs[0].unwrap()], plan.buffers[board_step.outputs[0]]);
     }
 
+    /// Sets the Alarm Processor `processor`'s alarms to `kinds`, each on.
+    fn alarms(graph: &mut Graph<Nodes>, processor: NodeId, kinds: &[crate::standard::alarms::AlarmKind]) {
+        if let Some(Nodes::AlarmProcessor(p)) = graph.get_mut(processor).map(|e| &mut e.node) {
+            p.alarms = Default::default();
+            for kind in kinds {
+                p.alarms.add(kind.clone());
+            }
+        }
+    }
+
+    /// An Alarm Processor only needs the inputs its alarms watch, so the filter feeding its LFP input only runs while
+    /// an LFP alarm is on.
     #[test]
     fn nodes_run_only_while_something_needs_their_outputs() {
+        use crate::standard::alarms::AlarmKind;
+        let [lfp, ttl] = [1, 3].map(|i| AlarmKind::library()[i].clone());
         let mut graph = Graph::default();
         let board = add(&mut graph, "Acquisition Board");
-        let spectrum = add(&mut graph, "Spectrum");
-        let viewer = add(&mut graph, "Continuous Data Viewer");
-        link(&mut graph, board, 0, spectrum, 0);
-        link(&mut graph, board, 0, viewer, 0);
-        link(&mut graph, spectrum, 0, viewer, 1);
+        let filter = add(&mut graph, "Band-pass Filter");
+        let processor = add(&mut graph, "Alarm Processor");
+        let viewer = add(&mut graph, "Alarm Viewer");
+        link(&mut graph, board, 0, filter, 0);
+        link(&mut graph, filter, 0, processor, 1);
+        link(&mut graph, board, 1, processor, 3);
+        link(&mut graph, processor, 0, viewer, 0);
         let runs = |graph: &Graph<Nodes>, id| Plan::new(graph, false).steps.iter().any(|s| s.id == id);
-        assert!(runs(&graph, spectrum), "the viewer shows the spectra");
-        if let Some(Nodes::ContinuousViewer(v)) = graph.get_mut(viewer).map(|e| &mut e.node) {
-            v.spectrum = false;
-        }
-        assert!(!runs(&graph, spectrum), "nothing needs them");
-        assert!(runs(&graph, board) && runs(&graph, viewer), "sources and viewers run regardless");
+        alarms(&mut graph, processor, &[lfp, ttl.clone()]);
+        assert!(runs(&graph, filter), "an alarm watches the LFP");
+        alarms(&mut graph, processor, &[ttl]);
+        assert!(!runs(&graph, filter), "nothing needs it");
+        assert!(runs(&graph, board) && runs(&graph, processor) && runs(&graph, viewer), "the TTLs are still watched");
         let plan = Plan::new(&graph, false);
-        assert_eq!(plan.steps.iter().find(|s| s.id == viewer).unwrap().inputs[1], None, "nor are they passed");
+        assert_eq!(plan.steps.iter().find(|s| s.id == processor).unwrap().inputs[1], None, "nor is it passed");
     }
 
     #[test]
@@ -586,19 +601,22 @@ mod tests {
 
     #[test]
     fn what_a_node_does_not_need_counts_for_neither_it_nor_what_feeds_it() {
+        use crate::standard::alarms::AlarmKind;
+        let lfp = AlarmKind::library()[1].clone();
         let mut graph = Graph::default();
         let board = add(&mut graph, "Acquisition Board");
-        let spectrum = add(&mut graph, "Spectrum");
-        let viewer = add(&mut graph, "Continuous Data Viewer");
-        link(&mut graph, board, 0, spectrum, 0);
-        link(&mut graph, spectrum, 0, viewer, 1);
+        let filter = add(&mut graph, "Band-pass Filter");
+        let processor = add(&mut graph, "Alarm Processor");
+        let viewer = add(&mut graph, "Alarm Viewer");
+        link(&mut graph, board, 0, filter, 0);
+        link(&mut graph, filter, 0, processor, 1);
+        link(&mut graph, processor, 0, viewer, 0);
         let runs = |graph: &Graph<Nodes>, id| Plan::new(graph, false).steps.iter().any(|s| s.id == id);
-        assert!(runs(&graph, spectrum) && runs(&graph, viewer), "it shows the spectra");
-        if let Some(Nodes::ContinuousViewer(v)) = graph.get_mut(viewer).map(|e| &mut e.node) {
-            v.spectrum = false;
-        }
-        assert!(!runs(&graph, viewer), "the spectra are all it's given, and it doesn't need them");
-        assert!(!runs(&graph, spectrum), "so nothing needs them");
+        alarms(&mut graph, processor, &[lfp]);
+        assert!(runs(&graph, filter) && runs(&graph, processor), "an alarm watches the LFP");
+        alarms(&mut graph, processor, &[]);
+        assert!(!runs(&graph, processor), "the LFP is all it's given, and it doesn't need it");
+        assert!(!runs(&graph, filter), "so nothing needs the filter");
         assert!(runs(&graph, board), "which needn't stop a source");
     }
 }

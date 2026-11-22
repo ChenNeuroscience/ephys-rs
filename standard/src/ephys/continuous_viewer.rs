@@ -1,7 +1,6 @@
 //! The Continuous Data Viewer shows scrolling traces of continuous data, band-passed or not. Each channel has a row of
-//! fixed height (the rows scroll), with a y axis at the chosen scale. Beside each row is the channel's spectrum over a
-//! band of interest, from a Spectrum node, which only runs while the spectrum is shown (see
-//! `Node::evaluate_tree_shake`). Time runs along the bottom, below the last channel.
+//! fixed height (the rows scroll), with a y axis at the chosen scale. Time runs along the bottom, below the last
+//! channel.
 //!
 //! Each pass adds its samples to a few seconds' worth for each channel shown, kept as the lowest and highest sample in
 //! each of the view's columns (so spikes show however far it's zoomed out).
@@ -27,7 +26,6 @@ use crate::standard::auto_detect::{Detect, auto_detect_ui};
 use crate::standard::ephys::reference::{
     Computation, Method, Reference, SetReference, format_channels, parse_channels, reference_colour,
 };
-use crate::standard::ephys::spectrum::{Spectra, SpectraBuffer};
 use crate::standard::ephys::{ChannelSelection, Continuous, ContinuousBuffer, SetChannelSelection};
 use crate::standard::plots;
 use crate::standard::plots::axis_ui;
@@ -42,8 +40,6 @@ use ephys_rs::gui::widgets::{Icon, small_toggle_button};
 
 /// Columns across the view.
 const COLUMNS: usize = 1200;
-/// The spectrum's column's width.
-const SPECTRUM_WIDTH: f32 = 160.0;
 /// The width of a row's y axis's labels and ticks.
 const AXIS_WIDTH: f32 = 44.0;
 
@@ -56,13 +52,11 @@ pub struct ContinuousViewer {
     pub scale_uv: f32,
     /// Each row's height, in points.
     pub row_height: f32,
-    /// Whether to show each channel's spectrum (from a Spectrum node).
-    pub spectrum: bool,
 }
 
 impl Default for ContinuousViewer {
     fn default() -> Self {
-        ContinuousViewer { span: 2.0, scale_uv: 200.0, row_height: 40.0, spectrum: true }
+        ContinuousViewer { span: 2.0, scale_uv: 200.0, row_height: 40.0 }
     }
 }
 
@@ -165,7 +159,7 @@ fn extremes(values: impl Iterator<Item = f32>) -> (f32, f32) {
     values.fold((f32::INFINITY, f32::NEG_INFINITY), |(low, high), x| (low.min(x), high.max(x)))
 }
 
-/// What a pass sends the window: the columns filled since the last (see `Traces::update`), and the latest spectra.
+/// What a pass sends the window: the columns filled since the last (see `Traces::update`).
 /// Every one delivered is taken, in order (see `TracesDisplay::apply`), so the window keeps the traces itself: a pass
 /// sends only what's new. One that can't be delivered (the GUI held up) isn't sent again: the window shows a gap.
 #[derive(Default)]
@@ -180,11 +174,9 @@ pub struct TracesUpdate {
     /// For each row (the channels shown, then the references), `count` columns' lowest and highest.
     lows: Vec<f32>,
     highs: Vec<f32>,
-    spectra: Option<SpectraBuffer>,
 }
 
-/// The traces as the window has them (from the passes' updates), round a ring as the passes keep them, and the
-/// spectra.
+/// The traces as the window has them (from the passes' updates), round a ring as the passes keep them.
 #[derive(Default)]
 pub struct TracesDisplay {
     first: usize,
@@ -200,8 +192,6 @@ pub struct TracesDisplay {
     column_seconds: f64,
     lows: Vec<f32>,
     highs: Vec<f32>,
-    /// Each channel's spectrum, if it's being worked out.
-    spectra: Option<SpectraBuffer>,
     /// The number of the next column it expects, and whether it's been sent anything.
     next: u64,
     received: bool,
@@ -242,17 +232,6 @@ impl TracesDisplay {
         // The newest's just before the next, so the oldest's at the next's place, round the ring.
         self.oldest = (self.next % COLUMNS as u64) as usize;
         self.column_seconds = update.column_seconds;
-        match (&update.spectra, &mut self.spectra) {
-            (Some(sent), Some(kept)) => {
-                kept.power.clone_from(&sent.power);
-                kept.done.clone_from(&sent.done);
-                kept.bins = sent.bins;
-            }
-            (sent, kept) => {
-                *kept =
-                    sent.as_ref().map(|s| SpectraBuffer { power: s.power.clone(), done: s.done.clone(), bins: s.bins })
-            }
-        }
         self.received = true;
     }
 }
@@ -261,7 +240,6 @@ impl TracesDisplay {
 struct Rows<'a> {
     display: &'a TracesDisplay,
     stream: Continuous,
-    spectra: Option<(&'a SpectraBuffer, Spectra)>,
     reference: Option<&'a Reference>,
     /// Whether the app's in advanced mode, where the Reference's settings can be got to.
     advanced: bool,
@@ -271,7 +249,6 @@ struct Rows<'a> {
 
 ephys_rs::ports! {
     continuous: DataStreamIn<Continuous>,
-    spectra: DataStreamIn<Spectra>,
     reference: DataStreamIn<Continuous>,
     // The viewer reads and sets a Continuous Gain's gains, a Channel Selector's selection and a Reference's
     // settings.
@@ -293,19 +270,15 @@ impl<E: PortEdges> Node<E> for ContinuousViewer {
     const INFO: NodeInfo = NodeInfo {
         name: "Continuous Data Viewer",
         category: Category::Visualisation,
-        description: "Scrolling traces of continuous data, one row per channel, each with its spectrum over a band \
-                      (theta, say). Sets a Continuous Gain's gains, a Channel Selector's channels and a Reference's \
-                      reference channels.",
+        description: "Scrolling traces of continuous data, one row per channel. Sets a Continuous Gain's gains, a \
+                      Channel Selector's channels and a Reference's reference channels.",
     };
     const WINDOW_SIZE: [f32; 2] = [820.0, 520.0];
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
-    /// The spectra only while they're shown: otherwise, the Spectrum node needn't run at all. It runs while it's
-    /// given something it needs.
+    /// Only while it's given something.
     fn evaluate_tree_shake(&self, inputs: &[bool], _outputs: &[bool], _recording: bool) -> TreeShake {
-        let needs: Vec<bool> = (0..inputs.len()).map(|input| input != DataStreamIn::spectra || self.spectrum).collect();
-        let given = inputs.iter().zip(&needs).any(|(&used, &needed)| used && needed);
-        TreeShake { runs: given, needs }
+        TreeShake::needing_all(inputs.contains(&true), inputs.len())
     }
 
     fn output_streams(&self, _inputs: &DataStreamIn) -> NoPorts {
@@ -338,22 +311,10 @@ impl<E: PortEdges> Node<E> for ContinuousViewer {
         traces.reshape((first, shown, count, per_column));
         traces.add(input, first, references);
         let column_seconds = per_column as f64 / rate as f64;
-        let spectra = inputs.spectra.filter(|_| self.spectrum);
         // What the window hasn't had: if there's no buffer to send it in (the GUI's held up), it waits for the next.
         let pool = pass.shared::<Pool<TracesUpdate>>();
         if let Some(mut update) = pool.empty() {
             traces.update(&mut update, column_seconds);
-            match (spectra, &mut update.spectra) {
-                (Some(spectra), Some(sent)) => {
-                    sent.power.clone_from(&spectra.power);
-                    sent.done.clone_from(&spectra.done);
-                    sent.bins = spectra.bins;
-                }
-                (spectra, sent) => {
-                    *sent =
-                        spectra.map(|s| SpectraBuffer { power: s.power.clone(), done: s.done.clone(), bins: s.bins })
-                }
-            }
             pool.send(update);
         }
     }
@@ -392,10 +353,6 @@ impl<E: PortEdges> Node<E> for ContinuousViewer {
             plots::unconnected(ui, context.theme, &message);
             return;
         };
-        let spectra = match (&display.spectra, inputs.spectra) {
-            (Some(buffer), Some(stream)) => Some((buffer, stream)),
-            _ => None,
-        };
         let advanced = context.advanced();
         let theme = context.theme;
         let mut settings =
@@ -403,7 +360,6 @@ impl<E: PortEdges> Node<E> for ContinuousViewer {
         let rows = Rows {
             display,
             stream,
-            spectra,
             reference: reference.as_ref(),
             advanced,
             selection_settings: advanced.then_some(&mut settings),
@@ -449,7 +405,7 @@ impl ContinuousViewer {
         egui::DragValue::new(&mut self.scale_uv).range(10.0..=5000.0).speed(2.0).prefix("±").suffix(" µV")
     }
 
-    /// The span, scale and rows' height, the spectrum, and (if they're connected) the gains and the reference, which
+    /// The span, scale and rows' height, and (if they're connected) the gains and the reference, which
     /// can't be changed while a selection's `applied`: it can't be told from what's shown.
     fn toolbar<E: PortEdges>(
         &mut self,
@@ -492,21 +448,12 @@ impl ContinuousViewer {
                         }
                     });
                 }
-                let tip = match context.data_stream_in::<DataStreamIn>().spectra {
-                    Some(s) => format!("Show each channel's spectrum, {}", s.summary()),
-                    _ => "Show each channel's spectrum: connect a Spectrum node's".into(),
-                };
-                let spectrum = &mut self.spectrum;
-                context.node_toolbar_buttons(ui, &mut |ui| {
-                    if small_toggle_button(ui, Icon::Spectrum, "Spectrum", &tip, *spectrum).clicked() {
-                        *spectrum = !*spectrum;
-                    }
-                });
+                context.node_toolbar_buttons(ui, &mut |_| {});
             });
         });
     }
 
-    /// A row for each channel shown, at the row height: its trace, and its spectrum; with its number to click to select
+    /// A row for each channel shown, at the row height, with its trace; with its number to click to select
     /// it if there's a selection to make, and left of that an R for each reference if there are any. Above the first
     /// channel, scrolling with them, are what heads those columns, and the selection, if there's one. Returns any
     /// change to the references.
@@ -518,7 +465,7 @@ impl ContinuousViewer {
         mut selection: Option<&mut ChannelSelection>,
         locked: bool,
     ) -> Option<ReferenceEdit> {
-        let Rows { display, stream, spectra, reference, advanced, mut selection_settings } = rows_of;
+        let Rows { display, stream, reference, advanced, mut selection_settings } = rows_of;
         let references = display.references;
         let area = ui.available_rect_before_wrap();
         ui.painter().rect_filled(area, 2.0, theme.surface_sunken);
@@ -590,12 +537,10 @@ impl ContinuousViewer {
             ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| {
                 ui.skip_ahead_auto_ids(first);
                 let (rect, width) = (body, body.width());
-                let spectra = spectra.filter(|_| self.spectrum && width > SPECTRUM_WIDTH * 2.0);
-                let spectrum = if spectra.is_some() { SPECTRUM_WIDTH } else { 0.0 };
                 let painter = ui.painter().clone();
                 // Up to now, with room for the future at the right (see `time_axis`).
                 let future = 1.0 + ephys_rs::time_axis::FUTURE as f32;
-                let column = (width - label - spectrum) / (COLUMNS as f32 * future);
+                let column = (width - label) / (COLUMNS as f32 * future);
                 // The columns filled so far are the last of each row's.
                 let start = COLUMNS - display.columns;
                 if viewport.max.y > channels_bottom {
@@ -603,7 +548,7 @@ impl ContinuousViewer {
                     let top = rect.top() + channels_bottom;
                     let axis = Rect::from_min_max(
                         egui::pos2(rect.left() + label, top),
-                        egui::pos2(rect.right() - spectrum, top + TIME_AXIS_HEIGHT),
+                        egui::pos2(rect.right(), top + TIME_AXIS_HEIGHT),
                     );
                     time_axis_ui(&painter, axis, ephys_rs::time_axis::window(0.0, span), theme);
                 }
@@ -616,7 +561,7 @@ impl ContinuousViewer {
                     }
                     let centre = top + height * 0.5;
                     let y = |uv: f32| centre - (uv / self.scale_uv).clamp(-1.0, 1.0) * height * 0.5;
-                    let plot = egui::Rangef::new(rect.left() + label, row.right() - spectrum);
+                    let plot = egui::Rangef::new(rect.left() + label, row.right());
                     axis_ui(&painter, plot, top, height, self.scale_uv, theme);
                     // Row `i`'s trace: each column's whole range (a line through dense data: see `dense_line`).
                     let trace = |i: usize, colour: egui::Color32| {
@@ -726,11 +671,6 @@ impl ContinuousViewer {
                     let unselected = selected.as_ref().is_some_and(|t| !t.contains(&number));
                     let colour = if unselected { theme.text_primary.gamma_multiply(0.3) } else { theme.text_primary };
                     trace(i, colour);
-
-                    if let Some((buffer, stream)) = spectra {
-                        let place = Rect::from_min_max(egui::pos2(row.right() - spectrum, top), row.max).shrink(2.0);
-                        spectrum_ui(&painter, place, buffer, stream, i, theme);
-                    }
                 }
             });
         });
@@ -744,51 +684,6 @@ impl ContinuousViewer {
             set_selected(selection, &selected, stream.channels);
         }
         reference_toggled
-    }
-}
-
-/// A channel's spectrum over the band, scaled to its biggest bin, with the peak's frequency.
-fn spectrum_ui(
-    painter: &egui::Painter,
-    place: Rect,
-    spectra: &SpectraBuffer,
-    stream: Spectra,
-    i: usize,
-    theme: &ephys_rs::theme::Colours,
-) {
-    painter.rect_filled(place, 2.0, theme.surface_raised.gamma_multiply(0.5));
-    let bins = spectra.bins;
-    if !spectra.done.get(i).copied().unwrap_or(false) || bins == 0 || spectra.power.len() < (i + 1) * bins {
-        if place.height() >= 12.0 {
-            painter.text(place.center(), Align2::CENTER_CENTER, "…", FontId::proportional(10.0), theme.text_disabled);
-        }
-        return;
-    }
-    let power = &spectra.power[i * bins..(i + 1) * bins];
-    let (peak, &most) = power.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).unwrap();
-    let (first_hz, step) = (stream.first_hz, stream.step_hz);
-    let span = (stream.last_hz() - first_hz).max(0.1);
-    let x = |hz: f32| place.left() + ((hz - first_hz) / span).clamp(0.0, 1.0) * place.width();
-    let y = |p: f32| place.bottom() - if most > 0.0 { p / most } else { 0.0 } * place.height();
-    let colour = theme.text_primary;
-    let points: Vec<Pos2> =
-        power.iter().enumerate().map(|(b, &p)| egui::pos2(x(first_hz + b as f32 * step), y(p))).collect();
-    // Filled beneath (as quads: the outline needn't be convex).
-    for pair in points.windows(2) {
-        let quad = vec![pair[0], pair[1], egui::pos2(pair[1].x, place.bottom()), egui::pos2(pair[0].x, place.bottom())];
-        painter.add(Shape::convex_polygon(quad, colour.gamma_multiply(0.25), Stroke::NONE));
-    }
-    painter.add(Shape::line(points, Stroke::new(1.0, colour)));
-    let peak_hz = first_hz + peak as f32 * step;
-    painter.vline(x(peak_hz), place.y_range(), Stroke::new(1.0, theme.text_secondary.gamma_multiply(0.5)));
-    if place.height() >= 10.0 {
-        painter.text(
-            place.right_top() + egui::vec2(-3.0, 1.0),
-            Align2::RIGHT_TOP,
-            format!("{peak_hz:.1} Hz"),
-            FontId::monospace(9.0),
-            theme.text_primary,
-        );
     }
 }
 
@@ -1217,14 +1112,7 @@ mod tests {
         let stream = Continuous { channels: 3, sample_rate: 30000.0 };
         let mut harness = egui_kittest::Harness::builder().with_size([700.0, 280.0]).wgpu().build_ui(|ui| {
             let viewer = ContinuousViewer { row_height: 60.0, ..Default::default() };
-            let rows = Rows {
-                display: &display,
-                stream,
-                spectra: None,
-                reference: None,
-                advanced: true,
-                selection_settings: None,
-            };
+            let rows = Rows { display: &display, stream, reference: None, advanced: true, selection_settings: None };
             viewer.rows_ui(ui, &THEMES[0].colours, rows, None, false);
         });
         THEMES[0].apply(&harness.ctx);
@@ -1248,7 +1136,6 @@ mod tests {
             let rows = Rows {
                 display: &display,
                 stream,
-                spectra: None,
                 reference: Some(&reference),
                 advanced: true,
                 selection_settings: None,
@@ -1274,7 +1161,6 @@ mod tests {
             let rows = Rows {
                 display: &display,
                 stream,
-                spectra: None,
                 reference: Some(&reference),
                 advanced: true,
                 selection_settings: None,
@@ -1304,14 +1190,8 @@ mod tests {
         let mut harness = egui_kittest::Harness::builder().with_size([400.0, 100.0]).wgpu().build_ui_state(
             move |ui, selection: &mut ChannelSelection| {
                 let viewer = ContinuousViewer::default();
-                let rows = Rows {
-                    display: &display,
-                    stream,
-                    spectra: None,
-                    reference: None,
-                    advanced: true,
-                    selection_settings: None,
-                };
+                let rows =
+                    Rows { display: &display, stream, reference: None, advanced: true, selection_settings: None };
                 let colours = &crate::standard::themes::THEMES[0].colours;
                 viewer.rows_ui(ui, colours, rows, Some(selection), false);
             },
@@ -1345,7 +1225,6 @@ mod tests {
                 let rows = Rows {
                     display: &display,
                     stream,
-                    spectra: None,
                     reference: Some(&reference),
                     advanced: true,
                     selection_settings: Some(&mut settings),
@@ -1449,7 +1328,6 @@ mod tests {
                 let rows = Rows {
                     display: &display,
                     stream,
-                    spectra: None,
                     reference: reference_shown,
                     advanced: false,
                     selection_settings: None,
@@ -1522,7 +1400,6 @@ mod tests {
             let rows = Rows {
                 display: &display,
                 stream,
-                spectra: None,
                 reference: Some(&reference),
                 advanced: true,
                 selection_settings: None,

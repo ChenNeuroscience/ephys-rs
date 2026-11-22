@@ -115,8 +115,9 @@ starting to record leaves the gains as they were. Its result is an edit like any
 
 > **Processing.** In: `continuous`. Out: `spectra`.
 
-Each channel's power spectrum over a **Band** of interest (theta, 4–12 Hz, to begin with), updated every few passes,
-for a Continuous Data Viewer to show beside its traces. It only runs while the viewer's showing them.
+Each channel's power spectrum over a **Band** of interest (theta, 4–12 Hz, to begin with), updated every few passes.
+It only runs while something needs its output. No standard viewer shows spectra: for each channel's frequency and
+phase, use a [Hilbert Transform](#hilbert-transform) and a [Phase Viewer](#phase-viewer).
 
 ## Hilbert Transform
 
@@ -133,7 +134,7 @@ rates it's capped, and the node warns that it's only accurate above a higher fre
 
 ## Continuous Data Viewer
 
-> **Viewer.** In: `continuous`, `spectra` (from a Spectrum), `reference` (from a Reference's `reference` output).
+> **Viewer.** In: `continuous`, `reference` (from a Reference's `reference` output).
 > ◇ `gains` (a Continuous Gain's), ◇ `selection` (a Channel Selector's), ◇ `reference` (a Reference's).
 
 ![Traces, with the references in rows of their own](../../tests/snapshots/continuous_viewer_rows.png)

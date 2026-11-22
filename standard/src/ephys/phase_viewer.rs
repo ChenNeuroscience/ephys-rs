@@ -196,7 +196,9 @@ impl<E: PortEdges> Node<E> for PhaseViewer {
             let side = area.height().min(area.width() * 0.45).max(120.0);
             polar_ui(ui, &display, side, theme);
             ui.add_space(12.0);
-            egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| ui.vertical(|ui| table_ui(ui, &display, theme)));
+            egui::ScrollArea::vertical()
+                .auto_shrink(false)
+                .show(ui, |ui| ui.vertical(|ui| table_ui(ui, &display, theme)));
         });
     }
 

@@ -232,7 +232,7 @@ fn make_tour() {
     tour.harness.run_steps(3);
     tour.only(lfp);
     tour.wait(2.0);
-    tour.shot("LFP traces and theta spectra");
+    tour.shot("LFP traces");
     tour.harness.event(egui::Event::PointerMoved(egui::pos2(67.0, 190.0)));
     tour.wait(1.0);
     tour.shot("Pick reference channels per row");

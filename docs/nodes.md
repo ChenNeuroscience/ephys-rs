@@ -140,8 +140,8 @@ DataStreamOut { spikes: &mut out }, ..)`.
 - **The tree shake: whether it runs, and what it needs.** It's up to the node: `evaluate_tree_shake(inputs, outputs,
   recording)`, given which of its inputs have something running into them, which of its outputs have something running
   that needs them, and whether the snapshot's recording, as well as its settings (`self`), says whether it runs, and which inputs it needs (a `TreeShake`). An input it doesn't need isn't passed,
-  and doesn't count as in use for what feeds it (the Continuous Data Viewer's spectrum, switched off, stops the
-  [Spectrum](../standard/src/ephys/spectrum.rs) node). The plan starts with everything that can run running
+  and doesn't count as in use for what feeds it (an [Alarm Processor](../standard/src/alarms/processor.rs) with no
+  LFP alarm on stops what feeds its LFP input). The plan starts with everything that can run running
   and needing everything, asks each node in turn, upstream first, and whenever one's answer changes, asks its
   neighbours again, if what they're told has changed, until nothing does. So the answer must depend only on what it's
   told and its settings; and if more in use never makes a node run or need less, it always settles. A node whose

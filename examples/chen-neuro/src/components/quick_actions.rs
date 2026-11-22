@@ -169,7 +169,7 @@ fn real_camera() -> camera::Source {
 /// Board → Reference → Band-pass (spikes' band) → Spike Detector → Spike Gain → Spike Viewer (setting the detector's
 /// thresholds and the gain's gains); Board → Channel Selector → Band-pass (LFP's band) → Continuous Data Viewer (choosing the
 /// selector's channels, which only the LFP branch is, the Continuous Gain's gains, and the spikes' Reference's
-/// reference channels, and showing the reference), with a Spectrum of it too; the board's digital inputs → TTL Viewer;
+/// reference channels, and showing the reference); the board's digital inputs → TTL Viewer;
 /// Camera → Position Detector → Tracker View (setting the camera's and detector's settings). Write LTX records the
 /// spikes (at their gains), the LFP branch's data as EEG (the channels selected, band-passed, downsampled to 5 kHz,
 /// through a Continuous Gain), the positions (with the detector's settings), the digital inputs and the timing LED, if
@@ -216,11 +216,8 @@ fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
         }
     };
     change.link((selector, DataStreamOut, 0), (lfp, DataStreamIn, 0));
-    let spectrum = change.upsert(NodeType::Spectrum, Some(lfp));
-    change.link((lfp, DataStreamOut, 0), (spectrum, DataStreamIn, 0));
-    let continuous_viewer = change.upsert(NodeType::ContinuousViewer, Some(spectrum));
+    let continuous_viewer = change.upsert(NodeType::ContinuousViewer, Some(lfp));
     change.link((lfp, DataStreamOut, 0), (continuous_viewer, DataStreamIn, 0));
-    change.link((spectrum, DataStreamOut, 0), (continuous_viewer, DataStreamIn, 1));
     change.link((continuous_viewer, ValInCmdOut, 1), (selector, ValOutCmdIn, 0));
 
     // Digital inputs.
@@ -255,7 +252,7 @@ fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
     change.link((continuous_gain, DataStreamOut, 0), (ltx, DataStreamIn, 1));
     change.link((continuous_viewer, ValInCmdOut, 0), (continuous_gain, ValOutCmdIn, 0));
     change.link((continuous_viewer, ValInCmdOut, 2), (reference, ValOutCmdIn, 0));
-    change.link((reference, DataStreamOut, 1), (continuous_viewer, DataStreamIn, 2));
+    change.link((reference, DataStreamOut, 1), (continuous_viewer, DataStreamIn, 1));
     change.link((positions, DataStreamOut, 0), (ltx, DataStreamIn, 2));
     change.link((board, DataStreamOut, 1), (ltx, DataStreamIn, 3));
     change.link((positions, DataStreamOut, 1), (ltx, DataStreamIn, 4));
@@ -546,7 +543,7 @@ mod tests {
         assert_eq!(controls(0), Some(named("Continuous Gain")));
         assert_eq!(controls(1), Some(selector));
         assert_eq!(controls(2), Some(named("Reference")));
-        let reference_shown = PortAddress { node: continuous_viewer, role: DataStreamIn, port_idx: 2 };
+        let reference_shown = PortAddress { node: continuous_viewer, role: DataStreamIn, port_idx: 1 };
         assert_eq!(
             graph.edge_into(reference_shown).map(|e| (e.from.node, e.from.port_idx)),
             Some((named("Reference"), 1))

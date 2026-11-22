@@ -1,10 +1,9 @@
-//! The Spectrum: each channel's power spectrum over a band of interest (theta, 4–12 Hz, to begin with), for the LFP
-//! Viewer to show beside its traces.
+//! The Spectrum: each channel's power spectrum over a band of interest (theta, 4–12 Hz, to begin with). No standard
+//! viewer shows spectra now (the Phase Viewer shows each channel's frequency instead), so this is for a build's own.
 //!
 //! It keeps about four seconds of each channel, averaged down to about 1 kHz, and works out a few channels' spectra
 //! each pass (by real FFT, Hann windowed), so each is fresh every few passes, smoothed over the last few. Each pass
-//! passes on the latest of them all. It only runs while something needs them (see `Node::evaluate_tree_shake`): the LFP
-//! Viewer, with its spectrum on.
+//! passes on the latest of them all. It only runs while something needs them (see `Node::evaluate_tree_shake`).
 
 use ephys_rs::engine::TreeShake;
 use std::ops::Range;
@@ -131,8 +130,8 @@ impl<E: PortEdges> Node<E> for Spectrum {
     const INFO: NodeInfo = NodeInfo {
         name: "Spectrum",
         category: Category::Processing,
-        description: "Each channel's power spectrum over a band (theta, say), for the Continuous Data Viewer to show: worked out \
-                      only while something needs it.",
+        description: "Each channel's power spectrum over a band (theta, say), worked out only while something needs \
+                      it.",
     };
 
     /// Only while it's given something, and something needs what it makes.
