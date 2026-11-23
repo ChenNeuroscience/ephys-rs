@@ -42,8 +42,26 @@ impl EdgeType for Continuous {
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Events {
     pub lines: u32,
-    /// The rate of the samples the events are timed by.
-    pub sample_rate: f32,
+    /// What the events are timed by (see `Event::at`).
+    pub clock: Clock,
+}
+
+/// A stream of events says what its events' times are counted in: ticks of its source's clock, which come at a rate
+/// (a board's samples), or seconds by its source's own clock (a camera's timestamps, a remote computer's).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Clock {
+    Ticks { rate: f32 },
+    Seconds,
+}
+
+impl Clock {
+    /// A time on this clock (`at`), in seconds.
+    pub fn seconds(self, at: f64) -> f64 {
+        match self {
+            Clock::Ticks { rate } => at / rate.max(f32::MIN_POSITIVE) as f64,
+            Clock::Seconds => at,
+        }
+    }
 }
 
 impl EdgeType for Events {
@@ -216,27 +234,30 @@ impl DataStreamType for ComplexContinuous {
     }
 }
 
-/// A digital event: a line going high or low, at a sample within the pass.
+/// A digital event: a line going high or low.
 #[derive(Clone, Copy, Debug)]
 pub struct Event {
-    pub sample: u32,
+    /// When the line changed, on the stream's clock (`Events::clock`): a tick's number (whole, and exact as an `f64`
+    /// for any time a run could take), or seconds.
+    pub at: f64,
     pub line: u8,
     pub high: bool,
-    /// When it happened, in seconds by its source's own clock, if it has one: otherwise it's timed by its sample.
-    pub time: Option<f64>,
 }
 
+/// Events, in order, and the stretch of the stream's clock they cover, from `start` up to `end`: no line changed in
+/// it but as `events` say. The next buffer's stretch starts at `end`, unless some was lost between them: a gap. A
+/// source timed in seconds only knows as far as its last news, so its stretch can be empty.
 pub struct EventsBuffer {
     pub events: Vec<Event>,
-    /// How many samples the pass covers (for timing events across passes).
-    pub pass_samples: usize,
+    pub start: f64,
+    pub end: f64,
 }
 
 impl DataStreamType for Events {
     type Buffer = EventsBuffer;
 
     fn buffer(&self, _duration: f64) -> EventsBuffer {
-        EventsBuffer { events: Vec::with_capacity(64 * self.lines.max(1) as usize), pass_samples: 0 }
+        EventsBuffer { events: Vec::with_capacity(64 * self.lines.max(1) as usize), start: 0.0, end: 0.0 }
     }
 
     fn bytes(buffer: &EventsBuffer) -> usize {
@@ -245,12 +266,12 @@ impl DataStreamType for Events {
 
     fn copy(from: &EventsBuffer, to: &mut EventsBuffer) {
         to.events.clone_from(&from.events);
-        to.pass_samples = from.pass_samples;
+        (to.start, to.end) = (from.start, from.end);
     }
 
     fn empty(buffer: &mut EventsBuffer) {
         buffer.events.clear();
-        buffer.pass_samples = 0;
+        buffer.start = buffer.end;
     }
 }
 

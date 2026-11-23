@@ -42,7 +42,7 @@ use super::{
     Files, OnFinished, Status, Writing, after_recording, location_summary, recording_path, show_status, status_ui,
 };
 use crate::standard::ephys::reference::parse_channels;
-use crate::standard::ephys::{ChannelSelection, Continuous, Events};
+use crate::standard::ephys::{ChannelSelection, Clock, Continuous, Events};
 use crate::standard::logs::LogLines;
 use crate::standard::other::run_command::{FileInput, ProcessFiles};
 use crate::standard::pool::Pool;
@@ -560,9 +560,10 @@ struct LtxFiles {
     /// The spikes' clock's number for the first sample recorded (see `SpikesBuffer::start`), which spikes' times count
     /// from.
     spike_origin: Option<u64>,
-    /// Samples of the events' passes so far.
-    event_samples: u64,
-    position_event_samples: u64,
+    /// The events' and the timing LED's clocks' times for the start of what's recorded (see `EventsBuffer::start`),
+    /// which their times count from, if they're timed by ticks. (Those timed in seconds count from `first_position`.)
+    event_origin: Option<f64>,
+    position_event_origin: Option<f64>,
     /// The source's time of the first position, which positions' times, the timing LED's and log lines' count from.
     first_position: Option<f64>,
     pos: Option<Pos>,
@@ -680,8 +681,8 @@ impl LtxFiles {
             tetrodes,
             egf,
             spike_origin: None,
-            event_samples: 0,
-            position_event_samples: 0,
+            event_origin: None,
+            position_event_origin: None,
             first_position: None,
             pos,
             ttl,
@@ -830,27 +831,30 @@ impl Files<Chunk> for LtxFiles {
 
         if let (Some(ttl), Some(events), Some(buffer)) = (&mut self.ttl, self.streams.events, chunk.inputs.events.get())
         {
+            let origin = *self.event_origin.get_or_insert(buffer.start);
             for event in &buffer.events {
-                let seconds = (self.event_samples + event.sample as u64) as f64 / events.sample_rate as f64;
+                let seconds = events.clock.seconds(event.at - origin);
                 let line = format!("ttl_{} {seconds} {}\r\n", event.line + 1, event.high as u8);
                 ttl.data(line.as_bytes())?;
                 bytes += line.len() as u64;
             }
-            self.event_samples += buffer.pass_samples as u64;
         }
 
         let position_events = (&mut self.pos_ttl, self.streams.pos_ttl, chunk.inputs.pos_ttl.get());
         if let (Some(ttl), Some(events), Some(buffer)) = position_events {
             for event in &buffer.events {
-                let seconds = match event.time {
-                    Some(time) => time - *self.first_position.get_or_insert(time),
-                    None => (self.position_event_samples + event.sample as u64) as f64 / events.sample_rate as f64,
+                // In seconds by the camera's (or VR computer's) clock, as the positions are, and from the same time;
+                // or in ticks, from the start of what's recorded.
+                let seconds = match events.clock {
+                    Clock::Seconds => event.at - *self.first_position.get_or_insert(event.at),
+                    Clock::Ticks { .. } => {
+                        events.clock.seconds(event.at - *self.position_event_origin.get_or_insert(buffer.start))
+                    }
                 };
                 let line = format!("ttl_{} {seconds:.6} {}\r\n", event.line + 1, event.high as u8);
                 ttl.data(line.as_bytes())?;
                 bytes += line.len() as u64;
             }
-            self.position_event_samples += buffer.pass_samples as u64;
         }
 
         if let (Some(log), Some(lines)) = (&mut self.log, chunk.inputs.log.get()) {
@@ -937,11 +941,11 @@ mod tests {
     fn writes_ups_and_downs_saying_which_is_which_and_the_timing_led_by_the_positions_clock() {
         let dir = std::env::temp_dir().join(format!("ephys-rs-ltx-ttl-{}", std::process::id()));
         let base = dir.join("test");
-        let events = Events { lines: 8, sample_rate: 1000.0 };
+        let events = Events { lines: 8, clock: Clock::Ticks { rate: 1000.0 } };
         let streams = DataStreamIn {
             positions: Some(Positions { fps: 50.0, width: 640, height: 480, source: CAMERA_TRACKER }),
             events: Some(events),
-            pos_ttl: Some(Events { lines: 1, sample_rate: 50.0 }),
+            pos_ttl: Some(Events { lines: 1, clock: Clock::Seconds }),
             ..Default::default()
         };
         let timing_led = TimingLed { enabled: true, center: [600.0, 30.0], radius: 8.0, ..Default::default() };
@@ -956,20 +960,21 @@ mod tests {
             timing_led: Some(true),
             pixels_per_metre: f32::NAN,
         };
-        let event = |sample, line, high, time| Event { sample, line, high, time };
+        let event = |at, line, high| Event { at, line, high };
         // Positions start at 100 s by the camera's clock; the LED comes on 0.25 s later, and goes off 0.3 s after that.
         let mut chunk = Chunk::new(streams);
         let positions = chunk.inputs.positions.give();
         positions.samples.push(sample(100.0));
         let events = chunk.inputs.events.give();
-        events.pass_samples = 20;
-        events.events.extend([event(10, 1, true, None), event(15, 1, false, None)]);
+        // Recorded from the board's sample 5000.
+        (events.start, events.end) = (5000.0, 5020.0);
+        events.events.extend([event(5010.0, 1, true), event(5015.0, 1, false)]);
         files.write(&chunk).unwrap();
         chunk.inputs.events.given = false;
         let positions = chunk.inputs.positions.give();
         positions.samples[0] = sample(100.25);
         let events = chunk.inputs.pos_ttl.give();
-        events.events.extend([event(0, 0, true, Some(100.25)), event(0, 0, false, Some(100.55))]);
+        events.events.extend([event(100.25, 0, true), event(100.55, 0, false)]);
         files.write(&chunk).unwrap();
         files.finish().unwrap();
 
@@ -1001,7 +1006,7 @@ mod tests {
         let base = dir.join("test");
         let streams = DataStreamIn {
             positions: Some(Positions { fps: 50.0, width: 1000, height: 1000, source: "vr_computer" }),
-            pos_ttl: Some(Events { lines: 1, sample_rate: 1000.0 }),
+            pos_ttl: Some(Events { lines: 1, clock: Clock::Seconds }),
             log: Some(LogLines { width: 32 }),
             ..Default::default()
         };
@@ -1021,7 +1026,7 @@ mod tests {
             pixels_per_metre: f32::NAN,
         });
         let events = chunk.inputs.pos_ttl.give();
-        events.events.push(Event { sample: 0, line: 0, high: true, time: Some(2.0) });
+        events.events.push(Event { at: 2.0, line: 0, high: true });
         let log = chunk.inputs.log.give();
         assert!(log.push(1.75, "first line") && log.push(4.0, "second"));
         files.write(&chunk).unwrap();

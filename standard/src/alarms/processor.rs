@@ -530,26 +530,26 @@ mod tests {
 
     #[test]
     fn ttls_are_counted_by_their_ups_over_the_period() {
-        let stream = Events { lines: 2, sample_rate: 1000.0 };
+        let stream = Events { lines: 2, clock: crate::standard::ephys::Clock::Ticks { rate: 1000.0 } };
         let selection = Selection { together: true, ..Default::default() };
         let alarms = one(AlarmKind::TtlCount { low: 40.0, high: 60.0, selection }, 1.0);
         let mut run = Run::new(alarms, DataStreamIn { ttl: Some(stream), ..Default::default() });
-        let change = |high| Event { sample: 0, line: 0, high, time: None };
-        let events = EventsBuffer { events: vec![change(true), change(false)], pass_samples: 20 };
+        let change = |high| Event { at: 0.0, line: 0, high };
+        let events = EventsBuffer { events: vec![change(true), change(false)], start: 0.0, end: 20.0 };
         let state = run.run(Ttl(&events), 2.0);
         assert_eq!((state.phase, state.value), (Phase::Clear, 50.0), "a pass's up, and not its down");
         run.left_out(vec![0]);
-        let events = EventsBuffer { events: Vec::new(), pass_samples: 20 };
+        let events = EventsBuffer { events: Vec::new(), start: 20.0, end: 40.0 };
         assert_eq!(run.run(Ttl(&events), 0.02).phase, Phase::Alarm, "the other line has none");
     }
 
     #[test]
     fn a_ttl_up_alarm_follows_its_line_at_once() {
-        let stream = Events { lines: 2, sample_rate: 1000.0 };
+        let stream = Events { lines: 2, clock: crate::standard::ephys::Clock::Ticks { rate: 1000.0 } };
         let mut run =
             Run::new(one(AlarmKind::TtlUp { line: 1 }, 1.0), DataStreamIn { ttl: Some(stream), ..Default::default() });
-        let pass = |events: Vec<Event>| EventsBuffer { events, pass_samples: 20 };
-        let change = |line, high| Event { sample: 0, line, high, time: None };
+        let pass = |events: Vec<Event>| EventsBuffer { events, start: 0.0, end: 20.0 };
+        let change = |line, high| Event { at: 0.0, line, high };
         assert_eq!(run.run(Ttl(&pass(Vec::new())), 0.02).phase, Phase::Clear, "with no period to wait for");
         assert_eq!(run.run(Ttl(&pass(vec![change(0, true)])), 0.02).phase, Phase::Clear, "the other line");
         let state = run.run(Ttl(&pass(vec![change(1, true)])), 0.02);

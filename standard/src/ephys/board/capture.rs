@@ -287,14 +287,15 @@ fn capture(shared: &Shared, source: &Source, config: &Config, shape: Shape, pool
                     pool.fill(Samples::clear, |samples| {
                         let before = samples.len();
                         let decoded = board.decode(samples, &mut ttl)?;
-                        let at = samples.len() - decoded.samples;
                         for (i, &word) in ttl.iter().enumerate() {
                             let changed = (word ^ last_ttl) & mask;
                             for line in (0..lines).filter(|line| changed & (1 << line) != 0) {
                                 let events = &mut samples.events.events;
                                 if events.len() < events.capacity() {
                                     let high = word & (1 << line) != 0;
-                                    events.push(Event { sample: (at + i) as u32, line: line as u8, high, time: None });
+                                    // Numbered as the board numbers the sample.
+                                    let at = (decoded.first + i as u64) as f64;
+                                    events.push(Event { at, line: line as u8, high });
                                 } else {
                                     lost_events += 1;
                                 }
@@ -408,6 +409,7 @@ mod tests {
     use std::process::{Command, Stdio};
 
     use super::*;
+    use crate::standard::ephys::Clock;
     use crate::standard::ephys::board::{Bandwidth, Headstage};
 
     /// Takes from `capture`'s pool as passes do, for `seconds` or until `wanted` samples: how many, the layout,
@@ -430,7 +432,7 @@ mod tests {
                 for c in 0..taken.ephys.channels {
                     peak = taken.ephys.channel(c).iter().fold(peak, |m, v| m.max(v.abs()));
                 }
-                assert_eq!(taken.events.pass_samples, taken.len());
+                assert_eq!(taken.events.end - taken.events.start, taken.len() as f64);
                 capture.pool().give_back(taken);
             }
         }
@@ -443,7 +445,7 @@ mod tests {
             ephys: continuous(ephys),
             aux: continuous(aux),
             adc: continuous(8),
-            events: Events { lines: 8, sample_rate: rate },
+            events: Events { lines: 8, clock: Clock::Ticks { rate } },
         }
     }
 

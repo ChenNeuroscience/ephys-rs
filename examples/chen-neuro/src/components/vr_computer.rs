@@ -42,7 +42,7 @@ use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwapOption;
 
-use crate::standard::ephys::{Event, Events, EventsBuffer};
+use crate::standard::ephys::{self, Event, Events, EventsBuffer};
 use crate::standard::logs::{LogLines, LogLinesBuffer};
 use crate::standard::pool::Pool;
 use crate::standard::tracking::pipeline::Blob;
@@ -72,8 +72,6 @@ const TTL_CHANNELS_KEY: &str = "ttl_channels";
 const MOST_TTL_CHANNELS: u32 = 32;
 /// The frame the positions are declared in until there's a window.
 const FRAME_SIZE: u32 = 1000;
-/// The rate the TTLs are declared at, which only matters to what goes by their samples: they carry their times.
-const TTL_RATE: f64 = 1000.0;
 /// The most of each kind of message kept for the passes: any more are lost.
 const QUEUE: usize = 4096;
 /// The longest message: longer than this, and it isn't one.
@@ -197,7 +195,7 @@ impl Inbox {
                     return false;
                 }
                 let line = idx.get() - 1;
-                self.ttls.push_back(Event { sample: 0, line, high: value != 0, time: Some(time) });
+                self.ttls.push_back(Event { at: time, line, high: value != 0 });
             }
             Message::Log { time, line } => {
                 if self.logs.len() == QUEUE {
@@ -230,6 +228,10 @@ impl Inbox {
         let room = ttls.events.capacity() - ttls.events.len();
         let count = self.ttls.len().min(room);
         ttls.events.extend(self.ttls.drain(..count));
+        // As far as the VR computer's said: to its last TTL's time.
+        if let Some(last) = ttls.events.last() {
+            ttls.end = ttls.end.max(last.at);
+        }
         while !logs.is_full() {
             let Some((time, line)) = self.logs.pop_front() else { break };
             logs.push(time, &line);
@@ -556,7 +558,8 @@ impl<E: PortEdges> Node<E> for VrComputer {
         let [_, _, width, height] = window(&self.custom).and_then(|crop| crop.bounds()).unwrap_or([0.0; 4]);
         let frame = |size: f32| if size > 0.0 { size.ceil() as u32 } else { FRAME_SIZE };
         let positions = Positions { fps: self.fps, width: frame(width), height: frame(height), source: SOURCE };
-        let ttl = Events { lines: ttl_channels(&self.custom).unwrap_or(0), sample_rate: TTL_RATE as f32 };
+        // Timed by the VR computer's own clock.
+        let ttl = Events { lines: ttl_channels(&self.custom).unwrap_or(0), clock: ephys::Clock::Seconds };
         DataStreamOut { positions: Some(positions), pos_ttl: Some(ttl), log: Some(LogLines { width: self.log_width }) }
     }
 
@@ -632,7 +635,7 @@ impl<E: PortEdges> Node<E> for VrComputer {
         let DataStreamOut { positions, pos_ttl: ttls, log: logs } = outputs;
         positions.samples.clear();
         ttls.events.clear();
-        ttls.pass_samples = (pass.duration * TTL_RATE).round() as usize;
+        ttls.start = ttls.end;
         logs.clear();
         // If the thread's filing a message just then, what's there is left for the next pass; and while new settings
         // are on their way, for the passes that have them.
@@ -1011,7 +1014,7 @@ mod tests {
         wait(&|| shared.inbox.lock().unwrap().positions.len() == 1);
         assert_eq!(shared.status.lock().unwrap().messages, 2);
         let ttl = shared.inbox.lock().unwrap().ttls[0];
-        assert!(ttl.high && ttl.time == Some(7.0));
+        assert!(ttl.high && ttl.at == 7.0);
         // Its clone too, or the connection stays open.
         drop((stream, states));
         let (mut stream, _) = listener.accept().unwrap();

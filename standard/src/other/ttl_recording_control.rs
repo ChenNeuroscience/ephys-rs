@@ -169,12 +169,12 @@ mod tests {
     use ephys_rs::commands::Sent;
 
     fn event(line: u8, high: bool) -> Event {
-        Event { sample: 0, line, high, time: None }
+        Event { at: 0.0, line, high }
     }
 
     /// What a pass of `events` asks for, recording or not.
     fn asks(node: &TtlRecordingControl, events: Vec<Event>, recording: bool, seen: &mut Seen) -> Vec<bool> {
-        let buffer = EventsBuffer { events, pass_samples: 0 };
+        let buffer = EventsBuffer { events, start: 0.0, end: 0.0 };
         let mut pass = PassContext::<Edges>::new(0, 0.02);
         let shared = Pool::<Seen>::default();
         pass.shared = &shared;
@@ -213,7 +213,9 @@ mod tests {
     fn it_warns_of_a_line_its_events_dont_have() {
         let node = TtlRecordingControl { line: 3, ..Default::default() };
         assert_eq!(Node::<Edges>::warnings(&node, &DataStreamIn { events: None }), ["Connect events"]);
-        let events = |lines| DataStreamIn { events: Some(Events { lines, sample_rate: 1000.0 }) };
+        let events = |lines| DataStreamIn {
+            events: Some(Events { lines, clock: crate::standard::ephys::Clock::Ticks { rate: 1000.0 } }),
+        };
         assert_eq!(Node::<Edges>::warnings(&node, &events(2)), ["Its events have 2 lines: there's no line 3"]);
         assert!(Node::<Edges>::warnings(&node, &events(3)).is_empty());
     }

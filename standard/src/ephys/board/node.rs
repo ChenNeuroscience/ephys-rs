@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use super::capture::{self, Capture, Shape, State, Status};
 use super::{AUX_PER_HEADSTAGE, Bandwidth, BoardInfo, Config, Headstage, OpalKellyKind, PORTS, SAMPLE_RATES, Source};
-use crate::standard::ephys::{Continuous, Events};
+use crate::standard::ephys::{Clock, Continuous, Events};
 use crate::standard::pool::Pool;
 use crate::standard::widgets::{named_settings_grid, setting, settings_grid};
 use ephys_rs::engine::{
@@ -119,7 +119,7 @@ impl AcquisitionBoard {
             ephys: continuous(Headstage::total(&self.headstages)),
             aux: continuous(AUX_PER_HEADSTAGE * self.headstages.len() as u32),
             adc: continuous(ADC_CHANNELS),
-            events: Events { lines: self.source.ttl_lines(), sample_rate: rate },
+            events: Events { lines: self.source.ttl_lines(), clock: Clock::Ticks { rate } },
         }
     }
 }
@@ -235,7 +235,7 @@ impl<E: PortEdges> Node<E> for AcquisitionBoard {
                     (out.start, out.len) = (out.start + out.len as u64, 0);
                 }
                 digital.events.clear();
-                digital.pass_samples = 0;
+                digital.start = digital.end;
             }
         }
         // Not if the capture thread's updating the status just then: the next pass shows it.

@@ -6,7 +6,7 @@ use eframe::egui::{self, RichText};
 use ephys_rs::engine::{Buffers, TreeShake};
 use serde::{Deserialize, Serialize};
 
-use crate::standard::ephys::{Event, Events};
+use crate::standard::ephys::{Clock, Event, Events};
 use crate::standard::tracking::SetDetection;
 use crate::standard::tracking::pipeline::{Pipeline, timing_led_on};
 use crate::standard::tracking::{CAMERA_TRACKER, PositionSample, Positions, Video};
@@ -75,7 +75,8 @@ impl<E: PortEdges> Node<E> for PositionDetector {
                 height: video.height,
                 source: CAMERA_TRACKER,
             }),
-            pos_ttl: video.map(|video| Events { lines: 1, sample_rate: video.fps }),
+            // Timed by the camera's timestamps, as the positions are.
+            pos_ttl: video.map(|_| Events { lines: 1, clock: Clock::Seconds }),
         }
     }
 
@@ -108,7 +109,11 @@ impl<E: PortEdges> Node<E> for PositionDetector {
         let DataStreamOut { positions: output, pos_ttl: ttl } = outputs;
         output.samples.clear();
         ttl.events.clear();
-        ttl.pass_samples = video.frames;
+        // As far as the frames go: to the last one's time.
+        ttl.start = ttl.end;
+        if let Some(&last) = video.times[..video.frames].last() {
+            ttl.end = ttl.end.max(last);
+        }
         let pixels_per_metre = self.detection.pixels_per_metre().unwrap_or(f32::NAN);
         let (width, height) = (video.width as u32, video.height as u32);
         for frame in 0..video.frames.min(output.samples.capacity()) {
@@ -125,8 +130,7 @@ impl<E: PortEdges> Node<E> for PositionDetector {
             });
             match timing_led {
                 Some(on) if changed(&mut finding.timing_led, on) && ttl.events.len() < ttl.events.capacity() => {
-                    let time = Some(video.times[frame]);
-                    ttl.events.push(Event { sample: frame as u32, line: 0, high: on, time });
+                    ttl.events.push(Event { at: video.times[frame], line: 0, high: on });
                 }
                 Some(_) => {}
                 None => finding.timing_led = None,

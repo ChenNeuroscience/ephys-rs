@@ -52,8 +52,6 @@ pub struct Change {
 #[derive(Default)]
 pub struct Lines {
     stream: Option<Events>,
-    /// Samples so far, which the events are timed by.
-    samples: u64,
     /// The lines' levels now, a bit each.
     levels: u32,
     /// Changes over the longest span that can be shown.
@@ -68,8 +66,7 @@ pub struct Lines {
 
 impl PassState for Lines {
     const WHY: &'static str = "The lines' levels, their changes over the last minute (to plot), and how many times \
-                               each has gone up, which each pass carries on from; and samples so far, to time the \
-                               changes.";
+                               each has gone up, which each pass carries on from.";
 }
 
 /// What's shown: the changes over the span, the levels as it began, and the counts.
@@ -147,7 +144,6 @@ impl<E: PortEdges> Node<E> for TtlViewer {
     ) {
         let Some(events) = inputs.events else { return };
         let Some(stream) = lines.stream else { return };
-        let rate = stream.sample_rate.max(1.0) as f64;
         if pass.recording() && !lines.recording {
             lines.ups_recording.fill(0);
         }
@@ -165,14 +161,13 @@ impl<E: PortEdges> Node<E> for TtlViewer {
                 }
             }
             lines.levels = if event.high { lines.levels | bit } else { lines.levels & !bit };
-            let time = (lines.samples + event.sample as u64) as f64 / rate;
+            let time = stream.clock.seconds(event.at);
             if lines.changes.len() == KEPT {
                 lines.changes.pop_front();
             }
             lines.changes.push_back(Change { time, line: event.line, high: event.high });
         }
-        lines.samples += events.pass_samples as u64;
-        let now = lines.samples as f64 / rate;
+        let now = stream.clock.seconds(events.end);
         while lines.changes.front().is_some_and(|c| c.time < now - LONGEST as f64) {
             lines.changes.pop_front();
         }
@@ -296,29 +291,29 @@ mod tests {
     use super::*;
     use crate::Edges;
     use crate::NodeType;
-    use crate::standard::ephys::{Event, EventsBuffer};
+    use crate::standard::ephys::{Clock, Event, EventsBuffer};
     use ephys_rs::engine::DataStreamInPorts;
 
-    fn events(list: &[(u32, u8, bool)], pass_samples: usize) -> EventsBuffer {
-        let events = list.iter().map(|&(sample, line, high)| Event { sample, line, high, time: None }).collect();
-        EventsBuffer { events, pass_samples }
+    fn events(list: &[(u32, u8, bool)], start: f64, end: f64) -> EventsBuffer {
+        let events = list.iter().map(|&(at, line, high)| Event { at: at as f64, line, high }).collect();
+        EventsBuffer { events, start, end }
     }
 
     #[test]
     fn counts_ups_since_acquisition_and_recording() {
         let viewer = TtlViewer::default();
-        let stream = Events { lines: 2, sample_rate: 1000.0 };
+        let stream = Events { lines: 2, clock: Clock::Ticks { rate: 1000.0 } };
         let shared = Pool::<LinesDisplay>::default();
         let mut lines = ephys_rs::engine::fresh_state::<Edges, _>(&viewer, &DataStreamIn { events: Some(stream) });
-        let mut run = |list: &[(u32, u8, bool)], recording: bool| {
-            let input = events(list, 100);
+        let mut run = |list: &[(u32, u8, bool)], start: f64, recording: bool| {
+            let input = events(list, start, start + 100.0);
             let mut pass = PassContext::<Edges>::new(0, 0.1);
             pass.set_recording(recording);
             pass.shared = &shared;
             viewer.process(&mut pass, DataStreamIn { events: Some(&input) }, NoPorts, &mut lines, &mut ());
         };
-        run(&[(10, 0, true), (20, 0, false), (30, 0, true)], false);
-        run(&[(5, 0, false), (50, 0, true), (60, 1, true)], true);
+        run(&[(10, 0, true), (20, 0, false), (30, 0, true)], 0.0, false);
+        run(&[(105, 0, false), (150, 0, true), (160, 1, true)], 100.0, true);
         assert_eq!(lines.ups, vec![3, 1]);
         assert_eq!(lines.ups_recording, vec![1, 1]);
         assert_eq!(lines.changes[3].time, 0.105, "a change in the second pass, 5 samples in");
@@ -349,7 +344,7 @@ mod tests {
             ..Default::default()
         };
         let streams = DataStreamInPorts::<Edges>::streams(&DataStreamIn {
-            events: Some(Events { lines: 8, sample_rate: 30000.0 }),
+            events: Some(Events { lines: 8, clock: Clock::Ticks { rate: 30000.0 } }),
         });
         let shared = ephys_rs::engine::SharedByNode::default().with(viewer, Pool::holding(display));
         let mut harness = egui_kittest::Harness::builder().with_size([600.0, 220.0]).wgpu().build_ui_state(

@@ -169,6 +169,7 @@ impl Samples {
         for buffer in [&mut self.ephys, &mut self.aux, &mut self.adc] {
             buffer.start = start;
         }
+        (self.events.start, self.events.end) = (start as f64, (start + self.len() as u64) as f64);
     }
 
     /// Where the board skipped samples partway through, the capture thread moves those after the gap (from `at` on,
@@ -186,11 +187,12 @@ impl Samples {
             }
             (into.len, into.start, from.len) = (count, start, at);
         }
-        let after = self.events.events.iter().filter(|e| e.sample as usize >= at);
-        let moved = after.map(|e| crate::standard::ephys::Event { sample: e.sample - at as u32, ..*e });
-        to.events.events.extend(moved.take(to.events.events.capacity()));
-        self.events.events.retain(|e| (e.sample as usize) < at);
-        (self.events.pass_samples, to.events.pass_samples) = (at, count);
+        // The events are numbered as the board numbered their samples, so those after the gap are from `start` on.
+        let after = self.events.events.iter().filter(|e| e.at >= start as f64).copied();
+        to.events.events.extend(after.take(to.events.events.capacity()));
+        self.events.events.retain(|e| e.at < start as f64);
+        self.events.end = self.events.start + at as f64;
+        (to.events.start, to.events.end) = (start as f64, (start + count as u64) as f64);
     }
 
     /// The capture thread fills an empty buffer with what it split off (see `split_off`) with this.
@@ -205,9 +207,10 @@ impl Samples {
             }
             (into.len, into.start) = (count, from.start);
         }
-        let events = from.events.events.iter().filter(|e| (e.sample as usize) < count);
+        let end = from.events.start + count as f64;
+        let events = from.events.events.iter().filter(|e| e.at < end);
         self.events.events.extend(events.take(self.events.events.capacity()).copied());
-        self.events.pass_samples = count;
+        (self.events.start, self.events.end) = (from.events.start, end);
     }
 
     /// Whether there are no samples yet.
@@ -224,7 +227,6 @@ impl Samples {
     pub fn clear(&mut self) {
         (self.ephys.len, self.aux.len, self.adc.len) = (0, 0, 0);
         self.events.events.clear();
-        self.events.pass_samples = 0;
     }
 
     /// The channels of each kind: headstage, auxiliary and analogue.
@@ -238,7 +240,7 @@ impl Samples {
         for buffer in [&mut self.ephys, &mut self.aux, &mut self.adc] {
             buffer.len += count;
         }
-        self.events.pass_samples += count;
+        self.events.end += count as f64;
     }
 }
 
@@ -327,11 +329,16 @@ pub fn open(source: &Source) -> io::Result<Box<dyn Board>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::standard::ephys::Event;
+    use crate::standard::ephys::{Clock, Event};
 
     fn samples() -> Samples {
         let continuous = |channels| Continuous { channels, sample_rate: 30000.0 };
-        Samples::new(continuous(2), continuous(1), continuous(1), Events { lines: 8, sample_rate: 30000.0 })
+        Samples::new(
+            continuous(2),
+            continuous(1),
+            continuous(1),
+            Events { lines: 8, clock: Clock::Ticks { rate: 30000.0 } },
+        )
     }
 
     /// Ten samples numbered from 100, then the board skips to 500 after the sixth: the six stay, numbered from 100, and
@@ -344,20 +351,23 @@ mod tests {
         for channel in 0..2 {
             first.ephys.channel_mut(channel).iter_mut().enumerate().for_each(|(i, x)| *x = (channel * 100 + i) as f32);
         }
-        let event = |sample| Event { sample, line: 0, high: true, time: None };
-        first.events.events.extend([event(2), event(7)]);
+        let event = |at| Event { at, line: 0, high: true };
+        // The second after the gap: the board's 501.
+        first.events.events.extend([event(102.0), event(501.0)]);
         let mut carry = samples();
         first.split_off(6, 500, &mut carry);
         let mut next = samples();
         next.put(&carry);
 
-        assert_eq!((first.start(), first.len(), first.events.pass_samples), (100, 6, 6));
+        assert_eq!((first.start(), first.len()), (100, 6));
+        assert_eq!((first.events.start, first.events.end), (100.0, 106.0));
         assert_eq!(first.ephys.channel(1), [100.0, 101.0, 102.0, 103.0, 104.0, 105.0]);
-        assert_eq!(first.events.events.iter().map(|e| e.sample).collect::<Vec<_>>(), [2]);
+        assert_eq!(first.events.events.iter().map(|e| e.at).collect::<Vec<_>>(), [102.0]);
         // Numbered as the board numbered them, so the gap shows: 106 to 499 never came.
-        assert_eq!((next.start(), next.len(), next.events.pass_samples), (500, 4, 4));
+        assert_eq!((next.start(), next.len()), (500, 4));
+        assert_eq!((next.events.start, next.events.end), (500.0, 504.0));
         assert_eq!(next.ephys.channel(1), [106.0, 107.0, 108.0, 109.0]);
         assert_eq!((next.aux.start, next.adc.start), (500, 500));
-        assert_eq!(next.events.events.iter().map(|e| e.sample).collect::<Vec<_>>(), [1]);
+        assert_eq!(next.events.events.iter().map(|e| e.at).collect::<Vec<_>>(), [501.0]);
     }
 }
