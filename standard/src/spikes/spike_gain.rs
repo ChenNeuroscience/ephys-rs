@@ -203,7 +203,7 @@ impl<E: PortEdges> Node<E> for SpikeGain {
         TreeShake::needing_all(inputs.contains(&true) && wanted, inputs.len())
     }
 
-    fn output_streams(&self, inputs: &DataStreamIn) -> DataStreamOut {
+    fn data_stream_out(&self, inputs: &DataStreamIn) -> DataStreamOut {
         DataStreamOut { spikes: inputs.spikes }
     }
 

@@ -437,7 +437,7 @@ impl<E: PortEdges> Node<E> for Reference {
         }
     }
 
-    fn output_streams(&self, inputs: &DataStreamIn) -> DataStreamOut {
+    fn data_stream_out(&self, inputs: &DataStreamIn) -> DataStreamOut {
         let reference = inputs.continuous.map(|c| Continuous { channels: self.references() as u32, ..c });
         DataStreamOut { referenced: inputs.continuous, reference }
     }
@@ -717,7 +717,7 @@ mod tests {
             made(2, Method::Mean, "3", "all"),
         ]);
         assert_eq!((reference.references(), of(vec![]).references()), (3, 0));
-        let outputs = Node::<Edges>::output_streams(&reference, &DataStreamIn { continuous: Some(stream) });
+        let outputs = Node::<Edges>::data_stream_out(&reference, &DataStreamIn { continuous: Some(stream) });
         assert_eq!(outputs.reference, Some(Continuous { channels: 3, ..stream }));
         let mut input = stream.buffer(PASS_DURATION);
         input.len = 2;

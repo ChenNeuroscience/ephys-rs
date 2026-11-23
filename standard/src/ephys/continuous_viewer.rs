@@ -281,7 +281,7 @@ impl<E: PortEdges> Node<E> for ContinuousViewer {
         TreeShake::needing_all(inputs.contains(&true), inputs.len())
     }
 
-    fn output_streams(&self, _inputs: &DataStreamIn) -> NoPorts {
+    fn data_stream_out(&self, _inputs: &DataStreamIn) -> NoPorts {
         NoPorts
     }
 

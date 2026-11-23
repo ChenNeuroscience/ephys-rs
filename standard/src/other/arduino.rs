@@ -364,7 +364,7 @@ impl<E: ephys_rs::engine::Edges> Node<E> for Arduino {
         match command {}
     }
 
-    fn output_streams(&self, _inputs: &NoPorts) -> NoPorts {
+    fn data_stream_out(&self, _inputs: &NoPorts) -> NoPorts {
         NoPorts
     }
 

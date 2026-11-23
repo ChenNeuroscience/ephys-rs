@@ -2,8 +2,8 @@
 //! global settings. Each type is a tab of its own in Settings…, kept between sessions, and its value now can be had
 //! from any thread (`current`).
 //!
-//! A node names the global settings it reads (`Node::GlobalSettings`), and reads them through that
-//! (`Node::global_settings`); a build has a tab for each type its nodes name (`NodesEnum::global_settings_types`). So
+//! A node names the global settings it reads (`Node::GlobalSettings`), and reads each with `current`; a build has a
+//! tab for each type its nodes name (`NodesEnum::global_settings_types`). So
 //! a component's global settings are in a build whenever a node that needs them is, without the build listing them.
 
 use std::any::{Any, TypeId};

@@ -85,7 +85,7 @@ impl<E: PortEdges> Node<E> for Camera {
     type UiState = ();
     type GlobalSettings = super::SpinnakerSettings;
 
-    fn output_streams(&self, _inputs: &NoPorts) -> DataStreamOut {
+    fn data_stream_out(&self, _inputs: &NoPorts) -> DataStreamOut {
         let [width, height] = self.settings.frame_size;
         DataStreamOut {
             video: Some(Video { width, height, fps: self.settings.frame_rate as f32 }),

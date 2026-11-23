@@ -148,7 +148,7 @@ impl<E: PortEdges> Node<E> for AcquisitionBoard {
         match command {}
     }
 
-    fn output_streams(&self, _inputs: &NoPorts) -> DataStreamOut {
+    fn data_stream_out(&self, _inputs: &NoPorts) -> DataStreamOut {
         let shape = self.shape();
         DataStreamOut {
             headstages: Some(shape.ephys),
@@ -166,7 +166,7 @@ impl<E: PortEdges> Node<E> for AcquisitionBoard {
             flow: Flow::ToPasses,
             why: "On a thread of its own so samples are taken from the board as they come (before its buffer \
                   overflows), whatever the passes are doing.",
-            swapped_outputs: (0..DataStreamOutPorts::<E>::ports(&Node::<E>::output_streams(self, &NoPorts)).len())
+            swapped_outputs: (0..DataStreamOutPorts::<E>::ports(&Node::<E>::data_stream_out(self, &NoPorts)).len())
                 .collect(),
             pool: display.as_ref().map(|d| d.pool),
         };

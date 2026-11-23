@@ -92,7 +92,7 @@ impl<E: PortEdges> Node<E> for BandPassFilter {
         match command {}
     }
 
-    fn output_streams(&self, inputs: &DataStreamIn) -> DataStreamOut {
+    fn data_stream_out(&self, inputs: &DataStreamIn) -> DataStreamOut {
         DataStreamOut { filtered: inputs.continuous }
     }
 

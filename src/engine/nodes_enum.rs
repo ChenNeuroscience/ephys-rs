@@ -54,7 +54,7 @@ pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + S
     /// The node's `DataStreamIn` ports, in declaration order, for the graph (see `Node::Ports`).
     fn list_ports_data_stream_in(&self) -> Vec<Port<Self::Edges>>;
     /// The node's `DataStreamOut` ports, in declaration order, for the graph. Each port includes the stream on it,
-    /// computed from the streams on the node's inputs (see `Node::output_streams`).
+    /// computed from the streams on the node's inputs (see `Node::data_stream_out`).
     fn list_ports_data_stream_out(
         &self,
         inputs: &[Option<<Self::Edges as Edges>::DataStream>],
@@ -255,7 +255,7 @@ macro_rules! nodes_enum {
                     $($name::$variant(n) => {
                         let inputs = <$crate::engine::DataStreamInOf<$ty, $edges> as $crate::engine::DataStreamInPorts<$edges>>::of(inputs);
                         let outputs: $crate::engine::DataStreamOutOf<$ty, $edges> =
-                            $crate::engine::Node::<$edges>::output_streams(n, &inputs);
+                            $crate::engine::Node::<$edges>::data_stream_out(n, &inputs);
                         $crate::engine::DataStreamOutPorts::<$edges>::ports(&outputs)
                     }),+
                 }

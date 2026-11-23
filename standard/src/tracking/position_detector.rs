@@ -66,7 +66,7 @@ impl<E: PortEdges> Node<E> for PositionDetector {
     type UiState = ();
     type GlobalSettings = ();
 
-    fn output_streams(&self, inputs: &DataStreamIn) -> DataStreamOut {
+    fn data_stream_out(&self, inputs: &DataStreamIn) -> DataStreamOut {
         let video = inputs.video;
         DataStreamOut {
             positions: video.map(|video| Positions {
@@ -389,7 +389,8 @@ mod tests {
     fn says_what_it_outputs() {
         use ephys_rs::engine::DataStreamOutPorts;
         let video = Video { width: 640, height: 480, fps: 50.0 };
-        let outputs = Node::<Edges>::output_streams(&PositionDetector::default(), &DataStreamIn { video: Some(video) });
+        let outputs =
+            Node::<Edges>::data_stream_out(&PositionDetector::default(), &DataStreamIn { video: Some(video) });
         assert_eq!(DataStreamOutPorts::<Edges>::ports(&outputs)[1].name(), "pos ttl");
         assert!(matches!(outputs.pos_ttl, Some(Events { lines: 1, .. })), "a single line");
     }

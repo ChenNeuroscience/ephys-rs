@@ -3,7 +3,7 @@
 //! that declaration:
 //!
 //! - `DataStreamIn` and `DataStreamOut`: structs of the node's data ports, generic over a form (see
-//!   `crate::engine::data_ports`). In one form the fields are the ports' streams, which `Node::output_streams` uses;
+//!   `crate::engine::data_ports`). In one form the fields are the ports' streams, which `Node::data_stream_out` uses;
 //!   in another they are the ports' buffers, which `Node::process` uses.
 //! - `ValOutCmdIn`: a struct of the values the node publishes, which `Node::val_out` returns. `CmdIn` is an enum of
 //!   every command those ports accept, which `Node::on_command` receives (see `crate::engine::val_cmd_ports`).

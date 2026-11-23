@@ -331,7 +331,7 @@ impl<E: PortEdges> Node<E> for SyncPositions {
     const WINDOW_SIZE: [f32; 2] = [680.0, 780.0];
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
-    fn output_streams(&self, _inputs: &NoPorts) -> NoPorts {
+    fn data_stream_out(&self, _inputs: &NoPorts) -> NoPorts {
         NoPorts
     }
 

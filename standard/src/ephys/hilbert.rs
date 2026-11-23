@@ -114,7 +114,7 @@ impl<E: PortEdges> Node<E> for HilbertTransform {
         match command {}
     }
 
-    fn output_streams(&self, inputs: &DataStreamIn) -> DataStreamOut {
+    fn data_stream_out(&self, inputs: &DataStreamIn) -> DataStreamOut {
         let analytic =
             inputs.continuous.map(|c| ComplexContinuous { channels: c.channels, sample_rate: c.sample_rate });
         DataStreamOut { analytic }
@@ -304,7 +304,7 @@ mod tests {
     fn the_output_matches_the_input() {
         let node = HilbertTransform::default();
         let inputs = DataStreamIn { continuous: Some(Continuous { channels: 4, sample_rate: RATE }) };
-        let outputs = Node::<crate::Edges>::output_streams(&node, &inputs);
+        let outputs = Node::<crate::Edges>::data_stream_out(&node, &inputs);
         assert_eq!(outputs.analytic, Some(ComplexContinuous { channels: 4, sample_rate: RATE }));
     }
 }

@@ -290,7 +290,7 @@ impl<E: PortEdges> Node<E> for AlarmProcessor {
         TreeShake { runs: given && outputs.contains(&true), needs }
     }
 
-    fn output_streams(&self, inputs: &DataStreamIn) -> DataStreamOut {
+    fn data_stream_out(&self, inputs: &DataStreamIn) -> DataStreamOut {
         DataStreamOut { alarms: Some(streams(inputs)) }
     }
 

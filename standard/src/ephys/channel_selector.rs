@@ -70,7 +70,7 @@ impl<E: PortEdges> Node<E> for ChannelSelector {
     type UiState = ();
     type GlobalSettings = ();
 
-    fn output_streams(&self, inputs: &DataStreamIn) -> DataStreamOut {
+    fn data_stream_out(&self, inputs: &DataStreamIn) -> DataStreamOut {
         let selected = inputs.continuous.map(|c| Continuous { channels: self.passed(c.channels).len() as u32, ..c });
         DataStreamOut { selected }
     }
@@ -153,7 +153,7 @@ mod tests {
         let mut selector = ChannelSelector { apply: false, channels: "2, 4".into() };
         let run = |selector: &ChannelSelector| {
             let out =
-                Node::<Edges>::output_streams(selector, &DataStreamIn { continuous: Some(stream) }).selected.unwrap();
+                Node::<Edges>::data_stream_out(selector, &DataStreamIn { continuous: Some(stream) }).selected.unwrap();
             let mut input = stream.buffer(PASS_DURATION);
             input.len = 3;
             for c in 0..4 {

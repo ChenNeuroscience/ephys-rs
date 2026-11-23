@@ -21,7 +21,7 @@ else.
 The parts of the API are there for three different reasons, and it helps to know which is which:
 
 - **The data model: what the node is and does.** These have to be right for the node to work: its ports (declared
-  with `ports!`), the streams on its outputs (`output_streams`), the values it publishes (`val_out`), the commands it
+  with `ports!`), the streams on its outputs (`data_stream_out`), the values it publishes (`val_out`), the commands it
   takes (`on_command`), `process` and its state (prepared for each snapshot: `prepare_for_snapshot`).
 - **Optimisation: how cheaply it runs.** Leaving these at their defaults is always correct, only slower or using more
   memory: inputs it takes and outputs it makes in place (in its `ports!`), `evaluate_tree_shake` (one exception: a writer says it only runs while recording,
@@ -57,7 +57,7 @@ The parts of the API are there for three different reasons, and it helps to know
   `impl<E: PortEdges> Node<E> for MyNode`, so the node works with any build's edges that include those types. Saved
   graphs identify each port by its field name (its id), so reordering ports is fine, but renaming one needs a config
   patch to rename the saved edges' ends.
-- `output_streams(inputs)`: the data stream on each output, given the streams on the inputs (each `None` while it
+- `data_stream_out(inputs)`: the data stream on each output, given the streams on the inputs (each `None` while it
   can't be known, such as when nothing is connected). The graph uses this to work out every stream before anything
   runs. In the structs' default form, each field is the stream on its port (such as `Option<Continuous>`), so an
   output's stream always has the output's type.
@@ -67,7 +67,7 @@ The parts of the API are there for three different reasons, and it helps to know
 - `on_command(from, command, context)`: how it handles a command sent to it, received as its `CmdIn` (see
   [Commands](#commands)).
 
-A node must implement these even when it has no ports of the role: `output_streams(&self, _: &NoPorts) -> NoPorts`
+A node must implement these even when it has no ports of the role: `data_stream_out(&self, _: &NoPorts) -> NoPorts`
 for a node with no inputs or outputs, `val_out(&self) -> NoPorts`, and
 `on_command(.., command: CmdIn, ..) { match command {} }` for a node that accepts no commands. None of the three has a
 default, so a node can't forget them.
@@ -334,7 +334,7 @@ data does.
 Settings for the whole program on this machine, rather than a graph (where a vendor's library is, say), are global
 settings: a type implementing [`GlobalSettings`](../src/global_settings.rs), with a `NAME` and a `ui`, which is a
 tab of its own in Settings…, kept between sessions. A node names those it reads, as `type GlobalSettings` (`()` for
-none, a type, or a pair or triple), and reads them as they are now, from any thread, with `Self::global_settings()`. A
+none, a type, or a pair or triple), and reads them as they are now, from any thread, with `global_settings::current::<T>()`. A
 build has a tab for each type its nodes name, so a component's global settings come with it, without the build listing
 them. The [Acquisition Board](../standard/src/ephys/board/open_ephys.rs) reads which folder of the Open
 Ephys GUI's its files come from; the [Camera](../standard/src/tracking/camera/spinnaker.rs) where FLIR's SDK

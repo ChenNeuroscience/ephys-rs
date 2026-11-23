@@ -147,7 +147,7 @@ impl<E: PortEdges> Node<E> for Spectrum {
         match command {}
     }
 
-    fn output_streams(&self, inputs: &DataStreamIn) -> DataStreamOut {
+    fn data_stream_out(&self, inputs: &DataStreamIn) -> DataStreamOut {
         DataStreamOut { spectra: inputs.continuous.map(|c| Spectra::of(c, self.band)) }
     }
 

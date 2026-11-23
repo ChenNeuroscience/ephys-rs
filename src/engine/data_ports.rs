@@ -6,7 +6,7 @@
 //!
 //! Each struct is generic over a form (`PortForm`), which decides what each field holds. In the `Streams` form (the
 //! default), each field holds the data stream on the port, if known, such as `Option<Continuous>`. The node computes
-//! its output streams from its input streams in this form (see `Node::output_streams`), so a port's kind and its
+//! its output streams from its input streams in this form (see `Node::data_stream_out`), so a port's kind and its
 //! stream can't disagree. In the `Buffers` form, each field holds the port's buffer during a pass:
 //! `Option<&ContinuousBuffer>` for an input and `&mut ContinuousBuffer` for an output. The node's `process` receives
 //! the buffers already converted to the right types.
@@ -150,7 +150,7 @@ pub fn take_input<'a, E: HasDataStream<T>, T: DataStreamType>(
     taken.and_then(Option::as_mut).and_then(E::from_buffer_mut)
 }
 
-/// Finds an output's buffer. The plan makes each output's buffer from the stream that the node's `output_streams`
+/// Finds an output's buffer. The plan makes each output's buffer from the stream that the node's `data_stream_out`
 /// returned for the output, and that stream has the output's declared type, so the buffer has the matching type too.
 /// Only `ports!` calls this.
 #[doc(hidden)]

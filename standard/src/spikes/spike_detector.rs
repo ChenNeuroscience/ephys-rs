@@ -288,7 +288,7 @@ impl<E: PortEdges> Node<E> for SpikeDetector {
         self.choose_thresholds(pass, input, sampling);
     }
 
-    fn output_streams(&self, inputs: &DataStreamIn) -> DataStreamOut {
+    fn data_stream_out(&self, inputs: &DataStreamIn) -> DataStreamOut {
         DataStreamOut { spikes: inputs.continuous.map(|c| self.stream(c.channels, c.sample_rate)) }
     }
 

@@ -45,7 +45,7 @@ impl<E: PortEdges> Node<E> for VideoViewer {
         match command {}
     }
 
-    fn output_streams(&self, _inputs: &DataStreamIn) -> NoPorts {
+    fn data_stream_out(&self, _inputs: &DataStreamIn) -> NoPorts {
         NoPorts
     }
 

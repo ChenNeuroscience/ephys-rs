@@ -187,7 +187,7 @@ impl<E: PortEdges> Node<E> for AlarmViewer {
     const WINDOW_SIZE: [f32; 2] = [820.0, 520.0];
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
-    fn output_streams(&self, _inputs: &DataStreamIn) -> NoPorts {
+    fn data_stream_out(&self, _inputs: &DataStreamIn) -> NoPorts {
         NoPorts
     }
 

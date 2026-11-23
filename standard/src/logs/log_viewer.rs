@@ -90,7 +90,7 @@ impl<E: PortEdges> Node<E> for LogViewer {
         match command {}
     }
 
-    fn output_streams(&self, _inputs: &DataStreamIn) -> NoPorts {
+    fn data_stream_out(&self, _inputs: &DataStreamIn) -> NoPorts {
         NoPorts
     }
 

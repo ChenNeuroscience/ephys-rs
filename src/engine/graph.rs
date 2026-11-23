@@ -136,7 +136,7 @@ impl<E: Edges> NodeState<E> {
         let inputs = DataStreamInOf::<N, E>::of(&input_streams);
         NodeState {
             inputs: DataStreamInOf::<N, E>::ports(),
-            outputs: node.output_streams(&inputs).ports(),
+            outputs: node.data_stream_out(&inputs).ports(),
             warnings: node.warnings(&inputs),
             input_streams,
             values: node.val_out().values(),

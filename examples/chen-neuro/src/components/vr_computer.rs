@@ -552,7 +552,7 @@ impl<E: PortEdges> Node<E> for VrComputer {
     type UiState = ();
     type GlobalSettings = ();
 
-    fn output_streams(&self, _inputs: &NoPorts) -> DataStreamOut {
+    fn data_stream_out(&self, _inputs: &NoPorts) -> DataStreamOut {
         let [_, _, width, height] = window(&self.custom).and_then(|crop| crop.bounds()).unwrap_or([0.0; 4]);
         let frame = |size: f32| if size > 0.0 { size.ceil() as u32 } else { FRAME_SIZE };
         let positions = Positions { fps: self.fps, width: frame(width), height: frame(height), source: SOURCE };
@@ -753,7 +753,7 @@ mod tests {
     /// A pass's buffers.
     fn buffers(node: &VrComputer) -> (PositionsBuffer, EventsBuffer, LogLinesBuffer) {
         let DataStreamOut { positions: Some(p), pos_ttl: Some(e), log: Some(l) } =
-            Node::<Edges>::output_streams(node, &NoPorts)
+            Node::<Edges>::data_stream_out(node, &NoPorts)
         else {
             panic!("its streams")
         };
@@ -845,7 +845,7 @@ mod tests {
         assert!(complete(&custom));
         let node = VrComputer { custom, ..node };
         assert!(Node::<Edges>::warnings(&node, &NoPorts).is_empty());
-        let ttl = Node::<Edges>::output_streams(&node, &NoPorts).pos_ttl.unwrap();
+        let ttl = Node::<Edges>::data_stream_out(&node, &NoPorts).pos_ttl.unwrap();
         assert_eq!(ttl.lines, 3, "a line a channel");
         let detection = &Node::<Edges>::val_out(&node).settings;
         assert_eq!(detection.crop, crop, "for Write LTX");

@@ -166,11 +166,6 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     /// build's nodes name gets a tab in Settings… . See `crate::global_settings`.
     type GlobalSettings: GlobalSettingsSet;
 
-    /// A node can read its global settings from any thread. This gives them as they are now: an `Arc` of each.
-    fn global_settings() -> <Self::GlobalSettings as GlobalSettingsSet>::Current {
-        Self::GlobalSettings::current()
-    }
-
     /// A node's window can float, and opens at this size when it does. A node with a view of its own might want more
     /// room than the standard window needs.
     const WINDOW_SIZE: [f32; 2] = [340.0, 460.0];
@@ -189,7 +184,7 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     /// ports (`inputs`, where an unconnected input is `None`). The graph calls this to work out the streams. The node
     /// only runs once every output's stream is known, so the node should return `None` for an output it can't produce
     /// from what it has, such as when a required input isn't connected.
-    fn output_streams(&self, inputs: &DataStreamInOf<Self, E>) -> DataStreamOutOf<Self, E>;
+    fn data_stream_out(&self, inputs: &DataStreamInOf<Self, E>) -> DataStreamOutOf<Self, E>;
 
     /// Returns the current values at the node's `ValOutCmdIn` ports, which other nodes read. These are usually copies
     /// of some of the node's settings. The app reads them each frame for the nodes' windows, and each snapshot keeps a
