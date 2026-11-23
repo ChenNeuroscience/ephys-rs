@@ -77,15 +77,11 @@ pub struct Spike {
 pub struct SpikesBuffer {
     pub spikes: Vec<Spike>,
     /// Each spike's waveforms, one after another: for each of its group's channels (`group_size` of them, the
-    /// absent ones of a smaller last group being zero), `samples` values, in µV.
+    /// absent ones of a smaller last group being zero), `samples` values, in µV (amplified µV, once through a Spike
+    /// Gain: see `Gains`).
     pub waveforms: Vec<f32>,
     pub group_size: usize,
     pub samples: usize,
-    /// Each channel's threshold, in µV, as the pass ended.
-    pub thresholds: Vec<f32>,
-    /// The gain each channel's waveforms have been multiplied by: 1 until a Spike Gain has (they're then amplified µV,
-    /// see `Gains`).
-    pub gains: Vec<f32>,
     /// How many samples of continuous data the pass covers (for timing spikes across passes).
     pub pass_samples: usize,
 }
@@ -131,8 +127,6 @@ impl DataStreamType for Spikes {
             waveforms: Vec::with_capacity(capacity * group_size * waveform),
             group_size,
             samples: waveform,
-            thresholds: vec![0.0; self.channels as usize],
-            gains: vec![1.0; self.channels as usize],
             pass_samples: 0,
         }
     }
@@ -145,8 +139,6 @@ impl DataStreamType for Spikes {
         to.spikes.clone_from(&from.spikes);
         to.waveforms.clone_from(&from.waveforms);
         (to.group_size, to.samples, to.pass_samples) = (from.group_size, from.samples, from.pass_samples);
-        to.thresholds.clone_from(&from.thresholds);
-        to.gains.clone_from(&from.gains);
     }
 
     fn empty(buffer: &mut SpikesBuffer) {

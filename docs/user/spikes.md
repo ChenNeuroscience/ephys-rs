@@ -28,7 +28,8 @@ Gain's auto detect can turn channels whose spikes go up to go down, as most do.
 
 ## Spike Gain
 
-> **Processing.** In: `spikes` (µV). Out: `spikes` (amplified µV). ◇ `gains`.
+> **Processing.** In: `spikes` (µV). Out: `spikes` (amplified µV). ◇ `gains`. ◇ `thresholds` (a Spike Detector's,
+> read only).
 
 <img src="../../tests/snapshots/spike_gain_settings.png" alt="A gain for each tetrode, and auto detect">
 
@@ -56,8 +57,9 @@ from zero), and where the total's positive, it uses a negative gain. Channels sh
 a channel with no spikes stays as it was.
 
 The range is never less than 1.5 × the threshold, so the threshold's always in view, and a channel with no spikes goes
-by its threshold. If the thresholds change while it's sampling (moved by hand, say), it starts sampling again, so the
-gains follow the new thresholds and the spikes they find.
+by its threshold. The thresholds are the Spike Detector's, read through ◇ `thresholds` (unconnected, it goes by the
+default, 50 µV). If they change while it's sampling (moved by hand, say), it starts sampling again, so the gains follow
+the new thresholds and the spikes they find.
 
 Connect Write LTX's ◇ `gains` to it, and the gains are recorded in the `.set` file.
 
@@ -72,7 +74,8 @@ shown as they're recorded, amplified by their gain, so raising a gain makes them
 ±250 µV to begin with: what Write LTX records, so a spike reaching the edge is clipped. Set it to see more, or
 less. Each row of tetrodes has the scale on its y axis, at its left. Spikes are shown negative at the top, so the downward spikes most
 channels record point up, as people expect. Each channel's threshold, amplified with the spikes, is the line above the middle, to drag, and fainter below
-it, as spikes are found either way.
+it, as spikes are found either way. The viewer knows the thresholds and gains only through ◇ `thresholds` and ◇ `gains`:
+without the first it draws no threshold, and without the second it takes the spikes to be unamplified.
 
 Connected to a detector's thresholds and a gain's gains, it sets them:
 

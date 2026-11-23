@@ -204,6 +204,7 @@ fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
     change.link((gain, DataStreamOut, 0), (spike_viewer, DataStreamIn, 0));
     change.link((spike_viewer, ValInCmdOut, 0), (detector, ValOutCmdIn, 0));
     change.link((spike_viewer, ValInCmdOut, 1), (gain, ValOutCmdIn, 0));
+    change.link((gain, ValIn, 0), (detector, ValOutCmdIn, 0));
 
     // EEG: only some channels, chosen in the Continuous Data Viewer.
     let selector = change.upsert(NodeType::ChannelSelector, Some(board));

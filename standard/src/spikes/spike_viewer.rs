@@ -166,7 +166,7 @@ impl AutoDetecting {
     }
 }
 
-/// Each group's most recent spikes, round a ring, and each channel's latest threshold and gain.
+/// Each group's most recent spikes, round a ring.
 #[derive(Default)]
 pub struct Recent {
     stream: Option<Spikes>,
@@ -178,9 +178,6 @@ pub struct Recent {
     count: Vec<usize>,
     /// Spikes found, for each group.
     total: Vec<u64>,
-    thresholds: Vec<f32>,
-    /// Each channel's gain (see `SpikesBuffer::gains`).
-    gains: Vec<f32>,
 }
 
 impl ephys_rs::engine::PassState for Recent {
@@ -199,9 +196,6 @@ pub struct RecentDisplay {
     waveforms: Vec<f32>,
     count: Vec<usize>,
     total: Vec<u64>,
-    thresholds: Vec<f32>,
-    /// Each channel's gain.
-    gains: Vec<f32>,
 }
 
 /// Which setting's being typed.
@@ -311,8 +305,6 @@ impl<E: PortEdges> Node<E> for SpikeViewer {
             head: vec![0; groups],
             count: vec![0; groups],
             total: vec![0; groups],
-            thresholds: vec![DEFAULT_THRESHOLD_UV; stream.channels as usize],
-            gains: vec![1.0; stream.channels as usize],
         })
         .into()
     }
@@ -332,19 +324,16 @@ impl<E: PortEdges> Node<E> for SpikeViewer {
         for (i, spike) in input.spikes.iter().enumerate() {
             let group = spike.group as usize;
             let slot = (group * keep + recent.head[group]) * size;
-            // As they're recorded: amplified by their gains (see `SpikesBuffer::gains`).
+            // As they're recorded: amplified by their gains, once through a Spike Gain (see `Gains`).
             recent.waveforms[slot..slot + size].copy_from_slice(input.waveform(i));
             recent.head[group] = (recent.head[group] + 1) % keep;
             recent.count[group] = (recent.count[group] + 1).min(keep);
             recent.total[group] += 1;
         }
-        let channels = recent.thresholds.len();
-        recent.thresholds.copy_from_slice(&input.thresholds[..channels]);
-        recent.gains.clone_from(&input.gains);
 
         let groups = stream.groups() as usize;
         let (first, shown) = self.groups(groups);
-        let Recent { waveforms, head, count, total, thresholds, gains, .. } = recent;
+        let Recent { waveforms, head, count, total, .. } = recent;
         pass.shared::<Pool<RecentDisplay>>().send_newest(pass.sequence, |display| {
             (display.stream, display.first, display.shown, display.keep) = (Some(stream), first, shown, keep);
             display.waveforms.clear();
@@ -360,8 +349,6 @@ impl<E: PortEdges> Node<E> for SpikeViewer {
                 display.count.push(count[group]);
                 display.total.push(total[group]);
             }
-            display.thresholds.clone_from(thresholds);
-            display.gains.clone_from(gains);
         });
     }
 
@@ -624,18 +611,10 @@ impl SpikeViewer {
     ) {
         let theme = plots.theme;
         let layout = Channels { count: plots.stream.channels as usize, group_size: plots.stream.group_size as usize };
-        let shown = |values: &[f32], default: f32| values.get(channel).copied().unwrap_or(default);
-        let display_thresholds = plots.display.map_or(&[][..], |d| &d.thresholds[..]);
-        let threshold = match &plots.thresholds {
-            Some(t) => t.get(channel),
-            None => shown(display_thresholds, DEFAULT_THRESHOLD_UV),
-        };
-        // The gain the spikes come amplified by: the gains' (which take effect a pass later), or what came with them.
-        let gain = match (&plots.gains, plots.display) {
-            (Some(g), _) => g.get(channel),
-            (None, Some(d)) => shown(&d.gains, 1.0),
-            (None, None) => 1.0,
-        };
+        // The threshold, if the viewer's connected to a Spike Detector's, and the gain the spikes come amplified by, if
+        // it's connected to a Spike Gain's (×1, as far as it knows, if not).
+        let threshold = plots.thresholds.as_ref().map_or(DEFAULT_THRESHOLD_UV, |t| t.get(channel));
+        let gain = plots.gains.as_ref().map_or(1.0, |g| g.get(channel));
         let size = gain.abs().max(f32::MIN_POSITIVE);
         let scale = self.scale_uv.max(1.0);
         // What the plot shows of what comes in: a threshold stays within it.
@@ -657,11 +636,14 @@ impl SpikeViewer {
 
         let interactive = !plots.locked;
         let hovered = ui.rect_contains_pointer(rect);
-        // The threshold, amplified as the spikes are, either way from zero: above the middle, which can be dragged,
-        // and fainter below it.
+        // The threshold (only if connected), amplified as the spikes are, either way from zero: above the middle, which
+        // can be dragged, and fainter below it.
         let colour = crate::standard::spikes::Thresholds::INFO.colour;
-        painter.hline(rect.x_range(), y(threshold * size), Stroke::new(1.0, colour.gamma_multiply(0.25)));
-        for (i, line) in [y(-threshold * size)].into_iter().enumerate() {
+        let connected = plots.thresholds.is_some();
+        if connected {
+            painter.hline(rect.x_range(), y(threshold * size), Stroke::new(1.0, colour.gamma_multiply(0.25)));
+        }
+        for (i, line) in connected.then(|| y(-threshold * size)).into_iter().enumerate() {
             let mut active = false;
             if let (true, Some(thresholds)) = (interactive, plots.thresholds.as_deref_mut()) {
                 let grab = Rect::from_x_y_ranges(rect.x_range(), line - 4.0..=line + 4.0);

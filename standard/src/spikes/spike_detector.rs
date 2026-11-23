@@ -79,6 +79,8 @@ pub struct Detector {
     stride: usize,
     /// For each group, the first position (in `samples`) its next spike's peak can be at.
     next: Vec<i64>,
+    /// Each channel's threshold (µV) for this pass, from the node's settings.
+    thresholds: Vec<f32>,
 }
 
 /// What the node carries from pass to pass: the detector, and, only while the thresholds are being detected (see
@@ -127,6 +129,7 @@ impl Detector {
             tail,
             stride: tail + pass + SCAN,
             next: vec![0; spikes.groups() as usize],
+            thresholds: vec![0.0; channels],
         }
     }
 
@@ -217,10 +220,10 @@ impl<E: PortEdges> Node<E> for SpikeDetector {
         detector.fit(n, channels);
         let (tail, stride) = (detector.tail, detector.stride);
 
-        // This pass's samples after the tail.
-        for (channel, threshold) in output.thresholds.iter_mut().enumerate().take(channels) {
+        for (channel, threshold) in detector.thresholds.iter_mut().enumerate().take(channels) {
             *threshold = self.thresholds.get(channel);
         }
+        // This pass's samples after the tail.
         for channel in 0..channels {
             let row = &mut detector.samples[channel * stride..(channel + 1) * stride];
             row[tail..tail + n].copy_from_slice(input.channel(channel));
@@ -242,7 +245,7 @@ impl<E: PortEdges> Node<E> for SpikeDetector {
                 for channel in group_channels.clone() {
                     let start = channel as usize * stride + position - 1;
                     let row: &[f32; SCAN + 1] = detector.samples[start..start + SCAN + 1].try_into().unwrap();
-                    let threshold = output.thresholds[channel as usize];
+                    let threshold = detector.thresholds[channel as usize];
                     for (i, crossed) in crossings.iter_mut().enumerate() {
                         *crossed |= beyond(row[i + 1], threshold) & !beyond(row[i], threshold);
                     }
@@ -259,7 +262,7 @@ impl<E: PortEdges> Node<E> for SpikeDetector {
                     .clone()
                     .find(|&channel| {
                         let row = &detector.samples[channel as usize * stride..];
-                        let threshold = output.thresholds[channel as usize];
+                        let threshold = detector.thresholds[channel as usize];
                         beyond(row[p], threshold) && !beyond(row[p - 1], threshold)
                     })
                     .expect("one crossed there");

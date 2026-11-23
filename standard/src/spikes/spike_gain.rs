@@ -5,7 +5,9 @@
 //! channel's spikes for a while, then choose what's to fill what's recorded (`Gains::fill_uv`) by the channel's
 //! threshold, its spikes' peaks, or both (see `Fit`).
 //!
-//! The thresholds come with the spikes, as the detector has them. If they change while it's sampling (moved by hand, or
+//! The gain reads the thresholds from the Spike Detector's (its `thresholds` input, connected to the detector's
+//! `thresholds`), as they are in the snapshot the detector's finding spikes by; unconnected, it goes by the default
+//! threshold. If they change while it's sampling (moved by hand, or
 //! detected just before, and only now applied), it starts again, as the spikes it had were found by the old ones. A
 //! Spike Viewer detects the thresholds first, then the gains.
 
@@ -16,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use crate::standard::auto_detect::{Detect, Distribution, SAMPLING, auto_detect_ui, detect_changed};
 use crate::standard::spikes::Spikes;
 use crate::standard::spikes::{
-    Channels, DEFAULT_RANGE_UV, GainScope, Gains, RANGES_UV, SetGains, SpikesBuffer, fill_field, gain_field,
+    Channels, DEFAULT_RANGE_UV, GainScope, Gains, RANGES_UV, SetGains, SpikesBuffer, Thresholds, fill_field, gain_field,
 };
 use crate::standard::widgets::{input_summary, named_settings_grid, require_input, setting};
 use ephys_rs::engine::{Category, CommandContext, CommandSource, Node, NodeInfo, PassContext, UiContext};
@@ -26,6 +28,8 @@ ephys_rs::ports! {
     spikes: DataStreamIn<Spikes>,
     spikes: DataStreamOut<Spikes> in_place_of spikes,
     gains: ValOutCmdIn<Gains, (SetGains, Detect)>,
+    /// The Spike Detector's thresholds, which the gains' auto detect can go by. The gain only reads them.
+    thresholds: ValIn<Thresholds>,
 }
 
 #[derive(Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -242,9 +246,8 @@ impl<E: PortEdges> Node<E> for SpikeGain {
         Prepared::shared(Gaining { sampling }).into()
     }
 
-    /// Multiplies each channel's waveforms by its gain (saying so on the spikes); and, while the gains are being
-    /// detected, samples the spikes (in µV, before that) for a while, then sends itself gains chosen from them, with
-    /// `detect` cleared.
+    /// Multiplies each channel's waveforms by its gain; and, while the gains are being detected, samples the spikes (in
+    /// µV, before that) for a while, then sends itself gains chosen from them, with `detect` cleared.
     fn process(
         &self,
         pass: &mut PassContext<E>,
@@ -257,12 +260,14 @@ impl<E: PortEdges> Node<E> for SpikeGain {
         if let Some(input) = inputs.spikes {
             copy(input, spikes);
         }
-        let channels = spikes.gains.len();
-        let layout = Channels { count: channels, group_size: spikes.group_size };
         if let Some(sampling) = gaining.sampling.as_mut().filter(|s| !s.done) {
+            let channels = sampling.peaks.len();
+            let layout = Channels { count: channels, group_size: spikes.group_size };
+            let default = Thresholds::default();
+            let thresholds = pass.val_in(ValIn::thresholds).unwrap_or(&default);
             // From the start, and again if the thresholds change: the spikes so far were found by the old ones.
-            if sampling.thresholds != spikes.thresholds {
-                sampling.restart(&spikes.thresholds);
+            if !sampling.found_by(thresholds) {
+                sampling.restart(thresholds, channels);
             }
             sampling.add(spikes, pass.duration);
             if sampling.elapsed >= sampling.seconds {
@@ -279,14 +284,11 @@ impl<E: PortEdges> Node<E> for SpikeGain {
         }
 
         // The gains, applied: amplified µV.
-        for (channel, gain) in spikes.gains.iter_mut().enumerate() {
-            *gain = self.gains.get(channel);
-        }
         let (k, samples, size) = (spikes.group_size, spikes.samples, spikes.group_size * spikes.samples);
         for (i, spike) in spikes.spikes.iter().enumerate() {
             let waveform = &mut spikes.waveforms[i * size..(i + 1) * size];
             for c in 0..k {
-                let gain = spikes.gains.get(spike.group as usize * k + c).copied().unwrap_or(1.0);
+                let gain = self.gains.get(spike.group as usize * k + c);
                 waveform[c * samples..(c + 1) * samples].iter_mut().for_each(|v| *v *= gain);
             }
         }
@@ -461,15 +463,20 @@ impl Sampling {
         Sampling { elapsed: 0.0, seconds, thresholds: Vec::new(), peaks, extrema, done: false }
     }
 
-    /// Starts again, in the room it has, with spikes found by `thresholds`.
-    fn restart(&mut self, thresholds: &[f32]) {
+    /// Whether the spikes sampled so far were found by `thresholds` (none have been, before the first `restart`).
+    fn found_by(&self, thresholds: &Thresholds) -> bool {
+        !self.thresholds.is_empty() && self.thresholds.iter().enumerate().all(|(c, &t)| t == thresholds.get(c))
+    }
+
+    /// Starts again, in the room it has, with `channels`' spikes found by `thresholds`.
+    fn restart(&mut self, thresholds: &Thresholds, channels: usize) {
         self.elapsed = 0.0;
         self.thresholds.clear();
-        self.thresholds.extend_from_slice(thresholds);
-        self.peaks.resize_with(thresholds.len(), Distribution::default);
+        self.thresholds.extend((0..channels).map(|c| thresholds.get(c)));
+        self.peaks.resize_with(channels, Distribution::default);
         self.peaks.iter_mut().for_each(Distribution::clear);
         self.extrema.clear();
-        self.extrema.resize(thresholds.len(), 0.0);
+        self.extrema.resize(channels, 0.0);
     }
 
     fn add(&mut self, spikes: &SpikesBuffer, duration: f64) {
@@ -516,16 +523,16 @@ fn copy(input: &SpikesBuffer, output: &mut SpikesBuffer) {
     output.spikes.clone_from(&input.spikes);
     output.waveforms.clone_from(&input.waveforms);
     (output.group_size, output.samples, output.pass_samples) = (input.group_size, input.samples, input.pass_samples);
-    output.thresholds.clone_from(&input.thresholds);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::Edges;
-    use crate::standard::spikes::{DEFAULT_THRESHOLD_UV, Spike};
+    use crate::standard::spikes::Spike;
     use crate::{Command, NodeType};
     use ephys_rs::engine::DataStreamInPorts;
+    use ephys_rs::engine::HasValue;
     use ephys_rs::engine::{DataStreamType, PASS_DURATION};
 
     #[test]
@@ -561,7 +568,9 @@ mod tests {
         gain.gains.detect.started = Some(started);
         let mut state = ephys_rs::engine::fresh_state::<Edges, _>(&gain, &inputs);
         let mut spikes = stream.buffer(PASS_DURATION);
-        spikes.thresholds = vec![DEFAULT_THRESHOLD_UV, DEFAULT_THRESHOLD_UV, 80.0, DEFAULT_THRESHOLD_UV];
+        let mut thresholds = Thresholds::default();
+        thresholds.set(2, 80.0);
+        let val_ins = [Some(<Edges as HasValue<Thresholds>>::wrap(thresholds))];
         let passes = (4.0 / PASS_DURATION).round() as u64;
         let commands = ephys_rs::commands::Commands::default();
         for sequence in 0..passes {
@@ -573,7 +582,7 @@ mod tests {
                 waveform[40 + 8] = if sequence % 4 == 0 { 300.0 } else { 50.0 };
             }
             let mut pass = PassContext::<Edges>::new(sequence, PASS_DURATION);
-            pass.commands = &commands;
+            (pass.commands, pass.val_ins) = (&commands, &val_ins);
             // Made in place: the output already holds the spikes.
             gain.process(
                 &mut pass,
@@ -600,7 +609,7 @@ mod tests {
         assert!(!gains.inverted(2), "no spikes: as it was");
         // A percentile of them leaves out the second channel's few big ones: 3 in 4 are 50 µV.
         let mut sampling = Sampling::new(4.0, 4);
-        sampling.restart(&[50.0; 4]);
+        sampling.restart(&Thresholds::default(), 4);
         for sequence in 0..8 {
             spikes.clear();
             if let Some(waveform) = spikes.push(Spike { sample: 0, group: 0, channel: 0 }) {
@@ -623,26 +632,29 @@ mod tests {
         gain.gains.detect.started = Some(started);
         let mut state = ephys_rs::engine::fresh_state::<Edges, _>(&gain, &inputs);
         let mut spikes = stream.buffer(PASS_DURATION);
-        spikes.thresholds = vec![DEFAULT_THRESHOLD_UV; 4];
         let commands = ephys_rs::commands::Commands::default();
         let passes = (4.0 / PASS_DURATION).round() as u64;
-        let mut run = |sequence, spikes: &mut SpikesBuffer| {
+        let mut run = |sequence, spikes: &mut SpikesBuffer, thresholds: &Thresholds| {
+            let val_ins = [Some(<Edges as HasValue<Thresholds>>::wrap(thresholds.clone()))];
             let mut pass = PassContext::<Edges>::new(sequence, PASS_DURATION);
-            pass.commands = &commands;
+            (pass.commands, pass.val_ins) = (&commands, &val_ins);
             gain.process(&mut pass, DataStreamIn { spikes: None }, DataStreamOut { spikes }, &mut state, &mut ());
         };
+        let mut thresholds = Thresholds::default();
         for sequence in 0..passes / 2 {
-            run(sequence, &mut spikes);
+            run(sequence, &mut spikes, &thresholds);
         }
         // The detector's chosen its thresholds.
-        spikes.thresholds = vec![30.0, 40.0, 60.0, 70.0];
+        for (channel, uv) in [30.0, 40.0, 60.0, 70.0].into_iter().enumerate() {
+            thresholds.set(channel, uv);
+        }
         // From the pass the thresholds changed on, it samples for 4 s again.
         let done = passes / 2 + passes - 1;
         for sequence in passes / 2..done {
-            run(sequence, &mut spikes);
+            run(sequence, &mut spikes, &thresholds);
             assert!(commands.take_commands::<Command>().is_empty(), "sampling again, at pass {sequence}");
         }
-        run(done, &mut spikes);
+        run(done, &mut spikes, &thresholds);
         let updates = commands.take_commands::<Command>();
         let [(_, Command::SetGains(SetGains(gains)))] = &updates[..] else { panic!("{updates:?}") };
         // No spikes: each by its new threshold, times the factor.
@@ -704,7 +716,7 @@ mod tests {
     #[test]
     fn auto_invert_turns_spikes_to_go_down() {
         let mut sampling = Sampling::new(1.0, 8);
-        sampling.restart(&[50.0; 8]);
+        sampling.restart(&Thresholds::default(), 8);
         sampling.extrema = vec![-300.0, 200.0, 0.0, 0.0, -100.0, 150.0, 0.0, -10.0];
         let (tetrodes, each) = (Channels { count: 8, group_size: 4 }, Channels { count: 8, group_size: 1 });
         let mut gains = Gains::default();

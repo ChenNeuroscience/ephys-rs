@@ -11,6 +11,7 @@ mod continuous_viewer_spectra;
 mod edge_port_ids;
 mod example;
 mod gains_amplify;
+mod spike_gain_thresholds;
 mod write_ltx_val_ins;
 
 pub const PATCHES: PatchSet = PatchSet {
@@ -24,6 +25,7 @@ pub const PATCHES: PatchSet = PatchSet {
         edge_port_ids::PATCH,
         continuous_viewer::PATCH,
         continuous_viewer_spectra::PATCH,
+        spike_gain_thresholds::PATCH,
     ],
 };
 
