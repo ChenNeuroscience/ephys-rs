@@ -11,8 +11,8 @@ use crate::standard::ephys::{Continuous, Events};
 use crate::standard::pool::Pool;
 use crate::standard::widgets::{named_settings_grid, setting, settings_grid};
 use ephys_rs::engine::{
-    Buffers, Category, CommandContext, CommandSource, DataStreamOutPorts, Flow, NoPorts, Node, NodeInfo, NodeThread,
-    PassContext, PoolStatus, Prepare, PrepareContext, Prepared, Suggestion, ThreadContext, UiContext, UserDecision,
+    Buffers, Category, CommandContext, CommandSource, DataStreamOutPorts, DevTools, Flow, NoPorts, Node, NodeInfo,
+    NodeThread, PassContext, PoolStatus, Prepare, PrepareContext, Prepared, Suggestion, UiContext, UserDecision,
 };
 use ephys_rs::gui::widgets::{Icon, small_icon_button};
 
@@ -158,8 +158,9 @@ impl<E: PortEdges> Node<E> for AcquisitionBoard {
         }
     }
 
-    fn threads(&self) -> Vec<NodeThread> {
-        vec![NodeThread {
+    fn on_dev_tools_tick<'a>(&'a self, dev: &mut DevTools<'a>) {
+        let display = dev.shared::<Pool<BoardDisplay>>().and_then(Pool::newest);
+        let thread = NodeThread {
             name: "Board capture",
             link: "buffer pool",
             flow: Flow::ToPasses,
@@ -167,31 +168,30 @@ impl<E: PortEdges> Node<E> for AcquisitionBoard {
                   overflows), whatever the passes are doing.",
             swapped_outputs: (0..DataStreamOutPorts::<E>::ports(&Node::<E>::output_streams(self, &NoPorts)).len())
                 .collect(),
-        }]
-    }
-
-    fn thread_ui(&self, _thread_idx: usize, ui: &mut egui::Ui, context: &ThreadContext) {
-        let small = |text: String| RichText::new(text).size(11.0);
-        let pool = context.shared::<Pool<BoardDisplay>>();
-        let Some(display) = pool.and_then(Pool::newest) else {
-            ui.label(small("Reads the board as samples arrive; starts when running.".into()).weak());
-            return;
+            pool: display.as_ref().map(|d| d.pool),
         };
-        let status = &display.status;
-        match &status.state {
-            State::Starting => ui.label(small("Opening the board…".into()).weak()),
-            State::Running => ui.label(small(status.info.as_ref().map_or(String::new(), |i| i.description.clone()))),
-            State::Problem(problem) => ui.label(small(problem.clone()).color(context.theme.warning)),
-        };
-        ui.label(small(format!("{:.0} samples/s · {} samples", status.rate, status.samples)).weak());
-        if status.board_dropped + status.not_taken > 0 {
-            let text = format!("{} dropped by the board, {} not taken in time", status.board_dropped, status.not_taken);
-            ui.label(small(text).color(context.theme.warning));
-        }
-    }
-
-    fn thread_pool(&self, _thread_idx: usize, context: &ThreadContext) -> Option<PoolStatus> {
-        context.shared::<Pool<BoardDisplay>>().and_then(|l| l.newest().map(|d| d.pool))
+        let warning = dev.theme.warning;
+        dev.thread(thread, move |ui| {
+            let small = |text: String| RichText::new(text).size(11.0);
+            let Some(display) = display else {
+                ui.label(small("Reads the board as samples arrive; starts when running.".into()).weak());
+                return;
+            };
+            let status = &display.status;
+            match &status.state {
+                State::Starting => ui.label(small("Opening the board…".into()).weak()),
+                State::Running => {
+                    ui.label(small(status.info.as_ref().map_or(String::new(), |i| i.description.clone())))
+                }
+                State::Problem(problem) => ui.label(small(problem.clone()).color(warning)),
+            };
+            ui.label(small(format!("{:.0} samples/s · {} samples", status.rate, status.samples)).weak());
+            if status.board_dropped + status.not_taken > 0 {
+                let text =
+                    format!("{} dropped by the board, {} not taken in time", status.board_dropped, status.not_taken);
+                ui.label(small(text).color(warning));
+            }
+        });
     }
 
     /// Starts acquiring, carrying on with the board if it's acquiring as set already (see `Capture::start`): its

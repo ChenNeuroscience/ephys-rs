@@ -114,8 +114,8 @@ impl<N: NodesEnum> Plan<N> {
                 let buffers = PassBuffers { inputs: &inputs, taken: &mut taken, outputs: &mut outputs };
                 let ran = console::in_pass(pass, || match step.state {
                     Some(slot) => {
-                        let change = |state: &mut (dyn Any + Send), proto_state: &mut (dyn Any + Send)| {
-                            node.adopt_snapshot(state, proto_state)
+                        let change = |current_state: &mut (dyn Any + Send), new_proto_state: &mut (dyn Any + Send)| {
+                            node.adopt_snapshot(current_state, new_proto_state)
                         };
                         run.states[slot].with(sequence, &change, |state| {
                             began = Instant::now();

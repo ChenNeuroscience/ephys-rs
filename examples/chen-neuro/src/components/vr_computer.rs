@@ -52,8 +52,8 @@ use crate::standard::tracking::{
 use crate::standard::widgets::{named_settings_grid, setting};
 use eframe::egui::{self, RichText};
 use ephys_rs::engine::{
-    Buffers, Category, CommandContext, CommandSource, Flow, NoPorts, Node, NodeInfo, NodeThread, PassContext,
-    SnapshotLite, ThreadContext, UiContext,
+    Buffers, Category, CommandContext, CommandSource, DevTools, Flow, NoPorts, Node, NodeInfo, NodeThread, PassContext,
+    SnapshotLite, UiContext,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -582,22 +582,21 @@ impl<E: PortEdges> Node<E> for VrComputer {
         }
     }
 
-    fn threads(&self) -> Vec<NodeThread> {
-        vec![NodeThread {
+    fn on_dev_tools_tick<'a>(&'a self, dev: &mut DevTools<'a>) {
+        let status = dev.shared::<Pool<Status>>().and_then(Pool::newest);
+        let thread = NodeThread {
             name: "VR computer",
             link: "message queue",
             flow: Flow::ToPasses,
             why: "On a thread of its own so messages are read as they come, whatever the passes are doing.",
             swapped_outputs: Vec::new(),
-        }]
-    }
-
-    fn thread_ui(&self, _thread_idx: usize, ui: &mut egui::Ui, context: &ThreadContext) {
-        let pool = context.shared::<Pool<Status>>();
-        match pool.and_then(Pool::newest) {
-            Some(status) => status_ui(ui, &status, context.theme.warning),
+            pool: None,
+        };
+        let warning = dev.theme.warning;
+        dev.thread(thread, move |ui| match status {
+            Some(status) => status_ui(ui, &status, warning),
             None => drop(ui.weak("Reads messages as they arrive; starts when running.")),
-        }
+        });
     }
 
     fn prepare_for_snapshot(

@@ -32,8 +32,8 @@ use crate::standard::other::run_command::{FileInput, ProcessFiles};
 use crate::standard::pool::Pool;
 use crate::standard::widgets::require_input;
 use ephys_rs::engine::{
-    Category, CommandContext, CommandSource, DataStreamType, EdgeTypesEnum, Flow, Node, NodeInfo, NodeThread,
-    PASS_DURATION, PassContext, PoolStatus, ThreadContext, UiContext,
+    Category, CommandContext, CommandSource, DataStreamType, DevTools, EdgeTypesEnum, Flow, Node, NodeInfo, NodeThread,
+    PASS_DURATION, PassContext, UiContext,
 };
 
 const CONTINUOUS_FOLDER: &str = "ephys-rs-100.continuous";
@@ -133,23 +133,18 @@ impl<E: PortEdges> Node<E> for WriteRaw {
         NoPorts
     }
 
-    fn threads(&self) -> Vec<NodeThread> {
-        vec![NodeThread {
+    fn on_dev_tools_tick<'a>(&'a self, dev: &mut DevTools<'a>) {
+        let status = dev.shared::<Pool<Status>>().and_then(Pool::newest);
+        let thread = NodeThread {
             name: "Raw writer",
             link: "buffer pool",
             flow: Flow::FromPasses,
             why: super::WHY_A_THREAD,
             swapped_outputs: Vec::new(),
-        }]
-    }
-
-    fn thread_pool(&self, _thread_idx: usize, context: &ThreadContext) -> Option<PoolStatus> {
-        context.shared::<Pool<Status>>().and_then(|l| l.newest().map(|s| s.pool))
-    }
-
-    fn thread_ui(&self, _thread_idx: usize, ui: &mut egui::Ui, context: &ThreadContext) {
-        let pool = context.shared::<Pool<Status>>();
-        status_ui(ui, pool.and_then(Pool::newest).as_deref(), true, context.theme);
+            pool: status.as_ref().map(|s| s.pool),
+        };
+        let theme = dev.theme;
+        dev.thread(thread, move |ui| status_ui(ui, status.as_deref(), true, theme));
     }
 
     /// While recording, opens the files and starts the thread to write them (carrying on with them through the

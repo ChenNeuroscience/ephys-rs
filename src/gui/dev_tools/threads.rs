@@ -10,8 +10,8 @@
 //!   (to hand over its state: a sync point), which buffers it takes (to swap away) and where the plan copies data for
 //!   a node taking it that can't be the last to read it (a copy point). Then the memory each worker has for the plan.
 //! - Threads nodes run of their own (acquiring from a board, say), each drawn by its node (see
-//!   `Node::thread_ui`), linked to the node's step: the link points the way data goes. In it is the pool of buffers
-//!   the thread swaps with the passes, if it has one (see `Node::thread_pool`).
+//!   `Node::on_dev_tools_tick`), linked to the node's step: the link points the way data goes. In it is the pool of buffers
+//!   the thread swaps with the passes, if it has one (see `NodeThread::pool`).
 //!
 //! - Short-lived helpers, out of the way below the rest, which do what the threads above mustn't wait for.
 //!
@@ -27,8 +27,8 @@ use std::sync::Arc;
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Shape, Stroke, Vec2, vec2};
 
 use crate::engine::{
-    EdgeTypesEnum, Edges, Flow, Graph, NodeId, NodesEnum, PASS_DURATION, Plan, PoolStatus, Resolved, RunInfo, Runner,
-    Snapshot, Step, StepTime, ThreadContext,
+    DevTools, EdgeTypesEnum, Edges, Flow, Graph, NodeId, NodeThread, NodesEnum, PASS_DURATION, Plan, PoolStatus,
+    Resolved, RunInfo, Runner, Snapshot, Step, StepTime,
 };
 use crate::gui::style;
 use crate::theme::Colours;
@@ -657,7 +657,11 @@ fn step_row<N: NodesEnum>(
     let tip = egui::pos2(arrow.right() - 1.0, y);
     ui.painter().add(Shape::line(vec![tip + vec2(-3.5, -3.0), tip, tip + vec2(-3.5, 3.0)], stroke));
     // The outputs its thread fills, which the passes swap for their own.
-    let threads = graph.get(step.id).map(|e| e.node.threads()).unwrap_or_default();
+    let mut dev = DevTools::new(colours, step.id, None);
+    if let Some(entry) = graph.get(step.id) {
+        entry.node.on_dev_tools_tick(&mut dev);
+    }
+    let threads: Vec<NodeThread> = dev.into_threads().into_iter().map(|(t, _)| t).collect();
     let swapped = |o: usize| threads.iter().any(|t| t.flow == Flow::ToPasses && t.swapped_outputs.contains(&o));
     for (o, &b) in step.outputs.iter().enumerate() {
         let name = output_names.get(o).copied().unwrap_or("output");
@@ -964,8 +968,9 @@ fn node_threads<N: NodesEnum>(
     let shared = runner.map(|r| r.shared());
     for step in plan.steps() {
         let Some(entry) = graph.get(step.id) else { continue };
-        for (index, thread) in entry.node.threads().iter().enumerate().filter(|(_, t)| t.flow == flow) {
-            let context = ThreadContext { theme: colours, node: step.id, shared_by_node: shared.as_deref() };
+        let mut dev = DevTools::new(colours, step.id, shared.as_deref());
+        entry.node.on_dev_tools_tick(&mut dev);
+        for (thread, thread_ui) in dev.into_threads().into_iter().filter(|(t, _)| t.flow == flow) {
             {
                 // The pool's buffers are like the step's: its outputs' for a source, its inputs' for a writer.
                 let ports: Vec<Option<usize>> = match thread.flow {
@@ -973,7 +978,7 @@ fn node_threads<N: NodesEnum>(
                     Flow::FromPasses => step.inputs.clone(),
                     Flow::FromGui => Vec::new(),
                 };
-                let pool = entry.node.thread_pool(index, &context);
+                let pool = thread.pool;
                 let pool = pool.filter(|p| p.size > 0).map(|p| {
                     let pooled = ports.iter().enumerate().filter(|(i, _)| *i < 64 && p.ports & (1 << i) != 0);
                     let colour =
@@ -992,7 +997,7 @@ fn node_threads<N: NodesEnum>(
                         }
                     }
                     ui.add_space(2.0);
-                    entry.node.thread_ui(index, ui, &context);
+                    thread_ui(ui);
                 });
                 anchors.node_threads.push(NodeThreadAnchor {
                     node: step.id,

@@ -10,8 +10,8 @@ use crate::standard::pool::Pool;
 use crate::standard::tracking::Video;
 use crate::standard::widgets::{setting, settings_grid};
 use ephys_rs::engine::{
-    Buffers, Category, CommandContext, CommandSource, Flow, NoPorts, Node, NodeInfo, NodeThread, PassContext,
-    PoolStatus, Prepare, PrepareContext, Prepared, Suggestion, ThreadContext, UiContext, UserDecision,
+    Buffers, Category, CommandContext, CommandSource, DevTools, Flow, NoPorts, Node, NodeInfo, NodeThread, PassContext,
+    PoolStatus, Prepare, PrepareContext, Prepared, Suggestion, UiContext, UserDecision,
 };
 
 ephys_rs::ports! {
@@ -103,8 +103,9 @@ impl<E: PortEdges> Node<E> for Camera {
         }
     }
 
-    fn threads(&self) -> Vec<NodeThread> {
-        vec![NodeThread {
+    fn on_dev_tools_tick<'a>(&'a self, dev: &mut DevTools<'a>) {
+        let stats = dev.shared::<Pool<CaptureStats>>().and_then(Pool::newest);
+        let thread = NodeThread {
             name: "Camera capture",
             link: "buffer pool",
             flow: Flow::ToPasses,
@@ -112,32 +113,28 @@ impl<E: PortEdges> Node<E> for Camera {
                   are doing.",
             // The video: the stats are made by the passes.
             swapped_outputs: vec![0],
-        }]
-    }
-
-    fn thread_ui(&self, _thread_idx: usize, ui: &mut egui::Ui, context: &ThreadContext) {
-        let small = |text: String| RichText::new(text).size(11.0);
-        let pool = context.shared::<Pool<CaptureStats>>();
-        let Some(stats) = pool.and_then(Pool::newest) else {
-            ui.label(small("Takes frames as they arrive; starts when running.".into()).weak());
-            return;
+            pool: stats.as_ref().map(|s| s.pool),
         };
-        let status = &stats.status;
-        match &status.state {
-            State::Starting => ui.label(small("Opening the camera…".into()).weak()),
-            State::Running => ui.label(small(status.description.clone())),
-            State::Problem(problem) => ui.label(small(problem.clone()).color(context.theme.warning)),
-        };
-        ui.label(small(format!("{:.1} frames/s · {} frames", status.fps, status.frames)).weak());
-        if status.camera_dropped + status.not_taken > 0 {
-            let text =
-                format!("{} dropped by the camera, {} not taken in time", status.camera_dropped, status.not_taken);
-            ui.label(small(text).color(context.theme.warning));
-        }
-    }
-
-    fn thread_pool(&self, _thread_idx: usize, context: &ThreadContext) -> Option<PoolStatus> {
-        context.shared::<Pool<CaptureStats>>().and_then(|l| l.newest().map(|s| s.pool))
+        let warning = dev.theme.warning;
+        dev.thread(thread, move |ui| {
+            let small = |text: String| RichText::new(text).size(11.0);
+            let Some(stats) = stats else {
+                ui.label(small("Takes frames as they arrive; starts when running.".into()).weak());
+                return;
+            };
+            let status = &stats.status;
+            match &status.state {
+                State::Starting => ui.label(small("Opening the camera…".into()).weak()),
+                State::Running => ui.label(small(status.description.clone())),
+                State::Problem(problem) => ui.label(small(problem.clone()).color(warning)),
+            };
+            ui.label(small(format!("{:.1} frames/s · {} frames", status.fps, status.frames)).weak());
+            if status.camera_dropped + status.not_taken > 0 {
+                let text =
+                    format!("{} dropped by the camera, {} not taken in time", status.camera_dropped, status.not_taken);
+                ui.label(small(text).color(warning));
+            }
+        });
     }
 
     /// Starts capturing, carrying on with the camera if it's capturing already (see `Capture::start`): its capture

@@ -8,8 +8,8 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use super::{
-    BufferUsage, CommandContext, CommandSource, Edges, NodeInfo, NodeThread, PassBuffers, PassContext, PoolStatus,
-    Port, PortRole, Prepare, PrepareContext, Shared, ThreadContext, TreeShake, UiContext,
+    BufferUsage, CommandContext, CommandSource, DevTools, Edges, NodeInfo, PassBuffers, PassContext, Port, PortRole,
+    Prepare, PrepareContext, Shared, TreeShake, UiContext,
 };
 
 /// The app sometimes needs a node's type without the node: what the add-node menu offers, say. `nodes_enum!` makes a
@@ -102,8 +102,8 @@ pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + S
         &self,
         context: &PrepareContext<Self::Edges, Self>,
     ) -> Prepare<Box<dyn Any + Send>, Box<dyn Any + Send>, Self>;
-    /// `state` and `proto_state` are the node's state, as its own type (see `Node::adopt_snapshot`).
-    fn adopt_snapshot(&self, state: &mut (dyn Any + Send), proto_state: &mut (dyn Any + Send));
+    /// `current_state` and `new_proto_state` are the node's state, as its own type (see `Node::adopt_snapshot`).
+    fn adopt_snapshot(&self, current_state: &mut (dyn Any + Send), new_proto_state: &mut (dyn Any + Send));
     fn shared(&self, inputs: &[Option<<Self::Edges as Edges>::DataStream>]) -> Box<dyn Shared>;
     /// Runs the node for one pass on `buffers`, with the node's state and the worker's state as
     /// `prepare_for_snapshot` made them (`None` if there is none). If the node lacks the state it needs, because it
@@ -115,9 +115,7 @@ pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + S
         state: Option<&mut (dyn Any + Send)>,
         worker_state: Option<&mut (dyn Any + Send)>,
     ) -> bool;
-    fn threads(&self) -> Vec<NodeThread>;
-    fn thread_ui(&self, thread_idx: usize, ui: &mut egui::Ui, context: &ThreadContext);
-    fn thread_pool(&self, thread_idx: usize, context: &ThreadContext) -> Option<PoolStatus>;
+    fn on_dev_tools_tick<'a>(&'a self, dev: &mut DevTools<'a>);
 
     fn info(&self) -> &'static NodeInfo {
         self.node_type().info()
@@ -413,16 +411,16 @@ macro_rules! nodes_enum {
 
             fn adopt_snapshot(
                 &self,
-                state: &mut (dyn std::any::Any + Send),
-                proto_state: &mut (dyn std::any::Any + Send),
+                current_state: &mut (dyn std::any::Any + Send),
+                new_proto_state: &mut (dyn std::any::Any + Send),
             ) {
                 match self {
                     $($name::$variant(n) => {
                         type State = <$ty as $crate::engine::Node<$edges>>::State;
-                        if let (Some(state), Some(proto_state)) =
-                            (state.downcast_mut::<State>(), proto_state.downcast_mut::<State>())
+                        if let (Some(current_state), Some(new_proto_state)) =
+                            (current_state.downcast_mut::<State>(), new_proto_state.downcast_mut::<State>())
                         {
-                            $crate::engine::Node::<$edges>::adopt_snapshot(n, state, proto_state);
+                            $crate::engine::Node::<$edges>::adopt_snapshot(n, current_state, new_proto_state);
                         }
                     }),+
                 }
@@ -471,25 +469,8 @@ macro_rules! nodes_enum {
                 }
             }
 
-            fn threads(&self) -> Vec<$crate::engine::NodeThread> {
-                match self { $($name::$variant(n) => $crate::engine::Node::<$edges>::threads(n)),+ }
-            }
-
-            fn thread_ui(
-                &self,
-                thread_idx: usize,
-                ui: &mut eframe::egui::Ui,
-                context: &$crate::engine::ThreadContext,
-            ) {
-                match self { $($name::$variant(n) => $crate::engine::Node::<$edges>::thread_ui(n, thread_idx, ui, context)),+ }
-            }
-
-            fn thread_pool(
-                &self,
-                thread_idx: usize,
-                context: &$crate::engine::ThreadContext,
-            ) -> Option<$crate::engine::PoolStatus> {
-                match self { $($name::$variant(n) => $crate::engine::Node::<$edges>::thread_pool(n, thread_idx, context)),+ }
+            fn on_dev_tools_tick<'a>(&'a self, dev: &mut $crate::engine::DevTools<'a>) {
+                match self { $($name::$variant(n) => $crate::engine::Node::<$edges>::on_dev_tools_tick(n, dev)),+ }
             }
         }
     };

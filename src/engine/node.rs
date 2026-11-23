@@ -11,8 +11,8 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use super::{
-    CmdInOf, CommandContext, DataStreamInOf, DataStreamInPorts, DataStreamOutOf, DataStreamOutPorts, Edges, NodeThread,
-    PassContext, PoolStatus, PortSet, Shared, ThreadContext, UiContext, ValOutCmdInOf,
+    CmdInOf, CommandContext, DataStreamInOf, DataStreamInPorts, DataStreamOutOf, DataStreamOutPorts, DevTools, Edges,
+    PassContext, PortSet, Shared, UiContext, ValOutCmdInOf,
 };
 use crate::global_settings::GlobalSettingsSet;
 
@@ -267,14 +267,15 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
         super::Prepared::nothing().into()
     }
 
-    /// When the passes switch to a new snapshot, a node that had state in the snapshot before (`state`) and prepared a
-    /// new shared proto-state (`proto_state`, see `prepare_for_snapshot`) gets to make its new state from the two. By
-    /// default, the node swaps the proto-state in, but a node can take what it likes across from the old state instead
-    /// (a device it has open, say). The engine calls this on the worker running the snapshot's first pass, once the
-    /// pass before has finished with the old state, so the node must be quick. The engine lets go of whatever's left
-    /// in `proto_state` (the old state, by default) in the background.
-    fn adopt_snapshot(&self, state: &mut Self::State, proto_state: &mut Self::State) {
-        std::mem::swap(state, proto_state);
+    /// When the passes switch to a new snapshot, a node that had state in the snapshot before and prepared a new shared
+    /// proto-state (`new_proto_state`, see `prepare_for_snapshot`) gets to make its new state from the two. The node's
+    /// `current_state` holds the old state when the engine calls this, and whatever the node leaves there becomes the
+    /// new state. By default, the node swaps the proto-state in, but a node can take what it likes across from the old
+    /// state instead (a device it has open, say). The engine calls this on the worker
+    /// running the snapshot's first pass, once the pass before has finished with the old state, so the node must be
+    /// quick. The engine lets go of whatever's left in `new_proto_state` (the old state, by default) in the background.
+    fn adopt_snapshot(&self, current_state: &mut Self::State, new_proto_state: &mut Self::State) {
+        std::mem::swap(current_state, new_proto_state);
     }
 
     /// Before a graph runs, the plan works out which nodes run, and which of their inputs' data each node needs (the
@@ -316,22 +317,10 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     ) {
     }
 
-    /// Some nodes run threads of their own while running (started with their state, say). The dev tools list the
-    /// threads a node gives here.
-    fn threads(&self) -> Vec<NodeThread> {
-        Vec::new()
-    }
-
-    /// The dev tools show, briefly, what each of a node's `threads()` is up to. The node draws that here, for one
-    /// thread (`thread_idx`).
-    fn thread_ui(&self, _thread_idx: usize, _ui: &mut egui::Ui, _context: &ThreadContext) {}
-
-    /// Some of a node's `threads()` swap buffers with the passes, and the dev tools show those buffers between the
-    /// thread and the passes. For one thread (`thread_idx`), the node says here where the buffers are, if the thread
-    /// has any.
-    fn thread_pool(&self, _thread_idx: usize, _context: &ThreadContext) -> Option<PoolStatus> {
-        None
-    }
+    /// Some nodes run threads of their own while running (started with their state, say). Each time the dev tools draw,
+    /// they ask the node here, and the node describes each of its threads to `dev` (see `DevTools::thread`): what the
+    /// thread is, where its pool's buffers are, and what to draw to show, briefly, what the thread's up to.
+    fn on_dev_tools_tick<'a>(&'a self, _dev: &mut DevTools<'a>) {}
 
     /// The graph and the node's window show any problems with how the node's set up, which the node lists here, given
     /// what's connected to its inputs.

@@ -192,11 +192,11 @@ impl<E: PortEdges> Node<E> for SpikeDetector {
     }
 
     /// The detector so far carries on unless the node made a new one; the sampling's always what the node prepared.
-    fn adopt_snapshot(&self, state: &mut Detecting, proto_state: &mut Detecting) {
-        if proto_state.detector.is_some() {
-            std::mem::swap(&mut state.detector, &mut proto_state.detector);
+    fn adopt_snapshot(&self, current_state: &mut Detecting, new_proto_state: &mut Detecting) {
+        if new_proto_state.detector.is_some() {
+            std::mem::swap(&mut current_state.detector, &mut new_proto_state.detector);
         }
-        std::mem::swap(&mut state.sampling, &mut proto_state.sampling);
+        std::mem::swap(&mut current_state.sampling, &mut new_proto_state.sampling);
     }
 
     fn process(

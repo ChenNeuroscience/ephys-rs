@@ -24,8 +24,8 @@ use serialport::SerialPortType;
 use crate::standard::pool::Pool;
 use crate::standard::widgets::{combo, named_settings_grid, setting};
 use ephys_rs::engine::{
-    Category, CommandContext, CommandSource, Flow, NoCommands, NoPorts, Node, NodeInfo, NodeThread, PassContext,
-    PassState, Prepare, PrepareContext, Prepared, ThreadContext, UiContext,
+    Category, CommandContext, CommandSource, DevTools, Flow, NoCommands, NoPorts, Node, NodeInfo, NodeThread,
+    PassContext, PassState, Prepare, PrepareContext, Prepared, UiContext,
 };
 use ephys_rs::gui::widgets::{Icon, small_icon_button};
 
@@ -368,22 +368,21 @@ impl<E: ephys_rs::engine::Edges> Node<E> for Arduino {
         NoPorts
     }
 
-    fn threads(&self) -> Vec<NodeThread> {
-        vec![NodeThread {
+    fn on_dev_tools_tick<'a>(&'a self, dev: &mut DevTools<'a>) {
+        let status = dev.shared::<Pool<Status>>().and_then(Pool::newest);
+        let thread = NodeThread {
             name: "Arduino",
             link: "pins wanted",
             flow: Flow::FromPasses,
             why: "On a thread of its own so the Arduino's serial port is waited on there, not by the passes.",
             swapped_outputs: Vec::new(),
-        }]
-    }
-
-    fn thread_ui(&self, _thread_idx: usize, ui: &mut egui::Ui, context: &ThreadContext) {
-        let pool = context.shared::<Pool<Status>>();
-        match pool.and_then(Pool::newest) {
-            Some(status) => status_ui(ui, &status, self.baud, context.theme.warning),
+            pool: None,
+        };
+        let warning = dev.theme.warning;
+        dev.thread(thread, move |ui| match status {
+            Some(status) => status_ui(ui, &status, self.baud, warning),
             None => drop(ui.weak("Opens the Arduino's port; starts when running.")),
-        }
+        });
     }
 
     fn prepare_for_snapshot(&self, context: &PrepareContext<E, Self>) -> Prepare<Connected, (), Self> {

@@ -28,7 +28,7 @@ use crate::standard::pool::Pool;
 use crate::standard::widgets::{mark_mixed, open_settings_button, require_input};
 use crate::standard::widgets::{power, small_toggle};
 use ephys_rs::engine::{
-    Buffers, Category, CommandContext, CommandSource, Flow, NoPorts, Node, NodeInfo, NodeThread, PassContext,
+    Buffers, Category, CommandContext, CommandSource, DevTools, Flow, NoPorts, Node, NodeInfo, NodeThread, PassContext,
     PassState, PoolStatus, Prepare, PrepareContext, Prepared, Shared, UiContext,
 };
 use ephys_rs::gui::widgets::Icon;
@@ -199,15 +199,17 @@ impl<E: PortEdges> Node<E> for AlarmViewer {
         match command {}
     }
 
-    fn threads(&self) -> Vec<NodeThread> {
-        vec![NodeThread {
+    fn on_dev_tools_tick<'a>(&'a self, dev: &mut DevTools<'a>) {
+        let thread = NodeThread {
             name: "Alarm tone",
             link: "flag",
             flow: Flow::FromGui,
             why: "On a thread of its own so that opening the sound device, the first time an alarm sounds, can't hold \
                   up the GUI. Only started if it's needed.",
             swapped_outputs: Vec::new(),
-        }]
+            pool: None,
+        };
+        dev.thread(thread, |_| {});
     }
 
     fn prepare_for_snapshot(&self, context: &PrepareContext<E, Self>) -> Prepare<Sending, (), Self> {
