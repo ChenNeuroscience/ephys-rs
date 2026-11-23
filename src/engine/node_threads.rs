@@ -57,6 +57,9 @@ pub enum Flow {
     FromGui,
 }
 
+/// A node's thread, as the node described it to the dev tools (see `DevTools::thread`), with what to draw for it.
+pub type DescribedThread<'a> = (NodeThread, Box<dyn FnOnce(&mut egui::Ui) + 'a>);
+
 /// The dev tools ask each node about its threads, each time they draw (see `Node::on_dev_tools_tick`), and the node
 /// tells them through this: the node describes each thread (`DevTools::thread`), with what to draw for it. The node can
 /// look at what its passes share (`DevTools::shared`), to say what the thread's up to.
@@ -64,7 +67,7 @@ pub struct DevTools<'a> {
     pub theme: &'a Colours,
     node: NodeId,
     shared_by_node: Option<&'a SharedByNode>,
-    threads: Vec<(NodeThread, Box<dyn FnOnce(&mut egui::Ui) + 'a>)>,
+    threads: Vec<DescribedThread<'a>>,
 }
 
 impl<'a> DevTools<'a> {
@@ -86,7 +89,7 @@ impl<'a> DevTools<'a> {
     }
 
     /// The dev tools take the threads the node described, each with what to draw for it, from this.
-    pub fn into_threads(self) -> Vec<(NodeThread, Box<dyn FnOnce(&mut egui::Ui) + 'a>)> {
+    pub fn into_threads(self) -> Vec<DescribedThread<'a>> {
         self.threads
     }
 }
