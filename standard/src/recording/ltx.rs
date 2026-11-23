@@ -557,8 +557,10 @@ struct LtxFiles {
     set: LtxFile,
     tetrodes: Vec<Tetrode>,
     egf: Vec<Egf>,
-    /// Samples of the spikes' and events' passes so far.
-    spike_samples: i64,
+    /// The spikes' clock's number for the first sample recorded (see `SpikesBuffer::start`), which spikes' times count
+    /// from.
+    spike_origin: Option<u64>,
+    /// Samples of the events' passes so far.
     event_samples: u64,
     position_event_samples: u64,
     /// The source's time of the first position, which positions' times, the timing LED's and log lines' count from.
@@ -677,7 +679,7 @@ impl LtxFiles {
             set,
             tetrodes,
             egf,
-            spike_samples: 0,
+            spike_origin: None,
             event_samples: 0,
             position_event_samples: 0,
             first_position: None,
@@ -764,9 +766,10 @@ impl Files<Chunk> for LtxFiles {
         let mut bytes = 0;
         if let (Some(spikes), Some(buffer)) = (self.streams.spikes, chunk.inputs.spikes.get()) {
             let (k, samples) = (spikes.group_size as usize, spikes.waveform_samples() as usize);
+            let origin = *self.spike_origin.get_or_insert(buffer.start) as i64;
             for (i, spike) in buffer.spikes.iter().enumerate() {
                 let Some(tetrode) = self.tetrodes.get_mut(spike.group as usize) else { continue };
-                let seconds = (self.spike_samples + spike.sample as i64) as f64 / spikes.sample_rate as f64;
+                let seconds = (spike.sample as i64 - origin) as f64 / spikes.sample_rate as f64;
                 let waveform = &buffer.waveforms[i * k * samples..(i + 1) * k * samples];
                 self.record.clear();
                 for channel in 0..SPIKE_CHANNELS {
@@ -782,7 +785,6 @@ impl Files<Chunk> for LtxFiles {
                 tetrode.spikes += 1;
                 bytes += self.record.len() as u64;
             }
-            self.spike_samples += buffer.pass_samples as i64;
         }
 
         if let Some(continuous) = chunk.inputs.eeg.get().filter(|_| !self.egf.is_empty()) {
@@ -1122,15 +1124,16 @@ mod tests {
         let requested = Local::now();
         let mut files = Box::new(LtxFiles::open(&base, requested, streams, recorded).unwrap());
 
-        // A spike 300 samples into the second pass of 600: at 900 samples, 30 ms, 2880 ticks.
+        // Recorded from sample 1000, a spike at sample 1900: 900 samples in, 30 ms, 2880 ticks.
         let mut chunk = Chunk::new(streams);
         let effective = requested + chrono::Duration::milliseconds(40);
         chunk.effective = Some(effective);
         let buffer = chunk.inputs.spikes.give();
-        buffer.pass_samples = 600;
+        buffer.start = 1000;
         files.write(&chunk).unwrap();
         let buffer = chunk.inputs.spikes.give();
-        buffer.spikes.push(Spike { sample: 300, group: 0, channel: 0 });
+        buffer.start = 1600;
+        buffer.spikes.push(Spike { sample: 1900, group: 0, channel: 0 });
         // Amplified µV (by a Spike Gain): what are, over the scale, int8 values from -80.
         let full_scale = Scales::default().spikes_uv;
         let step = full_scale / 128.0;

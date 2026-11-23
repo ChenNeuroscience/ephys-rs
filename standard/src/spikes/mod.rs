@@ -66,9 +66,9 @@ impl EdgeType for Spikes {
 /// A detected spike.
 #[derive(Clone, Copy, Debug)]
 pub struct Spike {
-    /// Its peak, as a sample of the pass (negative if it was in an earlier pass: a spike is only found once its
-    /// whole waveform has come).
-    pub sample: i32,
+    /// The number of the sample the spike peaked at, on the continuous data's clock (see `ContinuousBuffer::start`).
+    /// A spike is only found once its whole waveform has come, so it can be before the buffer's `start`.
+    pub sample: u64,
     pub group: u32,
     /// The channel (of all of them) on which it crossed the threshold.
     pub channel: u32,
@@ -82,8 +82,9 @@ pub struct SpikesBuffer {
     pub waveforms: Vec<f32>,
     pub group_size: usize,
     pub samples: usize,
-    /// How many samples of continuous data the pass covers (for timing spikes across passes).
-    pub pass_samples: usize,
+    /// The number of the continuous data's first sample that the spikes were found in (see
+    /// `ContinuousBuffer::start`): where that data sits on the clock the spikes are timed by.
+    pub start: u64,
 }
 
 impl SpikesBuffer {
@@ -127,7 +128,7 @@ impl DataStreamType for Spikes {
             waveforms: Vec::with_capacity(capacity * group_size * waveform),
             group_size,
             samples: waveform,
-            pass_samples: 0,
+            start: 0,
         }
     }
 
@@ -138,13 +139,12 @@ impl DataStreamType for Spikes {
     fn copy(from: &SpikesBuffer, to: &mut SpikesBuffer) {
         to.spikes.clone_from(&from.spikes);
         to.waveforms.clone_from(&from.waveforms);
-        (to.group_size, to.samples, to.pass_samples) = (from.group_size, from.samples, from.pass_samples);
+        (to.group_size, to.samples, to.start) = (from.group_size, from.samples, from.start);
     }
 
     fn empty(buffer: &mut SpikesBuffer) {
         buffer.spikes.clear();
         buffer.waveforms.clear();
-        buffer.pass_samples = 0;
     }
 }
 

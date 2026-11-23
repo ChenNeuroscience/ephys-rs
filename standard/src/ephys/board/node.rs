@@ -229,10 +229,10 @@ impl<E: PortEdges> Node<E> for AcquisitionBoard {
                 std::mem::swap(digital, &mut samples.events);
                 capture.pool().give_back(samples);
             }
-            // Nothing's come since the last pass.
+            // Nothing's come since the last pass: none, numbered on from the last.
             None => {
                 for out in [headstages, auxiliary, analogue] {
-                    out.len = 0;
+                    (out.start, out.len) = (out.start + out.len as u64, 0);
                 }
                 digital.events.clear();
                 digital.pass_samples = 0;

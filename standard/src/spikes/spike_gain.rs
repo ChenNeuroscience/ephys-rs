@@ -522,7 +522,7 @@ impl Sampling {
 fn copy(input: &SpikesBuffer, output: &mut SpikesBuffer) {
     output.spikes.clone_from(&input.spikes);
     output.waveforms.clone_from(&input.waveforms);
-    (output.group_size, output.samples, output.pass_samples) = (input.group_size, input.samples, input.pass_samples);
+    (output.group_size, output.samples, output.start) = (input.group_size, input.samples, input.start);
 }
 
 #[cfg(test)]

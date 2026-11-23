@@ -210,6 +210,9 @@ impl Transforming {
     fn run(&mut self, input: &ContinuousBuffer, output: &mut ComplexContinuousBuffer) {
         let half = self.half;
         output.len = input.len.min(output.capacity);
+        // Late by `half`: before the input's first `half` samples, the output's are the zeros the transform started
+        // from, numbered as the first.
+        output.start = input.start.saturating_sub(half as u64);
         let len = output.len;
         for (channel, recent) in self.recent.iter_mut().enumerate().take(output.channels.min(input.channels)) {
             recent.extend_from_slice(&input.channel(channel)[..len]);

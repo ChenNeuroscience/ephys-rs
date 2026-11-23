@@ -427,7 +427,7 @@ impl<E: PortEdges> Node<E> for Reference {
         }
         // The references themselves.
         let references = outputs.reference;
-        references.len = n.min(references.capacity);
+        (references.len, references.start) = (n.min(references.capacity), output.start);
         for r in 0..references.channels {
             let row = references.channel_mut(r);
             match state.values.get(r * n..(r + 1) * n) {

@@ -259,6 +259,8 @@ fn capture(shared: &Shared, source: &Source, config: &Config, shape: Shape, pool
             channels(adc, shape.adc),
             shape.events,
         );
+        // What came after a gap partway through a buffer, for the next (see `Samples::split_off`).
+        let mut carry = Samples::new(shape.ephys, shape.aux, shape.adc, shape.events);
         let mismatched = (ephys, aux, adc) != expected_layout(&shape);
         if mismatched {
             log::warn!(
@@ -283,6 +285,7 @@ fn capture(shared: &Shared, source: &Source, config: &Config, shape: Shape, pool
             let into_pool = (!mismatched)
                 .then(|| {
                     pool.fill(Samples::clear, |samples| {
+                        let before = samples.len();
                         let decoded = board.decode(samples, &mut ttl)?;
                         let at = samples.len() - decoded.samples;
                         for (i, &word) in ttl.iter().enumerate() {
@@ -298,14 +301,34 @@ fn capture(shared: &Shared, source: &Source, config: &Config, shape: Shape, pool
                             }
                             last_ttl = word;
                         }
-                        Ok::<_, std::io::Error>((decoded, samples.room() == 0))
+                        // A buffer's samples follow on from each other, numbered as the board numbers them: where the
+                        // board's skipped some, those after the gap start the next buffer.
+                        let gap = before > 0 && decoded.first != samples.start() + before as u64;
+                        if before == 0 {
+                            samples.set_start(decoded.first);
+                        } else if gap {
+                            samples.split_off(before, decoded.first, &mut carry);
+                        }
+                        Ok::<_, std::io::Error>((decoded, gap || samples.room() == 0, gap))
                     })
                 })
                 .flatten();
+            // Samples split off at a gap that there was no buffer for.
+            let mut carry_lost = 0;
             let (decoded, aside_why) = match into_pool {
-                Some(Ok((decoded, full))) => {
+                Some(Ok((decoded, full, gap))) => {
                     if full {
                         pool.filled();
+                    }
+                    if gap {
+                        match pool.fill(Samples::clear, |samples| {
+                            samples.put(&carry);
+                            samples.room() == 0
+                        }) {
+                            Some(true) => pool.filled(),
+                            Some(false) => {}
+                            None => carry_lost = carry.len() as u64,
+                        }
                     }
                     (Ok(decoded), None)
                 }
@@ -335,6 +358,7 @@ fn capture(shared: &Shared, source: &Source, config: &Config, shape: Shape, pool
             let samples = decoded.samples as u64;
             status.samples += samples;
             status.lost_events += lost_events;
+            status.not_taken += carry_lost;
             match aside_why {
                 Some(true) => status.mismatched += samples,
                 Some(false) => {

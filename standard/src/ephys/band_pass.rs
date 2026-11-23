@@ -226,9 +226,11 @@ mod tests {
             channels,
             capacity: 750,
             len,
+            start: 0,
             data: (0..channels * 750).map(|i| (i as f32 * 0.37).sin() * 100.0).collect(),
         };
-        let mut output = ContinuousBuffer { channels, capacity: 750, len: 0, data: vec![0.0; channels * 750] };
+        let mut output =
+            ContinuousBuffer { channels, capacity: 750, len: 0, start: 0, data: vec![0.0; channels * 750] };
         let passes = 500;
         let start = std::time::Instant::now();
         for _ in 0..passes {
@@ -255,10 +257,12 @@ mod tests {
             channels,
             capacity: 400,
             len,
+            start: 0,
             data: (0..channels * 400).map(|i| (i as f32 * 0.37).sin() * 100.0).collect(),
         };
-        let mut expected = ContinuousBuffer { channels, capacity: 400, len: 0, data: vec![0.0; channels * 400] };
-        let mut got = ContinuousBuffer { channels, capacity: 400, len: 0, data: vec![0.0; channels * 400] };
+        let mut expected =
+            ContinuousBuffer { channels, capacity: 400, len: 0, start: 0, data: vec![0.0; channels * 400] };
+        let mut got = ContinuousBuffer { channels, capacity: 400, len: 0, start: 0, data: vec![0.0; channels * 400] };
         for _ in 0..3 {
             expected.transform(Some(&input), |c, x| sosfilt_item(x as f64, &mut one.channels[c]) as f32);
             together.run(&mut got, Some(&input));
@@ -267,7 +271,7 @@ mod tests {
             }
         }
         // In place, too.
-        let mut in_place = ContinuousBuffer { channels, capacity: 400, len, data: input.data.clone() };
+        let mut in_place = ContinuousBuffer { channels, capacity: 400, len, start: 0, data: input.data.clone() };
         together.run(&mut in_place, None);
         expected.transform(Some(&input), |c, x| sosfilt_item(x as f64, &mut one.channels[c]) as f32);
         assert_eq!(expected.channel(3), in_place.channel(3));

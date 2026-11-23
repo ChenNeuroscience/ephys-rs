@@ -127,7 +127,9 @@ pub struct Config {
 
 /// A pass's worth of samples from a board, in the buffers passes take them in (see `capture`): the headstages',
 /// auxiliary and analogue inputs' (µV for the headstages, V for the rest), each channel's from the start of its
-/// row, and where the digital inputs change. The capture thread fills them, a read at a time, from `len()` on.
+/// row, and where the digital inputs change. The capture thread fills them, a read at a time, from `len()` on. The
+/// samples follow on from each other, numbered by the board from `start()`: where the board skips some, the capture
+/// thread starts the next buffer.
 pub struct Samples {
     pub ephys: ContinuousBuffer,
     pub aux: ContinuousBuffer,
@@ -155,6 +157,57 @@ impl Samples {
     /// Samples so far.
     pub fn len(&self) -> usize {
         self.ephys.len
+    }
+
+    /// The board's number for the first sample (see `ContinuousBuffer::start`).
+    pub fn start(&self) -> u64 {
+        self.ephys.start
+    }
+
+    /// The capture thread numbers the first sample `start`, as the board does, with this.
+    pub fn set_start(&mut self, start: u64) {
+        for buffer in [&mut self.ephys, &mut self.aux, &mut self.adc] {
+            buffer.start = start;
+        }
+    }
+
+    /// Where the board skipped samples partway through, the capture thread moves those after the gap (from `at` on,
+    /// and the digital changes among them) into `to`, which they start, numbered from `start` as the board numbered
+    /// them, with this; these then end at `at`.
+    pub fn split_off(&mut self, at: usize, start: u64, to: &mut Samples) {
+        to.clear();
+        let count = self.len().saturating_sub(at);
+        let kinds = [(&mut self.ephys, &mut to.ephys), (&mut self.aux, &mut to.aux), (&mut self.adc, &mut to.adc)];
+        for (from, into) in kinds {
+            for channel in 0..from.channels.min(into.channels) {
+                let (row, into_row) = (channel * from.capacity, channel * into.capacity);
+                let samples = &from.data[row + at..row + at + count];
+                into.data[into_row..into_row + count].copy_from_slice(samples);
+            }
+            (into.len, into.start, from.len) = (count, start, at);
+        }
+        let after = self.events.events.iter().filter(|e| e.sample as usize >= at);
+        let moved = after.map(|e| crate::standard::ephys::Event { sample: e.sample - at as u32, ..*e });
+        to.events.events.extend(moved.take(to.events.events.capacity()));
+        self.events.events.retain(|e| (e.sample as usize) < at);
+        (self.events.pass_samples, to.events.pass_samples) = (at, count);
+    }
+
+    /// The capture thread fills an empty buffer with what it split off (see `split_off`) with this.
+    pub fn put(&mut self, from: &Samples) {
+        self.clear();
+        let count = from.len().min(self.room());
+        let kinds = [(&from.ephys, &mut self.ephys), (&from.aux, &mut self.aux), (&from.adc, &mut self.adc)];
+        for (from, into) in kinds {
+            for channel in 0..from.channels.min(into.channels) {
+                let (row, into_row) = (channel * from.capacity, channel * into.capacity);
+                into.data[into_row..into_row + count].copy_from_slice(&from.data[row..row + count]);
+            }
+            (into.len, into.start) = (count, from.start);
+        }
+        let events = from.events.events.iter().filter(|e| (e.sample as usize) < count);
+        self.events.events.extend(events.take(self.events.events.capacity()).copied());
+        self.events.pass_samples = count;
     }
 
     /// Whether there are no samples yet.
@@ -269,4 +322,42 @@ pub fn open(source: &Source) -> io::Result<Box<dyn Board>> {
         Source::OpalKelly { board } => Box::new(opal_kelly::open(*board, &settings)?),
         Source::Oni => Box::new(oni::open(&settings)?),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::standard::ephys::Event;
+
+    fn samples() -> Samples {
+        let continuous = |channels| Continuous { channels, sample_rate: 30000.0 };
+        Samples::new(continuous(2), continuous(1), continuous(1), Events { lines: 8, sample_rate: 30000.0 })
+    }
+
+    /// Ten samples numbered from 100, then the board skips to 500 after the sixth: the six stay, numbered from 100, and
+    /// the four after the gap go to the next buffer, numbered from 500, each with its digital changes.
+    #[test]
+    fn samples_after_a_gap_start_the_next_buffer() {
+        let mut first = samples();
+        first.set_start(100);
+        first.grow(10);
+        for channel in 0..2 {
+            first.ephys.channel_mut(channel).iter_mut().enumerate().for_each(|(i, x)| *x = (channel * 100 + i) as f32);
+        }
+        let event = |sample| Event { sample, line: 0, high: true, time: None };
+        first.events.events.extend([event(2), event(7)]);
+        let mut carry = samples();
+        first.split_off(6, 500, &mut carry);
+        let mut next = samples();
+        next.put(&carry);
+
+        assert_eq!((first.start(), first.len(), first.events.pass_samples), (100, 6, 6));
+        assert_eq!(first.ephys.channel(1), [100.0, 101.0, 102.0, 103.0, 104.0, 105.0]);
+        assert_eq!(first.events.events.iter().map(|e| e.sample).collect::<Vec<_>>(), [2]);
+        // Numbered as the board numbered them, so the gap shows: 106 to 499 never came.
+        assert_eq!((next.start(), next.len(), next.events.pass_samples), (500, 4, 4));
+        assert_eq!(next.ephys.channel(1), [106.0, 107.0, 108.0, 109.0]);
+        assert_eq!((next.aux.start, next.adc.start), (500, 500));
+        assert_eq!(next.events.events.iter().map(|e| e.sample).collect::<Vec<_>>(), [1]);
+    }
 }

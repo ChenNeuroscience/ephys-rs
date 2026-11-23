@@ -212,7 +212,7 @@ impl<E: PortEdges> Node<E> for SpikeDetector {
     ) {
         let (Some(input), output) = (inputs.continuous, outputs.spikes) else { return };
         output.clear();
-        output.pass_samples = input.len;
+        output.start = input.start;
         let Detecting { detector: Some(detector), sampling } = state else { return };
         let Some(spikes) = detector.spikes else { return };
         let channels = (spikes.channels as usize).min(input.channels);
@@ -269,7 +269,9 @@ impl<E: PortEdges> Node<E> for SpikeDetector {
                 let row = &detector.samples[channel as usize * stride..];
                 let peak =
                     (p..=p + lookahead).max_by(|&a, &b| extremity(row[a]).total_cmp(&extremity(row[b]))).unwrap();
-                let spike = Spike { sample: peak as i32 - tail as i32, group, channel };
+                // Position `tail` in `samples` is the input's first sample.
+                let sample = (input.start + peak as u64).saturating_sub(tail as u64);
+                let spike = Spike { sample, group, channel };
                 if let Some(waveforms) = output.push(spike) {
                     let samples = pre + post;
                     for (i, c) in group_channels.clone().enumerate() {
@@ -474,6 +476,7 @@ mod tests {
         for (index, pass) in passes.iter().enumerate() {
             let mut input = stream.buffer(PASS_DURATION);
             input.len = pass[0].len();
+            input.start = passes[..index].iter().map(|p| p[0].len() as u64).sum();
             for (channel, samples) in pass.iter().enumerate() {
                 input.channel_mut(channel).copy_from_slice(samples);
             }
@@ -509,7 +512,7 @@ mod tests {
         assert_eq!(found.len(), 1, "{:?}", found.iter().map(|f| (f.0, f.1)).collect::<Vec<_>>());
         let (pass, spike, waveform) = &found[0];
         assert_eq!((*pass, spike.group, spike.channel), (1, 0, 2), "found in the next pass, once it all came");
-        assert!((-7..=-5).contains(&spike.sample), "at its peak, in the previous pass: {}", spike.sample);
+        assert!((593..=595).contains(&spike.sample), "at its peak, in the previous pass: {}", spike.sample);
         // The waveform's peak is at `pre`, on every channel of the group.
         let samples = 40;
         let peak_channel = &waveform[2 * samples..3 * samples];
@@ -535,7 +538,7 @@ mod tests {
                 .collect();
             let mut found: Vec<_> = detect(&detector, 8, &passes)
                 .into_iter()
-                .map(|(pass, spike, waveform)| (starts[pass] as i32 + spike.sample, spike.channel, waveform))
+                .map(|(_, spike, waveform)| (spike.sample, spike.channel, waveform))
                 .collect();
             found.sort_by_key(|(sample, ..)| *sample);
             found
@@ -560,7 +563,7 @@ mod tests {
             pass[0][start] -= 300.0;
         }
         let found = detect(&detector, 4, &[pass, noise(4, 600, 9)]);
-        let peaks: Vec<i64> = found.iter().map(|(p, s, _)| *p as i64 * 600 + s.sample as i64).collect();
+        let peaks: Vec<u64> = found.iter().map(|(_, s, _)| s.sample).collect();
         assert!(peaks.windows(2).all(|w| w[1] - w[0] >= 40), "{peaks:?}");
         assert!(found.len() >= 10, "{}", found.len());
     }

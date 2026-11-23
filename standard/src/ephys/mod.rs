@@ -64,6 +64,10 @@ pub struct ContinuousBuffer {
     pub channels: usize,
     pub capacity: usize,
     pub len: usize,
+    /// The data's source numbers its samples from when it started, and the buffer's first sample has this number
+    /// (on the stream's own clock: a downsampled stream counts its own samples). The next buffer's data starts at
+    /// `start + len`, unless samples were lost between them: a gap.
+    pub start: u64,
     /// Channel after channel, each `capacity` long.
     pub data: Vec<f32>,
 }
@@ -83,7 +87,7 @@ impl ContinuousBuffer {
     /// buffer is being made in place, and `input` is `None`) of its own samples.
     pub fn transform(&mut self, input: Option<&ContinuousBuffer>, mut f: impl FnMut(usize, f32) -> f32) {
         if let Some(input) = input {
-            self.len = input.len.min(self.capacity);
+            (self.len, self.start) = (input.len.min(self.capacity), input.start);
         }
         for channel in 0..self.channels {
             let start = channel * self.capacity;
@@ -112,7 +116,7 @@ impl DataStreamType for Continuous {
     fn buffer(&self, duration: f64) -> ContinuousBuffer {
         let capacity = per_pass(self.sample_rate, duration) * 5 / 4;
         let channels = self.channels as usize;
-        ContinuousBuffer { channels, capacity, len: 0, data: vec![0.0; channels * capacity] }
+        ContinuousBuffer { channels, capacity, len: 0, start: 0, data: vec![0.0; channels * capacity] }
     }
 
     fn bytes(buffer: &ContinuousBuffer) -> usize {
@@ -120,7 +124,7 @@ impl DataStreamType for Continuous {
     }
 
     fn copy(from: &ContinuousBuffer, to: &mut ContinuousBuffer) {
-        to.len = from.len.min(to.capacity);
+        (to.len, to.start) = (from.len.min(to.capacity), from.start);
         let len = to.len;
         for channel in 0..from.channels.min(to.channels) {
             to.channel_mut(channel).copy_from_slice(&from.channel(channel)[..len]);
@@ -159,6 +163,8 @@ pub struct ComplexContinuousBuffer {
     pub channels: usize,
     pub capacity: usize,
     pub len: usize,
+    /// The buffer's first sample's number, as `ContinuousBuffer::start`.
+    pub start: u64,
     /// The real parts, channel after channel, each `capacity` long.
     pub re: Vec<f32>,
     /// The imaginary parts, laid out as `re`.
@@ -187,7 +193,7 @@ impl DataStreamType for ComplexContinuous {
         let capacity = per_pass(self.sample_rate, duration) * 5 / 4;
         let channels = self.channels as usize;
         let size = channels * capacity;
-        ComplexContinuousBuffer { channels, capacity, len: 0, re: vec![0.0; size], im: vec![0.0; size] }
+        ComplexContinuousBuffer { channels, capacity, len: 0, start: 0, re: vec![0.0; size], im: vec![0.0; size] }
     }
 
     fn bytes(buffer: &ComplexContinuousBuffer) -> usize {
@@ -195,7 +201,7 @@ impl DataStreamType for ComplexContinuous {
     }
 
     fn copy(from: &ComplexContinuousBuffer, to: &mut ComplexContinuousBuffer) {
-        to.len = from.len.min(to.capacity);
+        (to.len, to.start) = (from.len.min(to.capacity), from.start);
         let len = to.len;
         for channel in 0..from.channels.min(to.channels) {
             let (re, im) = from.channel(channel);

@@ -1183,7 +1183,7 @@ mod tests {
         let stream = Continuous { channels: 0, sample_rate: 30000.0 };
         let mut traces = Traces::default();
         traces.reshape((0, 0, 0, 5));
-        let input = ContinuousBuffer { channels: 0, capacity: 32, len: 32, data: Vec::new() };
+        let input = ContinuousBuffer { channels: 0, capacity: 32, len: 32, start: 0, data: Vec::new() };
         traces.add(&input, 0, None);
         let display = TracesDisplay::default();
         let selection = ChannelSelection { apply: true, channels: "none".into() };
@@ -1271,7 +1271,7 @@ mod tests {
                     data[c * 32 + t] = value(c, t0 + t);
                 }
             }
-            traces.add(&ContinuousBuffer { channels, capacity: 32, len, data }, 0, None);
+            traces.add(&ContinuousBuffer { channels, capacity: 32, len, start: 0, data }, 0, None);
             t0 += len;
         }
         assert_eq!(traces.columns, t0 / per_column);

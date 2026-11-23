@@ -89,7 +89,7 @@ impl<E: PortEdges> Node<E> for ChannelSelector {
             passed.channels = self.passed(input.channels as u32);
             passed.from = Some((self.apply, self.channels.clone()));
         }
-        output.len = input.len.min(output.capacity);
+        (output.len, output.start) = (input.len.min(output.capacity), input.start);
         for (to, &from) in passed.channels.iter().take(output.channels).enumerate() {
             let len = output.len;
             output.channel_mut(to).copy_from_slice(&input.channel(from as usize)[..len]);

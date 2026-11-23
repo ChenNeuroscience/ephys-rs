@@ -64,7 +64,7 @@ impl<E: PortEdges> Node<E> for Downsample {
             return Prepared::nothing().into();
         }
         let step = context.data_stream_in::<DataStreamIn>().continuous.and_then(|input| self.step(input)).unwrap_or(0);
-        Prepared::shared(Downsampling { step, so_far: 0 }).into()
+        Prepared::shared(Downsampling { step }).into()
     }
 
     fn process(
@@ -81,15 +81,16 @@ impl<E: PortEdges> Node<E> for Downsample {
         if step == 0 {
             return;
         }
-        let first = keeping_from(downsampling.so_far, step);
+        // Every `step`th sample by number, so the downsampled stream's numbers are the input's divided by `step`.
+        let first = keeping_from(input.start, step);
         output.len = input.len.saturating_sub(first).div_ceil(step).min(output.capacity);
+        output.start = (input.start + first as u64) / step as u64;
         for channel in 0..output.channels.min(input.channels) {
             let kept = input.channel(channel).iter().skip(first).step_by(step);
             for (to, &from) in output.channel_mut(channel).iter_mut().zip(kept) {
                 *to = from;
             }
         }
-        downsampling.so_far += input.len as u64;
     }
 
     fn val_out(&self) -> NoPorts {
@@ -132,23 +133,20 @@ impl<E: PortEdges> Node<E> for Downsample {
     }
 }
 
-/// Which samples it keeps, carried from pass to pass.
+/// Which samples the node keeps: those numbered a multiple of `step` (see `ContinuousBuffer::start`).
 #[derive(Default)]
 pub struct Downsampling {
     /// Every how many it keeps (0 if it can't).
     step: usize,
-    /// Samples so far.
-    so_far: u64,
 }
 
 impl ephys_rs::engine::PassState for Downsampling {
-    const WHY: &'static str = "How many samples have come so far, so each pass keeps every so many carrying on from \
-                               the last, whatever each pass's length.";
+    const WHY: &'static str = "Every how many samples it keeps, worked out once for the snapshot's input stream.";
 }
 
-/// The first of the next samples to keep, keeping every `step`th, with `so_far` before them.
-fn keeping_from(so_far: u64, step: usize) -> usize {
-    (step - (so_far % step as u64) as usize) % step
+/// The first of samples numbered from `start` to keep, keeping those whose number is a multiple of `step`.
+fn keeping_from(start: u64, step: usize) -> usize {
+    (step - (start % step as u64) as usize) % step
 }
 
 #[cfg(test)]
@@ -169,16 +167,17 @@ mod tests {
         let (mut so_far, mut kept) = (0, vec![Vec::new(); 2]);
         for len in [4usize, 9, 5] {
             let mut data = input.buffer(0.02);
-            data.len = len;
+            (data.len, data.start) = (len, so_far as u64);
             for channel in 0..2 {
                 for (t, x) in data.channel_mut(channel).iter_mut().enumerate() {
                     *x = (channel * 1000 + so_far + t) as f32;
                 }
             }
-            so_far += len;
             let mut out = output.buffer(0.02);
             let (inputs, outputs) = (DataStreamIn { continuous: Some(&data) }, DataStreamOut { downsampled: &mut out });
             node.process(&mut PassContext::<Edges>::new(0, 0.02), inputs, outputs, &mut downsampling, &mut ());
+            assert_eq!(out.start, (so_far as u64).div_ceil(6), "numbered on from the last");
+            so_far += len;
             for (channel, kept) in kept.iter_mut().enumerate() {
                 kept.extend_from_slice(out.channel(channel));
             }
