@@ -9,6 +9,7 @@ pub mod spike_viewer;
 use eframe::egui::{self, Color32};
 use serde::{Deserialize, Serialize};
 
+use super::clock::{Clock, ClockId};
 use super::per_pass;
 use super::widgets::format_rate;
 use ephys_rs::engine::{DataStreamType, EdgeInfo, EdgeType};
@@ -25,9 +26,17 @@ pub struct Spikes {
     /// Waveform samples before and after each spike's peak.
     pub pre: u32,
     pub post: u32,
+    /// The clock the spikes are timed by: the continuous data's they were found in, counted in its samples (see
+    /// `Spike::sample`).
+    pub clock: ClockId,
 }
 
 impl Spikes {
+    /// The clock the spikes are timed by, counted in samples, as `Spike::sample` counts.
+    pub fn timing(&self) -> Clock {
+        Clock::new(self.clock, self.sample_rate as f64)
+    }
+
     pub fn groups(&self) -> u32 {
         self.channels.div_ceil(self.group_size.max(1))
     }
@@ -467,7 +476,8 @@ mod tests {
 
     #[test]
     fn summary() {
-        let spikes = Spikes { channels: 64, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32 };
+        let spikes =
+            Spikes { channels: 64, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32, clock: ClockId::TEST };
         assert_eq!(spikes.summary(), "16 tetrodes · 30 kHz");
         assert_eq!(spikes.group_channels(15), 60..64);
     }

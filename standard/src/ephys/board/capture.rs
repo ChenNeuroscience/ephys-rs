@@ -409,7 +409,7 @@ mod tests {
     use std::process::{Command, Stdio};
 
     use super::*;
-    use crate::standard::ephys::Clock;
+    use crate::standard::clock::{Clock, ClockId};
     use crate::standard::ephys::board::{Bandwidth, Headstage};
 
     /// Takes from `capture`'s pool as passes do, for `seconds` or until `wanted` samples: how many, the layout,
@@ -440,12 +440,12 @@ mod tests {
     }
 
     fn shape(ephys: u32, aux: u32, rate: f32) -> Shape {
-        let continuous = |channels| Continuous { channels, sample_rate: rate };
+        let continuous = |channels| Continuous { channels, sample_rate: rate, clock: ClockId::TEST };
         Shape {
             ephys: continuous(ephys),
             aux: continuous(aux),
             adc: continuous(8),
-            events: Events { lines: 8, clock: Clock::Ticks { rate } },
+            events: Events { lines: 8, clock: Clock::new(ClockId::TEST, rate as f64) },
         }
     }
 

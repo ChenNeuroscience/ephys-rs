@@ -9,7 +9,7 @@ use crate::standard::ephys::{Event, Events};
 use crate::standard::pool::Pool;
 use crate::standard::widgets::{named_settings_grid, require_input, setting};
 use ephys_rs::engine::{
-    Buffers, Category, CommandContext, CommandSource, NoPorts, Node, NodeInfo, PassContext, PassState, Prepare,
+    Buffers, Category, CommandContext, CommandSource, NoPorts, Node, NodeId, NodeInfo, PassContext, PassState, Prepare,
     PrepareContext, Prepared, UiContext,
 };
 
@@ -85,7 +85,7 @@ impl<E: PortEdges> Node<E> for TtlRecordingControl {
         match command {}
     }
 
-    fn data_stream_out(&self, _inputs: &DataStreamIn) -> NoPorts {
+    fn data_stream_out(&self, _: NodeId, _inputs: &DataStreamIn) -> NoPorts {
         NoPorts
     }
 
@@ -165,6 +165,7 @@ impl<E: PortEdges> Node<E> for TtlRecordingControl {
 mod tests {
     use super::*;
     use crate::Edges;
+    use crate::standard::clock::{Clock, ClockId};
     use crate::standard::ephys::EventsBuffer;
     use ephys_rs::commands::Sent;
 
@@ -213,9 +214,7 @@ mod tests {
     fn it_warns_of_a_line_its_events_dont_have() {
         let node = TtlRecordingControl { line: 3, ..Default::default() };
         assert_eq!(Node::<Edges>::warnings(&node, &DataStreamIn { events: None }), ["Connect events"]);
-        let events = |lines| DataStreamIn {
-            events: Some(Events { lines, clock: crate::standard::ephys::Clock::Ticks { rate: 1000.0 } }),
-        };
+        let events = |lines| DataStreamIn { events: Some(Events { lines, clock: Clock::new(ClockId::TEST, 1000.0) }) };
         assert_eq!(Node::<Edges>::warnings(&node, &events(2)), ["Its events have 2 lines: there's no line 3"]);
         assert!(Node::<Edges>::warnings(&node, &events(3)).is_empty());
     }

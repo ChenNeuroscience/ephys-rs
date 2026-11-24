@@ -3,10 +3,10 @@
 //! downs, timed by the camera's clock, as the positions are.
 
 use eframe::egui::{self, RichText};
-use ephys_rs::engine::{Buffers, TreeShake};
+use ephys_rs::engine::{Buffers, NodeId, TreeShake};
 use serde::{Deserialize, Serialize};
 
-use crate::standard::ephys::{Clock, Event, Events};
+use crate::standard::ephys::{Event, Events};
 use crate::standard::tracking::SetDetection;
 use crate::standard::tracking::pipeline::{Pipeline, timing_led_on};
 use crate::standard::tracking::{CAMERA_TRACKER, PositionSample, Positions, Video};
@@ -66,7 +66,7 @@ impl<E: PortEdges> Node<E> for PositionDetector {
     type UiState = ();
     type GlobalSettings = ();
 
-    fn data_stream_out(&self, inputs: &DataStreamIn) -> DataStreamOut {
+    fn data_stream_out(&self, _: NodeId, inputs: &DataStreamIn) -> DataStreamOut {
         let video = inputs.video;
         DataStreamOut {
             positions: video.map(|video| Positions {
@@ -74,9 +74,10 @@ impl<E: PortEdges> Node<E> for PositionDetector {
                 width: video.width,
                 height: video.height,
                 source: CAMERA_TRACKER,
+                clock: video.clock,
             }),
             // Timed by the camera's timestamps, as the positions are.
-            pos_ttl: video.map(|_| Events { lines: 1, clock: Clock::Seconds }),
+            pos_ttl: video.map(|video| Events { lines: 1, clock: video.clock }),
         }
     }
 
@@ -381,6 +382,7 @@ pub(super) fn calibration_ui(ui: &mut egui::Ui, detection: &mut Detection, size:
 mod tests {
     use super::*;
     use crate::Edges;
+    use crate::standard::clock::{Clock, ClockId};
 
     #[test]
     fn only_changes_of_the_timing_led_count_and_not_the_first_frame() {
@@ -392,9 +394,12 @@ mod tests {
     #[test]
     fn says_what_it_outputs() {
         use ephys_rs::engine::DataStreamOutPorts;
-        let video = Video { width: 640, height: 480, fps: 50.0 };
-        let outputs =
-            Node::<Edges>::data_stream_out(&PositionDetector::default(), &DataStreamIn { video: Some(video) });
+        let video = Video { width: 640, height: 480, fps: 50.0, clock: Clock::seconds_of(ClockId::TEST) };
+        let outputs = Node::<Edges>::data_stream_out(
+            &PositionDetector::default(),
+            NodeId(1),
+            &DataStreamIn { video: Some(video) },
+        );
         assert_eq!(DataStreamOutPorts::<Edges>::ports(&outputs)[1].name(), "pos ttl");
         assert!(matches!(outputs.pos_ttl, Some(Events { lines: 1, .. })), "a single line");
     }

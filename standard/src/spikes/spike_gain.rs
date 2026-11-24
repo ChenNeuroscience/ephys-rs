@@ -12,7 +12,7 @@
 //! Spike Viewer detects the thresholds first, then the gains.
 
 use eframe::egui;
-use ephys_rs::engine::{Buffers, Prepare, PrepareContext, Prepared, TreeShake};
+use ephys_rs::engine::{Buffers, NodeId, Prepare, PrepareContext, Prepared, TreeShake};
 use serde::{Deserialize, Serialize};
 
 use crate::standard::auto_detect::{Detect, Distribution, SAMPLING, auto_detect_ui, detect_changed};
@@ -207,7 +207,7 @@ impl<E: PortEdges> Node<E> for SpikeGain {
         TreeShake::needing_all(inputs.contains(&true) && wanted, inputs.len())
     }
 
-    fn data_stream_out(&self, inputs: &DataStreamIn) -> DataStreamOut {
+    fn data_stream_out(&self, _: NodeId, inputs: &DataStreamIn) -> DataStreamOut {
         DataStreamOut { spikes: inputs.spikes }
     }
 
@@ -529,6 +529,7 @@ fn copy(input: &SpikesBuffer, output: &mut SpikesBuffer) {
 mod tests {
     use super::*;
     use crate::Edges;
+    use crate::standard::clock::ClockId;
     use crate::standard::spikes::Spike;
     use crate::{Command, NodeType};
     use ephys_rs::engine::DataStreamInPorts;
@@ -561,8 +562,14 @@ mod tests {
         let fit = Fit { algorithm: Algorithm::Peaks, peak_percent: 100.0, peak_factor: 2.0, ..Default::default() };
         let mut gain = SpikeGain { fit, ..Default::default() };
         gain.gains.detect.seconds = 4.0;
-        let stream =
-            crate::standard::spikes::Spikes { channels: 4, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32 };
+        let stream = crate::standard::spikes::Spikes {
+            channels: 4,
+            sample_rate: 30000.0,
+            group_size: 4,
+            pre: 8,
+            post: 32,
+            clock: ClockId::TEST,
+        };
         let started = std::time::Instant::now();
         let inputs = DataStreamIn { spikes: Some(stream) };
         gain.gains.detect.started = Some(started);
@@ -625,8 +632,14 @@ mod tests {
     fn it_samples_again_if_the_thresholds_change_while_it_is() {
         let mut gain = SpikeGain::default();
         gain.gains.detect.seconds = 4.0;
-        let stream =
-            crate::standard::spikes::Spikes { channels: 4, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32 };
+        let stream = crate::standard::spikes::Spikes {
+            channels: 4,
+            sample_rate: 30000.0,
+            group_size: 4,
+            pre: 8,
+            post: 32,
+            clock: ClockId::TEST,
+        };
         let started = std::time::Instant::now();
         let inputs = DataStreamIn { spikes: Some(stream) };
         gain.gains.detect.started = Some(started);
@@ -667,8 +680,14 @@ mod tests {
     fn stopping_auto_detect_lets_go_of_what_it_sampled() {
         use ephys_rs::engine::{Node as _, PrepareContext, Previous};
         let mut gain = SpikeGain::default();
-        let stream =
-            crate::standard::spikes::Spikes { channels: 4, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32 };
+        let stream = crate::standard::spikes::Spikes {
+            channels: 4,
+            sample_rate: 30000.0,
+            group_size: 4,
+            pre: 8,
+            post: 32,
+            clock: ClockId::TEST,
+        };
         let started = std::time::Instant::now();
         let inputs = DataStreamIn { spikes: Some(stream) };
         gain.gains.detect.started = Some(started);
@@ -762,7 +781,8 @@ mod tests {
         let mut graph = Graph::<Nodes>::default();
         let node_type = NodeType::SpikeGain;
         let id = graph.add(Nodes::create(node_type), [0.0, 0.0]);
-        let spikes = Spikes { channels: 8, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32 };
+        let spikes =
+            Spikes { channels: 8, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32, clock: ClockId::TEST };
         if let Some(Nodes::SpikeGain(gain)) = graph.get_mut(id).map(|e| &mut e.node) {
             let channels = Channels { count: 8, group_size: 4 };
             gain.gains.set_scope(GainScope::Group, channels);

@@ -131,12 +131,12 @@ pub struct NodeState<E: Edges> {
 }
 
 impl<E: Edges> NodeState<E> {
-    /// The state of `node`, given the data streams on its inputs.
-    pub fn of<N: Node<E>>(node: &N, input_streams: Vec<Option<E::DataStream>>) -> Self {
+    /// The state of `node` (node `id`), given the data streams on its inputs.
+    pub fn of<N: Node<E>>(node: &N, id: NodeId, input_streams: Vec<Option<E::DataStream>>) -> Self {
         let inputs = DataStreamInOf::<N, E>::of(&input_streams);
         NodeState {
             inputs: DataStreamInOf::<N, E>::ports(),
-            outputs: node.data_stream_out(&inputs).ports(),
+            outputs: node.data_stream_out(id, &inputs).ports(),
             warnings: node.warnings(&inputs),
             input_streams,
             values: node.val_out().values(),
@@ -145,12 +145,12 @@ impl<E: Edges> NodeState<E> {
         }
     }
 
-    pub fn new<N: NodesEnum<Edges = E>>(node: &N, input_streams: Vec<Option<E::DataStream>>) -> Self {
+    pub fn new<N: NodesEnum<Edges = E>>(node: &N, id: NodeId, input_streams: Vec<Option<E::DataStream>>) -> Self {
         let (val_outs, val_ins): (Vec<_>, Vec<_>) =
             node.list_ports_val_cmd().into_iter().partition(|p| p.role() == PortRole::ValOutCmdIn);
         NodeState {
             inputs: node.list_ports_data_stream_in(),
-            outputs: node.list_ports_data_stream_out(&input_streams),
+            outputs: node.list_ports_data_stream_out(id, &input_streams),
             warnings: node.warnings(&input_streams),
             input_streams,
             values: (0..val_outs.len()).map(|port| node.val_out(port)).collect(),
@@ -169,9 +169,9 @@ impl<E: Edges> NodeState<E> {
         }
     }
 
-    /// The state of `node` with nothing connected.
+    /// The state of `node` with nothing connected, as if it were node 0 (as the add-node menu shows one).
     pub fn unconnected<N: NodesEnum<Edges = E>>(node: &N) -> Self {
-        Self::new(node, vec![None; node.list_ports_data_stream_in().len()])
+        Self::new(node, NodeId(0), vec![None; node.list_ports_data_stream_in().len()])
     }
 
     /// How many ports of `role` the node has.
@@ -643,7 +643,7 @@ impl<N: NodesEnum> Graph<N> {
                     (inputs[index].data_stream_kind() == Some(stream.kind())).then_some(stream)
                 })
                 .collect();
-            let mut state = NodeState::new(node, input_streams);
+            let mut state = NodeState::new(node, id, input_streams);
             if in_loops.contains(&id) {
                 state.warnings.push(
                     "In a loop of commands: what it sets off can set it off again, over and over (Stop ends it)".into(),
@@ -991,6 +991,7 @@ mod tests {
     use crate::NodeType;
     use crate::Nodes;
     use crate::engine::NodeTypeEnum;
+    use crate::standard::clock::ClockId;
     use crate::standard::{ephys, spikes};
     use crate::{DataStream, PublishedValue};
 
@@ -1038,7 +1039,7 @@ mod tests {
         graph.connect(port(detector, PortRole::DataStreamIn, 0), port(filter, PortRole::DataStreamOut, 0)).unwrap();
 
         let resolved = graph.resolve();
-        let continuous = ephys::Continuous { channels: 64, sample_rate: 30000.0 };
+        let continuous = ephys::Continuous { channels: 64, sample_rate: 30000.0, clock: ClockId::new(board, 0) };
         assert_eq!(resolved[&filter].outputs[0].stream(), Some(DataStream::Continuous(continuous)));
         assert!(matches!(resolved[&detector].outputs[0].stream(), Some(DataStream::Spikes(s)) if s.channels == 64));
 

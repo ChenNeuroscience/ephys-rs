@@ -329,15 +329,16 @@ pub fn open(source: &Source) -> io::Result<Box<dyn Board>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::standard::ephys::{Clock, Event};
+    use crate::standard::clock::{Clock, ClockId};
+    use crate::standard::ephys::Event;
 
     fn samples() -> Samples {
-        let continuous = |channels| Continuous { channels, sample_rate: 30000.0 };
+        let continuous = |channels| Continuous { channels, sample_rate: 30000.0, clock: ClockId::TEST };
         Samples::new(
             continuous(2),
             continuous(1),
             continuous(1),
-            Events { lines: 8, clock: Clock::Ticks { rate: 30000.0 } },
+            Events { lines: 8, clock: Clock::new(ClockId::TEST, 30000.0) },
         )
     }
 

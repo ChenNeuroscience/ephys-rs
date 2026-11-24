@@ -6,12 +6,13 @@ use serde::{Deserialize, Serialize};
 
 use super::capture::{Capture, State};
 use super::{CameraConfig, CameraControls, CameraStats, CaptureStats, Control, Range, SetCamera, Source};
+use crate::standard::clock::{Clock, ClockId};
 use crate::standard::pool::Pool;
 use crate::standard::tracking::Video;
 use crate::standard::widgets::{setting, settings_grid};
 use ephys_rs::engine::{
-    Buffers, Category, CommandContext, CommandSource, DevTools, Flow, NoPorts, Node, NodeInfo, NodeThread, PassContext,
-    PoolStatus, Prepare, PrepareContext, Prepared, Suggestion, UiContext, UserDecision,
+    Buffers, Category, CommandContext, CommandSource, DevTools, Flow, NoPorts, Node, NodeId, NodeInfo, NodeThread,
+    PassContext, PoolStatus, Prepare, PrepareContext, Prepared, Suggestion, UiContext, UserDecision,
 };
 
 ephys_rs::ports! {
@@ -69,6 +70,15 @@ impl Camera {
     }
 }
 
+impl Camera {
+    /// Its video, as node `id`: frames timed in seconds by the camera's clock (its timestamps).
+    fn video(&self, id: NodeId) -> Video {
+        let [width, height] = self.settings.frame_size;
+        let clock = Clock::seconds_of(ClockId::new(id, 0));
+        Video { width, height, fps: self.settings.frame_rate as f32, clock }
+    }
+}
+
 impl<E: PortEdges> Node<E> for Camera {
     type Ports = Ports;
     const INFO: NodeInfo = NodeInfo {
@@ -85,12 +95,8 @@ impl<E: PortEdges> Node<E> for Camera {
     type UiState = ();
     type GlobalSettings = super::SpinnakerSettings;
 
-    fn data_stream_out(&self, _inputs: &NoPorts) -> DataStreamOut {
-        let [width, height] = self.settings.frame_size;
-        DataStreamOut {
-            video: Some(Video { width, height, fps: self.settings.frame_rate as f32 }),
-            stats: Some(CameraStats),
-        }
+    fn data_stream_out(&self, id: NodeId, _inputs: &NoPorts) -> DataStreamOut {
+        DataStreamOut { video: Some(self.video(id)), stats: Some(CameraStats) }
     }
 
     fn val_out(&self) -> ValOutCmdIn {
@@ -144,9 +150,7 @@ impl<E: PortEdges> Node<E> for Camera {
         if context.unchanged(self) {
             return Prepared::nothing().into();
         }
-        let [width, height] = self.settings.frame_size;
-        let video = Video { width, height, fps: self.settings.frame_rate as f32 };
-        let capture = Capture::start(self.source.clone(), self.settings, video);
+        let capture = Capture::start(self.source.clone(), self.settings, self.video(context.node));
         let camera = self.clone();
         Prepare::Wait(Box::new(move || {
             let decisions = camera.decisions(&capture.first_frame(OPENING_TIMEOUT, FIRST_FRAME_TIMEOUT));

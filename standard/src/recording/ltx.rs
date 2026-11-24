@@ -6,15 +6,20 @@
 //! - `name.egf`, `name.egf2`...: each continuous channel at 5 kHz, a byte a sample.
 //! - `name.pos`: LED positions, a 4-byte timestamp then 8 two-byte values (x1, y1, x2, y2, and the LEDs' sizes).
 //! - `name.ttl`: digital input changes, as text.
-//! - `name.pos.ttl`: the timing LED's changes, likewise, from its `pos ttl` input, if there's a timing LED. They're
-//!   timed by the camera's clock, as positions are, counting from the same first position.
-//! - `name.txt`: log lines, with no headers: each as `<seconds> <line>`, its time counting from the same first
-//!   position.
+//! - `name.pos.ttl`: the timing LED's changes, likewise, from its `pos ttl` input, if there's a timing LED.
+//! - `name.txt`: log lines, with no headers: each as `<seconds> <line>`.
 //!
 //! Each file but `name.txt` is `key value` header lines, then the data between `data_start` and `data_end`; counts and
 //! the duration (from the first pass recorded) are filled in at the end, and the `.set` file's `recording_requested`
 //! (when Record was pressed, which names the files) and `recording_effective` (its first pass), to the millisecond.
-//! Timestamps count 96 kHz ticks from the start of recording, and multi-byte values are big-endian. Spikes' samples are
+//! Timestamps count 96 kHz ticks, and multi-byte values are big-endian.
+//!
+//! Times count from when recording started, by each clock the data's timed by (see `crate::standard::clock`). Spikes,
+//! the EEG and digital inputs should all be timed by the board's clock, so that they line up exactly: from the start of
+//! the board's `time`, if that's connected, or else the earliest of them in the first pass recorded. The EEG's samples
+//! are placed by their times too (from before the start skipped, a gap filled with zeros), as its files have only its
+//! samples. Positions, the timing LED's changes and log lines are usually timed by another clock, the camera's or the
+//! VR computer's, so count from the first of them by that clock (the first position, usually). Spikes' samples are
 //! -128 to 127, covering the full scale: their waveforms should come amplified by a Spike Gain (see `Gains`), whose
 //! gains (connected, read-only, to `gains`) are recorded in the `.set` file, in Axona's terms: its full scale, and the
 //! gains that fit the same over it (`ADC_fullscale_mv`, `gain_ch_0`...). The EEG (its `eeg` input) should come at 5 kHz
@@ -29,7 +34,9 @@
 //! reader makes of a key with a space in it, or one that's the same as another header), except that line breaks are
 //! written as spaces, as a header's a line.
 
-use ephys_rs::engine::{Buffers, DataStreamInPorts, NoPorts, PortForm, Prepare, PrepareContext, Prepared, TreeShake};
+use ephys_rs::engine::{
+    Buffers, DataStreamInPorts, NoPorts, PortForm, Prepare, PrepareContext, Prepared, TreeShake, UserDecision,
+};
 use std::fs::File;
 use std::io::{self, BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -39,10 +46,12 @@ use eframe::egui;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    Files, OnFinished, Status, Writing, after_recording, location_summary, recording_path, show_status, status_ui,
+    Files, OnFinished, Origins, Status, Writing, after_recording, location_summary, recording_path, show_status,
+    status_ui,
 };
+use crate::standard::clock::{ClockId, Time};
 use crate::standard::ephys::reference::parse_channels;
-use crate::standard::ephys::{ChannelSelection, Clock, Continuous, Events};
+use crate::standard::ephys::{ChannelSelection, Continuous, Events};
 use crate::standard::logs::LogLines;
 use crate::standard::other::run_command::{FileInput, ProcessFiles};
 use crate::standard::pool::Pool;
@@ -50,8 +59,8 @@ use crate::standard::spikes::{Gains, RECORDED_FULL_SCALE_UV, Spikes, trimmed};
 use crate::standard::tracking::{Crop, Detection, Positions};
 use crate::standard::widgets::{require_input, setting, settings_grid};
 use ephys_rs::engine::{
-    Category, CommandContext, CommandSource, DataStreamType, DevTools, EdgeTypesEnum, Flow, Node, NodeInfo, NodeThread,
-    PASS_DURATION, PassContext, PrepareContext as Context, UiContext,
+    Category, CommandContext, CommandSource, DataStreamType, DevTools, EdgeTypesEnum, Flow, Node, NodeId, NodeInfo,
+    NodeThread, PASS_DURATION, PassContext, PrepareContext as Context, UiContext,
 };
 
 ephys_rs::ports! {
@@ -64,6 +73,8 @@ ephys_rs::ports! {
     events: DataStreamIn<Events> take,
     pos_ttl: DataStreamIn<Events> = "pos ttl" take,
     log: DataStreamIn<LogLines> take,
+    /// The board's times, which say when recording started by its clock (see `crate::standard::clock::Time`).
+    time: DataStreamIn<Time> take,
     /// Settings that the writer records alongside the data. The writer only reads them.
     detection: ValIn<Detection>,
     gains: ValIn<Gains>,
@@ -180,6 +191,7 @@ impl Chunk {
             events: Slot::new(streams.events),
             pos_ttl: Slot::new(streams.pos_ttl),
             log: Slot::new(streams.log),
+            time: Slot::new(streams.time),
         };
         Chunk { inputs, effective: None }
     }
@@ -188,7 +200,7 @@ impl Chunk {
     fn bytes(&self) -> usize {
         let i = &self.inputs;
         let held = [i.spikes.bytes(), i.eeg.bytes(), i.positions.bytes(), i.events.bytes()];
-        held.iter().sum::<usize>() + i.pos_ttl.bytes() + i.log.bytes()
+        held.iter().sum::<usize>() + i.pos_ttl.bytes() + i.log.bytes() + i.time.bytes()
     }
 
     /// The writer's thread, with a pool of chunks for `streams`, writing to `files`.
@@ -226,7 +238,7 @@ impl<E: PortEdges> Node<E> for WriteLtx {
         TreeShake::needing_all(recording && inputs.contains(&true), inputs.len())
     }
 
-    fn data_stream_out(&self, _inputs: &DataStreamIn) -> NoPorts {
+    fn data_stream_out(&self, _: NodeId, _inputs: &DataStreamIn) -> NoPorts {
         NoPorts
     }
 
@@ -258,14 +270,21 @@ impl<E: PortEdges> Node<E> for WriteLtx {
         if context.same_streams() && !context.recording_changed {
             return Prepared::nothing().into();
         }
+        let streams = context.data_stream_in::<DataStreamIn>();
         let writing = context.recording.map(|recording| {
             let date = recording.start_requested_date();
             let base = recording_path(recording.base_directory(), date);
-            let (streams, recorded) = (context.data_stream_in::<DataStreamIn>(), Recorded::of(context, self.scales));
+            let recorded = Recorded::of(context, self.scales);
             let files = LtxFiles::open(&base, *date, streams, recorded);
             Chunk::writing(&base, streams, files, after_recording(context.cmd_sender(ValInCmdOut::after_recording)))
         });
-        Prepared::shared(Recorder { writing }).into()
+        // As recording starts, whether its times will line up.
+        let mut decisions = Vec::new();
+        if context.recording.is_some() && context.recording_changed {
+            let what = clock_mismatch(&streams).into_iter().chain(without_time(&streams));
+            decisions.extend(what.map(|what| UserDecision { what, suggestion: None }));
+        }
+        Prepared::shared(Recorder { writing }).with_decisions(decisions).into()
     }
 
     /// While recording, hands the pass's data to the writer's thread, swapping the buffers it's in for a chunk's.
@@ -294,6 +313,7 @@ impl<E: PortEdges> Node<E> for WriteLtx {
             held.events.swap(inputs.events);
             held.pos_ttl.swap(inputs.pos_ttl);
             held.log.swap(inputs.log);
+            held.time.swap(inputs.time);
             writing.send(chunk);
         }
         show_status(recorder.writing.as_ref(), pass.shared::<Pool<Status>>(), pass.sequence);
@@ -329,6 +349,12 @@ impl<E: PortEdges> Node<E> for WriteLtx {
             if !context.val_in_connected(ValIn::gains) && inputs.spikes.is_some() {
                 ui.weak("Connect the Spike Gain's gains, to record them with the spikes.");
             }
+            if inputs.time.is_none() && !board_timed(&inputs).is_empty() {
+                ui.weak(
+                    "Connect the board's time, to count spikes', the EEG's and digital inputs' times from when \
+                         recording started by the board's clock.",
+                );
+            }
             let eeg = [context.val_in_connected(ValIn::eeg_selection), context.val_in_connected(ValIn::eeg_gains)];
             if eeg.contains(&false) && inputs.eeg.is_some() {
                 ui.weak("Connect the Channel Selector's selection and the Continuous Gain's gains, to record them with the EEG.");
@@ -354,8 +380,40 @@ impl<E: PortEdges> Node<E> for WriteLtx {
         if inputs.pos_ttl.is_some() && inputs.positions.is_none() {
             warnings.push("Connect the positions too, so the pos ttl's times can be compared with them".into());
         }
+        warnings.extend(clock_mismatch(inputs).map(|what| format!("{}{}", what[..1].to_uppercase(), &what[1..])));
         warnings
     }
+}
+
+/// What's to be timed by the board's clock, as `inputs` name it, and the clock each is timed by: the time, spikes, EEG
+/// and digital inputs connected.
+fn board_timed(inputs: &DataStreamIn) -> Vec<(&'static str, ClockId)> {
+    let mut timed = Vec::new();
+    timed.extend(inputs.time.map(|time| ("time", time.clock.id)));
+    timed.extend(inputs.spikes.map(|spikes| ("spikes", spikes.clock)));
+    timed.extend(inputs.eeg.map(|eeg| ("EEG", eeg.clock)));
+    timed.extend(inputs.events.map(|events| ("digital inputs", events.clock.id)));
+    timed
+}
+
+/// If what's to be timed by the board's clock in `inputs` isn't all timed by one clock, what's wrong.
+fn clock_mismatch(inputs: &DataStreamIn) -> Option<String> {
+    let timed = board_timed(inputs);
+    let first = timed.first()?.1;
+    if timed.iter().all(|&(_, clock)| clock == first) {
+        return None;
+    }
+    let names: Vec<&str> = timed.iter().map(|&(name, _)| name).collect();
+    Some(format!("the {} aren't all timed by the same clock (from the same board), so won't line up", names.join(", ")))
+}
+
+/// If spikes, EEG or digital inputs are connected but not the board's time, what that means.
+fn without_time(inputs: &DataStreamIn) -> Option<String> {
+    (inputs.time.is_none() && !board_timed(inputs).is_empty()).then(|| {
+        "the board's time isn't connected, so the spikes', EEG's and digital inputs' times will count from the \
+         earliest of them in the first pass recorded, not when recording started by the board's clock"
+            .into()
+    })
 }
 
 /// A scale: µV either side of zero, and what it's for.
@@ -557,15 +615,10 @@ struct LtxFiles {
     set: LtxFile,
     tetrodes: Vec<Tetrode>,
     egf: Vec<Egf>,
-    /// The spikes' clock's number for the first sample recorded (see `SpikesBuffer::start`), which spikes' times count
-    /// from.
-    spike_origin: Option<u64>,
-    /// The events' and the timing LED's clocks' times for the start of what's recorded (see `EventsBuffer::start`),
-    /// which their times count from, if they're timed by ticks. (Those timed in seconds count from `first_position`.)
-    event_origin: Option<f64>,
-    position_event_origin: Option<f64>,
-    /// The source's time of the first position, which positions' times, the timing LED's and log lines' count from.
-    first_position: Option<f64>,
+    /// When recording started, by each clock, which times by it count from.
+    origins: Origins,
+    /// The EEG's number (see `ContinuousBuffer::start`) for its files' first sample, and the samples written to each.
+    egf_first: Option<i64>,
     pos: Option<Pos>,
     ttl: Option<LtxFile>,
     pos_ttl: Option<LtxFile>,
@@ -652,8 +705,11 @@ impl LtxFiles {
         // Connected, it only has anything to say if there's a timing LED, as far as we can tell.
         let timing_led = recorded.detection.as_ref().map(|d| d.timing_led);
         let pos_ttl = match streams.pos_ttl {
-            Some(_) if timing_led.is_none_or(|led| led.enabled) => {
-                let mut f = open_ttl(file(".pos.ttl")?, "timing_led", "first_position")?;
+            Some(events) if timing_led.is_none_or(|led| led.enabled) => {
+                // By the board's clock, if it's timed by that, or else its own (the camera's), as the positions are.
+                let by_board = board_timed(&streams).iter().any(|&(_, clock)| clock == events.clock.id);
+                let from = if by_board { "recording_start" } else { "first_position" };
+                let mut f = open_ttl(file(".pos.ttl")?, "timing_led", from)?;
                 if let Some(detection) = recorded.detection.as_ref().filter(|_| timing_led.is_some()) {
                     let led = detection.timing_led;
                     f.header("timing_led_x", led.center[0])?;
@@ -680,10 +736,8 @@ impl LtxFiles {
             set,
             tetrodes,
             egf,
-            spike_origin: None,
-            event_origin: None,
-            position_event_origin: None,
-            first_position: None,
+            origins: Origins::default(),
+            egf_first: None,
             pos,
             ttl,
             pos_ttl,
@@ -692,6 +746,30 @@ impl LtxFiles {
             record: Vec::new(),
             scales: recorded.scales,
         })
+    }
+}
+
+impl LtxFiles {
+    /// Says when recording started by the board's clock (and any other that spikes, the EEG or digital inputs are timed
+    /// by), from the first chunk with any of them: the time's start, if that's given, or else the earliest of them.
+    fn start_clocks(&mut self, chunk: &Chunk) {
+        let (streams, inputs) = (&self.streams, &chunk.inputs);
+        if let (Some(time), Some(buffer)) = (streams.time, inputs.time.get()) {
+            self.origins.start([(time.clock.id, time.clock.seconds(buffer.start))]);
+        }
+        let mut starts = Vec::new();
+        if let (Some(spikes), Some(buffer)) = (streams.spikes, inputs.spikes.get()) {
+            // From the data they were found in, or the first spike, if that was before it.
+            let first = buffer.spikes.iter().map(|spike| spike.sample).fold(buffer.start, u64::min);
+            starts.push((spikes.clock, spikes.timing().seconds(first as f64)));
+        }
+        if let (Some(eeg), Some(buffer)) = (streams.eeg, inputs.eeg.get()) {
+            starts.push((eeg.clock, eeg.timing().seconds(buffer.start as f64)));
+        }
+        if let (Some(events), Some(buffer)) = (streams.events, inputs.events.get()) {
+            starts.push((events.clock.id, events.clock.seconds(buffer.start)));
+        }
+        self.origins.start(starts);
     }
 }
 
@@ -764,13 +842,13 @@ fn open_pos(mut f: LtxFile, positions: Positions, detection: Option<&Detection>)
 impl Files<Chunk> for LtxFiles {
     fn write(&mut self, chunk: &Chunk) -> io::Result<u64> {
         self.effective = self.effective.or(chunk.effective);
+        self.start_clocks(chunk);
         let mut bytes = 0;
         if let (Some(spikes), Some(buffer)) = (self.streams.spikes, chunk.inputs.spikes.get()) {
             let (k, samples) = (spikes.group_size as usize, spikes.waveform_samples() as usize);
-            let origin = *self.spike_origin.get_or_insert(buffer.start) as i64;
             for (i, spike) in buffer.spikes.iter().enumerate() {
                 let Some(tetrode) = self.tetrodes.get_mut(spike.group as usize) else { continue };
-                let seconds = (spike.sample as i64 - origin) as f64 / spikes.sample_rate as f64;
+                let seconds = self.origins.since(spikes.timing(), spike.sample as f64);
                 let waveform = &buffer.waveforms[i * k * samples..(i + 1) * k * samples];
                 self.record.clear();
                 for channel in 0..SPIKE_CHANNELS {
@@ -788,15 +866,32 @@ impl Files<Chunk> for LtxFiles {
             }
         }
 
-        if let Some(continuous) = chunk.inputs.eeg.get().filter(|_| !self.egf.is_empty()) {
+        if let (Some(eeg), Some(continuous)) =
+            (self.streams.eeg, chunk.inputs.eeg.get().filter(|_| !self.egf.is_empty()))
+            && continuous.len > 0
+        {
+            // Its samples go where their times say: the first file sample's at the start of recording.
+            let timing = eeg.timing();
+            let first = *self.egf_first.get_or_insert_with(|| {
+                let start = self.origins.of(eeg.clock).unwrap_or(timing.seconds(continuous.start as f64));
+                (start * timing.per_second).round() as i64
+            });
+            let written = self.egf.first().map_or(0, |egf| egf.samples) as i64;
+            let at = continuous.start as i64 - first;
+            // Samples already written over (or from before the start) are skipped, and a gap's filled with zeros.
+            let (skip, gap) = ((written - at).clamp(0, continuous.len as i64) as usize, (at - written).max(0) as usize);
+            if gap > 0 {
+                log::warn!("Write LTX: {gap} EEG samples missing; filled with zeros");
+            }
             for (channel, egf) in self.egf.iter_mut().enumerate() {
-                let values = continuous.channel(channel);
-                if values.is_empty() {
-                    continue;
-                }
+                let values = &continuous.channel(channel)[skip..];
                 self.record.clear();
+                self.record.resize(gap, 0);
                 // Amplified µV (by a Continuous Gain), over the full scale.
                 self.record.extend(values.iter().map(|&v| to_i8(v, self.scales.eeg_uv)));
+                if self.record.is_empty() {
+                    continue;
+                }
                 egf.file.data(&self.record)?;
                 egf.samples += self.record.len() as u64;
                 bytes += self.record.len() as u64;
@@ -804,10 +899,11 @@ impl Files<Chunk> for LtxFiles {
         }
 
         if let (Some(pos), Some(positions)) = (&mut self.pos, chunk.inputs.positions.get()) {
+            let clock = self.streams.positions.map(|p| p.clock);
             for sample in &positions.samples {
-                let first = *self.first_position.get_or_insert(sample.time);
+                let seconds = clock.map_or(0.0, |clock| self.origins.since(clock, sample.time));
                 self.record.clear();
-                self.record.extend_from_slice(&ticks(sample.time - first));
+                self.record.extend_from_slice(&ticks(seconds));
                 let led = |i: usize| sample.leds[i].map_or([f32::NAN, f32::NAN, 0.0], |b| [b.x, b.y, b.area as f32]);
                 let (a, b) = (led(0), led(1));
                 let values = [
@@ -831,9 +927,9 @@ impl Files<Chunk> for LtxFiles {
 
         if let (Some(ttl), Some(events), Some(buffer)) = (&mut self.ttl, self.streams.events, chunk.inputs.events.get())
         {
-            let origin = *self.event_origin.get_or_insert(buffer.start);
             for event in &buffer.events {
-                let seconds = events.clock.seconds(event.at - origin);
+                // Not before recording started: an event the board's time puts before then, at its start.
+                let seconds = self.origins.since(events.clock, event.at).max(0.0);
                 let line = format!("ttl_{} {seconds} {}\r\n", event.line + 1, event.high as u8);
                 ttl.data(line.as_bytes())?;
                 bytes += line.len() as u64;
@@ -843,23 +939,18 @@ impl Files<Chunk> for LtxFiles {
         let position_events = (&mut self.pos_ttl, self.streams.pos_ttl, chunk.inputs.pos_ttl.get());
         if let (Some(ttl), Some(events), Some(buffer)) = position_events {
             for event in &buffer.events {
-                // In seconds by the camera's (or VR computer's) clock, as the positions are, and from the same time;
-                // or in ticks, from the start of what's recorded.
-                let seconds = match events.clock {
-                    Clock::Seconds => event.at - *self.first_position.get_or_insert(event.at),
-                    Clock::Ticks { .. } => {
-                        events.clock.seconds(event.at - *self.position_event_origin.get_or_insert(buffer.start))
-                    }
-                };
+                // By the camera's (or VR computer's) clock, as the positions are, and from the same time; or by the
+                // board's, from when recording started by it.
+                let seconds = self.origins.since(events.clock, event.at).max(0.0);
                 let line = format!("ttl_{} {seconds:.6} {}\r\n", event.line + 1, event.high as u8);
                 ttl.data(line.as_bytes())?;
                 bytes += line.len() as u64;
             }
         }
 
-        if let (Some(log), Some(lines)) = (&mut self.log, chunk.inputs.log.get()) {
+        if let (Some(log), Some(stream), Some(lines)) = (&mut self.log, self.streams.log, chunk.inputs.log.get()) {
             for (time, line) in lines.lines() {
-                let seconds = time - *self.first_position.get_or_insert(time);
+                let seconds = self.origins.since(stream.clock, time);
                 self.record.clear();
                 write!(self.record, "{seconds:.6} ")?;
                 self.record.extend_from_slice(line);
@@ -904,6 +995,7 @@ impl Files<Chunk> for LtxFiles {
 mod tests {
     use super::*;
     use crate::Edges;
+    use crate::standard::clock::{Clock, ClockId};
     use crate::standard::ephys::Event;
     use crate::standard::spikes::Spike;
     use crate::standard::tracking::PositionSample;
@@ -915,8 +1007,13 @@ mod tests {
             self.buffer.as_mut().expect("connected")
         }
     }
+    use crate::standard::clock::TimeBuffer;
     use crate::standard::tracking::pipeline::Blob;
     use crate::standard::tracking::{CAMERA_TRACKER, TimingLed};
+
+    /// The clocks data's timed by in tests: a board's, and a camera's.
+    const BOARD: ClockId = ClockId::new(NodeId(1), 0);
+    const CAMERA: ClockId = ClockId::new(NodeId(2), 0);
 
     fn read(path: &Path, extension: &str) -> Vec<u8> {
         let mut path = path.to_path_buf();
@@ -941,11 +1038,12 @@ mod tests {
     fn writes_ups_and_downs_saying_which_is_which_and_the_timing_led_by_the_positions_clock() {
         let dir = std::env::temp_dir().join(format!("ephys-rs-ltx-ttl-{}", std::process::id()));
         let base = dir.join("test");
-        let events = Events { lines: 8, clock: Clock::Ticks { rate: 1000.0 } };
+        let (board, camera) = (Clock::new(BOARD, 1000.0), Clock::seconds_of(CAMERA));
+        let events = Events { lines: 8, clock: board };
         let streams = DataStreamIn {
-            positions: Some(Positions { fps: 50.0, width: 640, height: 480, source: CAMERA_TRACKER }),
+            positions: Some(Positions { fps: 50.0, width: 640, height: 480, source: CAMERA_TRACKER, clock: camera }),
             events: Some(events),
-            pos_ttl: Some(Events { lines: 1, clock: Clock::Seconds }),
+            pos_ttl: Some(Events { lines: 1, clock: camera }),
             ..Default::default()
         };
         let timing_led = TimingLed { enabled: true, center: [600.0, 30.0], radius: 8.0, ..Default::default() };
@@ -1004,10 +1102,11 @@ mod tests {
     fn positions_from_elsewhere_say_so_with_their_custom_settings_ttls_and_log() {
         let dir = std::env::temp_dir().join(format!("ephys-rs-ltx-elsewhere-{}", std::process::id()));
         let base = dir.join("test");
+        let vr = Clock::seconds_of(CAMERA);
         let streams = DataStreamIn {
-            positions: Some(Positions { fps: 50.0, width: 1000, height: 1000, source: "vr_computer" }),
-            pos_ttl: Some(Events { lines: 1, clock: Clock::Seconds }),
-            log: Some(LogLines { width: 32 }),
+            positions: Some(Positions { fps: 50.0, width: 1000, height: 1000, source: "vr_computer", clock: vr }),
+            pos_ttl: Some(Events { lines: 1, clock: vr }),
+            log: Some(LogLines { width: 32, clock: vr }),
             ..Default::default()
         };
         let custom = [("maze.arm length", "3"), ("note", "two\r\nlines")].map(|(k, v)| (k.to_string(), v.to_string()));
@@ -1107,14 +1206,13 @@ mod tests {
     fn writes_spikes_eeg_and_positions() {
         let dir = std::env::temp_dir().join(format!("ephys-rs-ltx-{}", std::process::id()));
         let base = dir.join("test");
-        let spikes = Spikes { channels: 4, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32 };
+        let spikes = Spikes { channels: 4, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32, clock: BOARD };
+        let camera = Clock::seconds_of(CAMERA);
         let streams = DataStreamIn {
             spikes: Some(spikes),
-            eeg: Some(Continuous { channels: 2, sample_rate: EGF_RATE }),
-            positions: Some(Positions { fps: 50.0, width: 640, height: 480, source: CAMERA_TRACKER }),
-            events: None,
-            pos_ttl: None,
-            log: None,
+            eeg: Some(Continuous { channels: 2, sample_rate: EGF_RATE, clock: BOARD }),
+            positions: Some(Positions { fps: 50.0, width: 640, height: 480, source: CAMERA_TRACKER, clock: camera }),
+            ..Default::default()
         };
         // Gains recorded: a µV a step on the first channel, half a µV on the second.
         let mut gains = Gains::default();
@@ -1143,9 +1241,10 @@ mod tests {
         let full_scale = Scales::default().spikes_uv;
         let step = full_scale / 128.0;
         buffer.waveforms = (0..160).map(|i| (i as f32 - 80.0) * step).collect();
-        // Two samples on each channel (at 5 kHz), amplified likewise; one beyond the full scale, clipped.
+        // Two samples on each channel (at 5 kHz) from the start of recording (sample 1000 at 30 kHz), amplified likewise;
+        // one beyond the full scale, clipped.
         let continuous = chunk.inputs.eeg.give();
-        continuous.len = 2;
+        (continuous.start, continuous.len) = (167, 2);
         continuous.channel_mut(0).copy_from_slice(&[0.0, 30.0 * step]);
         continuous.channel_mut(1).copy_from_slice(&[60.0 * step, 2.0 * full_scale]);
         let blob = Blob { x: 100.0, y: 50.0, area: 30 };
@@ -1191,5 +1290,82 @@ mod tests {
         assert_eq!(asked, requested.format(PRECISE_TIME).to_string(), "to the millisecond");
         assert_eq!(took, effective.format(PRECISE_TIME).to_string());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Spikes, the EEG and digital inputs all count from when recording started by the board's time, whatever the
+    /// first pass recorded had of each, and the EEG's samples are placed by their times.
+    #[test]
+    fn times_by_the_board_count_from_its_time() {
+        let dir = std::env::temp_dir().join(format!("ephys-rs-ltx-time-{}", std::process::id()));
+        let base = dir.join("test");
+        let board = Clock::new(BOARD, 30000.0);
+        let streams = DataStreamIn {
+            spikes: Some(Spikes { channels: 4, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32, clock: BOARD }),
+            eeg: Some(Continuous { channels: 1, sample_rate: EGF_RATE, clock: BOARD }),
+            events: Some(Events { lines: 8, clock: board }),
+            time: Some(Time { clock: board }),
+            ..Default::default()
+        };
+        assert_eq!((clock_mismatch(&streams), without_time(&streams)), (None, None));
+        let mut files = Box::new(LtxFiles::open(&base, Local::now(), streams, Recorded::default()).unwrap());
+
+        // Recording started at the board's sample 3000 (sample 500 at 5 kHz). The spikes were found in data from
+        // earlier, but count from then too: a spike at 3150 is 5 ms in, 480 ticks.
+        let mut chunk = Chunk::new(streams);
+        *chunk.inputs.time.give() = TimeBuffer { start: 3000.0, end: 3600.0 };
+        let buffer = chunk.inputs.spikes.give();
+        buffer.start = 2700;
+        buffer.spikes.push(Spike { sample: 3150, group: 0, channel: 0 });
+        buffer.waveforms = vec![0.0; 160];
+        let events = chunk.inputs.events.give();
+        (events.start, events.end) = (3000.0, 3600.0);
+        events.events.push(Event { at: 3300.0, line: 0, high: true });
+        // The EEG from two samples before then: those are skipped.
+        let eeg = chunk.inputs.eeg.give();
+        (eeg.start, eeg.len) = (498, 4);
+        eeg.channel_mut(0).copy_from_slice(&[1.0, 2.0, 3.0, 4.0].map(|n| n * full_scale_step()));
+        files.write(&chunk).unwrap();
+        // Then the EEG skips 3 samples (a gap), filled with zeros.
+        let mut chunk = Chunk::new(streams);
+        let eeg = chunk.inputs.eeg.give();
+        (eeg.start, eeg.len) = (505, 1);
+        eeg.channel_mut(0)[0] = 5.0 * full_scale_step();
+        files.write(&chunk).unwrap();
+        files.finish().unwrap();
+
+        let tetrode = read(&base, ".1");
+        assert_eq!(i32::from_be_bytes(data(&tetrode)[..4].try_into().unwrap()), 480);
+        assert_eq!(data(&read(&base, ".ttl")), b"ttl_1 0.01 1\r\n");
+        let egf = read(&base, ".egf");
+        assert_eq!(data(&egf).iter().map(|b| *b as i8).collect::<Vec<_>>(), vec![3, 4, 0, 0, 0, 5]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A µV, amplified, that's a step in the files' bytes.
+    fn full_scale_step() -> f32 {
+        Scales::default().spikes_uv / 128.0
+    }
+
+    /// Spikes, the EEG and digital inputs not all by one clock, or without the board's time, are something to decide.
+    #[test]
+    fn says_if_times_wont_line_up() {
+        let (board, other) = (Clock::new(BOARD, 30000.0), Clock::new(CAMERA, 30000.0));
+        let spikes = Spikes { channels: 4, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32, clock: BOARD };
+        let mismatched = DataStreamIn {
+            spikes: Some(spikes),
+            events: Some(Events { lines: 8, clock: other }),
+            time: Some(Time { clock: board }),
+            ..Default::default()
+        };
+        let mismatch = clock_mismatch(&mismatched).expect("different clocks");
+        assert!(mismatch.contains("time, spikes, digital inputs"), "{mismatch}");
+        assert!(
+            Node::<Edges>::warnings(&WriteLtx::default(), &mismatched)
+                .iter()
+                .any(|w| w.starts_with("The time, spikes"))
+        );
+        let untimed = DataStreamIn { spikes: Some(spikes), ..Default::default() };
+        assert!(without_time(&untimed).is_some());
+        assert_eq!(without_time(&DataStreamIn::default()), None, "nothing by the board's clock");
     }
 }

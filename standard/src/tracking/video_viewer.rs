@@ -8,8 +8,8 @@ use crate::standard::tracking::overlay::Overlays;
 use crate::standard::tracking::{Video, VideoBuffer};
 use crate::standard::widgets::require_input;
 use ephys_rs::engine::{
-    Buffers, Category, CommandContext, CommandSource, DataStreamType, EdgeType, NoPorts, Node, NodeInfo, PASS_DURATION,
-    PassContext, UiContext,
+    Buffers, Category, CommandContext, CommandSource, DataStreamType, EdgeType, NoPorts, Node, NodeId, NodeInfo,
+    PASS_DURATION, PassContext, UiContext,
 };
 
 ephys_rs::ports! {
@@ -45,7 +45,7 @@ impl<E: PortEdges> Node<E> for VideoViewer {
         match command {}
     }
 
-    fn data_stream_out(&self, _inputs: &DataStreamIn) -> NoPorts {
+    fn data_stream_out(&self, _: NodeId, _inputs: &DataStreamIn) -> NoPorts {
         NoPorts
     }
 

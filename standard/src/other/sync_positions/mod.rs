@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::standard::other::run_command::{FileInput, ProcessFiles};
 use ephys_rs::commands::CmdSender;
-use ephys_rs::engine::{Category, CommandContext, CommandSource, NoPorts, Node, NodeInfo, UiContext};
+use ephys_rs::engine::{Category, CommandContext, CommandSource, NoPorts, Node, NodeId, NodeInfo, UiContext};
 
 mod checks;
 pub mod files;
@@ -331,7 +331,7 @@ impl<E: PortEdges> Node<E> for SyncPositions {
     const WINDOW_SIZE: [f32; 2] = [680.0, 780.0];
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
-    fn data_stream_out(&self, _inputs: &NoPorts) -> NoPorts {
+    fn data_stream_out(&self, _: NodeId, _inputs: &NoPorts) -> NoPorts {
         NoPorts
     }
 

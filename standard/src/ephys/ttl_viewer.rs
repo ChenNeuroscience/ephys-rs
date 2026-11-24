@@ -11,8 +11,8 @@ use crate::standard::plots;
 use crate::standard::pool::Pool;
 use crate::standard::widgets::{TIME_AXIS_HEIGHT, require_input, time_axis_ui};
 use ephys_rs::engine::{
-    Buffers, Category, CommandContext, CommandSource, EdgeType, NoPorts, Node, NodeInfo, PassContext, PassState,
-    Prepare, PrepareContext, Prepared, UiContext,
+    Buffers, Category, CommandContext, CommandSource, EdgeType, NoPorts, Node, NodeId, NodeInfo, PassContext,
+    PassState, Prepare, PrepareContext, Prepared, UiContext,
 };
 
 ephys_rs::ports! {
@@ -112,7 +112,7 @@ impl<E: PortEdges> Node<E> for TtlViewer {
         match command {}
     }
 
-    fn data_stream_out(&self, _inputs: &DataStreamIn) -> NoPorts {
+    fn data_stream_out(&self, _: NodeId, _inputs: &DataStreamIn) -> NoPorts {
         NoPorts
     }
 
@@ -291,7 +291,8 @@ mod tests {
     use super::*;
     use crate::Edges;
     use crate::NodeType;
-    use crate::standard::ephys::{Clock, Event, EventsBuffer};
+    use crate::standard::clock::{Clock, ClockId};
+    use crate::standard::ephys::{Event, EventsBuffer};
     use ephys_rs::engine::DataStreamInPorts;
 
     fn events(list: &[(u32, u8, bool)], start: f64, end: f64) -> EventsBuffer {
@@ -302,7 +303,7 @@ mod tests {
     #[test]
     fn counts_ups_since_acquisition_and_recording() {
         let viewer = TtlViewer::default();
-        let stream = Events { lines: 2, clock: Clock::Ticks { rate: 1000.0 } };
+        let stream = Events { lines: 2, clock: Clock::new(ClockId::TEST, 1000.0) };
         let shared = Pool::<LinesDisplay>::default();
         let mut lines = ephys_rs::engine::fresh_state::<Edges, _>(&viewer, &DataStreamIn { events: Some(stream) });
         let mut run = |list: &[(u32, u8, bool)], start: f64, recording: bool| {
@@ -344,7 +345,7 @@ mod tests {
             ..Default::default()
         };
         let streams = DataStreamInPorts::<Edges>::streams(&DataStreamIn {
-            events: Some(Events { lines: 8, clock: Clock::Ticks { rate: 30000.0 } }),
+            events: Some(Events { lines: 8, clock: Clock::new(ClockId::TEST, 30000.0) }),
         });
         let shared = ephys_rs::engine::SharedByNode::default().with(viewer, Pool::holding(display));
         let mut harness = egui_kittest::Harness::builder().with_size([600.0, 220.0]).wgpu().build_ui_state(

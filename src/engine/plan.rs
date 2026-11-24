@@ -448,16 +448,16 @@ mod tests {
         // Something needing the filter's output, so it runs (see `Node::evaluate_tree_shake`).
         let end = add(&mut graph, "Continuous Data Viewer");
         link(&mut graph, filter, 0, end, 0);
-        // The buffers are the board's four outputs (headstages, digital, auxiliary and analogue). The gain and the
-        // filter then work in place, in the board's headstages buffer.
+        // The buffers are the board's five outputs (headstages, digital, auxiliary, analogue and time). The gain and
+        // the filter then work in place, in the board's headstages buffer.
         let plan = Plan::new(&graph, false);
-        assert_eq!(plan.buffers.len(), 4);
+        assert_eq!(plan.buffers.len(), 5);
 
         // A viewer also reading the board's data runs before the gain edits it, so the gain still works in place.
         let viewer = add(&mut graph, "Continuous Data Viewer");
         link(&mut graph, board, 0, viewer, 0);
         let plan = Plan::new(&graph, false);
-        assert_eq!(plan.buffers.len(), 4);
+        assert_eq!(plan.buffers.len(), 5);
         assert!(position(&plan, viewer) < position(&plan, gain));
 
         // Two nodes that would edit the board's data in place: one does (last), the other gets its own buffer.
@@ -466,7 +466,7 @@ mod tests {
         let second_end = add(&mut graph, "Continuous Data Viewer");
         link(&mut graph, second_gain, 0, second_end, 0);
         let plan = Plan::new(&graph, false);
-        assert_eq!(plan.buffers.len(), 5);
+        assert_eq!(plan.buffers.len(), 6);
         assert!(position(&plan, second_gain) < position(&plan, gain));
     }
 

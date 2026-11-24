@@ -5,7 +5,7 @@
 //! multiple of a percentile's distance from it, fill what's recorded (`Gains::fill_uv`). Sign doesn't count.
 
 use eframe::egui;
-use ephys_rs::engine::{Buffers, Prepare, PrepareContext, Prepared, TreeShake};
+use ephys_rs::engine::{Buffers, NodeId, Prepare, PrepareContext, Prepared, TreeShake};
 use serde::{Deserialize, Serialize};
 
 use crate::standard::auto_detect::{Detect, Distribution, PercentMultiple, SAMPLING, auto_detect_ui, detect_changed};
@@ -106,7 +106,7 @@ impl<E: PortEdges> Node<E> for ContinuousGain {
         TreeShake::needing_all(inputs.contains(&true) && wanted, inputs.len())
     }
 
-    fn data_stream_out(&self, inputs: &DataStreamIn) -> DataStreamOut {
+    fn data_stream_out(&self, _: NodeId, inputs: &DataStreamIn) -> DataStreamOut {
         DataStreamOut { scaled: inputs.continuous }
     }
 
@@ -293,6 +293,7 @@ mod tests {
     use super::*;
     use crate::Command;
     use crate::Edges;
+    use crate::standard::clock::ClockId;
     use ephys_rs::engine::{DataStreamType, PASS_DURATION};
 
     #[test]
@@ -300,7 +301,7 @@ mod tests {
         let level = PercentMultiple { percent: 98.0, multiple: 3.0 };
         let mut gain = ContinuousGain { level, ..Default::default() };
         gain.gains.detect.seconds = 4.0;
-        let stream = Continuous { channels: 2, sample_rate: 1000.0 };
+        let stream = Continuous { channels: 2, sample_rate: 1000.0, clock: ClockId::TEST };
         let started = std::time::Instant::now();
         let inputs = DataStreamIn { continuous: Some(stream) };
         gain.gains.detect.started = Some(started);

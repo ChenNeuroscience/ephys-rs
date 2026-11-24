@@ -12,7 +12,7 @@ use serde::de::DeserializeOwned;
 
 use super::{
     CmdInOf, CommandContext, DataStreamInOf, DataStreamInPorts, DataStreamOutOf, DataStreamOutPorts, DevTools, Edges,
-    PassContext, PortSet, Shared, UiContext, ValOutCmdInOf,
+    NodeId, PassContext, PortSet, Shared, UiContext, ValOutCmdInOf,
 };
 use crate::global_settings::GlobalSettingsSet;
 
@@ -184,7 +184,10 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     /// ports (`inputs`, where an unconnected input is `None`). The graph calls this to work out the streams. The node
     /// only runs once every output's stream is known, so the node should return `None` for an output it can't produce
     /// from what it has, such as when a required input isn't connected.
-    fn data_stream_out(&self, inputs: &DataStreamInOf<Self, E>) -> DataStreamOutOf<Self, E>;
+    ///
+    /// The node's `id` is for anything in a stream that names where the stream comes from: a source names the clock its
+    /// data's timed by from it, say. Nothing else should depend on it.
+    fn data_stream_out(&self, id: NodeId, inputs: &DataStreamInOf<Self, E>) -> DataStreamOutOf<Self, E>;
 
     /// Returns the current values at the node's `ValOutCmdIn` ports, which other nodes read. These are usually copies
     /// of some of the node's settings. The app reads them each frame for the nodes' windows, and each snapshot keeps a

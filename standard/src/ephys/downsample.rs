@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use crate::standard::ephys::Continuous;
 use crate::standard::widgets::{format_rate, input_summary, require_input, setting, settings_grid};
 use ephys_rs::engine::{
-    Buffers, Category, CommandContext, CommandSource, NoPorts, Node, NodeInfo, PassContext, Prepare, PrepareContext,
-    Prepared, TreeShake, UiContext,
+    Buffers, Category, CommandContext, CommandSource, NoPorts, Node, NodeId, NodeInfo, PassContext, Prepare,
+    PrepareContext, Prepared, TreeShake, UiContext,
 };
 
 ephys_rs::ports! {
@@ -101,7 +101,7 @@ impl<E: PortEdges> Node<E> for Downsample {
         match command {}
     }
 
-    fn data_stream_out(&self, inputs: &DataStreamIn) -> DataStreamOut {
+    fn data_stream_out(&self, _: NodeId, inputs: &DataStreamIn) -> DataStreamOut {
         let input = inputs.continuous.filter(|&input| self.step(input).is_some());
         DataStreamOut { downsampled: input.map(|input| Continuous { sample_rate: self.rate_hz, ..input }) }
     }
@@ -153,16 +153,17 @@ fn keeping_from(start: u64, step: usize) -> usize {
 mod tests {
     use super::*;
     use crate::Edges;
+    use crate::standard::clock::ClockId;
     use ephys_rs::engine::DataStreamType;
 
     /// Keeping every 6th of passes 4, 9 and 5 samples long keeps samples 0, 6 and 12 (of 18), on each channel.
     #[test]
     fn it_keeps_every_step_th_sample_across_passes() {
         let node = Downsample { rate_hz: 5000.0 };
-        let input = Continuous { channels: 2, sample_rate: 30000.0 };
+        let input = Continuous { channels: 2, sample_rate: 30000.0, clock: ClockId::TEST };
         let inputs = DataStreamIn { continuous: Some(input) };
         let mut downsampling = ephys_rs::engine::fresh_state::<Edges, _>(&node, &inputs);
-        let output = Node::<Edges>::data_stream_out(&node, &inputs).downsampled.expect("a 5 kHz stream");
+        let output = Node::<Edges>::data_stream_out(&node, NodeId(1), &inputs).downsampled.expect("a 5 kHz stream");
         assert_eq!(output.sample_rate, 5000.0);
         let (mut so_far, mut kept) = (0, vec![Vec::new(); 2]);
         for len in [4usize, 9, 5] {
@@ -188,10 +189,11 @@ mod tests {
     #[test]
     fn the_input_must_be_a_multiple_of_its_rate() {
         let node = Downsample { rate_hz: 5000.0 };
-        let input = |hz| DataStreamIn { continuous: Some(Continuous { channels: 1, sample_rate: hz }) };
+        let input =
+            |hz| DataStreamIn { continuous: Some(Continuous { channels: 1, sample_rate: hz, clock: ClockId::TEST }) };
         assert!(Node::<Edges>::warnings(&node, &input(30000.0)).is_empty());
         assert!(Node::<Edges>::warnings(&node, &input(5000.0)).is_empty(), "as it is");
         assert_eq!(Node::<Edges>::warnings(&node, &input(25600.0)).len(), 1);
-        assert!(Node::<Edges>::data_stream_out(&node, &input(25600.0)).downsampled.is_none());
+        assert!(Node::<Edges>::data_stream_out(&node, NodeId(1), &input(25600.0)).downsampled.is_none());
     }
 }

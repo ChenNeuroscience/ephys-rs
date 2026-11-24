@@ -42,6 +42,7 @@ ephys_rs::edge_types! {
         Spectra(crate::standard::ephys::spectrum::Spectra),
         AlarmStates(crate::standard::alarms::AlarmStates),
         LogLines(crate::standard::logs::LogLines),
+        Time(crate::standard::clock::Time),
     }
     values: pub enum PublishedValue, ValueKind {
         Thresholds(crate::standard::spikes::Thresholds),

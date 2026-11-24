@@ -26,8 +26,8 @@ use crate::standard::tracking::pipeline::{Blob, RowSpans, row_spans};
 use crate::standard::tracking::{Crop, Detection, Positions, SetDetection, Video};
 use crate::standard::widgets::{named_settings_grid, section};
 use ephys_rs::engine::{
-    Buffers, Category, CommandContext, CommandSource, EdgeType, NoPorts, Node, NodeInfo, PassContext, PoolStatus,
-    Prepare, PrepareContext, Prepared, Shared, UiContext,
+    Buffers, Category, CommandContext, CommandSource, EdgeType, NoPorts, Node, NodeId, NodeInfo, PassContext,
+    PoolStatus, Prepare, PrepareContext, Prepared, Shared, UiContext,
 };
 use ephys_rs::theme::Colours;
 
@@ -160,7 +160,7 @@ impl<E: PortEdges> Node<E> for TrackerView {
     type UiState = TrackerUi;
     type GlobalSettings = ();
 
-    fn data_stream_out(&self, _inputs: &DataStreamIn) -> NoPorts {
+    fn data_stream_out(&self, _: NodeId, _inputs: &DataStreamIn) -> NoPorts {
         NoPorts
     }
 

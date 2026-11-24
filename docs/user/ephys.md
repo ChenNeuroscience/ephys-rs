@@ -21,7 +21,8 @@ settings ports are marked ◇.
 ## Acquisition Board
 
 > **Source.** Out: `headstages` (continuous, µV), `digital` (events), `auxiliary` (each headstage's three auxiliary
-> inputs: accelerometers, say) and `analogue` (the board's 8 analogue inputs), both continuous.
+> inputs: accelerometers, say) and `analogue` (the board's 8 analogue inputs), both continuous; and `time`, only the
+> board's times, for Write LTX to say when recording started by the board's clock.
 
 <img src="../../tests/snapshots/board_settings.png" alt="The Acquisition Board's settings">
 

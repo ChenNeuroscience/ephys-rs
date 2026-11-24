@@ -42,7 +42,8 @@ use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwapOption;
 
-use crate::standard::ephys::{self, Event, Events, EventsBuffer};
+use crate::standard::clock::{self, ClockId};
+use crate::standard::ephys::{Event, Events, EventsBuffer};
 use crate::standard::logs::{LogLines, LogLinesBuffer};
 use crate::standard::pool::Pool;
 use crate::standard::tracking::pipeline::Blob;
@@ -52,8 +53,8 @@ use crate::standard::tracking::{
 use crate::standard::widgets::{named_settings_grid, setting};
 use eframe::egui::{self, RichText};
 use ephys_rs::engine::{
-    Buffers, Category, CommandContext, CommandSource, DevTools, Flow, NoPorts, Node, NodeInfo, NodeThread, PassContext,
-    SnapshotLite, UiContext,
+    Buffers, Category, CommandContext, CommandSource, DevTools, Flow, NoPorts, Node, NodeId, NodeInfo, NodeThread,
+    PassContext, SnapshotLite, UiContext,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -554,13 +555,15 @@ impl<E: PortEdges> Node<E> for VrComputer {
     type UiState = ();
     type GlobalSettings = ();
 
-    fn data_stream_out(&self, _inputs: &NoPorts) -> DataStreamOut {
+    fn data_stream_out(&self, id: NodeId, _inputs: &NoPorts) -> DataStreamOut {
         let [_, _, width, height] = window(&self.custom).and_then(|crop| crop.bounds()).unwrap_or([0.0; 4]);
         let frame = |size: f32| if size > 0.0 { size.ceil() as u32 } else { FRAME_SIZE };
-        let positions = Positions { fps: self.fps, width: frame(width), height: frame(height), source: SOURCE };
-        // Timed by the VR computer's own clock.
-        let ttl = Events { lines: ttl_channels(&self.custom).unwrap_or(0), clock: ephys::Clock::Seconds };
-        DataStreamOut { positions: Some(positions), pos_ttl: Some(ttl), log: Some(LogLines { width: self.log_width }) }
+        // All timed in seconds by the VR computer's own clock.
+        let clock = clock::Clock::seconds_of(ClockId::new(id, 0));
+        let positions = Positions { fps: self.fps, width: frame(width), height: frame(height), source: SOURCE, clock };
+        let ttl = Events { lines: ttl_channels(&self.custom).unwrap_or(0), clock };
+        let log = LogLines { width: self.log_width, clock };
+        DataStreamOut { positions: Some(positions), pos_ttl: Some(ttl), log: Some(log) }
     }
 
     fn val_out(&self) -> ValOutCmdIn {
@@ -756,7 +759,7 @@ mod tests {
     /// A pass's buffers.
     fn buffers(node: &VrComputer) -> (PositionsBuffer, EventsBuffer, LogLinesBuffer) {
         let DataStreamOut { positions: Some(p), pos_ttl: Some(e), log: Some(l) } =
-            Node::<Edges>::data_stream_out(node, &NoPorts)
+            Node::<Edges>::data_stream_out(node, NodeId(1), &NoPorts)
         else {
             panic!("its streams")
         };
@@ -848,7 +851,7 @@ mod tests {
         assert!(complete(&custom));
         let node = VrComputer { custom, ..node };
         assert!(Node::<Edges>::warnings(&node, &NoPorts).is_empty());
-        let ttl = Node::<Edges>::data_stream_out(&node, &NoPorts).pos_ttl.unwrap();
+        let ttl = Node::<Edges>::data_stream_out(&node, NodeId(1), &NoPorts).pos_ttl.unwrap();
         assert_eq!(ttl.lines, 3, "a line a channel");
         let detection = &Node::<Edges>::val_out(&node).settings;
         assert_eq!(detection.crop, crop, "for Write LTX");

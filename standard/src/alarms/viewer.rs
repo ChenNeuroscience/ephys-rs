@@ -28,8 +28,8 @@ use crate::standard::pool::Pool;
 use crate::standard::widgets::{mark_mixed, open_settings_button, require_input};
 use crate::standard::widgets::{power, small_toggle};
 use ephys_rs::engine::{
-    Buffers, Category, CommandContext, CommandSource, DevTools, Flow, NoPorts, Node, NodeInfo, NodeThread, PassContext,
-    PassState, PoolStatus, Prepare, PrepareContext, Prepared, Shared, UiContext,
+    Buffers, Category, CommandContext, CommandSource, DevTools, Flow, NoPorts, Node, NodeId, NodeInfo, NodeThread,
+    PassContext, PassState, PoolStatus, Prepare, PrepareContext, Prepared, Shared, UiContext,
 };
 use ephys_rs::gui::widgets::Icon;
 use ephys_rs::theme::Colours;
@@ -187,7 +187,7 @@ impl<E: PortEdges> Node<E> for AlarmViewer {
     const WINDOW_SIZE: [f32; 2] = [820.0, 520.0];
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
-    fn data_stream_out(&self, _inputs: &DataStreamIn) -> NoPorts {
+    fn data_stream_out(&self, _: NodeId, _inputs: &DataStreamIn) -> NoPorts {
         NoPorts
     }
 

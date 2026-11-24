@@ -19,6 +19,7 @@ use std::collections::BTreeMap;
 use eframe::egui::Color32;
 use serde::{Deserialize, Serialize};
 
+use super::clock::Clock;
 use super::per_pass;
 use ephys_rs::engine::{DataStreamType, EdgeInfo, EdgeType};
 use pipeline::Blob;
@@ -28,6 +29,8 @@ pub struct Video {
     pub width: u32,
     pub height: u32,
     pub fps: f32,
+    /// What the frames' times are by (see `VideoBuffer::times`): the camera's clock, say.
+    pub clock: Clock,
 }
 
 impl EdgeType for Video {
@@ -53,6 +56,8 @@ pub struct Positions {
     pub height: u32,
     /// Where they come from, as a name for headers: `CAMERA_TRACKER`, say.
     pub source: &'static str,
+    /// What the positions' times are by (see `PositionSample::time`): the camera's clock, say.
+    pub clock: Clock,
 }
 
 impl EdgeType for Positions {
@@ -70,7 +75,7 @@ impl EdgeType for Positions {
 /// Where the LEDs were in one frame.
 #[derive(Clone, Copy, Debug)]
 pub struct PositionSample {
-    /// The camera's frame id and timestamp (seconds, in the camera's clock).
+    /// The camera's frame id, and when the frame was, by the stream's clock (`Positions::clock`).
     pub frame: u64,
     pub time: f64,
     /// The biggest LED found, then the second biggest, in pixels.
@@ -113,7 +118,7 @@ pub struct VideoBuffer {
     pub frames: usize,
     pub capacity: usize,
     pub pixels: Vec<u8>,
-    /// For each frame, the camera's frame id and timestamp (seconds, in the camera's clock).
+    /// For each frame, the camera's frame id, and when the frame was, by the stream's clock (`Video::clock`).
     pub ids: Vec<u64>,
     pub times: Vec<f64>,
 }
@@ -425,10 +430,14 @@ impl Ruler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::standard::clock::{Clock, ClockId};
 
     #[test]
     fn summary() {
-        assert_eq!(Video { width: 640, height: 480, fps: 30.0 }.summary(), "640×480 · 30 fps");
+        assert_eq!(
+            Video { width: 640, height: 480, fps: 30.0, clock: Clock::seconds_of(ClockId::TEST) }.summary(),
+            "640×480 · 30 fps"
+        );
     }
 
     #[test]

@@ -8,7 +8,7 @@
 //! referenced data, it outputs the references themselves: a channel each.
 
 use eframe::egui::{self, Color32, RichText};
-use ephys_rs::engine::{Buffers, CommandContext, CommandSource, TreeShake};
+use ephys_rs::engine::{Buffers, CommandContext, CommandSource, NodeId, TreeShake};
 use serde::{Deserialize, Serialize};
 
 use crate::standard::ephys::{Continuous, ContinuousBuffer};
@@ -437,7 +437,7 @@ impl<E: PortEdges> Node<E> for Reference {
         }
     }
 
-    fn data_stream_out(&self, inputs: &DataStreamIn) -> DataStreamOut {
+    fn data_stream_out(&self, _: NodeId, inputs: &DataStreamIn) -> DataStreamOut {
         let reference = inputs.continuous.map(|c| Continuous { channels: self.references() as u32, ..c });
         DataStreamOut { referenced: inputs.continuous, reference }
     }
@@ -633,12 +633,13 @@ mod tests {
     use super::*;
     use crate::Edges;
     use crate::NodeType;
+    use crate::standard::clock::ClockId;
     use ephys_rs::engine::DataStreamInPorts;
     use ephys_rs::engine::{DataStreamType, PASS_DURATION};
 
     /// Runs one pass of `channels` (each a few samples) through `reference`.
     fn run(reference: &Reference, channels: &[Vec<f32>]) -> Vec<Vec<f32>> {
-        let stream = Continuous { channels: channels.len() as u32, sample_rate: 30000.0 };
+        let stream = Continuous { channels: channels.len() as u32, sample_rate: 30000.0, clock: ClockId::TEST };
         let mut input = stream.buffer(PASS_DURATION);
         input.len = channels[0].len();
         for (c, samples) in channels.iter().enumerate() {
@@ -710,14 +711,14 @@ mod tests {
     #[test]
     fn the_references_are_output_a_channel_each_in_order() {
         let data = [vec![1.0, 2.0], vec![3.0, 4.0], vec![5.0, 9.0], vec![10.0, 0.0]];
-        let stream = Continuous { channels: 4, sample_rate: 30000.0 };
+        let stream = Continuous { channels: 4, sample_rate: 30000.0, clock: ClockId::TEST };
         let reference = of(vec![
             made(0, Method::Mean, "1", "none"),
             made(1, Method::Mean, "none", "all"),
             made(2, Method::Mean, "3", "all"),
         ]);
         assert_eq!((reference.references(), of(vec![]).references()), (3, 0));
-        let outputs = Node::<Edges>::data_stream_out(&reference, &DataStreamIn { continuous: Some(stream) });
+        let outputs = Node::<Edges>::data_stream_out(&reference, NodeId(1), &DataStreamIn { continuous: Some(stream) });
         assert_eq!(outputs.reference, Some(Continuous { channels: 3, ..stream }));
         let mut input = stream.buffer(PASS_DURATION);
         input.len = 2;
@@ -815,7 +816,7 @@ mod tests {
             reference.list[0].channels = "1-3, 5-8, 13".into();
         }
         let inputs = DataStreamInPorts::<Edges>::streams(&DataStreamIn {
-            continuous: Some(Continuous { channels: 16, sample_rate: 30000.0 }),
+            continuous: Some(Continuous { channels: 16, sample_rate: 30000.0, clock: ClockId::TEST }),
         });
         let mut harness = egui_kittest::Harness::builder().with_size([360.0, 300.0]).wgpu().build_ui_state(
             |ui, graph: &mut Graph<Nodes>| {

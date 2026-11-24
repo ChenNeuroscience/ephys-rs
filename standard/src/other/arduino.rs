@@ -24,7 +24,7 @@ use serialport::SerialPortType;
 use crate::standard::pool::Pool;
 use crate::standard::widgets::{combo, named_settings_grid, setting};
 use ephys_rs::engine::{
-    Category, CommandContext, CommandSource, DevTools, Flow, NoCommands, NoPorts, Node, NodeInfo, NodeThread,
+    Category, CommandContext, CommandSource, DevTools, Flow, NoCommands, NoPorts, Node, NodeId, NodeInfo, NodeThread,
     PassContext, PassState, Prepare, PrepareContext, Prepared, UiContext,
 };
 use ephys_rs::gui::widgets::{Icon, small_icon_button};
@@ -364,7 +364,7 @@ impl<E: ephys_rs::engine::Edges> Node<E> for Arduino {
         match command {}
     }
 
-    fn data_stream_out(&self, _inputs: &NoPorts) -> NoPorts {
+    fn data_stream_out(&self, _: NodeId, _inputs: &NoPorts) -> NoPorts {
         NoPorts
     }
 

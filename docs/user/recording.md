@@ -9,7 +9,8 @@ Each component starts with what kind of node it is and its ports: data ports `li
 
 ## Write LTX
 
-> **Writer.** In: `spikes`, `eeg` (continuous), `positions`, `events`, `pos ttl`, `log`. ◇ `detection` (a Position
+> **Writer.** In: `spikes`, `eeg` (continuous), `positions`, `events`, `pos ttl`, `log`, `time` (an Acquisition
+> Board's). ◇ `detection` (a Position
 > Detector's), ◇ `gains` (a Spike Gain's), ◇ `eeg selection` (a Channel Selector's), ◇ `eeg gains` (a Continuous
 > Gain's), all read only. ◇ `after recording`.
 
@@ -35,6 +36,15 @@ Connect its read-only settings so the files say what they hold: the spikes' and 
 is, and the tracking's crop and calibration. Without them, the headers leave them out. Its window says which aren't
 connected, and it warns if what's connected doesn't suit LTX (spikes not in tetrodes, or EEG not at 5 kHz).
 
+Times in the files count from when recording started. Spikes, the EEG and digital inputs are all timed by the
+board's clock, so they line up exactly: connect the board's `time` (the standard LTX quick action does), which says
+when recording started by that clock, whatever the first pass recorded had of each. The EEG's samples are placed by
+their times too: any from before the start are left out, and any the board lost are filled with zeros. Without the
+`time`, they count from the earliest of them in the first pass recorded, and starting to record asks whether to carry
+on. If they come from different boards, they can't line up: Write LTX warns, and asks again as recording starts.
+Positions, the timing LED's changes and log lines are timed by the camera's (or the VR computer's) clock, so count
+from the first of them; Post-Process Positions LTX lines positions up with the board afterwards.
+
 ## Write Raw
 
 > **Writer.** In: `continuous`, `events`. ◇ `after recording`.
@@ -43,6 +53,10 @@ Records continuous data and digital inputs as they come, in the Open Ephys binar
 tools (and anything reading NumPy files) can load. Each recording is a folder in the base directory (its window shows
 what it'll be called), laid out as the Open Ephys GUI's are: `structure.oebin`, then `continuous/` (16-bit samples, with each
 sample's number and time) and `events/` (each TTL change).
+
+Samples and TTL changes are numbered, and timed, from when recording started: the earliest of them in the first pass
+recorded. Samples the board lost leave a gap in the numbers. It warns if the two aren't timed by the same clock (from
+the same board).
 
 ## Run Command
 

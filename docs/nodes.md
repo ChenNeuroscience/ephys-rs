@@ -57,8 +57,9 @@ The parts of the API are there for three different reasons, and it helps to know
   `impl<E: PortEdges> Node<E> for MyNode`, so the node works with any build's edges that include those types. Saved
   graphs identify each port by its field name (its id), so reordering ports is fine, but renaming one needs a config
   patch to rename the saved edges' ends.
-- `data_stream_out(inputs)`: the data stream on each output, given the streams on the inputs (each `None` while it
-  can't be known, such as when nothing is connected). The graph uses this to work out every stream before anything
+- `data_stream_out(id, inputs)`: the data stream on each output, given the node's id and the streams on the inputs
+  (each `None` while it can't be known, such as when nothing is connected). The id is only for naming where a stream
+  comes from: a source names the clock its data's timed by from it (see `standard/src/clock.rs`). The graph uses this to work out every stream before anything
   runs. In the structs' default form, each field is the stream on its port (such as `Option<Continuous>`), so an
   output's stream always has the output's type.
 - `warnings(inputs)`: what's wrong (an input not connected, say), shown on the graph and in its window.
@@ -67,7 +68,7 @@ The parts of the API are there for three different reasons, and it helps to know
 - `on_command(from, command, context)`: how it handles a command sent to it, received as its `CmdIn` (see
   [Commands](#commands)).
 
-A node must implement these even when it has no ports of the role: `data_stream_out(&self, _: &NoPorts) -> NoPorts`
+A node must implement these even when it has no ports of the role: `data_stream_out(&self, _: NodeId, _: &NoPorts) -> NoPorts`
 for a node with no inputs or outputs, `val_out(&self) -> NoPorts`, and
 `on_command(.., command: CmdIn, ..) { match command {} }` for a node that accepts no commands. None of the three has a
 default, so a node can't forget them.

@@ -14,7 +14,7 @@ pub fn standard<E: Edges, N: Node<E>>(
     context: &mut UiContext<E>,
     settings: impl FnOnce(&mut N, &mut egui::Ui, &mut UiContext<E>),
 ) {
-    let state = NodeState::of(node, context.inputs.to_vec());
+    let state = NodeState::of(node, context.node, context.inputs.to_vec());
     let info = N::INFO;
     let colours = context.theme;
     // Its name, and its toolbar (see `NodeToolbar`). Then its type.

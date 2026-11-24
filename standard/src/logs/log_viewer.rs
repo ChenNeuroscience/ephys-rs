@@ -13,8 +13,8 @@ use crate::standard::plots;
 use crate::standard::pool::Pool;
 use crate::standard::widgets::require_input;
 use ephys_rs::engine::{
-    Buffers, Category, CommandContext, CommandSource, NoPorts, Node, NodeInfo, PassContext, PassState, PoolStatus,
-    Prepare, PrepareContext, Prepared, Shared, UiContext,
+    Buffers, Category, CommandContext, CommandSource, NoPorts, Node, NodeId, NodeInfo, PassContext, PassState,
+    PoolStatus, Prepare, PrepareContext, Prepared, Shared, UiContext,
 };
 
 ephys_rs::ports! {
@@ -90,7 +90,7 @@ impl<E: PortEdges> Node<E> for LogViewer {
         match command {}
     }
 
-    fn data_stream_out(&self, _inputs: &DataStreamIn) -> NoPorts {
+    fn data_stream_out(&self, _: NodeId, _inputs: &DataStreamIn) -> NoPorts {
         NoPorts
     }
 
@@ -173,6 +173,7 @@ impl LogViewer {
 
 #[cfg(test)]
 mod tests {
+    use crate::standard::clock::{Clock, ClockId};
     use std::any::Any;
     use std::cell::RefCell;
 
@@ -187,7 +188,7 @@ mod tests {
     /// Runs a pass of the viewer, sending `lines` to `sent`.
     fn pass(viewing: &mut Viewing, sent: &SentLines, lines: &[(f64, String)]) {
         use ephys_rs::engine::DataStreamType;
-        let mut log = LogLines { width: 64 }.buffer(0.02);
+        let mut log = LogLines { width: 64, clock: Clock::seconds_of(ClockId::TEST) }.buffer(0.02);
         for (time, line) in lines {
             assert!(log.push(*time, line));
         }

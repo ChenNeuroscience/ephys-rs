@@ -29,7 +29,7 @@ use crate::standard::spikes::{
 };
 use crate::standard::widgets::{open_settings_button, require_input};
 use ephys_rs::engine::{
-    Buffers, Category, CommandContext, CommandSource, EdgeType, NoPorts, Node, NodeInfo, PassContext, Prepare,
+    Buffers, Category, CommandContext, CommandSource, EdgeType, NoPorts, Node, NodeId, NodeInfo, PassContext, Prepare,
     PrepareContext, Prepared, Shortcut, UiContext,
 };
 use ephys_rs::gui::widgets::Icon;
@@ -276,7 +276,7 @@ impl<E: PortEdges> Node<E> for SpikeViewer {
     const WINDOW_SIZE: [f32; 2] = [820.0, 520.0];
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
-    fn data_stream_out(&self, _inputs: &DataStreamIn) -> NoPorts {
+    fn data_stream_out(&self, _: NodeId, _inputs: &DataStreamIn) -> NoPorts {
         NoPorts
     }
 
@@ -768,6 +768,7 @@ impl SpikeViewer {
 
 #[cfg(test)]
 mod tests {
+    use crate::standard::clock::ClockId;
     use egui_kittest::Harness;
     use egui_kittest::kittest::Queryable;
 
@@ -783,7 +784,8 @@ mod tests {
         assert_eq!(group_title("Channel", 4, 4..5), "Channel 5", "it says it already");
     }
 
-    const STREAM: Spikes = Spikes { channels: 8, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32 };
+    const STREAM: Spikes =
+        Spikes { channels: 8, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32, clock: ClockId::TEST };
 
     fn harness<'a>() -> Harness<'a, (Thresholds, Gains)> {
         Harness::builder().with_size([700.0, 400.0]).wgpu().build_ui_state(

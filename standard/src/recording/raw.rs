@@ -12,9 +12,12 @@
 //!         sample_numbers.npy, timestamps.npy, full_words.npy
 //! ```
 //!
-//! Samples are numbered, and timed, from the start of recording.
+//! Samples are numbered, and timed, from the start of recording, by the clock they're timed by (see
+//! `crate::standard::clock`): the earliest of the continuous data and digital inputs in the first pass recorded. So a
+//! gap in the data shows as a gap in its numbers, and the two line up if they're timed by the same clock (a board's),
+//! as they should be.
 
-use ephys_rs::engine::{Buffers, DataStreamInPorts, NoPorts, Prepare, PrepareContext, Prepared, TreeShake};
+use ephys_rs::engine::{Buffers, DataStreamInPorts, NoPorts, NodeId, Prepare, PrepareContext, Prepared, TreeShake};
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -24,10 +27,12 @@ use serde::{Deserialize, Serialize};
 
 use super::npy::Npy;
 use super::{
-    Files, OnFinished, Status, Writing, after_recording, location_summary, recording_path, show_status, status_ui,
+    Files, OnFinished, Origins, Status, Writing, after_recording, location_summary, recording_path, show_status,
+    status_ui,
 };
+use crate::standard::clock::ClockId;
 use crate::standard::ephys::board::EPHYS_MICROVOLTS_PER_BIT;
-use crate::standard::ephys::{Clock, Continuous, ContinuousBuffer, Event, Events, EventsBuffer};
+use crate::standard::ephys::{Continuous, ContinuousBuffer, Event, Events, EventsBuffer};
 use crate::standard::other::run_command::{FileInput, ProcessFiles};
 use crate::standard::pool::Pool;
 use crate::standard::widgets::require_input;
@@ -64,7 +69,7 @@ pub struct Chunk {
 impl Chunk {
     /// Empty, for these inputs (nothing, for an input not connected).
     fn new(continuous: Option<Continuous>, events: Option<Events>) -> Self {
-        let none = || Continuous { channels: 0, sample_rate: 1.0 };
+        let none = || Continuous { channels: 0, sample_rate: 1.0, clock: ClockId::new(NodeId(0), 0) };
         Chunk {
             continuous: continuous.unwrap_or_else(none).buffer(PASS_DURATION),
             events: events
@@ -130,7 +135,7 @@ impl<E: PortEdges> Node<E> for WriteRaw {
         match command {}
     }
 
-    fn data_stream_out(&self, _inputs: &DataStreamIn) -> NoPorts {
+    fn data_stream_out(&self, _: NodeId, _inputs: &DataStreamIn) -> NoPorts {
         NoPorts
     }
 
@@ -219,7 +224,14 @@ impl<E: PortEdges> Node<E> for WriteRaw {
     }
 
     fn warnings(&self, inputs: &DataStreamIn) -> Vec<String> {
-        require_input(inputs.any_connected(), "something to record")
+        let mut warnings = require_input(inputs.any_connected(), "something to record");
+        if let (Some(continuous), Some(events)) = (inputs.continuous, inputs.events)
+            && continuous.clock != events.clock.id
+        {
+            warnings
+                .push("The continuous data and digital inputs aren't timed by the same clock, so won't line up".into());
+        }
+        warnings
     }
 }
 
@@ -228,7 +240,6 @@ struct Samples {
     data: BufWriter<File>,
     numbers: Npy,
     times: Npy,
-    count: u64,
     /// Each sample's values, as 16-bit integers.
     row: Vec<u8>,
 }
@@ -239,9 +250,7 @@ struct Ttl {
     numbers: Npy,
     times: Npy,
     words: Npy,
-    /// The events' clock's time for the start of what's recorded (see `EventsBuffer::start`), which their numbers and
-    /// times count from; and the lines' states.
-    origin: Option<f64>,
+    /// The lines' states.
     word: u64,
 }
 
@@ -250,6 +259,8 @@ struct RawFiles {
     continuous: Option<Samples>,
     events: Option<Ttl>,
     paths: Vec<PathBuf>,
+    /// When recording started, by each clock, which numbers and times count from.
+    origins: Origins,
 }
 
 impl RawFiles {
@@ -271,7 +282,6 @@ impl RawFiles {
                     data: BufWriter::new(File::create(path(dir.join("continuous.dat")))?),
                     numbers: Npy::create(&path(dir.join("sample_numbers.npy")), "<i8")?,
                     times: Npy::create(&path(dir.join("timestamps.npy")), "<f8")?,
-                    count: 0,
                     row: Vec::new(),
                 })
             }
@@ -287,14 +297,13 @@ impl RawFiles {
                     numbers: Npy::create(&path(dir.join("sample_numbers.npy")), "<i8")?,
                     times: Npy::create(&path(dir.join("timestamps.npy")), "<f8")?,
                     words: Npy::create(&path(dir.join("full_words.npy")), "<u8")?,
-                    origin: None,
                     word: 0,
                 })
             }
             None => None,
         };
         log::info!("Recording raw data to {}", folder.display());
-        Ok(RawFiles { continuous, events, paths })
+        Ok(RawFiles { continuous, events, paths, origins: Origins::default() })
     }
 }
 
@@ -336,10 +345,7 @@ fn structure(continuous: Option<Continuous>, events: Option<Events>) -> String {
                 "description": "Digital inputs",
                 "identifier": "",
                 // None, for events timed in seconds.
-                "sample_rate": match e.clock {
-                    Clock::Ticks { rate } => rate,
-                    Clock::Seconds => 0.0,
-                },
+                "sample_rate": if e.clock.ticks() { e.clock.per_second } else { 0.0 },
                 "type": "int16",
                 "num_channels": e.lines,
                 "source_processor": "ephys-rs",
@@ -361,14 +367,21 @@ fn structure(continuous: Option<Continuous>, events: Option<Events>) -> String {
 
 impl Files<Chunk> for RawFiles {
     fn write(&mut self, chunk: &Chunk) -> io::Result<u64> {
+        // Recording started at the earliest of the first pass's data, by each clock.
+        let continuous = self.continuous.as_ref().map(|samples| samples.stream.timing());
+        let events = self.events.as_ref().map(|ttl| ttl.stream.clock);
+        let starts = [
+            continuous.map(|clock| (clock.id, clock.seconds(chunk.continuous.start as f64))),
+            events.map(|clock| (clock.id, clock.seconds(chunk.events.start))),
+        ];
+        self.origins.start(starts.into_iter().flatten());
         let mut bytes = 0;
-        if let Some(samples) = &mut self.continuous
+        if let (Some(samples), Some(clock)) = (&mut self.continuous, continuous)
             && chunk.continuous.len > 0
         {
-            let (channels, len, rate) =
-                (samples.stream.channels as usize, chunk.continuous.len, samples.stream.sample_rate as f64);
-            let channels = channels.min(chunk.continuous.channels);
-            for t in 0..len {
+            let channels = (samples.stream.channels as usize).min(chunk.continuous.channels);
+            let origin = self.origins.of(clock.id).map_or(0, |seconds| (seconds * clock.per_second).round() as i64);
+            for t in 0..chunk.continuous.len {
                 samples.row.clear();
                 for channel in 0..channels {
                     let value = chunk.continuous.channel(channel)[t];
@@ -376,15 +389,13 @@ impl Files<Chunk> for RawFiles {
                     samples.row.extend_from_slice(&(step as i16).to_le_bytes());
                 }
                 samples.data.write_all(&samples.row)?;
-                let number = samples.count + t as u64;
-                samples.numbers.write_i64(number as i64)?;
-                samples.times.write_f64(number as f64 / rate)?;
+                let number = (chunk.continuous.start + t as u64) as i64 - origin;
+                samples.numbers.write_i64(number)?;
+                samples.times.write_f64(clock.seconds(number as f64))?;
                 bytes += samples.row.len() as u64 + 16;
             }
-            samples.count += len as u64;
         }
-        if let Some(ttl) = &mut self.events {
-            let origin = *ttl.origin.get_or_insert(chunk.events.start);
+        if let (Some(ttl), Some(clock)) = (&mut self.events, events) {
             for event in &chunk.events.events {
                 let line = event.line as u64;
                 if event.high {
@@ -393,14 +404,12 @@ impl Files<Chunk> for RawFiles {
                     ttl.word &= !(1 << line);
                 }
                 let state = (line as i16 + 1) * if event.high { 1 } else { -1 };
-                // Ticks from the start of what's recorded (-1 for events timed in seconds, which have no sample).
-                let number = match ttl.stream.clock {
-                    Clock::Ticks { .. } => (event.at - origin).round() as i64,
-                    Clock::Seconds => -1,
-                };
+                let seconds = self.origins.since(clock, event.at);
+                // Ticks from the start of recording (-1 for events timed in seconds, which have no sample).
+                let number = if clock.ticks() { (seconds * clock.per_second).round() as i64 } else { -1 };
                 ttl.states.write(&state.to_le_bytes(), 1)?;
                 ttl.numbers.write_i64(number)?;
-                ttl.times.write_f64(ttl.stream.clock.seconds(event.at - origin))?;
+                ttl.times.write_f64(seconds)?;
                 ttl.words.write(&ttl.word.to_le_bytes(), 1)?;
                 bytes += 26;
             }
@@ -427,23 +436,26 @@ impl Files<Chunk> for RawFiles {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::standard::clock::Clock;
 
     #[test]
     fn writes_samples_interleaved_and_events() {
         let dir = std::env::temp_dir().join(format!("ephys-rs-raw-{}", std::process::id()));
-        let continuous = Continuous { channels: 2, sample_rate: 1000.0 };
-        let events = Events { lines: 8, clock: Clock::Ticks { rate: 1000.0 } };
+        let continuous = Continuous { channels: 2, sample_rate: 1000.0, clock: ClockId::TEST };
+        let events = Events { lines: 8, clock: Clock::new(ClockId::TEST, 1000.0) };
         let mut files = Box::new(RawFiles::open(&dir, Some(continuous), Some(events)).unwrap());
         let mut chunk = Chunk::new(Some(continuous), Some(events));
         // Two channels of three samples: 1, 2, 3 and 10, 20, 30 steps.
         chunk.continuous.len = 3;
         chunk.continuous.channel_mut(0).copy_from_slice(&[1.0, 2.0, 3.0].map(|s| s * EPHYS_MICROVOLTS_PER_BIT));
         chunk.continuous.channel_mut(1).copy_from_slice(&[10.0, 20.0, 30.0].map(|s| s * EPHYS_MICROVOLTS_PER_BIT));
-        // Recorded from the board's sample 700.
+        // Recorded from the board's sample 700; the second pass's samples after a gap of 2.
         let event = |at| Event { at, line: 1, high: true };
+        chunk.continuous.start = 700;
         chunk.events = EventsBuffer { events: vec![event(702.0)], start: 700.0, end: 703.0 };
         files.write(&chunk).unwrap();
-        chunk.events = EventsBuffer { events: vec![event(705.0)], start: 703.0, end: 706.0 };
+        chunk.continuous.start = 705;
+        chunk.events = EventsBuffer { events: vec![event(705.0)], start: 703.0, end: 708.0 };
         files.write(&chunk).unwrap();
         files.finish().unwrap();
         let recording = dir.join("Record Node 101/experiment1/recording1");
@@ -455,6 +467,10 @@ mod tests {
             std::fs::read(recording.join("events").join(EVENTS_FOLDER).join("TTL/sample_numbers.npy")).unwrap();
         let second = i64::from_le_bytes(numbers[128 + 8..128 + 16].try_into().unwrap());
         assert_eq!(second, 5, "the second pass's event, 3 samples on");
+        let numbers =
+            std::fs::read(recording.join("continuous").join(CONTINUOUS_FOLDER).join("sample_numbers.npy")).unwrap();
+        let numbers: Vec<i64> = numbers[128..].as_chunks::<8>().0.iter().map(|b| i64::from_le_bytes(*b)).collect();
+        assert_eq!(numbers, [0, 1, 2, 5, 6, 7], "the gap shows");
         let oebin: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(recording.join("structure.oebin")).unwrap()).unwrap();
         assert_eq!(oebin["continuous"][0]["num_channels"], 2);

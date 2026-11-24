@@ -18,6 +18,7 @@ pub mod alarms;
 pub mod annotations;
 pub mod auto_detect;
 pub mod base_directories;
+pub mod clock;
 pub mod config_patches;
 pub mod ephys;
 pub mod logs;

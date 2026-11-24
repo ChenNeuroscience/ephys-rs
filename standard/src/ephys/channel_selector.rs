@@ -4,7 +4,7 @@
 //! the numbers of the ones to keep, then apply the selection.
 
 use eframe::egui;
-use ephys_rs::engine::{Buffers, TreeShake};
+use ephys_rs::engine::{Buffers, NodeId, TreeShake};
 use serde::{Deserialize, Serialize};
 
 use crate::standard::ephys::reference::{channels_ui, parse_channels};
@@ -70,7 +70,7 @@ impl<E: PortEdges> Node<E> for ChannelSelector {
     type UiState = ();
     type GlobalSettings = ();
 
-    fn data_stream_out(&self, inputs: &DataStreamIn) -> DataStreamOut {
+    fn data_stream_out(&self, _: NodeId, inputs: &DataStreamIn) -> DataStreamOut {
         let selected = inputs.continuous.map(|c| Continuous { channels: self.passed(c.channels).len() as u32, ..c });
         DataStreamOut { selected }
     }
@@ -145,15 +145,17 @@ impl<E: PortEdges> Node<E> for ChannelSelector {
 mod tests {
     use super::*;
     use crate::Edges;
+    use crate::standard::clock::ClockId;
     use ephys_rs::engine::{DataStreamType, PASS_DURATION};
 
     #[test]
     fn passes_on_the_selected_channels_once_applied() {
-        let stream = Continuous { channels: 4, sample_rate: 1000.0 };
+        let stream = Continuous { channels: 4, sample_rate: 1000.0, clock: ClockId::TEST };
         let mut selector = ChannelSelector { apply: false, channels: "2, 4".into() };
         let run = |selector: &ChannelSelector| {
-            let out =
-                Node::<Edges>::data_stream_out(selector, &DataStreamIn { continuous: Some(stream) }).selected.unwrap();
+            let out = Node::<Edges>::data_stream_out(selector, NodeId(1), &DataStreamIn { continuous: Some(stream) })
+                .selected
+                .unwrap();
             let mut input = stream.buffer(PASS_DURATION);
             input.len = 3;
             for c in 0..4 {
@@ -295,7 +297,7 @@ mod tests {
                 let mut graph = Graph::<crate::Nodes>::default();
                 let node_type = crate::NodeType::ChannelSelector;
                 let id = graph.add(crate::Nodes::create(node_type), [0.0, 0.0]);
-                let stream = Continuous { channels: 16, sample_rate: 30000.0 };
+                let stream = Continuous { channels: 16, sample_rate: 30000.0, clock: ClockId::TEST };
                 let inputs = [Some(crate::DataStream::Continuous(stream))];
                 graph.edit(id, &inputs, &THEMES[0].colours, None, None, None, false, false, None, |_, context| {
                     selector.on_gui_tick(Some(ui), context)

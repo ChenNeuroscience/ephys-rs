@@ -352,6 +352,7 @@ fn capture(shared: &Shared, source: &Source) {
 
 #[cfg(test)]
 mod tests {
+    use crate::standard::clock::{Clock, ClockId};
     use std::process::{Command, Stdio};
 
     use super::*;
@@ -385,7 +386,7 @@ mod tests {
     #[test]
     fn passes_take_frames_as_they_come() {
         let source = Source::Fake { address: camera::serve_test_scene(320, 240) };
-        let video = Video { width: 320, height: 240, fps: 50.0 };
+        let video = Video { width: 320, height: 240, fps: 50.0, clock: Clock::seconds_of(ClockId::TEST) };
         let capture = Capture::start(source, CameraConfig::default(), video);
         let frames = take_like_passes(&capture, 25, 10);
         let mut status = Status::default();
@@ -406,8 +407,10 @@ mod tests {
         // The test scene takes one connection, so frames coming later show it wasn't opened again.
         let source = Source::Fake { address: camera::serve_test_scene(320, 240) };
         let settings = CameraConfig::default();
-        let (right, wrong) =
-            (Video { width: 320, height: 240, fps: 50.0 }, Video { width: 640, height: 480, fps: 50.0 });
+        let (right, wrong) = (
+            Video { width: 320, height: 240, fps: 50.0, clock: Clock::seconds_of(ClockId::TEST) },
+            Video { width: 640, height: 480, fps: 50.0, clock: Clock::seconds_of(ClockId::TEST) },
+        );
         let first = Capture::start(source.clone(), settings, wrong);
         let deadline = Instant::now() + Duration::from_secs(5);
         while first.wrong_size().is_none() && Instant::now() < deadline {
@@ -451,7 +454,7 @@ mod tests {
             .spawn()
             .expect("run python3");
         let source = Source::Fake { address: format!("127.0.0.1:{port}") };
-        let video = Video { width: 640, height: 480, fps: 50.0 };
+        let video = Video { width: 640, height: 480, fps: 50.0, clock: Clock::seconds_of(ClockId::TEST) };
         let capture = Capture::start(source, CameraConfig::default(), video);
         let frames = take_like_passes(&capture, 50, 10);
         let mut status = Status::default();

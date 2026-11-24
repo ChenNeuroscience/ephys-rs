@@ -15,6 +15,7 @@ pub mod ttl_viewer;
 
 use eframe::egui::Color32;
 
+use super::clock::{Clock, ClockId};
 use super::per_pass;
 use super::widgets::format_rate;
 use ephys_rs::engine::{DataStreamType, EdgeInfo, EdgeType};
@@ -24,6 +25,15 @@ use ephys_rs::engine::{DataStreamType, EdgeInfo, EdgeType};
 pub struct Continuous {
     pub channels: u32,
     pub sample_rate: f32,
+    /// The clock its samples are timed by, counted in samples (see `crate::standard::clock`).
+    pub clock: ClockId,
+}
+
+impl Continuous {
+    /// The clock its samples are timed by, counted in samples, as `ContinuousBuffer::start` counts.
+    pub fn timing(&self) -> Clock {
+        Clock::new(self.clock, self.sample_rate as f64)
+    }
 }
 
 impl EdgeType for Continuous {
@@ -42,26 +52,8 @@ impl EdgeType for Continuous {
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Events {
     pub lines: u32,
-    /// What the events are timed by (see `Event::at`).
+    /// What the events are timed by (see `Event::at`): a board's samples, say, or seconds by a camera's clock.
     pub clock: Clock,
-}
-
-/// A stream of events says what its events' times are counted in: ticks of its source's clock, which come at a rate
-/// (a board's samples), or seconds by its source's own clock (a camera's timestamps, a remote computer's).
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub enum Clock {
-    Ticks { rate: f32 },
-    Seconds,
-}
-
-impl Clock {
-    /// A time on this clock (`at`), in seconds.
-    pub fn seconds(self, at: f64) -> f64 {
-        match self {
-            Clock::Ticks { rate } => at / rate.max(f32::MIN_POSITIVE) as f64,
-            Clock::Seconds => at,
-        }
-    }
 }
 
 impl EdgeType for Events {
@@ -82,9 +74,9 @@ pub struct ContinuousBuffer {
     pub channels: usize,
     pub capacity: usize,
     pub len: usize,
-    /// The data's source numbers its samples from when it started, and the buffer's first sample has this number
-    /// (on the stream's own clock: a downsampled stream counts its own samples). The next buffer's data starts at
-    /// `start + len`, unless samples were lost between them: a gap.
+    /// When the buffer's first sample was, by the stream's clock (`Continuous::timing`): its number, counting at the
+    /// stream's sample rate from the clock's zero (so a downsampled stream counts its own samples). The next buffer's
+    /// data starts at `start + len`, unless samples were lost between them: a gap.
     pub start: u64,
     /// Channel after channel, each `capacity` long.
     pub data: Vec<f32>,
@@ -160,6 +152,8 @@ impl DataStreamType for Continuous {
 pub struct ComplexContinuous {
     pub channels: u32,
     pub sample_rate: f32,
+    /// The clock its samples are timed by, as `Continuous::clock`.
+    pub clock: ClockId,
 }
 
 impl EdgeType for ComplexContinuous {
@@ -237,7 +231,7 @@ impl DataStreamType for ComplexContinuous {
 /// A digital event: a line going high or low.
 #[derive(Clone, Copy, Debug)]
 pub struct Event {
-    /// When the line changed, on the stream's clock (`Events::clock`): a tick's number (whole, and exact as an `f64`
+    /// When the line changed, by the stream's clock (`Events::clock`): a tick's number (whole, and exact as an `f64`
     /// for any time a run could take), or seconds.
     pub at: f64,
     pub line: u8,
@@ -306,6 +300,6 @@ mod tests {
 
     #[test]
     fn summary() {
-        assert_eq!(Continuous { channels: 32, sample_rate: 30000.0 }.summary(), "32 ch · 30 kHz");
+        assert_eq!(Continuous { channels: 32, sample_rate: 30000.0, clock: ClockId::TEST }.summary(), "32 ch · 30 kHz");
     }
 }

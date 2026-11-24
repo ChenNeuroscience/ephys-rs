@@ -7,12 +7,14 @@ use serde::{Deserialize, Serialize};
 
 use super::capture::{self, Capture, Shape, State, Status};
 use super::{AUX_PER_HEADSTAGE, Bandwidth, BoardInfo, Config, Headstage, OpalKellyKind, PORTS, SAMPLE_RATES, Source};
-use crate::standard::ephys::{Clock, Continuous, Events};
+use crate::standard::clock::{Clock, ClockId, Time};
+use crate::standard::ephys::{Continuous, Events};
 use crate::standard::pool::Pool;
 use crate::standard::widgets::{named_settings_grid, setting, settings_grid};
 use ephys_rs::engine::{
-    Buffers, Category, CommandContext, CommandSource, DataStreamOutPorts, DevTools, Flow, NoPorts, Node, NodeInfo,
-    NodeThread, PassContext, PoolStatus, Prepare, PrepareContext, Prepared, Suggestion, UiContext, UserDecision,
+    Buffers, Category, CommandContext, CommandSource, DataStreamOutPorts, DevTools, Flow, NoPorts, Node, NodeId,
+    NodeInfo, NodeThread, PassContext, PoolStatus, Prepare, PrepareContext, Prepared, Suggestion, UiContext,
+    UserDecision,
 };
 use ephys_rs::gui::widgets::{Icon, small_icon_button};
 
@@ -21,6 +23,9 @@ ephys_rs::ports! {
     digital: DataStreamOut<Events>,
     auxiliary: DataStreamOut<Continuous>,
     analogue: DataStreamOut<Continuous>,
+    /// Only the board's times: the stretch of its samples each pass covers, which writers say when recording started
+    /// by (see `crate::standard::clock::Time`).
+    time: DataStreamOut<Time>,
 }
 
 /// The board's analogue inputs.
@@ -112,14 +117,15 @@ impl AcquisitionBoard {
 
     /// The board's data streams: the shape of the data its capture thread fills in, which is also what the node
     /// outputs.
-    fn shape(&self) -> Shape {
-        let rate = self.sample_rate as f32;
-        let continuous = |channels| Continuous { channels, sample_rate: rate };
+    /// Its streams, as node `id`: all timed by the board's clock, its samples.
+    fn shape(&self, id: NodeId) -> Shape {
+        let (rate, clock) = (self.sample_rate as f32, ClockId::new(id, 0));
+        let continuous = |channels| Continuous { channels, sample_rate: rate, clock };
         Shape {
             ephys: continuous(Headstage::total(&self.headstages)),
             aux: continuous(AUX_PER_HEADSTAGE * self.headstages.len() as u32),
             adc: continuous(ADC_CHANNELS),
-            events: Events { lines: self.source.ttl_lines(), clock: Clock::Ticks { rate } },
+            events: Events { lines: self.source.ttl_lines(), clock: Clock::new(clock, rate as f64) },
         }
     }
 }
@@ -148,13 +154,14 @@ impl<E: PortEdges> Node<E> for AcquisitionBoard {
         match command {}
     }
 
-    fn data_stream_out(&self, _inputs: &NoPorts) -> DataStreamOut {
-        let shape = self.shape();
+    fn data_stream_out(&self, id: NodeId, _inputs: &NoPorts) -> DataStreamOut {
+        let shape = self.shape(id);
         DataStreamOut {
             headstages: Some(shape.ephys),
             digital: Some(shape.events),
             auxiliary: Some(shape.aux),
             analogue: Some(shape.adc),
+            time: Some(Time { clock: shape.events.clock }),
         }
     }
 
@@ -166,7 +173,12 @@ impl<E: PortEdges> Node<E> for AcquisitionBoard {
             flow: Flow::ToPasses,
             why: "On a thread of its own so samples are taken from the board as they come (before its buffer \
                   overflows), whatever the passes are doing.",
-            swapped_outputs: (0..DataStreamOutPorts::<E>::ports(&Node::<E>::data_stream_out(self, &NoPorts)).len())
+            swapped_outputs: (0..DataStreamOutPorts::<E>::ports(&Node::<E>::data_stream_out(
+                self,
+                NodeId(0),
+                &NoPorts,
+            ))
+            .len())
                 .collect(),
             pool: display.as_ref().map(|d| d.pool),
         };
@@ -201,7 +213,7 @@ impl<E: PortEdges> Node<E> for AcquisitionBoard {
         if context.unchanged(self) {
             return Prepared::nothing().into();
         }
-        let capture = Capture::start(self.source.clone(), self.config(), self.shape());
+        let capture = Capture::start(self.source.clone(), self.config(), self.shape(context.node));
         let board = self.clone();
         Prepare::Wait(Box::new(move || {
             let decisions = board.decisions(&capture.started(START_TIMEOUT));
@@ -220,7 +232,7 @@ impl<E: PortEdges> Node<E> for AcquisitionBoard {
         _: &mut (),
     ) {
         let Some(capture) = &acquiring.capture else { return };
-        let DataStreamOut { headstages, digital, auxiliary, analogue } = outputs;
+        let DataStreamOut { headstages, digital, auxiliary, analogue, time } = outputs;
         match capture.pool().take(|samples| samples.is_empty()) {
             Some(mut samples) => {
                 std::mem::swap(headstages, &mut samples.ephys);
@@ -231,13 +243,14 @@ impl<E: PortEdges> Node<E> for AcquisitionBoard {
             }
             // Nothing's come since the last pass: none, numbered on from the last.
             None => {
-                for out in [headstages, auxiliary, analogue] {
+                for out in [&mut *headstages, &mut *auxiliary, &mut *analogue] {
                     (out.start, out.len) = (out.start + out.len as u64, 0);
                 }
                 digital.events.clear();
                 digital.start = digital.end;
             }
         }
+        (time.start, time.end) = (headstages.start as f64, (headstages.start + headstages.len as u64) as f64);
         // Not if the capture thread's updating the status just then: the next pass shows it.
         if let Some(status) = capture.try_status() {
             pass.shared::<Pool<BoardDisplay>>().send_newest(pass.sequence, |display| {

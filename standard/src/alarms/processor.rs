@@ -4,7 +4,7 @@
 //! small size, and what's selected can change without waiting for a new period. An alarm doesn't go off until it's seen
 //! a whole period.
 
-use ephys_rs::engine::{Buffers, TreeShake};
+use ephys_rs::engine::{Buffers, NodeId, TreeShake};
 use std::collections::VecDeque;
 
 use eframe::egui;
@@ -290,7 +290,7 @@ impl<E: PortEdges> Node<E> for AlarmProcessor {
         TreeShake { runs: given && outputs.contains(&true), needs }
     }
 
-    fn data_stream_out(&self, inputs: &DataStreamIn) -> DataStreamOut {
+    fn data_stream_out(&self, _: NodeId, inputs: &DataStreamIn) -> DataStreamOut {
         DataStreamOut { alarms: Some(streams(inputs)) }
     }
 
@@ -368,6 +368,7 @@ mod tests {
     use super::*;
     use crate::Edges;
     use crate::standard::alarms::Selection;
+    use crate::standard::clock::{Clock, ClockId};
     use crate::standard::ephys::{ContinuousBuffer, Event, EventsBuffer};
     use crate::standard::spikes::{Spike, SpikesBuffer};
     use crate::standard::tracking::pipeline::Blob;
@@ -375,7 +376,8 @@ mod tests {
     use Input::{Lfp, Ttl};
     use ephys_rs::engine::{DataStreamType, PASS_DURATION};
 
-    const SPIKES: Spikes = Spikes { channels: 8, sample_rate: 1000.0, group_size: 4, pre: 2, post: 2 };
+    const SPIKES: Spikes =
+        Spikes { channels: 8, sample_rate: 1000.0, group_size: 4, pre: 2, post: 2, clock: ClockId::TEST };
 
     /// A processor of `alarms`, watching only what `inputs` has.
     struct Run {
@@ -499,7 +501,7 @@ mod tests {
 
     #[test]
     fn lfp_is_the_fraction_of_time_in_range() {
-        let stream = Continuous { channels: 2, sample_rate: 1000.0 };
+        let stream = Continuous { channels: 2, sample_rate: 1000.0, clock: ClockId::TEST };
         let kind = AlarmKind::LfpSaturation { level_uv: 100.0, low: 90.0, selection: Selection::default() };
         let mut run = Run::new(one(kind, 1.0), DataStreamIn { lfp: Some(stream), ..Default::default() });
         let mut buffer = stream.buffer(PASS_DURATION);
@@ -514,7 +516,8 @@ mod tests {
 
     #[test]
     fn positions_are_the_fraction_of_samples_with_leds() {
-        let stream = Positions { fps: 50.0, width: 100, height: 100, source: "test" };
+        let stream =
+            Positions { fps: 50.0, width: 100, height: 100, source: "test", clock: Clock::seconds_of(ClockId::TEST) };
         let alarms = one(AlarmKind::MissingPositions { low: 80.0 }, 1.0);
         let mut run = Run::new(alarms, DataStreamIn { positions: Some(stream), ..Default::default() });
         let sample = |leds| PositionSample { frame: 0, time: 0.0, leds, timing_led: None, pixels_per_metre: f32::NAN };
@@ -530,7 +533,7 @@ mod tests {
 
     #[test]
     fn ttls_are_counted_by_their_ups_over_the_period() {
-        let stream = Events { lines: 2, clock: crate::standard::ephys::Clock::Ticks { rate: 1000.0 } };
+        let stream = Events { lines: 2, clock: crate::standard::clock::Clock::new(ClockId::TEST, 1000.0) };
         let selection = Selection { together: true, ..Default::default() };
         let alarms = one(AlarmKind::TtlCount { low: 40.0, high: 60.0, selection }, 1.0);
         let mut run = Run::new(alarms, DataStreamIn { ttl: Some(stream), ..Default::default() });
@@ -545,7 +548,7 @@ mod tests {
 
     #[test]
     fn a_ttl_up_alarm_follows_its_line_at_once() {
-        let stream = Events { lines: 2, clock: crate::standard::ephys::Clock::Ticks { rate: 1000.0 } };
+        let stream = Events { lines: 2, clock: crate::standard::clock::Clock::new(ClockId::TEST, 1000.0) };
         let mut run =
             Run::new(one(AlarmKind::TtlUp { line: 1 }, 1.0), DataStreamIn { ttl: Some(stream), ..Default::default() });
         let pass = |events: Vec<Event>| EventsBuffer { events, start: 0.0, end: 20.0 };

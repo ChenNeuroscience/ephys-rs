@@ -17,8 +17,8 @@ use serde::{Deserialize, Serialize};
 use crate::standard::ephys::{Continuous, ContinuousBuffer};
 use crate::standard::widgets::{input_summary, require_input, setting, settings_grid};
 use ephys_rs::engine::{
-    Buffers, Category, CommandContext, CommandSource, DataStreamType, EdgeInfo, EdgeType, NoPorts, Node, NodeInfo,
-    PassContext, Prepare, PrepareContext, Prepared, UiContext,
+    Buffers, Category, CommandContext, CommandSource, DataStreamType, EdgeInfo, EdgeType, NoPorts, Node, NodeId,
+    NodeInfo, PassContext, Prepare, PrepareContext, Prepared, UiContext,
 };
 
 /// About how many samples a second the spectra are worked out from.
@@ -147,7 +147,7 @@ impl<E: PortEdges> Node<E> for Spectrum {
         match command {}
     }
 
-    fn data_stream_out(&self, inputs: &DataStreamIn) -> DataStreamOut {
+    fn data_stream_out(&self, _: NodeId, inputs: &DataStreamIn) -> DataStreamOut {
         DataStreamOut { spectra: inputs.continuous.map(|c| Spectra::of(c, self.band)) }
     }
 
@@ -346,12 +346,13 @@ impl Analysis {
 mod tests {
     use super::*;
     use crate::Edges;
+    use crate::standard::clock::ClockId;
     use ephys_rs::engine::PASS_DURATION;
 
     #[test]
     fn the_spectrum_peaks_at_the_rhythm() {
         let spectrum = Spectrum::default();
-        let stream = Continuous { channels: 2, sample_rate: 30000.0 };
+        let stream = Continuous { channels: 2, sample_rate: 30000.0, clock: ClockId::TEST };
         let mut analysis =
             ephys_rs::engine::fresh_state::<Edges, _>(&spectrum, &DataStreamIn { continuous: Some(stream) });
         let mut out = Spectra::of(stream, spectrum.band).buffer(PASS_DURATION);

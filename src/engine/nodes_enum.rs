@@ -8,8 +8,8 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use super::{
-    BufferUsage, CommandContext, CommandSource, DevTools, Edges, NodeInfo, PassBuffers, PassContext, Port, PortRole,
-    Prepare, PrepareContext, Shared, TreeShake, UiContext,
+    BufferUsage, CommandContext, CommandSource, DevTools, Edges, NodeId, NodeInfo, PassBuffers, PassContext, Port,
+    PortRole, Prepare, PrepareContext, Shared, TreeShake, UiContext,
 };
 
 /// The app sometimes needs a node's type without the node: what the add-node menu offers, say. `nodes_enum!` makes a
@@ -54,9 +54,10 @@ pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + S
     /// The node's `DataStreamIn` ports, in declaration order, for the graph (see `Node::Ports`).
     fn list_ports_data_stream_in(&self) -> Vec<Port<Self::Edges>>;
     /// The node's `DataStreamOut` ports, in declaration order, for the graph. Each port includes the stream on it,
-    /// computed from the streams on the node's inputs (see `Node::data_stream_out`).
+    /// computed from the node's `id` and the streams on its inputs (see `Node::data_stream_out`).
     fn list_ports_data_stream_out(
         &self,
+        id: NodeId,
         inputs: &[Option<<Self::Edges as Edges>::DataStream>],
     ) -> Vec<Port<Self::Edges>>;
     fn warnings(&self, inputs: &[Option<<Self::Edges as Edges>::DataStream>]) -> Vec<String>;
@@ -249,13 +250,14 @@ macro_rules! nodes_enum {
 
             fn list_ports_data_stream_out(
                 &self,
+                id: $crate::engine::NodeId,
                 inputs: &[Option<<$edges as $crate::engine::Edges>::DataStream>],
             ) -> Vec<$crate::engine::Port<$edges>> {
                 match self {
                     $($name::$variant(n) => {
                         let inputs = <$crate::engine::DataStreamInOf<$ty, $edges> as $crate::engine::DataStreamInPorts<$edges>>::of(inputs);
                         let outputs: $crate::engine::DataStreamOutOf<$ty, $edges> =
-                            $crate::engine::Node::<$edges>::data_stream_out(n, &inputs);
+                            $crate::engine::Node::<$edges>::data_stream_out(n, id, &inputs);
                         $crate::engine::DataStreamOutPorts::<$edges>::ports(&outputs)
                     }),+
                 }

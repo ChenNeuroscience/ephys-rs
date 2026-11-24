@@ -21,7 +21,7 @@ use crate::standard::recording::expand;
 use crate::standard::widgets::{combo, setting, settings_grid};
 use ephys_rs::commands::CmdSender;
 use ephys_rs::engine::{
-    Category, CommandContext, CommandSource, EdgeInfo, EdgeType, NoPorts, Node, NodeInfo, UiContext,
+    Category, CommandContext, CommandSource, EdgeInfo, EdgeType, NoPorts, Node, NodeId, NodeInfo, UiContext,
 };
 use ephys_rs::gui::widgets::{Icon, help_link, small_icon_button};
 use ephys_rs::theme::Colours;
@@ -626,7 +626,7 @@ impl<E: PortEdges> Node<E> for RunCommand {
     const WINDOW_SIZE: [f32; 2] = [820.0, 520.0];
     const SHOW_IN_BASIC_DEFAULT: bool = true;
 
-    fn data_stream_out(&self, _inputs: &NoPorts) -> NoPorts {
+    fn data_stream_out(&self, _: NodeId, _inputs: &NoPorts) -> NoPorts {
         NoPorts
     }
 

@@ -1,5 +1,5 @@
-//! Log lines: lines of text as a data stream, each of at most `LogLines::width` bytes, and each with a time, in seconds
-//! by its source's own clock (as positions and events have). They're held fixed width, so a
+//! Log lines: lines of text as a data stream, each of at most `LogLines::width` bytes, and each with a time, by its
+//! source's clock (`LogLines::clock`), as positions and events have. They're held fixed width, so a
 //! pass's buffer is made once, with room for `LINES_PER_PASS` lines, and nothing's allocated as they're passed on. The
 //! Log Viewer shows them (`log_viewer`).
 
@@ -7,6 +7,7 @@ pub mod log_viewer;
 
 use eframe::egui::Color32;
 
+use super::clock::Clock;
 use ephys_rs::engine::{DataStreamType, EdgeInfo, EdgeType};
 
 /// Room in a pass's buffer: 3,200 lines a second. A source with more keeps them for the next pass.
@@ -16,6 +17,8 @@ pub const LINES_PER_PASS: usize = 64;
 pub struct LogLines {
     /// The most bytes in a line: longer ones are cut short.
     pub width: u32,
+    /// What the lines' times are by: the VR computer's clock, say.
+    pub clock: Clock,
 }
 
 impl EdgeType for LogLines {
@@ -110,11 +113,12 @@ impl DataStreamType for LogLines {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::standard::clock::{Clock, ClockId};
     use ephys_rs::engine::PASS_DURATION;
 
     #[test]
     fn long_lines_are_cut_short_keeping_whole_characters_and_stay_one_line() {
-        let mut buffer = LogLines { width: 5 }.buffer(PASS_DURATION);
+        let mut buffer = LogLines { width: 5, clock: Clock::seconds_of(ClockId::TEST) }.buffer(PASS_DURATION);
         assert!(buffer.push(1.0, "hello there"));
         assert!(buffer.push(2.0, "abcdé!"), "é is two bytes, the fifth and sixth");
         assert!(buffer.push(3.0, "a\r\nb"));
@@ -124,7 +128,7 @@ mod tests {
 
     #[test]
     fn a_full_buffer_says_so_and_copies_whole() {
-        let stream = LogLines { width: 8 };
+        let stream = LogLines { width: 8, clock: Clock::seconds_of(ClockId::TEST) };
         let (mut from, mut to) = (stream.buffer(PASS_DURATION), stream.buffer(PASS_DURATION));
         for _ in 0..LINES_PER_PASS {
             assert!(from.push(7.0, "line"));

@@ -19,8 +19,8 @@ use crate::standard::plots;
 use crate::standard::pool::Pool;
 use crate::standard::widgets::require_input;
 use ephys_rs::engine::{
-    Buffers, Category, CommandContext, CommandSource, EdgeType, NoPorts, Node, NodeInfo, PassContext, PassState,
-    Prepare, PrepareContext, Prepared, UiContext,
+    Buffers, Category, CommandContext, CommandSource, EdgeType, NoPorts, Node, NodeId, NodeInfo, PassContext,
+    PassState, Prepare, PrepareContext, Prepared, UiContext,
 };
 use ephys_rs::theme::Colours;
 
@@ -123,7 +123,7 @@ impl<E: PortEdges> Node<E> for PhaseViewer {
         match command {}
     }
 
-    fn data_stream_out(&self, _inputs: &DataStreamIn) -> NoPorts {
+    fn data_stream_out(&self, _: NodeId, _inputs: &DataStreamIn) -> NoPorts {
         NoPorts
     }
 
@@ -438,6 +438,7 @@ fn cell_ui(
 mod tests {
     use super::*;
     use crate::Edges;
+    use crate::standard::clock::ClockId;
     use crate::standard::ephys::ComplexContinuousBuffer;
     use ephys_rs::engine::{DataStreamInPorts, DataStreamType};
 
@@ -445,7 +446,7 @@ mod tests {
 
     /// A pass of `len` samples from `start`, on channels each `(amplitude, hz, phase)`.
     fn pass(channels: &[(f32, f32, f32)], start: usize, len: usize) -> ComplexContinuousBuffer {
-        let stream = ComplexContinuous { channels: channels.len() as u32, sample_rate: RATE };
+        let stream = ComplexContinuous { channels: channels.len() as u32, sample_rate: RATE, clock: ClockId::TEST };
         let mut buffer = stream.buffer(0.1);
         buffer.len = len;
         for (c, &(amplitude, hz, phase)) in channels.iter().enumerate() {
@@ -473,7 +474,7 @@ mod tests {
     #[test]
     fn phases_are_relative_to_the_anchor() {
         let channels = [(1.0, 8.0, 0.0), (2.0, 8.0, std::f32::consts::FRAC_PI_4), (1.0, 9.0, 0.0)];
-        let mut phases = Phases::new(ComplexContinuous { channels: 3, sample_rate: RATE });
+        let mut phases = Phases::new(ComplexContinuous { channels: 3, sample_rate: RATE, clock: ClockId::TEST });
         run(&mut phases, &channels, 0, 10);
         let display = phases.display();
         near(display.channels[0].frequency_hz, 8.0, 0.01);
@@ -498,7 +499,8 @@ mod tests {
     fn an_anchor_past_the_last_channel_is_the_last() {
         let viewer = PhaseViewer { anchor: 9, ..Default::default() };
         assert_eq!(viewer.anchor_of(4), 3);
-        let inputs = DataStreamIn { analytic: Some(ComplexContinuous { channels: 4, sample_rate: RATE }) };
+        let inputs =
+            DataStreamIn { analytic: Some(ComplexContinuous { channels: 4, sample_rate: RATE, clock: ClockId::TEST }) };
         assert_eq!(Node::<Edges>::warnings(&viewer, &inputs).len(), 1);
     }
 
@@ -556,7 +558,7 @@ mod tests {
             .collect();
         let display = PhaseDisplay { channels, anchor: 0, covered: 2.0 };
         let streams = DataStreamInPorts::<Edges>::streams(&DataStreamIn {
-            analytic: Some(ComplexContinuous { channels: 8, sample_rate: RATE }),
+            analytic: Some(ComplexContinuous { channels: 8, sample_rate: RATE, clock: ClockId::TEST }),
         });
         let shared = ephys_rs::engine::SharedByNode::default().with(viewer, Pool::holding(display));
         let mut harness = egui_kittest::Harness::builder().with_size([760.0, 380.0]).wgpu().build_ui_state(

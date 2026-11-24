@@ -2,7 +2,9 @@
 //! run as second-order sections by sci-rs (a port of SciPy's `butter` and `sosfilt`).
 
 use eframe::egui;
-use ephys_rs::engine::{Buffers, CommandContext, CommandSource, NoPorts, Prepare, PrepareContext, Prepared, TreeShake};
+use ephys_rs::engine::{
+    Buffers, CommandContext, CommandSource, NoPorts, NodeId, Prepare, PrepareContext, Prepared, TreeShake,
+};
 use sci_rs::signal::filter::design::{DigitalFilter, FilterBandType, FilterOutputType, Sos, butter_dyn};
 use sci_rs::signal::filter::sosfilt_item;
 use serde::{Deserialize, Serialize};
@@ -92,7 +94,7 @@ impl<E: PortEdges> Node<E> for BandPassFilter {
         match command {}
     }
 
-    fn data_stream_out(&self, inputs: &DataStreamIn) -> DataStreamOut {
+    fn data_stream_out(&self, _: NodeId, inputs: &DataStreamIn) -> DataStreamOut {
         DataStreamOut { filtered: inputs.continuous }
     }
 
