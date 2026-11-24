@@ -120,8 +120,8 @@ mod components;
 mod standard;
 #[cfg(test)]
 use components::{
-    AnnotationKind, AnnotationTypes, Buffer, Command, DataStream, DataStreamKind, Edges, NodeType, Nodes,
-    PublishedValue, example_graph,
+    AnnotationKind, AnnotationTypes, Buffer, Command, DataStream, DataStreamKind, Edges, NodeType, Nodes, ValOut,
+    example_graph,
 };
 
 /// A build only lists the edge types its nodes need. This build has two standard node types whose ports carry only
@@ -136,7 +136,7 @@ mod minimal_build {
         data_streams: pub enum DataStream, DataStreamKind, Buffer {
             Continuous(Continuous),
         }
-        values: pub enum PublishedValue, ValueKind {}
+        values: pub enum ValOut, ValueKind {}
         commands: pub enum Command, CommandKind {}
     }
 

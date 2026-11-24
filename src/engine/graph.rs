@@ -121,9 +121,9 @@ pub struct NodeState<E: Edges> {
     /// For each input, the data stream connected to it, if any.
     pub input_streams: Vec<Option<E::DataStream>>,
     pub outputs: Vec<Port<E>>,
-    /// The node's `ValOutCmdIn` ports, in order, and what it publishes at each (see `Node::val_out`).
+    /// The node's `ValOutCmdIn` ports, in order, and the node's value out at each (see `Node::val_out`).
     pub val_outs: Vec<Port<E>>,
-    pub values: Vec<E::PublishedValue>,
+    pub values: Vec<E::ValOut>,
     /// The node's `ValInCmdOut` and `ValIn` ports, in the order it declares them (as it numbers them: see
     /// `val_in_address`).
     pub val_ins: Vec<Port<E>>,
@@ -209,7 +209,7 @@ impl<E: Edges> NodeState<E> {
 
     pub fn kind(&self, role: PortRole, port_idx: usize) -> Option<PortKind> {
         let stream = |kind| PortKind::DataStream(E::DataStream::kind_index(kind));
-        let value = |kind| PortKind::Value(E::PublishedValue::kind_index(kind));
+        let value = |kind| PortKind::Value(E::ValOut::kind_index(kind));
         match role {
             PortRole::DataStreamIn => self.inputs.get(port_idx).and_then(Port::data_stream_kind).map(stream),
             PortRole::DataStreamOut => self.outputs.get(port_idx).and_then(Port::data_stream_kind).map(stream),
@@ -221,8 +221,8 @@ impl<E: Edges> NodeState<E> {
         self.kind(role, port_idx).map(edge_info::<E>)
     }
 
-    /// The graph and the node's window show what's on a port: the data stream on an input or output, or the value the
-    /// node publishes.
+    /// The graph and the node's window show what's on a port: the data stream on an input or output, or the node's value
+    /// out.
     pub fn summary(&self, role: PortRole, port_idx: usize) -> Option<String> {
         match role {
             PortRole::DataStreamIn => self.input_streams.get(port_idx).copied().flatten().map(|s| s.summary()),
@@ -263,7 +263,7 @@ impl<E: Edges> NodeState<E> {
 pub fn edge_info<E: Edges>(kind: PortKind) -> &'static EdgeInfo {
     match kind {
         PortKind::DataStream(index) => &E::DataStream::KINDS[index],
-        PortKind::Value(index) => &E::PublishedValue::KINDS[index],
+        PortKind::Value(index) => &E::ValOut::KINDS[index],
     }
 }
 
@@ -368,7 +368,7 @@ impl<N> Default for Graph<N> {
     }
 }
 
-type PublishedValue<N> = <<N as NodesEnum>::Edges as Edges>::PublishedValue;
+type ValOut<N> = <<N as NodesEnum>::Edges as Edges>::ValOut;
 type DataStream<N> = <<N as NodesEnum>::Edges as Edges>::DataStream;
 
 impl<N: NodesEnum> Graph<N> {
@@ -491,8 +491,8 @@ impl<N: NodesEnum> Graph<N> {
         self.edges.iter().filter(move |e| e.from == port && self.is_live(e)).copied()
     }
 
-    /// A node's window says which nodes read and command what it publishes: for each of its `ValOutCmdIn` ports, the
-    /// labels of the nodes with a live edge to it.
+    /// A node's window says which nodes read and command the node's values out: for each of the node's `ValOutCmdIn`
+    /// ports, the labels of the nodes with a live edge to the port.
     fn controlled_by(&self, id: NodeId) -> Vec<Vec<String>> {
         let count = self.nodes.get(&id).map_or(0, |entry| {
             entry.node.list_ports_val_cmd().iter().filter(|p| p.role() == PortRole::ValOutCmdIn).count()
@@ -696,9 +696,9 @@ impl<N: NodesEnum> Graph<N> {
         next.keys().copied().filter(|&id| reaches_itself(id)).collect()
     }
 
-    /// A node reads values through its `ValInCmdOut` and `ValIn` ports. This gives, for each of node `id`'s, what the
-    /// node at the other end publishes there now, if the port's connected (by a live edge).
-    pub fn val_ins(&self, id: NodeId) -> Vec<Option<PublishedValue<N>>> {
+    /// A node reads values through its `ValInCmdOut` and `ValIn` ports. This gives, for each of node `id`'s, the value
+    /// out of the node at the other end now, if the port's connected (by a live edge).
+    pub fn val_ins(&self, id: NodeId) -> Vec<Option<ValOut<N>>> {
         let Some(entry) = self.nodes.get(&id) else { return Vec::new() };
         let count = entry.node.list_ports_val_cmd().iter().filter(|p| p.role() != PortRole::ValOutCmdIn).count();
         (0..count)
@@ -860,7 +860,7 @@ impl<N: NodesEnum> Graph<N> {
 
 /// A snapshot keeps, for each node with `ValInCmdOut` or `ValIn` ports, the value at the other end of each, if it's
 /// connected.
-pub type ValIns<N> = HashMap<NodeId, Vec<Option<PublishedValue<N>>>>;
+pub type ValIns<N> = HashMap<NodeId, Vec<Option<ValOut<N>>>>;
 
 /// When Record's pressed (or a node asks), the app makes a recording: its base directory (see
 /// `crate::base_directory`), when it was asked for, and once it has, when it took effect. Its nodes prepare for it as
@@ -994,7 +994,7 @@ mod tests {
     use crate::engine::NodeTypeEnum;
     use crate::standard::clock::ClockId;
     use crate::standard::{ephys, spikes};
-    use crate::{DataStream, PublishedValue};
+    use crate::{DataStream, ValOut};
 
     fn create(name: &str) -> Nodes {
         Nodes::create(NodeType::named(name).unwrap())
@@ -1127,8 +1127,7 @@ mod tests {
         graph.connect(port(viewer, PortRole::ValInCmdOut, 0), port(detector, PortRole::ValOutCmdIn, 0)).unwrap();
         assert_eq!(graph.topological_order(), vec![board, detector, viewer]);
 
-        let thresholds =
-            |uv: Vec<f32>| PublishedValue::Thresholds(spikes::Thresholds { values: uv, ..Default::default() });
+        let thresholds = |uv: Vec<f32>| ValOut::Thresholds(spikes::Thresholds { values: uv, ..Default::default() });
         assert_eq!(graph.val_ins(viewer), vec![Some(thresholds(vec![])), None]);
         let theme = &crate::standard::themes::THEMES[0].colours;
         graph.edit(viewer, &[], theme, None, None, None, false, false, None, |_, context| {
@@ -1186,7 +1185,7 @@ mod tests {
         let mut graph = Graph::default();
         let detector = graph.add(create("Spike Detector"), [0.0, 0.0]);
         let started = |graph: &Graph<Nodes>| match graph.get(detector).unwrap().node.val_out(0) {
-            PublishedValue::Thresholds(thresholds) => thresholds.detect.started.is_some(),
+            ValOut::Thresholds(thresholds) => thresholds.detect.started.is_some(),
             _ => unreachable!(),
         };
         let mut send = |from, command| graph.command(detector, from, command, None, None, false);

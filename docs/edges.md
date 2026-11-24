@@ -12,7 +12,7 @@ edge_types! {
         Continuous(ephys::Continuous),
         // ...
     }
-    values: pub enum PublishedValue, ValueKind {
+    values: pub enum ValOut, ValueKind {
         Thresholds(spikes::Thresholds),
         // ...
     }
@@ -26,7 +26,7 @@ edge_types! {
 
 This generates:
 
-- the `DataStream` and `PublishedValue` enums, and the `DataStreamKind` and `ValueKind` enums naming their variants,
+- the `DataStream` and `ValOut` enums, and the `DataStreamKind` and `ValueKind` enums naming their variants,
   which the graph matches ports by;
 - the `Buffer` enum of the data streams' buffers;
 - the `Command` enum of the commands nodes can send each other through ValCmd edges (or send themselves, from their
@@ -75,7 +75,7 @@ selected, so Delete can't remove something out of sight.
 A ValCmd edge runs from a node's `ValInCmdOut` port to another node's `ValOutCmdIn` port of the same kind. Each port is
 named for what flows through it, which way (as data ports are `DataStreamIn` and `DataStreamOut`):
 
-- At the `ValOutCmdIn` end, the node **publishes a value** (`Node::val_out`), usually a copy of one of its settings,
+- At the `ValOutCmdIn` end, the node offers a **value out** (`Node::val_out`), usually a copy of one of its settings,
   and takes **commands** through the edge (`Node::on_command`).
 - At the `ValInCmdOut` end, the node reads the value (`UiContext::val_in`), and sends commands (`UiContext::cmd_out`):
   usually the one setting the value (`SetThresholds`, say), sometimes others (auto detect's `Detect`).

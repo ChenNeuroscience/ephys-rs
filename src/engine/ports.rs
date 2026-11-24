@@ -5,7 +5,7 @@
 //! - `DataStreamIn` and `DataStreamOut`: structs of the node's data ports, generic over a form (see
 //!   `crate::engine::data_ports`). In one form the fields are the ports' streams, which `Node::data_stream_out` uses;
 //!   in another they are the ports' buffers, which `Node::process` uses.
-//! - `ValOutCmdIn`: a struct of the values the node publishes, which `Node::val_out` returns. `CmdIn` is an enum of
+//! - `ValOutCmdIn`: a struct of the node's values out, which `Node::val_out` returns. `CmdIn` is an enum of
 //!   every command those ports accept, which `Node::on_command` receives (see `crate::engine::val_cmd_ports`).
 //! - `ValInCmdOut` and `ValIn`: a handle for each port that reads another node's value (such as
 //!   `ValInCmdOut::gains`). The contexts take these handles to read values and send commands.
@@ -76,7 +76,7 @@ impl<E: Edges> PortSet<E> for NoPorts {
 /// - `DataStreamIn` and `DataStreamOut`, if the node has such ports: structs of the ports, generic over a `PortForm`
 ///   (`Streams` by default), implementing `DataStreamInPorts` and `DataStreamOutPorts`. Each `DataStreamIn` port also
 ///   gets an associated constant holding the port's number (`DataStreamIn::continuous`).
-/// - `ValOutCmdIn`, if the node has such ports: a struct of the values the ports publish, implementing
+/// - `ValOutCmdIn`, if the node has such ports: a struct of the ports' values out, implementing
 ///   `ValOutCmdInPorts`. Each port also gets an associated constant holding the port's number (`ValOutCmdIn::files`),
 ///   which `CommandSource::Port` compares against.
 /// - `CmdIn`: an enum with one variant for each command the `ValOutCmdIn` ports accept (`CmdIn::Detect(Detect)`),
@@ -353,7 +353,7 @@ macro_rules! ports {
     (@val_out_cmd_in $(
         { ($($m:tt)*) $field:ident ($value:ty) ($($command:ident),*) ($($name:literal)?) ($($side:ident)?) }
     )+) => {
-        /// The values the node publishes at its `ValOutCmdIn` ports (see `ephys_rs::engine::ports`).
+        /// The node's values out, at its `ValOutCmdIn` ports (see `ephys_rs::engine::ports`).
         pub struct ValOutCmdIn {
             $($($m)* pub $field: $value,)+
         }
@@ -387,7 +387,7 @@ macro_rules! ports {
                 ),+]
             }
 
-            fn values(self) -> Vec<E::PublishedValue> {
+            fn values(self) -> Vec<E::ValOut> {
                 vec![$(<E as $crate::engine::HasValue<$value>>::wrap(self.$field)),+]
             }
         }

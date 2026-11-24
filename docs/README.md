@@ -6,7 +6,7 @@ you're working on. For how to use it, see the [user guide](user/README.md).
 - [Architecture](architecture.md): the graph and its snapshots, plans and passes; threads, buffers and pools;
   how the GUI and the passes talk; the framework, standard components and custom builds.
 - [Nodes](nodes.md): writing a node type, from settings and ports to state, views, threads and commands.
-- [Edges](edges.md): data streams, published values and commands, and how buffers are made.
+- [Edges](edges.md): data streams, values out and commands, and how buffers are made.
 - [Annotations](annotations.md): things on the canvas that aren't part of the graph.
 - [Quick actions](quick-actions.md): ready-made changes to the graph, offered in basic mode.
 - [Base directories](base-directories.md): where recordings go, chosen in the main toolbar, for every writer.

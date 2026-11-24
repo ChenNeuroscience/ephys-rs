@@ -36,9 +36,9 @@ pub struct PassContext<'a, E: Edges> {
     pub duration: f64,
     /// The node the pass is running.
     pub node: NodeId,
-    /// For each of the node's `ValInCmdOut` and `ValIn` ports, what the node at the other end published as the snapshot
-    /// was made, if it's connected (which a writer records, say: see `val_in`).
-    pub val_ins: &'a [Option<E::PublishedValue>],
+    /// For each of the node's `ValInCmdOut` and `ValIn` ports, the value out of the node at the other end as the
+    /// snapshot was made, if the port's connected (which a writer records, say: see `val_in`).
+    pub val_ins: &'a [Option<E::ValOut>],
     /// The pass runs against a snapshot, which nodes can see some of (see `snapshot`).
     pub(super) snapshot: &'a Arc<dyn SnapshotLite>,
     /// The node shares this with the GUI (its `Node::Shared`: see `shared`).

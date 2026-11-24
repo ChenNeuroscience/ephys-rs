@@ -277,7 +277,7 @@ pub struct ChannelSelection {
     pub channels: String,
 }
 
-/// The command that gives a node publishing a channel selection, such as a Channel Selector, a new selection.
+/// The command that gives a node with a channel selection as a value out, such as a Channel Selector, a new selection.
 #[derive(Debug)]
 pub struct SetChannelSelection(pub ChannelSelection);
 

@@ -165,9 +165,9 @@ pub struct PrepareContext<'a, E: Edges, N> {
     pub node: NodeId,
     /// For each input, the data stream connected to it, if any.
     pub inputs: &'a [Option<E::DataStream>],
-    /// For each of the node's `ValInCmdOut` and `ValIn` ports, what the node at the other end publishes, if it's
-    /// connected (see `val_in`).
-    pub val_ins: &'a [Option<E::PublishedValue>],
+    /// For each of the node's `ValInCmdOut` and `ValIn` ports, the value out of the node at the other end, if the
+    /// port's connected (see `val_in`).
+    pub val_ins: &'a [Option<E::ValOut>],
     /// If the snapshot's recording, the recording (where it goes, and when it was asked for).
     pub recording: Option<&'a Recording>,
     /// The app's queue of commands, which the node's senders send to (see `cmd_sender`), if there is one (there isn't

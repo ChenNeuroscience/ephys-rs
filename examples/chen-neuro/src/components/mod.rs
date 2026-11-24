@@ -44,7 +44,7 @@ ephys_rs::edge_types! {
         LogLines(crate::standard::logs::LogLines),
         Time(crate::standard::clock::Time),
     }
-    values: pub enum PublishedValue, ValueKind {
+    values: pub enum ValOut, ValueKind {
         Thresholds(crate::standard::spikes::Thresholds),
         Gains(crate::standard::spikes::Gains),
         ChannelSelection(crate::standard::ephys::ChannelSelection),

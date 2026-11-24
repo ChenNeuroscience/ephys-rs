@@ -209,7 +209,7 @@ pub struct Detection {
     pub custom: BTreeMap<String, String>,
 }
 
-/// The command that gives a node publishing detection settings, such as a Position Detector, new settings.
+/// The command that gives a node with detection settings as a value out, such as a Position Detector, new settings.
 #[derive(Debug)]
 pub struct SetDetection(pub Detection);
 

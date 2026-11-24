@@ -35,8 +35,8 @@ use terminal::{Chain, Job, Outcome, Progress};
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProcessFiles(pub Vec<PathBuf>);
 
-/// Run Command and Sync Positions take files to process (`ProcessFiles`) at a port of their own, which publishes
-/// nothing: this. Writers, and they themselves, send files on through ports reading it.
+/// Run Command and Sync Positions take files to process (`ProcessFiles`) at a port of their own, whose value out
+/// is nothing: this. Writers, and they themselves, send files on through ports reading it.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct FileInput;
 

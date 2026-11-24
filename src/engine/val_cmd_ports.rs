@@ -1,7 +1,7 @@
 //! The building blocks for ValCmd ports. A node declares its ValCmd ports with `ports!`, as it does its data ports
 //! (see `crate::engine::ports`).
 //!
-//! - **`ValOutCmdIn`** ports: the node publishes a value at each port and accepts commands through it. `ports!`
+//! - **`ValOutCmdIn`** ports: the node offers a value out at each port and accepts commands through the port. `ports!`
 //!   generates a struct of the values (`ValOutCmdIn`), which the node returns from `Node::val_out`. It also generates
 //!   an enum of every command those ports accept (`CmdIn`), which the app passes to `Node::on_command`. The node must
 //!   match every command it accepts, and can't receive any other.
@@ -225,13 +225,13 @@ impl<E: HasValue<V>, V: EdgeType> ValInPortOf<E> for ValInPort<V> {
     }
 }
 
-/// A node's struct of the values it publishes at its `ValOutCmdIn` ports (`ValOutCmdIn`, which `PortSet::ValOutCmdIn`
+/// A node's struct of its values out, at its `ValOutCmdIn` ports (`ValOutCmdIn`, which `PortSet::ValOutCmdIn`
 /// names). `ports!` implements this trait for each node's struct.
 pub trait ValOutCmdInPorts<E: Edges>: Sized {
     /// The node's `ValOutCmdIn` ports, in declaration order, for the graph.
     fn ports() -> Vec<Port<E>>;
     /// The values, each converted to the program's enum of values, in declaration order.
-    fn values(self) -> Vec<E::PublishedValue>;
+    fn values(self) -> Vec<E::ValOut>;
 }
 
 impl<E: Edges> ValOutCmdInPorts<E> for NoPorts {
@@ -239,7 +239,7 @@ impl<E: Edges> ValOutCmdInPorts<E> for NoPorts {
         Vec::new()
     }
 
-    fn values(self) -> Vec<E::PublishedValue> {
+    fn values(self) -> Vec<E::ValOut> {
         Vec::new()
     }
 }

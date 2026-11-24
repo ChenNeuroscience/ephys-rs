@@ -74,7 +74,7 @@ pub trait NodesEnum: Clone + PartialEq + Serialize + DeserializeOwned + Send + S
     /// group in declaration order (see `Node::Ports`).
     fn list_ports_val_cmd(&self) -> Vec<Port<Self::Edges>>;
     /// The current value at the node's `ValOutCmdIn` port number `port_idx` (see `Node::val_out`).
-    fn val_out(&self, port_idx: usize) -> <Self::Edges as Edges>::PublishedValue;
+    fn val_out(&self, port_idx: usize) -> <Self::Edges as Edges>::ValOut;
     /// Delivers `command` to the node, converted to the node's own `CmdIn` (see `Node::on_command`). If the node doesn't
     /// accept the command, nothing is delivered and the command is returned as the error.
     fn on_command(
@@ -303,7 +303,7 @@ macro_rules! nodes_enum {
                 }
             }
 
-            fn val_out(&self, port_idx: usize) -> <$edges as $crate::engine::Edges>::PublishedValue {
+            fn val_out(&self, port_idx: usize) -> <$edges as $crate::engine::Edges>::ValOut {
                 match self {
                     $($name::$variant(n) => {
                         let values = $crate::engine::Node::<$edges>::val_out(n);

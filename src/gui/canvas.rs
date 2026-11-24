@@ -1297,7 +1297,7 @@ pub(super) fn legend_entries<N: NodesEnum>(
         (
             "Settings",
             WireStyle::ReadWrite,
-            shown(PortKind::Value, <<N::Edges as Edges>::PublishedValue as EdgeTypesEnum>::KINDS),
+            shown(PortKind::Value, <<N::Edges as Edges>::ValOut as EdgeTypesEnum>::KINDS),
         ),
     ]
     .into_iter()

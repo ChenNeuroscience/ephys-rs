@@ -35,7 +35,7 @@ pub enum Port<E: Edges> {
         /// then this is `None`.
         stream: Option<E::DataStream>,
     },
-    /// The node publishes a value here (usually a copy of one of its settings: see `Node::val_out`), and accepts
+    /// The node offers a value out here (usually a copy of one of its settings: see `Node::val_out`), and accepts
     /// commands through the edges into it, from other nodes' `ValInCmdOut` ports.
     ValOutCmdIn {
         /// What the graph and the node's window call the port.
@@ -157,7 +157,7 @@ impl<E: Edges> Port<E> {
             }
             Port::ValOutCmdIn { value_kind, .. }
             | Port::ValInCmdOut { value_kind, .. }
-            | Port::ValIn { value_kind, .. } => PortKind::Value(E::PublishedValue::kind_index(*value_kind)),
+            | Port::ValIn { value_kind, .. } => PortKind::Value(E::ValOut::kind_index(*value_kind)),
         }
     }
 
@@ -200,17 +200,17 @@ impl<E: Edges> Port<E> {
 
 /// A node has ports of five roles, each named for what flows through it, which way. Data edges run from a
 /// `DataStreamOut` to a `DataStreamIn`, carrying a pass's data. ValCmd edges run from a `ValInCmdOut` to a
-/// `ValOutCmdIn`: the node at the `ValOutCmdIn` end publishes a value, which the node at the other end reads, and which
+/// `ValOutCmdIn`: the node at the `ValOutCmdIn` end offers a value out, which the node at the other end reads, and which
 /// that node can send commands back to.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub enum PortRole {
     DataStreamIn,
     DataStreamOut,
-    /// The node publishes a value here, and takes commands through the edges into it.
+    /// The node offers a value out here, and takes commands through the edges into it.
     ValOutCmdIn,
-    /// The node reads another node's published value here, and sends it commands.
+    /// The node reads another node's value out here, and sends that node commands.
     ValInCmdOut,
-    /// Val-only: the node only reads another node's published value here (the GUI calls it read-only).
+    /// Val-only: the node only reads another node's value out here (the GUI calls it read-only).
     ValIn,
 }
 

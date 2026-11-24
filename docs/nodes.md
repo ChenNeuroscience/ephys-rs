@@ -21,7 +21,7 @@ else.
 The parts of the API are there for three different reasons, and it helps to know which is which:
 
 - **The data model: what the node is and does.** These have to be right for the node to work: its ports (declared
-  with `ports!`), the streams on its outputs (`data_stream_out`), the values it publishes (`val_out`), the commands it
+  with `ports!`), the streams on its outputs (`data_stream_out`), its values out (`val_out`), the commands it
   takes (`on_command`), `process` and its state (prepared for each snapshot: `prepare_for_snapshot`).
 - **Optimisation: how cheaply it runs.** Leaving these at their defaults is always correct, only slower or using more
   memory: inputs it takes and outputs it makes in place (in its `ports!`), `evaluate_tree_shake` (one exception: a writer says it only runs while recording,
@@ -250,7 +250,7 @@ its window closed too.
 
 ## Commands
 
-Anything a node tells another to do is a command: setting a value it publishes (`SetGains`), starting auto detect
+Anything a node tells another to do is a command: setting one of its values out (`SetGains`), starting auto detect
 (`Detect`), processing files (`ProcessFiles`). Each is a type of its own, holding what it carries
 (`SetGains(pub Gains)`), and the program lists them in `edge_types!` (`commands:`), which makes its `Command` enum,
 with `CommandKind` naming them; every set is a command like any other, so the core knows nothing of settings. A command
@@ -316,7 +316,7 @@ once they're finished, with `ProcessFiles` (not when recording stops, which is s
 files once the writer's state is dropped, as the snapshot without it takes over), and only if something was
 recorded. The [Run Command](../standard/src/other/run_command/mod.rs) node takes them, as does
 [Post-Process Positions LTX](../standard/src/other/sync_positions/mod.rs), and neither end knows what's at the other:
-anything can send files to process. A "files" port publishes nothing: it's there to send `ProcessFiles` to.
+anything can send files to process. A "files" port's value out is nothing: it's there to send `ProcessFiles` to.
 
 Run Command has an "after running" port of its own: once what it ran is done, it sends the same files on to what's
 connected there (another Run Command, say), if every command succeeded, if any failed, or either way, as its "Then"

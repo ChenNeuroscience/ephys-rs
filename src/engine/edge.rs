@@ -2,7 +2,7 @@
 //! its node types.
 //!
 //! There are two kinds of edge, by the roles of the ports they join (see `PortRole`). Data edges carry data streams
-//! from outputs to inputs, and must form a DAG. ValCmd edges let one node read a value another publishes, and send that
+//! from outputs to inputs, and must form a DAG. ValCmd edges let one node read another's value out, and send that
 //! node commands (a viewer reading a detector's thresholds, and setting them, say); they carry no data, so they may
 //! point anywhere, including upstream.
 //!
@@ -25,7 +25,7 @@ pub struct EdgeInfo {
 }
 
 /// Each edge type implements this: what flows along an edge of one kind, a data stream (32 channels at 30 kHz, say) or
-/// a published value (a spike detector's thresholds), and how the graph describes it.
+/// a value out (a spike detector's thresholds), and how the graph describes it.
 pub trait EdgeType: Clone + PartialEq + Debug + Send + Sync + 'static {
     const INFO: EdgeInfo;
 
@@ -114,9 +114,9 @@ pub trait HasValue<T: EdgeType>: Edges {
     /// The kind of `T`, by which the graph matches ports.
     const KIND: ValueKind<Self>;
     /// Converts `value` to the program's enum of values.
-    fn wrap(value: T) -> Self::PublishedValue;
+    fn wrap(value: T) -> Self::ValOut;
     /// Converts `value` back to a `T`, or returns `None` if `value` holds another type.
-    fn from_value(value: &Self::PublishedValue) -> Option<&T>;
+    fn from_value(value: &Self::ValOut) -> Option<&T>;
 }
 
 /// A node can command another through a ValCmd edge (or itself, from its passes or threads; see `Node::on_command`).
@@ -150,8 +150,8 @@ pub trait HasCommand<T: Debug + Send + 'static>: Edges {
 pub trait Edges: 'static {
     /// Data streams flow from outputs to inputs, a pass at a time.
     type DataStream: DataStreamsEnum;
-    /// Nodes publish values, which other nodes read through ValCmd edges.
-    type PublishedValue: EdgeTypesEnum;
+    /// Nodes offer values out, which other nodes read through ValCmd edges.
+    type ValOut: EdgeTypesEnum;
     /// Nodes command each other through ValCmd edges (see `CommandsEnum`).
     type Command: CommandsEnum;
 }
@@ -160,7 +160,7 @@ pub trait Edges: 'static {
 pub type DataStreamKind<E> = <<E as Edges>::DataStream as EdgeTypesEnum>::Kind;
 
 /// The program's enum of value kinds (see `EdgeTypesEnum::Kind`).
-pub type ValueKind<E> = <<E as Edges>::PublishedValue as EdgeTypesEnum>::Kind;
+pub type ValueKind<E> = <<E as Edges>::ValOut as EdgeTypesEnum>::Kind;
 
 /// The program's enum of command kinds (see `CommandsEnum::Kind`).
 pub type CommandKind<E> = <<E as Edges>::Command as CommandsEnum>::Kind;
@@ -176,7 +176,7 @@ pub type Buffer<E> = <<E as Edges>::DataStream as DataStreamsEnum>::Buffer;
 ///     data_streams: pub enum DataStream, DataStreamKind, Buffer {
 ///         Continuous(ephys::Continuous),
 ///     }
-///     values: pub enum PublishedValue, ValueKind {
+///     values: pub enum ValOut, ValueKind {
 ///         Thresholds(spikes::Thresholds),
 ///     }
 ///     commands: pub enum Command, CommandKind {
@@ -188,7 +188,7 @@ pub type Buffer<E> = <<E as Edges>::DataStream as DataStreamsEnum>::Buffer;
 /// This generates:
 ///
 /// - `Edges`, implementing `engine::Edges`;
-/// - the `DataStream`, `PublishedValue` and `Command` enums;
+/// - the `DataStream`, `ValOut` and `Command` enums;
 /// - the `DataStreamKind`, `ValueKind` and `CommandKind` enums, naming the variants of those three;
 /// - the `Buffer` enum of the data streams' buffers;
 /// - `HasDataStream`, `HasValue` and `HasCommand` on `Edges` for each type listed, which nodes use to work with the
@@ -205,7 +205,7 @@ macro_rules! edge_types {
 
         impl $crate::engine::Edges for $edges {
             type DataStream = $data_stream;
-            type PublishedValue = $value;
+            type ValOut = $value;
             type Command = $command;
         }
 

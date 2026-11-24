@@ -10,7 +10,7 @@
 //!
 //! While `started` is set, the node runs. As the node prepares, it makes room to sample into; its passes sample the
 //! data for `seconds`, then send the node the setting they found (`PassContext::cmd_self`), which clears `started`.
-//! Anything that can see the setting, such as the node's window or a viewer reading the value the node publishes, can
+//! Anything that can see the setting, such as the node's window or a viewer reading the node's value out, can
 //! estimate the progress from `started` and `seconds` (`estimated_progress`).
 
 use std::time::Instant;

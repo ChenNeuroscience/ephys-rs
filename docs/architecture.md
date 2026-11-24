@@ -147,8 +147,8 @@ The passes never wait on the GUI, nor it on them.
   thread, running or not, so they belong to it rather than a run. A setting a pass found (an auto detect's) is one.
 - Once a run's stopped, the app keeps what its last snapshot shared, so everything goes on showing what it last had,
   until the next run, or until the graph changes so it would need new buffers (`Plan::same_shape`).
-- A node can **command** another (`Node::on_command`), through a ValCmd edge from its `ValInCmdOut` port: set the value
-  the other publishes, start its auto detect, process files. Having a node do something with the data over a while (an
+- A node can **command** another (`Node::on_command`), through a ValCmd edge from its `ValInCmdOut` port: set the other's
+  value out, start its auto detect, process files. Having a node do something with the data over a while (an
   auto detect) is kept as its **transient state**: the node prepares for it, runs while it's set, and its passes clear
   it with what they found; the app has every node clear it (`Node::clear_transient_state`) on undo and redo, and as
   recording starts or running stops.

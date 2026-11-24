@@ -3667,8 +3667,8 @@ mod tests {
     /// When auto detect was started for node `node`'s setting (its gains, or thresholds), if it's going.
     fn auto_detect_started(app: &TestApp, node: NodeId) -> Option<std::time::Instant> {
         match &app.graph.get(node)?.node.val_out(0) {
-            crate::PublishedValue::Gains(gains) => gains.detect.started,
-            crate::PublishedValue::Thresholds(thresholds) => thresholds.detect.started,
+            crate::ValOut::Gains(gains) => gains.detect.started,
+            crate::ValOut::Thresholds(thresholds) => thresholds.detect.started,
             _ => None,
         }
     }
@@ -3677,8 +3677,8 @@ mod tests {
     fn auto_detect_progress(app: &TestApp, node: NodeId) -> Option<f32> {
         let started = auto_detect_started(app, node)?;
         let seconds = match &app.graph.get(node)?.node.val_out(0) {
-            crate::PublishedValue::Gains(gains) => gains.detect.seconds,
-            crate::PublishedValue::Thresholds(thresholds) => thresholds.detect.seconds,
+            crate::ValOut::Gains(gains) => gains.detect.seconds,
+            crate::ValOut::Thresholds(thresholds) => thresholds.detect.seconds,
             _ => return None,
         };
         Some(crate::standard::auto_detect::estimated_progress(started, seconds))

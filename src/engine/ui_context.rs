@@ -21,9 +21,9 @@ pub type UiStateCell = RefCell<Box<dyn Any>>;
 pub struct UiContext<'a, E: Edges> {
     /// For each input, the data stream connected to it, if any.
     pub inputs: &'a [Option<E::DataStream>],
-    /// For each of the node's `ValInCmdOut` and `ValIn` ports, what the node at the other end publishes, if the port's
-    /// connected (see `val_in`).
-    pub val_ins: &'a [Option<E::PublishedValue>],
+    /// For each of the node's `ValInCmdOut` and `ValIn` ports, the value out of the node at the other end, if the
+    /// port's connected (see `val_in`).
+    pub val_ins: &'a [Option<E::ValOut>],
     /// For each of the node's `ValOutCmdIn` ports, the names of the nodes with a live edge into the port.
     pub controlled_by: &'a [Vec<String>],
     /// The theme's colours to draw with, by role. A node can derive more of its own from these.
@@ -235,9 +235,9 @@ pub struct CommandContext<'a, E: Edges> {
     /// The node, and its name.
     pub node: NodeId,
     pub label: &'a str,
-    /// For each of the node's `ValInCmdOut` and `ValIn` ports, what the node at the other end publishes, if it's
-    /// connected.
-    pub val_ins: &'a [Option<E::PublishedValue>],
+    /// For each of the node's `ValInCmdOut` and `ValIn` ports, the value out of the node at the other end, if the
+    /// port's connected.
+    pub val_ins: &'a [Option<E::ValOut>],
     /// The node's state on the GUI's side (its `Node::UiState`), where it keeps work it starts, if the app has it (it
     /// always does for a command a node sent: see `ui_state`).
     pub ui_state: Option<&'a UiStateCell>,
@@ -251,7 +251,7 @@ impl<'a, E: Edges> CommandContext<'a, E> {
     pub fn new(
         node: NodeId,
         label: &'a str,
-        val_ins: &'a [Option<E::PublishedValue>],
+        val_ins: &'a [Option<E::ValOut>],
         ui_state: Option<&'a UiStateCell>,
         commands: Option<&'a Arc<Commands>>,
         running: bool,
