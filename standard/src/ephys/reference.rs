@@ -478,7 +478,7 @@ impl<E: PortEdges> Node<E> for Reference {
             if let Some(index) = remove {
                 node.list.remove(index);
             }
-            if ui.button("Add reference").on_hover_text("Channels using none will use it").clicked() {
+            if ui.button("Add reference").on_hover_text("Channels without a reference will use the new one").clicked() {
                 node.add(count);
             }
             ui.add_space(6.0);
@@ -580,8 +580,9 @@ pub fn method_ui(ui: &mut egui::Ui, method: &mut Method) -> egui::Response {
         .width(70.0)
         .show_ui(ui, |ui| {
             ui.selectable_value(method, Method::Mean, "mean").on_hover_text("A common average reference");
-            ui.selectable_value(method, Method::Median, "median")
-                .on_hover_text("A common median reference: a spike on one of its channels hardly moves it");
+            ui.selectable_value(method, Method::Median, "median").on_hover_text(
+                "A common median reference: a spike on one of the reference's channels hardly moves the median",
+            );
         })
         .response
 }

@@ -442,7 +442,7 @@ impl ContinuousViewer {
                         let shown = ui.add_enabled_ui(!applied, |ui| {
                             reference_ui(ui, reference, stream.channels);
                         });
-                        shown.response.on_disabled_hover_text("Disable the selection to change it");
+                        shown.response.on_disabled_hover_text("Turn the channel selection off to change the reference");
                         if context.advanced() {
                             open_settings_button(ui, context, ValInCmdOut::reference, "Reference");
                         }

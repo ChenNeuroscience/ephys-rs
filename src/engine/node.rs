@@ -185,8 +185,8 @@ pub trait Node<E: Edges>: Default + Clone + PartialEq + Serialize + DeserializeO
     /// only runs once every output's stream is known, so the node should return `None` for an output it can't produce
     /// from what it has, such as when a required input isn't connected.
     ///
-    /// The node's `id` is for anything in a stream that names where the stream comes from: a source names the clock its
-    /// data's timed by from it, say. Nothing else should depend on it.
+    /// Some streams name where they come from: a source names the clock that times its data, say. The node uses its
+    /// `id` for that, and for nothing else.
     fn data_stream_out(&self, id: NodeId, inputs: &DataStreamInOf<Self, E>) -> DataStreamOutOf<Self, E>;
 
     /// Returns the current values at the node's `ValOutCmdIn` ports, which other nodes read. These are usually copies

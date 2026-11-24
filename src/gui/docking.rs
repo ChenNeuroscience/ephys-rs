@@ -227,7 +227,7 @@ fn annotation_ui<A: AnnotationsEnum>(
         }
         Some(_) => {
             ui.heading(format!("{count} annotations"));
-            ui.weak("Select one to change its settings.");
+            ui.weak("Select an annotation to change its settings.");
         }
     }
 }

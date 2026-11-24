@@ -12,10 +12,10 @@
 //!         sample_numbers.npy, timestamps.npy, full_words.npy
 //! ```
 //!
-//! Samples are numbered, and timed, from the start of recording, by the clock they're timed by (see
-//! `crate::standard::clock`): the earliest of the continuous data and digital inputs in the first pass recorded. So a
-//! gap in the data shows as a gap in its numbers, and the two line up if they're timed by the same clock (a board's),
-//! as they should be.
+//! Samples and events are numbered, and timed, from the start of recording by the clock they're timed by (see
+//! `crate::standard::clock`). The start is the earliest of the continuous data and digital inputs in the first pass
+//! recorded. Samples lost from the continuous data leave a gap in the sample numbers. The continuous data and digital
+//! inputs line up only if both are timed by the same clock (a board's), as they should be.
 
 use ephys_rs::engine::{Buffers, DataStreamInPorts, NoPorts, NodeId, Prepare, PrepareContext, Prepared, TreeShake};
 use std::fs::File;
@@ -118,7 +118,7 @@ impl<E: PortEdges> Node<E> for WriteRaw {
     const INFO: NodeInfo = NodeInfo {
         name: "Write Raw",
         category: Category::Recording,
-        description: "Records continuous data and digital inputs as they are, in Open Ephys's binary format.",
+        description: "Records continuous data and digital inputs unchanged, in the Open Ephys binary format.",
     };
 
     /// Only while recording, and given something to record: otherwise there'd be nothing to write, but files all the
@@ -259,7 +259,7 @@ struct RawFiles {
     continuous: Option<Samples>,
     events: Option<Ttl>,
     paths: Vec<PathBuf>,
-    /// When recording started, by each clock, which numbers and times count from.
+    /// When recording started by each clock: the written numbers and times count from these.
     origins: Origins,
 }
 
@@ -367,7 +367,7 @@ fn structure(continuous: Option<Continuous>, events: Option<Events>) -> String {
 
 impl Files<Chunk> for RawFiles {
     fn write(&mut self, chunk: &Chunk) -> io::Result<u64> {
-        // Recording started at the earliest of the first pass's data, by each clock.
+        // For each clock, recording started at the earliest data by that clock in the first pass.
         let continuous = self.continuous.as_ref().map(|samples| samples.stream.timing());
         let events = self.events.as_ref().map(|ttl| ttl.stream.clock);
         let starts = [
@@ -405,7 +405,8 @@ impl Files<Chunk> for RawFiles {
                 }
                 let state = (line as i16 + 1) * if event.high { 1 } else { -1 };
                 let seconds = self.origins.since(clock, event.at);
-                // Ticks from the start of recording (-1 for events timed in seconds, which have no sample).
+                // An event's number counts ticks from the start of recording. Events timed in seconds have no
+                // sample to number, so get -1.
                 let number = if clock.ticks() { (seconds * clock.per_second).round() as i64 } else { -1 };
                 ttl.states.write(&state.to_le_bytes(), 1)?;
                 ttl.numbers.write_i64(number)?;
@@ -449,7 +450,7 @@ mod tests {
         chunk.continuous.len = 3;
         chunk.continuous.channel_mut(0).copy_from_slice(&[1.0, 2.0, 3.0].map(|s| s * EPHYS_MICROVOLTS_PER_BIT));
         chunk.continuous.channel_mut(1).copy_from_slice(&[10.0, 20.0, 30.0].map(|s| s * EPHYS_MICROVOLTS_PER_BIT));
-        // Recorded from the board's sample 700; the second pass's samples after a gap of 2.
+        // Recording starts at the board's sample 700. The second pass's samples come after a gap of 2.
         let event = |at| Event { at, line: 1, high: true };
         chunk.continuous.start = 700;
         chunk.events = EventsBuffer { events: vec![event(702.0)], start: 700.0, end: 703.0 };

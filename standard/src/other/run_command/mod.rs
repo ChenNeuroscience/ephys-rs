@@ -44,7 +44,7 @@ impl EdgeType for FileInput {
     const INFO: EdgeInfo = EdgeInfo {
         name: "files",
         colour: Color32::from_rgb(190, 150, 220),
-        description: "Files sent on to be processed: what a writer's recorded, once it's finished, say.",
+        description: "Files sent on to be processed, such as a writer's recording once the writer has finished.",
     };
 
     fn summary(&self) -> String {
@@ -495,12 +495,12 @@ fn files_list(ui: &mut egui::Ui, files: &mut Vec<PathBuf>, listed: Option<usize>
         files.remove(index);
     }
     ui.horizontal(|ui| {
-        if ui.button("Select files…").on_hover_text("Files from one folder, in place of those here").clicked()
+        if ui.button("Select files…").on_hover_text("Use files from one folder in place of those here").clicked()
             && let Some(paths) = rfd::FileDialog::new().pick_files()
         {
             *files = paths;
         }
-        if ui.button("Select a folder…").on_hover_text("The files in it, in place of those here").clicked()
+        if ui.button("Select a folder…").on_hover_text("Use the folder's files in place of those here").clicked()
             && let Some(folder) = rfd::FileDialog::new().pick_folder()
         {
             *files = vec![folder];
@@ -605,7 +605,7 @@ fn files_help(senders: &[String]) -> String {
     if senders.is_empty() {
         "Connect a supporting node to supply files automatically".into()
     } else {
-        format!("Supplied by {}: disconnect or disable it to pick files yourself", any_of(senders))
+        format!("{} supplies the files. Disconnect or disable that node to choose them yourself.", any_of(senders))
     }
 }
 
@@ -620,7 +620,7 @@ impl<E: PortEdges> Node<E> for RunCommand {
     const INFO: NodeInfo = NodeInfo {
         name: "Run Command",
         category: Category::Other,
-        description: "Runs a program on files, in a terminal: by hand, or on files sent to it (by a writer, after recording).",
+        description: "Runs a program on files, in a terminal: by hand, or on files sent to the node (by a writer, after recording).",
     };
 
     const WINDOW_SIZE: [f32; 2] = [820.0, 520.0];
@@ -652,7 +652,7 @@ impl<E: PortEdges> Node<E> for RunCommand {
         let Some(ui) = ui else { return };
         ui.horizontal(|ui| context.node_toolbar(ui));
         ui.horizontal(|ui| {
-            ui.label("Runs a program on files, in a terminal window of its own.");
+            ui.label("Runs a program on files, in a terminal window of the program's own.");
             help_link(ui, "Examples", examples);
         });
         let warning = "Recording performance may suffer if the computer's resources are strained by other running \
@@ -691,13 +691,13 @@ impl<E: PortEdges> Node<E> for RunCommand {
             ui.add_space(6.0);
             // Whatever's locked, something heavy can always be stopped.
             if running {
-                if ui.button("Stop").on_hover_text("Stop what's running in its terminal").clicked() {
+                if ui.button("Stop").on_hover_text("Stop the program running in the terminal").clicked() {
                     job.stop();
                 }
             } else {
                 let run = ui.add_enabled(runs.is_ok() && !locked && !connected, egui::Button::new("Run"));
                 let run = if connected {
-                    run.on_disabled_hover_text("It runs by itself on the files sent")
+                    run.on_disabled_hover_text("The command runs by itself on the files sent")
                 } else {
                     run.on_hover_text("Open a terminal, and run these there")
                 };
@@ -1131,8 +1131,8 @@ mod tests {
     fn it_says_where_the_files_come_from_by_what_is_connected() {
         let names = |names: &[&str]| names.iter().map(|name| name.to_string()).collect::<Vec<_>>();
         assert!(files_help(&[]).starts_with("Connect a supporting node"));
-        assert!(files_help(&names(&["Write LTX"])).starts_with("Supplied by Write LTX:"));
-        assert!(files_help(&names(&["A", "B", "C"])).starts_with("Supplied by A, B or C:"));
+        assert!(files_help(&names(&["Write LTX"])).starts_with("Write LTX supplies the files."));
+        assert!(files_help(&names(&["A", "B", "C"])).starts_with("A, B or C supplies the files."));
     }
 
     #[test]
@@ -1408,7 +1408,7 @@ mod tests {
         let mut harness = window_harness(true);
         use egui_kittest::kittest::Queryable;
         assert!(disabled(&harness, "Run"));
-        assert!(harness.query_by_label_contains("Supplied by Write Raw").is_some());
+        assert!(harness.query_by_label_contains("Write Raw supplies the files").is_some());
         assert!(harness.query_by_label("Select files…").is_none(), "what's picked isn't shown, being no use");
         let files = |harness: &egui_kittest::Harness<'_, Graph<Nodes>>| {
             let nodes = harness.state().iter().filter_map(|(_, e)| match &e.node {

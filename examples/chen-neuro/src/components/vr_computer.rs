@@ -558,7 +558,7 @@ impl<E: PortEdges> Node<E> for VrComputer {
     fn data_stream_out(&self, id: NodeId, _inputs: &NoPorts) -> DataStreamOut {
         let [_, _, width, height] = window(&self.custom).and_then(|crop| crop.bounds()).unwrap_or([0.0; 4]);
         let frame = |size: f32| if size > 0.0 { size.ceil() as u32 } else { FRAME_SIZE };
-        // All timed in seconds by the VR computer's own clock.
+        // The VR computer's own clock times all three streams, in seconds.
         let clock = clock::Clock::seconds_of(ClockId::new(id, 0));
         let positions = Positions { fps: self.fps, width: frame(width), height: frame(height), source: SOURCE, clock };
         let ttl = Events { lines: ttl_channels(&self.custom).unwrap_or(0), clock };
@@ -601,7 +601,7 @@ impl<E: PortEdges> Node<E> for VrComputer {
         let warning = dev.theme.warning;
         dev.thread(thread, move |ui| match status {
             Some(status) => status_ui(ui, &status, warning),
-            None => drop(ui.weak("Reads messages as they arrive; starts when running.")),
+            None => drop(ui.weak("Messages are read as they arrive, once you press Play.")),
         });
     }
 
@@ -677,7 +677,7 @@ impl<E: PortEdges> Node<E> for VrComputer {
                 setting(ui, "Port", |ui| ui.add(egui::DragValue::new(&mut node.port)));
                 setting(ui, "Position rate", |ui| {
                     ui.add(egui::DragValue::new(&mut node.fps).range(1.0..=1000.0).suffix(" Hz"))
-                        .on_hover_text("How many positions to expect a second, as a frame rate: the alarms go by it")
+                        .on_hover_text("How many positions to expect a second, as a frame rate, which the alarms go by")
                 });
                 setting(ui, "Log line limit", |ui| {
                     ui.add(egui::DragValue::new(&mut node.log_width).range(16..=65536).suffix(" bytes"))

@@ -67,7 +67,7 @@ impl<E: PortEdges> Node<E> for TtlRecordingControl {
     const INFO: NodeInfo = NodeInfo {
         name: "TTL Recording Control",
         category: Category::Other,
-        description: "Starts recording when a line of its events goes up, and can stop it when it goes down.",
+        description: "Starts recording when a chosen events line goes up, and can stop recording when the line goes down.",
     };
 
     type State = Seen;
@@ -145,7 +145,7 @@ impl<E: PortEdges> Node<E> for TtlRecordingControl {
                 Some(false) => format!("Line {} is down", node.line),
                 None => format!("Line {} hasn't changed yet", node.line),
             });
-            ui.weak(format!("Started recording {} times, stopped it {} times", seen.starts, seen.stops));
+            ui.weak(format!("Started recording {} times, stopped recording {} times", seen.starts, seen.stops));
         });
     }
 
@@ -155,7 +155,7 @@ impl<E: PortEdges> Node<E> for TtlRecordingControl {
             && self.line > stream.lines
         {
             let lines = if stream.lines == 1 { "line".to_string() } else { format!("{} lines", stream.lines) };
-            warnings.push(format!("Its events have {lines}: there's no line {}", self.line));
+            warnings.push(format!("The events input has {lines}, so there's no line {}", self.line));
         }
         warnings
     }
@@ -215,7 +215,7 @@ mod tests {
         let node = TtlRecordingControl { line: 3, ..Default::default() };
         assert_eq!(Node::<Edges>::warnings(&node, &DataStreamIn { events: None }), ["Connect events"]);
         let events = |lines| DataStreamIn { events: Some(Events { lines, clock: Clock::new(ClockId::TEST, 1000.0) }) };
-        assert_eq!(Node::<Edges>::warnings(&node, &events(2)), ["Its events have 2 lines: there's no line 3"]);
+        assert_eq!(Node::<Edges>::warnings(&node, &events(2)), ["The events input has 2 lines, so there's no line 3"]);
         assert!(Node::<Edges>::warnings(&node, &events(3)).is_empty());
     }
 }

@@ -25,7 +25,7 @@ impl EdgeType for CameraStats {
     const INFO: EdgeInfo = EdgeInfo {
         name: "camera stats",
         colour: Color32::from_rgb(170, 175, 195),
-        description: "How a camera is doing (frames, rate, drops), and what it is and supports.",
+        description: "How a camera is doing (frames, rate, drops), which camera it is, and what the camera supports.",
     };
 
     fn summary(&self) -> String {

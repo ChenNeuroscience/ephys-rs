@@ -381,7 +381,7 @@ impl<E: ephys_rs::engine::Edges> Node<E> for Arduino {
         let warning = dev.theme.warning;
         dev.thread(thread, move |ui| match status {
             Some(status) => status_ui(ui, &status, self.baud, warning),
-            None => drop(ui.weak("Opens the Arduino's port; starts when running.")),
+            None => drop(ui.weak("The Arduino's port opens when you press Play.")),
         });
     }
 
@@ -416,7 +416,7 @@ impl<E: ephys_rs::engine::Edges> Node<E> for Arduino {
         let status = context.shared::<Pool<Status>>().and_then(Pool::newest).map(|s| s.clone());
         let (running, warning) = (context.running, context.theme.warning);
         ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, _context| {
-            ui.label("Sets the Arduino's pins over Firmata: it has to be running a Firmata sketch.");
+            ui.label("Sets the Arduino's pins over Firmata, so the Arduino has to be running a Firmata sketch.");
             ui.add_space(4.0);
             named_settings_grid(ui, "arduino", |ui| {
                 setting(ui, "Port", |ui| port_ui(ui, &mut node.port));
@@ -463,7 +463,7 @@ impl<E: ephys_rs::engine::Edges> Node<E> for Arduino {
             ui.separator();
             match status.filter(|_| running) {
                 Some(status) => status_ui(ui, &status, node.baud, warning),
-                None => drop(ui.weak("Press Play to open its port.")),
+                None => drop(ui.weak("Press Play to open the Arduino's port.")),
             }
         });
     }
@@ -503,7 +503,7 @@ fn status_ui(ui: &mut egui::Ui, status: &Status, baud: u32, warning: egui::Color
             )),
             None => drop(ui.weak(format!("Open on {open}: waiting for the Arduino to start…"))),
         },
-        (None, None) => drop(ui.weak("Opening its port…")),
+        (None, None) => drop(ui.weak("Opening the Arduino's port…")),
     }
     if status.open.is_some() && (status.firmata.is_some() || status.no_reply) {
         let high: Vec<String> = status.high.iter().map(u8::to_string).collect();

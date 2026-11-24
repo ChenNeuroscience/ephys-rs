@@ -463,7 +463,7 @@ impl SpikeViewer {
             });
             if !running.is_empty() || !next.is_empty() {
                 let stop = ui.add(egui::Button::new("Stop").small());
-                if stop.on_hover_text("Stop detecting, leaving what's not done as it was").clicked() {
+                if stop.on_hover_text("Stop detecting, leaving channels not yet done unchanged").clicked() {
                     context.ui_state::<AutoDetecting>().next.clear();
                     for &(detector, _) in &running {
                         detector.detect(context, DetectRequest::Stop);
@@ -653,9 +653,10 @@ impl SpikeViewer {
                     thresholds.set(channel, uv.clamp(MIN_THRESHOLD_UV, range));
                 }
                 active = response.hovered() || response.dragged();
-                response
-                    .on_hover_cursor(egui::CursorIcon::ResizeVertical)
-                    .on_hover_text(format!("Channel {}'s threshold: {threshold:.1} µV. Drag to move it", channel + 1));
+                response.on_hover_cursor(egui::CursorIcon::ResizeVertical).on_hover_text(format!(
+                    "Channel {}'s threshold: {threshold:.1} µV. Drag to move the threshold",
+                    channel + 1
+                ));
             }
             let stroke = if active { Stroke::new(2.0, colour) } else { Stroke::new(1.0, colour.gamma_multiply(0.8)) };
             painter.hline(rect.x_range(), line, stroke);

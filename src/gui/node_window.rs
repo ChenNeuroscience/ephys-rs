@@ -24,7 +24,7 @@ pub fn standard<E: Edges, N: Node<E>>(
             .font(egui::TextStyle::Heading)
             .hint_text("Name")
             .desired_width(width);
-        ui.add(name).on_hover_text("Its name");
+        ui.add(name).on_hover_text("The node's name");
         context.node_toolbar(ui);
     });
     ui.horizontal_wrapped(|ui| {

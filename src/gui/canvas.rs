@@ -1091,7 +1091,8 @@ impl Canvas {
                 (false, true) => "Disable selected",
                 (true, true) => "Enable selected",
             };
-            if ui.button(text).on_hover_text("Run the graph as if it weren't there, keeping it").clicked() {
+            if ui.button(text).on_hover_text("Run the graph as if the node weren't there, but keep the node").clicked()
+            {
                 events.push(Event::SetDisabled(id, !disabled));
             }
             ui.separator();

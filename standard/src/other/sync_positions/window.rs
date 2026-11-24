@@ -72,7 +72,10 @@ impl SyncPositions {
             settings_grid(ui, |ui| {
                 let label = ui.label("Recording");
                 if connected {
-                    ui.weak(format!("Supplied by {}: disconnect or disable it to pick one yourself", any_of(&senders)));
+                    ui.weak(format!(
+                        "{} supplies the recording. Disconnect or disable that node to choose one yourself.",
+                        any_of(&senders)
+                    ));
                 } else {
                     ui.horizontal(|ui| {
                         if ui.button("Select .set file…").clicked()
@@ -144,7 +147,7 @@ impl SyncPositions {
             let picked = !self.settings.set_file.as_os_str().is_empty();
             let run = ui.add_enabled(picked && !locked && !running && !connected, egui::Button::new("Run"));
             let run = if connected {
-                run.on_disabled_hover_text("It runs by itself on the recordings sent")
+                run.on_disabled_hover_text("Syncing runs by itself on the recordings sent")
             } else {
                 run.on_hover_text("Sync the positions of the recording picked")
             };
@@ -157,7 +160,9 @@ impl SyncPositions {
                 ui.weak(format!("Run triggered by {}", any_of(&senders)));
             }
             if context.val_in_connected(ValInCmdOut::after_syncing) {
-                ui.weak("Once synced, its files are sent on, after syncing");
+                ui.weak(
+                    "Once a recording is synced, its files are sent to whatever is connected to \"after syncing\".",
+                );
             }
         });
         let theme = context.theme;
@@ -182,7 +187,7 @@ impl SyncPositions {
                 },
             },
             None => {
-                ui.weak("Each recording's .pos, .ttl and .pos.ttl files, found beside its .set file");
+                ui.weak("Each recording's .pos, .ttl and .pos.ttl files, found beside the recording's .set file");
             }
         }
         ui.add_space(6.0);

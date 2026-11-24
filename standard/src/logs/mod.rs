@@ -17,7 +17,7 @@ pub const LINES_PER_PASS: usize = 64;
 pub struct LogLines {
     /// The most bytes in a line: longer ones are cut short.
     pub width: u32,
-    /// What the lines' times are by: the VR computer's clock, say.
+    /// The clock that times the lines: the VR computer's, say.
     pub clock: Clock,
 }
 

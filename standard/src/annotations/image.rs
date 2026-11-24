@@ -110,7 +110,7 @@ impl AnnotationType for Image {
         {
             *self = image;
         }
-        ui.weak("Its shape stays the image's when resized.");
+        ui.weak("Resizing keeps the image's proportions.");
     }
 
     /// A framed picture: a sun over hills.

@@ -29,7 +29,7 @@ pub struct Video {
     pub width: u32,
     pub height: u32,
     pub fps: f32,
-    /// What the frames' times are by (see `VideoBuffer::times`): the camera's clock, say.
+    /// The clock that times the frames (see `VideoBuffer::times`): the camera's, say.
     pub clock: Clock,
 }
 
@@ -56,7 +56,7 @@ pub struct Positions {
     pub height: u32,
     /// Where they come from, as a name for headers: `CAMERA_TRACKER`, say.
     pub source: &'static str,
-    /// What the positions' times are by (see `PositionSample::time`): the camera's clock, say.
+    /// The clock that times the positions (see `PositionSample::time`): the camera's, say.
     pub clock: Clock,
 }
 

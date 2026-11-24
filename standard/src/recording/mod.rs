@@ -60,20 +60,20 @@ pub struct Status {
     pub problem: Option<String>,
 }
 
-/// A recording's times count from when it started, by each clock its data's timed by (see `crate::standard::clock`).
-/// This keeps that moment for each clock, in seconds by it, so times by the same clock count from the same moment,
-/// whichever stream they're in.
+/// Writers count a recording's times from when the recording started. Each clock the data is timed by (see
+/// `crate::standard::clock`) gives that moment a different time, so this keeps the moment for each clock, in seconds
+/// by that clock. Times by the same clock then count from the same moment, whichever stream they're in.
 #[derive(Default, Debug)]
 pub struct Origins(Vec<(ClockId, f64)>);
 
 impl Origins {
-    /// When recording started by `clock`, in seconds by it, once that's said.
+    /// When recording started by `clock`, in seconds by that clock, once that has been set.
     pub fn of(&self, clock: ClockId) -> Option<f64> {
         self.0.iter().find(|(id, _)| *id == clock).map(|&(_, seconds)| seconds)
     }
 
-    /// Says when recording started by each clock in `times` (a clock, and a time by it in seconds) that it hasn't been
-    /// said for yet: the earliest of that clock's times.
+    /// Sets when recording started for each clock in `times` (pairs of a clock and a time by it, in seconds) that has
+    /// no start yet: the earliest of the times by that clock. Clocks that already have a start keep it.
     pub fn start(&mut self, times: impl IntoIterator<Item = (ClockId, f64)>) {
         let mut earliest: Vec<(ClockId, f64)> = Vec::new();
         for (clock, seconds) in times.into_iter().filter(|(clock, _)| self.of(*clock).is_none()) {
@@ -85,9 +85,9 @@ impl Origins {
         self.0.extend(earliest);
     }
 
-    /// `at`, a time by `clock` (in its units), in seconds from when recording started by it; which is then, if that
-    /// wasn't said already. Counted in the clock's units first, whole ticks for a clock that counts them, so times by
-    /// one come out as exactly as they can.
+    /// Converts `at`, a time by `clock` in the clock's units, to seconds since recording started by that clock. If the
+    /// clock has no start yet, recording started at `at`. The subtraction is done in the clock's units first (whole
+    /// ticks, for a clock that counts them), so that times by a ticking clock come out as exact as they can.
     pub fn since(&mut self, clock: Clock, at: f64) -> f64 {
         self.start([(clock.id, clock.seconds(at))]);
         let origin = self.of(clock.id).unwrap_or(0.0) * clock.per_second;

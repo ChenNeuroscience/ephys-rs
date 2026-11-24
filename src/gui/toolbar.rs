@@ -339,7 +339,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         let text = egui::RichText::new(super::clock_text(since)).monospace();
         let text = if recording { text.color(colours.error) } else { text.color(colours.text_disabled) };
         ui.add_space(2.0);
-        ui.label(text).on_hover_text("How long it's been recording");
+        ui.label(text).on_hover_text("How long recording has been going");
         if self.is_preparing() {
             ui.label(egui::RichText::new("preparing…").color(colours.text_secondary));
         }

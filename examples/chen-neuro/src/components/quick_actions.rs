@@ -257,7 +257,7 @@ fn standard(state: &QuickState<Nodes>) -> Option<QuickChange<Nodes>> {
     change.link((positions, DataStreamOut, 0), (ltx, DataStreamIn, 2));
     change.link((board, DataStreamOut, 1), (ltx, DataStreamIn, 3));
     change.link((positions, DataStreamOut, 1), (ltx, DataStreamIn, 4));
-    // The board's time, which the spikes, EEG and digital inputs count from.
+    // Write LTX counts the spikes, EEG and digital inputs from when recording started by the board's time.
     change.link((board, DataStreamOut, 4), (ltx, DataStreamIn, 6));
     change.link((ltx, ValIn, 0), (positions, ValOutCmdIn, 0));
     change.link((ltx, ValIn, 1), (gain, ValOutCmdIn, 0));

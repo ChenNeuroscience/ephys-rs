@@ -1,16 +1,16 @@
-//! Write LTX reading the board's time, from 0.303.0. Before that version, Write LTX counted spikes', the EEG's and
-//! digital inputs' times each from its own first buffer recorded, so they could be out by however much the first pass
-//! had of each. It now counts them all from when recording started by the board's clock, which its `time` input says,
-//! from the Acquisition Board's `time` output. So this patch connects that, for each Write LTX whose spikes, EEG or
-//! digital inputs come from one Acquisition Board (through whatever's between them, in edges enabled or not), and
-//! whose time isn't connected already.
+//! Write LTX reading the board's time, from 0.303.0. Before that version, Write LTX counted the times of spikes, the EEG
+//! and digital inputs each from that input's first buffer recorded, so the three could be out by however much the
+//! first pass had of each. Write LTX now counts all three from when recording started by the board's clock, which the
+//! writer learns through its `time` input, from the Acquisition Board's `time` output. This patch connects those, for
+//! each Write LTX whose spikes, EEG or digital inputs come from one Acquisition Board (through whatever nodes are in
+//! between, by edges enabled or not), and whose `time` input isn't connected already.
 
 use ephys_rs::config_patching::{IncomingConfig, Patch};
 use serde_json::{Value, json};
 
 pub const PATCH: Patch = Patch::new("0.303.0", patch);
 
-/// Write LTX's inputs timed by the board's clock.
+/// The Write LTX inputs that the board's clock times.
 const BOARD_TIMED: [&str; 3] = ["spikes", "eeg", "events"];
 
 fn patch(config: &mut IncomingConfig) {
@@ -20,7 +20,7 @@ fn patch(config: &mut IncomingConfig) {
         nodes.filter(|(_, entry)| entry["node"]["type"] == node_type).filter_map(|(id, _)| id.parse().ok()).collect()
     };
     let (boards, writers) = (of_type("AcquisitionBoard"), of_type("WriteLtx"));
-    // Data edges, as (from node, to node, to port).
+    // Every data edge, as (from node, to node, to port).
     let mut data: Vec<(u64, u64, String)> = Vec::new();
     for list in ["edges", "disabled_edges"] {
         for edge in graph.get(list).and_then(Value::as_array).into_iter().flatten() {
@@ -39,7 +39,7 @@ fn patch(config: &mut IncomingConfig) {
         if data.iter().any(|(_, to, port)| *to == writer && port == "time") {
             continue;
         }
-        // Everything upstream of its board-timed inputs.
+        // Every node upstream of the writer's inputs that the board's clock times.
         let mut seen: Vec<u64> = Vec::new();
         let mut stack: Vec<u64> = data
             .iter()
@@ -94,8 +94,9 @@ mod tests {
         data(board, "time", writer, "time")
     }
 
-    /// A writer whose spikes come from a board through other nodes, or whose digital inputs come straight from one,
-    /// reads that board's time; one with only positions, one with its time connected, and one fed by two boards don't.
+    /// A writer gets the board's time when the writer's spikes come from that board through other nodes, or the
+    /// writer's digital inputs come straight from it. A writer with only positions, or with its time connected
+    /// already, gets nothing.
     #[test]
     fn connects_the_board_feeding_write_ltx() {
         let project = json!({ "graph": {
@@ -129,7 +130,7 @@ mod tests {
             !edges.iter().any(|e| e["to"]["node"] == 9 && e["to"]["port"] == "time"),
             "nothing by the board's clock"
         );
-        // Node 7: digital inputs from board 1, but spikes (disabled) also from board 1, so one board: connected.
+        // Writer 7's digital inputs and (disabled) spikes both come from board 1, so there's one board to connect.
         assert!(edges.contains(&time(1, 7)));
     }
 

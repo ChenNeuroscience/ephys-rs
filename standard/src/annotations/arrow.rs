@@ -100,7 +100,7 @@ impl AnnotationType for Arrow {
         if ui.button("Reverse").clicked() {
             self.flipped = self.flipped.map(|f| !f);
         }
-        ui.weak("Drag either end to move it.");
+        ui.weak("Drag either end of the arrow to move that end.");
     }
 
     /// A thick grey arrow, up and to the right.

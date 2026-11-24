@@ -186,7 +186,7 @@ impl<N: NodesEnum> PasteSettings<N> {
             targets.sort();
             targets.dedup();
             if targets.len() < pasting.len() {
-                ui.label(RichText::new("Two go to the same node: the later is what it gets").color(colours.warning));
+                ui.label(RichText::new("Two pastes go to the same node: the later one wins").color(colours.warning));
             }
             if locked {
                 ui.label(RichText::new("Settings are locked while recording.").color(colours.warning));

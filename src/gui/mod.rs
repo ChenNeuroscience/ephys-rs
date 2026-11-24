@@ -1080,7 +1080,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         let Some(report) = &self.last_crash else { return };
         let mut close = false;
         let body = |ui: &mut egui::Ui| {
-            ui.label("A report of what happened, to send to whoever looks after it, is in:");
+            ui.label("A report of what happened, to send to whoever looks after ephys-rs, is in:");
             ui.add(egui::Label::new(egui::RichText::new(report.display().to_string()).monospace()).selectable(true));
         };
         let footer = |ui: &mut egui::Ui| {
@@ -1443,8 +1443,9 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         }
         ui.label(format!("{:.1} MB", stats.memory as f64 / 1e6)).on_hover_text("Memory for the workers' buffers");
         ui.separator();
-        ui.label(format!("lag {:.1} ms", ms(stats.max_lag)))
-            .on_hover_text("Longest time in the last second from a pass's data being due to its being processed");
+        ui.label(format!("lag {:.1} ms", ms(stats.max_lag))).on_hover_text(
+            "Longest time in the last second between a pass's data being due and the pass being processed",
+        );
         ui.separator();
         ui.label(format!("pass {:.2} ms avg, {:.2} max", ms(stats.mean_time), ms(stats.max_time)))
             .on_hover_text("How long passes took to run, over the last second");

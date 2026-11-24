@@ -199,7 +199,7 @@ pub fn show(
             if response.clicked() {
                 view.pinned = if view.pinned.as_deref() == Some(*part) { None } else { Some(part.to_string()) };
             }
-            response.on_hover_text("Pick it out in every frame (click to keep it picked out)");
+            response.on_hover_text("Highlight this part in every frame (click to keep it highlighted)");
         }
     });
     ui.data_mut(|d| match hovered_now {

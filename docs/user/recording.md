@@ -27,7 +27,7 @@ for tetrode analysis code and [Waveform](https://chenneuroscience.github.io/wave
 | `name.pos.ttl` | The timing LED's changes | `pos ttl`, from a Position Detector |
 | `name.txt` | Log lines | `log` |
 
-Its **Spikes' scale** and **EEG's scale** map the µV that come in (amplified by their gains) to the files' 8 bits,
+The **Spikes' scale** and **EEG's scale** settings map the µV that come in (amplified by their gains) to the files' 8 bits,
 −128 to 127: ±250 µV each, to begin with, beyond which they're clipped. There's rarely a reason to change them: set
 the gains instead. The `.set` file gives each channel's gain from what came in to what's stored, in Axona's terms
 (`gain_ch_0`..., over `ADC_fullscale_mv`: ×1 over ±250 µV is 6000).
@@ -132,8 +132,9 @@ The board's clock is taken as true, and the positions are put on it in three ste
    slot, the nearer is kept and the other dropped, and an empty slot is filled with a position whose LEDs weren't
    found.
 
-It shows how many changes on each side were paired, ambiguous or unmatched, the clocks' drift, how far the pairs
-scatter about the offset, and how many positions were dropped and added. It warns, there and in the console, if few
+The window shows how many changes on each side were paired, ambiguous or unmatched, the clocks' drift, how far the
+pairs scatter about the offset, and how many positions were dropped and added. The node warns, in the window and the
+console, if few
 of the LED's changes paired, the pairs scatter by more than half a frame, the offset jumps or drifts more than a
 crystal would, there's a stretch with no pairs, or more than 1% of positions were dropped or added. If it can't sync
 (the board's line never changed, say, or nothing paired), it says why and leaves the files as they are.
@@ -152,11 +153,11 @@ it starts from that original, not from the synced positions, and says so:
 Starts recording when a line of its events goes up, as if **Record** were pressed, and, if **Stop on down** is ticked,
 stops it when the line goes down. Connect a VR computer's `pos ttl`, say, or the board's `events`.
 
-**Line**: the line it goes by, numbered from 1, as the LTX files number them (`ttl_1`, `ttl_2`...).
+**Line**: the events line to watch, numbered from 1, as the LTX files number them (`ttl_1`, `ttl_2`...).
 
-It only starts recording while acquiring, and does nothing if recording's already as the line says: a recording started
-by hand is stopped by the line going down, too, if it stops on down. Its window says whether the line's up, and how many
-times it's started and stopped recording.
+The node only starts recording while acquiring, and does nothing if recording is already as the line says. A
+recording started by hand is also stopped by the line going down, if the node stops on down. The node's window says
+whether the line is up, and how many times the node has started and stopped recording.
 
 ## Arduino
 
@@ -173,11 +174,12 @@ Arduino's port resets it. The list labels the ports that are Arduinos.
 
 **Baud rate**: the sketch's. StandardFirmata's is 57600.
 
-**Pins**: each pin it sets, and when it's high: **while acquiring** (from Play to Stop), **while recording**, or **set
+**Pins**: each pin to set, and when the pin is high: **while acquiring** (from Play to Stop), **while recording**, or **set
 by hand** (with a **high** box to tick). **Add a pin** to set another.
 
-It opens the port on Play, and keeps it open until Stop, as opening it restarts most Arduinos. Then it waits for the
-sketch to say which version of Firmata it speaks, as what's sent while it's starting is lost. If it doesn't say within
-a few seconds, the window warns that it may not be running Firmata, and the pins are set anyway. On Stop, every pin it
-set goes low. A sketch that's busy (in a `delay`, say) acts on each change once it's done, but none are lost. If the
-Arduino's unplugged, or isn't found, it says so, and keeps trying.
+The node opens the Arduino's port on Play and keeps the port open until Stop, as opening the port restarts most
+Arduinos. The node then waits for the sketch to say which version of Firmata the sketch speaks, as anything sent while
+the Arduino is starting is lost. If the sketch doesn't say within a few seconds, the window warns that the Arduino may
+not be running Firmata, and the pins are set anyway. On Stop, every pin the node set goes low. A sketch that's busy (in
+a `delay`, say) acts on each change once the sketch is free, and none are lost. If the Arduino is unplugged, or isn't
+found, the window says so, and the node keeps trying.

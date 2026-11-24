@@ -26,13 +26,13 @@ pub struct Spikes {
     /// Waveform samples before and after each spike's peak.
     pub pre: u32,
     pub post: u32,
-    /// The clock the spikes are timed by: the continuous data's they were found in, counted in its samples (see
-    /// `Spike::sample`).
+    /// The clock that times the spikes: the clock of the continuous data the spikes were found in, counted in that
+    /// data's samples (see `Spike::sample`).
     pub clock: ClockId,
 }
 
 impl Spikes {
-    /// The clock the spikes are timed by, counted in samples, as `Spike::sample` counts.
+    /// The clock that times the spikes, with the sample rate as its timebase, as `Spike::sample` counts.
     pub fn timing(&self) -> Clock {
         Clock::new(self.clock, self.sample_rate as f64)
     }

@@ -37,7 +37,7 @@ pub fn title(ui: &mut egui::Ui, on: bool, name: &str) {
 
 /// The alarms, to change or remove, and a menu to add one.
 pub fn alarms_ui(ui: &mut egui::Ui, alarms: &mut Alarms, stream: AlarmStates) {
-    ui.weak("An alarm goes off when its healthy condition isn't met over a complete period.");
+    ui.weak("An alarm goes off when the alarm's healthy condition isn't met over a complete period.");
     ui.add_space(6.0);
     if alarms.list.is_empty() {
         ui.weak("No alarms yet");

@@ -23,8 +23,8 @@ ephys_rs::ports! {
     digital: DataStreamOut<Events>,
     auxiliary: DataStreamOut<Continuous>,
     analogue: DataStreamOut<Continuous>,
-    /// Only the board's times: the stretch of its samples each pass covers, which writers say when recording started
-    /// by (see `crate::standard::clock::Time`).
+    /// Writers need to know when recording started by the board's clock. This output has nothing but the board's
+    /// times: for each pass, the stretch of samples the pass covers (see `crate::standard::clock::Time`).
     time: DataStreamOut<Time>,
 }
 
@@ -117,7 +117,8 @@ impl AcquisitionBoard {
 
     /// The board's data streams: the shape of the data its capture thread fills in, which is also what the node
     /// outputs.
-    /// Its streams, as node `id`: all timed by the board's clock, its samples.
+    /// The board's output streams, for the node with this `id`. All are timed by the board's clock, which counts the
+    /// board's samples.
     fn shape(&self, id: NodeId) -> Shape {
         let (rate, clock) = (self.sample_rate as f32, ClockId::new(id, 0));
         let continuous = |channels| Continuous { channels, sample_rate: rate, clock };
@@ -467,7 +468,11 @@ fn detect_ui(ui: &mut egui::Ui, board: &mut AcquisitionBoard, theme: &ephys_rs::
                 };
                 ui.data_mut(|d| d.insert_temp(result_id, message));
             }
-            if ui.button("Detect").on_hover_text("Ask the board which headstages it has, and use those").clicked() {
+            if ui
+                .button("Detect")
+                .on_hover_text("Ask the board which headstages are connected, and use those")
+                .clicked()
+            {
                 ui.data_mut(|d| d.insert_temp(id, capture::detect(board.source.clone())));
             }
             match ui.data(|d| d.get_temp::<Result<String, String>>(id.with("result"))) {

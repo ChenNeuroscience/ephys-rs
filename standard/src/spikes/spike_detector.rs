@@ -50,7 +50,7 @@ impl Default for SpikeDetector {
 }
 
 impl SpikeDetector {
-    /// The spikes it finds in `continuous`.
+    /// The stream of spikes that the detector finds in `continuous`.
     fn stream(&self, continuous: Continuous) -> Spikes {
         Spikes {
             channels: continuous.channels,

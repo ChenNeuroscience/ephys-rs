@@ -131,7 +131,7 @@ pub struct NodeState<E: Edges> {
 }
 
 impl<E: Edges> NodeState<E> {
-    /// The state of `node` (node `id`), given the data streams on its inputs.
+    /// The state of `node`, whose id is `id`, given the data streams on the node's inputs.
     pub fn of<N: Node<E>>(node: &N, id: NodeId, input_streams: Vec<Option<E::DataStream>>) -> Self {
         let inputs = DataStreamInOf::<N, E>::of(&input_streams);
         NodeState {
@@ -169,7 +169,8 @@ impl<E: Edges> NodeState<E> {
         }
     }
 
-    /// The state of `node` with nothing connected, as if it were node 0 (as the add-node menu shows one).
+    /// The add-node menu shows nodes that aren't in the graph yet. This is such a node's state, with nothing connected,
+    /// and node 0 standing in for the node's id.
     pub fn unconnected<N: NodesEnum<Edges = E>>(node: &N) -> Self {
         Self::new(node, NodeId(0), vec![None; node.list_ports_data_stream_in().len()])
     }

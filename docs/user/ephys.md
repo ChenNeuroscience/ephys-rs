@@ -109,15 +109,16 @@ to 127, to begin with). Gains go from ×¼ to ×4, and can be **one for** all ch
 **Auto detect** chooses gains from the data: it samples each channel **for** a while, then sets each gain so that the
 mean plus a multiple of a percentile's distance from it (the **Level**) maps to the upper limit of the **Fit range**
 (what's recorded: ±250 µV, Write LTX's EEG scale, to begin with). Run it from here, or from an [Continuous Data Viewer](#continuous-data-viewer) connected to ◇ `gains`.
-It needs data, so it only runs while acquiring, and not while recording: **Stop**, undoing it, stopping acquisition or
-starting to record leaves the gains as they were. Its result is an edit like any other, which undo takes back.
+Auto detect needs data, so it only runs while acquiring, and not while recording. **Stop**, undoing the auto detect,
+stopping acquisition or starting to record leaves the gains as they were. The gains it sets are an edit like any other,
+which undo takes back.
 
 ## Spectrum
 
 > **Processing.** In: `continuous`. Out: `spectra`.
 
 Each channel's power spectrum over a **Band** of interest (theta, 4–12 Hz, to begin with), updated every few passes.
-It only runs while something needs its output. No standard viewer shows spectra: for each channel's frequency and
+The Spectrum only runs while something needs its output. No standard viewer shows spectra: for each channel's frequency and
 phase, use a [Hilbert Transform](#hilbert-transform) and a [Phase Viewer](#phase-viewer).
 
 ## Hilbert Transform

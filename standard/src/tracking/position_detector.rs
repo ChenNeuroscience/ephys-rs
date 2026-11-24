@@ -223,7 +223,7 @@ pub(super) fn timing_led_ui(ui: &mut egui::Ui, detection: &mut Detection, size: 
     match on {
         Some(true) => ui.label(RichText::new("On").strong()),
         Some(false) => ui.weak("Off"),
-        None => ui.weak("Press Play to see whether it's on"),
+        None => ui.weak("Press Play to see whether the timing LED is on"),
     };
     switched_on
 }
@@ -345,7 +345,7 @@ pub(super) fn calibration_ui(ui: &mut egui::Ui, detection: &mut Detection, size:
             ui.weak(format!("{:.2} mm/px, the mean of {measured} ruler(s)", 1000.0 / ppm));
         }
         None => {
-            ui.weak("Not calibrated: add a ruler, drag its ends onto something of known size and enter its length.");
+            ui.weak("Not calibrated. Add a ruler, drag its ends onto something of known size, and enter that size.");
         }
     }
     // The readout above stays readable when locked.

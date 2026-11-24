@@ -118,7 +118,7 @@ pub fn show<N: NodesEnum>(
                         })
                         .inner;
                     let tip = if open { "Its window's open" } else { "Open its window beside this view" };
-                    let card = card.on_hover_text(format!("{tip} (right-click to hide it from here)"));
+                    let card = card.on_hover_text(format!("{tip} (right-click to hide this node from here)"));
                     if card.clicked() {
                         events.push(Event::OpenWindow(id, Some(crate::layout::Pane::Home)));
                     }

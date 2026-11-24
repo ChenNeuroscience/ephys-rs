@@ -511,7 +511,7 @@ impl Job {
         };
         if let Err(e) = std::thread::Builder::new().name("run command progress".into()).spawn(watch) {
             self.0.lock().unwrap().terminal = None;
-            self.fail(format!("Couldn't follow how it's going: {e}"));
+            self.fail(format!("Couldn't check on the command: {e}"));
         }
     }
 

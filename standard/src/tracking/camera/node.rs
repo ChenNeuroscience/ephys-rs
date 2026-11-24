@@ -71,7 +71,8 @@ impl Camera {
 }
 
 impl Camera {
-    /// Its video, as node `id`: frames timed in seconds by the camera's clock (its timestamps).
+    /// The camera's video stream, for the node with this `id`. The camera's timestamps time the frames, in seconds by
+    /// the camera's clock.
     fn video(&self, id: NodeId) -> Video {
         let [width, height] = self.settings.frame_size;
         let clock = Clock::seconds_of(ClockId::new(id, 0));

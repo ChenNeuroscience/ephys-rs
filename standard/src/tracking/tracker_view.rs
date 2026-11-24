@@ -412,7 +412,7 @@ impl TrackerView {
                 camera_settings_ui(ui, settings, supports);
             }
             None => {
-                ui.weak("Connect the camera control to a Camera to adjust it here.");
+                ui.weak("Connect the camera control to a Camera to adjust the camera here.");
             }
         });
         self.camera_locked = camera_locked;
@@ -422,7 +422,7 @@ impl TrackerView {
 
         let mut detection = context.val_in(ValInCmdOut::detection).cloned();
         let unconnected = |ui: &mut egui::Ui| {
-            ui.weak("Connect the detection control to a Position Detector to adjust it here.");
+            ui.weak("Connect the detection control to a Position Detector to adjust the detection here.");
         };
         let Overlays { crop, detection: found, rulers, timing } = &mut self.overlays;
 
