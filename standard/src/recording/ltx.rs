@@ -405,14 +405,11 @@ fn board_timed(inputs: &DataStreamIn) -> Vec<(&'static str, ClockId)> {
 }
 
 /// The positions, and what's timed alongside them, should share a clock: the camera's or the VR computer's. This lists
-/// those that are connected in `inputs`, each by name, with the clock the input is actually timed by. A pos ttl stream
-/// timed by the board's clock is left out, as it counts from recording's start by the board's clock instead.
+/// those that are connected in `inputs`, each by name, with the clock the input is actually timed by.
 fn position_timed(inputs: &DataStreamIn) -> Vec<(&'static str, ClockId)> {
-    let board: Vec<ClockId> = board_timed(inputs).into_iter().map(|(_, clock)| clock).collect();
     let mut timed = Vec::new();
     timed.extend(inputs.positions.map(|positions| ("positions", positions.clock.id)));
-    let pos_ttl = inputs.pos_ttl.filter(|events| !board.contains(&events.clock.id));
-    timed.extend(pos_ttl.map(|events| ("pos ttl", events.clock.id)));
+    timed.extend(inputs.pos_ttl.map(|events| ("pos ttl", events.clock.id)));
     timed.extend(inputs.log.map(|log| ("log lines", log.clock.id)));
     timed
 }
@@ -732,12 +729,10 @@ impl LtxFiles {
         // Connected, it only has anything to say if there's a timing LED, as far as we can tell.
         let timing_led = recorded.detection.as_ref().map(|d| d.timing_led);
         let pos_ttl = match streams.pos_ttl {
-            Some(events) if timing_led.is_none_or(|led| led.enabled) => {
-                // The timing LED's changes are timed by the board's clock if the pos ttl stream is, and so count from
-                // recording's start; otherwise they're timed by the camera's clock, as the positions are.
-                let by_board = board_timed(&streams).iter().any(|&(_, clock)| clock == events.clock.id);
-                let from = if by_board { "recording_start" } else { "first_position" };
-                let mut f = open_ttl(file(".pos.ttl")?, "timing_led", from)?;
+            Some(_) if timing_led.is_none_or(|led| led.enabled) => {
+                // The timing LED's changes are timed by the positions' clock (see `position_timed`), so they count
+                // from the first position.
+                let mut f = open_ttl(file(".pos.ttl")?, "timing_led", "first_position")?;
                 if let Some(detection) = recorded.detection.as_ref().filter(|_| timing_led.is_some()) {
                     let led = detection.timing_led;
                     f.header("timing_led_x", led.center[0])?;
@@ -968,8 +963,8 @@ impl Files<Chunk> for LtxFiles {
         let position_events = (&mut self.pos_ttl, self.streams.pos_ttl, chunk.inputs.pos_ttl.get());
         if let (Some(ttl), Some(events), Some(buffer)) = position_events {
             for event in &buffer.events {
-                // A timing LED's change counts from recording's start by whichever clock times it: the camera's (or
-                // the VR computer's), as the positions do, or the board's.
+                // A timing LED's change counts from the first position, by the positions' clock: the camera's or the
+                // VR computer's.
                 let seconds = self.origins.since(events.clock, event.at).max(0.0);
                 let line = format!("ttl_{} {seconds:.6} {}\r\n", event.line + 1, event.high as u8);
                 ttl.data(line.as_bytes())?;
@@ -1419,7 +1414,8 @@ mod tests {
             events: Some(Events { lines: 8, clock: board }),
             ..Default::default()
         };
-        assert!(clock_mismatch(&by_board).is_empty(), "a pos ttl stream by the board's clock counts from its start");
+        let mismatch = clock_mismatch(&by_board);
+        assert!(mismatch.len() == 1 && mismatch[0].contains("positions, pos ttl"), "{mismatch:?}");
         let together = DataStreamIn { pos_ttl: Some(Events { lines: 1, clock: camera }), ..by_board };
         assert!(clock_mismatch(&together).is_empty());
     }
