@@ -386,7 +386,9 @@ impl<E: PortEdges> Node<E> for WriteLtx {
         if inputs.pos_ttl.is_some() && inputs.positions.is_none() {
             warnings.push("Connect the positions too: the pos ttl times only make sense next to them".into());
         }
-        warnings.extend(clock_mismatch(inputs).map(|what| format!("{}{}", what[..1].to_uppercase(), &what[1..])));
+        warnings.extend(
+            clock_mismatch(inputs).into_iter().map(|what| format!("{}{}", what[..1].to_uppercase(), &what[1..])),
+        );
         warnings
     }
 }
@@ -402,19 +404,33 @@ fn board_timed(inputs: &DataStreamIn) -> Vec<(&'static str, ClockId)> {
     timed
 }
 
-/// The inputs that should be timed by the board's clock (see `board_timed`) can't line up if they come from different
-/// clocks. If they do, this says so, for a warning or a decision.
-fn clock_mismatch(inputs: &DataStreamIn) -> Option<String> {
-    let timed = board_timed(inputs);
-    let first = timed.first()?.1;
-    if timed.iter().all(|&(_, clock)| clock == first) {
-        return None;
-    }
-    let names: Vec<&str> = timed.iter().map(|&(name, _)| name).collect();
-    Some(format!(
-        "the {} don't all come from the same board, so their times won't line up in the files",
-        names.join(", ")
-    ))
+/// The positions, and what's timed alongside them, should share a clock: the camera's or the VR computer's. This lists
+/// those that are connected in `inputs`, each by name, with the clock the input is actually timed by. A pos ttl stream
+/// timed by the board's clock is left out, as it counts from recording's start by the board's clock instead.
+fn position_timed(inputs: &DataStreamIn) -> Vec<(&'static str, ClockId)> {
+    let board: Vec<ClockId> = board_timed(inputs).into_iter().map(|(_, clock)| clock).collect();
+    let mut timed = Vec::new();
+    timed.extend(inputs.positions.map(|positions| ("positions", positions.clock.id)));
+    let pos_ttl = inputs.pos_ttl.filter(|events| !board.contains(&events.clock.id));
+    timed.extend(pos_ttl.map(|events| ("pos ttl", events.clock.id)));
+    timed.extend(inputs.log.map(|log| ("log lines", log.clock.id)));
+    timed
+}
+
+/// Each group of inputs that should share a clock (see `board_timed` and `position_timed`) can't line up if its inputs
+/// come from different clocks. This says so for each group that does, for a warning or a decision.
+fn clock_mismatch(inputs: &DataStreamIn) -> Vec<String> {
+    let groups = [(board_timed(inputs), "board"), (position_timed(inputs), "camera or VR computer")];
+    let mixed = groups.into_iter().filter(|(timed, _)| timed.windows(2).any(|pair| pair[0].1 != pair[1].1));
+    mixed
+        .map(|(timed, source)| {
+            let names: Vec<&str> = timed.iter().map(|&(name, _)| name).collect();
+            format!(
+                "the {} don't all come from the same {source}, so their times won't line up in the files",
+                names.join(", ")
+            )
+        })
+        .collect()
 }
 
 /// Without the board's time, recording's start by the board's clock is only a guess from the data. If spikes, EEG or
@@ -1320,7 +1336,7 @@ mod tests {
             time: Some(Time { clock: board }),
             ..Default::default()
         };
-        assert_eq!((clock_mismatch(&streams), without_time(&streams)), (None, None));
+        assert_eq!((clock_mismatch(&streams), without_time(&streams)), (vec![], None));
         let mut files = Box::new(LtxFiles::open(&base, Local::now(), streams, Recorded::default()).unwrap());
 
         // Recording starts at the board's sample 3000 (sample 500 at 5 kHz). The spikes were found in data from
@@ -1372,8 +1388,8 @@ mod tests {
             time: Some(Time { clock: board }),
             ..Default::default()
         };
-        let mismatch = clock_mismatch(&mismatched).expect("different clocks");
-        assert!(mismatch.contains("time, spikes, digital inputs"), "{mismatch}");
+        let mismatch = clock_mismatch(&mismatched);
+        assert!(mismatch.len() == 1 && mismatch[0].contains("time, spikes, digital inputs"), "{mismatch:?}");
         assert!(
             Node::<Edges>::warnings(&WriteLtx::default(), &mismatched)
                 .iter()
@@ -1382,5 +1398,29 @@ mod tests {
         let untimed = DataStreamIn { spikes: Some(spikes), ..Default::default() };
         assert!(without_time(&untimed).is_some());
         assert_eq!(without_time(&DataStreamIn::default()), None, "nothing by the board's clock");
+    }
+
+    #[test]
+    fn says_if_positions_times_wont_line_up() {
+        let (board, camera, vr) =
+            (Clock::new(BOARD, 1000.0), Clock::seconds_of(CAMERA), Clock::seconds_of(ClockId::new(NodeId(3), 0)));
+        let positions = Positions { fps: 50.0, width: 640, height: 480, source: CAMERA_TRACKER, clock: camera };
+        let mixed = DataStreamIn {
+            positions: Some(positions),
+            pos_ttl: Some(Events { lines: 1, clock: vr }),
+            log: Some(LogLines { width: 80, clock: vr }),
+            ..Default::default()
+        };
+        let mismatch = clock_mismatch(&mixed);
+        assert!(mismatch.len() == 1 && mismatch[0].contains("positions, pos ttl, log lines"), "{mismatch:?}");
+        let by_board = DataStreamIn {
+            positions: Some(positions),
+            pos_ttl: Some(Events { lines: 1, clock: board }),
+            events: Some(Events { lines: 8, clock: board }),
+            ..Default::default()
+        };
+        assert!(clock_mismatch(&by_board).is_empty(), "a pos ttl stream by the board's clock counts from its start");
+        let together = DataStreamIn { pos_ttl: Some(Events { lines: 1, clock: camera }), ..by_board };
+        assert!(clock_mismatch(&together).is_empty());
     }
 }
