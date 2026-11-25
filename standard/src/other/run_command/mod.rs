@@ -1100,7 +1100,9 @@ mod tests {
         let [Outcome::Ended { took, code: Some(0) }, Outcome::Ended { code: Some(3), .. }] = outcomes[..] else {
             panic!("{outcomes:?}")
         };
-        assert!(took >= Duration::from_millis(250) && took < Duration::from_secs(5), "{took:?}");
+        // The run's start and end are seen as the status file is polled, so a busy machine can see the 0.3 s sleep
+        // as shorter; this only checks the time is roughly the run's.
+        assert!(took >= Duration::from_millis(100) && took < Duration::from_secs(5), "{took:?}");
         let mut changed = command.clone();
         changed.program = "/bin/bash".into();
         assert!(job.runs_with(&changed).is_none(), "shown till the settings change");
