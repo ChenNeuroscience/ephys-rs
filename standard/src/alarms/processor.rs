@@ -310,7 +310,7 @@ impl<E: PortEdges> Node<E> for AlarmProcessor {
         }
         let inputs = context.data_stream_in::<DataStreamIn>();
         let stream = streams(&inputs);
-        let lfp_rate = inputs.lfp.map(|continuous| continuous.sample_rate as f64);
+        let lfp_rate = inputs.lfp.map(|continuous| continuous.sample_rate() as f64);
         let fps = inputs.positions.map(|positions| positions.fps as f64);
         let mut watching = Watching {
             windows: Vec::new(),
@@ -377,7 +377,7 @@ mod tests {
     use ephys_rs::engine::{DataStreamType, PASS_DURATION};
 
     const SPIKES: Spikes =
-        Spikes { channels: 8, sample_rate: 1000.0, group_size: 4, pre: 2, post: 2, clock: ClockId::TEST };
+        Spikes { channels: 8, group_size: 4, pre: 2, post: 2, clock: Clock::new(ClockId::TEST, 1000.0) };
 
     /// A processor of `alarms`, watching only what `inputs` has.
     struct Run {
@@ -501,7 +501,7 @@ mod tests {
 
     #[test]
     fn lfp_is_the_fraction_of_time_in_range() {
-        let stream = Continuous { channels: 2, sample_rate: 1000.0, clock: ClockId::TEST };
+        let stream = Continuous { channels: 2, clock: Clock::new(ClockId::TEST, 1000.0) };
         let kind = AlarmKind::LfpSaturation { level_uv: 100.0, low: 90.0, selection: Selection::default() };
         let mut run = Run::new(one(kind, 1.0), DataStreamIn { lfp: Some(stream), ..Default::default() });
         let mut buffer = stream.buffer(PASS_DURATION);

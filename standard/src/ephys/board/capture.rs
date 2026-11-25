@@ -440,7 +440,7 @@ mod tests {
     }
 
     fn shape(ephys: u32, aux: u32, rate: f32) -> Shape {
-        let continuous = |channels| Continuous { channels, sample_rate: rate, clock: ClockId::TEST };
+        let continuous = |channels| Continuous { channels, clock: Clock::new(ClockId::TEST, rate as f64) };
         Shape {
             ephys: continuous(ephys),
             aux: continuous(aux),

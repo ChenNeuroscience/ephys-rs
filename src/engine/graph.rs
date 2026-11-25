@@ -992,7 +992,7 @@ mod tests {
     use crate::NodeType;
     use crate::Nodes;
     use crate::engine::NodeTypeEnum;
-    use crate::standard::clock::ClockId;
+    use crate::standard::clock::{Clock, ClockId};
     use crate::standard::{ephys, spikes};
     use crate::{DataStream, ValOut};
 
@@ -1040,7 +1040,7 @@ mod tests {
         graph.connect(port(detector, PortRole::DataStreamIn, 0), port(filter, PortRole::DataStreamOut, 0)).unwrap();
 
         let resolved = graph.resolve();
-        let continuous = ephys::Continuous { channels: 64, sample_rate: 30000.0, clock: ClockId::new(board, 0) };
+        let continuous = ephys::Continuous { channels: 64, clock: Clock::new(ClockId::new(board, 0), 30000.0) };
         assert_eq!(resolved[&filter].outputs[0].stream(), Some(DataStream::Continuous(continuous)));
         assert!(matches!(resolved[&detector].outputs[0].stream(), Some(DataStream::Spikes(s)) if s.channels == 64));
 

@@ -293,7 +293,7 @@ mod tests {
     use super::*;
     use crate::Command;
     use crate::Edges;
-    use crate::standard::clock::ClockId;
+    use crate::standard::clock::{Clock, ClockId};
     use ephys_rs::engine::{DataStreamType, PASS_DURATION};
 
     #[test]
@@ -301,7 +301,7 @@ mod tests {
         let level = PercentMultiple { percent: 98.0, multiple: 3.0 };
         let mut gain = ContinuousGain { level, ..Default::default() };
         gain.gains.detect.seconds = 4.0;
-        let stream = Continuous { channels: 2, sample_rate: 1000.0, clock: ClockId::TEST };
+        let stream = Continuous { channels: 2, clock: Clock::new(ClockId::TEST, 1000.0) };
         let started = std::time::Instant::now();
         let inputs = DataStreamIn { continuous: Some(stream) };
         gain.gains.detect.started = Some(started);

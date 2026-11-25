@@ -120,13 +120,13 @@ impl AcquisitionBoard {
     /// The board's output streams, for the node with this `id`. All are timed by the board's clock, which counts the
     /// board's samples.
     fn shape(&self, id: NodeId) -> Shape {
-        let (rate, clock) = (self.sample_rate as f32, ClockId::new(id, 0));
-        let continuous = |channels| Continuous { channels, sample_rate: rate, clock };
+        let clock = Clock::new(ClockId::new(id, 0), self.sample_rate as f64);
+        let continuous = |channels| Continuous { channels, clock };
         Shape {
             ephys: continuous(Headstage::total(&self.headstages)),
             aux: continuous(AUX_PER_HEADSTAGE * self.headstages.len() as u32),
             adc: continuous(ADC_CHANNELS),
-            events: Events { lines: self.source.ttl_lines(), clock: Clock::new(clock, rate as f64) },
+            events: Events { lines: self.source.ttl_lines(), clock },
         }
     }
 }

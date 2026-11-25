@@ -62,7 +62,7 @@ impl<E: PortEdges> Node<E> for BandPassFilter {
             return Prepared::shared(Filters::default()).into();
         };
         let mut filters = Filters { channels: vec![Vec::new(); stream.channels as usize], ..Default::default() };
-        filters.tune(self, stream.sample_rate);
+        filters.tune(self, stream.sample_rate());
         Prepared::shared(filters).into()
     }
 
@@ -120,11 +120,11 @@ impl<E: PortEdges> Node<E> for BandPassFilter {
             warnings.push("The low cut-off must be below the high cut-off".into());
         }
         if let Some(c) = inputs.continuous
-            && self.high_hz >= c.sample_rate / 2.0
+            && self.high_hz >= c.sample_rate() / 2.0
         {
             warnings.push(format!(
                 "The high cut-off must be below {} (half the sample rate)",
-                format_rate(c.sample_rate / 2.0)
+                format_rate(c.sample_rate() / 2.0)
             ));
         }
         warnings

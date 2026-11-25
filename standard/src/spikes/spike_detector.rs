@@ -54,7 +54,6 @@ impl SpikeDetector {
     fn stream(&self, continuous: Continuous) -> Spikes {
         Spikes {
             channels: continuous.channels,
-            sample_rate: continuous.sample_rate,
             clock: continuous.clock,
             group_size: self.group_size.max(1),
             pre: self.pre.max(1),
@@ -121,9 +120,9 @@ impl ephys_rs::engine::PassState for Detecting {
 impl Detector {
     fn new(spikes: Spikes) -> Self {
         let channels = spikes.channels as usize;
-        let lookahead = ((spikes.sample_rate / 2000.0) as usize).max(1); // half a millisecond
+        let lookahead = ((spikes.sample_rate() / 2000.0) as usize).max(1); // half a millisecond
         let tail = (spikes.pre + spikes.post) as usize + lookahead;
-        let pass = (spikes.sample_rate as f64 * PASS_DURATION).ceil() as usize * 5 / 4 + 1;
+        let pass = (spikes.sample_rate() as f64 * PASS_DURATION).ceil() as usize * 5 / 4 + 1;
         Detector {
             spikes: Some(spikes),
             lookahead,
@@ -326,7 +325,7 @@ impl<E: PortEdges> Node<E> for SpikeDetector {
         let Some(ui) = ui else { return };
         ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, context| {
             let (rate, channels) = match context.data_stream_in::<DataStreamIn>().continuous {
-                Some(c) => (c.sample_rate, c.channels as usize),
+                Some(c) => (c.sample_rate(), c.channels as usize),
                 _ => (30000.0, 0),
             };
             let ms = |samples: u32| format!(" samples ({:.2} ms)", samples as f32 * 1000.0 / rate);
@@ -467,12 +466,12 @@ mod tests {
     use super::*;
     use crate::Command;
     use crate::Edges;
-    use crate::standard::clock::ClockId;
+    use crate::standard::clock::{Clock, ClockId};
     use ephys_rs::engine::{DataStreamType, PassContext};
 
     /// Runs passes of `samples` through a detector, returning the spikes found (with their pass).
     fn detect(detector: &SpikeDetector, channels: u32, passes: &[Vec<Vec<f32>>]) -> Vec<(usize, Spike, Vec<f32>)> {
-        let stream = Continuous { channels, sample_rate: 30000.0, clock: ClockId::TEST };
+        let stream = Continuous { channels, clock: Clock::new(ClockId::TEST, 30000.0) };
         let mut state = ephys_rs::engine::fresh_state::<Edges, _>(detector, &DataStreamIn { continuous: Some(stream) });
         let spikes = detector.stream(stream);
         let mut found = Vec::new();
@@ -576,7 +575,7 @@ mod tests {
         let mut detector =
             SpikeDetector { level: PercentMultiple { percent: 98.0, multiple: 2.0 }, ..Default::default() };
         detector.thresholds.detect.seconds = 4.0;
-        let stream = Continuous { channels: 4, sample_rate: 30000.0, clock: ClockId::TEST };
+        let stream = Continuous { channels: 4, clock: Clock::new(ClockId::TEST, 30000.0) };
         let started = std::time::Instant::now();
         let inputs = DataStreamIn { continuous: Some(stream) };
         detector.thresholds.detect.started = Some(started);

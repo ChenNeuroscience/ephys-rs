@@ -55,8 +55,8 @@ pub struct Spectra {
 impl Spectra {
     /// Of `input`'s channels, over `band`.
     pub fn of(input: Continuous, band: [f32; 2]) -> Spectra {
-        let bins = Analysis::bins(input.sample_rate, band);
-        let step_hz = input.sample_rate / Analysis::factor(input.sample_rate) as f32 / SPECTRUM_SAMPLES as f32;
+        let bins = Analysis::bins(input.sample_rate(), band);
+        let step_hz = input.sample_rate() / Analysis::factor(input.sample_rate()) as f32 / SPECTRUM_SAMPLES as f32;
         Spectra { channels: input.channels, bins: bins.len() as u32, first_hz: bins.start as f32 * step_hz, step_hz }
     }
 
@@ -157,8 +157,8 @@ impl<E: PortEdges> Node<E> for Spectrum {
         }
         let mut analysis = Analysis::default();
         if let Some(c) = context.data_stream_in::<DataStreamIn>().continuous {
-            analysis.reshape(c.channels as usize, c.sample_rate, self.band);
-            analysis.rate = c.sample_rate;
+            analysis.reshape(c.channels as usize, c.sample_rate(), self.band);
+            analysis.rate = c.sample_rate();
         }
         Prepared::shared(analysis).into()
     }
@@ -186,7 +186,7 @@ impl<E: PortEdges> Node<E> for Spectrum {
         let Some(ui) = ui else { return };
         ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, context| {
             let rate = match context.data_stream_in::<DataStreamIn>().continuous {
-                Some(c) => c.sample_rate,
+                Some(c) => c.sample_rate(),
                 _ => 30000.0,
             };
             let nyquist = rate / Analysis::factor(rate) as f32 / 2.0;
@@ -346,13 +346,13 @@ impl Analysis {
 mod tests {
     use super::*;
     use crate::Edges;
-    use crate::standard::clock::ClockId;
+    use crate::standard::clock::{Clock, ClockId};
     use ephys_rs::engine::PASS_DURATION;
 
     #[test]
     fn the_spectrum_peaks_at_the_rhythm() {
         let spectrum = Spectrum::default();
-        let stream = Continuous { channels: 2, sample_rate: 30000.0, clock: ClockId::TEST };
+        let stream = Continuous { channels: 2, clock: Clock::new(ClockId::TEST, 30000.0) };
         let mut analysis =
             ephys_rs::engine::fresh_state::<Edges, _>(&spectrum, &DataStreamIn { continuous: Some(stream) });
         let mut out = Spectra::of(stream, spectrum.band).buffer(PASS_DURATION);

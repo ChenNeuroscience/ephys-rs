@@ -289,7 +289,7 @@ impl<E: PortEdges> Node<E> for ContinuousViewer {
         if context.same_streams() {
             return Prepared::nothing().into();
         }
-        let rate = context.data_stream_in::<DataStreamIn>().continuous.map_or(30000.0, |c| c.sample_rate);
+        let rate = context.data_stream_in::<DataStreamIn>().continuous.map_or(30000.0, |c| c.sample_rate());
         Prepared::shared(Traces { rate, ..Default::default() }).into()
     }
 
@@ -1045,13 +1045,13 @@ fn column_toggles(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::standard::clock::ClockId;
+    use crate::standard::clock::{Clock, ClockId};
 
     /// The window keeps the traces from the passes' updates, each only the columns new since the last; one that isn't
     /// delivered leaves a gap, not sent again; and a new shape starts afresh.
     #[test]
     fn the_window_keeps_the_traces_from_updates_with_gaps_for_those_missed() {
-        let stream = Continuous { channels: 2, sample_rate: 1000.0, clock: ClockId::TEST };
+        let stream = Continuous { channels: 2, clock: Clock::new(ClockId::TEST, 1000.0) };
         let mut traces = Traces::default();
         // A sample a column, so each is a column.
         traces.reshape((0, 1, 0, 1));
@@ -1110,7 +1110,7 @@ mod tests {
             highs: columns(5.0),
             ..Default::default()
         };
-        let stream = Continuous { channels: 3, sample_rate: 30000.0, clock: ClockId::TEST };
+        let stream = Continuous { channels: 3, clock: Clock::new(ClockId::TEST, 30000.0) };
         let mut harness = egui_kittest::Harness::builder().with_size([700.0, 280.0]).wgpu().build_ui(|ui| {
             let viewer = ContinuousViewer { row_height: 60.0, ..Default::default() };
             let rows = Rows { display: &display, stream, reference: None, advanced: true, selection_settings: None };
@@ -1129,7 +1129,7 @@ mod tests {
         let (shown, columns) = (3, vec![0.0; 3 * COLUMNS]);
         let display =
             TracesDisplay { shown, columns: COLUMNS, lows: columns.clone(), highs: columns, ..Default::default() };
-        let stream = Continuous { channels: 3, sample_rate: 30000.0, clock: ClockId::TEST };
+        let stream = Continuous { channels: 3, clock: Clock::new(ClockId::TEST, 30000.0) };
         let reference = reference_of("1");
         let mut selection = ChannelSelection { apply: false, channels: "1-2".into() };
         let mut harness = egui_kittest::Harness::builder().with_size([400.0, 160.0]).wgpu().build_ui(|ui| {
@@ -1154,7 +1154,7 @@ mod tests {
         let (shown, columns) = (2, vec![0.0; 2 * COLUMNS]);
         let display =
             TracesDisplay { shown, columns: COLUMNS, lows: columns.clone(), highs: columns, ..Default::default() };
-        let stream = Continuous { channels: 2, sample_rate: 30000.0, clock: ClockId::TEST };
+        let stream = Continuous { channels: 2, clock: Clock::new(ClockId::TEST, 30000.0) };
         let reference = reference_of("1");
         let mut selection = ChannelSelection { apply: true, channels: "1, 3".into() };
         let mut harness = egui_kittest::Harness::builder().with_size([400.0, 160.0]).wgpu().build_ui(|ui| {
@@ -1181,7 +1181,7 @@ mod tests {
     #[test]
     fn with_nothing_selected_and_applied_it_can_still_be_disabled() {
         use egui_kittest::kittest::Queryable as _;
-        let stream = Continuous { channels: 0, sample_rate: 30000.0, clock: ClockId::TEST };
+        let stream = Continuous { channels: 0, clock: Clock::new(ClockId::TEST, 30000.0) };
         let mut traces = Traces::default();
         traces.reshape((0, 0, 0, 5));
         let input = ContinuousBuffer { channels: 0, capacity: 32, len: 32, start: 0, data: Vec::new() };
@@ -1214,7 +1214,7 @@ mod tests {
         let (shown, columns) = (3, vec![0.0; 3 * COLUMNS]);
         let display =
             TracesDisplay { shown, columns: COLUMNS, lows: columns.clone(), highs: columns, ..Default::default() };
-        let stream = Continuous { channels: 3, sample_rate: 30000.0, clock: ClockId::TEST };
+        let stream = Continuous { channels: 3, clock: Clock::new(ClockId::TEST, 30000.0) };
         let reference = reference_of("1");
         let selection = ChannelSelection { apply: false, channels: "all".into() };
         let mut harness = egui_kittest::Harness::builder().with_size([500.0, 200.0]).wgpu().build_ui_state(
@@ -1307,7 +1307,7 @@ mod tests {
             highs: columns(5.0),
             ..Default::default()
         };
-        let stream = Continuous { channels: 5, sample_rate: 30000.0, clock: ClockId::TEST };
+        let stream = Continuous { channels: 5, clock: Clock::new(ClockId::TEST, 30000.0) };
         let made = |id, method, channels: &str, used_by: &str| Computation {
             id,
             method,
@@ -1392,7 +1392,7 @@ mod tests {
             highs: columns(5.0),
             ..Default::default()
         };
-        let stream = Continuous { channels: 2, sample_rate: 30000.0, clock: ClockId::TEST };
+        let stream = Continuous { channels: 2, clock: Clock::new(ClockId::TEST, 30000.0) };
         let mut reference = reference_of("1");
         reference.add(2);
         let mut selection = ChannelSelection { apply: true, channels: "1-2".into() };

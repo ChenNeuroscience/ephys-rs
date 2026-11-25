@@ -30,7 +30,7 @@ use super::{
     Files, OnFinished, Origins, Status, Writing, after_recording, location_summary, recording_path, show_status,
     status_ui,
 };
-use crate::standard::clock::ClockId;
+use crate::standard::clock::{Clock, ClockId};
 use crate::standard::ephys::board::EPHYS_MICROVOLTS_PER_BIT;
 use crate::standard::ephys::{Continuous, ContinuousBuffer, Event, Events, EventsBuffer};
 use crate::standard::other::run_command::{FileInput, ProcessFiles};
@@ -69,7 +69,7 @@ pub struct Chunk {
 impl Chunk {
     /// Empty, for these inputs (nothing, for an input not connected).
     fn new(continuous: Option<Continuous>, events: Option<Events>) -> Self {
-        let none = || Continuous { channels: 0, sample_rate: 1.0, clock: ClockId::new(NodeId(0), 0) };
+        let none = || Continuous { channels: 0, clock: Clock::seconds_of(ClockId::new(NodeId(0), 0)) };
         Chunk {
             continuous: continuous.unwrap_or_else(none).buffer(PASS_DURATION),
             events: events
@@ -226,7 +226,7 @@ impl<E: PortEdges> Node<E> for WriteRaw {
     fn warnings(&self, inputs: &DataStreamIn) -> Vec<String> {
         let mut warnings = require_input(inputs.any_connected(), "something to record");
         if let (Some(continuous), Some(events)) = (inputs.continuous, inputs.events)
-            && continuous.clock != events.clock.id
+            && continuous.clock.id != events.clock.id
         {
             warnings
                 .push("The continuous data and digital inputs aren't timed by the same clock, so won't line up".into());
@@ -325,7 +325,7 @@ fn structure(continuous: Option<Continuous>, events: Option<Events>) -> String {
                 .collect();
             serde_json::json!({
                 "folder_name": format!("{CONTINUOUS_FOLDER}/"),
-                "sample_rate": c.sample_rate,
+                "sample_rate": c.sample_rate(),
                 "source_processor_name": "ephys-rs",
                 "source_processor_id": 100,
                 "stream_name": "continuous",
@@ -368,7 +368,7 @@ fn structure(continuous: Option<Continuous>, events: Option<Events>) -> String {
 impl Files<Chunk> for RawFiles {
     fn write(&mut self, chunk: &Chunk) -> io::Result<u64> {
         // For each clock, recording started at the earliest data by that clock in the first pass.
-        let continuous = self.continuous.as_ref().map(|samples| samples.stream.timing());
+        let continuous = self.continuous.as_ref().map(|samples| samples.stream.clock);
         let events = self.events.as_ref().map(|ttl| ttl.stream.clock);
         let starts = [
             continuous.map(|clock| (clock.id, clock.seconds(chunk.continuous.start as f64))),
@@ -442,7 +442,7 @@ mod tests {
     #[test]
     fn writes_samples_interleaved_and_events() {
         let dir = std::env::temp_dir().join(format!("ephys-rs-raw-{}", std::process::id()));
-        let continuous = Continuous { channels: 2, sample_rate: 1000.0, clock: ClockId::TEST };
+        let continuous = Continuous { channels: 2, clock: Clock::new(ClockId::TEST, 1000.0) };
         let events = Events { lines: 8, clock: Clock::new(ClockId::TEST, 1000.0) };
         let mut files = Box::new(RawFiles::open(&dir, Some(continuous), Some(events)).unwrap());
         let mut chunk = Chunk::new(Some(continuous), Some(events));

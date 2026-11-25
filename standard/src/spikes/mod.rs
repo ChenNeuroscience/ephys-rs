@@ -9,7 +9,7 @@ pub mod spike_viewer;
 use eframe::egui::{self, Color32};
 use serde::{Deserialize, Serialize};
 
-use super::clock::{Clock, ClockId};
+use super::clock::Clock;
 use super::per_pass;
 use super::widgets::format_rate;
 use ephys_rs::engine::{DataStreamType, EdgeInfo, EdgeType};
@@ -20,21 +20,20 @@ use ephys_rs::engine::{DataStreamType, EdgeInfo, EdgeType};
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Spikes {
     pub channels: u32,
-    pub sample_rate: f32,
     /// Channels in each group (the last may have fewer).
     pub group_size: u32,
     /// Waveform samples before and after each spike's peak.
     pub pre: u32,
     pub post: u32,
     /// The clock that times the spikes: the clock of the continuous data the spikes were found in, counted in that
-    /// data's samples (see `Spike::sample`).
-    pub clock: ClockId,
+    /// data's samples (see `Spike::sample`), so the clock's timebase is the data's sample rate.
+    pub clock: Clock,
 }
 
 impl Spikes {
-    /// The clock that times the spikes, with the sample rate as its timebase, as `Spike::sample` counts.
-    pub fn timing(&self) -> Clock {
-        Clock::new(self.clock, self.sample_rate as f64)
+    /// The continuous data's samples a second: the clock's timebase.
+    pub fn sample_rate(&self) -> f32 {
+        self.clock.per_second as f32
     }
 
     pub fn groups(&self) -> u32 {
@@ -68,7 +67,7 @@ impl EdgeType for Spikes {
             4 => "tetrodes",
             _ => "groups",
         };
-        format!("{} {groups} · {}", self.groups(), format_rate(self.sample_rate))
+        format!("{} {groups} · {}", self.groups(), format_rate(self.sample_rate()))
     }
 }
 
@@ -128,7 +127,7 @@ impl DataStreamType for Spikes {
     /// Room for as many spikes as a pass can have: a pass of continuous data is at most `per_pass(...) * 5/4`
     /// samples (see `Continuous`), and a group's spikes are at least a waveform apart.
     fn buffer(&self, duration: f64) -> SpikesBuffer {
-        let samples = per_pass(self.sample_rate, duration) * 5 / 4;
+        let samples = per_pass(self.sample_rate(), duration) * 5 / 4;
         let waveform = self.waveform_samples().max(1) as usize;
         let capacity = self.groups() as usize * (samples.div_ceil(waveform) + 1);
         let group_size = self.group_size.max(1) as usize;
@@ -472,12 +471,13 @@ impl EdgeType for Gains {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::standard::clock::ClockId;
     use ephys_rs::engine::EdgeType;
 
     #[test]
     fn summary() {
         let spikes =
-            Spikes { channels: 64, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32, clock: ClockId::TEST };
+            Spikes { channels: 64, group_size: 4, pre: 8, post: 32, clock: Clock::new(ClockId::TEST, 30000.0) };
         assert_eq!(spikes.summary(), "16 tetrodes · 30 kHz");
         assert_eq!(spikes.group_channels(15), 60..64);
     }

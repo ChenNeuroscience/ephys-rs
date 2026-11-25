@@ -529,7 +529,7 @@ fn copy(input: &SpikesBuffer, output: &mut SpikesBuffer) {
 mod tests {
     use super::*;
     use crate::Edges;
-    use crate::standard::clock::ClockId;
+    use crate::standard::clock::{Clock, ClockId};
     use crate::standard::spikes::Spike;
     use crate::{Command, NodeType};
     use ephys_rs::engine::DataStreamInPorts;
@@ -564,11 +564,11 @@ mod tests {
         gain.gains.detect.seconds = 4.0;
         let stream = crate::standard::spikes::Spikes {
             channels: 4,
-            sample_rate: 30000.0,
+
             group_size: 4,
             pre: 8,
             post: 32,
-            clock: ClockId::TEST,
+            clock: Clock::new(ClockId::TEST, 30000.0),
         };
         let started = std::time::Instant::now();
         let inputs = DataStreamIn { spikes: Some(stream) };
@@ -634,11 +634,11 @@ mod tests {
         gain.gains.detect.seconds = 4.0;
         let stream = crate::standard::spikes::Spikes {
             channels: 4,
-            sample_rate: 30000.0,
+
             group_size: 4,
             pre: 8,
             post: 32,
-            clock: ClockId::TEST,
+            clock: Clock::new(ClockId::TEST, 30000.0),
         };
         let started = std::time::Instant::now();
         let inputs = DataStreamIn { spikes: Some(stream) };
@@ -682,11 +682,11 @@ mod tests {
         let mut gain = SpikeGain::default();
         let stream = crate::standard::spikes::Spikes {
             channels: 4,
-            sample_rate: 30000.0,
+
             group_size: 4,
             pre: 8,
             post: 32,
-            clock: ClockId::TEST,
+            clock: Clock::new(ClockId::TEST, 30000.0),
         };
         let started = std::time::Instant::now();
         let inputs = DataStreamIn { spikes: Some(stream) };
@@ -781,8 +781,7 @@ mod tests {
         let mut graph = Graph::<Nodes>::default();
         let node_type = NodeType::SpikeGain;
         let id = graph.add(Nodes::create(node_type), [0.0, 0.0]);
-        let spikes =
-            Spikes { channels: 8, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32, clock: ClockId::TEST };
+        let spikes = Spikes { channels: 8, group_size: 4, pre: 8, post: 32, clock: Clock::new(ClockId::TEST, 30000.0) };
         if let Some(Nodes::SpikeGain(gain)) = graph.get_mut(id).map(|e| &mut e.node) {
             let channels = Channels { count: 8, group_size: 4 };
             gain.gains.set_scope(GainScope::Group, channels);

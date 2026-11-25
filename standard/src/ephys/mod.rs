@@ -15,7 +15,7 @@ pub mod ttl_viewer;
 
 use eframe::egui::Color32;
 
-use super::clock::{Clock, ClockId};
+use super::clock::Clock;
 use super::per_pass;
 use super::widgets::format_rate;
 use ephys_rs::engine::{DataStreamType, EdgeInfo, EdgeType};
@@ -24,15 +24,15 @@ use ephys_rs::engine::{DataStreamType, EdgeInfo, EdgeType};
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Continuous {
     pub channels: u32,
-    pub sample_rate: f32,
-    /// The clock that times the samples, counted in samples (see `crate::standard::clock`).
-    pub clock: ClockId,
+    /// The clock that times the samples (see `crate::standard::clock`). Continuous data counts time in samples, so the
+    /// clock's timebase is the sample rate.
+    pub clock: Clock,
 }
 
 impl Continuous {
-    /// The clock that times the samples, with the sample rate as its timebase, as `ContinuousBuffer::start` counts.
-    pub fn timing(&self) -> Clock {
-        Clock::new(self.clock, self.sample_rate as f64)
+    /// Samples a second: the clock's timebase.
+    pub fn sample_rate(&self) -> f32 {
+        self.clock.per_second as f32
     }
 }
 
@@ -44,7 +44,7 @@ impl EdgeType for Continuous {
     };
 
     fn summary(&self) -> String {
-        format!("{} ch · {}", self.channels, format_rate(self.sample_rate))
+        format!("{} ch · {}", self.channels, format_rate(self.sample_rate()))
     }
 }
 
@@ -74,7 +74,7 @@ pub struct ContinuousBuffer {
     pub channels: usize,
     pub capacity: usize,
     pub len: usize,
-    /// When the buffer's first sample was, by the stream's clock (`Continuous::timing`): the sample's number, counting
+    /// When the buffer's first sample was, by the stream's clock (`Continuous::clock`): the sample's number, counting
     /// at the stream's sample rate from the clock's zero (so a downsampled stream counts its own samples). The next
     /// buffer starts at `start + len`, unless samples were lost in between: a gap.
     pub start: u64,
@@ -124,7 +124,7 @@ impl DataStreamType for Continuous {
     /// Room for a quarter more than a pass's worth, so a source can catch up after a hiccup (samples arriving
     /// late, say).
     fn buffer(&self, duration: f64) -> ContinuousBuffer {
-        let capacity = per_pass(self.sample_rate, duration) * 5 / 4;
+        let capacity = per_pass(self.sample_rate(), duration) * 5 / 4;
         let channels = self.channels as usize;
         ContinuousBuffer { channels, capacity, len: 0, start: 0, data: vec![0.0; channels * capacity] }
     }
@@ -151,9 +151,15 @@ impl DataStreamType for Continuous {
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct ComplexContinuous {
     pub channels: u32,
-    pub sample_rate: f32,
-    /// The clock that times the samples, as for `Continuous::clock`.
-    pub clock: ClockId,
+    /// The clock that times the samples, whose timebase is the sample rate, as for `Continuous::clock`.
+    pub clock: Clock,
+}
+
+impl ComplexContinuous {
+    /// Samples a second: the clock's timebase.
+    pub fn sample_rate(&self) -> f32 {
+        self.clock.per_second as f32
+    }
 }
 
 impl EdgeType for ComplexContinuous {
@@ -165,7 +171,7 @@ impl EdgeType for ComplexContinuous {
     };
 
     fn summary(&self) -> String {
-        format!("{} ch · {}", self.channels, format_rate(self.sample_rate))
+        format!("{} ch · {}", self.channels, format_rate(self.sample_rate()))
     }
 }
 
@@ -202,7 +208,7 @@ impl DataStreamType for ComplexContinuous {
 
     /// Room for a quarter more than a pass's worth, as `Continuous` has.
     fn buffer(&self, duration: f64) -> ComplexContinuousBuffer {
-        let capacity = per_pass(self.sample_rate, duration) * 5 / 4;
+        let capacity = per_pass(self.sample_rate(), duration) * 5 / 4;
         let channels = self.channels as usize;
         let size = channels * capacity;
         ComplexContinuousBuffer { channels, capacity, len: 0, start: 0, re: vec![0.0; size], im: vec![0.0; size] }
@@ -296,10 +302,11 @@ impl EdgeType for ChannelSelection {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::standard::clock::ClockId;
     use ephys_rs::engine::EdgeType;
 
     #[test]
     fn summary() {
-        assert_eq!(Continuous { channels: 32, sample_rate: 30000.0, clock: ClockId::TEST }.summary(), "32 ch · 30 kHz");
+        assert_eq!(Continuous { channels: 32, clock: Clock::new(ClockId::TEST, 30000.0) }.summary(), "32 ch · 30 kHz");
     }
 }

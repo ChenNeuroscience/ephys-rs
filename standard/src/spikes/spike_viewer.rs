@@ -769,7 +769,7 @@ impl SpikeViewer {
 
 #[cfg(test)]
 mod tests {
-    use crate::standard::clock::ClockId;
+    use crate::standard::clock::{Clock, ClockId};
     use egui_kittest::Harness;
     use egui_kittest::kittest::Queryable;
 
@@ -786,7 +786,7 @@ mod tests {
     }
 
     const STREAM: Spikes =
-        Spikes { channels: 8, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32, clock: ClockId::TEST };
+        Spikes { channels: 8, group_size: 4, pre: 8, post: 32, clock: Clock::new(ClockId::TEST, 30000.0) };
 
     fn harness<'a>() -> Harness<'a, (Thresholds, Gains)> {
         Harness::builder().with_size([700.0, 400.0]).wgpu().build_ui_state(

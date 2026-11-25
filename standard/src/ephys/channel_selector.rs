@@ -145,12 +145,12 @@ impl<E: PortEdges> Node<E> for ChannelSelector {
 mod tests {
     use super::*;
     use crate::Edges;
-    use crate::standard::clock::ClockId;
+    use crate::standard::clock::{Clock, ClockId};
     use ephys_rs::engine::{DataStreamType, PASS_DURATION};
 
     #[test]
     fn passes_on_the_selected_channels_once_applied() {
-        let stream = Continuous { channels: 4, sample_rate: 1000.0, clock: ClockId::TEST };
+        let stream = Continuous { channels: 4, clock: Clock::new(ClockId::TEST, 1000.0) };
         let mut selector = ChannelSelector { apply: false, channels: "2, 4".into() };
         let run = |selector: &ChannelSelector| {
             let out = Node::<Edges>::data_stream_out(selector, NodeId(1), &DataStreamIn { continuous: Some(stream) })
@@ -297,7 +297,7 @@ mod tests {
                 let mut graph = Graph::<crate::Nodes>::default();
                 let node_type = crate::NodeType::ChannelSelector;
                 let id = graph.add(crate::Nodes::create(node_type), [0.0, 0.0]);
-                let stream = Continuous { channels: 16, sample_rate: 30000.0, clock: ClockId::TEST };
+                let stream = Continuous { channels: 16, clock: Clock::new(ClockId::TEST, 30000.0) };
                 let inputs = [Some(crate::DataStream::Continuous(stream))];
                 graph.edit(id, &inputs, &THEMES[0].colours, None, None, None, false, false, None, |_, context| {
                     selector.on_gui_tick(Some(ui), context)

@@ -333,7 +333,7 @@ mod tests {
     use crate::standard::ephys::Event;
 
     fn samples() -> Samples {
-        let continuous = |channels| Continuous { channels, sample_rate: 30000.0, clock: ClockId::TEST };
+        let continuous = |channels| Continuous { channels, clock: Clock::new(ClockId::TEST, 30000.0) };
         Samples::new(
             continuous(2),
             continuous(1),

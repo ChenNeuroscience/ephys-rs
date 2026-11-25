@@ -87,7 +87,7 @@ impl<E: PortEdges> Node<E> for HilbertTransform {
             return Prepared::nothing().into();
         }
         let transforming = match context.data_stream_in::<DataStreamIn>().continuous {
-            Some(stream) => Transforming::new(self.half(stream.sample_rate), stream, PASS_ROOM),
+            Some(stream) => Transforming::new(self.half(stream.sample_rate()), stream, PASS_ROOM),
             None => Transforming::default(),
         };
         Prepared::shared(transforming).into()
@@ -117,18 +117,14 @@ impl<E: PortEdges> Node<E> for HilbertTransform {
     }
 
     fn data_stream_out(&self, _: NodeId, inputs: &DataStreamIn) -> DataStreamOut {
-        let analytic = inputs.continuous.map(|c| ComplexContinuous {
-            channels: c.channels,
-            sample_rate: c.sample_rate,
-            clock: c.clock,
-        });
+        let analytic = inputs.continuous.map(|c| ComplexContinuous { channels: c.channels, clock: c.clock });
         DataStreamOut { analytic }
     }
 
     fn on_gui_tick(&mut self, ui: Option<&mut egui::Ui>, context: &mut UiContext<E>) {
         let Some(ui) = ui else { return };
         ephys_rs::gui::node_window::standard(self, ui, context, |node, ui, context| {
-            let rate = context.data_stream_in::<DataStreamIn>().continuous.map(|c| c.sample_rate);
+            let rate = context.data_stream_in::<DataStreamIn>().continuous.map(|c| c.sample_rate());
             settings_grid(ui, |ui| {
                 setting(ui, "Lowest frequency", |ui| {
                     let field = egui::DragValue::new(&mut node.lowest_hz).range(0.5..=200.0).speed(0.1).suffix(" Hz");
@@ -151,17 +147,17 @@ impl<E: PortEdges> Node<E> for HilbertTransform {
     fn warnings(&self, inputs: &DataStreamIn) -> Vec<String> {
         let mut warnings = require_input(inputs.any_connected(), "a continuous data stream");
         if let Some(c) = inputs.continuous {
-            let from = self.accurate_from(c.sample_rate);
+            let from = self.accurate_from(c.sample_rate());
             if from > self.lowest_hz * 1.01 {
                 warnings.push(format!(
                     "At {}, the transform is only accurate above {from:.1} Hz: downsample first (to about 1 kHz)",
-                    format_rate(c.sample_rate)
+                    format_rate(c.sample_rate())
                 ));
             }
-            if self.lowest_hz >= c.sample_rate / 4.0 {
+            if self.lowest_hz >= c.sample_rate() / 4.0 {
                 warnings.push(format!(
                     "The lowest frequency must be well below {} (half the sample rate)",
-                    format_rate(c.sample_rate / 2.0)
+                    format_rate(c.sample_rate() / 2.0)
                 ));
             }
         }
@@ -202,7 +198,7 @@ impl Transforming {
             .step_by(2)
             .map(|k| (2.0 / (std::f64::consts::PI * k as f64) * blackman(half + k)) as f32)
             .collect();
-        let pass = (stream.sample_rate as f64 * room).ceil() as usize;
+        let pass = (stream.sample_rate() as f64 * room).ceil() as usize;
         let recent = (0..stream.channels).map(|_| Vec::with_capacity(2 * half + pass)).collect();
         let mut transforming = Transforming { half, taps, recent };
         for recent in &mut transforming.recent {
@@ -242,7 +238,7 @@ impl Transforming {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::standard::clock::ClockId;
+    use crate::standard::clock::{Clock, ClockId};
     use ephys_rs::engine::DataStreamType;
 
     const RATE: f32 = 1000.0;
@@ -250,9 +246,9 @@ mod tests {
     /// Runs `transforming` on `signal` for one channel, in passes of the lengths in `passes`, round and round, and
     /// returns the analytic signal.
     fn run(transforming: &mut Transforming, signal: &[f32], passes: &[usize]) -> Vec<(f32, f32)> {
-        let stream = Continuous { channels: 1, sample_rate: RATE, clock: ClockId::TEST };
+        let stream = Continuous { channels: 1, clock: Clock::new(ClockId::TEST, RATE as f64) };
         let mut input = stream.buffer(0.1);
-        let mut output = ComplexContinuous { channels: 1, sample_rate: RATE, clock: ClockId::TEST }.buffer(0.1);
+        let mut output = ComplexContinuous { channels: 1, clock: Clock::new(ClockId::TEST, RATE as f64) }.buffer(0.1);
         let mut analytic = Vec::new();
         let mut at = 0;
         for &len in passes.iter().cycle() {
@@ -281,7 +277,7 @@ mod tests {
         let node = HilbertTransform::default();
         let half = node.half(RATE);
         assert_eq!(half, 375, "1.5 cycles of 4 Hz at 1 kHz");
-        let stream = Continuous { channels: 1, sample_rate: RATE, clock: ClockId::TEST };
+        let stream = Continuous { channels: 1, clock: Clock::new(ClockId::TEST, RATE as f64) };
         for hz in [4.0, 8.0, 40.0, 200.0] {
             let mut transforming = Transforming::new(half, stream, 0.1);
             let samples = 4000;
@@ -302,11 +298,12 @@ mod tests {
         assert_eq!(node.half(30000.0), MAX_HALF);
         assert!(node.accurate_from(30000.0) > 10.0);
         let inputs =
-            DataStreamIn { continuous: Some(Continuous { channels: 4, sample_rate: 30000.0, clock: ClockId::TEST }) };
+            DataStreamIn { continuous: Some(Continuous { channels: 4, clock: Clock::new(ClockId::TEST, 30000.0) }) };
         let warnings = Node::<crate::Edges>::warnings(&node, &inputs);
         assert!(warnings.iter().any(|w| w.contains("downsample first")), "{warnings:?}");
-        let inputs =
-            DataStreamIn { continuous: Some(Continuous { channels: 4, sample_rate: RATE, clock: ClockId::TEST }) };
+        let inputs = DataStreamIn {
+            continuous: Some(Continuous { channels: 4, clock: Clock::new(ClockId::TEST, RATE as f64) }),
+        };
         assert!(Node::<crate::Edges>::warnings(&node, &inputs).is_empty());
     }
 
@@ -314,9 +311,13 @@ mod tests {
     #[test]
     fn the_output_matches_the_input() {
         let node = HilbertTransform::default();
-        let inputs =
-            DataStreamIn { continuous: Some(Continuous { channels: 4, sample_rate: RATE, clock: ClockId::TEST }) };
+        let inputs = DataStreamIn {
+            continuous: Some(Continuous { channels: 4, clock: Clock::new(ClockId::TEST, RATE as f64) }),
+        };
         let outputs = Node::<crate::Edges>::data_stream_out(&node, NodeId(1), &inputs);
-        assert_eq!(outputs.analytic, Some(ComplexContinuous { channels: 4, sample_rate: RATE, clock: ClockId::TEST }));
+        assert_eq!(
+            outputs.analytic,
+            Some(ComplexContinuous { channels: 4, clock: Clock::new(ClockId::TEST, RATE as f64) })
+        );
     }
 }

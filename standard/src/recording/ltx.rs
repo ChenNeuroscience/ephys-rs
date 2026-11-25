@@ -379,7 +379,7 @@ impl<E: PortEdges> Node<E> for WriteLtx {
             ));
         }
         if let Some(continuous) = inputs.eeg
-            && continuous.sample_rate != EGF_RATE
+            && continuous.sample_rate() != EGF_RATE
         {
             warnings.push(format!("LTX stores EEG at {} kHz: add a Downsample before this input", EGF_RATE / 1000.0));
         }
@@ -396,8 +396,8 @@ impl<E: PortEdges> Node<E> for WriteLtx {
 fn board_timed(inputs: &DataStreamIn) -> Vec<(&'static str, ClockId)> {
     let mut timed = Vec::new();
     timed.extend(inputs.time.map(|time| ("time", time.clock.id)));
-    timed.extend(inputs.spikes.map(|spikes| ("spikes", spikes.clock)));
-    timed.extend(inputs.eeg.map(|eeg| ("EEG", eeg.clock)));
+    timed.extend(inputs.spikes.map(|spikes| ("spikes", spikes.clock.id)));
+    timed.extend(inputs.eeg.map(|eeg| ("EEG", eeg.clock.id)));
     timed.extend(inputs.events.map(|events| ("digital inputs", events.clock.id)));
     timed
 }
@@ -663,7 +663,7 @@ impl LtxFiles {
         let mut tetrodes = Vec::new();
         // The full scale the samples cover: the spikes' gains', which the EEG's are taken relative to (the format has one).
         let Scales { spikes_uv: full_scale_uv, eeg_uv: eeg_full_scale_uv } = recorded.scales;
-        if streams.spikes.is_some() || streams.eeg.is_some_and(|c| c.sample_rate == EGF_RATE) {
+        if streams.spikes.is_some() || streams.eeg.is_some_and(|c| c.sample_rate() == EGF_RATE) {
             set.header("ADC_fullscale_mv", AXONA_FULL_SCALE_UV / 1000.0)?;
         }
         if let Some(spikes) = streams.spikes {
@@ -677,7 +677,7 @@ impl LtxFiles {
                 f.header("samples_per_spike", SPIKE_SAMPLES)?;
                 f.header("bytes_per_sample", 1)?;
                 f.header("spike_format", "t,ch1,t,ch2,t,ch3,t,ch4")?;
-                f.header("sample_rate", format!("{:.6} hz", spikes.sample_rate))?;
+                f.header("sample_rate", format!("{:.6} hz", spikes.sample_rate()))?;
                 f.header("timebase", format!("{TIMEBASE} hz"))?;
                 f.count_header("num_spikes")?;
                 tetrodes.push(Tetrode { file: f, spikes: 0 });
@@ -685,7 +685,7 @@ impl LtxFiles {
         }
 
         let mut egf = Vec::new();
-        if let Some(continuous) = streams.eeg.filter(|c| c.sample_rate == EGF_RATE) {
+        if let Some(continuous) = streams.eeg.filter(|c| c.sample_rate() == EGF_RATE) {
             let numbers = recorded.eeg_channels(continuous.channels);
             for channel in 0..continuous.channels {
                 let number = numbers[channel as usize];
@@ -774,10 +774,10 @@ impl LtxFiles {
         if let (Some(spikes), Some(buffer)) = (streams.spikes, inputs.spikes.get()) {
             // Spikes start with the data they were found in, unless a spike from the pass before is earlier still.
             let first = buffer.spikes.iter().map(|spike| spike.sample).fold(buffer.start, u64::min);
-            starts.push((spikes.clock, spikes.timing().seconds(first as f64)));
+            starts.push((spikes.clock.id, spikes.clock.seconds(first as f64)));
         }
         if let (Some(eeg), Some(buffer)) = (streams.eeg, inputs.eeg.get()) {
-            starts.push((eeg.clock, eeg.timing().seconds(buffer.start as f64)));
+            starts.push((eeg.clock.id, eeg.clock.seconds(buffer.start as f64)));
         }
         if let (Some(events), Some(buffer)) = (streams.events, inputs.events.get()) {
             starts.push((events.clock.id, events.clock.seconds(buffer.start)));
@@ -861,7 +861,7 @@ impl Files<Chunk> for LtxFiles {
             let (k, samples) = (spikes.group_size as usize, spikes.waveform_samples() as usize);
             for (i, spike) in buffer.spikes.iter().enumerate() {
                 let Some(tetrode) = self.tetrodes.get_mut(spike.group as usize) else { continue };
-                let seconds = self.origins.since(spikes.timing(), spike.sample as f64);
+                let seconds = self.origins.since(spikes.clock, spike.sample as f64);
                 let waveform = &buffer.waveforms[i * k * samples..(i + 1) * k * samples];
                 self.record.clear();
                 for channel in 0..SPIKE_CHANNELS {
@@ -884,10 +884,10 @@ impl Files<Chunk> for LtxFiles {
             && continuous.len > 0
         {
             // Each EEG sample goes where its time says, the files' first sample being at the start of recording.
-            let timing = eeg.timing();
+            let clock = eeg.clock;
             let first = *self.egf_first.get_or_insert_with(|| {
-                let start = self.origins.of(eeg.clock).unwrap_or(timing.seconds(continuous.start as f64));
-                (start * timing.per_second).round() as i64
+                let start = self.origins.of(clock.id).unwrap_or(clock.seconds(continuous.start as f64));
+                (start * clock.per_second).round() as i64
             });
             let written = self.egf.first().map_or(0, |egf| egf.samples) as i64;
             let at = continuous.start as i64 - first;
@@ -1219,11 +1219,11 @@ mod tests {
     fn writes_spikes_eeg_and_positions() {
         let dir = std::env::temp_dir().join(format!("ephys-rs-ltx-{}", std::process::id()));
         let base = dir.join("test");
-        let spikes = Spikes { channels: 4, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32, clock: BOARD };
+        let spikes = Spikes { channels: 4, group_size: 4, pre: 8, post: 32, clock: Clock::new(BOARD, 30000.0) };
         let camera = Clock::seconds_of(CAMERA);
         let streams = DataStreamIn {
             spikes: Some(spikes),
-            eeg: Some(Continuous { channels: 2, sample_rate: EGF_RATE, clock: BOARD }),
+            eeg: Some(Continuous { channels: 2, clock: Clock::new(BOARD, EGF_RATE as f64) }),
             positions: Some(Positions { fps: 50.0, width: 640, height: 480, source: CAMERA_TRACKER, clock: camera }),
             ..Default::default()
         };
@@ -1314,8 +1314,8 @@ mod tests {
         let base = dir.join("test");
         let board = Clock::new(BOARD, 30000.0);
         let streams = DataStreamIn {
-            spikes: Some(Spikes { channels: 4, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32, clock: BOARD }),
-            eeg: Some(Continuous { channels: 1, sample_rate: EGF_RATE, clock: BOARD }),
+            spikes: Some(Spikes { channels: 4, group_size: 4, pre: 8, post: 32, clock: Clock::new(BOARD, 30000.0) }),
+            eeg: Some(Continuous { channels: 1, clock: Clock::new(BOARD, EGF_RATE as f64) }),
             events: Some(Events { lines: 8, clock: board }),
             time: Some(Time { clock: board }),
             ..Default::default()
@@ -1365,7 +1365,7 @@ mod tests {
     #[test]
     fn says_if_times_wont_line_up() {
         let (board, other) = (Clock::new(BOARD, 30000.0), Clock::new(CAMERA, 30000.0));
-        let spikes = Spikes { channels: 4, sample_rate: 30000.0, group_size: 4, pre: 8, post: 32, clock: BOARD };
+        let spikes = Spikes { channels: 4, group_size: 4, pre: 8, post: 32, clock: Clock::new(BOARD, 30000.0) };
         let mismatched = DataStreamIn {
             spikes: Some(spikes),
             events: Some(Events { lines: 8, clock: other }),
