@@ -60,9 +60,18 @@ pub struct Colours {
     pub error: Color32,
     pub success: Color32,
     pub shadow: Color32,
+
+    /// The chrome (the menu bar, toolbar and status bar around the panes) can have colours of its own, a whole set
+    /// of them, as it can be dark where the panes are light. With none, the chrome has the panes' colours.
+    pub chrome: Option<&'static Colours>,
 }
 
 impl Colours {
+    /// The chrome's colours are its own, if the theme gives it some, or else these.
+    pub fn chrome(&'static self) -> &'static Colours {
+        self.chrome.unwrap_or(self)
+    }
+
     /// egui's widgets draw with its visuals, which this gives in the theme's colours.
     pub fn visuals(&self) -> egui::Visuals {
         let mut visuals = if self.dark { egui::Visuals::dark() } else { egui::Visuals::light() };

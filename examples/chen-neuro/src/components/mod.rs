@@ -1,6 +1,5 @@
 //! What chen-neuro's made of: the standard components, its quick actions and its base directory.
 
-pub mod china;
 pub mod config_patches;
 pub mod quick_actions;
 pub mod trials;
@@ -17,7 +16,7 @@ use crate::standard::logs::log_viewer;
 use crate::standard::other::{arduino, run_command, sync_positions, ttl_recording_control};
 use crate::standard::recording::{ltx, raw};
 use crate::standard::spikes::{spike_detector, spike_gain, spike_viewer};
-use crate::standard::themes::{DARK, LIGHT};
+use crate::standard::themes::{DARK, LIGHT, RED_ENVELOPE, SONG_CONTEST, SPANGLED};
 use crate::standard::tracking::{camera, position_detector, tracker_view, video_viewer};
 use ephys_rs::base_directory::BaseDirectoryType;
 use ephys_rs::config_patching::PatchSet;
@@ -115,8 +114,8 @@ annotations_enum! {
     pub enum AnnotationKind;
 }
 
-/// The first is the default.
-pub const THEMES: &[Theme] = &[DARK, LIGHT, china::CHINA];
+/// The standard themes, with light first, as the default.
+pub const THEMES: &[Theme] = &[LIGHT, DARK, RED_ENVELOPE, SPANGLED, SONG_CONTEST];
 
 /// In the order they're offered: the first is the default.
 pub const BASE_DIRECTORIES: &[BaseDirectoryType] = &[A_DIRECTORY, trials::TRIALS];

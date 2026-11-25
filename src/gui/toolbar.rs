@@ -262,7 +262,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             if self.base_directory_ui(ui) {
                 ui.separator();
                 if let Some(place) = self.base_directories.place() {
-                    self.disk_space.ui(ui, &place.directory, self.colours());
+                    self.disk_space.ui(ui, &place.directory, self.colours().chrome());
                     ui.separator();
                 }
             }
@@ -291,7 +291,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         if types.is_empty() {
             return false;
         }
-        let colours = self.colours();
+        let colours = self.colours().chrome();
         let recording = self.recording.is_some();
         if let Some(current) = self.base_directories.current() {
             current.toolbar_ui(ui, &BaseDirectoryContext { theme: colours, recording });
@@ -318,7 +318,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
 
     /// The toolbar shows the acquisition clock: how long the graph's been running, greyed out when it isn't.
     fn play_clock(&self, ui: &mut egui::Ui) {
-        let colours = self.colours();
+        let colours = self.colours().chrome();
         let clock = self.runner.as_ref().map(|r| r.clock());
         #[cfg(test)]
         let clock = clock.map(|clock| if self.shown_stats.is_some() { 0.0 } else { clock });
@@ -334,7 +334,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
     /// The toolbar shows how long the graph's been recording, greyed out when it isn't (and saying so while getting
     /// ready to).
     fn record_clock(&self, ui: &mut egui::Ui, recording: bool) {
-        let colours = self.colours();
+        let colours = self.colours().chrome();
         let since = self.recording_since.map_or(0.0, |since| self.runner.as_ref().map_or(0.0, |r| r.clock()) - since);
         let text = egui::RichText::new(super::clock_text(since)).monospace();
         let text = if recording { text.color(colours.error) } else { text.color(colours.text_disabled) };

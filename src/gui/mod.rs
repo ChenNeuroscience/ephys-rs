@@ -1385,7 +1385,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.weak(crate::full_version()).on_hover_text("The version of this build, and of ephys-rs in it");
-                let colours = self.colours();
+                let colours = self.colours().chrome();
                 let (errors, warnings) = self.problems;
                 for (symbol, count, name, colour) in
                     [("⚠", warnings, "warning", colours.warning), ("✖", errors, "error", colours.error)]
@@ -1425,7 +1425,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
     /// The status bar says what's just happened.
     fn status_message(&self, ui: &mut egui::Ui, now: f64) {
         if let Some(status) = self.status.as_ref().filter(|status| now < status.until) {
-            let colours = self.colours();
+            let colours = self.colours().chrome();
             let colour = if status.ok { colours.success } else { colours.warning };
             ui.label(RichText::new(&status.message).color(colour));
         }
@@ -1433,7 +1433,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
 
     /// The status bar says how the run is going: workers, passes and their timing, and memory.
     fn run_stats(&self, ui: &mut egui::Ui, stats: &Stats) {
-        let colours = self.colours();
+        let colours = self.colours().chrome();
         let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0;
         // Right to left.
         if stats.dropped > 0 {
@@ -1682,10 +1682,32 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         let started = Instant::now();
         self.confirm_close(&ctx);
         let mut chosen = None;
+        // The chrome has colours of its own, in some themes: its panels are filled with them, and drawn in them.
+        let chrome = self.colours().chrome.map(|colours| {
+            let mut style = egui::Style::clone(ui.style());
+            style.visuals = colours.visuals();
+            style
+        });
+        let chrome_panel = |panel: egui::Panel| match &chrome {
+            Some(style) => panel.frame(egui::Frame::side_top_panel(style)),
+            None => panel,
+        };
+        // Just the panel's own `Ui` (`ui.set_visuals` would be the `Context`'s, for everything).
+        let in_chrome = |ui: &mut egui::Ui| {
+            if let Some(style) = &chrome {
+                *ui.visuals_mut() = style.visuals.clone();
+            }
+        };
         if !self.native_menu() {
-            egui::Panel::top("menu_bar").show(ui, |ui| chosen = self.menu_bar(ui));
+            chrome_panel(egui::Panel::top("menu_bar")).show(ui, |ui| {
+                in_chrome(ui);
+                chosen = self.menu_bar(ui);
+            });
         }
-        egui::Panel::top("toolbar").show(ui, |ui| chosen = chosen.or(self.toolbar(ui)));
+        chrome_panel(egui::Panel::top("toolbar")).show(ui, |ui| {
+            in_chrome(ui);
+            chosen = chosen.or(self.toolbar(ui));
+        });
         if let Some(action) = chosen {
             self.perform(&ctx, action);
         }
@@ -1695,7 +1717,12 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         if !cfg!(test) {
             self.problems = crate::console::totals();
         }
-        let (stats_clicked, problems_clicked) = egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui)).inner;
+        let (stats_clicked, problems_clicked) = chrome_panel(egui::Panel::bottom("status"))
+            .show(ui, |ui| {
+                in_chrome(ui);
+                self.status_bar(ui)
+            })
+            .inner;
         self.frame_times.add("Status bar", ms_since(started));
         // Shown, and brought to the front of its group if it's behind another tab.
         if stats_clicked || problems_clicked {

@@ -131,4 +131,5 @@ Double-click one to edit it. Its settings open in a pane beside the graph.
 
 ![The graph in the light theme](../../tests/snapshots/graph_light.png)
 
-The toolbar's theme button switches between dark and light.
+The toolbar's theme button switches between dark and light. For fun, there's also Red Envelope (red and gold), Spangled
+(red, white and blue) and Song Contest (the European flag's blue and gold).

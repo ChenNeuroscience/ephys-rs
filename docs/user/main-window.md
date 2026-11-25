@@ -20,7 +20,7 @@ From left to right:
 | 📁 and a path | [Where recordings go](#where-recordings-go). |
 | A bar and "GB free" | How full the disk recordings go to is. |
 | Console | The [developer tools](#developer-tools). |
-| Theme | Dark or light. |
+| Theme | Dark or light, or one of the themes for fun: Red Envelope, Spangled and Song Contest. |
 
 ### Playing and recording
 
