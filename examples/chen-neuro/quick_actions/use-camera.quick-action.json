@@ -38,8 +38,10 @@
           }
         },
         "quick": {
-          "mode": "if_present",
-          "enabled": true
+          "if_found": {
+            "enable_or_disable": "enable"
+          },
+          "if_not_found": "do_nothing"
         }
       },
       "12": {
@@ -79,8 +81,10 @@
           }
         },
         "quick": {
-          "mode": "require",
-          "enabled": true
+          "if_found": {
+            "enable_or_disable": "enable"
+          },
+          "if_not_found": "dont_offer"
         }
       },
       "13": {
@@ -114,7 +118,7 @@
           }
         },
         "quick": {
-          "mode": "if_present"
+          "if_not_found": "do_nothing"
         }
       },
       "14": {
@@ -133,7 +137,7 @@
           }
         },
         "quick": {
-          "mode": "if_present"
+          "if_not_found": "do_nothing"
         }
       },
       "18": {
@@ -157,8 +161,10 @@
           }
         },
         "quick": {
-          "mode": "if_present",
-          "enabled": true
+          "if_found": {
+            "enable_or_disable": "enable"
+          },
+          "if_not_found": "do_nothing"
         }
       },
       "19": {
@@ -218,7 +224,7 @@
           }
         },
         "quick": {
-          "mode": "if_present"
+          "if_not_found": "do_nothing"
         }
       },
       "21": {
@@ -239,8 +245,10 @@
         },
         "show_in_basic_override": true,
         "quick": {
-          "mode": "if_present",
-          "enabled": false
+          "if_found": {
+            "enable_or_disable": "disable"
+          },
+          "if_not_found": "do_nothing"
         }
       },
       "22": {
@@ -254,11 +262,11 @@
           "type": "LogViewer"
         },
         "quick": {
-          "mode": "if_present",
-          "enabled": false,
-          "window": {
-            "close": true
-          }
+          "if_found": {
+            "enable_or_disable": "disable"
+          },
+          "if_not_found": "do_nothing",
+          "if_window_open": "close"
         }
       }
     },
@@ -274,7 +282,7 @@
           "role": "DataStreamIn",
           "port": "positions"
         },
-        "replace": true
+        "if_occupied": "swap"
       },
       {
         "from": {
@@ -287,7 +295,7 @@
           "role": "DataStreamIn",
           "port": "positions"
         },
-        "replace": true
+        "if_occupied": "swap"
       },
       {
         "from": {
@@ -300,7 +308,7 @@
           "role": "DataStreamIn",
           "port": "positions"
         },
-        "replace": true
+        "if_occupied": "swap"
       },
       {
         "from": {
@@ -313,7 +321,7 @@
           "role": "DataStreamIn",
           "port": "pos_ttl"
         },
-        "replace": true
+        "if_occupied": "swap"
       },
       {
         "from": {
@@ -326,7 +334,7 @@
           "role": "DataStreamIn",
           "port": "ttl"
         },
-        "replace": true
+        "if_occupied": "swap"
       },
       {
         "from": {
@@ -339,7 +347,7 @@
           "role": "ValOutCmdIn",
           "port": "detection"
         },
-        "replace": true
+        "if_occupied": "swap"
       },
       {
         "from": {
@@ -352,7 +360,7 @@
           "role": "ValOutCmdIn",
           "port": "detection"
         },
-        "replace": true
+        "if_occupied": "swap"
       },
       {
         "from": {
@@ -365,8 +373,8 @@
           "role": "DataStreamIn",
           "port": "positions"
         },
-        "connect": false,
-        "enabled": false
+        "if_connected": "disable",
+        "if_free": "do_nothing"
       },
       {
         "from": {
@@ -379,8 +387,8 @@
           "role": "DataStreamIn",
           "port": "positions"
         },
-        "connect": false,
-        "enabled": false
+        "if_connected": "disable",
+        "if_free": "do_nothing"
       },
       {
         "from": {
@@ -393,8 +401,8 @@
           "role": "DataStreamIn",
           "port": "positions"
         },
-        "connect": false,
-        "enabled": false
+        "if_connected": "disable",
+        "if_free": "do_nothing"
       },
       {
         "from": {
@@ -407,8 +415,8 @@
           "role": "DataStreamIn",
           "port": "pos_ttl"
         },
-        "connect": false,
-        "enabled": false
+        "if_connected": "disable",
+        "if_free": "do_nothing"
       },
       {
         "from": {
@@ -421,8 +429,8 @@
           "role": "DataStreamIn",
           "port": "ttl"
         },
-        "connect": false,
-        "enabled": false
+        "if_connected": "disable",
+        "if_free": "do_nothing"
       },
       {
         "from": {
@@ -435,8 +443,8 @@
           "role": "ValOutCmdIn",
           "port": "settings"
         },
-        "connect": false,
-        "enabled": false
+        "if_connected": "disable",
+        "if_free": "do_nothing"
       },
       {
         "from": {
@@ -449,8 +457,8 @@
           "role": "ValOutCmdIn",
           "port": "settings"
         },
-        "connect": false,
-        "enabled": false
+        "if_connected": "disable",
+        "if_free": "do_nothing"
       },
       {
         "from": {
@@ -463,8 +471,8 @@
           "role": "DataStreamIn",
           "port": "log"
         },
-        "connect": false,
-        "enabled": false
+        "if_connected": "disable",
+        "if_free": "do_nothing"
       },
       {
         "from": {
@@ -477,8 +485,8 @@
           "role": "DataStreamIn",
           "port": "log"
         },
-        "connect": false,
-        "enabled": false
+        "if_connected": "disable",
+        "if_free": "do_nothing"
       }
     ]
   }

@@ -23,7 +23,7 @@
           }
         },
         "quick": {
-          "mode": "if_present"
+          "if_not_found": "do_nothing"
         }
       },
       "11": {
@@ -55,8 +55,10 @@
           }
         },
         "quick": {
-          "mode": "if_present",
-          "enabled": false
+          "if_found": {
+            "enable_or_disable": "disable"
+          },
+          "if_not_found": "do_nothing"
         }
       },
       "12": {
@@ -96,8 +98,10 @@
           }
         },
         "quick": {
-          "mode": "require",
-          "enabled": false
+          "if_found": {
+            "enable_or_disable": "disable"
+          },
+          "if_not_found": "dont_offer"
         }
       },
       "13": {
@@ -131,7 +135,7 @@
           }
         },
         "quick": {
-          "mode": "if_present"
+          "if_not_found": "do_nothing"
         }
       },
       "14": {
@@ -150,7 +154,7 @@
           }
         },
         "quick": {
-          "mode": "if_present"
+          "if_not_found": "do_nothing"
         }
       },
       "18": {
@@ -174,8 +178,10 @@
           }
         },
         "quick": {
-          "mode": "if_present",
-          "enabled": false
+          "if_found": {
+            "enable_or_disable": "disable"
+          },
+          "if_not_found": "do_nothing"
         }
       },
       "19": {
@@ -235,7 +241,7 @@
           }
         },
         "quick": {
-          "mode": "if_present"
+          "if_not_found": "do_nothing"
         }
       },
       "21": {
@@ -256,7 +262,9 @@
         },
         "show_in_basic_override": true,
         "quick": {
-          "enabled": true
+          "if_found": {
+            "enable_or_disable": "enable"
+          }
         }
       },
       "22": {
@@ -270,10 +278,15 @@
           "type": "LogViewer"
         },
         "quick": {
-          "enabled": true,
-          "window": {
+          "if_found": {
+            "enable_or_disable": "enable"
+          },
+          "if_window_closed": {
             "open": {
-              "behind": 10
+              "anchored": {
+                "to": 10,
+                "at": "back"
+              }
             }
           }
         }
@@ -291,8 +304,8 @@
           "role": "DataStreamIn",
           "port": "positions"
         },
-        "replace": true,
-        "enabled": true
+        "if_connected": "enable",
+        "if_occupied": "swap"
       },
       {
         "from": {
@@ -305,8 +318,8 @@
           "role": "DataStreamIn",
           "port": "positions"
         },
-        "replace": true,
-        "enabled": true
+        "if_connected": "enable",
+        "if_occupied": "swap"
       },
       {
         "from": {
@@ -319,8 +332,8 @@
           "role": "DataStreamIn",
           "port": "positions"
         },
-        "replace": true,
-        "enabled": true
+        "if_connected": "enable",
+        "if_occupied": "swap"
       },
       {
         "from": {
@@ -333,8 +346,8 @@
           "role": "DataStreamIn",
           "port": "pos_ttl"
         },
-        "replace": true,
-        "enabled": true
+        "if_connected": "enable",
+        "if_occupied": "swap"
       },
       {
         "from": {
@@ -347,8 +360,8 @@
           "role": "DataStreamIn",
           "port": "ttl"
         },
-        "replace": true,
-        "enabled": true
+        "if_connected": "enable",
+        "if_occupied": "swap"
       },
       {
         "from": {
@@ -361,8 +374,8 @@
           "role": "ValOutCmdIn",
           "port": "settings"
         },
-        "replace": true,
-        "enabled": true
+        "if_connected": "enable",
+        "if_occupied": "swap"
       },
       {
         "from": {
@@ -375,8 +388,8 @@
           "role": "ValOutCmdIn",
           "port": "settings"
         },
-        "replace": true,
-        "enabled": true
+        "if_connected": "enable",
+        "if_occupied": "swap"
       },
       {
         "from": {
@@ -389,7 +402,7 @@
           "role": "DataStreamIn",
           "port": "log"
         },
-        "enabled": true
+        "if_connected": "enable"
       },
       {
         "from": {
@@ -402,7 +415,7 @@
           "role": "DataStreamIn",
           "port": "log"
         },
-        "enabled": true
+        "if_connected": "enable"
       }
     ]
   }

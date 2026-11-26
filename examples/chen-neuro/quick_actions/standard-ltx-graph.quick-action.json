@@ -77,7 +77,9 @@
           73.0
         ],
         "quick": {
-          "label_pattern": "(?i)high|spike|^band-pass filter$"
+          "match": {
+            "label": "(?i)high|spike|^band-pass filter$"
+          }
         }
       },
       "4": {
@@ -147,7 +149,7 @@
           58.0
         ],
         "quick": {
-          "window": {
+          "if_window_closed": {
             "open": "default"
           }
         }
@@ -181,7 +183,9 @@
           457.0
         ],
         "quick": {
-          "label_pattern": "(?i)low|lfp"
+          "match": {
+            "label": "(?i)low|lfp"
+          }
         }
       },
       "9": {
@@ -199,7 +203,7 @@
           264.5
         ],
         "quick": {
-          "window": {
+          "if_window_closed": {
             "open": "default"
           }
         }
@@ -218,7 +222,7 @@
           869.5
         ],
         "quick": {
-          "window": {
+          "if_window_closed": {
             "open": "default"
           }
         }
@@ -320,7 +324,7 @@
           1019.5
         ],
         "quick": {
-          "window": {
+          "if_window_closed": {
             "open": "default"
           }
         }
@@ -491,7 +495,7 @@
           844.5
         ],
         "quick": {
-          "window": {
+          "if_window_closed": {
             "open": "default"
           }
         }
@@ -1052,6 +1056,6 @@
       ]
     }
   },
-  "base_directory_type": "Subject, date and trial",
-  "arrange_if_empty": true
+  "lay_out_if_empty": true,
+  "base_directory": "Subject, date and trial"
 }

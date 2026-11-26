@@ -41,10 +41,14 @@
           "type": "AcquisitionBoard"
         },
         "quick": {
-          "mode": "if_present",
-          "settings": [
-            "source"
-          ]
+          "if_found": {
+            "settings": {
+              "apply": [
+                "source"
+              ]
+            }
+          },
+          "if_not_found": "do_nothing"
         }
       },
       "2": {
@@ -76,10 +80,14 @@
           "type": "Camera"
         },
         "quick": {
-          "mode": "if_present",
-          "settings": [
-            "source"
-          ]
+          "if_found": {
+            "settings": {
+              "apply": [
+                "source"
+              ]
+            }
+          },
+          "if_not_found": "do_nothing"
         }
       }
     },

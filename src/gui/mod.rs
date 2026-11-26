@@ -3374,7 +3374,7 @@ mod tests {
         harness.run_steps(3);
         let editor = harness.state().quick_action_editor.as_ref().expect("open");
         assert_eq!(editor.name(), "Use VR computer");
-        assert!(harness.query_by_label("Arrange").is_some(), "the quick action itself, with nothing selected");
+        assert!(harness.query_by_label("Description").is_some(), "the quick action itself, with nothing selected");
         harness.snapshot("quick_action_editor");
         // A node selected, the inspector says how it's found and what's done to it.
         let detector = harness.state().quick_action_editor.as_ref().unwrap().role_named("Position Detector");
@@ -3392,7 +3392,7 @@ mod tests {
         harness.state_mut().quick_action_editor.as_mut().unwrap().select(log);
         harness.run_steps(3);
         harness.snapshot("quick_action_editor_window");
-        assert!(harness.query_by_label("Whose window").is_some());
+        assert!(harness.query_by_label("Node").is_some() && harness.query_by_label("At the back").is_some());
         // Help clicked open, in the modal, shows in front of it.
         harness.get_all_by_label("What's this?").next().unwrap().click();
         harness.run_steps(3);
@@ -3405,8 +3405,24 @@ mod tests {
         let tracker = harness.state().quick_action_editor.as_ref().unwrap().role_named("Tracker View");
         harness.state_mut().quick_action_editor.as_mut().unwrap().select_edge_into(tracker);
         harness.run_steps(3);
-        assert!(harness.query_by_label("Connect them, replacing that").is_some());
+        assert!(harness.query_by_label("Swap to VR Computer").is_some());
         harness.snapshot("quick_action_editor_connection");
+        // Several nodes: in a box, with one checkbox for all of them.
+        let some: Vec<NodeId> = ["TTL Viewer", "Camera", "Arduino"]
+            .iter()
+            .map(|n| harness.state().quick_action_editor.as_ref().unwrap().role_named(n))
+            .collect();
+        let uses = |h: &Harness<TestApp>, id: &NodeId| h.state().quick_action_editor.as_ref().unwrap().uses(*id);
+        harness.state_mut().quick_action_editor.as_mut().unwrap().select_all_of(&some);
+        harness.run_steps(3);
+        assert!(harness.query_by_label("3 nodes").is_some());
+        harness.snapshot("quick_action_editor_nodes");
+        harness.get_by_label("Use these nodes").click();
+        harness.run_steps(2);
+        assert!(some.iter().all(|id| !uses(&harness, id)), "all unticked");
+        harness.get_by_label("Use these nodes").click();
+        harness.run_steps(2);
+        assert!(some.iter().all(|id| uses(&harness, id)), "and ticked again");
     }
 
     #[test]

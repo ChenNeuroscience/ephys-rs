@@ -70,8 +70,7 @@ pub enum WindowState {
 }
 
 /// A new group goes on one side of another.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Side {
     Left,
     Right,
@@ -319,10 +318,26 @@ impl Layout {
     /// The largest group of tabs showing (as laid out: see `rects`), other than `except`: of two as large, the first
     /// made.
     pub fn largest_group(&self, except: &[TileId]) -> Option<TileId> {
+        self.group_with_most(except, Rect::area)
+    }
+
+    /// The widest group of tabs showing, as `largest_group` finds the largest.
+    pub fn widest_group(&self, except: &[TileId]) -> Option<TileId> {
+        self.group_with_most(except, Rect::width)
+    }
+
+    /// The tallest group of tabs showing, as `largest_group` finds the largest.
+    pub fn tallest_group(&self, except: &[TileId]) -> Option<TileId> {
+        self.group_with_most(except, Rect::height)
+    }
+
+    /// The group of tabs showing (as laid out: see `rects`), other than `except`, with the most of `measure` (its area,
+    /// say): of two with as much, the first made.
+    fn group_with_most(&self, except: &[TileId], measure: fn(&Rect) -> f32) -> Option<TileId> {
         let rects = self.rects();
         let groups = self.groups_in(&rects);
-        let area = |tile: &TileId| rects.get(tile).map_or(0.0, |r| r.area());
-        groups.into_iter().filter(|g| !except.contains(g)).rev().max_by(|a, b| area(a).total_cmp(&area(b)))
+        let size = |tile: &TileId| rects.get(tile).map_or(0.0, measure);
+        groups.into_iter().filter(|g| !except.contains(g)).rev().max_by(|a, b| size(a).total_cmp(&size(b)))
     }
 
     /// The group of tabs beside `group` (as laid out: see `rects`): on its right, or failing that its left, the one

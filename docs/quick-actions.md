@@ -17,76 +17,91 @@ and an update to the build doesn't change the ones already given.
 
 ## What a quick action is
 
-A quick action is a small graph whose nodes are each a **role**, with a rule (`Rule`) for how it's found in the graph
-it's done on, and what's done to it:
+A quick action is a small graph whose nodes are each a **role**, with a rule (`Rule`) saying how it's found in the
+graph it's done on, and what's done in each case. The file mirrors the editor: each choice is saved under the
+question it answers, and only what isn't the default is written. "Do nothing" (`"do_nothing"`) is the default
+everywhere but two: a role not found is created, and a connection whose input is free is connected.
 
-- **Matched**: by the node's type, and a regular expression its label matches (`label_pattern`, such as `(?i)low|lfp`;
-  without one, `.*`, any label; an empty one matches nothing). Each role is one node, and each node one role's at most: a role with only one candidate
+- **`use`**: `false` for a role that plays no part (the editor's unticked box): never matched, and its edges left
+  alone, so in a quick action made from a whole graph the parts that don't matter to it can stay, to show what
+  surrounds the rest.
+- **`match`**: by the node's type, and `{"label": regex}` (such as `(?i)low|lfp`; without one, `.*`, any label; an
+  empty one matches nothing). Each role is one node, and each node one role's at most: a role with only one candidate
   is paired with it first (and that node struck off the rest's candidates); when none has just one, the left-most
   role takes its left-most candidate (of two equally far left, the higher); and so on (`QuickAction::find`).
-- **When found**: `settings`, the settings (by name) applied as the quick action has them, and `enabled`, whether the
-  node's enabled or disabled (or, without it, left as it is). A node created is always enabled.
-- **When not found** (`mode`): `ensure` creates the node, with all its settings (the default); `if_present` doesn't
-  create it, and the quick action is still offered, leaving out its edges and window; `require` means the quick
-  action isn't offered. Or the role's ignored (`ignore`): never matched, and its edges left alone, so in a quick
-  action made from a whole graph the parts that don't matter to it can stay, to show where the parts that do are.
+- **`if_found`**: `enable_or_disable` (`"enable"`, `"disable"`), and `settings` (`{"apply": [names]}`, those settings
+  set as the quick action has them).
+- **`if_not_found`**: `"create"` (the default: the node as the quick action has it, with all its settings,
+  enabled), `"do_nothing"` (the quick action is still offered, leaving out the role's edges and window) or
+  `"dont_offer"` (the quick action isn't offered).
+- **`if_window_open`**: `"close"`. **`if_window_closed`**: `{"open": placement}`, where a window that's been open
+  before reopens where it was, and the placement says where it goes the first time: `"default"` (where the app puts
+  a new window: see `Layout::place`); `{"by_group_shape": {"shape": "largest", "at": "front"}}` (as a tab in the largest group, or
+`"widest"` or `"tallest"`, at the front or `"back"`); or
+  `{"anchored": {"to": role, "at": "back"}}` (or `"front"`: as a tab in the group of that role's window, or, if that
+  isn't open, where the app puts a new window).
 
-Each edge is between roles, by port id, with what's done to it in each case (`EdgeRule`): if the nodes found are
-connected that way already, `enabled` (true or false; or, without it, left as it is); else, if the end that takes just one edge (a data stream's
-input, or the reading end of a value) is free, `connect` them (the default) or not; else (that end connected to
-something else), `replace` that, or not. A quick action never disconnects an edge; an edge it connects is enabled.
-An edge that does nothing in any case just shows what surrounds the rest.
-Nodes are never removed: a quick action disables them, which
-keeps their settings for when they're wanted again.
+Each edge is between roles, by port id, with what's done in each case (`EdgeRule`): `if_connected` (the nodes found
+connected that way already: `"enable"`, `"disable"`); `if_free` (the end that takes just one edge, a data stream's
+input or the reading end of a value, free: `"connect"`, the default, or `"do_nothing"`); and `if_occupied` (that end
+connected to something else: `"swap"`, to this edge). A quick action never disconnects an edge, and an edge it
+connects is enabled. Nodes are never removed: a quick action disables them, which keeps their settings for when
+they're wanted again.
 
-A role's `window` says what's done with the node's window: if it's open, it's closed (`"close": true`) or left open;
-if it isn't, it's opened (`"open": placement`) or left closed. A window that's been open before opens where it was;
-opened for the first time, it goes as the placement says: `"default"` (where the app puts a new window: see
-`Layout::place`), `"largest"` (in front, as a tab in the largest group), `{"behind": role}` (as a tab behind that
-role's window) or `{"beside": {"of": role, "side": "right", "share": 0.5}}` (a group of its own on that side of that
-role's window's group, taking that share of the space). Placed relative to a window that isn't open, it goes where
-the app puts a new window. `panes.arrangement` arranges the panes (see [the layout](#the-layout)), each window by
-role. `base_directory_type` chooses the [base directory](base-directories.md) (not while recording), and
-`arrange_if_empty` lays out a graph built from nothing afresh.
+`panes.arrangement` arranges the panes (see [the layout](#the-layout)), each window by role. `base_directory`
+chooses the [base directory](base-directories.md) (not while recording), and `lay_out_if_empty` lays out a graph
+built from nothing afresh.
 
 A quick action is offered while its required roles are found and doing it would change the graph (see
 `QuickAction::run`). So one that's done isn't offered until something changes, and closing a window it opened doesn't
 bring it back. One that can't change the graph (that only opens and closes windows) is offered while it would change
 which windows are open. Doing one is undone in one step.
 
-The roles are found in the order they're listed. A role added goes where it is in the quick action relative to a node
-it's connected to that's in the graph, or, with none, below the graph; then down, clear of what's there.
+A role created goes where it is in the quick action relative to a node it's connected to that's in the graph, or,
+with none, below the graph; then down, clear of what's there.
 
-chen-neuro's quick actions show each of these: the standard LTX graph ensures everything, telling the spikes' and the
-LFP's band-pass filters (Band-pass High and Band-pass Low) apart by their labels; "Use VR computer" and "Use camera"
-disable one source, enable the other, replace the edges into the tracker view, Write LTX and the Alarm Processor, and disable (or enable again) the
-VR computer's other edges;
-"Use synthetic data" and "Use real devices" set `source` on the board and the camera.
+chen-neuro's quick actions show each of these: the standard LTX graph creates whatever's missing, telling the spikes'
+and the LFP's band-pass filters (Band-pass High and Band-pass Low) apart by their labels; "Use VR computer" and "Use
+camera" disable one source, enable the other, swap the edges into the tracker view, Write LTX and the Alarm
+Processor, and disable (or enable again) the VR computer's other edges; "Use synthetic data" and "Use real devices"
+set `source` on the board and the camera.
 
 ## The file
 
 A quick action's file (`name.quick-action.json`) is shaped as a project, with each node's rule beside it (`"quick"`)
-and each edge's rule on it (`"enabled"`, `"connect"`, `"replace"`), so the app's [config patches](development.md#config-patches) bring an old one up to date as they would
-a project:
+and each edge's rule on it, so the app's [config patches](development.md#config-patches) bring an old one up to date
+as they would a project:
 
 ```json
 {
-  "ephys-rs quick action": { "core": "0.310.0", "std": "0.310.0", "chen-neuro": "0.1159.0" },
-  "name": "Use synthetic data",
-  "description": "The fake acquisition board and camera, instead of real devices",
+  "ephys-rs quick action": { "core": "0.315.0", "std": "0.315.0", "chen-neuro": "0.1164.0" },
+  "name": "Use VR computer",
+  "description": "Positions, TTLs, log lines and settings from the VR computer, ...",
   "graph": {
-    "next_id": 3,
+    "next_id": 23,
     "nodes": {
-      "1": {
-        "label": "Acquisition Board", "pos": [0, 0],
-        "node": { "type": "AcquisitionBoard", "settings": { "...": "..." } },
+      "12": {
+        "label": "Position Detector", "pos": [0, 120],
+        "node": { "type": "PositionDetector", "settings": { "...": "..." } },
+        "quick": { "if_found": { "enable_or_disable": "disable" }, "if_not_found": "dont_offer" }
+      },
+      "22": {
+        "label": "Log Viewer", "pos": [480, 600],
+        "node": { "type": "LogViewer", "settings": { "...": "..." } },
         "quick": {
-          "mode": "if_present", "settings": ["source"]
+          "if_found": { "enable_or_disable": "enable" },
+          "if_window_closed": { "open": { "anchored": { "to": 10, "at": "back" } } }
         }
       }
     },
-    "edges": []
-  },
+    "edges": [
+      {
+        "from": { "node": 21, "role": "DataStreamOut", "port": "positions" },
+        "to": { "node": 13, "role": "DataStreamIn", "port": "positions" },
+        "if_connected": "enable", "if_occupied": "swap"
+      }
+    ]
+  }
 }
 ```
 
@@ -95,7 +110,8 @@ A quick action with a node type the build doesn't have can't be read, and Settin
 ## Making and changing them
 
 In Settings › Quick actions, **New from the graph** (or from the nodes selected) makes one from the graph: each node a
-role, ensured, setting nothing on what's found; the edges between them, ensured; their open windows, opened. Each
+role, created if not found, with nothing done to what's found; the edges between them, connected if free; their open
+windows, opened if not. Each
 quick action has buttons to edit it, copy it to the clipboard, and delete its file; the folder icon opens the folder.
 
 The editor shows the quick action's nodes and edges as a graph, on a canvas like the app's, most of the window's
@@ -108,7 +124,7 @@ size:
   replace another are drawn in the warning colour, and those that do nothing faded.
 - The nodes and edges are those the quick action was made with: none can be added or removed in the editor (there's
   no undo there, nor settings to edit), so to change which are in it, make a new one from the graph, or untick the
-  parts that don't matter. **Arrange** lays them out afresh.
+  parts that don't matter.
 - Beside the canvas, the inspector changes what's selected, under a bar naming it (for a node, in its colour, as its
   window's tab is), in sections drawn as a tree; each pair that's one choice (if found, else if not; if the window's
   open, else if not) is drawn as branches of one line. For a node: whether it's used (the box at the right of its
@@ -116,10 +132,11 @@ size:
   with a cheat sheet); if found, whether to enable or disable it, and whether to apply settings, and which; else,
   whether to do nothing, create it, or not offer the quick action; and its window, if open (do nothing, or close
   it), else (do nothing, or open it, and where, the first time). "Do nothing" is the first option of every choice
-  that has one. For a connection: in a box with a checkbox to use it (unticked,
+  that has one. For several nodes: a box of them with one checkbox, ticked, empty or
+  mixed, to use or ignore them all. For a connection: in a box with a checkbox to use it (unticked,
   it's ignored), its two nodes, each with its port on its right edge, joined by the wire as the canvas draws it; and
-  what's done in each case, as branches (if connected already, enable or disable; else, if the input's free, connect;
-  else, if it's occupied, connect, replacing that; either way, the source's other connections are left as
+  what's done in each case, as branches (if connected already, enable or disable; else, if the input's free, connect the source;
+  else, if it's occupied, swap to the source; either way, the source's other connections are left as
   they are). With nothing selected, the quick action's name, description, arrangement and base
   directory. An ⓘ explains the few things that aren't plain: which node is used when several match, the
   label pattern's syntax, connecting "if free", and where a window opens the first time.

@@ -3,32 +3,34 @@
 //! own: a build ships some (`Components::QUICK_ACTIONS`), and people's own are files in a folder beside the app's
 //! settings (see `crate::gui::quick_actions`).
 //!
-//! A quick action is a small graph, its nodes each a *role* with a rule (`Rule`) for how it's found in the graph it's
-//! done on, and what's done to it:
+//! A quick action is a small graph, its nodes each a *role* with a rule (`Rule`) for whether it's used, how it's found
+//! in the graph it's done on, and what's done in each case. The rule mirrors the quick action editor: each choice is
+//! saved under the question it answers (`if_found`, `if_not_found`, `if_window_open`, `if_window_closed`), and only
+//! what isn't the default is written.
 //!
-//! - A role's found by its node's type, and a regular expression its label matches: one node, each node one role's
-//!   at most, paired first where there's only one candidate, then left to right (see `QuickAction::find`).
-//! - A role that's *required* (`Mode::Require`) has to be found, or the quick action isn't offered. One that's
-//!   *ensured* (`Mode::Ensure`) is added if it isn't found, as it is in the quick action; one that's only *if present*
-//!   (`Mode::IfPresent`) is just left out. One that's *ignored* (`Mode::Ignore`) plays no part, and nor do its edges:
-//!   it shows where the rest are, in a quick action made from a whole graph.
-//! - A role found can have some of its settings (`Rule::settings`) set as they are in the quick action, and be enabled
-//!   or disabled (`Rule::enabled`).
+//! - A role's found by its node's type, and a regular expression its label matches (`Match`): one node, each node one
+//!   role's at most, paired first where there's only one candidate, then left to right (see `QuickAction::find`).
+//! - A role found can be enabled or disabled, and have some of its settings set as the quick action has them
+//!   (`IfFound`). One not found (`IfNotFound`) is left out, created as it is in the quick action, or stops the quick
+//!   action being offered. One not used (`Rule::used`) plays no part, and nor do its edges: it shows what surrounds the
+//!   rest, in a quick action made from a whole graph.
+//! - A role's window can be closed if it's open (`IfWindowOpen`), and opened if it isn't (`IfWindowClosed`: a window
+//!   opened for the first time goes as its `Placement` says).
 //!
-//! Each of the quick action's edges is ensured (connected if the port that takes just the one edge is free), replaced
-//! (connected, replacing what was there), removed, or left alone (`EdgeRule`), between every node found for each of its ends. Nodes
-//! are never removed: a quick action disables them, which keeps their settings for when they're wanted again.
+//! Each of the quick action's edges, between the nodes found for its ends, is enabled or disabled if they're connected
+//! already, connected if its input's free, and swapped in if its input's occupied, or not, in each case (`EdgeRule`).
+//! Nothing's ever disconnected, and nodes are never removed: a quick action disables them, which keeps their settings
+//! for when they're wanted again.
 //!
-//! A quick action also closes the roles' windows if they're open, and opens them if they aren't (`Window`: a window
-//! opened for the first time goes as its `Placement` says), and can arrange the panes (`Plan`), choose the base directory, and
-//! have a graph it builds from nothing laid out afresh.
+//! A quick action can also arrange the panes (`Plan`), choose the base directory, and have a graph it builds from
+//! nothing laid out afresh.
 //!
 //! The basic view offers a quick action if its required roles are found and doing it would change the graph (or, for
 //! one that only opens and closes windows, which are open: see `QuickAction::changes_graph`). So one that's done is no
 //! longer offered until something changes.
 //!
 //! A quick action's file is shaped as a project (`{"graph": {"nodes": ..., "edges": ...}}`), with each node's rule
-//! beside it (`"quick"`) and each edge's mode on it, so the app's config patches (see `crate::config_patching`) bring
+//! beside it (`"quick"`) and each edge's rule on it, so the app's config patches (see `crate::config_patching`) bring
 //! an old one up to date as they would a project. It says the versions that wrote it, as copied settings do.
 
 use std::collections::{BTreeMap, HashSet};
@@ -39,7 +41,7 @@ use serde_json::Value;
 use super::config_patching::{PatchSets, Versions};
 use super::engine::{Edge, Graph, NodeId, NodesEnum, PortAddress, PortRole, SavedPort};
 pub use super::layout::{Arrangement, Layout, Tab};
-use super::layout::{Pane, Side, WindowState};
+use super::layout::{Pane, WindowState};
 
 /// A role's label pattern, by default: any label.
 pub const ANY_LABEL: &str = ".*";
@@ -47,64 +49,153 @@ pub const ANY_LABEL: &str = ".*";
 /// A quick action's file says it's one, and the versions that wrote it, under this key.
 pub const MARKER: &str = "ephys-rs quick action";
 
-/// A role is found, or not, as its rule's mode says.
+/// A choice that, by default, does nothing.
+fn is_default<T: Default + PartialEq>(value: &T) -> bool {
+    *value == T::default()
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// A node, or an edge, found is enabled or disabled, or left as it is.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum Mode {
-    /// The quick action is only offered if the role's found.
-    Require,
-    /// The role's added if it isn't found.
+pub enum EnableOrDisable {
     #[default]
-    Ensure,
-    /// The role's only acted on if it's found; without it, the quick action is still offered.
-    IfPresent,
-    /// The role plays no part: never looked for, and its edges and windows left alone. A quick action made from a
-    /// whole graph keeps the parts that don't matter to it like this, to show where the parts that do are.
-    Ignore,
+    DoNothing,
+    Enable,
+    Disable,
 }
 
-impl Mode {
-    pub const ALL: [Mode; 4] = [Mode::Ensure, Mode::IfPresent, Mode::Require, Mode::Ignore];
-
-    /// A short name, for the badge under the role's node.
-    pub fn name(self) -> &'static str {
+impl EnableOrDisable {
+    /// Whether it's to be enabled (or disabled), if it's to be either.
+    pub fn wanted(self) -> Option<bool> {
         match self {
-            Mode::Require => "Required",
-            Mode::Ensure => "Created if missing",
-            Mode::IfPresent => "Only if found",
-            Mode::Ignore => "Ignored",
+            EnableOrDisable::DoNothing => None,
+            EnableOrDisable::Enable => Some(true),
+            EnableOrDisable::Disable => Some(false),
         }
     }
+}
 
-    /// The choice, as offered in the editor: what's done when the role isn't found (or that it's ignored).
+/// A node found has some of its settings (by name) set as the quick action has them, or none.
+#[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Settings {
+    #[default]
+    DoNothing,
+    Apply(Vec<String>),
+}
+
+impl Settings {
+    /// The settings applied, by name: none, doing nothing.
+    pub fn applied(&self) -> &[String] {
+        match self {
+            Settings::DoNothing => &[],
+            Settings::Apply(names) => names,
+        }
+    }
+}
+
+/// What's done to the node found for a role.
+#[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct IfFound {
+    #[serde(skip_serializing_if = "is_default")]
+    pub enable_or_disable: EnableOrDisable,
+    #[serde(skip_serializing_if = "is_default")]
+    pub settings: Settings,
+}
+
+/// What's done when a role isn't found: nothing (the quick action is still offered, leaving the role out), the node
+/// created (as the quick action has it, enabled), or the quick action not offered.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IfNotFound {
+    DoNothing,
+    #[default]
+    Create,
+    DontOffer,
+}
+
+impl IfNotFound {
+    pub const ALL: [IfNotFound; 3] = [IfNotFound::DoNothing, IfNotFound::Create, IfNotFound::DontOffer];
+
+    /// The choice, as the editor offers it.
     pub fn choice(self) -> &'static str {
         match self {
-            Mode::Require => "Don't offer the quick action",
-            Mode::Ensure => "Create the node and apply all settings",
-            Mode::IfPresent => "Do nothing",
-            Mode::Ignore => "Ignore this node",
+            IfNotFound::DoNothing => "Do nothing",
+            IfNotFound::Create => "Create the node and apply all settings",
+            IfNotFound::DontOffer => "Don't offer the quick action",
         }
     }
 }
 
-/// A role's rule: how it's found, and what's done to it (see the module docs).
-#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
+/// How a role's found: of the nodes of its type, those whose labels match this regular expression (`^Band-pass`,
+/// say), or, without one, any (`ANY_LABEL`). One that's empty, or can't be read, matches nothing.
+#[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Match {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+/// What's done with the window of the node found (or created), if it's open.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IfWindowOpen {
+    #[default]
+    DoNothing,
+    Close,
+}
+
+/// What's done with the window of the node found (or created), if it isn't open: opened, placed (the first time it's
+/// opened) as `Placement` says, or left closed.
+#[derive(Clone, Copy, PartialEq, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IfWindowClosed {
+    #[default]
+    DoNothing,
+    Open(Placement),
+}
+
+/// A role's rule: whether it's used, how it's found, and what's done in each case (see the module docs). The file says
+/// only what isn't the default.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Rule {
-    pub mode: Mode,
-    /// Only a node whose label matches this regular expression fits (`^Band-pass`, say); without one, any label does
-    /// (`ANY_LABEL`). One that's empty, or can't be read, fits nothing.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub label_pattern: Option<String>,
-    /// The settings, by name, set as they are in the quick action on the nodes found. A node added has all of them.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub settings: Vec<String>,
-    /// The node found is enabled, or disabled; or, without this, left as it is. A node added is always enabled.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub enabled: Option<bool>,
-    /// What's done with the window of the node found (or added).
+    /// Not used, the role plays no part: never looked for, and its edges and windows left alone. A quick action made
+    /// from a whole graph keeps the parts that don't matter to it like this, to show where the parts that do are.
+    #[serde(rename = "use", default = "yes", skip_serializing_if = "is_true")]
+    pub used: bool,
+    #[serde(rename = "match", skip_serializing_if = "is_default")]
+    pub matching: Match,
     #[serde(skip_serializing_if = "is_default")]
-    pub window: Window,
+    pub if_found: IfFound,
+    #[serde(skip_serializing_if = "is_default")]
+    pub if_not_found: IfNotFound,
+    #[serde(skip_serializing_if = "is_default")]
+    pub if_window_open: IfWindowOpen,
+    #[serde(skip_serializing_if = "is_default")]
+    pub if_window_closed: IfWindowClosed,
+}
+
+impl Default for Rule {
+    fn default() -> Self {
+        Rule {
+            used: true,
+            matching: Match::default(),
+            if_found: IfFound::default(),
+            if_not_found: IfNotFound::default(),
+            if_window_open: IfWindowOpen::default(),
+            if_window_closed: IfWindowClosed::default(),
+        }
+    }
 }
 
 /// A role: one of the quick action's nodes, with its rule.
@@ -132,41 +223,51 @@ fn settings_of<N: NodesEnum>(node: &N) -> Value {
     serde_json::to_value(node).ok().and_then(|mut v| v.get_mut("settings").map(Value::take)).unwrap_or_default()
 }
 
-/// What a quick action does to an edge between the nodes found for its ends, in each case: if the ends are connected
-/// already (enabled or disabled); else, if the end that takes just the one edge (a data stream's input, or the reading end of a value) is
-/// free; else (that end connected to something else). By default, the edge's connected if that end's free.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
-#[serde(default)]
-pub struct EdgeRule {
-    /// Connected already, the edge's enabled, or disabled; or, without this, left as it is. A quick action never
-    /// disconnects an edge (an edge connected elsewhere is replaced: see `replace`), and an edge it connects is enabled.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub enabled: Option<bool>,
-    /// The end that takes just the one edge free, the edge's connected.
-    #[serde(skip_serializing_if = "is_true")]
-    pub connect: bool,
-    /// That end connected to something else, the edge's connected, replacing that.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub replace: bool,
+/// An edge that takes the end that takes just the one edge (a data stream's input, or the reading end of a value),
+/// free, is connected, or not.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IfFree {
+    DoNothing,
+    #[default]
+    Connect,
 }
 
-impl Default for EdgeRule {
-    fn default() -> Self {
-        EdgeRule { enabled: None, connect: true, replace: false }
-    }
+/// An edge whose end that takes just the one edge is occupied (connected to something else) is swapped in for that,
+/// or not.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IfOccupied {
+    #[default]
+    DoNothing,
+    Swap,
+}
+
+/// What a quick action does to an edge between the nodes found for its ends, in each case: if they're connected
+/// already, enabled or disabled; else, if the end that takes just the one edge is free, connected; else (that end
+/// occupied), swapped in. A quick action never disconnects an edge, and an edge it connects is enabled.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EdgeRule {
+    #[serde(skip_serializing_if = "is_default")]
+    pub if_connected: EnableOrDisable,
+    #[serde(skip_serializing_if = "is_default")]
+    pub if_free: IfFree,
+    #[serde(skip_serializing_if = "is_default")]
+    pub if_occupied: IfOccupied,
 }
 
 impl EdgeRule {
     /// The rule for an edge that's only there to show what surrounds the rest: nothing's done to it.
-    pub const NOTHING: EdgeRule = EdgeRule { enabled: None, connect: false, replace: false };
+    pub const NOTHING: EdgeRule = EdgeRule {
+        if_connected: EnableOrDisable::DoNothing,
+        if_free: IfFree::DoNothing,
+        if_occupied: IfOccupied::DoNothing,
+    };
 
     pub fn does_nothing(self) -> bool {
         self == Self::NOTHING
     }
-}
-
-fn is_true(value: &bool) -> bool {
-    *value
 }
 
 /// One of the quick action's edges, between roles, by port id, with what's done to it.
@@ -178,44 +279,56 @@ pub struct RoleEdge {
     pub rule: EdgeRule,
 }
 
-fn is_default<T: Default + PartialEq>(value: &T) -> bool {
-    *value == T::default()
+/// A tab goes at the front of its group, or the back.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Position {
+    Front,
+    Back,
 }
 
-/// What a quick action does with a role's window: if it's open, closes it, or not; if it isn't, opens it, or not. By
-/// default, the window's left as it is.
-#[derive(Clone, Copy, PartialEq, Debug, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Window {
-    /// If the window's open, it's closed.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub close: bool,
-    /// If the window isn't open, it's opened, placed (the first time) like this.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub open: Option<Placement>,
+/// A window placed by another role's window (`to`): as a tab in its group, at the front or the back.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct Anchor {
+    pub to: NodeId,
+    pub at: Position,
 }
 
-/// A window that's been open before opens where it was. Opened for the first time, it goes here.
+/// A group of tabs chosen by its shape, as laid out: the largest, the widest or the tallest.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Shape {
+    #[default]
+    Largest,
+    Widest,
+    Tallest,
+}
+
+/// A window placed in a group chosen by its shape, as a tab at the front or the back.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct ByShape {
+    pub shape: Shape,
+    pub at: Position,
+}
+
+/// A window that's been open before opens where it was. Opened for the first time, it goes here: where the app puts a
+/// new window (see `Layout::place`); as a tab in a group chosen by its shape (`Layout::largest_group`, say); or in the
+/// group of another role's window (or, if that isn't open, where the app puts a new window).
 #[derive(Clone, Copy, PartialEq, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Placement {
-    /// Where the app puts a new window (see `Layout::place`).
     #[default]
     Default,
-    /// In front, as a tab in the largest group (see `Layout::largest_group`).
-    Largest,
-    /// Behind another role's window, as a tab in its group.
-    Behind(NodeId),
-    /// In a group of its own, on one side of another role's window's group, taking a share of the space.
-    Beside { of: NodeId, side: Side, share: f32 },
+    ByGroupShape(ByShape),
+    Anchored(Anchor),
 }
 
 impl Placement {
     /// The role whose window the placement is relative to, if any.
     pub fn anchor(self) -> Option<NodeId> {
         match self {
-            Placement::Behind(of) | Placement::Beside { of, .. } => Some(of),
-            Placement::Default | Placement::Largest => None,
+            Placement::Anchored(anchor) => Some(anchor.to),
+            Placement::Default | Placement::ByGroupShape(_) => None,
         }
     }
 }
@@ -242,7 +355,7 @@ pub struct QuickAction<N> {
     /// The base directory chosen, by its type's name (see `crate::base_directory`).
     pub base_directory: Option<String>,
     /// A graph built from nothing is laid out afresh (see the toolbar's Arrange).
-    pub arrange_if_empty: bool,
+    pub lay_out_if_empty: bool,
 }
 
 /// A quick action works from this.
@@ -279,12 +392,12 @@ struct File {
     #[serde(default)]
     panes: Plan,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    base_directory_type: Option<String>,
+    base_directory: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    arrange_if_empty: bool,
+    lay_out_if_empty: bool,
 }
 
-/// A quick action's graph, as a project's is saved, with each node's rule and each edge's mode.
+/// A quick action's graph, as a project's is saved, with each node's rule and each edge's.
 #[derive(Serialize, Deserialize)]
 struct FileGraph {
     #[serde(default)]
@@ -343,8 +456,8 @@ impl<N: NodesEnum> QuickAction<N> {
             roles,
             edges: file.graph.edges,
             panes: file.panes,
-            base_directory: file.base_directory_type,
-            arrange_if_empty: file.arrange_if_empty,
+            base_directory: file.base_directory,
+            lay_out_if_empty: file.lay_out_if_empty,
         })
     }
 
@@ -371,14 +484,14 @@ impl<N: NodesEnum> QuickAction<N> {
             description: self.description.clone(),
             graph: FileGraph { next_id, nodes, edges: self.edges.clone() },
             panes: self.panes.clone(),
-            base_directory_type: self.base_directory.clone(),
-            arrange_if_empty: self.arrange_if_empty,
+            base_directory: self.base_directory.clone(),
+            lay_out_if_empty: self.lay_out_if_empty,
         };
         serde_json::to_string_pretty(&file).unwrap_or_default()
     }
 
-    /// A quick action made from some of a graph's nodes (`ids`, or all of them, if none): each a role, ensured, with
-    /// no settings set on what's found; the edges between them, ensured; and the windows of theirs that are open,
+    /// A quick action made from some of a graph's nodes (`ids`, or all of them, if none): each a role, created if not
+    /// found, with nothing done to what's found; the edges between them, connected if free; and the windows of theirs that are open,
     /// opened, arranged as they are (if `arrange`).
     pub fn from_graph(name: &str, graph: &Graph<N>, layout: &Layout, ids: &[NodeId], arrange: bool) -> Self {
         let chosen: Vec<NodeId> = if ids.is_empty() { graph.ids().collect() } else { ids.to_vec() };
@@ -394,7 +507,10 @@ impl<N: NodesEnum> QuickAction<N> {
                     node: entry.node.clone(),
                     show_in_basic_override: entry.show_in_basic_override,
                     rule: Rule {
-                        window: Window { open: open_windows.contains(id).then_some(Placement::Default), close: false },
+                        if_window_closed: match open_windows.contains(id) {
+                            true => IfWindowClosed::Open(Placement::Default),
+                            false => IfWindowClosed::DoNothing,
+                        },
                         ..Rule::default()
                     },
                 })
@@ -418,7 +534,7 @@ impl<N: NodesEnum> QuickAction<N> {
             edges,
             panes: Plan { arrangement },
             base_directory: None,
-            arrange_if_empty: false,
+            lay_out_if_empty: false,
         }
     }
 
@@ -435,7 +551,7 @@ impl<N: NodesEnum> QuickAction<N> {
                     "pos": role.pos,
                     "node": serde_json::to_value(&role.node).unwrap_or_default(),
                     "show_in_basic_override": role.show_in_basic_override,
-                    // Drawn faded only if ignored (see `Mode::Ignore`): a node created is always enabled.
+                    // Drawn faded only if ignored (see `Rule::used`): a node created is always enabled.
                     "disabled": false,
                 });
                 (role.id.0.to_string(), entry)
@@ -456,7 +572,7 @@ impl<N: NodesEnum> QuickAction<N> {
     }
 
     /// The quick action with the nodes and edges `graph` has (see `graph`): each node a role, with its rule from
-    /// `rules` (or, without one, the default), and each edge with its mode from `modes` (or ensured). Windows and the
+    /// `rules` (or, without one, the default), and each edge with its rule from `rules_of_edges` (or the default). Windows and the
     /// arrangement leave out the roles no longer there.
     pub fn set_graph(&mut self, graph: &Graph<N>, rules: &BTreeMap<NodeId, Rule>, rules_of_edges: &[(Edge, EdgeRule)]) {
         self.roles = graph
@@ -480,7 +596,7 @@ impl<N: NodesEnum> QuickAction<N> {
             .collect();
         // A window placed relative to a role no longer there goes where the app puts a new one.
         for role in &mut self.roles {
-            if let Some(placement) = &mut role.rule.window.open
+            if let IfWindowClosed::Open(placement) = &mut role.rule.if_window_closed
                 && placement.anchor().is_some_and(|of| !graph.contains(of))
             {
                 *placement = Placement::Default;
@@ -499,7 +615,7 @@ impl<N: NodesEnum> QuickAction<N> {
     /// label pattern, left-most first.
     fn candidates(&self, role: &Role<N>, graph: &Graph<N>) -> Vec<NodeId> {
         let kind = role.node.node_type();
-        let pattern = match role.rule.label_pattern.as_deref() {
+        let pattern = match role.rule.matching.label.as_deref() {
             Some("") => return Vec::new(),
             Some(pattern) => match regex::Regex::new(pattern) {
                 Ok(pattern) => Some(pattern),
@@ -526,7 +642,7 @@ impl<N: NodesEnum> QuickAction<N> {
     /// until no role has a candidate left. So a node only one role could be is that role's, and the rest pair up left
     /// to right, as they'd be matched by eye.
     pub fn find(&self, graph: &Graph<N>) -> Result<BTreeMap<NodeId, NodeId>, String> {
-        let mut roles: Vec<&Role<N>> = self.roles.iter().filter(|r| r.rule.mode != Mode::Ignore).collect();
+        let mut roles: Vec<&Role<N>> = self.roles.iter().filter(|r| r.rule.used).collect();
         roles.sort_by(|a, b| left_most(a.pos, b.pos).then(a.id.cmp(&b.id)));
         let mut open: Vec<(NodeId, Vec<NodeId>)> =
             roles.iter().map(|role| (role.id, self.candidates(role, graph))).collect();
@@ -544,7 +660,8 @@ impl<N: NodesEnum> QuickAction<N> {
                 candidates.retain(|n| *n != node);
             }
         }
-        let required = |r: &&Role<N>| r.rule.mode == Mode::Require && !found.contains_key(&r.id);
+        let required =
+            |r: &&Role<N>| r.rule.used && r.rule.if_not_found == IfNotFound::DontOffer && !found.contains_key(&r.id);
         match self.roles.iter().find(required) {
             Some(role) => Err(role.label.clone()),
             None => Ok(found),
@@ -561,7 +678,8 @@ impl<N: NodesEnum> QuickAction<N> {
         // Finding each role.
         let mut found = self.find(&graph).ok()?;
         let missing: Vec<NodeId> = (self.roles.iter())
-            .filter(|role| role.rule.mode == Mode::Ensure && !found.contains_key(&role.id))
+            .filter(|role| role.rule.used && role.rule.if_not_found == IfNotFound::Create)
+            .filter(|role| !found.contains_key(&role.id))
             .map(|role| role.id)
             .collect();
 
@@ -586,17 +704,18 @@ impl<N: NodesEnum> QuickAction<N> {
 
         // Setting what the rules say on what's found.
         for role in &self.roles {
-            let settings = (!role.rule.settings.is_empty()).then(|| role.settings());
+            let applied = role.rule.if_found.settings.applied();
+            let settings = (!applied.is_empty()).then(|| role.settings());
             let Some(&id) = found.get(&role.id) else { continue };
             if let Some(entry) = graph.get_mut(id) {
                 if let Some(settings) = &settings
-                    && let Some(node) = with_settings(&entry.node, settings, &role.rule.settings)
+                    && let Some(node) = with_settings(&entry.node, settings, applied)
                     && node != entry.node
                 {
                     entry.node = node;
                     summary.set.push(entry.label.clone());
                 }
-                if let Some(enabled) = role.rule.enabled
+                if let Some(enabled) = role.rule.if_found.enable_or_disable.wanted()
                     && !added_ids.contains(&id)
                     && entry.disabled == enabled
                 {
@@ -615,7 +734,7 @@ impl<N: NodesEnum> QuickAction<N> {
             };
             let existing = Edge { from, to };
             if graph.edges().contains(&existing) {
-                if let Some(enabled) = edge.rule.enabled
+                if let Some(enabled) = edge.rule.if_connected.wanted()
                     && graph.is_edge_disabled(&existing) == enabled
                 {
                     graph.set_edge_disabled(existing, !enabled);
@@ -626,7 +745,8 @@ impl<N: NodesEnum> QuickAction<N> {
             }
             let single = if to.role == PortRole::DataStreamIn { to } else { from };
             let free = !graph.edges().iter().any(|e| e.from == single || e.to == single);
-            let wanted = if free { edge.rule.connect } else { edge.rule.replace };
+            let wanted =
+                if free { edge.rule.if_free == IfFree::Connect } else { edge.rule.if_occupied == IfOccupied::Swap };
             if wanted && graph.connect(from, to).is_ok() {
                 summary.connected += 1;
             }
@@ -640,9 +760,10 @@ impl<N: NodesEnum> QuickAction<N> {
         let mut to_open = Vec::new();
         for role in &self.roles {
             let Some(&id) = found.get(&role.id) else { continue };
-            match role.rule.window {
-                Window { close: true, .. } if open_before.contains(&id) => layout.close(id),
-                Window { open: Some(placement), .. } if !open_before.contains(&id) => to_open.push((id, placement)),
+            let open = open_before.contains(&id);
+            match (role.rule.if_window_open, role.rule.if_window_closed) {
+                (IfWindowOpen::Close, _) if open => layout.close(id),
+                (_, IfWindowClosed::Open(placement)) if !open => to_open.push((id, placement)),
                 _ => {}
             }
         }
@@ -666,7 +787,7 @@ impl<N: NodesEnum> QuickAction<N> {
         Some(QuickChange {
             graph,
             layout,
-            arrange: empty && self.arrange_if_empty,
+            arrange: empty && self.lay_out_if_empty,
             summary: summary.line(),
             base_directory: self.base_directory.clone(),
         })
@@ -677,9 +798,13 @@ impl<N: NodesEnum> QuickAction<N> {
     /// it opens are for what it adds, and closing one shouldn't bring it back. One that can't (that only opens and
     /// closes windows) is offered while it would change which are open.
     pub fn changes_graph(&self) -> bool {
-        let acts = |r: &Role<N>| r.rule.mode == Mode::Ensure || !r.rule.settings.is_empty() || r.rule.enabled.is_some();
-        let role = |r: &Role<N>| r.rule.mode != Mode::Ignore && acts(r);
-        let ignored = |id: NodeId| self.role(id).is_none_or(|r| r.rule.mode == Mode::Ignore);
+        let acts = |r: &Role<N>| {
+            let found = &r.rule.if_found;
+            let changes = found.enable_or_disable != EnableOrDisable::DoNothing || !found.settings.applied().is_empty();
+            r.rule.if_not_found == IfNotFound::Create || changes
+        };
+        let role = |r: &Role<N>| r.rule.used && acts(r);
+        let ignored = |id: NodeId| self.role(id).is_none_or(|r| !r.rule.used);
         let edge = |e: &RoleEdge| !e.rule.does_nothing() && !ignored(e.from.node) && !ignored(e.to.node);
         self.edges.iter().any(edge) || self.roles.iter().any(role)
     }
@@ -739,15 +864,28 @@ fn open_window(layout: &mut Layout, id: NodeId, placement: Placement, found: &BT
         (other != id && layout.open_windows().contains(&other)).then(|| layout.group_of(Pane::Node(other)))?
     };
     match placement {
-        Placement::Largest if let Some(group) = layout.largest_group(&[]) => {
+        Placement::ByGroupShape(by) if let Some(group) = group_by_shape(layout, by.shape) => {
             layout.add_tab(group, pane);
-            layout.show(pane);
+            if by.at == Position::Front {
+                layout.show(pane);
+            }
         }
-        Placement::Behind(of) if let Some(group) = group_of(layout, of) => layout.add_tab(group, pane),
-        Placement::Beside { of, side, share } if let Some(group) = group_of(layout, of) => {
-            layout.split(group, pane, side, share.clamp(0.1, 0.9));
+        Placement::Anchored(anchor) if let Some(group) = group_of(layout, anchor.to) => {
+            layout.add_tab(group, pane);
+            if anchor.at == Position::Front {
+                layout.show(pane);
+            }
         }
         _ => layout.open(id, None),
+    }
+}
+
+/// The group of tabs with `shape` (the largest, the widest or the tallest), if any are showing.
+fn group_by_shape(layout: &Layout, shape: Shape) -> Option<egui_tiles::TileId> {
+    match shape {
+        Shape::Largest => layout.largest_group(&[]),
+        Shape::Widest => layout.widest_group(&[]),
+        Shape::Tallest => layout.tallest_group(&[]),
     }
 }
 
@@ -844,7 +982,7 @@ mod tests {
         let action = QuickAction::from_graph("Spikes", &graph, &layout, &[], true);
         assert_eq!(action.roles.len(), 2);
         assert_eq!(action.edges.len(), 1);
-        assert_eq!(action.role(viewer).unwrap().rule.window.open, Some(Placement::Default));
+        assert_eq!(action.role(viewer).unwrap().rule.if_window_closed, IfWindowClosed::Open(Placement::Default));
         assert!(action.panes.arrangement.as_ref().is_some_and(|a| a.windows() == vec![viewer]));
         assert!(action.run(&QuickState { graph: &graph, layout: &layout }).is_none(), "nothing to do");
 
@@ -862,8 +1000,8 @@ mod tests {
     fn one_that_only_opens_windows_is_offered_while_they_are_closed() {
         let (graph, _, _, viewer) = detector_and_viewer();
         let mut action = QuickAction::from_graph("Show the spikes", &graph, &Layout::default(), &[viewer], false);
-        action.roles[0].rule.mode = Mode::Require;
-        action.roles[0].rule.window.open = Some(Placement::Default);
+        action.roles[0].rule.if_not_found = IfNotFound::DontOffer;
+        action.roles[0].rule.if_window_closed = IfWindowClosed::Open(Placement::Default);
         assert!(!action.changes_graph());
         let closed = Layout::default();
         let change = action.run(&QuickState { graph: &graph, layout: &closed }).expect("offered");
@@ -877,12 +1015,15 @@ mod tests {
     fn as_a_graph_and_back_it_is_the_same() {
         let (graph, layout, detector, viewer) = detector_and_viewer();
         let mut action = QuickAction::from_graph("Spikes", &graph, &layout, &[], true);
-        action.roles[0].rule.mode = Mode::Require;
-        action.edges[0].rule = EdgeRule { replace: true, ..EdgeRule::default() };
+        action.roles[0].rule.if_not_found = IfNotFound::DontOffer;
+        action.edges[0].rule = EdgeRule { if_occupied: IfOccupied::Swap, ..EdgeRule::default() };
         let (as_graph, modes) = action.graph();
         assert!(as_graph.get(detector).is_some_and(|e| e.label == "Spike Detector"), "with the roles' ids");
         assert_eq!(as_graph.edges().len(), 1);
-        assert_eq!(modes, vec![(as_graph.edges()[0], EdgeRule { replace: true, ..EdgeRule::default() })]);
+        assert_eq!(
+            modes,
+            vec![(as_graph.edges()[0], EdgeRule { if_occupied: IfOccupied::Swap, ..EdgeRule::default() })]
+        );
         let rules: BTreeMap<NodeId, Rule> = action.roles.iter().map(|r| (r.id, r.rule.clone())).collect();
         let mut again = action.clone();
         again.set_graph(&as_graph, &rules, &modes);
@@ -909,10 +1050,10 @@ mod tests {
             rule: EdgeRule::default(),
         };
         action.edges = vec![edge.clone()];
-        action.roles[0].rule.label_pattern = Some(" 2$".into());
+        action.roles[0].rule.matching.label = Some(" 2$".into());
         let state = QuickState { graph: &other, layout: &layout };
         assert!(action.run(&state).is_none(), "the viewer's input isn't free");
-        action.edges[0].rule = EdgeRule { replace: true, ..EdgeRule::default() };
+        action.edges[0].rule = EdgeRule { if_occupied: IfOccupied::Swap, ..EdgeRule::default() };
         let replaced = action.run(&state).unwrap().graph;
         let feeding = |g: &Graph<Nodes>| g.edges().iter().find(|e| e.to.node == viewer).map(|e| e.from.node);
         assert_eq!(feeding(&replaced), Some(second));
@@ -924,14 +1065,14 @@ mod tests {
         let (graph, layout, _, _) = detector_and_viewer();
         let mut action = QuickAction::from_graph("Spikes", &graph, &layout, &[], false);
         let empty = QuickState { graph: &Graph::default(), layout: &Layout::default() };
-        action.roles[0].rule.mode = Mode::Ignore;
+        action.roles[0].rule.used = false;
         let change = action.run(&empty).unwrap();
         assert_eq!(change.summary, "added Spike Viewer", "no detector, and nothing to connect it to");
-        action.roles[0].rule.mode = Mode::Ensure;
+        action.roles[0].rule.used = true;
         action.edges[0].rule = EdgeRule::NOTHING;
         assert_eq!(action.run(&empty).unwrap().summary, "added Spike Detector, Spike Viewer");
         // With every role ignored, the edge between them is too, even when the edge itself isn't.
-        action.roles.iter_mut().for_each(|r| r.rule.mode = Mode::Ignore);
+        action.roles.iter_mut().for_each(|r| r.rule.used = false);
         action.edges[0].rule = EdgeRule::default();
         assert!(!action.changes_graph());
         let mut detached = graph.clone();
@@ -949,11 +1090,11 @@ mod tests {
             |action: &QuickAction<Nodes>, graph: &Graph<Nodes>| action.find(graph).unwrap().get(&right).copied();
         assert_eq!(found(&action, &graph), Some(left));
         graph.get_mut(right).unwrap().label = "Spikes (tetrode 2)".into();
-        action.roles[0].rule.label_pattern = Some("tetrode \\d".into());
+        action.roles[0].rule.matching.label = Some("tetrode \\d".into());
         assert_eq!(found(&action, &graph), Some(right), "only the one whose label matches");
-        action.roles[0].rule.label_pattern = Some("(".into());
+        action.roles[0].rule.matching.label = Some("(".into());
         assert_eq!(found(&action, &graph), None, "a pattern that can't be read matches nothing");
-        action.roles[0].rule.label_pattern = Some(String::new());
+        action.roles[0].rule.matching.label = Some(String::new());
         assert_eq!(found(&action, &graph), None, "nor does an empty one");
     }
 
@@ -975,7 +1116,7 @@ mod tests {
         let found = action.find(&graph).unwrap();
         assert_eq!((found[&first], found[&second], found[&third]), (lfp, spikes, other), "left to right");
         // The left-most role would take the LFP filter, but only the right-most role can.
-        action.roles[2].rule.label_pattern = Some("^LFP$".into());
+        action.roles[2].rule.matching.label = Some("^LFP$".into());
         let found = action.find(&graph).unwrap();
         assert_eq!((found[&first], found[&second], found[&third]), (spikes, other, lfp));
     }
@@ -984,12 +1125,33 @@ mod tests {
     fn edges_connected_already_can_be_enabled_or_disabled() {
         let (graph, layout, _, _) = detector_and_viewer();
         let mut action = QuickAction::from_graph("Spikes", &graph, &layout, &[], false);
-        action.edges[0].rule.enabled = Some(false);
+        action.edges[0].rule.if_connected = EnableOrDisable::Disable;
         let change = action.run(&QuickState { graph: &graph, layout: &layout }).unwrap();
         assert!(change.graph.is_edge_disabled(&change.graph.edges()[0]));
         assert_eq!(change.summary, "disabled 1 connections");
         assert!(action.run(&QuickState { graph: &change.graph, layout: &layout }).is_none(), "disabled already");
-        action.edges[0].rule.enabled = Some(true);
+        action.edges[0].rule.if_connected = EnableOrDisable::Enable;
         assert!(action.run(&QuickState { graph: &change.graph, layout: &layout }).is_some());
+    }
+
+    #[test]
+    fn a_window_opened_by_group_shape_goes_in_that_group() {
+        let (graph, _, detector, viewer) = detector_and_viewer();
+        // Home on the left, a third of the width, and the viewer's window on its right: as tall as home, but larger.
+        let mut layout = Layout::default();
+        layout.open(viewer, None);
+        let mut action = QuickAction::from_graph("Detector", &graph, &Layout::default(), &[detector], false);
+        action.roles[0].rule.if_not_found = IfNotFound::DoNothing;
+        assert_ne!(layout.largest_group(&[]), layout.tallest_group(&[]), "the tallest, of two as tall, is home's");
+        let by = |shape| ByShape { shape, at: Position::Front };
+        let group = |layout: &Layout| layout.group_of(Pane::Node(detector));
+        for (shape, expected) in
+            [(Shape::Largest, layout.largest_group(&[])), (Shape::Tallest, layout.tallest_group(&[]))]
+        {
+            action.roles[0].rule.if_window_closed = IfWindowClosed::Open(Placement::ByGroupShape(by(shape)));
+            let change = action.run(&QuickState { graph: &graph, layout: &layout }).unwrap();
+            assert_eq!(group(&change.layout), expected, "{shape:?}");
+            assert!(change.layout.is_shown(Pane::Node(detector)), "at the front");
+        }
     }
 }

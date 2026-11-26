@@ -26,8 +26,10 @@ use crate::annotation::{Annotations, AnnotationsEnum};
 use crate::config_patching::PatchSets;
 use crate::engine::{Edge, Graph, NodeId, NodesEnum};
 use crate::layout::Layout;
-use crate::layout::Side;
-use crate::quick_action::{ANY_LABEL, EdgeRule, Mode, Placement, QuickAction, Rule, Window};
+use crate::quick_action::{
+    ANY_LABEL, Anchor, ByShape, EdgeRule, EnableOrDisable, IfFree, IfNotFound, IfOccupied, IfWindowClosed,
+    IfWindowOpen, Placement, Position, QuickAction, Rule, Settings, Shape,
+};
 use crate::theme::Colours;
 
 /// A file's a quick action if its name ends with this.
@@ -284,9 +286,6 @@ pub struct Editor<N> {
     edge_rules: Vec<(Edge, EdgeRule)>,
     canvas: Canvas,
     selection: Selection,
-    /// The nodes whose settings are applied, chosen in the inspector before any are ticked (a rule that applies none
-    /// leaves them as they are, so this keeps the choice while none are).
-    applying: BTreeSet<NodeId>,
 }
 
 /// Each frame, the editor says what came of it.
@@ -301,6 +300,8 @@ pub enum Outcome {
 struct Marks<'a> {
     rules: &'a mut BTreeMap<NodeId, Rule>,
     edge_rules: &'a mut Vec<(Edge, EdgeRule)>,
+    /// How many settings each node has, for saying how many of them are applied.
+    setting_counts: BTreeMap<NodeId, usize>,
     colours: &'a Colours,
 }
 
@@ -315,41 +316,44 @@ impl crate::gui::canvas::Extras for Marks<'_> {
 
     fn node_badge(&self, id: NodeId) -> Option<(String, egui::Color32)> {
         let rule = self.rules.get(&id).cloned().unwrap_or_default();
-        let colour = match rule.mode {
-            Mode::Require => self.colours.accent,
-            Mode::Ensure => self.colours.success,
-            Mode::IfPresent | Mode::Ignore => self.colours.text_secondary,
+        let colour = match rule.if_not_found {
+            IfNotFound::DontOffer => self.colours.accent,
+            IfNotFound::Create => self.colours.success,
+            IfNotFound::DoNothing => self.colours.text_secondary,
         };
-        if rule.mode == Mode::Ignore {
+        if !rule.used {
             return None;
         }
         // In the inspector's words, leaving out what does nothing (but for what happens if it isn't found).
         let mut lines = Vec::new();
         let mut if_found = Vec::new();
-        match rule.enabled {
-            Some(true) => if_found.push("enable"),
-            Some(false) => if_found.push("disable"),
-            None => {}
+        match rule.if_found.enable_or_disable {
+            EnableOrDisable::Enable => if_found.push("enable".to_string()),
+            EnableOrDisable::Disable => if_found.push("disable".to_string()),
+            EnableOrDisable::DoNothing => {}
         }
-        if !rule.settings.is_empty() {
-            if_found.push("apply settings");
+        if let Settings::Apply(names) = &rule.if_found.settings
+            && !names.is_empty()
+        {
+            let of = self.setting_counts.get(&id).copied().unwrap_or(names.len());
+            if_found.push(format!("apply {}/{of} settings", names.len()));
         }
         if !if_found.is_empty() {
             lines.push(format!("If found: {}", if_found.join(", ")));
         }
-        let otherwise = match rule.mode {
-            Mode::Ensure => "create the node",
-            Mode::Require => "don't offer the quick action",
-            Mode::IfPresent | Mode::Ignore => "do nothing",
+        let otherwise = match rule.if_not_found {
+            IfNotFound::Create => "create the node",
+            IfNotFound::DontOffer => "don't offer the quick action",
+            IfNotFound::DoNothing => "do nothing",
         };
         // "Else" follows an "If found"; on its own, it says its case.
         let case = if lines.is_empty() { "If not found" } else { "Else" };
         lines.push(format!("{case}: {otherwise}"));
         let mut window = Vec::new();
-        if rule.window.close {
+        if rule.if_window_open == IfWindowOpen::Close {
             window.push("close it if open");
         }
-        if rule.window.open.is_some() {
+        if rule.if_window_closed != IfWindowClosed::DoNothing {
             window.push("open it if not");
         }
         if !window.is_empty() {
@@ -360,7 +364,7 @@ impl crate::gui::canvas::Extras for Marks<'_> {
 
     fn edge_colour(&self, edge: &Edge) -> Option<egui::Color32> {
         let rule = edge_rule(self.edge_rules, *edge);
-        if rule.replace { Some(self.colours.warning) } else { None }
+        if rule.if_occupied == IfOccupied::Swap { Some(self.colours.warning) } else { None }
     }
 
     fn node_faded(&self, id: NodeId) -> bool {
@@ -373,15 +377,12 @@ impl crate::gui::canvas::Extras for Marks<'_> {
 
     fn node_menu(&mut self, ui: &mut egui::Ui, id: NodeId) {
         let rule = self.rules.entry(id).or_default();
-        let mut used = rule.mode != Mode::Ignore;
-        if ui.checkbox(&mut used, "Use this node").changed() {
-            rule.mode = if used { Mode::Ensure } else { Mode::Ignore };
-        }
-        if used {
+        ui.checkbox(&mut rule.used, "Use this node");
+        if rule.used {
             ui.separator();
-            ui.weak("When not found");
-            for mode in [Mode::IfPresent, Mode::Ensure, Mode::Require] {
-                ui.radio_value(&mut rule.mode, mode, mode.choice());
+            ui.weak("If not found");
+            for choice in IfNotFound::ALL {
+                ui.radio_value(&mut rule.if_not_found, choice, choice.choice());
             }
         }
     }
@@ -394,8 +395,11 @@ impl crate::gui::canvas::Extras for Marks<'_> {
         }
         if used {
             ui.separator();
-            ui.checkbox(&mut rule.connect, "If free: connect them");
-            ui.checkbox(&mut rule.replace, "If occupied: connect them, replacing that");
+            ui.radio_value(&mut rule.if_free, IfFree::DoNothing, "If free: do nothing");
+            ui.radio_value(&mut rule.if_free, IfFree::Connect, "If free: connect");
+            ui.separator();
+            ui.radio_value(&mut rule.if_occupied, IfOccupied::DoNothing, "If occupied: do nothing");
+            ui.radio_value(&mut rule.if_occupied, IfOccupied::Swap, "If occupied: swap");
         }
         set_edge_rule(self.edge_rules, edge, rule);
     }
@@ -403,7 +407,7 @@ impl crate::gui::canvas::Extras for Marks<'_> {
 
 impl Marks<'_> {
     fn ignored(&self, id: NodeId) -> bool {
-        self.rules.get(&id).is_some_and(|r| r.mode == Mode::Ignore)
+        self.rules.get(&id).is_some_and(|r| !r.used)
     }
 }
 
@@ -421,6 +425,9 @@ fn set_edge_rule(rules: &mut Vec<(Edge, EdgeRule)>, edge: Edge, rule: EdgeRule) 
 /// The inspector, beside the canvas, is this wide.
 const INSPECTOR: f32 = 330.0;
 
+/// Between the canvas and the inspector there's this gap.
+const GAP: f32 = 14.0;
+
 impl<N: NodesEnum> Editor<N> {
     pub fn new(action: QuickAction<N>, file: Option<PathBuf>, colours: &'static Colours) -> Self {
         let (graph, edge_rules) = action.graph();
@@ -428,8 +435,7 @@ impl<N: NodesEnum> Editor<N> {
         let mut canvas = Canvas::new(colours);
         canvas.legend_open = false;
         canvas.id_salt = Some(egui::Id::unique("quick action canvas"));
-        let applying = action.roles.iter().filter(|r| !r.rule.settings.is_empty()).map(|r| r.id).collect();
-        Editor { action, file, graph, rules, edge_rules, canvas, selection: Selection::default(), applying }
+        Editor { action, file, graph, rules, edge_rules, canvas, selection: Selection::default() }
     }
 
     /// The quick action as it is now.
@@ -454,6 +460,19 @@ impl<N: NodesEnum> Editor<N> {
     #[cfg(test)]
     pub fn select(&mut self, id: NodeId) {
         self.selection.only(id);
+    }
+
+    /// Tests select several nodes of the quick action with this.
+    #[cfg(test)]
+    pub fn select_all_of(&mut self, ids: &[NodeId]) {
+        self.selection.clear();
+        self.selection.nodes.extend(ids);
+    }
+
+    /// Tests check whether the quick action uses a node with this.
+    #[cfg(test)]
+    pub fn uses(&self, id: NodeId) -> bool {
+        self.rules.get(&id).is_none_or(|r| r.used)
     }
 
     /// Tests select an edge of the quick action, into `to`, with this.
@@ -485,7 +504,10 @@ impl<N: NodesEnum> Editor<N> {
             let size = egui::vec2(ui.available_width(), height);
             ui.allocate_ui_with_layout(size, egui::Layout::left_to_right(egui::Align::Min), |ui| {
                 ui.set_height(height);
-                let canvas_size = egui::vec2(size.x - INSPECTOR - 16.0, height);
+                // The canvas, a gap and the inspector fill the width exactly (any wider, and the dialog grows past
+                // its title bar and footer), so nothing's spaced between them but the gap.
+                let spacing = std::mem::replace(&mut ui.spacing_mut().item_spacing.x, 0.0);
+                let canvas_size = egui::vec2(size.x - INSPECTOR - GAP, height);
                 ui.allocate_ui(canvas_size, |ui| {
                     ui.set_min_size(canvas_size);
                     ui.set_max_size(canvas_size);
@@ -493,8 +515,9 @@ impl<N: NodesEnum> Editor<N> {
                         self.canvas_ui::<A>(ui, colours);
                     });
                 });
-                ui.add_space(14.0);
+                ui.add_space(GAP);
                 ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.x = spacing;
                     ui.set_width(INSPECTOR);
                     ui.set_height(height);
                     self.inspector(ui, graph, layout, &found, base_directories, colours);
@@ -523,7 +546,13 @@ impl<N: NodesEnum> Editor<N> {
         let resolved = self.graph.resolve();
         let mut annotations = Annotations::<A>::default();
         let mut events = Vec::new();
-        let mut marks = Marks { rules: &mut self.rules, edge_rules: &mut self.edge_rules, colours };
+        let setting_counts = (self.graph.iter())
+            .map(|(id, entry)| {
+                let settings = serde_json::to_value(&entry.node).ok().and_then(|v| v.get("settings").cloned());
+                (id, settings.as_ref().and_then(|s| s.as_object()).map_or(0, |o| o.len()))
+            })
+            .collect();
+        let mut marks = Marks { rules: &mut self.rules, edge_rules: &mut self.edge_rules, setting_counts, colours };
         self.canvas.show(
             ui,
             &mut self.graph,
@@ -551,7 +580,65 @@ impl<N: NodesEnum> Editor<N> {
         if let Some(id) = self.selection.single() {
             return self.node_inspector(ui, id, graph, found, colours);
         }
+        if self.selection.nodes.len() > 1 {
+            return self.nodes_inspector(ui, colours);
+        }
         self.action_inspector(ui, layout, found, base_directories, colours);
+    }
+
+    /// Several nodes selected: a box of them, left to right, each as its bar, with a checkbox for all of them at its top
+    /// right, ticked while they're all used, empty while none is, and marked as mixed otherwise (clicked, it uses
+    /// them all).
+    fn nodes_inspector(&mut self, ui: &mut egui::Ui, colours: &Colours) {
+        let mut nodes: Vec<(NodeId, String, egui::Color32, [f32; 2])> = (self.selection.nodes.iter())
+            .filter_map(|id| {
+                let entry = self.graph.get(*id)?;
+                let colour = style::category_colour(entry.node.info().category);
+                Some((*id, entry.label.clone(), colour, entry.pos))
+            })
+            .collect();
+        nodes.sort_by(|a, b| a.3[0].total_cmp(&b.3[0]).then(a.3[1].total_cmp(&b.3[1])));
+        let used = |rules: &BTreeMap<NodeId, Rule>, id: &NodeId| rules.get(id).is_none_or(|r| r.used);
+        let count = nodes.iter().filter(|(id, ..)| used(&self.rules, id)).count();
+        let (mut all, mixed) = (count == nodes.len(), count > 0 && count < nodes.len());
+        let mut clicked = false;
+        egui::Frame::new()
+            .stroke(egui::Stroke::new(1.0, colours.border))
+            .corner_radius(4.0)
+            .inner_margin(egui::Margin::symmetric(8, 6))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("{} nodes", nodes.len())).weak());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let response = ui.add(egui::Checkbox::without_text(&mut all).indeterminate(mixed));
+                        response.widget_info(|| {
+                            egui::WidgetInfo::selected(egui::Role::CheckBox, true, all, "Use these nodes")
+                        });
+                        clicked = response.changed();
+                    });
+                });
+                ui.add_space(4.0);
+                for (_, label, colour, _) in &nodes {
+                    egui::Frame::new()
+                        .fill(colours.surface_raised)
+                        .stroke(egui::Stroke::new(1.0, colours.border))
+                        .corner_radius(4.0)
+                        .inner_margin(egui::Margin::symmetric(8, 5))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.label(super::docking::tab_title(label, *colour));
+                        });
+                    ui.add_space(2.0);
+                }
+            });
+        if clicked {
+            // Mixed, a click uses them all, as egui ticks the box.
+            let use_them = mixed || all;
+            for (id, ..) in &nodes {
+                self.rules.entry(*id).or_default().used = use_them;
+            }
+        }
     }
 
     /// A connection's inspector: its two ends, as a title, and what's done to it in each case.
@@ -585,20 +672,18 @@ impl<N: NodesEnum> Editor<N> {
         scrolled(ui, |ui| {
             if_else(ui, colours, |ui| {
                 section(ui, "If they're connected already", colours, |ui| {
-                    section(ui, "Enable or disable", colours, |ui| {
-                        for (choice, text) in [(None, DO_NOTHING), (Some(true), "Enable"), (Some(false), "Disable")] {
-                            radio(ui, &mut rule.enabled, choice, text);
-                        }
+                    section(ui, "Enabled/disabled", colours, |ui| {
+                        enable_or_disable(ui, &mut rule.if_connected);
                     });
                 });
                 section_with_info(ui, &format!("Else, if {port} is free"), Some(&others_kept), colours, |ui| {
-                    radio(ui, &mut rule.connect, false, DO_NOTHING);
-                    radio(ui, &mut rule.connect, true, "Connect them");
+                    radio(ui, &mut rule.if_free, IfFree::DoNothing, DO_NOTHING);
+                    radio(ui, &mut rule.if_free, IfFree::Connect, &format!("Connect {}", from.0));
                 });
                 let title = format!("Else, if {port} is occupied");
                 section_with_info(ui, &title, Some(&others_kept), colours, |ui| {
-                    radio(ui, &mut rule.replace, false, DO_NOTHING);
-                    radio(ui, &mut rule.replace, true, "Connect them, replacing that");
+                    radio(ui, &mut rule.if_occupied, IfOccupied::DoNothing, DO_NOTHING);
+                    radio(ui, &mut rule.if_occupied, IfOccupied::Swap, &format!("Swap to {}", from.0));
                 });
             });
         });
@@ -618,12 +703,9 @@ impl<N: NodesEnum> Editor<N> {
         let Some(entry) = self.graph.get_mut(id) else { return };
         let rule = self.rules.entry(id).or_default();
         let info = entry.node.info();
-        let mut used = rule.mode != Mode::Ignore;
         let colour = style::category_colour(info.category);
-        if title_bar(ui, &entry.label, Some(colour), Some(&mut used), colours) {
-            rule.mode = if used { Mode::Ensure } else { Mode::Ignore };
-        }
-        if !used {
+        title_bar(ui, &entry.label, Some(colour), Some(&mut rule.used), colours);
+        if !rule.used {
             return;
         }
         scrolled(ui, |ui| {
@@ -631,7 +713,7 @@ impl<N: NodesEnum> Editor<N> {
             let disambiguation = "Nodes with only one possible match are paired first; the rest pair up left to right.";
             section_with_info(ui, "Find a node that matches", Some(disambiguation), colours, |ui| {
                 leaf(ui.label(format!("Type: {}", info.name)).rect);
-                let mut pattern = rule.label_pattern.clone().unwrap_or_else(|| ANY_LABEL.to_string());
+                let mut pattern = rule.matching.label.clone().unwrap_or_else(|| ANY_LABEL.to_string());
                 let row = ui.horizontal(|ui| {
                     let label = ui.label("Label pattern");
                     // Room after the box for the ⓘ.
@@ -643,7 +725,7 @@ impl<N: NodesEnum> Editor<N> {
                 });
                 leaf(row.response.rect);
                 if row.inner {
-                    rule.label_pattern = (pattern != ANY_LABEL).then(|| pattern.clone());
+                    rule.matching.label = (pattern != ANY_LABEL).then(|| pattern.clone());
                 }
                 let problem = match regex::Regex::new(&pattern) {
                     _ if pattern.is_empty() => Some("Empty, it matches nothing: .* matches any label".to_string()),
@@ -659,10 +741,8 @@ impl<N: NodesEnum> Editor<N> {
 
             if_else(ui, colours, |ui| {
                 section(ui, "If a matching node is found", colours, |ui| {
-                    section(ui, "Enable or disable", colours, |ui| {
-                        for (choice, text) in [(None, DO_NOTHING), (Some(true), "Enable"), (Some(false), "Disable")] {
-                            radio(ui, &mut rule.enabled, choice, text);
-                        }
+                    section(ui, "Enabled/disabled", colours, |ui| {
+                        enable_or_disable(ui, &mut rule.if_found.enable_or_disable);
                     });
                     let settings = serde_json::to_value(&entry.node).ok().and_then(|v| v.get("settings").cloned());
                     let keys: Vec<String> = (settings.as_ref().and_then(|s| s.as_object()))
@@ -671,29 +751,49 @@ impl<N: NodesEnum> Editor<N> {
                     if keys.is_empty() {
                         return;
                     }
-                    let applying = &mut self.applying;
                     section(ui, "Settings", colours, |ui| {
-                        let mut apply = applying.contains(&id) || !rule.settings.is_empty();
+                        let settings = &mut rule.if_found.settings;
+                        let mut apply = matches!(settings, Settings::Apply(_));
+                        // The values applied come from the node matched in the graph now, so without one, which are
+                        // applied can be kept, or dropped, but not changed.
+                        let matched = found_as.is_some();
                         radio(ui, &mut apply, false, DO_NOTHING);
-                        let apply_row = radio(ui, &mut apply, true, "Apply settings");
+                        let apply_row = ui.horizontal(|ui| {
+                            let can_apply = matched || apply;
+                            let row =
+                                ui.add_enabled_ui(can_apply, |ui| ui.radio_value(&mut apply, true, "Apply settings"));
+                            info_icon(ui, APPLYING);
+                            row.inner.rect
+                        });
+                        leaf(apply_row.response.rect);
+                        let apply_row = apply_row.inner;
                         if !apply {
-                            applying.remove(&id);
-                            rule.settings.clear();
+                            *settings = Settings::DoNothing;
                             return;
                         }
-                        applying.insert(id);
+                        if *settings == Settings::DoNothing {
+                            *settings = Settings::Apply(Vec::new());
+                        }
+                        let Settings::Apply(names) = settings else { return };
                         nested(ui, apply_row, colours, |ui| {
-                            for key in &keys {
-                                let mut on = rule.settings.contains(key);
-                                let checkbox = ui.checkbox(&mut on, key.replace('_', " "));
-                                leaf(checkbox.rect);
-                                if checkbox.changed() {
-                                    match on {
-                                        true => rule.settings.push(key.clone()),
-                                        false => rule.settings.retain(|k| k != key),
+                            ui.add_enabled_ui(matched, |ui| {
+                                for key in &keys {
+                                    let mut on = names.contains(key);
+                                    let checkbox = ui.checkbox(&mut on, key.replace('_', " "));
+                                    leaf(checkbox.rect);
+                                    if !checkbox.changed() {
+                                        continue;
+                                    }
+                                    if on {
+                                        names.push(key.clone());
+                                        if let Some(other) = found_as {
+                                            copy_setting(&mut entry.node, &other.node, key);
+                                        }
+                                    } else {
+                                        names.retain(|k| k != key);
                                     }
                                 }
-                            }
+                            });
                             if let Some(other) = found_as {
                                 let take = ui.horizontal(|ui| {
                                     if ui.button(format!("Take the settings of {}", other.label)).clicked() {
@@ -713,13 +813,13 @@ impl<N: NodesEnum> Editor<N> {
                 });
 
                 section(ui, "Else, if no matching node is found", colours, |ui| {
-                    for mode in [Mode::IfPresent, Mode::Ensure, Mode::Require] {
-                        radio(ui, &mut rule.mode, mode, mode.choice());
+                    for choice in IfNotFound::ALL {
+                        radio(ui, &mut rule.if_not_found, choice, choice.choice());
                     }
                 });
             });
 
-            window_ui(ui, &mut rule.window, &others, colours);
+            window_ui(ui, &mut rule.if_window_open, &mut rule.if_window_closed, &others, colours);
         });
     }
 
@@ -738,16 +838,6 @@ impl<N: NodesEnum> Editor<N> {
             ui.text_edit_singleline(&mut action.name).labelled_by(name.id);
             let description = ui.label("Description");
             ui.add(egui::TextEdit::multiline(&mut action.description).desired_rows(3)).labelled_by(description.id);
-            ui.horizontal(|ui| {
-                if ui.button("Arrange").clicked() {
-                    for (id, pos) in super::arrange::arrange(&self.graph) {
-                        if let Some(entry) = self.graph.get_mut(id) {
-                            entry.pos = pos;
-                        }
-                    }
-                    self.canvas.frame_all();
-                }
-            });
 
             section(ui, "Panes", colours, |ui| {
                 let action = &mut self.action;
@@ -798,7 +888,7 @@ impl<N: NodesEnum> Editor<N> {
             });
 
             section(ui, "If the graph was empty", colours, |ui| {
-                leaf(ui.checkbox(&mut self.action.arrange_if_empty, "Lay out the graph afresh").rect);
+                leaf(ui.checkbox(&mut self.action.lay_out_if_empty, "Lay out the graph afresh").rect);
             });
         });
     }
@@ -807,112 +897,146 @@ impl<N: NodesEnum> Editor<N> {
 /// A node's window, if open, is left as it is or closed; if not, left as it is or opened, going (the first time)
 /// where `Placement` says, relative to the window of one of `others` (the quick action's other nodes, with their
 /// labels) for some.
-fn window_ui(ui: &mut egui::Ui, window: &mut Window, others: &[(NodeId, String)], colours: &Colours) {
+fn window_ui(
+    ui: &mut egui::Ui,
+    if_open: &mut IfWindowOpen,
+    if_closed: &mut IfWindowClosed,
+    others: &[(NodeId, String)],
+    colours: &Colours,
+) {
     if_else(ui, colours, |ui| {
         section(ui, "If the node's window is open", colours, |ui| {
-            radio(ui, &mut window.close, false, DO_NOTHING);
-            radio(ui, &mut window.close, true, "Close it");
+            radio(ui, if_open, IfWindowOpen::DoNothing, DO_NOTHING);
+            radio(ui, if_open, IfWindowOpen::Close, "Close it");
         });
         section(ui, "Else, if the node's window isn't open", colours, |ui| {
-            let opening = window.open.is_some();
-            radio(ui, &mut window.open, None, DO_NOTHING);
-            let open = ui.radio(opening, "Open it");
-            leaf(open.rect);
-            if open.clicked() && !opening {
-                window.open = Some(Placement::Default);
-            }
-            let Some(placement) = &mut window.open else { return };
-            let info = "A window that's been open before opens where it was. Placed by another window that isn't \
-                        open, a window goes where a new window goes.";
-            section_with_info(ui, "Where, the first time", Some(info), colours, |ui| {
-                placement_ui(ui, placement, others)
+            let opening = matches!(if_closed, IfWindowClosed::Open(_));
+            radio(ui, if_closed, IfWindowClosed::DoNothing, DO_NOTHING);
+            let open = ui.horizontal(|ui| {
+                let open = ui.radio(opening, "Open it");
+                info_icon(
+                    ui,
+                    "A window that's been open before reopens where it was. The choices below are for the first time \
+                     it opens.",
+                );
+                open
             });
+            leaf(open.response.rect);
+            if open.inner.clicked() && !opening {
+                *if_closed = IfWindowClosed::Open(Placement::Default);
+            }
+            let IfWindowClosed::Open(placement) = if_closed else { return };
+            nested(ui, open.inner.rect, colours, |ui| placement_ui(ui, placement, others, colours));
         });
     });
 }
 
-fn placement_ui(ui: &mut egui::Ui, placement: &mut Placement, others: &[(NodeId, String)]) {
+/// Where a window opened for the first time goes: each choice, and under the one chosen, what it needs (by group shape,
+/// which shape; anchored to another node's group, which node; and in either case, at the front or the back).
+fn placement_ui(ui: &mut egui::Ui, placement: &mut Placement, others: &[(NodeId, String)], colours: &Colours) {
     let first_other = others.first().map(|(o, _)| *o);
+    let anchored = |to| Placement::Anchored(Anchor { to, at: Position::Back });
     let kinds: Vec<(&str, Option<Placement>)> = vec![
-        ("Where a new window goes", Some(Placement::Default)),
-        ("In front, in the largest group", Some(Placement::Largest)),
-        ("Behind another window", first_other.map(Placement::Behind)),
-        ("Next to another window", first_other.map(|of| Placement::Beside { of, side: Side::Right, share: 0.5 })),
+        ("Use default location", Some(Placement::Default)),
+        ("By group shape", Some(Placement::ByGroupShape(ByShape { shape: Shape::Largest, at: Position::Front }))),
+        ("Anchor to group of another node", first_other.map(anchored)),
     ];
     let kind = |p: &Placement| match p {
         Placement::Default => 0,
-        Placement::Largest => 1,
-        Placement::Behind(_) => 2,
-        Placement::Beside { .. } => 3,
+        Placement::ByGroupShape(_) => 1,
+        Placement::Anchored(_) => 2,
     };
-    let current = kind(placement);
-    for (i, (name, choice)) in kinds.iter().enumerate() {
+    for (i, (text, choice)) in kinds.iter().enumerate() {
         let Some(choice) = choice else { continue };
-        let button = ui.radio(i == current, *name);
-        leaf(button.rect);
+        let current = kind(placement);
+        let row = ui.horizontal(|ui| {
+            let button = ui.radio(i == current, *text);
+            match choice {
+                Placement::Default => {
+                    info_icon(ui, DEFAULT_LOCATION);
+                }
+                Placement::Anchored(_) => {
+                    info_icon(
+                        ui,
+                        "If the other node's window isn't open (or the node isn't there), this window goes in the \
+                         default location instead.",
+                    );
+                }
+                Placement::ByGroupShape(_) => {}
+            }
+            button
+        });
+        leaf(row.response.rect);
+        let button = row.inner;
         if button.clicked() && i != current {
             *placement = *choice;
         }
+        match placement {
+            Placement::ByGroupShape(by) if i == 1 => nested(ui, button.rect, colours, |ui| {
+                section(ui, "Group", colours, |ui| {
+                    radio(ui, &mut by.shape, Shape::Largest, "Largest");
+                    radio(ui, &mut by.shape, Shape::Widest, "Widest");
+                    radio(ui, &mut by.shape, Shape::Tallest, "Tallest");
+                });
+                section(ui, "Tab", colours, |ui| {
+                    radio(ui, &mut by.at, Position::Front, "At the front");
+                    radio(ui, &mut by.at, Position::Back, "At the back");
+                });
+            }),
+            Placement::Anchored(anchor) if i == 2 => {
+                nested(ui, button.rect, colours, |ui| anchored_ui(ui, anchor, others))
+            }
+            _ => {}
+        }
     }
+}
 
+/// A window anchored to the group of another node's window: which node, and whether as a tab at the front of the
+/// group or the back.
+fn anchored_ui(ui: &mut egui::Ui, anchor: &mut Anchor, others: &[(NodeId, String)]) {
     let name = |of: NodeId| others.iter().find(|(o, _)| *o == of).map_or("?", |(_, l)| l.as_str()).to_string();
-    let which = |ui: &mut egui::Ui, of: &mut NodeId| {
-        let label = ui.label("Whose window");
-        leaf(label.rect);
-        let combo = egui::ComboBox::from_id_salt("anchor")
-            .selected_text(name(*of))
-            .width(ui.available_width() - 8.0)
+    let row = ui.horizontal(|ui| {
+        let label = ui.label("Node");
+        egui::ComboBox::from_id_salt("anchor")
+            .selected_text(name(anchor.to))
             .show_ui(ui, |ui| {
                 for (other, label) in others {
-                    ui.selectable_value(of, *other, label);
+                    ui.selectable_value(&mut anchor.to, *other, label);
                 }
             })
             .response
             .labelled_by(label.id);
-        leaf(combo.rect);
-    };
-    match placement {
-        Placement::Behind(of) => which(ui, of),
-        Placement::Beside { of, side, share } => {
-            which(ui, of);
-            let row = ui.horizontal(|ui| {
-                let sides = [
-                    (Side::Right, "on its right"),
-                    (Side::Left, "on its left"),
-                    (Side::Above, "above it"),
-                    (Side::Below, "below it"),
-                ];
-                let side_name = sides.iter().find(|(s, _)| s == side).map_or("", |(_, n)| *n);
-                let label = ui.label("Side");
-                egui::ComboBox::from_id_salt("side")
-                    .selected_text(side_name)
-                    .show_ui(ui, |ui| {
-                        for (choice, text) in sides {
-                            ui.selectable_value(side, choice, text);
-                        }
-                    })
-                    .response
-                    .labelled_by(label.id);
-                let shares = [(1.0 / 3.0, "a third"), (0.5, "half"), (2.0 / 3.0, "two thirds")];
-                let share_name = (shares.iter())
-                    .min_by(|a, b| (a.0 - *share).abs().total_cmp(&(b.0 - *share).abs()))
-                    .map_or("", |(_, n)| *n);
-                let label = ui.label("taking");
-                egui::ComboBox::from_id_salt("share")
-                    .selected_text(share_name)
-                    .show_ui(ui, |ui| {
-                        for (choice, text) in shares {
-                            if ui.selectable_label(share_name == text, text).clicked() {
-                                *share = choice;
-                            }
-                        }
-                    })
-                    .response
-                    .labelled_by(label.id);
-            });
-            leaf(row.response.rect);
-        }
-        Placement::Default | Placement::Largest => {}
+    });
+    leaf(row.response.rect);
+    radio(ui, &mut anchor.at, Position::Front, "At the front");
+    radio(ui, &mut anchor.at, Position::Back, "At the back");
+}
+
+/// Enabling or disabling, as a node or a connection found has it: doing nothing, enabling, or disabling.
+fn enable_or_disable(ui: &mut egui::Ui, choice: &mut EnableOrDisable) {
+    radio(ui, choice, EnableOrDisable::DoNothing, DO_NOTHING);
+    radio(ui, choice, EnableOrDisable::Enable, "Enable");
+    radio(ui, choice, EnableOrDisable::Disable, "Disable");
+}
+
+/// Beside "Use default location": where that is (see `Layout::place`).
+const DEFAULT_LOCATION: &str = "The app places a new window by how many groups of tabs are showing. With one group, \
+the window gets a new column to the right of it. With two groups, the window goes below the right-hand group. With \
+three or more, the window becomes a tab in the largest group.";
+
+/// Beside "Apply settings": where the values applied come from.
+const APPLYING: &str = "A setting ticked is applied with the value it has, when ticked, on the node matched in the graph \
+now. With no match in the graph, which settings are applied can't be changed.";
+
+/// `to` with the setting named `key` as `from` has it (both nodes of the same type), if that can be read.
+fn copy_setting<N: NodesEnum>(to: &mut N, from: &N, key: &str) {
+    let (Ok(mut json), Ok(source)) = (serde_json::to_value(&*to), serde_json::to_value(from)) else { return };
+    let Some(value) = source.get("settings").and_then(|s| s.get(key)) else { return };
+    if let Some(settings) = json.get_mut("settings").and_then(|s| s.as_object_mut()) {
+        settings.insert(key.to_string(), value.clone());
+    }
+    if let Ok(node) = serde_json::from_value(json) {
+        *to = node;
     }
 }
 
@@ -1190,5 +1314,20 @@ mod tests {
         give_built_ins(&dir, &built_in).unwrap();
         assert!(!file.exists());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_setting_ticked_takes_its_value_from_the_node_matched() {
+        use crate::Nodes;
+        let filter = |low: f64| {
+            let json =
+                serde_json::json!({ "type": "BandPassFilter", "settings": { "low_hz": low, "high_hz": 6000.0 } });
+            serde_json::from_value::<Nodes>(json).unwrap()
+        };
+        let mut role = filter(1.0);
+        copy_setting(&mut role, &filter(300.0), "low_hz");
+        let settings = serde_json::to_value(&role).unwrap()["settings"].clone();
+        assert_eq!(settings["low_hz"], 300.0);
+        assert_eq!(settings["high_hz"], 6000.0, "only the one ticked");
     }
 }
