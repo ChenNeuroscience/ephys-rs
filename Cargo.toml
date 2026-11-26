@@ -12,7 +12,7 @@ default-members = [".", "standard", "examples/chen-neuro"]
 # The framework's and the standard components', which are released together: ephys-rs's version (see
 # docs/development.md), counted up by the pre-commit hook.
 [workspace.package]
-version = "0.311.0"
+version = "0.313.0"
 
 # Versions shared by the framework, the standard components and builds.
 [workspace.dependencies]
@@ -67,6 +67,7 @@ dugong.workspace = true
 arboard.workspace = true
 fs4.workspace = true
 arc-swap.workspace = true
+regex.workspace = true
 
 [lints.rust]
 # Set by the standard components' build script, whose source the tests build too.
@@ -79,7 +80,6 @@ sci-rs.workspace = true
 base64.workspace = true
 realfft.workspace = true
 cpal.workspace = true
-regex.workspace = true
 serialport.workspace = true
 egui_kittest = { version = "0.37", features = ["wgpu", "snapshot"] }
 # For making the README's tour (see scripts/make_tour.sh).

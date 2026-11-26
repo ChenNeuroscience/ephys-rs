@@ -22,6 +22,7 @@ mod node_tools;
 pub mod node_window;
 mod paste_settings;
 mod preferences;
+mod quick_actions;
 mod shortcuts;
 mod style;
 mod toolbar;
@@ -54,8 +55,8 @@ use crate::engine::{
 use crate::layout::{Layout, Mode, Pane};
 use crate::theme::{Colours, Theme};
 use actions::Action;
-use canvas::{Canvas, HEADER, NODE_WIDTH, Selection, Tool};
-use create_menu::{Choice, CreateMenu};
+use canvas::{Canvas, NODE_WIDTH, Selection, Tool};
+use create_menu::CreateMenu;
 use docking::Panes;
 
 /// While running, the nodes have new data all the time, so the app tries to draw a frame every 20 ms (50 a second):
@@ -75,9 +76,10 @@ pub fn run<C: Components>(path: Option<PathBuf>) -> eframe::Result {
     crate::crash::start_session();
     crate::crash::test_if_asked();
     let mut app = App::<C::Nodes, C::Annotations>::new(C::THEMES)
-        .with_quick_actions(C::QUICK_ACTIONS)
-        .with_base_directories(C::BASE_DIRECTORIES)
         .with_config_patches(C::CONFIG_PATCHES)
+        .with_quick_actions(C::QUICK_ACTIONS)
+        .with_quick_action_folder(eframe::storage_dir("ephys-rs").map(|d| d.join("quick_actions")))
+        .with_base_directories(C::BASE_DIRECTORIES)
         .with_about(C::ABOUT, C::SOURCE);
     app.last_crash = crate::crash::take_latest();
     if let Some(report) = &app.last_crash {
@@ -309,8 +311,10 @@ pub struct App<N: NodesEnum, A: AnnotationsEnum> {
     /// Once the recording's taken effect (its first pass), the acquisition clock then.
     recording_since: Option<f64>,
     dev_tools: dev_tools::DevTools,
-    /// The basic view offers these quick actions.
-    quick_actions: &'static [crate::quick_action::QuickAction<N>],
+    /// The basic view offers these quick actions (those not hidden: see `Preferences::hidden_quick_actions`).
+    quick_actions: quick_actions::QuickActions<N>,
+    /// While a quick action's being changed, the editor.
+    quick_action_editor: Option<quick_actions::Editor<N>>,
     /// The status bar counts the errors and warnings since the console was cleared.
     problems: (u64, u64),
     /// The About window, while it's open (see `Components::ABOUT`, and `SOURCE`).
@@ -401,7 +405,8 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             asking: None,
             left_alone: Vec::new(),
             ticked_since_logic: true,
-            quick_actions: &[],
+            quick_actions: Default::default(),
+            quick_action_editor: None,
             problems: (0, 0),
             about: None,
             shortcuts: None,
@@ -791,8 +796,112 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             base_directories: self.base_directories.types(),
             global: &global,
         };
-        if !window.show(ctx, &mut self.preferences, &mut self.recent, &types, &self.hidden, colours) {
+        let mut requests = Vec::new();
+        let (actions, selected) = (&self.quick_actions, self.selection.nodes.len());
+        let mut quick_actions = |ui: &mut egui::Ui, hidden: &mut std::collections::BTreeSet<String>| {
+            quick_actions::manager_ui(ui, actions, hidden, selected, colours, &mut requests);
+        };
+        let preferences = &mut self.preferences;
+        if !window.show(ctx, preferences, &mut self.recent, &types, &self.hidden, colours, &mut quick_actions) {
             self.settings = None;
+        }
+        for request in requests {
+            self.quick_action_request(ctx, request);
+        }
+    }
+
+    /// Settings › Quick actions asks for these.
+    fn quick_action_request(&mut self, ctx: &egui::Context, request: quick_actions::Request) {
+        use quick_actions::{Editor, Request};
+        let entry = |index: usize| self.quick_actions.entries.get(index);
+        match request {
+            Request::New => {
+                let mut ids: Vec<NodeId> = self.selection.nodes.iter().copied().collect();
+                ids.sort();
+                let action = crate::quick_action::QuickAction::from_graph(
+                    "New quick action",
+                    &self.graph,
+                    &self.layout,
+                    &ids,
+                    false,
+                );
+                self.quick_action_editor = Some(Editor::new(action, None, self.colours()));
+            }
+            Request::Edit(index) => {
+                if let Some(entry) = entry(index) {
+                    let editor = Editor::new(entry.action.clone(), entry.file.clone(), self.colours());
+                    self.quick_action_editor = Some(editor);
+                }
+            }
+            Request::Duplicate(index) => {
+                if let Some(entry) = entry(index) {
+                    let mut action = entry.action.clone();
+                    action.name = format!("{} (mine)", action.name);
+                    self.quick_action_editor = Some(Editor::new(action, None, self.colours()));
+                }
+            }
+            Request::Copy(index) => {
+                if let Some(entry) = entry(index) {
+                    let text = entry.action.to_text(&self.config_patches);
+                    let name = entry.action.name.clone();
+                    match arboard::Clipboard::new().and_then(|mut c| c.set_text(text)) {
+                        Ok(()) => self.set_done(ctx, format!("Copied the quick action \"{name}\"")),
+                        Err(e) => self.set_status(ctx, format!("Couldn't copy the quick action: {e}")),
+                    }
+                }
+            }
+            Request::Delete(index) => {
+                if let Some(file) = entry(index).and_then(|e| e.file.clone()) {
+                    match std::fs::remove_file(&file) {
+                        Ok(()) => log::info!("Deleted the quick action in {}", file.display()),
+                        Err(e) => self.set_status(ctx, format!("Couldn't delete {}: {e}", file.display())),
+                    }
+                    self.quick_actions.reload(&self.config_patches);
+                }
+            }
+            Request::Paste => {
+                let text = arboard::Clipboard::new().and_then(|mut c| c.get_text()).unwrap_or_default();
+                self.paste_quick_action(ctx, &text);
+            }
+            Request::OpenFolder => {
+                if let Some(folder) = &self.quick_actions.folder
+                    && let Err(e) = quick_actions::open_folder(folder)
+                {
+                    self.set_status(ctx, format!("Couldn't open {}: {e}", folder.display()));
+                }
+            }
+        }
+    }
+
+    /// A quick action pasted (in Settings, or anywhere settings can be) opens in the editor, to be saved as one of
+    /// the person's own.
+    fn paste_quick_action(&mut self, ctx: &egui::Context, text: &str) {
+        match crate::quick_action::QuickAction::parse(text, &self.config_patches) {
+            Ok(action) => self.quick_action_editor = Some(quick_actions::Editor::new(action, None, self.colours())),
+            Err(problem) => self.set_status(ctx, format!("Couldn't paste a quick action: {problem}")),
+        }
+    }
+
+    /// The app shows the quick action editor, while it's open, with this.
+    fn quick_action_editor(&mut self, ctx: &egui::Context) {
+        let colours = self.colours();
+        let Some(editor) = &mut self.quick_action_editor else { return };
+        let base_directories: Vec<&'static str> = self.base_directories.types().iter().map(|t| t.name).collect();
+        match editor.show::<A>(ctx, &self.graph, &self.layout, &self.selection.nodes, &base_directories, colours) {
+            quick_actions::Outcome::Open => {}
+            quick_actions::Outcome::Cancelled => self.quick_action_editor = None,
+            quick_actions::Outcome::Save => {
+                let action = editor.action();
+                let saved = self.quick_actions.save(&action, editor.file.as_deref(), &self.config_patches);
+                match saved {
+                    Ok(file) => {
+                        log::info!("Saved the quick action \"{}\" to {}", action.name, file.display());
+                        self.quick_action_editor = None;
+                        self.quick_actions.reload(&self.config_patches);
+                    }
+                    Err(problem) => self.set_status(ctx, problem),
+                }
+            }
         }
     }
 
@@ -937,12 +1046,21 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
     /// `crate::config_patching`).
     pub fn with_config_patches(mut self, sets: &'static [config_patching::PatchSet]) -> Self {
         self.config_patches = PatchSets::new(sets);
+        self.quick_actions.reload(&self.config_patches);
         self
     }
 
-    /// A program has the basic view offer `quick_actions` with this.
-    pub fn with_quick_actions(mut self, quick_actions: &'static [crate::quick_action::QuickAction<N>]) -> Self {
-        self.quick_actions = quick_actions;
+    /// A program has the basic view offer `quick_actions` (each as its file has it) with this, before people's own.
+    pub fn with_quick_actions(mut self, quick_actions: &'static [&'static str]) -> Self {
+        let folder = self.quick_actions.folder.take();
+        self.quick_actions = quick_actions::QuickActions::new(quick_actions, folder, &self.config_patches);
+        self
+    }
+
+    /// People's own quick actions are files in `folder`, which the app reads with this.
+    pub fn with_quick_action_folder(mut self, folder: Option<PathBuf>) -> Self {
+        self.quick_actions.folder = folder;
+        self.quick_actions.reload(&self.config_patches);
         self
     }
 
@@ -985,7 +1103,8 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
     /// Settings pasted the usual way (Ctrl/⌘ V, while nothing's being typed in) are pasted as settings, wherever the
     /// pointer is, rather than reaching the canvas as text.
     fn paste_settings_pasted(&mut self, ctx: &egui::Context) {
-        let pasted = |e: &egui::Event| matches!(e, egui::Event::Paste(text) if paste_settings::is_settings(text));
+        let ours = |text: &str| paste_settings::is_settings(text) || crate::quick_action::is_quick_action(text);
+        let pasted = |e: &egui::Event| matches!(e, egui::Event::Paste(text) if ours(text));
         let text = ctx.input_mut(|i| match i.events.iter().position(pasted).map(|at| i.events.remove(at)) {
             Some(egui::Event::Paste(text)) => Some(text),
             _ => None,
@@ -1003,6 +1122,9 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
     }
 
     fn paste_text(&mut self, ctx: &egui::Context, text: &str, target: Option<NodeId>) {
+        if crate::quick_action::is_quick_action(text) {
+            return self.paste_quick_action(ctx, text);
+        }
         let paste = match paste_settings::PasteSettings::new(text, &self.graph, &self.config_patches) {
             Ok(paste) => paste,
             Err(problem) => return self.set_status(ctx, problem),
@@ -1175,18 +1297,21 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
     /// index.
     fn offered(&self) -> Vec<usize> {
         let state = crate::quick_action::QuickState { graph: &self.graph, layout: &self.layout };
-        (0..self.quick_actions.len()).filter(|&i| (self.quick_actions[i].run)(&state).is_some()).collect()
+        let hidden = &self.preferences.hidden_quick_actions;
+        let entries = self.quick_actions.entries.iter().enumerate();
+        let shown = entries.filter(|(_, e)| !hidden.contains(&e.action.name));
+        shown.filter(|(_, e)| e.action.run(&state).is_some()).map(|(i, _)| i).collect()
     }
 
     /// The app does a quick action with this: it changes the graph, and opens windows, as the action says (unless it no
     /// longer applies).
     fn quick_action(&mut self, index: usize) {
-        let Some(action) = self.quick_actions.get(index) else { return };
+        let Some(action) = self.quick_actions.entries.get(index).map(|e| &e.action) else { return };
         if self.locked() {
             return;
         }
         let state = crate::quick_action::QuickState { graph: &self.graph, layout: &self.layout };
-        let Some(change) = (action.run)(&state) else { return };
+        let Some(change) = action.run(&state) else { return };
         self.graph = change.graph;
         self.layout = change.layout;
         if change.arrange {
@@ -1199,7 +1324,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         }
         let recording = self.recording.is_some();
         let types = self.base_directories.types();
-        if let (Some(name), false) = (change.base_directory, recording)
+        if let (Some(name), false) = (change.base_directory.as_deref(), recording)
             && let Some(index) = types.iter().position(|t| t.name == name)
         {
             self.base_directories.choose(index);
@@ -1591,39 +1716,13 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         if !keep {
             self.menu = None;
         }
-        let connect = |app: &mut Self, from: PortAddress, to: PortAddress| {
-            if let Err(e) = app.graph.connect(from, to) {
-                app.set_status(ctx, format!("Can't connect: {e}"));
-            }
-        };
-        match choice {
-            Some(Choice::New(node_type)) => {
-                // Beside the port it's connected to, on the side its edge leaves from.
-                let pos = match from {
-                    Some(port)
-                        if resolved
-                            .get(&port.node)
-                            .is_some_and(|s| s.side(port.role, port.port_idx) == crate::engine::Side::Right) =>
-                    {
-                        [scene.x + 40.0, scene.y - HEADER]
-                    }
-                    Some(_) => [scene.x - NODE_WIDTH - 40.0, scene.y - HEADER],
-                    None => [scene.x - NODE_WIDTH / 2.0, scene.y - HEADER / 2.0],
-                };
-                let id = self.graph.add(N::create(node_type), pos);
-                self.selection.only(id);
-                if let Some(from) = from
-                    && let Some(port) = create_menu::port_on_new::<N>(from, resolved, node_type)
-                {
-                    connect(self, from, PortAddress { node: id, ..port });
-                }
-            }
-            Some(Choice::Existing(port)) => {
-                if let Some(from) = from {
-                    connect(self, from, port);
-                }
-            }
-            None => {}
+        let Some(choice) = choice else { return };
+        let (added, connected) = create_menu::add_chosen(&mut self.graph, resolved, choice, scene, from);
+        if let Some(id) = added {
+            self.selection.only(id);
+        }
+        if let Err(problem) = connected {
+            self.set_status(ctx, problem);
         }
     }
 
@@ -1761,7 +1860,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                 snapshot: &self.snapshot,
                 mode: self.layout.mode,
                 graph_tools,
-                quick_actions: self.quick_actions,
+                quick_actions: &self.quick_actions.entries,
                 offered: &offered,
                 workers: self.workers,
                 locked,
@@ -1800,6 +1899,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             }
         }
         self.settings_window(&ctx);
+        self.quick_action_editor(&ctx);
         self.unattended_ui(&ctx);
         self.upkeep(&ctx);
         self.frame_times.add("Upkeep", ms_since(started));
@@ -2205,7 +2305,7 @@ mod tests {
     }
 
     /// A node's first output port is here, on its right edge.
-    const FIRST_OUTPUT: [f32; 2] = [NODE_WIDTH, HEADER + 5.0 + 11.0];
+    const FIRST_OUTPUT: [f32; 2] = [NODE_WIDTH, canvas::HEADER + 5.0 + 11.0];
 
     #[test]
     fn example_graph() {
@@ -3268,6 +3368,34 @@ mod tests {
         harness.get_by_label("OK").click();
         harness.run_steps(2);
         assert!(harness.state().last_crash.is_none(), "said once");
+    }
+
+    /// A quick action of the build's, duplicated to change, in the editor, on the example graph (which has all but
+    /// the VR computer and its log viewer).
+    #[test]
+    fn the_quick_action_editor() {
+        let mut harness = harness();
+        let ctx = harness.ctx.clone();
+        let vr = harness.state().quick_actions.entries.iter().position(|e| e.action.name == "Use VR computer");
+        harness.state_mut().quick_action_request(&ctx, quick_actions::Request::Duplicate(vr.unwrap()));
+        harness.run_steps(3);
+        let editor = harness.state().quick_action_editor.as_ref().expect("open");
+        assert_eq!(editor.name(), "Use VR computer (mine)");
+        assert!(editor.file.is_none(), "a new file, once saved");
+        assert!(harness.query_by_label_contains("Now, it would have added VR Computer").is_some());
+        harness.snapshot("quick_action_editor");
+        // A node selected, the inspector says how it's found and what's done to it.
+        let detector = harness.state().quick_action_editor.as_ref().unwrap().role_named("Position Detector");
+        harness.state_mut().quick_action_editor.as_mut().unwrap().select(detector);
+        harness.run_steps(3);
+        assert!(harness.query_by_label("Type: Position Detector").is_some());
+        harness.snapshot("quick_action_editor_node");
+        // The log viewer's window opens behind the TTL viewer's, the first time.
+        let log = harness.state().quick_action_editor.as_ref().unwrap().role_named("Log Viewer");
+        harness.state_mut().quick_action_editor.as_mut().unwrap().select(log);
+        harness.run_steps(3);
+        harness.snapshot("quick_action_editor_window");
+        assert!(harness.query_by_label("Whose window").is_some());
     }
 
     #[test]

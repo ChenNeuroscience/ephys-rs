@@ -20,6 +20,8 @@ pub struct CreateMenu {
     pub from: Option<PortAddress>,
     search: String,
     focused: bool,
+    /// The menu's above everything else on this layer: the quick action editor's, above its window.
+    order: Order,
 }
 
 /// Opened from port `from`, the menu offers a node type only if a new node of that type has a port `from` would
@@ -40,7 +42,13 @@ pub fn port_on_new<N: NodesEnum>(
 
 impl CreateMenu {
     pub fn new(screen: Pos2, scene: Pos2, from: Option<PortAddress>) -> Self {
-        CreateMenu { screen, scene, from, search: String::new(), focused: false }
+        CreateMenu { screen, scene, from, search: String::new(), focused: false, order: Order::Foreground }
+    }
+
+    /// The menu, above a window shown as a modal (which is itself in front of the app).
+    pub fn above_modal(mut self) -> Self {
+        self.order = Order::Tooltip;
+        self
     }
 
     /// The app shows the menu with this, which returns what was chosen, if anything, and whether the menu stays open.
@@ -71,7 +79,7 @@ impl CreateMenu {
 
         let mut choice = None;
         let area = egui::Area::new(Id::unique("create-menu"))
-            .order(Order::Foreground)
+            .order(self.order)
             .fixed_pos(self.screen)
             .constrain(true)
             .show(ctx, |ui| {
@@ -138,5 +146,40 @@ impl CreateMenu {
         let escaped = ctx.input(|i| i.key_pressed(Key::Escape));
         let keep = choice.is_none() && !clicked_outside && !escaped;
         (choice, keep)
+    }
+}
+
+/// What's chosen from the menu, opened at `scene` (from the port `from`, if it was), is done to `graph` with this: a new
+/// node beside the port it's connected to, on the side its edge leaves from (or centred where the menu was opened); or
+/// the port chosen connected. This returns the new node, if there is one, or why the edge couldn't be made.
+pub fn add_chosen<N: NodesEnum>(
+    graph: &mut Graph<N>,
+    resolved: &Resolved<N::Edges>,
+    choice: Choice<N::Type>,
+    scene: Pos2,
+    from: Option<PortAddress>,
+) -> (Option<NodeId>, Result<(), String>) {
+    use super::canvas::{HEADER, NODE_WIDTH};
+    let connect = |graph: &mut Graph<N>, from: PortAddress, to: PortAddress| {
+        graph.connect(from, to).map(|_| ()).map_err(|e| format!("Can't connect: {e}"))
+    };
+    match choice {
+        Choice::New(node_type) => {
+            let right = |port: PortAddress| {
+                resolved.get(&port.node).is_some_and(|s| s.side(port.role, port.port_idx) == crate::engine::Side::Right)
+            };
+            let pos = match from {
+                Some(port) if right(port) => [scene.x + 40.0, scene.y - HEADER],
+                Some(_) => [scene.x - NODE_WIDTH - 40.0, scene.y - HEADER],
+                None => [scene.x - NODE_WIDTH / 2.0, scene.y - HEADER / 2.0],
+            };
+            let id = graph.add(N::create(node_type), pos);
+            let connected = match from.and_then(|from| Some((from, port_on_new::<N>(from, resolved, node_type)?))) {
+                Some((from, port)) => connect(graph, from, PortAddress { node: id, ..port }),
+                None => Ok(()),
+            };
+            (Some(id), connected)
+        }
+        Choice::Existing(port) => (None, from.map_or(Ok(()), |from| connect(graph, from, port))),
     }
 }

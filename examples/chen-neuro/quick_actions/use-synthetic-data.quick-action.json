@@ -1,0 +1,102 @@
+{
+  "ephys-rs quick action": {
+    "core": "0.310.0",
+    "std": "0.310.0",
+    "chen-neuro": "0.1159.0"
+  },
+  "name": "Use synthetic data",
+  "description": "The fake acquisition board and camera (run synthetic_streams' scripts), instead of real devices",
+  "graph": {
+    "next_id": 3,
+    "nodes": {
+      "1": {
+        "label": "Acquisition Board",
+        "pos": [
+          0.0,
+          0.0
+        ],
+        "node": {
+          "settings": {
+            "bandwidth": {
+              "dsp_hz": 0.5,
+              "lower_hz": 1.0,
+              "upper_hz": 7500.0
+            },
+            "headstages": [
+              {
+                "channels": 32,
+                "port": "A1"
+              },
+              {
+                "channels": 32,
+                "port": "B1"
+              }
+            ],
+            "sample_rate": 30000,
+            "source": {
+              "address": "127.0.0.1:9",
+              "kind": "fake"
+            }
+          },
+          "type": "AcquisitionBoard"
+        },
+        "quick": {
+          "mode": "if_present",
+          "conditions": [
+            {
+              "setting": "source.kind",
+              "op": "!=",
+              "value": "fake"
+            }
+          ],
+          "settings": [
+            "source"
+          ]
+        }
+      },
+      "2": {
+        "label": "Camera",
+        "pos": [
+          0.0,
+          182.0
+        ],
+        "node": {
+          "settings": {
+            "settings": {
+              "exposure": {
+                "mode": "unchanged"
+              },
+              "frame_rate": 50.0,
+              "frame_size": [
+                640,
+                480
+              ],
+              "gain": {
+                "mode": "unchanged"
+              }
+            },
+            "source": {
+              "address": "127.0.0.1:27030",
+              "kind": "fake"
+            }
+          },
+          "type": "Camera"
+        },
+        "quick": {
+          "mode": "if_present",
+          "conditions": [
+            {
+              "setting": "source.kind",
+              "op": "!=",
+              "value": "fake"
+            }
+          ],
+          "settings": [
+            "source"
+          ]
+        }
+      }
+    },
+    "edges": []
+  }
+}

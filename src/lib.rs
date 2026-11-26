@@ -71,8 +71,9 @@ pub trait Components: 'static {
     type Annotations: annotation::AnnotationsEnum;
     /// The program's themes, the first being the default.
     const THEMES: &'static [theme::Theme];
-    /// The basic view offers the program's quick actions in this order.
-    const QUICK_ACTIONS: &'static [quick_action::QuickAction<Self::Nodes>] = &[];
+    /// The basic view offers the program's quick actions in this order, before people's own: each as its file has it
+    /// (see `quick_action`), with `include_str!`.
+    const QUICK_ACTIONS: &'static [&'static str] = &[];
     /// Recordings go in base directories of these types (see `base_directory`), the first being the default.
     const BASE_DIRECTORIES: &'static [base_directory::BaseDirectoryType] = &[];
     /// The app patches what it reads with the patches of the parts the program's built from, in this order (see

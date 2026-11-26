@@ -1,6 +1,7 @@
 //! Every piece of config the app reads back records which version of each part of the program wrote it, so later
 //! versions can patch it up to date. That covers saved files (projects, and the settings saved beside recordings),
-//! settings pasted from the clipboard, and the base directory's settings in the app's stored preferences.
+//! settings pasted from the clipboard, quick actions (shaped as projects: see `crate::quick_action`), and the base
+//! directory's settings in the app's stored preferences.
 //!
 //! Each part of the program has a `PatchSet`: the core's (`crate::config_patches`), the standard components'
 //! (`crate::standard::config_patches`), and a build's own. When a part changes what it saves, it adds a `Patch`, which

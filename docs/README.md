@@ -8,7 +8,7 @@ you're working on. For how to use it, see the [user guide](user/README.md).
 - [Nodes](nodes.md): writing a node type, from settings and ports to state, views, threads and commands.
 - [Edges](edges.md): data streams, values out and commands, and how buffers are made.
 - [Annotations](annotations.md): things on the canvas that aren't part of the graph.
-- [Quick actions](quick-actions.md): ready-made changes to the graph, offered in basic mode.
+- [Quick actions](quick-actions.md): ready-made changes to the graph, offered in basic mode: the build's, and people's own.
 - [Base directories](base-directories.md): where recordings go, chosen in the main toolbar, for every writer.
 - [Components](components.md): how some of the components work: cameras, the timing LED, alarms.
 - [Development](development.md): building, testing (snapshots included), versions and releases, config patches for what's

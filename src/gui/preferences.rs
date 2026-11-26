@@ -1,6 +1,6 @@
 //! The app keeps its preferences (Settings…) between sessions, with the recent files: stopping recording and
 //! acquisition when no one's been using the app for a while; which node, annotation and base directory types are
-//! offered; and how many recent files are kept.
+//! offered, and which quick actions; and how many recent files are kept.
 //!
 //! The GUI does the auto stopping: it notes when there was last input (`App::last_input`), warns in the last minutes
 //! before a stop (any input carries on), stops, and says it did. Recording stops no later than acquisition, as stopping
@@ -42,6 +42,8 @@ pub struct Preferences {
     pub hidden: Hidden,
     /// The app keeps this many recent files (up to `MOST_RECENT_FILES`).
     pub recent_files: usize,
+    /// The basic view doesn't offer these quick actions, by name. Unlike what's `hidden`, this applies straight away.
+    pub hidden_quick_actions: BTreeSet<String>,
 }
 
 impl Default for Preferences {
@@ -51,6 +53,7 @@ impl Default for Preferences {
             stop_acquisition: IdleLimit { on: true, minutes: 120 },
             hidden: Hidden::default(),
             recent_files: 10,
+            hidden_quick_actions: BTreeSet::new(),
         }
     }
 }
@@ -246,13 +249,20 @@ pub enum Section {
     Annotations,
     BaseDirectories,
     RecentFiles,
+    QuickActions,
     /// A type of global settings has a section, by its index in `Types::global`.
     Global(usize),
 }
 
 impl Section {
-    const ALL: [Section; 5] =
-        [Section::AutoStop, Section::Nodes, Section::Annotations, Section::BaseDirectories, Section::RecentFiles];
+    const ALL: [Section; 6] = [
+        Section::AutoStop,
+        Section::QuickActions,
+        Section::Nodes,
+        Section::Annotations,
+        Section::BaseDirectories,
+        Section::RecentFiles,
+    ];
 
     fn name(self) -> &'static str {
         match self {
@@ -261,6 +271,7 @@ impl Section {
             Section::Annotations => "Annotations",
             Section::BaseDirectories => "Base directories",
             Section::RecentFiles => "Recent files",
+            Section::QuickActions => "Quick actions",
             Section::Global(_) => "",
         }
     }
@@ -278,7 +289,9 @@ const SECTION_HEIGHT: f32 = 340.0;
 impl SettingsWindow {
     /// The app shows the window with this, which edits `preferences` (and `recent`, the recent files) as it goes.
     /// `hidden_at_start` is what's been hidden since the app started (of `types`), so the window can say a restart's
-    /// needed when that's changed. This returns whether the window's still open.
+    /// needed when that's changed. The quick actions' section is drawn by `quick_actions`, which is given which are
+    /// hidden. This returns whether the window's still open.
+    #[allow(clippy::too_many_arguments)]
     pub fn show(
         &mut self,
         ctx: &egui::Context,
@@ -287,6 +300,7 @@ impl SettingsWindow {
         types: &Types,
         hidden_at_start: &Hidden,
         colours: &Colours,
+        quick_actions: &mut dyn FnMut(&mut egui::Ui, &mut BTreeSet<String>),
     ) -> bool {
         let mut close = false;
         let restart = preferences.hidden != *hidden_at_start;
@@ -321,7 +335,11 @@ impl SettingsWindow {
                     egui::ScrollArea::vertical().max_height(SECTION_HEIGHT).auto_shrink([false, false]).show(
                         ui,
                         |ui| {
-                            self.section_ui(ui, preferences, recent, types, colours);
+                            if self.section == Section::QuickActions {
+                                quick_actions(ui, &mut preferences.hidden_quick_actions);
+                            } else {
+                                self.section_ui(ui, preferences, recent, types, colours);
+                            }
                         },
                     );
                 });
@@ -398,6 +416,7 @@ impl SettingsWindow {
                 let items: Vec<(&str, &str)> = types.base_directories.iter().map(|t| (t.name, t.description)).collect();
                 checklist(ui, &items, &mut preferences.hidden.base_directories);
             }
+            Section::QuickActions => {}
             Section::Global(i) => {
                 if let Some(global) = types.global.get(i) {
                     global.ui(ui, colours);
@@ -546,7 +565,14 @@ mod tests {
         // The Spinnaker cameras' tab: what it finds is the same anywhere without the SDK (the others' differ, with
         // the Open Ephys GUI's files).
         let spinnaker = global.iter().position(|t| t.name == "Spinnaker cameras").unwrap();
-        for section in [Section::AutoStop, Section::Nodes, Section::RecentFiles, Section::Global(spinnaker)] {
+        let sections = [
+            Section::AutoStop,
+            Section::QuickActions,
+            Section::Nodes,
+            Section::RecentFiles,
+            Section::Global(spinnaker),
+        ];
+        for section in sections {
             let mut preferences = Preferences::default();
             preferences.hidden.nodes.insert("Spectrum".into());
             let mut window = SettingsWindow { section };
@@ -557,10 +583,32 @@ mod tests {
                 global: &global.clone(),
             };
             let mut recent = vec![PathBuf::from("/a.json"), PathBuf::from("/b.json")];
+            let patches = crate::config_patching::PatchSets::new(crate::components::CONFIG_PATCHES);
+            let built_in = crate::components::quick_actions::QUICK_ACTIONS;
+            let quick_actions = super::super::quick_actions::QuickActions::<Nodes>::new(built_in, None, &patches);
             let mut harness = egui_kittest::Harness::builder().with_size([760.0, 600.0]).wgpu().build_ui_state(
                 move |ui, preferences: &mut Preferences| {
                     let colours = &THEMES[0].colours;
-                    window.show(ui.ctx(), preferences, &mut recent, &types, &Hidden::default(), colours);
+                    window.show(
+                        ui.ctx(),
+                        preferences,
+                        &mut recent,
+                        &types,
+                        &Hidden::default(),
+                        colours,
+                        &mut |ui, hidden| {
+                            hidden.insert("Use camera".into());
+                            let mut requests = Vec::new();
+                            super::super::quick_actions::manager_ui(
+                                ui,
+                                &quick_actions,
+                                hidden,
+                                0,
+                                colours,
+                                &mut requests,
+                            );
+                        },
+                    );
                 },
                 preferences,
             );

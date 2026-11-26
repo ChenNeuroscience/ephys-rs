@@ -1,0 +1,102 @@
+{
+  "ephys-rs quick action": {
+    "core": "0.310.0",
+    "std": "0.310.0",
+    "chen-neuro": "0.1159.0"
+  },
+  "name": "Use real devices",
+  "description": "An Open Ephys acquisition board (gen 1/2) and a FLIR camera, instead of the synthetic data",
+  "graph": {
+    "next_id": 3,
+    "nodes": {
+      "1": {
+        "label": "Acquisition Board",
+        "pos": [
+          0.0,
+          0.0
+        ],
+        "node": {
+          "settings": {
+            "bandwidth": {
+              "dsp_hz": 0.5,
+              "lower_hz": 1.0,
+              "upper_hz": 7500.0
+            },
+            "headstages": [
+              {
+                "channels": 32,
+                "port": "A1"
+              },
+              {
+                "channels": 32,
+                "port": "B1"
+              }
+            ],
+            "sample_rate": 30000,
+            "source": {
+              "board": "open_ephys",
+              "kind": "opal_kelly"
+            }
+          },
+          "type": "AcquisitionBoard"
+        },
+        "quick": {
+          "mode": "if_present",
+          "conditions": [
+            {
+              "setting": "source.kind",
+              "op": "==",
+              "value": "fake"
+            }
+          ],
+          "settings": [
+            "source"
+          ]
+        }
+      },
+      "2": {
+        "label": "Camera",
+        "pos": [
+          0.0,
+          182.0
+        ],
+        "node": {
+          "settings": {
+            "settings": {
+              "exposure": {
+                "mode": "unchanged"
+              },
+              "frame_rate": 50.0,
+              "frame_size": [
+                640,
+                480
+              ],
+              "gain": {
+                "mode": "unchanged"
+              }
+            },
+            "source": {
+              "kind": "spinnaker",
+              "serial": ""
+            }
+          },
+          "type": "Camera"
+        },
+        "quick": {
+          "mode": "if_present",
+          "conditions": [
+            {
+              "setting": "source.kind",
+              "op": "==",
+              "value": "fake"
+            }
+          ],
+          "settings": [
+            "source"
+          ]
+        }
+      }
+    },
+    "edges": []
+  }
+}

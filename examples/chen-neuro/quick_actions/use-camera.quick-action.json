@@ -1,0 +1,474 @@
+{
+  "ephys-rs quick action": {
+    "core": "0.310.0",
+    "std": "0.310.0",
+    "chen-neuro": "0.1159.0"
+  },
+  "name": "Use camera",
+  "description": "Positions from the camera and position detector, keeping the VR computer disabled",
+  "graph": {
+    "next_id": 23,
+    "nodes": {
+      "11": {
+        "label": "Camera",
+        "pos": [
+          0.0,
+          272.0
+        ],
+        "node": {
+          "type": "Camera",
+          "settings": {
+            "source": {
+              "kind": "spinnaker",
+              "serial": ""
+            },
+            "settings": {
+              "frame_rate": 50.0,
+              "frame_size": [
+                640,
+                480
+              ],
+              "exposure": {
+                "mode": "unchanged"
+              },
+              "gain": {
+                "mode": "unchanged"
+              }
+            }
+          }
+        },
+        "quick": {
+          "mode": "if_present",
+          "enabled": true
+        }
+      },
+      "12": {
+        "label": "Position Detector",
+        "pos": [
+          0.0,
+          418.0
+        ],
+        "node": {
+          "type": "PositionDetector",
+          "settings": {
+            "detection": {
+              "threshold": 200,
+              "min_area": 5,
+              "max_area": null,
+              "crop": {
+                "shape": "none"
+              },
+              "edge": {
+                "enabled": false,
+                "width": 25.0,
+                "threshold": 250
+              },
+              "rulers": [],
+              "timing_led": {
+                "enabled": false,
+                "center": [
+                  0.0,
+                  0.0
+                ],
+                "radius": 10.0,
+                "separate": false,
+                "threshold": 200,
+                "min_area": 5
+              }
+            }
+          }
+        },
+        "quick": {
+          "mode": "require",
+          "enabled": true
+        }
+      },
+      "13": {
+        "label": "Tracker View",
+        "pos": [
+          280.0,
+          160.0
+        ],
+        "node": {
+          "type": "TrackerView",
+          "settings": {
+            "overlays": {
+              "crop": {
+                "visible": true,
+                "locked": false
+              },
+              "detection": {
+                "visible": true,
+                "locked": false
+              },
+              "rulers": {
+                "visible": true,
+                "locked": false
+              },
+              "timing": {
+                "visible": true,
+                "locked": false
+              }
+            },
+            "camera_locked": false
+          }
+        },
+        "quick": {
+          "mode": "if_present"
+        }
+      },
+      "14": {
+        "label": "Write LTX",
+        "pos": [
+          280.0,
+          350.0
+        ],
+        "node": {
+          "type": "WriteLtx",
+          "settings": {
+            "scales": {
+              "spikes_uv": 250.0,
+              "eeg_uv": 250.0
+            }
+          }
+        },
+        "quick": {
+          "mode": "if_present"
+        }
+      },
+      "18": {
+        "label": "Arduino",
+        "pos": [
+          0.0,
+          586.0
+        ],
+        "node": {
+          "type": "Arduino",
+          "settings": {
+            "port": "",
+            "baud": 57600,
+            "pins": [
+              {
+                "pin": 8,
+                "when": "Acquiring",
+                "on": false
+              }
+            ]
+          }
+        },
+        "quick": {
+          "mode": "if_present",
+          "enabled": true
+        }
+      },
+      "19": {
+        "label": "Alarm Processor",
+        "pos": [
+          280.0,
+          694.0
+        ],
+        "node": {
+          "type": "AlarmProcessor",
+          "settings": {
+            "alarms": {
+              "list": [
+                {
+                  "id": 0,
+                  "on": true,
+                  "seconds": 20.0,
+                  "kind": {
+                    "SpikeRate": {
+                      "low": 5.0,
+                      "high": 400.0,
+                      "selection": {
+                        "left_out": [],
+                        "together": true
+                      }
+                    }
+                  }
+                },
+                {
+                  "id": 1,
+                  "on": true,
+                  "seconds": 20.0,
+                  "kind": {
+                    "LfpSaturation": {
+                      "level_uv": 6300.0,
+                      "low": 95.0,
+                      "selection": {
+                        "left_out": [],
+                        "together": false
+                      }
+                    }
+                  }
+                },
+                {
+                  "id": 2,
+                  "on": true,
+                  "seconds": 20.0,
+                  "kind": {
+                    "MissingPositions": {
+                      "low": 80.0
+                    }
+                  }
+                }
+              ],
+              "next_id": 3
+            }
+          }
+        },
+        "quick": {
+          "mode": "if_present"
+        }
+      },
+      "21": {
+        "label": "VR Computer",
+        "pos": [
+          0.0,
+          698.0
+        ],
+        "node": {
+          "settings": {
+            "custom": {},
+            "fps": 50.0,
+            "ip": "127.0.0.1",
+            "log_width": 256,
+            "port": 27032
+          },
+          "type": "VrComputer"
+        },
+        "show_in_basic_override": true,
+        "quick": {
+          "mode": "if_present",
+          "enabled": false
+        }
+      },
+      "22": {
+        "label": "Log Viewer",
+        "pos": [
+          280.0,
+          906.0
+        ],
+        "node": {
+          "settings": {},
+          "type": "LogViewer"
+        },
+        "quick": {
+          "mode": "if_present",
+          "enabled": false,
+          "window": "close"
+        }
+      }
+    },
+    "edges": [
+      {
+        "from": {
+          "node": 12,
+          "role": "DataStreamOut",
+          "port": "positions"
+        },
+        "to": {
+          "node": 13,
+          "role": "DataStreamIn",
+          "port": "positions"
+        },
+        "mode": "replace"
+      },
+      {
+        "from": {
+          "node": 12,
+          "role": "DataStreamOut",
+          "port": "positions"
+        },
+        "to": {
+          "node": 14,
+          "role": "DataStreamIn",
+          "port": "positions"
+        },
+        "mode": "replace"
+      },
+      {
+        "from": {
+          "node": 12,
+          "role": "DataStreamOut",
+          "port": "positions"
+        },
+        "to": {
+          "node": 19,
+          "role": "DataStreamIn",
+          "port": "positions"
+        },
+        "mode": "replace"
+      },
+      {
+        "from": {
+          "node": 12,
+          "role": "DataStreamOut",
+          "port": "pos_ttl"
+        },
+        "to": {
+          "node": 14,
+          "role": "DataStreamIn",
+          "port": "pos_ttl"
+        },
+        "mode": "replace"
+      },
+      {
+        "from": {
+          "node": 12,
+          "role": "DataStreamOut",
+          "port": "pos_ttl"
+        },
+        "to": {
+          "node": 19,
+          "role": "DataStreamIn",
+          "port": "ttl"
+        },
+        "mode": "replace"
+      },
+      {
+        "from": {
+          "node": 13,
+          "role": "ValInCmdOut",
+          "port": "detection"
+        },
+        "to": {
+          "node": 12,
+          "role": "ValOutCmdIn",
+          "port": "detection"
+        },
+        "mode": "replace"
+      },
+      {
+        "from": {
+          "node": 14,
+          "role": "ValIn",
+          "port": "detection"
+        },
+        "to": {
+          "node": 12,
+          "role": "ValOutCmdIn",
+          "port": "detection"
+        },
+        "mode": "replace"
+      },
+      {
+        "from": {
+          "node": 21,
+          "role": "DataStreamOut",
+          "port": "positions"
+        },
+        "to": {
+          "node": 13,
+          "role": "DataStreamIn",
+          "port": "positions"
+        },
+        "mode": "remove"
+      },
+      {
+        "from": {
+          "node": 21,
+          "role": "DataStreamOut",
+          "port": "positions"
+        },
+        "to": {
+          "node": 14,
+          "role": "DataStreamIn",
+          "port": "positions"
+        },
+        "mode": "remove"
+      },
+      {
+        "from": {
+          "node": 21,
+          "role": "DataStreamOut",
+          "port": "positions"
+        },
+        "to": {
+          "node": 19,
+          "role": "DataStreamIn",
+          "port": "positions"
+        },
+        "mode": "remove"
+      },
+      {
+        "from": {
+          "node": 21,
+          "role": "DataStreamOut",
+          "port": "pos_ttl"
+        },
+        "to": {
+          "node": 14,
+          "role": "DataStreamIn",
+          "port": "pos_ttl"
+        },
+        "mode": "remove"
+      },
+      {
+        "from": {
+          "node": 21,
+          "role": "DataStreamOut",
+          "port": "pos_ttl"
+        },
+        "to": {
+          "node": 19,
+          "role": "DataStreamIn",
+          "port": "ttl"
+        },
+        "mode": "remove"
+      },
+      {
+        "from": {
+          "node": 13,
+          "role": "ValInCmdOut",
+          "port": "detection"
+        },
+        "to": {
+          "node": 21,
+          "role": "ValOutCmdIn",
+          "port": "settings"
+        },
+        "mode": "remove"
+      },
+      {
+        "from": {
+          "node": 14,
+          "role": "ValIn",
+          "port": "detection"
+        },
+        "to": {
+          "node": 21,
+          "role": "ValOutCmdIn",
+          "port": "settings"
+        },
+        "mode": "remove"
+      },
+      {
+        "from": {
+          "node": 21,
+          "role": "DataStreamOut",
+          "port": "log"
+        },
+        "to": {
+          "node": 14,
+          "role": "DataStreamIn",
+          "port": "log"
+        },
+        "mode": "remove"
+      },
+      {
+        "from": {
+          "node": 21,
+          "role": "DataStreamOut",
+          "port": "log"
+        },
+        "to": {
+          "node": 22,
+          "role": "DataStreamIn",
+          "port": "log"
+        },
+        "mode": "remove"
+      }
+    ]
+  }
+}

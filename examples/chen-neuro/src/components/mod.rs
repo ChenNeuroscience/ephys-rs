@@ -20,7 +20,6 @@ use crate::standard::themes::{DARK, LIGHT, RED_ENVELOPE, SONG_CONTEST, SPANGLED}
 use crate::standard::tracking::{camera, position_detector, tracker_view, video_viewer};
 use ephys_rs::base_directory::BaseDirectoryType;
 use ephys_rs::config_patching::PatchSet;
-use ephys_rs::quick_action::QuickAction;
 use ephys_rs::theme::Theme;
 use ephys_rs::{Components, build_version};
 use ephys_rs::{annotations_enum, nodes_enum};
@@ -127,7 +126,7 @@ impl Components for ChenNeuro {
     type Nodes = Nodes;
     type Annotations = AnnotationTypes;
     const THEMES: &'static [Theme] = THEMES;
-    const QUICK_ACTIONS: &'static [QuickAction<Nodes>] = quick_actions::QUICK_ACTIONS;
+    const QUICK_ACTIONS: &'static [&'static str] = quick_actions::QUICK_ACTIONS;
     const BASE_DIRECTORIES: &'static [BaseDirectoryType] = BASE_DIRECTORIES;
     const CONFIG_PATCHES: &'static [PatchSet] = CONFIG_PATCHES;
     const ABOUT: &'static str = "The Chen lab's build, for its LTX rig:\n\n\

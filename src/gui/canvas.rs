@@ -45,6 +45,38 @@ const HIT_DISTANCE: f32 = 8.0;
 const MIN_ZOOM: f32 = 0.2;
 const MAX_ZOOM: f32 = 2.5;
 
+/// The canvas can draw a graph other than the app's (the quick action editor's: see `super::quick_actions`), with more
+/// on it. This says what: by default (`()`, for the app's graph), nothing more.
+pub trait Extras {
+    /// Whether the canvas is the app's graph's: with annotations, windows to open, pasting, and the app's menus on
+    /// nodes and edges. Otherwise the canvas has just the graph, with `node_menu` and `edge_menu` for menus.
+    fn app_graph(&self) -> bool {
+        true
+    }
+    /// A label under a node, in a colour: what the node's for, say.
+    fn node_badge(&self, _id: NodeId) -> Option<(String, Color32)> {
+        None
+    }
+    /// An edge can be drawn in a colour of its own, rather than its kind's.
+    fn edge_colour(&self, _edge: &Edge) -> Option<Color32> {
+        None
+    }
+    /// A node drawn faded, as a disabled node is: one that plays no part, say.
+    fn node_faded(&self, _id: NodeId) -> bool {
+        false
+    }
+    /// An edge drawn faded, as one to or from a disabled node is.
+    fn edge_faded(&self, _edge: &Edge) -> bool {
+        false
+    }
+    /// A node's menu, when the canvas isn't the app's graph's.
+    fn node_menu(&mut self, _ui: &mut egui::Ui, _id: NodeId) {}
+    /// An edge's menu, when the canvas isn't the app's graph's.
+    fn edge_menu(&mut self, _ui: &mut egui::Ui, _edge: Edge) {}
+}
+
+impl Extras for () {}
+
 /// Someone can select nodes and annotations on the canvas, or an edge.
 #[derive(Default)]
 pub struct Selection {
@@ -381,9 +413,19 @@ pub struct Canvas {
     pub legend_open: bool,
     /// The eye in the legend shows or hides settings, on the nodes and as edges: without them there's less clutter.
     pub settings_shown: bool,
+    /// Another canvas (the quick action editor's) has its widgets' ids apart from the app's with this.
+    pub id_salt: Option<Id>,
 }
 
 impl Canvas {
+    /// The id of one of the canvas's widgets.
+    fn id(&self, source: impl std::hash::Hash + std::fmt::Debug) -> Id {
+        match self.id_salt {
+            Some(salt) => salt.with(source),
+            None => Id::unique(source),
+        }
+    }
+
     pub fn new(colours: &'static Colours) -> Self {
         Canvas {
             view: TSTransform::IDENTITY,
@@ -400,6 +442,7 @@ impl Canvas {
             drawing: None,
             legend_open: true,
             settings_shown: true,
+            id_salt: None,
         }
     }
 }
@@ -488,7 +531,9 @@ impl Canvas {
         selection: &mut Selection,
         open_windows: &HashSet<NodeId>,
         events: &mut Vec<Event>,
+        extras: &mut dyn Extras,
     ) {
+        let app_graph = extras.app_graph();
         let (rect, background) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
         self.screen_rect = rect;
         if self.frame_requested && rect.is_positive() {
@@ -504,8 +549,10 @@ impl Canvas {
         let pointer = ui.input(|i| i.pointer.latest_pos());
         let shift = ui.input(|i| i.modifiers.shift);
 
-        self.annotations(ui, &painter, graph, annotations, selection, events, false);
-        self.paste(ui, annotations, selection, pointer.filter(|p| rect.contains(*p)));
+        if app_graph {
+            self.annotations(ui, &painter, graph, annotations, selection, events, false);
+            self.paste(ui, annotations, selection, pointer.filter(|p| rect.contains(*p)));
+        }
 
         // Selected nodes are drawn last, so on top.
         let mut order: Vec<NodeId> = graph.ids().filter(|id| !selection.nodes.contains(id)).collect();
@@ -516,7 +563,7 @@ impl Canvas {
         for &id in &order {
             if let (Some(layout), Some(state)) = (layouts.get(&id), resolved.get(&id)) {
                 let open = open_windows.contains(&id);
-                moved |= self.interact_node(ui, id, layout, state, open, graph, annotations, selection, events);
+                moved |= self.interact_node(ui, id, layout, state, open, graph, annotations, selection, events, extras);
             }
         }
         if moved {
@@ -525,6 +572,7 @@ impl Canvas {
 
         let drawn = match self.tool {
             Tool::Select => None,
+            Tool::Draw(_) if !app_graph => None,
             Tool::Draw(name) => {
                 let annotation_type = A::Type::named(name);
                 annotation_type.and_then(|t| self.draw_annotation(ui, rect, t, annotations, selection))
@@ -583,6 +631,9 @@ impl Canvas {
         }
         if let Some(edge) = self.menu_edge {
             let menu = background.context_menu(|ui| {
+                if !app_graph {
+                    return extras.edge_menu(ui, edge);
+                }
                 let disabled = graph.is_edge_disabled(&edge);
                 if ui.button(if disabled { "Enable connection" } else { "Disable connection" }).clicked() {
                     events.push(Event::SetEdgeDisabled(edge, !disabled));
@@ -596,7 +647,7 @@ impl Canvas {
             }
         }
 
-        self.paint_edges(&painter, graph, resolved, &layouts, selection);
+        self.paint_edges(&painter, graph, resolved, &layouts, selection, &*extras);
         if let (Some(port), Some(p)) = (self.wire, pointer)
             && let Some(start) = port_pos(&layouts, port)
             && let Some(info) = resolved.get(&port.node).and_then(|s| s.info(port.role, port.port_idx))
@@ -623,10 +674,16 @@ impl Canvas {
             let has_target = targets.iter().any(|t| t.node == id);
             let dim = self.wire.is_some_and(|w| w.node != id) && !has_target;
             let ports = PortPaint { connected: &connected, targets: &targets, target, pointer, colours: self.colours };
-            paint_node(&painter, id, layout, entry, state, selected, dim || entry.disabled, &ports);
+            let faded = dim || entry.disabled || extras.node_faded(id);
+            paint_node(&painter, id, layout, entry, state, selected, faded, &ports);
+            if let Some((text, colour)) = extras.node_badge(id) {
+                paint_badge(&painter, layout, &text, colour, self.colours);
+            }
         }
         // Those above the graph (images), over the nodes, and grabbed before them.
-        self.annotations(ui, &painter, graph, annotations, selection, events, true);
+        if app_graph {
+            self.annotations(ui, &painter, graph, annotations, selection, events, true);
+        }
 
         if let (Some(r), Tool::Draw(name)) = (drawn, self.tool)
             && let Some(annotation_type) = A::Type::named(name)
@@ -657,7 +714,7 @@ impl Canvas {
         selection: &mut Selection,
     ) -> Option<Rect> {
         let response = ui
-            .interact(rect, Id::unique("draw-annotation"), Sense::click_and_drag())
+            .interact(rect, self.id("draw-annotation"), Sense::click_and_drag())
             .on_hover_cursor(egui::CursorIcon::Crosshair);
         let pointer = response.interact_pointer_pos().or(response.hover_pos());
         let to_scene = self.to_screen.inverse();
@@ -737,9 +794,9 @@ impl Canvas {
             return; // no room
         }
         // Over the whole legend, so clicks on it don't reach the graph beneath.
-        ui.interact(rect, Id::unique("legend"), Sense::click_and_drag());
+        ui.interact(rect, self.id("legend"), Sense::click_and_drag());
         let title = Rect::from_min_size(rect.min + egui::vec2(PAD, PAD), egui::vec2(WIDTH - 2.0 * PAD, ROW));
-        let toggle = ui.interact(title, Id::unique("legend-toggle"), Sense::click());
+        let toggle = ui.interact(title, self.id("legend-toggle"), Sense::click());
         toggle.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Legend"));
         if toggle.clicked() {
             self.legend_open = !self.legend_open;
@@ -841,7 +898,7 @@ impl Canvas {
     /// to remove unseen.
     fn settings_eye(&mut self, ui: &egui::Ui, painter: &Painter, rect: Rect, selection: &mut Selection) {
         let tip = if self.settings_shown { "Hide settings" } else { "Show settings" };
-        let eye_button = ui.interact(rect, Id::unique("legend-settings"), Sense::click());
+        let eye_button = ui.interact(rect, self.id("legend-settings"), Sense::click());
         eye_button.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tip));
         let hovered = eye_button.hovered();
         if eye_button.on_hover_text(tip).clicked() {
@@ -966,7 +1023,7 @@ impl Canvas {
             let reach = rect.expand(AnnotationUi::REACH);
             // Only where it can be grabbed (or while it's being dragged), so clicks elsewhere in it reach what's
             // beneath: a box's inside, say.
-            let body_id = Id::unique(("annotation", id));
+            let body_id = self.id(("annotation", id));
             let grabbable = ui.ctx().dragged_id() == Some(body_id)
                 || pointer.is_some_and(|p| reach.contains(p) && annotation.kind.hit(rect, p, zoom));
             let sense = if grabbable { Sense::click_and_drag() } else { Sense::hover() };
@@ -1037,9 +1094,11 @@ impl Canvas {
         annotations: &mut Annotations<A>,
         selection: &mut Selection,
         events: &mut Vec<Event>,
+        extras: &mut dyn Extras,
     ) -> bool {
+        let app_graph = extras.app_graph();
         let shift = ui.input(|i| i.modifiers.shift);
-        let body = ui.interact(layout.rect, Id::unique(("node", id)), Sense::click_and_drag());
+        let body = ui.interact(layout.rect, self.id(("node", id)), Sense::click_and_drag());
         if body.drag_started() && !selection.nodes.contains(&id) {
             if !shift {
                 selection.clear();
@@ -1055,7 +1114,7 @@ impl Canvas {
         // brings it to the front.
         if body.clicked() {
             if !shift {
-                if selection.nodes.contains(&id) {
+                if selection.nodes.contains(&id) && app_graph {
                     events.push(Event::OpenWindow(id, Some(Pane::Home)));
                 }
                 selection.only(id);
@@ -1064,6 +1123,9 @@ impl Canvas {
             }
         }
         body.context_menu(|ui| {
+            if !app_graph {
+                return extras.node_menu(ui, id);
+            }
             if let Some(entry) = graph.get_mut(id) {
                 let name = ui.label(egui::RichText::new("Name").small().weak());
                 ui.text_edit_singleline(&mut entry.label).labelled_by(name.id);
@@ -1112,15 +1174,14 @@ impl Canvas {
         });
 
         if !state.warnings.is_empty() {
-            ui.interact(layout.badge, Id::unique(("badge", id)), Sense::hover())
-                .on_hover_text(state.warnings.join("\n"));
+            ui.interact(layout.badge, self.id(("badge", id)), Sense::hover()).on_hover_text(state.warnings.join("\n"));
         }
 
         for port in state.ports(id) {
             let Some(pos) = layout.port(port) else { continue };
             let response = ui.interact(
                 Rect::from_center_size(pos, Vec2::splat(2.0 * HIT_DISTANCE)),
-                Id::unique(("port", port.node, port.role.name(), port.port_idx)),
+                self.id(("port", port.node, port.role.name(), port.port_idx)),
                 Sense::click_and_drag(),
             );
             if response.drag_started() {
@@ -1224,6 +1285,7 @@ impl Canvas {
         resolved: &Resolved<N::Edges>,
         layouts: &HashMap<NodeId, Layout>,
         selection: &Selection,
+        extras: &dyn Extras,
     ) {
         let zoom = self.to_screen.scaling;
         let width = 2.0 * zoom.sqrt();
@@ -1235,14 +1297,14 @@ impl Canvas {
             let Some(state) = resolved.get(&source.node) else { continue };
             let Some(info) = state.info(source.role, source.port_idx) else { continue };
             let style = WireStyle::of([edge.from.role, edge.to.role]);
-            let mut colour = wire_colour(style, info.colour, self.colours);
+            let mut colour = extras.edge_colour(edge).unwrap_or_else(|| wire_colour(style, info.colour, self.colours));
             let unknown = edge.carries_data_stream() && state.summary(source.role, source.port_idx).is_none();
             if unknown || self.wire.is_some() {
                 colour = colour.gamma_multiply(0.4);
             }
-            // Not counting, as the graph runs: disabled, or to or from a disabled node.
+            // Not counting, as the graph runs (disabled, or to or from a disabled node), or faded by `extras`.
             let live = graph.is_live(edge);
-            if !live {
+            if !live || extras.edge_faded(edge) {
                 colour = colour.gamma_multiply(0.3);
             }
             let selected = selection.edge == Some(*edge);
@@ -1387,6 +1449,18 @@ fn small_gear(painter: &Painter, centre: Pos2, zoom: f32, ink: Color32, back: Op
         painter.line_segment([centre + d * 2.5 * zoom, centre + d * 4.8 * zoom], Stroke::new(1.8 * zoom, ink));
     }
     painter.circle_stroke(centre, 2.9 * zoom, Stroke::new(1.4 * zoom, ink));
+}
+
+/// A node's badge (see `Extras::node_badge`) goes just under it: its text, a line at a time, on a tint of its colour.
+fn paint_badge(painter: &Painter, layout: &Layout, text: &str, colour: Color32, colours: &Colours) {
+    let z = layout.zoom;
+    let font = FontId::proportional(11.0 * z);
+    let galley = painter.layout(text.to_string(), font, colours.text_primary, layout.rect.width() - 8.0 * z);
+    let pad = egui::vec2(6.0 * z, 3.0 * z);
+    let top_left = layout.rect.left_bottom() + egui::vec2(0.0, 5.0 * z);
+    let back = Rect::from_min_size(top_left, galley.size() + 2.0 * pad);
+    painter.rect(back, 4.0 * z, colour.gamma_multiply(0.25), Stroke::new(1.0, colour), StrokeKind::Inside);
+    painter.galley(top_left + pad, galley, colours.text_primary);
 }
 
 #[allow(clippy::too_many_arguments)]

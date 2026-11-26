@@ -27,6 +27,13 @@ Click one to open its window beside the home pane. A quick action usually opens 
 Below them are the quick actions that still apply, which change the setup from here. Chen-neuro's "Use VR computer",
 for example, swaps the camera for positions from a VR computer. Each can be undone (Ctrl/⌘ Z) in one step.
 
+You can make your own quick actions, and choose which are offered, in Settings › Quick actions. **New from the
+graph** makes one from the setup as it is (or from the nodes selected). The editor shows its nodes as a graph, much
+as advanced mode does, with a note under each saying whether it's required, added if it's missing, or only changed if
+it's there, and what it is in your setup now; select one to change that, and which of its settings to set. Quick actions
+are files, so you can share them: **Copy** one and paste it in on another computer, or copy the files themselves
+(**Open folder**).
+
 ![After using a quick action](../../tests/snapshots/basic_using_vr.png)
 
 Then use **Play** and **Record** in the toolbar, as in [a typical session](README.md#a-typical-session).

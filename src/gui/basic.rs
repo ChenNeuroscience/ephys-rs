@@ -12,9 +12,9 @@ use eframe::egui::{self, Color32, CornerRadius, RichText, Sense, Stroke};
 use super::Event;
 use super::actions::Action;
 use super::icons::Icon;
+use super::quick_actions::Entry;
 use super::style;
 use crate::engine::{Category, EdgeTypesEnum, Graph, NodeId, NodesEnum, Resolved};
-use crate::quick_action::QuickAction;
 use crate::theme::Colours;
 
 /// The cards are at most this wide.
@@ -28,7 +28,7 @@ pub fn show<N: NodesEnum>(
     graph: &Graph<N>,
     resolved: &Resolved<N::Edges>,
     colours: &Colours,
-    quick_actions: &[QuickAction<N>],
+    quick_actions: &[Entry<N>],
     // Those offered, by index (see `App::offered`).
     offered: &[usize],
     open_windows: &HashSet<NodeId>,
@@ -134,19 +134,19 @@ pub fn show<N: NodesEnum>(
             }
             ui.label(RichText::new("Quick actions").size(22.0).color(colours.text_primary));
             ui.add_space(8.0);
-            let offered: Vec<(usize, &QuickAction<N>)> =
+            let offered: Vec<(usize, &Entry<N>)> =
                 offered.iter().filter_map(|&i| Some((i, quick_actions.get(i)?))).collect();
             if offered.is_empty() {
                 ui.label(RichText::new("Nothing to add: the graph does all of these.").color(colours.text_secondary));
             }
-            for (index, action) in offered {
+            for (index, Entry { action, .. }) in offered {
                 ui.add_enabled_ui(!locked, |ui| {
                     let card = card(
                         ui,
                         colours,
                         colours.text_secondary,
-                        action.name,
-                        action.description,
+                        &action.name,
+                        &action.description,
                         colours.text_secondary,
                     );
                     if card.on_disabled_hover_text("Not while recording").clicked() {

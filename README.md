@@ -50,7 +50,7 @@ The code is in three parts:
 
 1. The framework, the `ephys-rs` crate (`src/`): the graph engine, the GUI, and the traits for nodes, annotations and themes. It knows nothing about particular node, edge or annotation types.
 2. The standard components, the `ephys-rs-standard` crate (`standard/`): the components most labs will need, grouped by feature (`ephys`, `spikes`, `tracking`...).
-3. `examples/chen-neuro/`: the Chen lab's build, and what this repository releases. It declares which components it's built with, and adds its own: the LTX quick actions, and the subject, date and trial base directory.
+3. `examples/chen-neuro/`: the Chen lab's build, and what this repository releases. It declares which components it's built with, and adds its own: the LTX quick actions (as files, in `quick_actions/`), and the subject, date and trial base directory.
 
 To make your own build, add the first two to a new program with `cargo add --git https://github.com/ChenNeuroscience/ephys-rs ephys-rs ephys-rs-standard`, and use `examples/chen-neuro/` as a starting point: [custom builds](docs/architecture.md#the-framework-standard-components-and-custom-builds) says what you can add.
 

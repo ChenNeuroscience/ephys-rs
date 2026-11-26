@@ -70,8 +70,8 @@ crash reports start with it.
 ## Config patches
 
 All the config the app reads back says which version of each part of the program wrote it: saved files (projects, and
-the settings saved beside recordings: `"versions"`), settings copied to the clipboard (`"ephys-rs settings"`), and the
-base directory's settings in the app's stored preferences. Later versions patch it up to date before reading it. See
+the settings saved beside recordings: `"versions"`), settings copied to the clipboard (`"ephys-rs settings"`), quick actions (`"ephys-rs quick action"`, shaped as a
+project: see [quick actions](quick-actions.md#the-file)), and the base directory's settings in the app's stored preferences. Later versions patch it up to date before reading it. See
 [`config_patching.rs`](../src/config_patching.rs).
 
 Each part has a set of patches, saving its crate's version: the core's

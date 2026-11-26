@@ -70,7 +70,8 @@ pub enum WindowState {
 }
 
 /// A new group goes on one side of another.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Side {
     Left,
     Right,
@@ -459,6 +460,69 @@ impl Layout {
         self.floating.retain(|id| !arrangement.places(Tab::Window(*id)));
     }
 
+    /// A quick action made from the layout keeps how it's arranged as this: its rows, columns and groups of tabs as they
+    /// are, with the docked windows and home that are showing, and the panes there were before (see `Tab::Others`) as
+    /// tabs in home's group (or the first group, without home). Floating windows, the dev tools and the annotation pane
+    /// are left out.
+    pub fn arrangement(&self) -> Option<Arrangement> {
+        let mut arrangement = self.arrangement_of(self.tree.root?)?;
+        let has_home = arrangement.places(Tab::Home);
+        add_others(&mut arrangement, has_home);
+        Some(arrangement)
+    }
+
+    fn arrangement_of(&self, tile: TileId) -> Option<Arrangement> {
+        let tiles = &self.tree.tiles;
+        if !tiles.is_visible(tile) {
+            return None;
+        }
+        match tiles.get(tile)? {
+            Tile::Pane(pane) => {
+                let tab = match pane {
+                    Pane::Home => Tab::Home,
+                    Pane::Node(id) => Tab::Window(*id),
+                    _ => return None,
+                };
+                Some(Arrangement::tabs(vec![tab]))
+            }
+            Tile::Container(Container::Tabs(group)) => {
+                let mut tabs = Vec::new();
+                let mut active = 0;
+                for child in group.children.iter().copied().filter(|c| tiles.is_visible(*c)) {
+                    let tab = match tiles.get(child) {
+                        Some(Tile::Pane(Pane::Home)) => Tab::Home,
+                        Some(Tile::Pane(Pane::Node(id))) => Tab::Window(*id),
+                        _ => continue,
+                    };
+                    if group.active == Some(child) {
+                        active = tabs.len();
+                    }
+                    tabs.push(tab);
+                }
+                (!tabs.is_empty()).then_some(Arrangement::Tabs { tabs, active })
+            }
+            Tile::Container(Container::Linear(linear)) => {
+                let parts: Vec<(f32, Arrangement)> = linear
+                    .children
+                    .iter()
+                    .filter_map(|child| Some((linear.shares[*child], self.arrangement_of(*child)?)))
+                    .collect();
+                match parts.len() {
+                    0 => None,
+                    1 => parts.into_iter().next().map(|(_, part)| part),
+                    _ => Some(match linear.dir {
+                        LinearDir::Horizontal => Arrangement::Row(parts),
+                        LinearDir::Vertical => Arrangement::Column(parts),
+                    }),
+                }
+            }
+            Tile::Container(container) => {
+                let children: Vec<TileId> = container.children().copied().collect();
+                children.into_iter().find_map(|child| self.arrangement_of(child))
+            }
+        }
+    }
+
     /// The docked panes, in the order they're laid out (left to right, top to bottom, tab by tab), and whether each is
     /// shown.
     fn panes_in_order(&self) -> Vec<(Pane, bool)> {
@@ -491,7 +555,10 @@ impl Layout {
     }
 }
 
-/// Quick actions arrange the panes as rows and columns of groups of tabs.
+/// Quick actions arrange the panes as rows and columns of groups of tabs. A quick action's file keeps its arrangement,
+/// with its windows by the ids of the nodes in the quick action (see `crate::quick_action`).
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Arrangement {
     /// A row has its parts side by side, left to right, each with its share of the width.
     Row(Vec<(f32, Arrangement)>),
@@ -502,7 +569,8 @@ pub enum Arrangement {
 }
 
 /// An arrangement's tabs are each one of these.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Tab {
     Home,
     /// A node's window.
@@ -534,6 +602,69 @@ impl Arrangement {
             Arrangement::Row(parts) | Arrangement::Column(parts) => parts.iter().any(|(_, part)| part.places(tab)),
             Arrangement::Tabs { tabs, .. } => tabs.contains(&tab),
         }
+    }
+
+    /// The same arrangement with each window's node given by `map`, leaving out the windows `map` gives no node for. A
+    /// group of tabs left with none is left out too, and a row or column with no parts; a tab in front that's left
+    /// out puts the first in front instead.
+    pub fn map_windows(&self, map: &impl Fn(NodeId) -> Option<NodeId>) -> Option<Arrangement> {
+        match self {
+            Arrangement::Row(parts) | Arrangement::Column(parts) => {
+                let parts: Vec<(f32, Arrangement)> =
+                    parts.iter().filter_map(|(share, part)| Some((*share, part.map_windows(map)?))).collect();
+                if parts.is_empty() {
+                    return None;
+                }
+                Some(if matches!(self, Arrangement::Row(_)) {
+                    Arrangement::Row(parts)
+                } else {
+                    Arrangement::Column(parts)
+                })
+            }
+            Arrangement::Tabs { tabs, active } => {
+                let front = tabs.get(*active).copied();
+                let tabs: Vec<Tab> = tabs
+                    .iter()
+                    .filter_map(|tab| match tab {
+                        Tab::Window(id) => map(*id).map(Tab::Window),
+                        other => Some(*other),
+                    })
+                    .collect();
+                let front = front.and_then(|front| match front {
+                    Tab::Window(id) => map(id).map(Tab::Window),
+                    other => Some(other),
+                });
+                let active = front.and_then(|front| tabs.iter().position(|t| *t == front)).unwrap_or(0);
+                (!tabs.is_empty()).then_some(Arrangement::Tabs { tabs, active })
+            }
+        }
+    }
+
+    /// The windows the arrangement places, in order.
+    pub fn windows(&self) -> Vec<NodeId> {
+        match self {
+            Arrangement::Row(parts) | Arrangement::Column(parts) => {
+                parts.iter().flat_map(|(_, part)| part.windows()).collect()
+            }
+            Arrangement::Tabs { tabs, .. } => {
+                tabs.iter().filter_map(|tab| if let Tab::Window(id) = tab { Some(*id) } else { None }).collect()
+            }
+        }
+    }
+}
+
+/// A captured arrangement keeps the panes there were before as tabs in home's group, or (with `home` false) the first
+/// group; this adds them there.
+fn add_others(arrangement: &mut Arrangement, home: bool) -> bool {
+    match arrangement {
+        Arrangement::Row(parts) | Arrangement::Column(parts) => {
+            parts.iter_mut().any(|(_, part)| add_others(part, home))
+        }
+        Arrangement::Tabs { tabs, .. } if !home || tabs.contains(&Tab::Home) => {
+            tabs.push(Tab::Others);
+            true
+        }
+        Arrangement::Tabs { .. } => false,
     }
 }
 
@@ -615,6 +746,32 @@ mod tests {
         assert_eq!(layout.group_of(node(3)), Some(home), "home's, as the first's is the one it's opened from");
         layout.open(NodeId(4), None);
         assert_eq!(layout.group_of(node(4)), Some(first), "the largest");
+    }
+
+    #[test]
+    fn an_arrangement_captured_from_the_layout_arranges_it_the_same() {
+        let arrangement = Arrangement::default_layout(
+            Arrangement::Tabs { tabs: vec![Tab::Home, Tab::Window(NodeId(1))], active: 1 },
+            Arrangement::tabs(vec![Tab::Window(NodeId(2))]),
+            Arrangement::tabs(vec![Tab::Window(NodeId(3)), Tab::Window(NodeId(4))]),
+        );
+        let mut layout = Layout::default();
+        layout.arrange(&arrangement);
+        let captured = layout.arrangement().unwrap();
+        let Arrangement::Row(parts) = &captured else { panic!("{captured:?}") };
+        assert_eq!(parts.len(), 2);
+        assert!((parts[0].0 - 1.0 / 3.0).abs() < 1e-4);
+        assert_eq!(
+            parts[0].1,
+            Arrangement::Tabs { tabs: vec![Tab::Home, Tab::Window(NodeId(1)), Tab::Others], active: 1 },
+            "with the panes there were before beside home"
+        );
+        assert_eq!(captured.windows(), [1, 2, 3, 4].map(NodeId));
+        let mut again = Layout::default();
+        again.arrange(&captured);
+        assert_eq!(again.arrangement(), Some(captured.clone()));
+        let only_odd = captured.map_windows(&|id| (id.0 % 2 == 1).then_some(NodeId(id.0 * 10))).unwrap();
+        assert_eq!(only_odd.windows(), [NodeId(10), NodeId(30)]);
     }
 
     #[test]

@@ -17,7 +17,6 @@ use super::{Event, basic, toolbar};
 use crate::annotation::{Annotations, AnnotationsEnum};
 use crate::engine::{Graph, NodeId, NodesEnum, Resolved, Runner, Snapshot};
 use crate::layout::{Layout, Mode, Pane, hide_tile};
-use crate::quick_action::QuickAction;
 use crate::theme::Colours;
 
 /// A pane can't be dragged narrower or shorter than this.
@@ -52,7 +51,7 @@ pub struct Panes<'a, N: NodesEnum, A: AnnotationsEnum> {
     pub mode: Mode,
     /// The graph's toolbar greys out what it can't do, from this.
     pub graph_tools: toolbar::GraphTools,
-    pub quick_actions: &'a [QuickAction<N>],
+    pub quick_actions: &'a [super::quick_actions::Entry<N>],
     /// The basic view offers these quick actions, by index (they apply to the graph and layout as they are).
     pub offered: &'a [usize],
     /// Runs start with this many workers.
@@ -273,6 +272,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> Panes<'_, N, A> {
                     self.selection,
                     self.open_windows,
                     self.events,
+                    &mut (),
                 )
             }
             Pane::Annotation => padded(ui, |ui| annotation_ui(ui, self.annotations, self.selection, self.events)),
