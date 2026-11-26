@@ -6,8 +6,8 @@
 //! A quick action is a small graph, its nodes each a *role* with a rule (`Rule`) for how it's found in the graph it's
 //! done on, and what's done to it:
 //!
-//! - A role's found by its node's type, and optionally a regular expression its label matches: one node, not another
-//!   role's already, the left-most on the canvas of those that fit.
+//! - A role's found by its node's type, and a regular expression its label matches: one node, each node one role's
+//!   at most, paired first where there's only one candidate, then left to right (see `QuickAction::find`).
 //! - A role that's *required* (`Mode::Require`) has to be found, or the quick action isn't offered. One that's
 //!   *ensured* (`Mode::Ensure`) is added if it isn't found, as it is in the quick action; one that's only *if present*
 //!   (`Mode::IfPresent`) is just left out. One that's *ignored* (`Mode::Ignore`) plays no part, and nor do its edges:
@@ -16,7 +16,7 @@
 //!   or disabled (`Rule::enabled`).
 //!
 //! Each of the quick action's edges is ensured (connected if the port that takes just the one edge is free), replaced
-//! (connected, replacing what was there), removed or ignored (`EdgeMode`), between every node found for each of its ends. Nodes
+//! (connected, replacing what was there), removed, or left alone (`EdgeRule`), between every node found for each of its ends. Nodes
 //! are never removed: a quick action disables them, which keeps their settings for when they're wanted again.
 //!
 //! A quick action also closes the roles' windows if they're open, and opens them if they aren't (`Window`: a window
@@ -40,6 +40,9 @@ use super::config_patching::{PatchSets, Versions};
 use super::engine::{Edge, Graph, NodeId, NodesEnum, PortAddress, PortRole, SavedPort};
 pub use super::layout::{Arrangement, Layout, Tab};
 use super::layout::{Pane, Side, WindowState};
+
+/// A role's label pattern, by default: any label.
+pub const ANY_LABEL: &str = ".*";
 
 /// A quick action's file says it's one, and the versions that wrote it, under this key.
 pub const MARKER: &str = "ephys-rs quick action";
@@ -67,8 +70,8 @@ impl Mode {
     pub fn name(self) -> &'static str {
         match self {
             Mode::Require => "Required",
-            Mode::Ensure => "Added if missing",
-            Mode::IfPresent => "Skipped if missing",
+            Mode::Ensure => "Created if missing",
+            Mode::IfPresent => "Only if found",
             Mode::Ignore => "Ignored",
         }
     }
@@ -78,7 +81,7 @@ impl Mode {
         match self {
             Mode::Require => "Don't offer the quick action",
             Mode::Ensure => "Create the node and apply all settings",
-            Mode::IfPresent => "Don't create the node",
+            Mode::IfPresent => "Do nothing",
             Mode::Ignore => "Ignore this node",
         }
     }
@@ -89,15 +92,14 @@ impl Mode {
 #[serde(default)]
 pub struct Rule {
     pub mode: Mode,
-    /// Only a node whose label matches this regular expression fits (`^Band-pass`, say). One that can't be read
-    /// fits nothing.
+    /// Only a node whose label matches this regular expression fits (`^Band-pass`, say); without one, any label does
+    /// (`ANY_LABEL`). One that's empty, or can't be read, fits nothing.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label_pattern: Option<String>,
     /// The settings, by name, set as they are in the quick action on the nodes found. A node added has all of them.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub settings: Vec<String>,
-    /// The nodes found (and added) are enabled, or disabled; or, without this, left as they are (added as the quick
-    /// action has them).
+    /// The node found is enabled, or disabled; or, without this, left as it is. A node added is always enabled.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
     /// What's done with the window of the node found (or added).
@@ -114,8 +116,6 @@ pub struct Role<N> {
     /// Where the role's node is in the quick action, which places it, when added, beside the nodes it's connected to.
     pub pos: [f32; 2],
     pub node: N,
-    /// When added, the node's disabled (unless the rule says to enable it).
-    pub disabled: bool,
     /// When added, whether the node's listed in the basic view, if the quick action says.
     pub show_in_basic_override: Option<bool>,
     pub rule: Rule,
@@ -132,33 +132,41 @@ fn settings_of<N: NodesEnum>(node: &N) -> Value {
     serde_json::to_value(node).ok().and_then(|mut v| v.get_mut("settings").map(Value::take)).unwrap_or_default()
 }
 
-/// What a quick action does to an edge between the nodes found for its ends.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EdgeMode {
-    /// Connected, if the end that takes just the one edge (a data stream's input, or the reading end of a value) is
-    /// free.
-    #[default]
-    Ensure,
-    /// Connected, replacing whatever the end that takes just the one edge was connected to.
-    Replace,
-    /// Disconnected, if it's there.
-    Remove,
-    /// Left as it is: kept only to show where the parts that matter are (see `Mode::Ignore`).
-    Ignore,
+/// What a quick action does to an edge between the nodes found for its ends, in each case: if the ends are connected
+/// already (enabled or disabled); else, if the end that takes just the one edge (a data stream's input, or the reading end of a value) is
+/// free; else (that end connected to something else). By default, the edge's connected if that end's free.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EdgeRule {
+    /// Connected already, the edge's enabled, or disabled; or, without this, left as it is. A quick action never
+    /// disconnects an edge (an edge connected elsewhere is replaced: see `replace`), and an edge it connects is enabled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// The end that takes just the one edge free, the edge's connected.
+    #[serde(skip_serializing_if = "is_true")]
+    pub connect: bool,
+    /// That end connected to something else, the edge's connected, replacing that.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub replace: bool,
 }
 
-impl EdgeMode {
-    pub const ALL: [EdgeMode; 4] = [EdgeMode::Ensure, EdgeMode::Replace, EdgeMode::Remove, EdgeMode::Ignore];
-
-    pub fn name(self) -> &'static str {
-        match self {
-            EdgeMode::Ensure => "Connect if free",
-            EdgeMode::Replace => "Connect, replacing",
-            EdgeMode::Remove => "Disconnect",
-            EdgeMode::Ignore => "Ignore",
-        }
+impl Default for EdgeRule {
+    fn default() -> Self {
+        EdgeRule { enabled: None, connect: true, replace: false }
     }
+}
+
+impl EdgeRule {
+    /// The rule for an edge that's only there to show what surrounds the rest: nothing's done to it.
+    pub const NOTHING: EdgeRule = EdgeRule { enabled: None, connect: false, replace: false };
+
+    pub fn does_nothing(self) -> bool {
+        self == Self::NOTHING
+    }
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
 }
 
 /// One of the quick action's edges, between roles, by port id, with what's done to it.
@@ -166,8 +174,8 @@ impl EdgeMode {
 pub struct RoleEdge {
     pub from: SavedPort,
     pub to: SavedPort,
-    #[serde(default, skip_serializing_if = "is_default")]
-    pub mode: EdgeMode,
+    #[serde(flatten)]
+    pub rule: EdgeRule,
 }
 
 fn is_default<T: Default + PartialEq>(value: &T) -> bool {
@@ -294,8 +302,6 @@ struct FileNode {
     node: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     show_in_basic_override: Option<bool>,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    disabled: bool,
     #[serde(default)]
     quick: Rule,
 }
@@ -327,7 +333,6 @@ impl<N: NodesEnum> QuickAction<N> {
                 label: entry.label,
                 pos: entry.pos,
                 node,
-                disabled: entry.disabled,
                 show_in_basic_override: entry.show_in_basic_override,
                 rule: entry.quick,
             });
@@ -354,7 +359,6 @@ impl<N: NodesEnum> QuickAction<N> {
                     pos: role.pos,
                     node: serde_json::to_value(&role.node).unwrap_or_default(),
                     show_in_basic_override: role.show_in_basic_override,
-                    disabled: role.disabled,
                     quick: role.rule.clone(),
                 };
                 (role.id, entry)
@@ -388,7 +392,6 @@ impl<N: NodesEnum> QuickAction<N> {
                     label: entry.label.clone(),
                     pos: entry.pos,
                     node: entry.node.clone(),
-                    disabled: entry.disabled,
                     show_in_basic_override: entry.show_in_basic_override,
                     rule: Rule {
                         window: Window { open: open_windows.contains(id).then_some(Placement::Default), close: false },
@@ -402,7 +405,7 @@ impl<N: NodesEnum> QuickAction<N> {
             .iter()
             .filter(|e| chosen.contains(&e.from.node) && chosen.contains(&e.to.node))
             .filter_map(|e| graph.saved_edge(e))
-            .map(|e| RoleEdge { from: e.from, to: e.to, mode: EdgeMode::Ensure })
+            .map(|e| RoleEdge { from: e.from, to: e.to, rule: EdgeRule::default() })
             .collect();
         let arrangement = arrange
             .then(|| layout.arrangement())
@@ -422,7 +425,7 @@ impl<N: NodesEnum> QuickAction<N> {
     /// The quick action's roles as a graph, each node with the id of its role (so the quick action's edges, windows
     /// and arrangement name them), and the mode of each of the graph's edges. The quick action editor shows and
     /// changes it on a canvas (see `crate::gui::quick_actions`), and puts it back with `set_graph`.
-    pub fn graph(&self) -> (Graph<N>, Vec<(Edge, EdgeMode)>) {
+    pub fn graph(&self) -> (Graph<N>, Vec<(Edge, EdgeRule)>) {
         let nodes: serde_json::Map<String, Value> = self
             .roles
             .iter()
@@ -432,7 +435,8 @@ impl<N: NodesEnum> QuickAction<N> {
                     "pos": role.pos,
                     "node": serde_json::to_value(&role.node).unwrap_or_default(),
                     "show_in_basic_override": role.show_in_basic_override,
-                    "disabled": role.disabled,
+                    // Drawn faded only if ignored (see `Mode::Ignore`): a node created is always enabled.
+                    "disabled": false,
                 });
                 (role.id.0.to_string(), entry)
             })
@@ -445,7 +449,7 @@ impl<N: NodesEnum> QuickAction<N> {
         let modes = (self.edges.iter())
             .filter_map(|e| {
                 let saved = crate::engine::SavedEdge { from: e.from.clone(), to: e.to.clone() };
-                Some((graph.edge_of(&saved)?, e.mode))
+                Some((graph.edge_of(&saved)?, e.rule))
             })
             .collect();
         (graph, modes)
@@ -454,7 +458,7 @@ impl<N: NodesEnum> QuickAction<N> {
     /// The quick action with the nodes and edges `graph` has (see `graph`): each node a role, with its rule from
     /// `rules` (or, without one, the default), and each edge with its mode from `modes` (or ensured). Windows and the
     /// arrangement leave out the roles no longer there.
-    pub fn set_graph(&mut self, graph: &Graph<N>, rules: &BTreeMap<NodeId, Rule>, modes: &[(Edge, EdgeMode)]) {
+    pub fn set_graph(&mut self, graph: &Graph<N>, rules: &BTreeMap<NodeId, Rule>, rules_of_edges: &[(Edge, EdgeRule)]) {
         self.roles = graph
             .iter()
             .map(|(id, entry)| Role {
@@ -462,7 +466,6 @@ impl<N: NodesEnum> QuickAction<N> {
                 label: entry.label.clone(),
                 pos: entry.pos,
                 node: entry.node.clone(),
-                disabled: entry.disabled,
                 show_in_basic_override: entry.show_in_basic_override,
                 rule: rules.get(&id).cloned().unwrap_or_default(),
             })
@@ -470,8 +473,9 @@ impl<N: NodesEnum> QuickAction<N> {
         self.edges = (graph.edges().iter())
             .filter_map(|edge| {
                 let saved = graph.saved_edge(edge)?;
-                let mode = modes.iter().find(|(e, _)| e == edge).map_or(EdgeMode::Ensure, |(_, mode)| *mode);
-                Some(RoleEdge { from: saved.from, to: saved.to, mode })
+                let rule =
+                    (rules_of_edges.iter()).find(|(e, _)| e == edge).map_or(EdgeRule::default(), |(_, rule)| *rule);
+                Some(RoleEdge { from: saved.from, to: saved.to, rule })
             })
             .collect();
         // A window placed relative to a role no longer there goes where the app puts a new one.
@@ -491,40 +495,60 @@ impl<N: NodesEnum> QuickAction<N> {
         self.roles.iter().find(|r| r.id == id)
     }
 
-    /// The node in `graph` found for `role`, leaving out those in `taken` (see `Rule`): of the nodes of its type
-    /// (whose labels match its `label_pattern`, if it has one), the left-most.
-    fn fitting(&self, role: &Role<N>, graph: &Graph<N>, taken: &HashSet<NodeId>) -> Option<NodeId> {
+    /// The nodes in `graph` that `role` could be found as (see `Rule`): those of its type whose labels match its
+    /// label pattern, left-most first.
+    fn candidates(&self, role: &Role<N>, graph: &Graph<N>) -> Vec<NodeId> {
         let kind = role.node.node_type();
-        let pattern = match &role.rule.label_pattern {
-            Some(pattern) => Some(regex::Regex::new(pattern).ok()?),
+        let pattern = match role.rule.label_pattern.as_deref() {
+            Some("") => return Vec::new(),
+            Some(pattern) => match regex::Regex::new(pattern) {
+                Ok(pattern) => Some(pattern),
+                Err(_) => return Vec::new(),
+            },
             None => None,
         };
-        graph
+        let mut fits: Vec<(NodeId, [f32; 2])> = graph
             .iter()
-            .filter(|(id, e)| !taken.contains(id) && e.node.node_type() == kind)
+            .filter(|(_, e)| e.node.node_type() == kind)
             .filter(|(_, e)| pattern.as_ref().is_none_or(|p| p.is_match(&e.label)))
-            .min_by(|(a_id, a), (b_id, b)| {
-                (a.pos[0].total_cmp(&b.pos[0])).then(a.pos[1].total_cmp(&b.pos[1])).then(a_id.cmp(b_id))
-            })
-            .map(|(id, _)| id)
+            .map(|(id, e)| (id, e.pos))
+            .collect();
+        fits.sort_by(|(a_id, a), (b_id, b)| left_most(*a, *b).then(a_id.cmp(b_id)));
+        fits.into_iter().map(|(id, _)| id).collect()
     }
 
     /// The node in `graph` found for each role, by the role's id (roles not found, or ignored, left out); or, if a
     /// required role isn't found, its label.
+    ///
+    /// Each role is paired with one of its candidates (see `candidates`), each node with one role at most. A role with
+    /// just one candidate left is paired first, and that node struck off the others' candidates; when none has just
+    /// one, the left-most role (as the quick action has them) is paired with its left-most candidate; and so on,
+    /// until no role has a candidate left. So a node only one role could be is that role's, and the rest pair up left
+    /// to right, as they'd be matched by eye.
     pub fn find(&self, graph: &Graph<N>) -> Result<BTreeMap<NodeId, NodeId>, String> {
+        let mut roles: Vec<&Role<N>> = self.roles.iter().filter(|r| r.rule.mode != Mode::Ignore).collect();
+        roles.sort_by(|a, b| left_most(a.pos, b.pos).then(a.id.cmp(&b.id)));
+        let mut open: Vec<(NodeId, Vec<NodeId>)> =
+            roles.iter().map(|role| (role.id, self.candidates(role, graph))).collect();
         let mut found = BTreeMap::new();
-        let mut taken = HashSet::new();
-        for role in self.roles.iter().filter(|r| r.rule.mode != Mode::Ignore) {
-            match self.fitting(role, graph, &taken) {
-                Some(id) => {
-                    taken.insert(id);
-                    found.insert(role.id, id);
-                }
-                None if role.rule.mode == Mode::Require => return Err(role.label.clone()),
-                None => {}
+        loop {
+            open.retain(|(_, candidates)| !candidates.is_empty());
+            if open.is_empty() {
+                break;
+            }
+            let next = open.iter().position(|(_, candidates)| candidates.len() == 1).unwrap_or(0);
+            let (role, candidates) = open.remove(next);
+            let node = candidates[0];
+            found.insert(role, node);
+            for (_, candidates) in &mut open {
+                candidates.retain(|n| *n != node);
             }
         }
-        Ok(found)
+        let required = |r: &&Role<N>| r.rule.mode == Mode::Require && !found.contains_key(&r.id);
+        match self.roles.iter().find(required) {
+            Some(role) => Err(role.label.clone()),
+            None => Ok(found),
+        }
     }
 
     /// The quick action done on `state`: the graph and layout changed, and what changed; or nothing if a required role
@@ -541,8 +565,9 @@ impl<N: NodesEnum> QuickAction<N> {
             .map(|role| role.id)
             .collect();
 
-        // Adding those missing, beside what they're connected to.
+        // Adding those missing, beside what they're connected to, enabled.
         let origin = self.origin();
+        let mut added_ids = HashSet::new();
         for id in missing {
             let Some(role) = self.role(id) else { continue };
             let pos = self.place(role, &graph, &found, empty, origin);
@@ -552,17 +577,18 @@ impl<N: NodesEnum> QuickAction<N> {
                 if label_free {
                     entry.label = role.label.clone();
                 }
-                entry.disabled = role.rule.enabled.map_or(role.disabled, |enabled| !enabled);
                 entry.show_in_basic_override = role.show_in_basic_override;
                 summary.added.push(entry.label.clone());
             }
             found.insert(id, added);
+            added_ids.insert(added);
         }
 
         // Setting what the rules say on what's found.
         for role in &self.roles {
             let settings = (!role.rule.settings.is_empty()).then(|| role.settings());
-            if let Some(entry) = found.get(&role.id).and_then(|id| graph.get_mut(*id)) {
+            let Some(&id) = found.get(&role.id) else { continue };
+            if let Some(entry) = graph.get_mut(id) {
                 if let Some(settings) = &settings
                     && let Some(node) = with_settings(&entry.node, settings, &role.rule.settings)
                     && node != entry.node
@@ -571,6 +597,7 @@ impl<N: NodesEnum> QuickAction<N> {
                     summary.set.push(entry.label.clone());
                 }
                 if let Some(enabled) = role.rule.enabled
+                    && !added_ids.contains(&id)
                     && entry.disabled == enabled
                 {
                     entry.disabled = !enabled;
@@ -581,28 +608,27 @@ impl<N: NodesEnum> QuickAction<N> {
         }
 
         // The edges.
-        for edge in self.edges.iter().filter(|e| e.mode != EdgeMode::Ignore) {
+        for edge in self.edges.iter().filter(|e| !e.rule.does_nothing()) {
             let (Some(&from), Some(&to)) = (found.get(&edge.from.node), found.get(&edge.to.node)) else { continue };
-            {
-                let (Some(from), Some(to)) = (address(&graph, from, &edge.from), address(&graph, to, &edge.to)) else {
-                    continue;
-                };
-                let exists = graph.edges().contains(&Edge { from, to });
-                match edge.mode {
-                    EdgeMode::Remove if exists => {
-                        graph.disconnect(Edge { from, to });
-                        summary.disconnected += 1;
-                    }
-                    EdgeMode::Remove | EdgeMode::Ignore => {}
-                    _ if exists => {}
-                    EdgeMode::Ensure | EdgeMode::Replace => {
-                        let single = if to.role == PortRole::DataStreamIn { to } else { from };
-                        let free = !graph.edges().iter().any(|e| e.from == single || e.to == single);
-                        if (free || edge.mode == EdgeMode::Replace) && graph.connect(from, to).is_ok() {
-                            summary.connected += 1;
-                        }
-                    }
+            let (Some(from), Some(to)) = (address(&graph, from, &edge.from), address(&graph, to, &edge.to)) else {
+                continue;
+            };
+            let existing = Edge { from, to };
+            if graph.edges().contains(&existing) {
+                if let Some(enabled) = edge.rule.enabled
+                    && graph.is_edge_disabled(&existing) == enabled
+                {
+                    graph.set_edge_disabled(existing, !enabled);
+                    let count = if enabled { &mut summary.edges_enabled } else { &mut summary.edges_disabled };
+                    *count += 1;
                 }
+                continue;
+            }
+            let single = if to.role == PortRole::DataStreamIn { to } else { from };
+            let free = !graph.edges().iter().any(|e| e.from == single || e.to == single);
+            let wanted = if free { edge.rule.connect } else { edge.rule.replace };
+            if wanted && graph.connect(from, to).is_ok() {
+                summary.connected += 1;
             }
         }
 
@@ -654,7 +680,7 @@ impl<N: NodesEnum> QuickAction<N> {
         let acts = |r: &Role<N>| r.rule.mode == Mode::Ensure || !r.rule.settings.is_empty() || r.rule.enabled.is_some();
         let role = |r: &Role<N>| r.rule.mode != Mode::Ignore && acts(r);
         let ignored = |id: NodeId| self.role(id).is_none_or(|r| r.rule.mode == Mode::Ignore);
-        let edge = |e: &RoleEdge| e.mode != EdgeMode::Ignore && !ignored(e.from.node) && !ignored(e.to.node);
+        let edge = |e: &RoleEdge| !e.rule.does_nothing() && !ignored(e.from.node) && !ignored(e.to.node);
         self.edges.iter().any(edge) || self.roles.iter().any(role)
     }
 
@@ -725,6 +751,11 @@ fn open_window(layout: &mut Layout, id: NodeId, placement: Placement, found: &BT
     }
 }
 
+/// Which of two places on the canvas is further left (or, as far left, higher).
+fn left_most(a: [f32; 2], b: [f32; 2]) -> std::cmp::Ordering {
+    a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1]))
+}
+
 /// Room for a node on the canvas, about, for placing those added clear of the rest.
 const NODE_WIDTH: f32 = 250.0;
 const NODE_HEIGHT: f32 = 150.0;
@@ -756,7 +787,8 @@ struct Summary {
     enabled: Vec<String>,
     disabled: Vec<String>,
     connected: usize,
-    disconnected: usize,
+    edges_enabled: usize,
+    edges_disabled: usize,
 }
 
 impl Summary {
@@ -778,8 +810,11 @@ impl Summary {
         if self.connected > 0 {
             done.push(format!("connected {}", self.connected));
         }
-        if self.disconnected > 0 {
-            done.push(format!("disconnected {}", self.disconnected));
+        if self.edges_enabled > 0 {
+            done.push(format!("enabled {} connections", self.edges_enabled));
+        }
+        if self.edges_disabled > 0 {
+            done.push(format!("disabled {} connections", self.edges_disabled));
         }
         if done.is_empty() { "opened windows".into() } else { done.join("; ") }
     }
@@ -843,11 +878,11 @@ mod tests {
         let (graph, layout, detector, viewer) = detector_and_viewer();
         let mut action = QuickAction::from_graph("Spikes", &graph, &layout, &[], true);
         action.roles[0].rule.mode = Mode::Require;
-        action.edges[0].mode = EdgeMode::Replace;
+        action.edges[0].rule = EdgeRule { replace: true, ..EdgeRule::default() };
         let (as_graph, modes) = action.graph();
         assert!(as_graph.get(detector).is_some_and(|e| e.label == "Spike Detector"), "with the roles' ids");
         assert_eq!(as_graph.edges().len(), 1);
-        assert_eq!(modes, vec![(as_graph.edges()[0], EdgeMode::Replace)]);
+        assert_eq!(modes, vec![(as_graph.edges()[0], EdgeRule { replace: true, ..EdgeRule::default() })]);
         let rules: BTreeMap<NodeId, Rule> = action.roles.iter().map(|r| (r.id, r.rule.clone())).collect();
         let mut again = action.clone();
         again.set_graph(&as_graph, &rules, &modes);
@@ -862,7 +897,7 @@ mod tests {
     }
 
     #[test]
-    fn edges_are_connected_if_free_replaced_or_removed() {
+    fn edges_are_connected_if_free_or_replacing_what_is_there() {
         let (graph, layout, detector, viewer) = detector_and_viewer();
         let mut other = graph.clone();
         let second = other.add(Nodes::create(crate::NodeType::SpikeDetector), [0.0, 200.0]);
@@ -871,20 +906,16 @@ mod tests {
         let edge = RoleEdge {
             from: SavedPort { node: second, role: PortRole::DataStreamOut, port: "spikes".into() },
             to: SavedPort { node: viewer, role: PortRole::DataStreamIn, port: "spikes".into() },
-            mode: EdgeMode::Ensure,
+            rule: EdgeRule::default(),
         };
         action.edges = vec![edge.clone()];
         action.roles[0].rule.label_pattern = Some(" 2$".into());
         let state = QuickState { graph: &other, layout: &layout };
         assert!(action.run(&state).is_none(), "the viewer's input isn't free");
-        action.edges[0].mode = EdgeMode::Replace;
+        action.edges[0].rule = EdgeRule { replace: true, ..EdgeRule::default() };
         let replaced = action.run(&state).unwrap().graph;
         let feeding = |g: &Graph<Nodes>| g.edges().iter().find(|e| e.to.node == viewer).map(|e| e.from.node);
         assert_eq!(feeding(&replaced), Some(second));
-        action.edges[0].mode = EdgeMode::Remove;
-        let removed = action.run(&QuickState { graph: &replaced, layout: &layout }).unwrap();
-        assert_eq!(feeding(&removed.graph), None);
-        assert_eq!(removed.summary, "disconnected 1");
         assert_eq!(feeding(&graph), Some(detector));
     }
 
@@ -897,11 +928,11 @@ mod tests {
         let change = action.run(&empty).unwrap();
         assert_eq!(change.summary, "added Spike Viewer", "no detector, and nothing to connect it to");
         action.roles[0].rule.mode = Mode::Ensure;
-        action.edges[0].mode = EdgeMode::Ignore;
+        action.edges[0].rule = EdgeRule::NOTHING;
         assert_eq!(action.run(&empty).unwrap().summary, "added Spike Detector, Spike Viewer");
         // With every role ignored, the edge between them is too, even when the edge itself isn't.
         action.roles.iter_mut().for_each(|r| r.rule.mode = Mode::Ignore);
-        action.edges[0].mode = EdgeMode::Ensure;
+        action.edges[0].rule = EdgeRule::default();
         assert!(!action.changes_graph());
         let mut detached = graph.clone();
         detached.disconnect(detached.edges()[0]);
@@ -922,5 +953,43 @@ mod tests {
         assert_eq!(found(&action, &graph), Some(right), "only the one whose label matches");
         action.roles[0].rule.label_pattern = Some("(".into());
         assert_eq!(found(&action, &graph), None, "a pattern that can't be read matches nothing");
+        action.roles[0].rule.label_pattern = Some(String::new());
+        assert_eq!(found(&action, &graph), None, "nor does an empty one");
+    }
+
+    #[test]
+    fn roles_with_one_candidate_are_paired_first_and_the_rest_left_to_right() {
+        let mut graph = Graph::<Nodes>::default();
+        let filter = || Nodes::create(crate::NodeType::BandPassFilter);
+        let lfp = graph.add(filter(), [0.0, 0.0]);
+        let spikes = graph.add(filter(), [300.0, 0.0]);
+        let other = graph.add(filter(), [600.0, 0.0]);
+        graph.get_mut(lfp).unwrap().label = "LFP".into();
+        let mut action = QuickAction::from_graph("Filters", &graph, &Layout::default(), &[], false);
+        // In the quick action, the roles are listed the other way round from where they're placed.
+        action.roles.reverse();
+        for (role, x) in action.roles.iter_mut().zip([0.0, 300.0, 600.0]) {
+            role.pos = [x, 0.0];
+        }
+        let (first, second, third) = (action.roles[0].id, action.roles[1].id, action.roles[2].id);
+        let found = action.find(&graph).unwrap();
+        assert_eq!((found[&first], found[&second], found[&third]), (lfp, spikes, other), "left to right");
+        // The left-most role would take the LFP filter, but only the right-most role can.
+        action.roles[2].rule.label_pattern = Some("^LFP$".into());
+        let found = action.find(&graph).unwrap();
+        assert_eq!((found[&first], found[&second], found[&third]), (spikes, other, lfp));
+    }
+
+    #[test]
+    fn edges_connected_already_can_be_enabled_or_disabled() {
+        let (graph, layout, _, _) = detector_and_viewer();
+        let mut action = QuickAction::from_graph("Spikes", &graph, &layout, &[], false);
+        action.edges[0].rule.enabled = Some(false);
+        let change = action.run(&QuickState { graph: &graph, layout: &layout }).unwrap();
+        assert!(change.graph.is_edge_disabled(&change.graph.edges()[0]));
+        assert_eq!(change.summary, "disabled 1 connections");
+        assert!(action.run(&QuickState { graph: &change.graph, layout: &layout }).is_none(), "disabled already");
+        action.edges[0].rule.enabled = Some(true);
+        assert!(action.run(&QuickState { graph: &change.graph, layout: &layout }).is_some());
     }
 }

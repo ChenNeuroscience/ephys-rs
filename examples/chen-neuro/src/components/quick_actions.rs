@@ -226,7 +226,9 @@ mod tests {
         assert_eq!(offered(&back), vec!["Use VR computer", "Use synthetic data"]);
         let computer_entry = back.get(computer).expect("kept");
         assert!(computer_entry.disabled);
-        assert!(!back.edges().iter().any(|e| e.from.node == computer || e.to.node == computer), "no edges left");
+        // Its edges are left in, disabled (a quick action never disconnects), or replaced by the detector's.
+        let computers = back.edges().iter().filter(|e| e.from.node == computer || e.to.node == computer);
+        assert!(computers.clone().all(|e| back.is_edge_disabled(e)), "its edges are disabled");
         assert!(position_nodes(&back).iter().all(|id| !back.get(*id).unwrap().disabled));
         assert!(!back.get(arduino).unwrap().disabled, "and with it, the Arduino");
         for (node, input) in [(ltx, 2), (ltx, 4), (alarms, 2), (alarms, 3)] {
@@ -236,9 +238,11 @@ mod tests {
                 "input {input}"
             );
         }
-        assert_eq!(feeding(&back, ltx, DataStreamIn, 5), None, "no log without the VR computer");
+        let log_into_ltx = back.edges().iter().find(|e| e.to.node == ltx && e.to.port_idx == 5).copied();
+        assert!(log_into_ltx.is_none_or(|e| back.is_edge_disabled(&e)), "no log without the VR computer");
         assert!(back.get(log_viewer).unwrap().disabled, "kept, like the VR computer");
-        assert_eq!(feeding(&back, log_viewer, DataStreamIn, 0), None);
+        let log_into_viewer = back.edges().iter().find(|e| e.to.node == log_viewer).copied();
+        assert!(log_into_viewer.is_none_or(|e| back.is_edge_disabled(&e)));
         assert_eq!(feeding(&back, tracker, DataStreamIn, 1).as_deref(), Some("Position Detector"));
         assert_eq!(feeding(&back, tracker, DataStreamIn, 0).as_deref(), Some("Camera"), "and the video again");
         let detector = named(&back, "Position Detector");
@@ -248,6 +252,8 @@ mod tests {
         assert_eq!(again.iter().filter(|(_, e)| matches!(e.node, Nodes::VrComputer(_))).count(), 1);
         assert_eq!(again.iter().filter(|(_, e)| matches!(e.node, Nodes::LogViewer(_))).count(), 1);
         assert!(!again.get(log_viewer).unwrap().disabled);
+        let computers = again.edges().iter().filter(|e| e.from.node == computer || e.to.node == computer);
+        assert!(computers.clone().all(|e| !again.is_edge_disabled(e)), "its edges enabled again");
         assert_eq!(again.edges().len(), vr.edges().len());
     }
 

@@ -61,6 +61,11 @@ pub trait Extras {
     fn edge_colour(&self, _edge: &Edge) -> Option<Color32> {
         None
     }
+    /// Whether nodes can be added (from the menu that clicking the canvas or a port opens) and edges made, moved and
+    /// deleted. Nodes can always be moved.
+    fn rewiring(&self) -> bool {
+        true
+    }
     /// A node drawn faded, as a disabled node is: one that plays no part, say.
     fn node_faded(&self, _id: NodeId) -> bool {
         false
@@ -362,6 +367,31 @@ impl WireStyle {
 
 /// An edge of a type with colour `colour` is drawn in this colour: settings edges are all the same grey, so they stay
 /// in the background of the data flowing through the graph.
+/// `edge` as the canvas draws it, off the canvas: its two ports, at `from` and `to`, both facing right (down the right
+/// of the quick action editor's inspector, say), and the wire between them, looping out to the right.
+pub fn paint_edge<E: crate::engine::Edges>(
+    painter: &Painter,
+    from: Pos2,
+    to: Pos2,
+    edge: &Edge,
+    resolved: &Resolved<E>,
+    colours: &Colours,
+) {
+    let style = WireStyle::of([edge.from.role, edge.to.role]);
+    let colour_of = |port: PortAddress| {
+        let info = resolved.get(&port.node).and_then(|state| state.info(port.role, port.port_idx));
+        info.map_or(Color32::GRAY, |info| info.colour)
+    };
+    let wire = wire_colour(style, colour_of(edge.from), colours);
+    paint_wire(painter, bezier(from, true, to, true, 1.0), style, Stroke::new(2.0, wire), 1.0, &[]);
+    let connected: HashSet<PortAddress> = [edge.from, edge.to].into();
+    let ports = PortPaint { connected: &connected, targets: &[], target: None, pointer: None, colours };
+    for (port, pos) in [(edge.from, from), (edge.to, to)] {
+        let read_only = port.role == PortRole::ValIn;
+        paint_port(painter, port, pos, colour_of(port), true, read_only, &ports, 1.0, |c| c);
+    }
+}
+
 fn wire_colour(style: WireStyle, colour: Color32, colours: &Colours) -> Color32 {
     match style {
         WireStyle::DataStream => colour,
@@ -578,7 +608,7 @@ impl Canvas {
                 annotation_type.and_then(|t| self.draw_annotation(ui, rect, t, annotations, selection))
             }
         };
-        self.background(ui, &background, selection, events);
+        self.background(ui, &background, selection, events, extras.rewiring());
         let marquee = self.marquee.zip(pointer).map(|(start, p)| Rect::from_two_pos(self.to_screen * start, p));
         if let Some(m) = marquee
             && !ui.input(|i| i.pointer.primary_down())
@@ -920,11 +950,19 @@ impl Canvas {
     }
 
     /// The canvas handles clicks and drags on empty canvas with this (middle and right drags pan, in `pan_and_zoom`).
-    fn background(&mut self, ui: &egui::Ui, response: &Response, selection: &mut Selection, events: &mut Vec<Event>) {
+    fn background(
+        &mut self,
+        ui: &egui::Ui,
+        response: &Response,
+        selection: &mut Selection,
+        events: &mut Vec<Event>,
+        rewiring: bool,
+    ) {
         let pointer = ui.input(|i| i.pointer.latest_pos());
         // (Right-clicking an edge opens its own menu.)
         let on_edge = self.hovered_edge.is_some();
-        if (response.double_clicked() || (response.secondary_clicked() && !on_edge))
+        if rewiring
+            && (response.double_clicked() || (response.secondary_clicked() && !on_edge))
             && let Some(screen) = pointer
         {
             events.push(Event::OpenMenu { screen, scene: self.to_screen.inverse() * screen, from: None });
@@ -1179,6 +1217,9 @@ impl Canvas {
 
         for port in state.ports(id) {
             let Some(pos) = layout.port(port) else { continue };
+            if !extras.rewiring() {
+                continue;
+            }
             let response = ui.interact(
                 Rect::from_center_size(pos, Vec2::splat(2.0 * HIT_DISTANCE)),
                 self.id(("port", port.node, port.role.name(), port.port_idx)),

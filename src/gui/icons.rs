@@ -294,18 +294,18 @@ impl Icon {
                 painter.add(Shape::line(vec![p(5.0, 8.0), p(8.0, 14.5), p(11.0, 8.0)], reflection));
             }
             Icon::Edit => {
-                // A pencil, writing down to the left: its sharpened tip, its body, and its eraser.
+                // A pencil, writing down to the left, in outline: its body, the band by its eraser, and its tip.
+                let stroke = Stroke::new(1.4 * s, ink);
                 let along = vec2(1.0, -1.0).normalized();
-                let across = vec2(1.0, 1.0).normalized() * 2.1 * s;
+                let across = vec2(1.0, 1.0).normalized() * 2.0 * s;
                 let tip = p(2.0, 14.0);
                 let wood = tip + along * 4.0 * s;
                 let end = p(14.0, 2.0);
                 let band = end - along * 3.0 * s;
-                let edged = |points: Vec<Pos2>, fill: Color32| Shape::convex_polygon(points, fade(fill), line);
-                painter.add(edged(vec![wood - across, band - across, band + across, wood + across], FOLDER));
-                painter.add(edged(vec![band - across, end - across, end + across, band + across], RED));
-                painter.add(edged(vec![tip, wood + across, wood - across], Color32::from_rgb(222, 190, 150)));
-                painter.circle_filled(tip + along * 1.0 * s, 0.9 * s, ink);
+                let corners = [wood - across, end - across, end + across, wood + across];
+                painter.add(Shape::closed_line(corners.to_vec(), stroke));
+                painter.line_segment([band - across, band + across], stroke);
+                painter.add(Shape::line(vec![wood - across, tip, wood + across], stroke));
             }
             Icon::ActualSize => {
                 painter.circle(p(6.5, 6.5), 4.5 * s, fade(PAPER), line);

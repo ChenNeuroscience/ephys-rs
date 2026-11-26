@@ -16,19 +16,18 @@ use std::path::{Path, PathBuf};
 
 use eframe::egui::{self, RichText};
 
-use super::Event;
 use super::canvas::{Canvas, Selection};
-use super::create_menu::{self, CreateMenu};
 use super::dialog;
-use super::help::info_icon;
+use super::help::{info_icon, info_icon_with, regex_cheat_sheet};
 use super::icons::Icon;
+use super::style;
 use super::toolbar;
 use crate::annotation::{Annotations, AnnotationsEnum};
 use crate::config_patching::PatchSets;
 use crate::engine::{Edge, Graph, NodeId, NodesEnum};
 use crate::layout::Layout;
 use crate::layout::Side;
-use crate::quick_action::{EdgeMode, Mode, Placement, QuickAction, QuickState, Rule, Window};
+use crate::quick_action::{ANY_LABEL, EdgeRule, Mode, Placement, QuickAction, Rule, Window};
 use crate::theme::Colours;
 
 /// A file's a quick action if its name ends with this.
@@ -219,6 +218,9 @@ pub fn manager_ui<N: NodesEnum>(
         }
     });
     ui.add_space(6.0);
+    // The names and descriptions wrap to leave room for the checkbox before them and the buttons after, so the list is
+    // no wider than the settings window's other sections.
+    let text_width = (ui.available_width() - 32.0 - 96.0).max(120.0);
     egui::Grid::new("quick actions").num_columns(3).min_col_width(0.0).spacing([10.0, 6.0]).striped(true).show(
         ui,
         |ui| {
@@ -238,7 +240,7 @@ pub fn manager_ui<N: NodesEnum>(
                     };
                 }
                 ui.vertical(|ui| {
-                    ui.set_max_width(420.0);
+                    ui.set_max_width(text_width);
                     ui.strong(name);
                     if !entry.action.description.is_empty() {
                         ui.label(weak(&entry.action.description));
@@ -279,10 +281,12 @@ pub struct Editor<N> {
     pub file: Option<PathBuf>,
     graph: Graph<N>,
     rules: BTreeMap<NodeId, Rule>,
-    modes: Vec<(Edge, EdgeMode)>,
+    edge_rules: Vec<(Edge, EdgeRule)>,
     canvas: Canvas,
     selection: Selection,
-    menu: Option<CreateMenu>,
+    /// The nodes whose settings are applied, chosen in the inspector before any are ticked (a rule that applies none
+    /// leaves them as they are, so this keeps the choice while none are).
+    applying: BTreeSet<NodeId>,
 }
 
 /// Each frame, the editor says what came of it.
@@ -292,19 +296,20 @@ pub enum Outcome {
     Save,
 }
 
-/// The editor's canvas draws, under each node, how it's found and what it's found as in the app's graph, and each edge
-/// in a colour for its mode. Its menus change them.
+/// The editor's canvas draws, under each node, what the quick action does with it (coloured for what happens if it isn't
+/// found), and each edge in a colour for its mode. Its menus change them.
 struct Marks<'a> {
     rules: &'a mut BTreeMap<NodeId, Rule>,
-    modes: &'a mut Vec<(Edge, EdgeMode)>,
-    /// What each node's found as in the app's graph: none if the quick action wouldn't be offered.
-    found: Option<BTreeMap<NodeId, String>>,
-    removed: Vec<NodeId>,
+    edge_rules: &'a mut Vec<(Edge, EdgeRule)>,
     colours: &'a Colours,
 }
 
 impl crate::gui::canvas::Extras for Marks<'_> {
     fn app_graph(&self) -> bool {
+        false
+    }
+
+    fn rewiring(&self) -> bool {
         false
     }
 
@@ -316,27 +321,46 @@ impl crate::gui::canvas::Extras for Marks<'_> {
             Mode::IfPresent | Mode::Ignore => self.colours.text_secondary,
         };
         if rule.mode == Mode::Ignore {
-            return Some((rule.mode.name().to_string(), colour));
+            return None;
         }
-        let mut text = rule.mode.name().to_string();
+        // In the inspector's words, leaving out what does nothing (but for what happens if it isn't found).
+        let mut lines = Vec::new();
+        let mut if_found = Vec::new();
         match rule.enabled {
-            Some(true) => text.push_str(", enabled"),
-            Some(false) => text.push_str(", disabled"),
+            Some(true) => if_found.push("enable"),
+            Some(false) => if_found.push("disable"),
             None => {}
         }
-        if let Some(found) = &self.found {
-            text.push('\n');
-            text.push_str(&found.get(&id).cloned().unwrap_or_default());
+        if !rule.settings.is_empty() {
+            if_found.push("apply settings");
         }
-        Some((text, colour))
+        if !if_found.is_empty() {
+            lines.push(format!("If found: {}", if_found.join(", ")));
+        }
+        let otherwise = match rule.mode {
+            Mode::Ensure => "create the node",
+            Mode::Require => "don't offer the quick action",
+            Mode::IfPresent | Mode::Ignore => "do nothing",
+        };
+        // "Else" follows an "If found"; on its own, it says its case.
+        let case = if lines.is_empty() { "If not found" } else { "Else" };
+        lines.push(format!("{case}: {otherwise}"));
+        let mut window = Vec::new();
+        if rule.window.close {
+            window.push("close it if open");
+        }
+        if rule.window.open.is_some() {
+            window.push("open it if not");
+        }
+        if !window.is_empty() {
+            lines.push(format!("Window: {}", window.join(", ")));
+        }
+        Some((lines.join("\n"), colour))
     }
 
     fn edge_colour(&self, edge: &Edge) -> Option<egui::Color32> {
-        match self.modes.iter().find(|(e, _)| e == edge).map(|(_, mode)| *mode) {
-            Some(EdgeMode::Replace) => Some(self.colours.warning),
-            Some(EdgeMode::Remove) => Some(self.colours.error),
-            _ => None,
-        }
+        let rule = edge_rule(self.edge_rules, *edge);
+        if rule.replace { Some(self.colours.warning) } else { None }
     }
 
     fn node_faded(&self, id: NodeId) -> bool {
@@ -344,35 +368,36 @@ impl crate::gui::canvas::Extras for Marks<'_> {
     }
 
     fn edge_faded(&self, edge: &Edge) -> bool {
-        edge_mode(self.modes, *edge) == EdgeMode::Ignore || self.ignored(edge.from.node) || self.ignored(edge.to.node)
+        edge_rule(self.edge_rules, *edge).does_nothing() || self.ignored(edge.from.node) || self.ignored(edge.to.node)
     }
 
     fn node_menu(&mut self, ui: &mut egui::Ui, id: NodeId) {
         let rule = self.rules.entry(id).or_default();
-        let mut ignored = rule.mode == Mode::Ignore;
-        if ui.checkbox(&mut ignored, Mode::Ignore.choice()).changed() {
-            rule.mode = if ignored { Mode::Ignore } else { Mode::Ensure };
+        let mut used = rule.mode != Mode::Ignore;
+        if ui.checkbox(&mut used, "Use this node").changed() {
+            rule.mode = if used { Mode::Ensure } else { Mode::Ignore };
         }
-        if !ignored {
+        if used {
             ui.separator();
             ui.weak("When not found");
-            for mode in [Mode::Ensure, Mode::IfPresent, Mode::Require] {
+            for mode in [Mode::IfPresent, Mode::Ensure, Mode::Require] {
                 ui.radio_value(&mut rule.mode, mode, mode.choice());
             }
-        }
-        ui.separator();
-        if ui.button("Remove from the quick action").clicked() {
-            self.removed.push(id);
-            ui.close();
         }
     }
 
     fn edge_menu(&mut self, ui: &mut egui::Ui, edge: Edge) {
-        let mut mode = edge_mode(self.modes, edge);
-        for choice in EdgeMode::ALL {
-            ui.radio_value(&mut mode, choice, choice.name());
+        let mut rule = edge_rule(self.edge_rules, edge);
+        let mut used = !rule.does_nothing();
+        if ui.checkbox(&mut used, "Use this connection").changed() {
+            rule = if used { EdgeRule::default() } else { EdgeRule::NOTHING };
         }
-        set_edge_mode(self.modes, edge, mode);
+        if used {
+            ui.separator();
+            ui.checkbox(&mut rule.connect, "If free: connect them");
+            ui.checkbox(&mut rule.replace, "If occupied: connect them, replacing that");
+        }
+        set_edge_rule(self.edge_rules, edge, rule);
     }
 }
 
@@ -382,14 +407,14 @@ impl Marks<'_> {
     }
 }
 
-fn edge_mode(modes: &[(Edge, EdgeMode)], edge: Edge) -> EdgeMode {
-    modes.iter().find(|(e, _)| *e == edge).map_or(EdgeMode::Ensure, |(_, mode)| *mode)
+fn edge_rule(rules: &[(Edge, EdgeRule)], edge: Edge) -> EdgeRule {
+    rules.iter().find(|(e, _)| *e == edge).map_or(EdgeRule::default(), |(_, rule)| *rule)
 }
 
-fn set_edge_mode(modes: &mut Vec<(Edge, EdgeMode)>, edge: Edge, mode: EdgeMode) {
-    modes.retain(|(e, _)| *e != edge);
-    if mode != EdgeMode::Ensure {
-        modes.push((edge, mode));
+fn set_edge_rule(rules: &mut Vec<(Edge, EdgeRule)>, edge: Edge, rule: EdgeRule) {
+    rules.retain(|(e, _)| *e != edge);
+    if rule != EdgeRule::default() {
+        rules.push((edge, rule));
     }
 }
 
@@ -398,18 +423,19 @@ const INSPECTOR: f32 = 330.0;
 
 impl<N: NodesEnum> Editor<N> {
     pub fn new(action: QuickAction<N>, file: Option<PathBuf>, colours: &'static Colours) -> Self {
-        let (graph, modes) = action.graph();
+        let (graph, edge_rules) = action.graph();
         let rules = action.roles.iter().map(|r| (r.id, r.rule.clone())).collect();
         let mut canvas = Canvas::new(colours);
         canvas.legend_open = false;
         canvas.id_salt = Some(egui::Id::unique("quick action canvas"));
-        Editor { action, file, graph, rules, modes, canvas, selection: Selection::default(), menu: None }
+        let applying = action.roles.iter().filter(|r| !r.rule.settings.is_empty()).map(|r| r.id).collect();
+        Editor { action, file, graph, rules, edge_rules, canvas, selection: Selection::default(), applying }
     }
 
     /// The quick action as it is now.
     pub fn action(&self) -> QuickAction<N> {
         let mut action = self.action.clone();
-        action.set_graph(&self.graph, &self.rules, &self.modes);
+        action.set_graph(&self.graph, &self.rules, &self.edge_rules);
         action
     }
 
@@ -430,44 +456,26 @@ impl<N: NodesEnum> Editor<N> {
         self.selection.only(id);
     }
 
+    /// Tests select an edge of the quick action, into `to`, with this.
+    #[cfg(test)]
+    pub fn select_edge_into(&mut self, to: NodeId) {
+        self.selection.clear();
+        self.selection.edge = self.graph.edges().iter().find(|e| e.to.node == to).copied();
+    }
+
     /// The editor takes most of the app's window, as a modal: the canvas on the left, and on the right, what's
     /// selected (a node, an edge) or, with nothing selected, the quick action itself. `graph` is the app's, which
-    /// the quick action would be done on, and whose `selected` nodes can be added to it.
+    /// the quick action would be done on.
     pub fn show<A: AnnotationsEnum>(
         &mut self,
         ctx: &egui::Context,
         graph: &Graph<N>,
         layout: &Layout,
-        selected: &BTreeSet<NodeId>,
         base_directories: &[&'static str],
         colours: &'static Colours,
     ) -> Outcome {
         let mut outcome = Outcome::Open;
-        let action = self.action();
-        let state = QuickState { graph, layout };
-        let found = action.find(graph);
-        let preview = match &found {
-            Err(label) => format!("Not offered now: there's no {label}"),
-            Ok(_) => match action.run(&state) {
-                Some(change) => format!("Now, it would have {}", change.summary),
-                None => "Not offered now: it would change nothing".into(),
-            },
-        };
-        let found_as: Option<BTreeMap<NodeId, String>> = found.as_ref().ok().map(|found| {
-            (self.graph.ids())
-                .map(|role| {
-                    let mode = self.rules.get(&role).map(|r| r.mode).unwrap_or_default();
-                    let label = found.get(&role).and_then(|id| graph.get(*id)).map(|e| e.label.as_str());
-                    let text = match (label, mode) {
-                        (_, Mode::Ignore) => String::new(),
-                        (Some(label), _) => format!("Is {label}"),
-                        (None, Mode::Ensure) => "Not in the graph: added".into(),
-                        (None, _) => "Not in the graph".into(),
-                    };
-                    (role, text)
-                })
-                .collect()
-        });
+        let found = self.action().find(graph);
         let screen = ctx.content_rect();
         let width = (screen.width() * 0.92).max(700.0);
         // Room for the title bar, the footer and the margins, which are about this tall together.
@@ -482,21 +490,18 @@ impl<N: NodesEnum> Editor<N> {
                     ui.set_min_size(canvas_size);
                     ui.set_max_size(canvas_size);
                     egui::Frame::new().stroke(egui::Stroke::new(1.0, colours.border)).show(ui, |ui| {
-                        self.canvas_ui::<A>(ui, found_as.clone(), colours);
+                        self.canvas_ui::<A>(ui, colours);
                     });
                 });
                 ui.add_space(14.0);
                 ui.vertical(|ui| {
                     ui.set_width(INSPECTOR);
-                    let scroll = egui::ScrollArea::vertical().max_height(height).auto_shrink([false, false]);
-                    scroll.id_salt("inspector").show(ui, |ui| {
-                        self.inspector(ui, graph, layout, &found, selected, base_directories);
-                    });
+                    ui.set_height(height);
+                    self.inspector(ui, graph, layout, &found, base_directories, colours);
                 });
             });
         };
         let footer = |ui: &mut egui::Ui| {
-            ui.label(RichText::new(&preview).small().color(colours.text_secondary));
             let (save, cancel) = dialog::at_right(ui, |ui| {
                 let save = ui.add_enabled(named, egui::Button::new("Save")).clicked();
                 (save, ui.button("Cancel").clicked())
@@ -508,23 +513,17 @@ impl<N: NodesEnum> Editor<N> {
             }
         };
         let closed = dialog::show(ctx, "Quick action", width, colours, body, footer);
-        if closed && matches!(outcome, Outcome::Open) && self.menu.is_none() {
+        if closed && matches!(outcome, Outcome::Open) {
             outcome = Outcome::Cancelled;
         }
-        self.create_menu(ctx);
         outcome
     }
 
-    fn canvas_ui<A: AnnotationsEnum>(
-        &mut self,
-        ui: &mut egui::Ui,
-        found: Option<BTreeMap<NodeId, String>>,
-        colours: &Colours,
-    ) {
+    fn canvas_ui<A: AnnotationsEnum>(&mut self, ui: &mut egui::Ui, colours: &Colours) {
         let resolved = self.graph.resolve();
         let mut annotations = Annotations::<A>::default();
         let mut events = Vec::new();
-        let mut marks = Marks { rules: &mut self.rules, modes: &mut self.modes, found, removed: Vec::new(), colours };
+        let mut marks = Marks { rules: &mut self.rules, edge_rules: &mut self.edge_rules, colours };
         self.canvas.show(
             ui,
             &mut self.graph,
@@ -535,114 +534,75 @@ impl<N: NodesEnum> Editor<N> {
             &mut events,
             &mut marks,
         );
-        for id in std::mem::take(&mut marks.removed) {
-            self.remove(id);
-        }
-        for event in events {
-            match event {
-                Event::OpenMenu { screen, scene, from } => {
-                    self.menu = Some(CreateMenu::new(screen, scene, from).above_modal());
-                }
-                Event::DeleteEdge(edge) => self.graph.disconnect(edge),
-                _ => {}
-            }
-        }
-        let deleting = ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace));
-        if deleting && !ui.ctx().egui_wants_keyboard_input() {
-            for id in std::mem::take(&mut self.selection.nodes) {
-                self.remove(id);
-            }
-            if let Some(edge) = self.selection.edge.take() {
-                self.graph.disconnect(edge);
-            }
-        }
-        // Edges gone (disconnected on the canvas, or with their nodes) take their modes with them.
-        let edges = self.graph.edges();
-        self.modes.retain(|(e, _)| edges.contains(e));
     }
 
-    fn remove(&mut self, id: NodeId) {
-        self.graph.remove(id);
-        self.rules.remove(&id);
-        self.selection.nodes.remove(&id);
-    }
-
-    /// Clicking the canvas, or a port, opens the menu to add a node; what's chosen is added to the quick action.
-    fn create_menu(&mut self, ctx: &egui::Context) {
-        let Some(menu) = &mut self.menu else { return };
-        let resolved = self.graph.resolve();
-        let (choice, keep) = menu.show(ctx, &self.graph, &resolved, &BTreeSet::new());
-        let (scene, from) = (menu.scene, menu.from);
-        if !keep {
-            self.menu = None;
-        }
-        if let Some(choice) = choice {
-            let (added, _) = create_menu::add_chosen(&mut self.graph, &resolved, choice, scene, from);
-            if let Some(id) = added {
-                self.selection.only(id);
-            }
-        }
-    }
-
-    /// Nodes selected in the app's graph are added to the quick action with this, with the edges between them, to
-    /// the right of what's there.
-    fn add_from(&mut self, graph: &Graph<N>, selected: &BTreeSet<NodeId>) {
-        let right = self.graph.iter().map(|(_, e)| e.pos[0] + 280.0).fold(f32::NEG_INFINITY, f32::max);
-        let left = selected.iter().filter_map(|id| graph.get(*id)).map(|e| e.pos[0]).fold(f32::INFINITY, f32::min);
-        let shift = if right.is_finite() { right - left } else { 0.0 };
-        let mut new_ids = BTreeMap::new();
-        for &id in selected {
-            let Some(entry) = graph.get(id) else { continue };
-            let added = self.graph.add(entry.node.clone(), [entry.pos[0] + shift, entry.pos[1]]);
-            if let Some(new) = self.graph.get_mut(added) {
-                new.label = entry.label.clone();
-                new.disabled = entry.disabled;
-                new.show_in_basic_override = entry.show_in_basic_override;
-            }
-            new_ids.insert(id, added);
-        }
-        for edge in graph.edges() {
-            if let (Some(from), Some(to)) = (new_ids.get(&edge.from.node), new_ids.get(&edge.to.node)) {
-                let from = crate::engine::PortAddress { node: *from, ..edge.from };
-                let to = crate::engine::PortAddress { node: *to, ..edge.to };
-                let _ = self.graph.connect(from, to);
-            }
-        }
-        self.selection.clear();
-        self.selection.nodes.extend(new_ids.values());
-        self.canvas.frame_all();
-    }
-
-    #[allow(clippy::too_many_arguments)]
     fn inspector(
         &mut self,
         ui: &mut egui::Ui,
         graph: &Graph<N>,
         layout: &Layout,
         found: &Result<BTreeMap<NodeId, NodeId>, String>,
-        selected: &BTreeSet<NodeId>,
         base_directories: &[&'static str],
+        colours: &Colours,
     ) {
         if let Some(edge) = self.selection.edge {
-            let name = |port: crate::engine::PortAddress| {
-                let label = self.graph.get(port.node).map_or("?", |e| e.label.as_str());
-                let ids = self.graph.get(port.node).map(|e| e.node.port_ids(port.role)).unwrap_or_default();
-                format!("{label} › {}", ids.get(port.port_idx).copied().unwrap_or("?").replace('_', " "))
-            };
-            ui.strong("Connection");
-            ui.label(format!("From {}\nto {}", name(edge.from), name(edge.to)));
-            ui.add_space(6.0);
-            let mut mode = edge_mode(&self.modes, edge);
-            for choice in EdgeMode::ALL {
-                radio_info(ui, &mut mode, choice, choice.name(), edge_info(choice));
-            }
-            set_edge_mode(&mut self.modes, edge, mode);
-            return;
+            return self.edge_inspector(ui, edge, colours);
         }
         if let Some(id) = self.selection.single() {
-            return self.node_inspector(ui, id, graph, found);
+            return self.node_inspector(ui, id, graph, found, colours);
         }
-        self.action_inspector(ui, graph, layout, found, selected, base_directories);
+        self.action_inspector(ui, layout, found, base_directories, colours);
+    }
+
+    /// A connection's inspector: its two ends, as a title, and what's done to it in each case.
+    fn edge_inspector(&mut self, ui: &mut egui::Ui, edge: Edge, colours: &Colours) {
+        let end = |port: crate::engine::PortAddress| {
+            let entry = self.graph.get(port.node);
+            let label = entry.map_or_else(|| "?".to_string(), |e| e.label.clone());
+            let colour = entry.map_or(colours.text_secondary, |e| style::category_colour(e.node.info().category));
+            let ids = entry.map(|e| e.node.port_ids(port.role)).unwrap_or_default();
+            let port = ids.get(port.port_idx).copied().unwrap_or("?").replace('_', " ");
+            (label, colour, port)
+        };
+        let (from, to) = (end(edge.from), end(edge.to));
+        let resolved = self.graph.resolve();
+        let mut rule = edge_rule(&self.edge_rules, edge);
+        let mut used = !rule.does_nothing();
+        let paint = |painter: &egui::Painter, start, finish| {
+            super::canvas::paint_edge(painter, start, finish, &edge, &resolved, colours);
+        };
+        if connection_bar(ui, &from, &to, &mut used, colours, paint) {
+            rule = if used { EdgeRule::default() } else { EdgeRule::NOTHING };
+        }
+        if !used {
+            set_edge_rule(&mut self.edge_rules, edge, rule);
+            return;
+        }
+        // The end that takes just the one edge: a data stream's input, or the reading end of a value.
+        let single = if edge.to.role == crate::engine::PortRole::DataStreamIn { &to } else { &from };
+        let port = format!("{}'s {}", single.0, single.2);
+        let others_kept = format!("Any other connections out of {}'s {} are left as they are.", from.0, from.2);
+        scrolled(ui, |ui| {
+            if_else(ui, colours, |ui| {
+                section(ui, "If they're connected already", colours, |ui| {
+                    section(ui, "Enable or disable", colours, |ui| {
+                        for (choice, text) in [(None, DO_NOTHING), (Some(true), "Enable"), (Some(false), "Disable")] {
+                            radio(ui, &mut rule.enabled, choice, text);
+                        }
+                    });
+                });
+                section_with_info(ui, &format!("Else, if {port} is free"), Some(&others_kept), colours, |ui| {
+                    radio(ui, &mut rule.connect, false, DO_NOTHING);
+                    radio(ui, &mut rule.connect, true, "Connect them");
+                });
+                let title = format!("Else, if {port} is occupied");
+                section_with_info(ui, &title, Some(&others_kept), colours, |ui| {
+                    radio(ui, &mut rule.replace, false, DO_NOTHING);
+                    radio(ui, &mut rule.replace, true, "Connect them, replacing that");
+                });
+            });
+        });
+        set_edge_rule(&mut self.edge_rules, edge, rule);
     }
 
     fn node_inspector(
@@ -651,182 +611,148 @@ impl<N: NodesEnum> Editor<N> {
         id: NodeId,
         graph: &Graph<N>,
         found: &Result<BTreeMap<NodeId, NodeId>, String>,
+        colours: &Colours,
     ) {
         let others: Vec<(NodeId, String)> =
             self.graph.iter().filter(|(o, _)| *o != id).map(|(o, e)| (o, e.label.clone())).collect();
         let Some(entry) = self.graph.get_mut(id) else { return };
         let rule = self.rules.entry(id).or_default();
-        let kind = entry.node.info().name;
-        ui.strong(&entry.label);
-        let label = ui.label("Label");
-        ui.text_edit_singleline(&mut entry.label).labelled_by(label.id);
-        let mut ignored = rule.mode == Mode::Ignore;
-        ui.horizontal(|ui| {
-            if ui.checkbox(&mut ignored, "Ignore this node").changed() {
-                rule.mode = if ignored { Mode::Ignore } else { Mode::Ensure };
-            }
-            info_icon(
-                ui,
-                "An ignored node stays in the quick action only to show what surrounds the rest. The graph is never \
-                 searched for it, and neither the node nor its connections are changed.",
-            );
-        });
-        if ignored {
+        let info = entry.node.info();
+        let mut used = rule.mode != Mode::Ignore;
+        let colour = style::category_colour(info.category);
+        if title_bar(ui, &entry.label, Some(colour), Some(&mut used), colours) {
+            rule.mode = if used { Mode::Ensure } else { Mode::Ignore };
+        }
+        if !used {
             return;
         }
-        ui.add_space(8.0);
-
-        ui.strong("Matching");
-        ui.horizontal(|ui| {
-            ui.label(format!("Type: {kind}"));
-            info_icon(ui, &format!("Only {kind} nodes in the graph are considered."));
-        });
-        let row = ui.horizontal(|ui| {
-            let label = ui.label("Label pattern");
-            info_icon(
-                ui,
-                "A regular expression, such as ^Band-pass or tetrode \\d, matched against anywhere in the label. \
-                 Empty, any label matches.",
-            );
-            label
-        });
-        let mut pattern = rule.label_pattern.clone().unwrap_or_default();
-        let edit = ui.add(egui::TextEdit::singleline(&mut pattern).hint_text("Any label")).labelled_by(row.inner.id);
-        if edit.changed() {
-            rule.label_pattern = (!pattern.is_empty()).then_some(pattern.clone());
-        }
-        if !pattern.is_empty()
-            && let Err(e) = regex::Regex::new(&pattern)
-        {
-            let error = e.to_string();
-            let line = error.lines().last().unwrap_or("").trim().to_string();
-            ui.label(RichText::new(format!("Not a valid pattern: {line}")).small().color(ui.visuals().error_fg_color));
-        }
-        let found_as = found.as_ref().ok().and_then(|f| f.get(&id).copied()).and_then(|other| graph.get(other));
-        let now = match (found_as, found) {
-            (Some(other), _) => format!("In the graph now: {}", other.label),
-            (None, Ok(_)) => "In the graph now: not found".to_string(),
-            (None, Err(_)) => "In the graph now: the quick action isn't offered".to_string(),
-        };
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(now).weak());
-            info_icon(
-                ui,
-                "Of the nodes that match, the left-most on the canvas is used (of two equally far left, the higher). \
-                 A node already used for another of the quick action's nodes is passed over.",
-            );
-        });
-        ui.add_space(8.0);
-
-        ui.strong("When found");
-        let choices = [
-            (
-                None,
-                "Leave enabled or disabled",
-                "A node created when none is found is enabled or disabled as this one is.",
-            ),
-            (Some(true), "Enable", "A node created when none is found is enabled too."),
-            (Some(false), "Disable", "A node created when none is found is disabled too."),
-        ];
-        for (choice, text, info) in choices {
-            radio_info(ui, &mut rule.enabled, choice, text, info);
-        }
-        ui.horizontal(|ui| {
-            ui.label("Apply these settings");
-            info_icon(
-                ui,
-                "Each setting ticked is copied from this node onto the node found. A node added has all of this \
-                 node's settings, ticked or not.",
-            );
-        });
-        let settings = serde_json::to_value(&entry.node).ok().and_then(|v| v.get("settings").cloned());
-        let keys: Vec<String> =
-            settings.as_ref().and_then(|s| s.as_object()).map(|o| o.keys().cloned().collect()).unwrap_or_default();
-        for key in &keys {
-            let mut on = rule.settings.contains(key);
-            if ui.checkbox(&mut on, key.replace('_', " ")).changed() {
-                match on {
-                    true => rule.settings.push(key.clone()),
-                    false => rule.settings.retain(|k| k != key),
+        scrolled(ui, |ui| {
+            let found_as = found.as_ref().ok().and_then(|f| f.get(&id).copied()).and_then(|other| graph.get(other));
+            let disambiguation = "Nodes with only one possible match are paired first; the rest pair up left to right.";
+            section_with_info(ui, "Find a node that matches", Some(disambiguation), colours, |ui| {
+                leaf(ui.label(format!("Type: {}", info.name)).rect);
+                let mut pattern = rule.label_pattern.clone().unwrap_or_else(|| ANY_LABEL.to_string());
+                let row = ui.horizontal(|ui| {
+                    let label = ui.label("Label pattern");
+                    // Room after the box for the ⓘ.
+                    let width = (ui.available_width() - 24.0).max(60.0);
+                    let edit = egui::TextEdit::singleline(&mut pattern).desired_width(width);
+                    let edited = ui.add(edit).labelled_by(label.id);
+                    info_icon_with(ui, regex_cheat_sheet);
+                    edited.changed()
+                });
+                leaf(row.response.rect);
+                if row.inner {
+                    rule.label_pattern = (pattern != ANY_LABEL).then(|| pattern.clone());
                 }
-            }
-        }
-        if let Some(other) = found_as {
-            ui.horizontal(|ui| {
-                if ui.button(format!("Take the settings of {}", other.label)).clicked() {
-                    entry.node = other.node.clone();
+                let problem = match regex::Regex::new(&pattern) {
+                    _ if pattern.is_empty() => Some("Empty, it matches nothing: .* matches any label".to_string()),
+                    Err(e) => {
+                        Some(format!("Not a valid pattern: {}", e.to_string().lines().last().unwrap_or("").trim()))
+                    }
+                    Ok(_) => None,
+                };
+                if let Some(problem) = problem {
+                    leaf(ui.label(RichText::new(problem).small().color(colours.error)).rect);
                 }
-                info_icon(
-                    ui,
-                    &format!(
-                        "In the graph now, {} is the node found for this one. Its current settings replace this \
-                         node's.",
-                        other.label
-                    ),
-                );
             });
-        }
-        ui.add_space(8.0);
 
-        ui.strong("When not found");
-        for mode in [Mode::Ensure, Mode::IfPresent, Mode::Require] {
-            radio_info(ui, &mut rule.mode, mode, mode.choice(), not_found_info(mode));
-        }
-        ui.add_space(8.0);
+            if_else(ui, colours, |ui| {
+                section(ui, "If a matching node is found", colours, |ui| {
+                    section(ui, "Enable or disable", colours, |ui| {
+                        for (choice, text) in [(None, DO_NOTHING), (Some(true), "Enable"), (Some(false), "Disable")] {
+                            radio(ui, &mut rule.enabled, choice, text);
+                        }
+                    });
+                    let settings = serde_json::to_value(&entry.node).ok().and_then(|v| v.get("settings").cloned());
+                    let keys: Vec<String> = (settings.as_ref().and_then(|s| s.as_object()))
+                        .map(|o| o.keys().cloned().collect())
+                        .unwrap_or_default();
+                    if keys.is_empty() {
+                        return;
+                    }
+                    let applying = &mut self.applying;
+                    section(ui, "Settings", colours, |ui| {
+                        let mut apply = applying.contains(&id) || !rule.settings.is_empty();
+                        radio(ui, &mut apply, false, DO_NOTHING);
+                        let apply_row = radio(ui, &mut apply, true, "Apply settings");
+                        if !apply {
+                            applying.remove(&id);
+                            rule.settings.clear();
+                            return;
+                        }
+                        applying.insert(id);
+                        nested(ui, apply_row, colours, |ui| {
+                            for key in &keys {
+                                let mut on = rule.settings.contains(key);
+                                let checkbox = ui.checkbox(&mut on, key.replace('_', " "));
+                                leaf(checkbox.rect);
+                                if checkbox.changed() {
+                                    match on {
+                                        true => rule.settings.push(key.clone()),
+                                        false => rule.settings.retain(|k| k != key),
+                                    }
+                                }
+                            }
+                            if let Some(other) = found_as {
+                                let take = ui.horizontal(|ui| {
+                                    if ui.button(format!("Take the settings of {}", other.label)).clicked() {
+                                        entry.node = other.node.clone();
+                                    }
+                                    let info = format!(
+                                        "In the graph now, {} is the node found for this one. Its current settings \
+                                     replace the settings here.",
+                                        other.label
+                                    );
+                                    info_icon(ui, &info);
+                                });
+                                leaf(take.response.rect);
+                            }
+                        });
+                    });
+                });
 
-        window_ui(ui, &mut rule.window, &others);
+                section(ui, "Else, if no matching node is found", colours, |ui| {
+                    for mode in [Mode::IfPresent, Mode::Ensure, Mode::Require] {
+                        radio(ui, &mut rule.mode, mode, mode.choice());
+                    }
+                });
+            });
+
+            window_ui(ui, &mut rule.window, &others, colours);
+        });
     }
 
     fn action_inspector(
         &mut self,
         ui: &mut egui::Ui,
-        graph: &Graph<N>,
         layout: &Layout,
         found: &Result<BTreeMap<NodeId, NodeId>, String>,
-        selected: &BTreeSet<NodeId>,
         base_directories: &[&'static str],
+        colours: &Colours,
     ) {
-        ui.strong("Quick action");
-        let action = &mut self.action;
-        let name = ui.label("Name");
-        ui.text_edit_singleline(&mut action.name).labelled_by(name.id);
-        let description = ui.label("Description");
-        ui.add(egui::TextEdit::multiline(&mut action.description).desired_rows(3)).labelled_by(description.id);
-        ui.add_space(8.0);
-        let add = match selected.len() {
-            0 => None,
-            1 => Some("Add the node selected in the graph".to_string()),
-            n => Some(format!("Add the {n} nodes selected in the graph")),
-        };
-        ui.horizontal(|ui| {
-            if let Some(add) = add
-                && ui.button(add).clicked()
-            {
-                self.add_from(graph, selected);
-            }
-            if ui.button("Arrange").on_hover_text("Lay out the quick action's nodes afresh").clicked() {
-                for (id, pos) in super::arrange::arrange(&self.graph) {
-                    if let Some(entry) = self.graph.get_mut(id) {
-                        entry.pos = pos;
+        title_bar(ui, "Quick action", None, None, colours);
+        scrolled(ui, |ui| {
+            let action = &mut self.action;
+            let name = ui.label("Name");
+            ui.text_edit_singleline(&mut action.name).labelled_by(name.id);
+            let description = ui.label("Description");
+            ui.add(egui::TextEdit::multiline(&mut action.description).desired_rows(3)).labelled_by(description.id);
+            ui.horizontal(|ui| {
+                if ui.button("Arrange").clicked() {
+                    for (id, pos) in super::arrange::arrange(&self.graph) {
+                        if let Some(entry) = self.graph.get_mut(id) {
+                            entry.pos = pos;
+                        }
                     }
+                    self.canvas.frame_all();
                 }
-                self.canvas.frame_all();
-            }
-            info_icon(
-                ui,
-                "On the canvas, selecting a node or a connection shows how the quick action treats it, and \
-                 right-clicking one opens its menu. Clicking the canvas, or a port, adds a node, and Delete takes \
-                 what's selected out of the quick action. To keep part of the graph here for context, without the \
-                 quick action touching it, choose Ignore.",
-            );
-        });
-        ui.add_space(8.0);
+            });
 
-        ui.strong("Panes");
-        let action = &mut self.action;
-        let mut arrange = action.panes.arrangement.is_some();
-        let ticked = ui
-            .horizontal(|ui| {
+            section(ui, "Panes", colours, |ui| {
+                let action = &mut self.action;
+                let mut arrange = action.panes.arrangement.is_some();
+                let row = ui.horizontal(|ui| {
                 let ticked = ui.checkbox(&mut arrange, "Arrange as they are now");
                 info_icon(
                     ui,
@@ -834,68 +760,78 @@ impl<N: NodesEnum> Editor<N> {
                      them now.",
                 );
                 ticked
-            })
-            .inner;
-        let again = arrange && ui.small_button("As they are now, again").clicked();
-        if ticked.changed() && !arrange {
-            action.panes.arrangement = None;
-        } else if ticked.changed() || again {
-            let ids: Vec<(NodeId, NodeId)> =
-                (found.iter()).flat_map(|f| f.iter()).map(|(role, id)| (*id, *role)).collect();
-            action.panes.arrangement = layout
-                .arrangement()
-                .and_then(|a| a.map_windows(&|id| ids.iter().find(|(node, _)| *node == id).map(|p| p.1)));
-        }
-        ui.add_space(8.0);
-        let label = ui.horizontal(|ui| {
-            let label = ui.label("Base directory");
-            info_icon(ui, "Chosen when the quick action runs, unless a recording is under way.");
-            label
-        });
-        let current = action.base_directory.clone().unwrap_or_else(|| "As it is".into());
-        egui::ComboBox::from_id_salt("base directory")
-            .selected_text(current)
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut action.base_directory, None, "As it is");
-                for name in base_directories {
-                    ui.selectable_value(&mut action.base_directory, Some(name.to_string()), *name);
+            });
+                leaf(row.response.rect);
+                let ticked = row.inner;
+                let again = arrange && {
+                    let again = ui.small_button("As they are now, again");
+                    leaf(again.rect);
+                    again.clicked()
+                };
+                if ticked.changed() && !arrange {
+                    action.panes.arrangement = None;
+                } else if ticked.changed() || again {
+                    let ids: Vec<(NodeId, NodeId)> =
+                        (found.iter()).flat_map(|f| f.iter()).map(|(role, id)| (*id, *role)).collect();
+                    action.panes.arrangement = layout
+                        .arrangement()
+                        .and_then(|a| a.map_windows(&|id| ids.iter().find(|(node, _)| *node == id).map(|p| p.1)));
                 }
-            })
-            .response
-            .labelled_by(label.inner.id);
-        ui.horizontal(|ui| {
-            ui.checkbox(&mut action.arrange_if_empty, "Lay out the graph afresh");
-            info_icon(ui, "Only when the quick action builds the graph from nothing.");
+            });
+
+            section(ui, "Base directory", colours, |ui| {
+                let action = &mut self.action;
+                let label = ui.label("Choose");
+                leaf(label.rect);
+                let current = action.base_directory.clone().unwrap_or_else(|| DO_NOTHING.into());
+                let combo = egui::ComboBox::from_id_salt("base directory")
+                    .selected_text(current)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut action.base_directory, None, DO_NOTHING);
+                        for name in base_directories {
+                            ui.selectable_value(&mut action.base_directory, Some(name.to_string()), *name);
+                        }
+                    })
+                    .response
+                    .labelled_by(label.id);
+                leaf(combo.rect);
+            });
+
+            section(ui, "If the graph was empty", colours, |ui| {
+                leaf(ui.checkbox(&mut self.action.arrange_if_empty, "Lay out the graph afresh").rect);
+            });
         });
     }
 }
 
-/// A node's window, if open, is left open or closed; if not, left closed or opened, going (the first time) where
-/// `Placement` says, relative to the window of one of `others` (the quick action's other nodes, with their labels) for
-/// some.
-fn window_ui(ui: &mut egui::Ui, window: &mut Window, others: &[(NodeId, String)]) {
-    ui.strong("If the node's window is open");
-    radio_info(ui, &mut window.close, false, "Leave it open", "The window stays where it is, as it is.");
-    radio_info(ui, &mut window.close, true, "Close it", "A docked window keeps its place for when it's next opened.");
-    ui.add_space(8.0);
-
-    ui.strong("If the node's window isn't open");
-    let opening = window.open.is_some();
-    radio_info(ui, &mut window.open, None, "Leave it closed", "The window stays closed.");
-    let open = ui.horizontal(|ui| {
-        let open = ui.radio(opening, "Open it").clicked();
-        info_icon(
-            ui,
-            "A window that's been open before opens where it was; one opening for the first time goes where chosen \
-             below.",
-        );
-        open
+/// A node's window, if open, is left as it is or closed; if not, left as it is or opened, going (the first time)
+/// where `Placement` says, relative to the window of one of `others` (the quick action's other nodes, with their
+/// labels) for some.
+fn window_ui(ui: &mut egui::Ui, window: &mut Window, others: &[(NodeId, String)], colours: &Colours) {
+    if_else(ui, colours, |ui| {
+        section(ui, "If the node's window is open", colours, |ui| {
+            radio(ui, &mut window.close, false, DO_NOTHING);
+            radio(ui, &mut window.close, true, "Close it");
+        });
+        section(ui, "Else, if the node's window isn't open", colours, |ui| {
+            let opening = window.open.is_some();
+            radio(ui, &mut window.open, None, DO_NOTHING);
+            let open = ui.radio(opening, "Open it");
+            leaf(open.rect);
+            if open.clicked() && !opening {
+                window.open = Some(Placement::Default);
+            }
+            let Some(placement) = &mut window.open else { return };
+            let info = "A window that's been open before opens where it was. Placed by another window that isn't \
+                        open, a window goes where a new window goes.";
+            section_with_info(ui, "Where, the first time", Some(info), colours, |ui| {
+                placement_ui(ui, placement, others)
+            });
+        });
     });
-    if open.inner && !opening {
-        window.open = Some(Placement::Default);
-    }
-    let Some(placement) = &mut window.open else { return };
+}
 
+fn placement_ui(ui: &mut egui::Ui, placement: &mut Placement, others: &[(NodeId, String)]) {
     let first_other = others.first().map(|(o, _)| *o);
     let kinds: Vec<(&str, Option<Placement>)> = vec![
         ("Where a new window goes", Some(Placement::Default)),
@@ -910,39 +846,22 @@ fn window_ui(ui: &mut egui::Ui, window: &mut Window, others: &[(NodeId, String)]
         Placement::Beside { .. } => 3,
     };
     let current = kind(placement);
-    let label = ui.horizontal(|ui| {
-        let label = ui.label("Where, the first time");
-        info_icon(
-            ui,
-            "• Where a new window goes: as the app places any window opened for the first time.\n\
-             • In front, in the largest group: as the front tab of the largest group of tabs.\n\
-             • Behind another window: as a tab behind the chosen node's window.\n\
-             • Next to another window: in a group of its own on one side of the chosen node's window, taking a \
-             share of the space.\n\n\
-             Placed relative to a window that isn't open, the window goes where a new window goes.",
-        );
-        label
-    });
-    egui::ComboBox::from_id_salt("placement")
-        .selected_text(kinds[current].0)
-        .width(INSPECTOR - 20.0)
-        .show_ui(ui, |ui| {
-            for (i, (name, choice)) in kinds.iter().enumerate() {
-                let Some(choice) = choice else { continue };
-                if ui.selectable_label(i == current, *name).clicked() && i != current {
-                    *placement = *choice;
-                }
-            }
-        })
-        .response
-        .labelled_by(label.inner.id);
+    for (i, (name, choice)) in kinds.iter().enumerate() {
+        let Some(choice) = choice else { continue };
+        let button = ui.radio(i == current, *name);
+        leaf(button.rect);
+        if button.clicked() && i != current {
+            *placement = *choice;
+        }
+    }
 
     let name = |of: NodeId| others.iter().find(|(o, _)| *o == of).map_or("?", |(_, l)| l.as_str()).to_string();
     let which = |ui: &mut egui::Ui, of: &mut NodeId| {
         let label = ui.label("Whose window");
-        egui::ComboBox::from_id_salt("anchor")
+        leaf(label.rect);
+        let combo = egui::ComboBox::from_id_salt("anchor")
             .selected_text(name(*of))
-            .width(INSPECTOR - 20.0)
+            .width(ui.available_width() - 8.0)
             .show_ui(ui, |ui| {
                 for (other, label) in others {
                     ui.selectable_value(of, *other, label);
@@ -950,12 +869,13 @@ fn window_ui(ui: &mut egui::Ui, window: &mut Window, others: &[(NodeId, String)]
             })
             .response
             .labelled_by(label.id);
+        leaf(combo.rect);
     };
     match placement {
         Placement::Behind(of) => which(ui, of),
         Placement::Beside { of, side, share } => {
             which(ui, of);
-            ui.horizontal(|ui| {
+            let row = ui.horizontal(|ui| {
                 let sides = [
                     (Side::Right, "on its right"),
                     (Side::Left, "on its left"),
@@ -990,46 +910,239 @@ fn window_ui(ui: &mut egui::Ui, window: &mut Window, others: &[(NodeId, String)]
                     .response
                     .labelled_by(label.id);
             });
+            leaf(row.response.rect);
         }
         Placement::Default | Placement::Largest => {}
     }
 }
 
-/// A choice in the inspector, with an ⓘ saying what it does.
-fn radio_info<T: PartialEq>(ui: &mut egui::Ui, current: &mut T, choice: T, text: &str, info: &str) {
-    ui.horizontal(|ui| {
-        ui.radio_value(current, choice, text);
-        info_icon(ui, info);
+/// The editor says "do nothing" the same way everywhere, as the first option: to the node found, when none is
+/// found, to a window, to a connection, and to the base directory.
+const DO_NOTHING: &str = "Do nothing";
+
+/// A connection's title, in a box with a checkbox at its top right (ticked while the quick action uses the connection;
+/// unticked, it does nothing to it): its two ends, one above the other, each drawn as a node is (a bar in the node's
+/// colour, with its label), with its port on its right edge, named beside it; and between the ports, outside the
+/// nodes, the connection (drawn by `paint`, given the ports' places), as the canvas draws it. This returns whether the
+/// checkbox was clicked.
+fn connection_bar(
+    ui: &mut egui::Ui,
+    from: &(String, egui::Color32, String),
+    to: &(String, egui::Color32, String),
+    used: &mut bool,
+    colours: &Colours,
+    paint: impl FnOnce(&egui::Painter, egui::Pos2, egui::Pos2),
+) -> bool {
+    // Room at the right of the nodes for the wire, looping out from one port to the other.
+    const LOOP: f32 = 40.0;
+    let mut clicked = false;
+    egui::Frame::new()
+        .stroke(egui::Stroke::new(1.0, colours.border))
+        .corner_radius(4.0)
+        .inner_margin(egui::Margin::symmetric(8, 6))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Connection").weak());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let checked = *used;
+                    let response = ui.add(egui::Checkbox::without_text(used));
+                    response.widget_info(|| {
+                        egui::WidgetInfo::selected(egui::Role::CheckBox, true, checked, "Use this connection")
+                    });
+                    clicked = response.changed();
+                });
+            });
+            ui.add_space(4.0);
+            let width = ui.available_width() - LOOP;
+            let node = |ui: &mut egui::Ui, (label, colour, port): &(String, egui::Color32, String)| {
+                let frame = egui::Frame::new()
+                    .fill(colours.surface_raised)
+                    .stroke(egui::Stroke::new(1.0, colours.border))
+                    .corner_radius(4.0)
+                    .inner_margin(egui::Margin { left: 8, right: 12, top: 5, bottom: 5 });
+                let shown = frame.show(ui, |ui| {
+                    ui.set_width(width - 20.0);
+                    ui.horizontal(|ui| {
+                        ui.label(super::docking::tab_title(label, *colour));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(RichText::new(port).color(colours.text_primary));
+                        });
+                    });
+                });
+                let rect = shown.response.rect;
+                egui::pos2(rect.right(), rect.center().y)
+            };
+            let from = node(ui, from);
+            ui.add_space(8.0);
+            let to = node(ui, to);
+            paint(ui.painter(), from, to);
+        });
+    ui.add_space(4.0);
+    clicked
+}
+
+/// Under its bar (see `title_bar`), what the inspector shows scrolls, if it's taller than the room left.
+fn scrolled(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
+    egui::ScrollArea::vertical().id_salt("inspector").auto_shrink([false, false]).show(ui, add);
+}
+
+/// The inspector shows what it's showing in a bar at its top, as a pane's tab does: a node's colour and label, say.
+/// A node's bar has a checkbox at its right, ticked while the quick action uses the node (otherwise it's ignored: see
+/// `Mode::Ignore`); this returns whether it was clicked.
+fn title_bar(
+    ui: &mut egui::Ui,
+    title: &str,
+    colour: Option<egui::Color32>,
+    used: Option<&mut bool>,
+    colours: &Colours,
+) -> bool {
+    let mut clicked = false;
+    egui::Frame::new()
+        .fill(colours.surface_raised)
+        .stroke(egui::Stroke::new(1.0, colours.border))
+        .corner_radius(4.0)
+        .inner_margin(egui::Margin::symmetric(8, 5))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                match colour {
+                    Some(colour) => ui.label(super::docking::tab_title(title, colour)),
+                    None => ui.label(RichText::new(title).size(14.0)),
+                };
+                if let Some(used) = used {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let checked = *used;
+                        let accessible = format!("Use {title}");
+                        let response = ui.add(egui::Checkbox::without_text(used));
+                        response.widget_info(|| {
+                            egui::WidgetInfo::selected(egui::Role::CheckBox, true, checked, accessible.clone())
+                        });
+                        clicked = response.changed();
+                    });
+                }
+            });
+        });
+    ui.add_space(4.0);
+    clicked
+}
+
+// The inspector's sections are drawn as a tree: each section's line runs from its title down to its last row, with a
+// stub out to each row, and a dot where a section within it branches off. Rows say where they are (`leaf`) to the
+// section they're in, kept on this stack while it's drawn.
+thread_local! {
+    static TREE: std::cell::RefCell<Vec<Vec<(egui::Rect, bool)>>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// A row of a section (an option, say) says where it is with this, for its stub from the section's line.
+fn leaf(rect: egui::Rect) {
+    branch_at(rect, false);
+}
+
+fn branch_at(rect: egui::Rect, heading: bool) {
+    TREE.with(|tree| {
+        if let Some(rows) = tree.borrow_mut().last_mut() {
+            rows.push((rect, heading));
+        }
     });
 }
 
-fn not_found_info(mode: Mode) -> &'static str {
-    match mode {
-        Mode::Ensure => {
-            "With no node in the graph to match this one, a node like this one is created, with all of its settings, \
-             ticked or not."
+/// What `add` adds, indented, and the rows (and sections' titles, marked) it says are in it.
+fn rows<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> (egui::Rect, Vec<(egui::Rect, bool)>, R) {
+    TREE.with(|tree| tree.borrow_mut().push(Vec::new()));
+    let inner = ui.horizontal_top(|ui| {
+        ui.add_space(14.0);
+        ui.vertical(add).inner
+    });
+    let rows = TREE.with(|tree| tree.borrow_mut().pop()).unwrap_or_default();
+    (inner.response.rect, rows, inner.inner)
+}
+
+/// A section's line, at `x`, from `top` to its last row (or to the bottom of what's in it, if something after its
+/// last row is), a stub to each row, and a dot where a section branches off.
+fn paint_tree(ui: &egui::Ui, x: f32, top: f32, area: egui::Rect, rows: &[(egui::Rect, bool)], colours: &Colours) {
+    let colour = colours.text_secondary.gamma_multiply(0.5);
+    let stroke = egui::Stroke::new(1.5, colour);
+    let painter = ui.painter();
+    let bottom = match rows.last() {
+        Some((rect, heading)) if *heading || area.bottom() - rect.bottom() < 6.0 => rect.center().y,
+        _ => area.bottom() - 4.0,
+    };
+    painter.line_segment([egui::pos2(x, top), egui::pos2(x, bottom)], stroke);
+    for (rect, heading) in rows {
+        let y = rect.center().y;
+        painter.line_segment([egui::pos2(x, y), egui::pos2(rect.left() - 3.0, y)], stroke);
+        if *heading {
+            painter.circle_filled(egui::pos2(x, y), 3.0, colour);
         }
-        Mode::IfPresent => {
-            "With no node in the graph to match this one, the quick action still runs, leaving out this node's \
-             connections and window."
-        }
-        Mode::Require => {
-            "With no node in the graph to match this one, the quick action isn't offered. Use VR computer, for \
-             example, isn't offered without a position detector."
-        }
-        Mode::Ignore => "",
     }
 }
 
-fn edge_info(mode: EdgeMode) -> &'static str {
-    match mode {
-        EdgeMode::Ensure => "Connected only if the input (or a control's reading end) has no connection yet.",
-        EdgeMode::Replace => "Connected, replacing any connection to the input.",
-        EdgeMode::Remove => "Removed, if the graph has it.",
-        EdgeMode::Ignore => {
-            "Left as the graph has it. An ignored connection stays here only to show what surrounds the rest."
+/// A section of the inspector: its title, in bold, and under it what's in it, indented, in the tree (see `TREE`).
+fn section<R>(ui: &mut egui::Ui, title: &str, colours: &Colours, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    section_with_info(ui, title, None, colours, add)
+}
+
+/// A section (see `section`) with an ⓘ beside its title, for what isn't plain from what's in it.
+fn section_with_info<R>(
+    ui: &mut egui::Ui,
+    title: &str,
+    info: Option<&str>,
+    colours: &Colours,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    ui.add_space(4.0);
+    let heading = match info {
+        Some(info) => {
+            ui.horizontal(|ui| {
+                let heading = bold(ui, title, colours.text_primary);
+                info_icon(ui, info);
+                heading
+            })
+            .inner
         }
-    }
+        None => bold(ui, title, colours.text_primary),
+    };
+    branch_at(heading, true);
+    let (area, rows, inner) = rows(ui, add);
+    paint_tree(ui, heading.left() + 4.5, heading.bottom() + 1.0, area, &rows, colours);
+    inner
+}
+
+/// What follows from an option (the settings to apply, once applying them's chosen, say), indented under it, its
+/// rows joined to a line down from the option's button.
+fn nested<R>(ui: &mut egui::Ui, option: egui::Rect, colours: &Colours, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let (area, rows, inner) = rows(ui, add);
+    let x = option.left() + ui.spacing().icon_width / 2.0;
+    paint_tree(ui, x, option.bottom(), area, &rows, colours);
+    inner
+}
+
+/// Sections that are one choice (if this, do one thing; else, if that, another) branch off one line down the left,
+/// from the first to the last.
+fn if_else(ui: &mut egui::Ui, colours: &Colours, add: impl FnOnce(&mut egui::Ui)) {
+    ui.add_space(4.0);
+    let (area, rows, ()) = rows(ui, add);
+    let top = rows.first().map_or(area.top(), |(rect, _)| rect.center().y);
+    paint_tree(ui, area.left() + 4.5, top, area, &rows, colours);
+}
+
+/// The app's fonts have no bold, so a title's drawn twice, a fraction of a pixel apart, to look it.
+fn bold(ui: &mut egui::Ui, text: &str, colour: egui::Color32) -> egui::Rect {
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let galley = ui.painter().layout_no_wrap(text.to_string(), font, colour);
+    let (rect, response) = ui.allocate_exact_size(galley.size() + egui::vec2(0.6, 0.0), egui::Sense::hover());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, text));
+    ui.painter().galley(rect.min, galley.clone(), colour);
+    ui.painter().galley(rect.min + egui::vec2(0.6, 0.0), galley, colour);
+    rect
+}
+
+/// A choice in the inspector, as a row of its section (see `leaf`).
+fn radio<T: PartialEq>(ui: &mut egui::Ui, current: &mut T, choice: T, text: &str) -> egui::Rect {
+    let rect = ui.radio_value(current, choice, text).rect;
+    leaf(rect);
+    rect
 }
 
 /// The app opens the quick actions' folder in the system's file manager with this.

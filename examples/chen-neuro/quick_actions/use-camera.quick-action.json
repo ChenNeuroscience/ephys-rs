@@ -274,7 +274,7 @@
           "role": "DataStreamIn",
           "port": "positions"
         },
-        "mode": "replace"
+        "replace": true
       },
       {
         "from": {
@@ -287,7 +287,7 @@
           "role": "DataStreamIn",
           "port": "positions"
         },
-        "mode": "replace"
+        "replace": true
       },
       {
         "from": {
@@ -300,7 +300,7 @@
           "role": "DataStreamIn",
           "port": "positions"
         },
-        "mode": "replace"
+        "replace": true
       },
       {
         "from": {
@@ -313,7 +313,7 @@
           "role": "DataStreamIn",
           "port": "pos_ttl"
         },
-        "mode": "replace"
+        "replace": true
       },
       {
         "from": {
@@ -326,7 +326,7 @@
           "role": "DataStreamIn",
           "port": "ttl"
         },
-        "mode": "replace"
+        "replace": true
       },
       {
         "from": {
@@ -339,7 +339,7 @@
           "role": "ValOutCmdIn",
           "port": "detection"
         },
-        "mode": "replace"
+        "replace": true
       },
       {
         "from": {
@@ -352,7 +352,7 @@
           "role": "ValOutCmdIn",
           "port": "detection"
         },
-        "mode": "replace"
+        "replace": true
       },
       {
         "from": {
@@ -365,7 +365,8 @@
           "role": "DataStreamIn",
           "port": "positions"
         },
-        "mode": "remove"
+        "connect": false,
+        "enabled": false
       },
       {
         "from": {
@@ -378,7 +379,8 @@
           "role": "DataStreamIn",
           "port": "positions"
         },
-        "mode": "remove"
+        "connect": false,
+        "enabled": false
       },
       {
         "from": {
@@ -391,7 +393,8 @@
           "role": "DataStreamIn",
           "port": "positions"
         },
-        "mode": "remove"
+        "connect": false,
+        "enabled": false
       },
       {
         "from": {
@@ -404,7 +407,8 @@
           "role": "DataStreamIn",
           "port": "pos_ttl"
         },
-        "mode": "remove"
+        "connect": false,
+        "enabled": false
       },
       {
         "from": {
@@ -417,7 +421,8 @@
           "role": "DataStreamIn",
           "port": "ttl"
         },
-        "mode": "remove"
+        "connect": false,
+        "enabled": false
       },
       {
         "from": {
@@ -430,7 +435,8 @@
           "role": "ValOutCmdIn",
           "port": "settings"
         },
-        "mode": "remove"
+        "connect": false,
+        "enabled": false
       },
       {
         "from": {
@@ -443,7 +449,8 @@
           "role": "ValOutCmdIn",
           "port": "settings"
         },
-        "mode": "remove"
+        "connect": false,
+        "enabled": false
       },
       {
         "from": {
@@ -456,7 +463,8 @@
           "role": "DataStreamIn",
           "port": "log"
         },
-        "mode": "remove"
+        "connect": false,
+        "enabled": false
       },
       {
         "from": {
@@ -469,7 +477,8 @@
           "role": "DataStreamIn",
           "port": "log"
         },
-        "mode": "remove"
+        "connect": false,
+        "enabled": false
       }
     ]
   }

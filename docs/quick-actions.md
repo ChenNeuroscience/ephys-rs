@@ -20,19 +20,23 @@ and an update to the build doesn't change the ones already given.
 A quick action is a small graph whose nodes are each a **role**, with a rule (`Rule`) for how it's found in the graph
 it's done on, and what's done to it:
 
-- **Matched**: by the node's type, and optionally a regular expression its label matches (`label_pattern`, such as
-  `(?i)low|lfp`). Each role is one node, never several, and not another role's: of those that match, the left-most
-  on the canvas (of two equally far left, the higher).
+- **Matched**: by the node's type, and a regular expression its label matches (`label_pattern`, such as `(?i)low|lfp`;
+  without one, `.*`, any label; an empty one matches nothing). Each role is one node, and each node one role's at most: a role with only one candidate
+  is paired with it first (and that node struck off the rest's candidates); when none has just one, the left-most
+  role takes its left-most candidate (of two equally far left, the higher); and so on (`QuickAction::find`).
 - **When found**: `settings`, the settings (by name) applied as the quick action has them, and `enabled`, whether the
-  node's enabled or disabled (or, without it, left as it is).
+  node's enabled or disabled (or, without it, left as it is). A node created is always enabled.
 - **When not found** (`mode`): `ensure` creates the node, with all its settings (the default); `if_present` doesn't
   create it, and the quick action is still offered, leaving out its edges and window; `require` means the quick
   action isn't offered. Or the role's ignored (`ignore`): never matched, and its edges left alone, so in a quick
   action made from a whole graph the parts that don't matter to it can stay, to show where the parts that do are.
 
-Each edge is between roles, by port id, with a mode (`EdgeMode`): `ensure` connects it if the end that takes just one
-edge is free (a data stream's input, or the reading end of a value); `replace` connects it, replacing what was there;
-`remove` disconnects it; `ignore` leaves it as it is. Nodes are never removed: a quick action disables them, which
+Each edge is between roles, by port id, with what's done to it in each case (`EdgeRule`): if the nodes found are
+connected that way already, `enabled` (true or false; or, without it, left as it is); else, if the end that takes just one edge (a data stream's
+input, or the reading end of a value) is free, `connect` them (the default) or not; else (that end connected to
+something else), `replace` that, or not. A quick action never disconnects an edge; an edge it connects is enabled.
+An edge that does nothing in any case just shows what surrounds the rest.
+Nodes are never removed: a quick action disables them, which
 keeps their settings for when they're wanted again.
 
 A role's `window` says what's done with the node's window: if it's open, it's closed (`"close": true`) or left open;
@@ -55,13 +59,14 @@ it's connected to that's in the graph, or, with none, below the graph; then down
 
 chen-neuro's quick actions show each of these: the standard LTX graph ensures everything, telling the spikes' and the
 LFP's band-pass filters (Band-pass High and Band-pass Low) apart by their labels; "Use VR computer" and "Use camera"
-disable one source, enable the other, and replace the edges into the tracker view, Write LTX and the Alarm Processor;
+disable one source, enable the other, replace the edges into the tracker view, Write LTX and the Alarm Processor, and disable (or enable again) the
+VR computer's other edges;
 "Use synthetic data" and "Use real devices" set `source` on the board and the camera.
 
 ## The file
 
 A quick action's file (`name.quick-action.json`) is shaped as a project, with each node's rule beside it (`"quick"`)
-and each edge's mode on it, so the app's [config patches](development.md#config-patches) bring an old one up to date as they would
+and each edge's rule on it (`"enabled"`, `"connect"`, `"replace"`), so the app's [config patches](development.md#config-patches) bring an old one up to date as they would
 a project:
 
 ```json
@@ -98,21 +103,29 @@ size:
 
 ![The quick action editor](../tests/snapshots/quick_action_editor_node.png)
 
-- Under each node, how it's found and what's done to it, and what it's found as in the graph now (or that it'd be
-  added). Edges that replace what's there are drawn in the warning colour, and those removed in the error colour.
-- Nodes are added as on the app's canvas (click the canvas, or a port), or copied from the nodes selected in the
-  graph (**Add the nodes selected in the graph**, with the edges between them). Delete, or a node's menu, removes one;
-  a node's menu also says how it's found, and an edge's what's done to it. **Arrange** lays them out afresh.
-- Beside the canvas, the inspector changes what's selected. For a node: its label; whether it's ignored; how it's
-  matched (its type, spelled out, and a label pattern), and what it matches in the graph now; when found, enable or
-  disable it, and which settings to apply; when not found, create it, don't, or don't offer the quick action; and its
-  window, if open (leave it open, or close it) and if not (leave it closed, or open it, and where, the first time).
-  For an edge, its mode. With nothing selected, the quick action's name, description, arrangement and base
-  directory. An ⓘ beside each option says what it does.
-- Ignored nodes and edges are drawn faded.
+- Under each node, what the quick action does with it, in the inspector's words ("If found: disable", "Else:
+  create the node", or without an "If found", "If not found: create the node"; "Window: open it if not"), coloured for what happens if it isn't found. Edges that may
+  replace another are drawn in the warning colour, and those that do nothing faded.
+- The nodes and edges are those the quick action was made with: none can be added or removed in the editor (there's
+  no undo there, nor settings to edit), so to change which are in it, make a new one from the graph, or untick the
+  parts that don't matter. **Arrange** lays them out afresh.
+- Beside the canvas, the inspector changes what's selected, under a bar naming it (for a node, in its colour, as its
+  window's tab is), in sections drawn as a tree; each pair that's one choice (if found, else if not; if the window's
+  open, else if not) is drawn as branches of one line. For a node: whether it's used (the box at the right of its
+  bar; unticked, it's ignored, and drawn faded); how it's matched (its type, and a label pattern, `.*` by default,
+  with a cheat sheet); if found, whether to enable or disable it, and whether to apply settings, and which; else,
+  whether to do nothing, create it, or not offer the quick action; and its window, if open (do nothing, or close
+  it), else (do nothing, or open it, and where, the first time). "Do nothing" is the first option of every choice
+  that has one. For a connection: in a box with a checkbox to use it (unticked,
+  it's ignored), its two nodes, each with its port on its right edge, joined by the wire as the canvas draws it; and
+  what's done in each case, as branches (if connected already, enable or disable; else, if the input's free, connect;
+  else, if it's occupied, connect, replacing that; either way, the source's other connections are left as
+  they are). With nothing selected, the quick action's name, description, arrangement and base
+  directory. An ⓘ explains the few things that aren't plain: which node is used when several match, the
+  label pattern's syntax, connecting "if free", and where a window opens the first time.
+- Ignored nodes and edges are drawn faded, with no note.
 - **Take the settings of** sets a node's settings from the node it's found as, so one way to change a quick action is
   to do it, change the graph by hand, and take the settings back.
-- The footer says what the quick action would do to the graph as it is.
 
 The editor's canvas is the app's (`gui::canvas::Canvas`), drawing the quick action's own graph (`QuickAction::graph`,
 put back with `set_graph`). What's different is given by `canvas::Extras`: the badges, the edges' colours, and the

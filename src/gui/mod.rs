@@ -30,7 +30,7 @@ mod user_decisions;
 
 /// Components draw with pieces of the GUI, gathered here, so their windows look of a piece with it.
 pub mod widgets {
-    pub use super::help::{help_link, info_icon, with_help};
+    pub use super::help::{help_link, info_icon, regex_cheat_sheet, with_help};
     pub use super::icons::Icon;
     pub use super::icons::eye;
     pub use super::toolbar::{small_icon_button, small_toggle_button, toolbar_button};
@@ -880,7 +880,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         let colours = self.colours();
         let Some(editor) = &mut self.quick_action_editor else { return };
         let base_directories: Vec<&'static str> = self.base_directories.types().iter().map(|t| t.name).collect();
-        match editor.show::<A>(ctx, &self.graph, &self.layout, &self.selection.nodes, &base_directories, colours) {
+        match editor.show::<A>(ctx, &self.graph, &self.layout, &base_directories, colours) {
             quick_actions::Outcome::Open => {}
             quick_actions::Outcome::Cancelled => self.quick_action_editor = None,
             quick_actions::Outcome::Save => {
@@ -3374,7 +3374,7 @@ mod tests {
         harness.run_steps(3);
         let editor = harness.state().quick_action_editor.as_ref().expect("open");
         assert_eq!(editor.name(), "Use VR computer");
-        assert!(harness.query_by_label_contains("Now, it would have added VR Computer").is_some());
+        assert!(harness.query_by_label("Arrange").is_some(), "the quick action itself, with nothing selected");
         harness.snapshot("quick_action_editor");
         // A node selected, the inspector says how it's found and what's done to it.
         let detector = harness.state().quick_action_editor.as_ref().unwrap().role_named("Position Detector");
@@ -3382,12 +3382,31 @@ mod tests {
         harness.run_steps(3);
         assert!(harness.query_by_label("Type: Position Detector").is_some());
         harness.snapshot("quick_action_editor_node");
+        // Applying settings lists them, to tick, under it.
+        harness.get_by_label("Apply settings").click();
+        harness.run_steps(3);
+        assert!(harness.query_by_label("detection").is_some());
+        harness.snapshot("quick_action_editor_settings");
         // The log viewer's window opens behind the TTL viewer's, the first time.
         let log = harness.state().quick_action_editor.as_ref().unwrap().role_named("Log Viewer");
         harness.state_mut().quick_action_editor.as_mut().unwrap().select(log);
         harness.run_steps(3);
         harness.snapshot("quick_action_editor_window");
         assert!(harness.query_by_label("Whose window").is_some());
+        // Help clicked open, in the modal, shows in front of it.
+        harness.get_all_by_label("What's this?").next().unwrap().click();
+        harness.run_steps(3);
+        let help = harness.get_by_label_contains("only one possible match").rect().center();
+        let on_top = harness.ctx.layer_id_at(help).map(|layer| layer.order);
+        assert_eq!(on_top, Some(egui::Order::Tooltip), "the help's in front of the editor");
+        harness.get_all_by_label("What's this?").next().unwrap().click();
+        harness.run_steps(2);
+        // A connection: its ends, and what's done to it in each case.
+        let tracker = harness.state().quick_action_editor.as_ref().unwrap().role_named("Tracker View");
+        harness.state_mut().quick_action_editor.as_mut().unwrap().select_edge_into(tracker);
+        harness.run_steps(3);
+        assert!(harness.query_by_label("Connect them, replacing that").is_some());
+        harness.snapshot("quick_action_editor_connection");
     }
 
     #[test]

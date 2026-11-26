@@ -23,7 +23,7 @@ use ephys_rs::commands::CmdSender;
 use ephys_rs::engine::{
     Category, CommandContext, CommandSource, EdgeInfo, EdgeType, NoPorts, Node, NodeId, NodeInfo, UiContext,
 };
-use ephys_rs::gui::widgets::{Icon, help_link, small_icon_button};
+use ephys_rs::gui::widgets::{Icon, help_link, regex_cheat_sheet, small_icon_button};
 use ephys_rs::theme::Colours;
 
 mod terminal;
@@ -563,33 +563,6 @@ fn help(ui: &mut egui::Ui, lines: &[&str]) {
         }
     });
     ui.end_row();
-}
-
-/// The bits of regular expressions most likely wanted.
-fn regex_cheat_sheet(ui: &mut egui::Ui) {
-    const BITS: [(&str, &str); 10] = [
-        (r"\d", "digit"),
-        ("[a-z]", "letter"),
-        (r"\.", "literal dot"),
-        (".", "any character"),
-        ("?", "optional"),
-        ("+", "one or more"),
-        ("*", "zero or more"),
-        ("a|b", "a or b"),
-        ("^", "start"),
-        ("$", "end"),
-    ];
-    // Which kind, so it can be looked up: the regex crate's, as `ScriptConfig::matching` uses.
-    ui.set_max_width(260.0);
-    ui.label("Rust regex syntax: like Perl's or Python's, without look-around or backreferences.");
-    ui.add_space(4.0);
-    egui::Grid::new("regular expressions").spacing([10.0, 2.0]).show(ui, |ui| {
-        for (bit, meaning) in BITS {
-            ui.label(RichText::new(bit).monospace());
-            ui.label(meaning);
-            ui.end_row();
-        }
-    });
 }
 
 /// `names`, as a list of alternatives.

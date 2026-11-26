@@ -20,8 +20,6 @@ pub struct CreateMenu {
     pub from: Option<PortAddress>,
     search: String,
     focused: bool,
-    /// The menu's above everything else on this layer: the quick action editor's, above its window.
-    order: Order,
 }
 
 /// Opened from port `from`, the menu offers a node type only if a new node of that type has a port `from` would
@@ -42,13 +40,7 @@ pub fn port_on_new<N: NodesEnum>(
 
 impl CreateMenu {
     pub fn new(screen: Pos2, scene: Pos2, from: Option<PortAddress>) -> Self {
-        CreateMenu { screen, scene, from, search: String::new(), focused: false, order: Order::Foreground }
-    }
-
-    /// The menu, above a window shown as a modal (which is itself in front of the app).
-    pub fn above_modal(mut self) -> Self {
-        self.order = Order::Tooltip;
-        self
+        CreateMenu { screen, scene, from, search: String::new(), focused: false }
     }
 
     /// The app shows the menu with this, which returns what was chosen, if anything, and whether the menu stays open.
@@ -79,7 +71,7 @@ impl CreateMenu {
 
         let mut choice = None;
         let area = egui::Area::new(Id::unique("create-menu"))
-            .order(self.order)
+            .order(Order::Foreground)
             .fixed_pos(self.screen)
             .constrain(true)
             .show(ctx, |ui| {
