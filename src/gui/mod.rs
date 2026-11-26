@@ -77,7 +77,6 @@ pub fn run<C: Components>(path: Option<PathBuf>) -> eframe::Result {
     crate::crash::test_if_asked();
     let mut app = App::<C::Nodes, C::Annotations>::new(C::THEMES)
         .with_config_patches(C::CONFIG_PATCHES)
-        .with_quick_actions(C::QUICK_ACTIONS)
         .with_quick_action_folder(eframe::storage_dir("ephys-rs").map(|d| d.join("quick_actions")))
         .with_base_directories(C::BASE_DIRECTORIES)
         .with_about(C::ABOUT, C::SOURCE);
@@ -181,6 +180,8 @@ pub enum Event {
     Status(String),
     /// The basic view asks to do the quick action of this index.
     QuickAction(usize),
+    /// The basic view asks to open Settings › Quick actions.
+    ManageQuickActions,
     /// The graph's toolbar asks to do an action, with where a menu it opens goes.
     Perform(Action, Option<Pos2>),
     /// A pane asks to list a node in the basic view, or not.
@@ -510,10 +511,11 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             .unwrap_or_default();
         self.config_patches.apply_to_project(&versions, &mut value);
         let file: SaveFile<N, A> = serde_json::from_value(value).map_err(|e| e.to_string())?;
-        // The mode stays as it is, opening a file (it starts basic, each time the app does).
+        // The mode stays as it is, opening a file (it starts basic, each time the app does), and with it, whether
+        // there's a graph pane.
         let mode = self.layout.mode;
         self.layout = file.layout.unwrap_or_default();
-        self.layout.mode = mode;
+        self.layout.set_mode(mode);
         self.history = History::new(&file.graph, &file.annotations);
         self.last_run = None;
         self.graph = file.graph;
@@ -833,16 +835,6 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                     self.quick_action_editor = Some(editor);
                 }
             }
-            Request::Copy(index) => {
-                if let Some(entry) = entry(index) {
-                    let text = entry.action.to_text(&self.config_patches);
-                    let name = entry.action.name.clone();
-                    match arboard::Clipboard::new().and_then(|mut c| c.set_text(text)) {
-                        Ok(()) => self.set_done(ctx, format!("Copied the quick action \"{name}\"")),
-                        Err(e) => self.set_status(ctx, format!("Couldn't copy the quick action: {e}")),
-                    }
-                }
-            }
             Request::Delete(index) => {
                 if let Some(file) = entry(index).and_then(|e| e.file.clone()) {
                     match std::fs::remove_file(&file) {
@@ -852,9 +844,18 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                     self.quick_actions.reload(&self.config_patches);
                 }
             }
-            Request::Paste => {
-                let text = arboard::Clipboard::new().and_then(|mut c| c.get_text()).unwrap_or_default();
-                self.paste_quick_action(ctx, &text);
+            Request::Import => {
+                let dialog = rfd::FileDialog::new().add_filter("Quick action", &["json"]);
+                let Some(files) = dialog.set_title("Import quick actions").pick_files() else { return };
+                let (imported, problems) = self.quick_actions.import(&files, &self.config_patches);
+                self.quick_actions.reload(&self.config_patches);
+                let plural = if imported == 1 { "" } else { "s" };
+                match problems.is_empty() {
+                    true => self.set_done(ctx, format!("Imported {imported} quick action{plural}")),
+                    false => {
+                        self.set_status(ctx, format!("Imported {imported}; couldn't import {}", problems.join("; ")))
+                    }
+                }
             }
             Request::OpenFolder => {
                 if let Some(folder) = &self.quick_actions.folder
@@ -1043,10 +1044,10 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         self
     }
 
-    /// A program has the basic view offer `quick_actions` (each as its file has it) with this, before people's own.
+    /// Tests have the basic view offer `quick_actions` (each as its file has it), without a folder, with this.
+    #[cfg(test)]
     pub fn with_quick_actions(mut self, quick_actions: &'static [&'static str]) -> Self {
-        let folder = self.quick_actions.folder.take();
-        self.quick_actions = quick_actions::QuickActions::new(quick_actions, folder, &self.config_patches);
+        self.quick_actions = quick_actions::QuickActions::from_texts(quick_actions, &self.config_patches);
         self
     }
 
@@ -1280,10 +1281,10 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         }
     }
 
-    /// The app shows the basic view or the graph in the home pane with this, bringing it to the front.
+    /// The app changes mode with this: into advanced mode, bringing the graph pane to the front; out of it, closing
+    /// the graph pane and bringing home to the front (see `Layout::set_mode`).
     fn show_mode(&mut self, mode: Mode) {
-        self.layout.mode = mode;
-        self.layout.show(Pane::Home);
+        self.layout.set_mode(mode);
     }
 
     /// The basic view offers the quick actions that apply to the graph and layout as they are; this gives them, by
@@ -1385,7 +1386,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             Action::ResetLayout => {
                 let mode = self.layout.mode;
                 self.layout = Layout::default();
-                self.layout.mode = mode;
+                self.layout.set_mode(mode);
             }
             // Goes through `confirm_close`, like closing the window.
             Action::Quit => ctx.send_viewport_cmd(ViewportCommand::Close),
@@ -1677,6 +1678,9 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             }
             Event::Status(message) => self.set_status(ctx, message),
             Event::QuickAction(index) => self.quick_action(index),
+            Event::ManageQuickActions => {
+                self.settings = Some(preferences::SettingsWindow { section: preferences::Section::QuickActions });
+            }
             Event::Perform(action, anchor) => {
                 if anchor.is_some() {
                     self.add_anchor = anchor;
@@ -2255,7 +2259,7 @@ mod tests {
             );
         app.open_path(example());
         // Most tests work on the graph.
-        app.layout.mode = Mode::Advanced;
+        app.layout.set_mode(Mode::Advanced);
         assert!(app.status.is_none(), "the example opens");
         let (renderer, gpu) = super::gpu::test_renderer();
         let mut harness = Harness::builder().with_size([1400.0, 850.0]).renderer(renderer).build_ui_state(run_app, app);
@@ -2988,7 +2992,7 @@ mod tests {
     #[test]
     fn the_basic_view_lists_recent_files_while_the_graph_is_empty() {
         let mut harness = harness();
-        harness.state_mut().layout.mode = Mode::Basic;
+        harness.state_mut().layout.set_mode(Mode::Basic);
         let context = harness.ctx.clone();
         // The same name every time: the pointer's left where it's clicked, in the snapshot.
         let directory = std::env::temp_dir().join(format!("ephys-rs-basic-recent-{}", std::process::id()));
@@ -3024,7 +3028,7 @@ mod tests {
     #[test]
     fn the_basic_view_is_titled_with_the_version_and_links_to_about() {
         let mut harness = harness();
-        harness.state_mut().layout.mode = Mode::Basic;
+        harness.state_mut().layout.set_mode(Mode::Basic);
         harness.run_steps(2);
         assert_eq!(harness.get_all_by_label("chen-neuro v0.x (ephys-rs v0.y)").count(), 2, "and in the status bar");
         harness.get_by_label("About").click();
@@ -3425,6 +3429,39 @@ mod tests {
         assert!(some.iter().all(|id| uses(&harness, id)), "and ticked again");
     }
 
+    /// With no quick actions, home links to managing them and to building a graph from scratch, in advanced mode; in
+    /// advanced mode, with some, it links to managing them.
+    #[test]
+    fn home_links_to_quick_actions_and_the_graph() {
+        let (renderer, gpu) = super::gpu::test_renderer();
+        let app = TestApp::new(THEMES);
+        let mut harness = Harness::builder().with_size([1200.0, 700.0]).renderer(renderer).build_ui_state(run_app, app);
+        super::gpu::install(&harness.ctx, &gpu);
+        harness.run_steps(3);
+        assert!(harness.query_by_label("Manage quick actions").is_some(), "none yet");
+        harness.snapshot("basic_no_quick_actions");
+        harness.get_by_label("Build a graph from scratch, in advanced mode").click();
+        harness.run_steps(3);
+        assert_eq!(harness.state().layout.mode, Mode::Advanced);
+        assert!(harness.state().layout.is_shown(Pane::Graph), "the graph in front");
+        harness.state_mut().layout.show(Pane::Home);
+        harness.run_steps(2);
+        assert!(harness.query_by_label_contains("Use the graph tab").is_some());
+        // With some, the link's there in advanced mode only.
+        let texts = crate::components::quick_actions::QUICK_ACTIONS;
+        harness.state_mut().quick_actions = quick_actions::QuickActions::from_texts(texts, &PatchSets::default());
+        harness.run_steps(2);
+        assert!(harness.query_by_label("Manage quick actions").is_some());
+        harness.get_by_label("Manage quick actions").click();
+        harness.run_steps(2);
+        assert!(harness.state().settings.as_ref().is_some_and(|s| s.section == preferences::Section::QuickActions));
+        harness.state_mut().settings = None;
+        harness.state_mut().layout.set_mode(Mode::Basic);
+        harness.run_steps(2);
+        assert!(!harness.state().layout.is_shown(Pane::Graph), "closed with advanced mode");
+        assert!(harness.query_by_label("Manage quick actions").is_none());
+    }
+
     #[test]
     fn quick_actions_build_the_graph_from_the_basic_view() {
         let mut app = TestApp::new(THEMES).with_quick_actions(crate::components::quick_actions::QUICK_ACTIONS);
@@ -3523,13 +3560,13 @@ mod tests {
         harness.run_steps(2);
         assert!(!card(&harness, "Spike Viewer") && card(&harness, "Spike Detector"));
 
-        // Closed, Home brings it back: in advanced mode, the graph.
+        // Closed, Home brings it back, in advanced mode too (the graph's in a tab of its own).
         let ctx = harness.ctx.clone();
         harness.state_mut().perform(&ctx, Action::Advanced);
         harness.state_mut().perform(&ctx, Action::CloseHome);
         harness.run_steps(2);
         assert!(!harness.state().layout.is_shown(Pane::Home));
-        harness.get_by_label_contains("Home: the graph").click();
+        harness.get_by_label_contains("Home: the components").click();
         harness.run_steps(2);
         assert!(harness.state().layout.is_shown(Pane::Home) && harness.state().layout.mode == Mode::Advanced);
     }
@@ -3828,12 +3865,16 @@ mod tests {
     fn panes_have_settings_in_advanced_mode() {
         let mut harness = harness();
         // In basic mode: no settings, enabling or deleting in panes.
-        harness.state_mut().layout.mode = Mode::Basic;
+        harness.state_mut().layout.set_mode(Mode::Basic);
         let viewer = node_named(harness.state(), "Spike Viewer");
         harness.state_mut().layout.open(viewer, Some(Pane::Home));
         harness.run_steps(2);
         assert!(harness.query_by_label("Settings").is_none() && harness.query_by_label("Enabled").is_none());
         harness.key_press_modifiers(Modifiers::COMMAND, Key::Num1);
+        harness.run_steps(2);
+        // The graph opens in front, in the largest group (the viewer's): the viewer's brought back in front of it.
+        assert!(harness.state().layout.is_shown(Pane::Graph));
+        harness.state_mut().layout.show(Pane::Node(viewer));
         harness.run_steps(2);
         harness.get_by_label("Settings").click();
         harness.run_steps(2);

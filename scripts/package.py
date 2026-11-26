@@ -1,5 +1,5 @@
-"""Package a release build: the app (on macOS, ephys-rs.app), the readme and licence, build details,
-dependency licence notices and checksums, zipped."""
+"""Package a release build: the app (on macOS, ephys-rs.app), the readme and licence, the build's quick actions (to
+import), build details, dependency licence notices and checksums, zipped."""
 import argparse
 import hashlib
 import os
@@ -74,6 +74,8 @@ def package(exe, output, platform):
         shutil.copy2(exe.with_name("ephys_rs.pdb"), output / "ephys_rs.pdb")
     for name in ("README.md", "LICENSE"):
         shutil.copy2(name, output / name)
+    # The build's quick actions, for people to import (Settings › Quick actions › Import…): a build has none of its own.
+    shutil.copytree("examples/chen-neuro/quick_actions", output / "Quick actions")
     commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     compiler = subprocess.check_output(["rustc", "-vV"], text=True)
     def manifest(path):

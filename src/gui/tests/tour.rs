@@ -115,9 +115,10 @@ impl Tour {
         let mode = self.app().layout.mode;
         let layout = &mut self.app().layout;
         *layout = Layout::default();
-        layout.mode = mode;
+        layout.set_mode(mode);
         layout.open(id, None);
         layout.hide(Pane::Home);
+        layout.hide(Pane::Graph);
         self.park_pointer();
     }
 
@@ -273,9 +274,10 @@ fn make_tour() {
     // What's going on inside.
     let mode = tour.app().layout.mode;
     tour.app().layout = Layout::default();
-    tour.app().layout.mode = mode;
+    tour.app().layout.set_mode(mode);
     tour.app().layout.toggle_dev_tools();
     tour.app().layout.hide(Pane::Home);
+    tour.app().layout.hide(Pane::Graph);
     tour.wait(3.0);
     tour.harness.get_by_label("Performance").click();
     tour.harness.run_steps(3);
@@ -300,7 +302,7 @@ fn make_tour() {
 
     // The graph.
     tour.app().layout = Layout::default();
-    tour.app().layout.mode = Mode::Advanced;
+    tour.app().layout.set_mode(Mode::Advanced);
     tour.app().canvas.frame_all();
     tour.harness.run_steps(3);
     tour.shot("Build any graph you like");

@@ -241,7 +241,7 @@ fn padded(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
 impl<N: NodesEnum, A: AnnotationsEnum> Panes<'_, N, A> {
     fn pane_contents(&mut self, ui: &mut egui::Ui, pane: Pane) {
         match pane {
-            Pane::Home if self.mode == Mode::Basic => basic::show(
+            Pane::Home => basic::show(
                 ui,
                 self.graph,
                 self.resolved,
@@ -251,9 +251,10 @@ impl<N: NodesEnum, A: AnnotationsEnum> Panes<'_, N, A> {
                 self.open_windows,
                 self.recent,
                 self.locked,
+                self.mode == Mode::Advanced,
                 self.events,
             ),
-            Pane::Home => {
+            Pane::Graph => {
                 // The line under the toolbar right under it, so its margins above and below are the same.
                 ui.spacing_mut().item_spacing.y = 0.0;
                 toolbar::graph_toolbar::<A>(
@@ -336,7 +337,8 @@ impl<N: NodesEnum, A: AnnotationsEnum> egui_tiles::Behavior<Pane> for Panes<'_, 
         let started = std::time::Instant::now();
         self.pane_contents(ui, *pane);
         let name = match *pane {
-            Pane::Home => format!("Home ({})", self.mode.name()),
+            Pane::Home => "Home".into(),
+            Pane::Graph => "Graph".into(),
             Pane::DevTools => "Developer Tools".into(),
             Pane::Annotation => "Annotation".into(),
             Pane::Node(id) => self.graph.get(id).map_or("?".into(), |e| e.label.clone()),
@@ -348,6 +350,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> egui_tiles::Behavior<Pane> for Panes<'_, 
     fn tab_title_for_pane(&mut self, pane: &Pane) -> egui::WidgetText {
         match pane {
             Pane::Home => "Home".into(),
+            Pane::Graph => "Graph".into(),
             Pane::DevTools => "Developer Tools".into(),
             Pane::Annotation => "Annotation".into(),
             Pane::Node(id) => match self.graph.get(*id) {
@@ -357,10 +360,10 @@ impl<N: NodesEnum, A: AnnotationsEnum> egui_tiles::Behavior<Pane> for Panes<'_, 
         }
     }
 
-    /// The annotation pane comes and goes with the selection, so it can't be closed by hand. (The home pane can be: the
-    /// toolbar's Basic | Graph brings it back.)
+    /// The annotation pane comes and goes with the selection, and the graph pane with advanced mode, so neither can be
+    /// closed by hand. (The home pane can be: the toolbar's home button brings it back.)
     fn is_tab_closable(&self, tiles: &Tiles<Pane>, tile: TileId) -> bool {
-        !matches!(tiles.get_pane(&tile), Some(Pane::Annotation))
+        !matches!(tiles.get_pane(&tile), Some(Pane::Annotation | Pane::Graph))
     }
 
     /// Closing a tab hides the pane rather than removing it, so it comes back in the same place.

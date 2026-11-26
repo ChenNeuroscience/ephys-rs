@@ -126,7 +126,6 @@ impl Components for ChenNeuro {
     type Nodes = Nodes;
     type Annotations = AnnotationTypes;
     const THEMES: &'static [Theme] = THEMES;
-    const QUICK_ACTIONS: &'static [&'static str] = quick_actions::QUICK_ACTIONS;
     const BASE_DIRECTORIES: &'static [BaseDirectoryType] = BASE_DIRECTORIES;
     const CONFIG_PATCHES: &'static [PatchSet] = CONFIG_PATCHES;
     const ABOUT: &'static str = "The Chen lab's build, for its LTX rig:\n\n\

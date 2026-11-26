@@ -1,8 +1,7 @@
 //! People manage quick actions (see `crate::quick_action`) in Settings › Quick actions. Each is a file
-//! (`name.quick-action.json`) in a folder beside the app's settings: the build's are copied there the first time (see
-//! `give_built_ins`), and from then on are like any other. Quick actions can be made from the graph (the nodes
-//! selected, or all of them), changed, copied to the clipboard and pasted in (to share them), and deleted. Any can be
-//! left out of the basic view.
+//! (`name.quick-action.json`) in a folder beside the app's settings; a build has none of its own. Quick actions can be
+//! made from the graph (the nodes selected, or all of them), changed, imported from files, copied to the clipboard (to
+//! share them), and deleted. Any can be left out of the basic view.
 //!
 //! The editor shows a quick action's nodes and edges as a graph, on a canvas of its own (the app's canvas, with
 //! `canvas::Extras`): under each node, how it's found and what it's found as in the app's graph; each edge coloured
@@ -43,17 +42,13 @@ pub struct Entry<N> {
     pub modified: Option<std::time::SystemTime>,
 }
 
-/// The folder lists the build's quick actions it's been given in this file, by file name, so one deleted isn't given
-/// again.
-const GIVEN: &str = ".built-in";
-
-/// The quick actions are files in a folder. The build's are copied there the first time the app finds them missing
-/// (see `give_built_ins`), and from then on are people's own, to change or delete like any other.
+/// The quick actions are files in a folder: people's own, made in the editor, pasted in, or copied there (the
+/// release's zip has some to start with).
 pub struct QuickActions<N> {
-    built_in: &'static [&'static str],
-    /// The quick actions' files are in this folder, if there is one. Without one (in tests), the build's quick
-    /// actions are read as they are, with no files.
+    /// The quick actions' files are in this folder, if there is one.
     pub folder: Option<PathBuf>,
+    /// Without a folder (in tests), the quick actions are read from these texts instead, with no files.
+    texts: &'static [&'static str],
     pub entries: Vec<Entry<N>>,
     /// What couldn't be read, and why, a line for each.
     pub problems: Vec<String>,
@@ -61,34 +56,33 @@ pub struct QuickActions<N> {
 
 impl<N> Default for QuickActions<N> {
     fn default() -> Self {
-        QuickActions { built_in: &[], folder: None, entries: Vec::new(), problems: Vec::new() }
+        QuickActions { folder: None, texts: &[], entries: Vec::new(), problems: Vec::new() }
     }
 }
 
 impl<N: NodesEnum> QuickActions<N> {
-    pub fn new(built_in: &'static [&'static str], folder: Option<PathBuf>, patches: &PatchSets) -> Self {
-        let mut actions = QuickActions { built_in, folder, entries: Vec::new(), problems: Vec::new() };
+    /// Quick actions read from texts, with no folder: tests' (see `crate::gui::App::with_quick_actions`).
+    #[cfg(test)]
+    pub fn from_texts(texts: &'static [&'static str], patches: &PatchSets) -> Self {
+        let mut actions = QuickActions { texts, ..Default::default() };
         actions.reload(patches);
         actions
     }
 
-    /// Reads the quick actions again, from the folder, in order of their files' names (after giving it the build's:
-    /// see `give_built_ins`); or, without a folder, the build's.
+    /// Reads the quick actions again, from the folder, in order of their files' names; or, without a folder, from
+    /// the texts (see `from_texts`).
     pub fn reload(&mut self, patches: &PatchSets) {
         self.entries.clear();
         self.problems.clear();
         let Some(folder) = &self.folder else {
-            for text in self.built_in {
+            for text in self.texts {
                 match QuickAction::parse(text, patches) {
                     Ok(action) => self.entries.push(Entry { action, file: None, modified: None }),
-                    Err(problem) => self.problems.push(format!("A built-in quick action: {problem}")),
+                    Err(problem) => self.problems.push(problem),
                 }
             }
             return;
         };
-        if let Err(problem) = give_built_ins(folder, self.built_in) {
-            self.problems.push(problem);
-        }
         let Ok(dir) = std::fs::read_dir(folder) else { return };
         let mut files: Vec<PathBuf> = dir
             .filter_map(|e| e.ok().map(|e| e.path()))
@@ -106,6 +100,39 @@ impl<N: NodesEnum> QuickActions<N> {
         }
     }
 
+    /// Copies the quick actions in `files` into the folder, each as it is, to a new file named for it; returns how many
+    /// were copied, and what couldn't be (a file that isn't a quick action, or can't be read here), and why.
+    pub fn import(&self, files: &[PathBuf], patches: &PatchSets) -> (usize, Vec<String>) {
+        let Some(folder) = &self.folder else { return (0, vec!["There's no folder for quick actions".into()]) };
+        let (mut imported, mut problems) = (0, Vec::new());
+        for file in files {
+            let name = file.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let text = match std::fs::read_to_string(file) {
+                Ok(text) => text,
+                Err(e) => {
+                    problems.push(format!("{name}: {e}"));
+                    continue;
+                }
+            };
+            let action = match QuickAction::<N>::parse(&text, patches) {
+                Ok(action) => action,
+                Err(problem) => {
+                    problems.push(format!("{name}: {problem}"));
+                    continue;
+                }
+            };
+            let copied = std::fs::create_dir_all(folder).and_then(|()| {
+                let to = new_file(folder, &action.name);
+                std::fs::write(to, &text)
+            });
+            match copied {
+                Ok(()) => imported += 1,
+                Err(e) => problems.push(format!("{name}: {e}")),
+            }
+        }
+        (imported, problems)
+    }
+
     /// Saves `action` to `file`, or (with none) to a new file in the folder, named for it; returns the file.
     pub fn save(&self, action: &QuickAction<N>, file: Option<&Path>, patches: &PatchSets) -> Result<PathBuf, String> {
         let file = match file {
@@ -119,37 +146,6 @@ impl<N: NodesEnum> QuickActions<N> {
         std::fs::write(&file, action.to_text(patches)).map_err(|e| format!("Can't save {}: {e}", file.display()))?;
         Ok(file)
     }
-}
-
-/// The build's quick actions are copied into `folder` with this, as they are, each to a file named for it, unless the
-/// folder's had it before (see `GIVEN`) or a file of that name is there already: a quick action changed, or one of the
-/// same name, is left as it is.
-fn give_built_ins(folder: &Path, built_in: &[&str]) -> Result<(), String> {
-    let list = folder.join(GIVEN);
-    let mut given: Vec<String> =
-        std::fs::read_to_string(&list).unwrap_or_default().lines().map(str::to_string).collect();
-    let mut changed = false;
-    for text in built_in {
-        let name = serde_json::from_str::<serde_json::Value>(text)
-            .ok()
-            .and_then(|v| v.get("name")?.as_str().map(str::to_string))
-            .unwrap_or_default();
-        let file = folder.join(format!("{}{EXTENSION}", slug(&name)));
-        let file_name = file.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        if given.contains(&file_name) {
-            continue;
-        }
-        if !file.exists() {
-            std::fs::create_dir_all(folder).map_err(|e| format!("Can't make {}: {e}", folder.display()))?;
-            std::fs::write(&file, text).map_err(|e| format!("Can't save {}: {e}", file.display()))?;
-        }
-        given.push(file_name);
-        changed = true;
-    }
-    if changed {
-        std::fs::write(&list, given.join("\n") + "\n").map_err(|e| format!("Can't save {}: {e}", list.display()))?;
-    }
-    Ok(())
 }
 
 /// A quick action's name in lower case, a hyphen between words, for its file's name.
@@ -175,9 +171,9 @@ pub enum Request {
     /// A new quick action from the nodes selected (or all, if none are).
     New,
     Edit(usize),
-    Copy(usize),
     Delete(usize),
-    Paste,
+    /// Files chosen, to copy into the folder.
+    Import,
     OpenFolder,
 }
 
@@ -194,7 +190,7 @@ pub fn manager_ui<N: NodesEnum>(
     let weak = |text: &str| RichText::new(text).small().color(colours.text_secondary);
     ui.label(weak(
         "Quick actions are offered in the basic view, when they'd change something. Each is a file: share one by \
-         copying the file, or with the copy button, then paste it in here.",
+         copying the file, and import it on another computer.",
     ));
     if let Some(folder) = &actions.folder {
         ui.horizontal(|ui| {
@@ -215,8 +211,8 @@ pub fn manager_ui<N: NodesEnum>(
         if ui.button(new).clicked() {
             requests.push(Request::New);
         }
-        if ui.button("Paste").on_hover_text("A quick action copied to the clipboard").clicked() {
-            requests.push(Request::Paste);
+        if actions.folder.is_some() && ui.button("Import…").on_hover_text("Quick actions' files").clicked() {
+            requests.push(Request::Import);
         }
     });
     ui.add_space(6.0);
@@ -255,9 +251,6 @@ pub fn manager_ui<N: NodesEnum>(
                 ui.horizontal(|ui| {
                     if toolbar::small_icon_button(ui, Icon::Edit, "Edit", "Edit").clicked() {
                         requests.push(Request::Edit(index));
-                    }
-                    if toolbar::small_icon_button(ui, Icon::Copy, "Copy", "Copy to the clipboard, to share").clicked() {
-                        requests.push(Request::Copy(index));
                     }
                     if entry.file.is_some()
                         && toolbar::small_icon_button(ui, Icon::Delete, "Delete", "Delete the file").clicked()
@@ -516,12 +509,20 @@ impl<N: NodesEnum> Editor<N> {
                     });
                 });
                 ui.add_space(GAP);
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.x = spacing;
-                    ui.set_width(INSPECTOR);
-                    ui.set_height(height);
-                    self.inspector(ui, graph, layout, &found, base_directories, colours);
-                });
+                // The inspector's a pane of its own, beside the canvas: bordered as the canvas is, on the surface
+                // the app's panes have, its contents inset.
+                const INSET: i8 = 8;
+                let inner = egui::vec2(INSPECTOR - 2.0 * f32::from(INSET) - 2.0, height - 2.0 * f32::from(INSET) - 2.0);
+                egui::Frame::new()
+                    .fill(colours.surface)
+                    .stroke(egui::Stroke::new(1.0, colours.border))
+                    .inner_margin(INSET)
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.x = spacing;
+                        ui.set_min_size(inner);
+                        ui.set_max_size(inner);
+                        ui.vertical(|ui| self.inspector(ui, graph, layout, &found, base_directories, colours));
+                    });
             });
         };
         let footer = |ui: &mut egui::Ui| {
@@ -1299,24 +1300,6 @@ mod tests {
     }
 
     #[test]
-    fn the_builds_quick_actions_are_given_to_the_folder_once() {
-        let dir = std::env::temp_dir().join(format!("ephys-rs-given-quick-actions-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let built_in = [r#"{"name": "Use VR computer!", "graph": {"nodes": {}}}"#];
-        give_built_ins(&dir, &built_in).unwrap();
-        let file = dir.join("use-vr-computer.quick-action.json");
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), built_in[0], "as it is");
-        // Changed, the file's left as it is; deleted, it isn't given again.
-        std::fs::write(&file, "changed").unwrap();
-        give_built_ins(&dir, &built_in).unwrap();
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), "changed");
-        std::fs::remove_file(&file).unwrap();
-        give_built_ins(&dir, &built_in).unwrap();
-        assert!(!file.exists());
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
     fn a_setting_ticked_takes_its_value_from_the_node_matched() {
         use crate::Nodes;
         let filter = |low: f64| {
@@ -1329,5 +1312,25 @@ mod tests {
         let settings = serde_json::to_value(&role).unwrap()["settings"].clone();
         assert_eq!(settings["low_hz"], 300.0);
         assert_eq!(settings["high_hz"], 6000.0, "only the one ticked");
+    }
+
+    #[test]
+    fn quick_actions_are_imported_from_files_into_the_folder() {
+        use crate::Nodes;
+        let dir = std::env::temp_dir().join(format!("ephys-rs-imported-quick-actions-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (from, folder) = (dir.join("from"), dir.join("quick_actions"));
+        std::fs::create_dir_all(&from).unwrap();
+        let text = crate::components::quick_actions::QUICK_ACTIONS[0];
+        std::fs::write(from.join("a.json"), text).unwrap();
+        std::fs::write(from.join("b.json"), "not a quick action").unwrap();
+        let actions = QuickActions::<Nodes> { folder: Some(folder.clone()), ..Default::default() };
+        let patches = PatchSets::default();
+        let (imported, problems) = actions.import(&[from.join("a.json"), from.join("b.json")], &patches);
+        assert_eq!(imported, 1);
+        assert!(problems.len() == 1 && problems[0].starts_with("b.json"), "{problems:?}");
+        let copied = folder.join("standard-ltx-graph-v0-5.quick-action.json");
+        assert_eq!(std::fs::read_to_string(copied).unwrap(), text, "as it was");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

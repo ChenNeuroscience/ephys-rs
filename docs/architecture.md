@@ -168,8 +168,10 @@ next pass.
 ## The GUI
 
 [`gui`](../src/gui/mod.rs) is an egui app: menus and a toolbar, a dockable layout of panes, and a status bar.
-The app is in **basic** or **advanced** mode: in basic mode, the home pane shows the version, with a link to the About
-window, the components (viewers, to begin with) and [quick actions](quick-actions.md); in advanced mode, the graph, and each pane has a settings menu. What a
+The app is in **basic** or **advanced** mode. The home pane shows the version, with a link to the About window, the
+components (viewers, to begin with) and [quick actions](quick-actions.md), in either. Advanced mode adds the graph,
+in a pane of its own (`Pane::Graph`, opened at the front of the largest group, and closed only by leaving advanced
+mode: see `Layout::set_mode`), and gives each pane a settings menu. What a
 pane shows in each mode is up to it (`UiContext::advanced`). Where panes go when they're opened is the
 [layout](quick-actions.md#the-layout)'s to say ([`layout.rs`](../src/layout.rs)): windows take steps towards a
 default layout, a column on the left and two groups one above another on the right.

@@ -30,8 +30,11 @@ use crate::engine::{Graph, NodeId, NodesEnum};
 /// A pane in the layout shows one of these.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub enum Pane {
-    /// The home pane shows the basic view, or the graph (see `Mode`).
+    /// The home pane shows the basic view: the components, and the quick actions.
     Home,
+    /// The graph pane shows the graph, to build and change node by node. It's there only in advanced mode (see
+    /// `Layout::set_mode`), and can't be closed by hand.
+    Graph,
     DevTools,
     /// The annotation pane shows the selected annotation's settings, while an annotation's selected.
     Annotation,
@@ -39,14 +42,14 @@ pub enum Pane {
     Node(NodeId),
 }
 
-/// The app is in basic or advanced mode, which decides what the home pane shows, and what panes offer (each pane
+/// The app is in basic or advanced mode, which decides whether there's a graph pane, and what panes offer (each pane
 /// decides: see `UiContext::advanced`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 pub enum Mode {
     /// Basic mode shows the viewers, large, and quick actions: for most people, most of the time.
     #[default]
     Basic,
-    /// Advanced mode shows the graph, to build and change it node by node, and each pane's settings.
+    /// Advanced mode adds the graph pane, to build and change the graph node by node, and shows each pane's settings.
     Advanced,
 }
 
@@ -208,6 +211,30 @@ impl Layout {
             }
         }
         self.show(pane);
+    }
+
+    /// The app changes mode with this. Into advanced mode, the graph pane's brought to the front (the first time, as a
+    /// tab in the largest group); out of it, the graph pane's taken out of the layout, and home brought to the front.
+    pub fn set_mode(&mut self, mode: Mode) {
+        self.mode = mode;
+        let pane = Pane::Graph;
+        match mode {
+            Mode::Advanced => {
+                if self.tile(pane).is_none() {
+                    match self.largest_group(&[]) {
+                        Some(group) => self.add_tab(group, pane),
+                        None => self.as_root(pane),
+                    }
+                }
+                self.show(pane);
+            }
+            Mode::Basic => {
+                if let Some(tile) = self.tile(pane) {
+                    self.tree.remove_recursively(tile);
+                }
+                self.show(Pane::Home);
+            }
+        }
     }
 
     /// The app shows a docked pane with this, bringing its tab to the front.

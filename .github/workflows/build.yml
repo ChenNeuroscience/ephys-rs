@@ -121,6 +121,7 @@ jobs:
             Version ${{ steps.package.outputs.version }}, built and tested from commit ${{ github.sha }}. In alpha testing, for use with LTX format recordings: https://github.com/ChenNeuroscience/ltx-format
 
             Windows: download the windows zip, extract it, and run ephys-rs.exe.
+            Quick actions: the zip's "Quick actions" folder has the lab's; import them in Settings › Quick actions › Import….
             macOS (Apple silicon): download the macos zip and move ephys-rs.app to Applications. It isn't notarised, so the first time, right-click it and choose Open.
           artifacts: release/*.zip,release/*.sha256
           artifactErrorsFailBuild: true

@@ -221,8 +221,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             }
 
             // Home, and advanced mode (the graph in it, and panes' settings).
-            let home = if self.layout.mode == Mode::Basic { "the basic view" } else { "the graph" };
-            let tip = self.tooltip(&ctx, Action::Home, &format!("Home: {home}"));
+            let tip = self.tooltip(&ctx, Action::Home, "Home: the components and quick actions");
             if tool_button(ui, Icon::Home, &tip, true, false).clicked() {
                 chosen = Some(Action::Home);
             }
@@ -230,7 +229,8 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             let tip = self.tooltip(
                 &ctx,
                 Action::Advanced,
-                "Advanced mode: the graph, to build and change it node by node, and each window's settings",
+                "Advanced mode: the graph, in a tab of its own, to build and change node by node, and each window's \
+                 settings",
             );
             if tool_button(ui, Icon::Graph, &tip, true, advanced).clicked() {
                 chosen = Some(Action::Advanced);

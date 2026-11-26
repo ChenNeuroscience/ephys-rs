@@ -1,8 +1,9 @@
 //! The basic view, the home pane's first mode, for people who'd rather not work with the graph: the program's version
 //! as a title, with a link to the About window; while the graph's empty, the recent files, and otherwise the components
 //! shown in it (viewers, unless set otherwise: see `NodeEntry::shown_in_basic`), large, to open their windows (beside
-//! it); and the quick actions that apply to the graph, in grey (blue is for processing). Disabled components are faded,
-//! as on the graph. The graph is in advanced mode (the toolbar's graph button), a click away.
+//! it); and the quick actions that apply to the graph, in grey (blue is for processing), with a link to manage them in
+//! advanced mode (or when there are none, with one to build a graph in advanced mode instead). Disabled components are
+//! faded, as on the graph. The graph is in a pane of its own in advanced mode (the toolbar's graph button).
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -34,6 +35,8 @@ pub fn show<N: NodesEnum>(
     open_windows: &HashSet<NodeId>,
     recent: &[PathBuf],
     locked: bool,
+    // In advanced mode, the quick actions can be managed from here, and the graph's in a pane of its own.
+    advanced: bool,
     events: &mut Vec<Event>,
 ) {
     egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
@@ -133,7 +136,22 @@ pub fn show<N: NodesEnum>(
                 ui.add_space(18.0);
             }
             ui.label(RichText::new("Quick actions").size(22.0).color(colours.text_primary));
+            // In advanced mode, or with none to offer, they can be managed (made, changed, imported) from here.
+            let none = quick_actions.is_empty();
+            if (advanced || none) && ui.link(RichText::new("Manage quick actions").size(12.0)).clicked() {
+                events.push(Event::ManageQuickActions);
+            }
             ui.add_space(8.0);
+            if none {
+                ui.label(RichText::new("There are no quick actions yet.").color(colours.text_secondary));
+                if advanced {
+                    let text = "Use the graph tab to build the graph, and configure it.";
+                    ui.label(RichText::new(text).color(colours.text_secondary));
+                } else if ui.link("Build a graph from scratch, in advanced mode").clicked() {
+                    events.push(Event::Perform(Action::Advanced, None));
+                }
+                return;
+            }
             let offered: Vec<(usize, &Entry<N>)> =
                 offered.iter().filter_map(|&i| Some((i, quick_actions.get(i)?))).collect();
             if offered.is_empty() {

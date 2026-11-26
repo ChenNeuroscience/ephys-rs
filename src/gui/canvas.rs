@@ -1153,7 +1153,7 @@ impl Canvas {
         if body.clicked() {
             if !shift {
                 if selection.nodes.contains(&id) && app_graph {
-                    events.push(Event::OpenWindow(id, Some(Pane::Home)));
+                    events.push(Event::OpenWindow(id, Some(Pane::Graph)));
                 }
                 selection.only(id);
             } else if !selection.nodes.remove(&id) {
@@ -1174,7 +1174,7 @@ impl Canvas {
                 ui.separator();
             }
             if ui.button(if window_open { "Close window" } else { "Open window" }).clicked() {
-                events.push(Event::ToggleWindow(id, Some(Pane::Home)));
+                events.push(Event::ToggleWindow(id, Some(Pane::Graph)));
             }
             if ui.button("Duplicate").clicked() {
                 events.push(Event::Duplicate(id));

@@ -18,7 +18,9 @@
 //! - Using synthetic data (the fake board and camera in `synthetic_streams`), while any board or camera is real; and
 //!   real devices, while any is synthetic.
 
-/// The quick actions, as their files have them, in the order they're offered.
+/// The quick actions, as their files have them, for tests: a build has none of its own (the release's zip has these
+/// files, for people to add to their quick actions' folder).
+#[cfg(test)]
 pub const QUICK_ACTIONS: &[&str] = &[
     include_str!("../../quick_actions/standard-ltx-graph.quick-action.json"),
     include_str!("../../quick_actions/use-vr-computer.quick-action.json"),

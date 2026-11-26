@@ -1,7 +1,8 @@
 # The graph
 
-In advanced mode (the toolbar's graph button, or Ctrl/⌘ 1), the home pane shows the *graph*: every part of the setup,
-as boxes (nodes) joined by wires (edges). Data flows left to right, from sources to writers.
+In advanced mode (the toolbar's graph button, or Ctrl/⌘ 1), the *graph* opens in a tab of its own, at the front of the
+largest group: every part of the setup, as boxes (nodes) joined by wires (edges). Data flows left to right, from
+sources to writers. The tab stays while you're in advanced mode, and closes when you leave it.
 
 ![An example graph](../../tests/snapshots/graph_example.png)
 

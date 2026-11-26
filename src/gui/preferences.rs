@@ -584,8 +584,8 @@ mod tests {
             };
             let mut recent = vec![PathBuf::from("/a.json"), PathBuf::from("/b.json")];
             let patches = crate::config_patching::PatchSets::new(crate::components::CONFIG_PATCHES);
-            let built_in = crate::components::quick_actions::QUICK_ACTIONS;
-            let quick_actions = super::super::quick_actions::QuickActions::<Nodes>::new(built_in, None, &patches);
+            let texts = crate::components::quick_actions::QUICK_ACTIONS;
+            let quick_actions = super::super::quick_actions::QuickActions::<Nodes>::from_texts(texts, &patches);
             let mut harness = egui_kittest::Harness::builder().with_size([760.0, 600.0]).wgpu().build_ui_state(
                 move |ui, preferences: &mut Preferences| {
                     let colours = &THEMES[0].colours;

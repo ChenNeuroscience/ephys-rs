@@ -5,15 +5,16 @@ node: chen-neuro's "Standard LTX graph", "Use VR computer", "Use synthetic data"
 
 ![Basic mode, with quick actions](../tests/snapshots/basic_after_quick_actions.png)
 
-A [`QuickAction`](../src/quick_action.rs) is data, not code, so people can make, change and share their own. A
-build ships some, as files listed in `Components::QUICK_ACTIONS` (chen-neuro's are in
-[`quick_actions/`](../examples/chen-neuro/quick_actions), each `include_str!`'d by
-[`quick_actions.rs`](../examples/chen-neuro/src/components/quick_actions.rs)). Every quick action is a file in a folder
-beside the app's settings (`quick_actions/` in eframe's storage directory), listed in Settings › Quick actions with its
-description and when it was last changed. At start, the build's quick actions are copied into the folder, each as
-it is, to a file named for it, unless the folder has had it before (listed in `.built-in`) or a file of that name is
-there already. From then on, they're files like any other: changed, or deleted (and not given again), as people like,
-and an update to the build doesn't change the ones already given.
+A [`QuickAction`](../src/quick_action.rs) is data, not code, so people can make, change and share their own. Every
+quick action is a file in a folder beside the app's settings (`quick_actions/` in eframe's storage directory), listed
+in Settings › Quick actions with its description and when it was last changed. A build has none of its own: the
+release's zip has chen-neuro's (from [`quick_actions/`](../examples/chen-neuro/quick_actions), copied in by
+`scripts/package.py`) in its "Quick actions" folder, for people to import (Settings › Quick actions › **Import…**,
+which copies the files chosen into the folder). Tests read them straight from the repository
+([`quick_actions.rs`](../examples/chen-neuro/src/components/quick_actions.rs)).
+
+With no quick actions, the home pane links to managing them (Settings › Quick actions) and to building a graph from
+scratch in advanced mode; in advanced mode, it links to managing them always.
 
 ## What a quick action is
 
@@ -148,8 +149,8 @@ The editor's canvas is the app's (`gui::canvas::Canvas`), drawing the quick acti
 put back with `set_graph`). What's different is given by `canvas::Extras`: the badges, the edges' colours, and the
 editor's own menus, without annotations, windows or pasting. The app's canvas uses `()`, which adds nothing.
 
-**Copy** puts a quick action on the clipboard, and pasting one (in Settings, or anywhere settings can be pasted) opens
-it in the editor, to save. With the files, that's how they're shared.
+Quick actions are shared as their files: **Import…** in Settings copies files chosen into the folder, and the folder
+icon opens it. A quick action's text pasted anywhere settings can be pasted opens it in the editor, to save.
 
 ## The layout
 
