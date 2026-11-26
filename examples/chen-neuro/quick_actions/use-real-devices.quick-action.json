@@ -42,13 +42,6 @@
         },
         "quick": {
           "mode": "if_present",
-          "conditions": [
-            {
-              "setting": "source.kind",
-              "op": "==",
-              "value": "fake"
-            }
-          ],
           "settings": [
             "source"
           ]
@@ -84,13 +77,6 @@
         },
         "quick": {
           "mode": "if_present",
-          "conditions": [
-            {
-              "setting": "source.kind",
-              "op": "==",
-              "value": "fake"
-            }
-          ],
           "settings": [
             "source"
           ]

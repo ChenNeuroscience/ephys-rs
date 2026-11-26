@@ -34,7 +34,7 @@
             ],
             "sample_rate": 30000,
             "source": {
-              "address": "127.0.0.1:9",
+              "address": "127.0.0.1:27031",
               "kind": "fake"
             }
           },
@@ -42,13 +42,6 @@
         },
         "quick": {
           "mode": "if_present",
-          "conditions": [
-            {
-              "setting": "source.kind",
-              "op": "!=",
-              "value": "fake"
-            }
-          ],
           "settings": [
             "source"
           ]
@@ -84,13 +77,6 @@
         },
         "quick": {
           "mode": "if_present",
-          "conditions": [
-            {
-              "setting": "source.kind",
-              "op": "!=",
-              "value": "fake"
-            }
-          ],
           "settings": [
             "source"
           ]

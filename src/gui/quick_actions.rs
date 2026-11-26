@@ -1,7 +1,8 @@
-//! People manage quick actions (see `crate::quick_action`) in Settings › Quick actions: those the build ships, and their
-//! own, which are files (`name.quick-action.json`) in a folder beside the app's settings. Their own can be made from
-//! the graph (the nodes selected, or all of them), changed, copied to the clipboard and pasted in (to share them), and
-//! deleted. The build's can be duplicated, to change the copy. Any can be left out of the basic view.
+//! People manage quick actions (see `crate::quick_action`) in Settings › Quick actions. Each is a file
+//! (`name.quick-action.json`) in a folder beside the app's settings: the build's are copied there the first time (see
+//! `give_built_ins`), and from then on are like any other. Quick actions can be made from the graph (the nodes
+//! selected, or all of them), changed, copied to the clipboard and pasted in (to share them), and deleted. Any can be
+//! left out of the basic view.
 //!
 //! The editor shows a quick action's nodes and edges as a graph, on a canvas of its own (the app's canvas, with
 //! `canvas::Extras`): under each node, how it's found and what it's found as in the app's graph; each edge coloured
@@ -20,6 +21,8 @@ use super::canvas::{Canvas, Selection};
 use super::create_menu::{self, CreateMenu};
 use super::dialog;
 use super::help::info_icon;
+use super::icons::Icon;
+use super::toolbar;
 use crate::annotation::{Annotations, AnnotationsEnum};
 use crate::config_patching::PatchSets;
 use crate::engine::{Edge, Graph, NodeId, NodesEnum};
@@ -31,22 +34,24 @@ use crate::theme::Colours;
 /// A file's a quick action if its name ends with this.
 pub const EXTENSION: &str = ".quick-action.json";
 
-/// A quick action, and its file: none for one the build ships.
+/// A quick action, and its file: none only without a folder (in tests), for one the build ships.
 pub struct Entry<N> {
     pub action: QuickAction<N>,
     pub file: Option<PathBuf>,
+    /// When the file was last changed, if the file system says.
+    pub modified: Option<std::time::SystemTime>,
 }
 
-impl<N> Entry<N> {
-    pub fn built_in(&self) -> bool {
-        self.file.is_none()
-    }
-}
+/// The folder lists the build's quick actions it's been given in this file, by file name, so one deleted isn't given
+/// again.
+const GIVEN: &str = ".built-in";
 
-/// The quick actions: the build's, then people's own, from their folder.
+/// The quick actions are files in a folder. The build's are copied there the first time the app finds them missing
+/// (see `give_built_ins`), and from then on are people's own, to change or delete like any other.
 pub struct QuickActions<N> {
     built_in: &'static [&'static str],
-    /// People's own quick actions are files in this folder, if there is one (there isn't, in tests).
+    /// The quick actions' files are in this folder, if there is one. Without one (in tests), the build's quick
+    /// actions are read as they are, with no files.
     pub folder: Option<PathBuf>,
     pub entries: Vec<Entry<N>>,
     /// What couldn't be read, and why, a line for each.
@@ -66,17 +71,23 @@ impl<N: NodesEnum> QuickActions<N> {
         actions
     }
 
-    /// Reads the quick actions again: the build's, and those in the folder, in order of their names.
+    /// Reads the quick actions again, from the folder, in order of their files' names (after giving it the build's:
+    /// see `give_built_ins`); or, without a folder, the build's.
     pub fn reload(&mut self, patches: &PatchSets) {
         self.entries.clear();
         self.problems.clear();
-        for text in self.built_in {
-            match QuickAction::parse(text, patches) {
-                Ok(action) => self.entries.push(Entry { action, file: None }),
-                Err(problem) => self.problems.push(format!("A built-in quick action: {problem}")),
+        let Some(folder) = &self.folder else {
+            for text in self.built_in {
+                match QuickAction::parse(text, patches) {
+                    Ok(action) => self.entries.push(Entry { action, file: None, modified: None }),
+                    Err(problem) => self.problems.push(format!("A built-in quick action: {problem}")),
+                }
             }
+            return;
+        };
+        if let Err(problem) = give_built_ins(folder, self.built_in) {
+            self.problems.push(problem);
         }
-        let Some(folder) = &self.folder else { return };
         let Ok(dir) = std::fs::read_dir(folder) else { return };
         let mut files: Vec<PathBuf> = dir
             .filter_map(|e| e.ok().map(|e| e.path()))
@@ -86,8 +97,9 @@ impl<N: NodesEnum> QuickActions<N> {
         for file in files {
             let name = file.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
             let read = std::fs::read_to_string(&file).map_err(|e| e.to_string());
+            let modified = std::fs::metadata(&file).and_then(|m| m.modified()).ok();
             match read.and_then(|text| QuickAction::parse(&text, patches)) {
-                Ok(action) => self.entries.push(Entry { action, file: Some(file) }),
+                Ok(action) => self.entries.push(Entry { action, file: Some(file), modified }),
                 Err(problem) => self.problems.push(format!("{name}: {problem}")),
             }
         }
@@ -108,12 +120,48 @@ impl<N: NodesEnum> QuickActions<N> {
     }
 }
 
+/// The build's quick actions are copied into `folder` with this, as they are, each to a file named for it, unless the
+/// folder's had it before (see `GIVEN`) or a file of that name is there already: a quick action changed, or one of the
+/// same name, is left as it is.
+fn give_built_ins(folder: &Path, built_in: &[&str]) -> Result<(), String> {
+    let list = folder.join(GIVEN);
+    let mut given: Vec<String> =
+        std::fs::read_to_string(&list).unwrap_or_default().lines().map(str::to_string).collect();
+    let mut changed = false;
+    for text in built_in {
+        let name = serde_json::from_str::<serde_json::Value>(text)
+            .ok()
+            .and_then(|v| v.get("name")?.as_str().map(str::to_string))
+            .unwrap_or_default();
+        let file = folder.join(format!("{}{EXTENSION}", slug(&name)));
+        let file_name = file.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        if given.contains(&file_name) {
+            continue;
+        }
+        if !file.exists() {
+            std::fs::create_dir_all(folder).map_err(|e| format!("Can't make {}: {e}", folder.display()))?;
+            std::fs::write(&file, text).map_err(|e| format!("Can't save {}: {e}", file.display()))?;
+        }
+        given.push(file_name);
+        changed = true;
+    }
+    if changed {
+        std::fs::write(&list, given.join("\n") + "\n").map_err(|e| format!("Can't save {}: {e}", list.display()))?;
+    }
+    Ok(())
+}
+
+/// A quick action's name in lower case, a hyphen between words, for its file's name.
+fn slug(name: &str) -> String {
+    let words: Vec<String> =
+        name.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(|w| w.to_lowercase()).collect();
+    if words.is_empty() { "quick-action".to_string() } else { words.join("-") }
+}
+
 /// A new file in `folder` for a quick action named `name`: its name in lower case, a hyphen between words, and a
 /// number after it if that's taken.
 fn new_file(folder: &Path, name: &str) -> PathBuf {
-    let words: Vec<String> =
-        name.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(|w| w.to_lowercase()).collect();
-    let stem = if words.is_empty() { "quick-action".to_string() } else { words.join("-") };
+    let stem = slug(name);
     let path = |n: usize| match n {
         1 => folder.join(format!("{stem}{EXTENSION}")),
         n => folder.join(format!("{stem}-{n}{EXTENSION}")),
@@ -126,7 +174,6 @@ pub enum Request {
     /// A new quick action from the nodes selected (or all, if none are).
     New,
     Edit(usize),
-    Duplicate(usize),
     Copy(usize),
     Delete(usize),
     Paste,
@@ -143,14 +190,20 @@ pub fn manager_ui<N: NodesEnum>(
     colours: &Colours,
     requests: &mut Vec<Request>,
 ) {
-    let note = |ui: &mut egui::Ui, text: &str| {
-        ui.label(RichText::new(text).small().color(colours.text_secondary));
-    };
-    note(
-        ui,
-        "Quick actions are offered in the basic view, when they'd change something. Yours are files: share them by \
-         copying the files, or with Copy, then paste one in here.",
-    );
+    let weak = |text: &str| RichText::new(text).small().color(colours.text_secondary);
+    ui.label(weak(
+        "Quick actions are offered in the basic view, when they'd change something. Each is a file: share one by \
+         copying the file, or with the copy button, then paste it in here.",
+    ));
+    if let Some(folder) = &actions.folder {
+        ui.horizontal(|ui| {
+            ui.label(weak(&format!("In {}", folder.display())));
+            let open = toolbar::small_icon_button(ui, Icon::Open, "Open the folder", "Open the folder");
+            if open.clicked() {
+                requests.push(Request::OpenFolder);
+            }
+        });
+    }
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         let new = match selected {
@@ -164,47 +217,54 @@ pub fn manager_ui<N: NodesEnum>(
         if ui.button("Paste").on_hover_text("A quick action copied to the clipboard").clicked() {
             requests.push(Request::Paste);
         }
-        if actions.folder.is_some() && ui.button("Open folder").clicked() {
-            requests.push(Request::OpenFolder);
-        }
     });
     ui.add_space(6.0);
-    egui::Grid::new("quick actions").num_columns(2).spacing([12.0, 4.0]).striped(true).show(ui, |ui| {
-        for (index, entry) in actions.entries.iter().enumerate() {
-            let name = &entry.action.name;
-            let mut on = !hidden.contains(name);
-            let mut label = name.clone();
-            if entry.built_in() {
-                label.push_str("  (built in)");
-            }
-            let mut checkbox = ui.checkbox(&mut on, label);
-            if !entry.action.description.is_empty() {
-                checkbox = checkbox.on_hover_text(&entry.action.description);
-            }
-            if checkbox.changed() {
-                match on {
-                    true => hidden.remove(name),
-                    false => hidden.insert(name.clone()),
-                };
-            }
-            ui.horizontal(|ui| {
-                if entry.built_in() {
-                    if ui.small_button("Duplicate").on_hover_text("Make a copy of your own, to change").clicked() {
-                        requests.push(Request::Duplicate(index));
+    egui::Grid::new("quick actions").num_columns(3).min_col_width(0.0).spacing([10.0, 6.0]).striped(true).show(
+        ui,
+        |ui| {
+            for (index, entry) in actions.entries.iter().enumerate() {
+                let name = &entry.action.name;
+                let mut on = !hidden.contains(name);
+                let offered = ui.add(egui::Checkbox::without_text(&mut on)).on_hover_text("Offered in the basic view");
+                let checked = on;
+                let accessible = format!("Offer {name} in the basic view");
+                offered.widget_info(|| {
+                    egui::WidgetInfo::selected(egui::Role::CheckBox, true, checked, accessible.clone())
+                });
+                if offered.changed() {
+                    match on {
+                        true => hidden.remove(name),
+                        false => hidden.insert(name.clone()),
+                    };
+                }
+                ui.vertical(|ui| {
+                    ui.set_max_width(420.0);
+                    ui.strong(name);
+                    if !entry.action.description.is_empty() {
+                        ui.label(weak(&entry.action.description));
                     }
-                } else if ui.small_button("Edit").clicked() {
-                    requests.push(Request::Edit(index));
-                }
-                if ui.small_button("Copy").on_hover_text("Copy to the clipboard, to share").clicked() {
-                    requests.push(Request::Copy(index));
-                }
-                if !entry.built_in() && ui.small_button("Delete").clicked() {
-                    requests.push(Request::Delete(index));
-                }
-            });
-            ui.end_row();
-        }
-    });
+                    if let Some(modified) = entry.modified {
+                        let local: chrono::DateTime<chrono::Local> = modified.into();
+                        ui.label(weak(&format!("Updated {}", local.format("%-d %b %Y, %H:%M"))));
+                    }
+                });
+                ui.horizontal(|ui| {
+                    if toolbar::small_icon_button(ui, Icon::Edit, "Edit", "Edit").clicked() {
+                        requests.push(Request::Edit(index));
+                    }
+                    if toolbar::small_icon_button(ui, Icon::Copy, "Copy", "Copy to the clipboard, to share").clicked() {
+                        requests.push(Request::Copy(index));
+                    }
+                    if entry.file.is_some()
+                        && toolbar::small_icon_button(ui, Icon::Delete, "Delete", "Delete the file").clicked()
+                    {
+                        requests.push(Request::Delete(index));
+                    }
+                });
+                ui.end_row();
+            }
+        },
+    );
     for problem in &actions.problems {
         ui.label(RichText::new(problem).small().color(colours.warning));
     }
@@ -569,12 +629,12 @@ impl<N: NodesEnum> Editor<N> {
                 let ids = self.graph.get(port.node).map(|e| e.node.port_ids(port.role)).unwrap_or_default();
                 format!("{label} › {}", ids.get(port.port_idx).copied().unwrap_or("?").replace('_', " "))
             };
-            heading(ui, "Connection", EDGE_MODES);
+            ui.strong("Connection");
             ui.label(format!("From {}\nto {}", name(edge.from), name(edge.to)));
             ui.add_space(6.0);
             let mut mode = edge_mode(&self.modes, edge);
             for choice in EdgeMode::ALL {
-                ui.radio_value(&mut mode, choice, choice.name());
+                radio_info(ui, &mut mode, choice, choice.name(), edge_info(choice));
             }
             set_edge_mode(&mut self.modes, edge, mode);
             return;
@@ -616,16 +676,11 @@ impl<N: NodesEnum> Editor<N> {
         }
         ui.add_space(8.0);
 
-        heading(
-            ui,
-            "Matching",
-            &format!(
-                "In the graph, only {kind} nodes are considered. Of those, with a label pattern, only the nodes whose \
-                 labels match it; then the left-most on the canvas is used (of two equally far left, the higher). A \
-                 node already used for another of the quick action's nodes is passed over."
-            ),
-        );
-        ui.label(format!("Type: {kind}"));
+        ui.strong("Matching");
+        ui.horizontal(|ui| {
+            ui.label(format!("Type: {kind}"));
+            info_icon(ui, &format!("Only {kind} nodes in the graph are considered."));
+        });
         let row = ui.horizontal(|ui| {
             let label = ui.label("Label pattern");
             info_icon(
@@ -647,44 +702,37 @@ impl<N: NodesEnum> Editor<N> {
             let line = error.lines().last().unwrap_or("").trim().to_string();
             ui.label(RichText::new(format!("Not a valid pattern: {line}")).small().color(ui.visuals().error_fg_color));
         }
-        if !rule.conditions.is_empty() {
-            let only = (rule.conditions.iter())
-                .map(|c| format!("{} {} {}", c.setting, c.op.symbol(), c.value))
-                .collect::<Vec<_>>()
-                .join(", ");
-            ui.horizontal(|ui| {
-                ui.label(format!("Only where {only}"));
-                info_icon(
-                    ui,
-                    "Conditions on settings come from the quick action's file, and can't yet be changed here.",
-                );
-            });
-        }
         let found_as = found.as_ref().ok().and_then(|f| f.get(&id).copied()).and_then(|other| graph.get(other));
         let now = match (found_as, found) {
             (Some(other), _) => format!("In the graph now: {}", other.label),
             (None, Ok(_)) => "In the graph now: not found".to_string(),
             (None, Err(_)) => "In the graph now: the quick action isn't offered".to_string(),
         };
-        ui.label(RichText::new(now).weak());
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(now).weak());
+            info_icon(
+                ui,
+                "Of the nodes that match, the left-most on the canvas is used (of two equally far left, the higher). \
+                 A node already used for another of the quick action's nodes is passed over.",
+            );
+        });
         ui.add_space(8.0);
 
-        heading(
-            ui,
-            "When found",
-            "Changes made to the node found in the graph. A node added when none is found is enabled or disabled as \
-             chosen here too.",
-        );
-        let enabled = |e: Option<bool>| match e {
-            None => "Left enabled or disabled",
-            Some(true) => "Enabled",
-            Some(false) => "Disabled",
-        };
-        for choice in [None, Some(true), Some(false)] {
-            ui.radio_value(&mut rule.enabled, choice, enabled(choice));
+        ui.strong("When found");
+        let choices = [
+            (
+                None,
+                "Leave enabled or disabled",
+                "A node created when none is found is enabled or disabled as this one is.",
+            ),
+            (Some(true), "Enable", "A node created when none is found is enabled too."),
+            (Some(false), "Disable", "A node created when none is found is disabled too."),
+        ];
+        for (choice, text, info) in choices {
+            radio_info(ui, &mut rule.enabled, choice, text, info);
         }
         ui.horizontal(|ui| {
-            ui.label("Settings applied");
+            ui.label("Apply these settings");
             info_icon(
                 ui,
                 "Each setting ticked is copied from this node onto the node found. A node added has all of this \
@@ -720,13 +768,12 @@ impl<N: NodesEnum> Editor<N> {
         }
         ui.add_space(8.0);
 
-        heading(ui, "When not found", NOT_FOUND);
+        ui.strong("When not found");
         for mode in [Mode::Ensure, Mode::IfPresent, Mode::Require] {
-            ui.radio_value(&mut rule.mode, mode, mode.choice());
+            radio_info(ui, &mut rule.mode, mode, mode.choice(), not_found_info(mode));
         }
         ui.add_space(8.0);
 
-        heading(ui, "The node's window", WINDOWS);
         window_ui(ui, &mut rule.window, &others);
     }
 
@@ -739,14 +786,7 @@ impl<N: NodesEnum> Editor<N> {
         selected: &BTreeSet<NodeId>,
         base_directories: &[&'static str],
     ) {
-        heading(
-            ui,
-            "Quick action",
-            "Selecting a node or a connection shows how the quick action treats it; right-clicking one opens its \
-             menu. Clicking the canvas, or a port, adds a node, and Delete takes what's selected out of the quick \
-             action. To keep part of the graph here, for context, without the quick action touching the graph, \
-             choose Ignore it.",
-        );
+        ui.strong("Quick action");
         let action = &mut self.action;
         let name = ui.label("Name");
         ui.text_edit_singleline(&mut action.name).labelled_by(name.id);
@@ -772,17 +812,30 @@ impl<N: NodesEnum> Editor<N> {
                 }
                 self.canvas.frame_all();
             }
+            info_icon(
+                ui,
+                "On the canvas, selecting a node or a connection shows how the quick action treats it, and \
+                 right-clicking one opens its menu. Clicking the canvas, or a port, adds a node, and Delete takes \
+                 what's selected out of the quick action. To keep part of the graph here for context, without the \
+                 quick action touching it, choose Ignore.",
+            );
         });
         ui.add_space(8.0);
 
-        heading(
-            ui,
-            "Panes",
-            "When the quick action runs, home and the windows of these nodes can be laid out as the app has them now.",
-        );
+        ui.strong("Panes");
         let action = &mut self.action;
         let mut arrange = action.panes.arrangement.is_some();
-        let ticked = ui.checkbox(&mut arrange, "Arranged as they are now");
+        let ticked = ui
+            .horizontal(|ui| {
+                let ticked = ui.checkbox(&mut arrange, "Arrange as they are now");
+                info_icon(
+                    ui,
+                    "When the quick action runs, home and the windows of the nodes found are laid out as the app has \
+                     them now.",
+                );
+                ticked
+            })
+            .inner;
         let again = arrange && ui.small_button("As they are now, again").clicked();
         if ticked.changed() && !arrange {
             action.panes.arrangement = None;
@@ -810,24 +863,38 @@ impl<N: NodesEnum> Editor<N> {
             })
             .response
             .labelled_by(label.inner.id);
-        ui.checkbox(&mut action.arrange_if_empty, "Lay out the graph afresh, if it was empty");
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut action.arrange_if_empty, "Lay out the graph afresh");
+            info_icon(ui, "Only when the quick action builds the graph from nothing.");
+        });
     }
 }
 
-/// A node's window is left as it is, opened or closed; opened, the first time, it goes where `Placement` says,
-/// relative to the window of one of `others` (the quick action's other nodes, with their labels) for some.
-fn window_ui(ui: &mut egui::Ui, window: &mut Option<Window>, others: &[(NodeId, String)]) {
-    let opened = matches!(window, Some(Window::Open(_)));
-    if ui.radio(window.is_none(), "Left as it is").clicked() {
-        *window = None;
+/// A node's window, if open, is left open or closed; if not, left closed or opened, going (the first time) where
+/// `Placement` says, relative to the window of one of `others` (the quick action's other nodes, with their labels) for
+/// some.
+fn window_ui(ui: &mut egui::Ui, window: &mut Window, others: &[(NodeId, String)]) {
+    ui.strong("If the node's window is open");
+    radio_info(ui, &mut window.close, false, "Leave it open", "The window stays where it is, as it is.");
+    radio_info(ui, &mut window.close, true, "Close it", "A docked window keeps its place for when it's next opened.");
+    ui.add_space(8.0);
+
+    ui.strong("If the node's window isn't open");
+    let opening = window.open.is_some();
+    radio_info(ui, &mut window.open, None, "Leave it closed", "The window stays closed.");
+    let open = ui.horizontal(|ui| {
+        let open = ui.radio(opening, "Open it").clicked();
+        info_icon(
+            ui,
+            "A window that's been open before opens where it was; one opening for the first time goes where chosen \
+             below.",
+        );
+        open
+    });
+    if open.inner && !opening {
+        window.open = Some(Placement::Default);
     }
-    if ui.radio(opened, "Opened").clicked() && !opened {
-        *window = Some(Window::Open(Placement::Default));
-    }
-    if ui.radio(*window == Some(Window::Close), "Closed").clicked() {
-        *window = Some(Window::Close);
-    }
-    let Some(Window::Open(placement)) = window else { return };
+    let Some(placement) = &mut window.open else { return };
 
     let first_other = others.first().map(|(o, _)| *o);
     let kinds: Vec<(&str, Option<Placement>)> = vec![
@@ -847,7 +914,11 @@ fn window_ui(ui: &mut egui::Ui, window: &mut Option<Window>, others: &[(NodeId, 
         let label = ui.label("Where, the first time");
         info_icon(
             ui,
-            "A window that's been open before opens where it was. Opened for the first time, the window goes here. \
+            "• Where a new window goes: as the app places any window opened for the first time.\n\
+             • In front, in the largest group: as the front tab of the largest group of tabs.\n\
+             • Behind another window: as a tab behind the chosen node's window.\n\
+             • Next to another window: in a group of its own on one side of the chosen node's window, taking a \
+             share of the space.\n\n\
              Placed relative to a window that isn't open, the window goes where a new window goes.",
         );
         label
@@ -924,28 +995,42 @@ fn window_ui(ui: &mut egui::Ui, window: &mut Option<Window>, others: &[(NodeId, 
     }
 }
 
-/// A heading in the inspector, with an ⓘ that explains the choices under it.
-fn heading(ui: &mut egui::Ui, text: &str, info: &str) {
+/// A choice in the inspector, with an ⓘ saying what it does.
+fn radio_info<T: PartialEq>(ui: &mut egui::Ui, current: &mut T, choice: T, text: &str, info: &str) {
     ui.horizontal(|ui| {
-        ui.strong(text);
+        ui.radio_value(current, choice, text);
         info_icon(ui, info);
     });
 }
 
-const NOT_FOUND: &str = "With no node in the graph to match this one:\n\n\
-• Add a copy of this node: the copy has all of this node's settings.\n\
-• Carry on without it: the quick action still runs, leaving out this node's connections and window.\n\
-• Don't offer the quick action: Use VR computer, for example, isn't offered without a position detector.";
+fn not_found_info(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Ensure => {
+            "With no node in the graph to match this one, a node like this one is created, with all of its settings, \
+             ticked or not."
+        }
+        Mode::IfPresent => {
+            "With no node in the graph to match this one, the quick action still runs, leaving out this node's \
+             connections and window."
+        }
+        Mode::Require => {
+            "With no node in the graph to match this one, the quick action isn't offered. Use VR computer, for \
+             example, isn't offered without a position detector."
+        }
+        Mode::Ignore => "",
+    }
+}
 
-const WINDOWS: &str = "When the quick action runs, the window of the node found (or added) can be opened or closed, \
-or left as it is.";
-
-const EDGE_MODES: &str = "When the quick action runs, this connection is made, or not, between the nodes found for its \
-two ends.\n\n\
-• Connect if free: made only if the input (or a control's reading end) has no connection yet.\n\
-• Connect, replacing: made, replacing any connection to the input.\n\
-• Disconnect: removed, if the graph has it.\n\
-• Ignore it: left as the graph has it. An ignored connection stays here only to show what surrounds the rest.";
+fn edge_info(mode: EdgeMode) -> &'static str {
+    match mode {
+        EdgeMode::Ensure => "Connected only if the input (or a control's reading end) has no connection yet.",
+        EdgeMode::Replace => "Connected, replacing any connection to the input.",
+        EdgeMode::Remove => "Removed, if the graph has it.",
+        EdgeMode::Ignore => {
+            "Left as the graph has it. An ignored connection stays here only to show what surrounds the rest."
+        }
+    }
+}
 
 /// The app opens the quick actions' folder in the system's file manager with this.
 pub fn open_folder(folder: &Path) -> std::io::Result<()> {
@@ -973,6 +1058,24 @@ mod tests {
         std::fs::write(&first, "").unwrap();
         assert_eq!(new_file(&dir, "Use VR computer").file_name().unwrap(), "use-vr-computer-2.quick-action.json");
         assert_eq!(new_file(&dir, "…").file_name().unwrap(), "quick-action.quick-action.json");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_builds_quick_actions_are_given_to_the_folder_once() {
+        let dir = std::env::temp_dir().join(format!("ephys-rs-given-quick-actions-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let built_in = [r#"{"name": "Use VR computer!", "graph": {"nodes": {}}}"#];
+        give_built_ins(&dir, &built_in).unwrap();
+        let file = dir.join("use-vr-computer.quick-action.json");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), built_in[0], "as it is");
+        // Changed, the file's left as it is; deleted, it isn't given again.
+        std::fs::write(&file, "changed").unwrap();
+        give_built_ins(&dir, &built_in).unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "changed");
+        std::fs::remove_file(&file).unwrap();
+        give_built_ins(&dir, &built_in).unwrap();
+        assert!(!file.exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

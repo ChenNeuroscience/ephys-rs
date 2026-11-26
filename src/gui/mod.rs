@@ -833,13 +833,6 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
                     self.quick_action_editor = Some(editor);
                 }
             }
-            Request::Duplicate(index) => {
-                if let Some(entry) = entry(index) {
-                    let mut action = entry.action.clone();
-                    action.name = format!("{} (mine)", action.name);
-                    self.quick_action_editor = Some(Editor::new(action, None, self.colours()));
-                }
-            }
             Request::Copy(index) => {
                 if let Some(entry) = entry(index) {
                     let text = entry.action.to_text(&self.config_patches);
@@ -3377,11 +3370,10 @@ mod tests {
         let mut harness = harness();
         let ctx = harness.ctx.clone();
         let vr = harness.state().quick_actions.entries.iter().position(|e| e.action.name == "Use VR computer");
-        harness.state_mut().quick_action_request(&ctx, quick_actions::Request::Duplicate(vr.unwrap()));
+        harness.state_mut().quick_action_request(&ctx, quick_actions::Request::Edit(vr.unwrap()));
         harness.run_steps(3);
         let editor = harness.state().quick_action_editor.as_ref().expect("open");
-        assert_eq!(editor.name(), "Use VR computer (mine)");
-        assert!(editor.file.is_none(), "a new file, once saved");
+        assert_eq!(editor.name(), "Use VR computer");
         assert!(harness.query_by_label_contains("Now, it would have added VR Computer").is_some());
         harness.snapshot("quick_action_editor");
         // A node selected, the inspector says how it's found and what's done to it.

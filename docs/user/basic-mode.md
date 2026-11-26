@@ -29,10 +29,10 @@ for example, swaps the camera for positions from a VR computer. Each can be undo
 
 You can make your own quick actions, and choose which are offered, in Settings › Quick actions. **New from the
 graph** makes one from the setup as it is (or from the nodes selected). The editor shows its nodes as a graph, much
-as advanced mode does, with a note under each saying whether it's required, added if it's missing, or only changed if
-it's there, and what it is in your setup now; select one to change that, and which of its settings to set. Quick actions
-are files, so you can share them: **Copy** one and paste it in on another computer, or copy the files themselves
-(**Open folder**).
+as advanced mode does, with a note under each saying what happens if it isn't in your setup, and what it is in your setup now; select one to change that, and which of its settings to set. Quick actions
+are files, so you can share them: copy one (the copy button) and paste it in on another computer, or copy the files
+themselves (the folder icon opens their folder). The ones the app comes with are files too, so you can change or
+delete them like your own.
 
 ![After using a quick action](../../tests/snapshots/basic_using_vr.png)
 

@@ -256,7 +256,9 @@
         "quick": {
           "mode": "if_present",
           "enabled": false,
-          "window": "close"
+          "window": {
+            "close": true
+          }
         }
       }
     },

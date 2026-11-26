@@ -8,39 +8,42 @@ node: chen-neuro's "Standard LTX graph", "Use VR computer", "Use synthetic data"
 A [`QuickAction`](../src/quick_action.rs) is data, not code, so people can make, change and share their own. A
 build ships some, as files listed in `Components::QUICK_ACTIONS` (chen-neuro's are in
 [`quick_actions/`](../examples/chen-neuro/quick_actions), each `include_str!`'d by
-[`quick_actions.rs`](../examples/chen-neuro/src/components/quick_actions.rs)). People's own are files in a folder beside
-the app's settings (`quick_actions/` in eframe's storage directory). Both are listed in Settings › Quick actions.
+[`quick_actions.rs`](../examples/chen-neuro/src/components/quick_actions.rs)). Every quick action is a file in a folder
+beside the app's settings (`quick_actions/` in eframe's storage directory), listed in Settings › Quick actions with its
+description and when it was last changed. At start, the build's quick actions are copied into the folder, each as
+it is, to a file named for it, unless the folder has had it before (listed in `.built-in`) or a file of that name is
+there already. From then on, they're files like any other: changed, or deleted (and not given again), as people like,
+and an update to the build doesn't change the ones already given.
 
 ## What a quick action is
 
 A quick action is a small graph whose nodes are each a **role**, with a rule (`Rule`) for how it's found in the graph
 it's done on, and what's done to it:
 
-- **Found**: by the node's type, and optionally a regular expression its label matches (`label_pattern`) and conditions on its settings
-  (`conditions`: `{"setting": "low_hz", "op": ">=", "value": 100}`, a dot between names for a setting inside another,
-  such as `source.kind`). Each role is one node, never several, and not another role's: of those that fit, the
-  left-most on the canvas (of two equally far left, the higher).
-- **Mode**: `ensure` (added as the quick action has it, if it isn't found; the default), `if_present` (if it isn't
-  found, the quick action is still offered, without it), `require` (if it isn't found, the quick action isn't
-  offered) or `ignore` (never looked for, and its edges left alone: in a quick action made from a whole graph, the
-  parts that don't matter to it can stay, to show where the parts that do are).
-- **What's done**: `settings`, the settings (by name) set as the quick action has them on the nodes found (a node added
-  has all of them), and `enabled`, whether they're enabled or disabled (or, without it, left as they are).
+- **Matched**: by the node's type, and optionally a regular expression its label matches (`label_pattern`, such as
+  `(?i)low|lfp`). Each role is one node, never several, and not another role's: of those that match, the left-most
+  on the canvas (of two equally far left, the higher).
+- **When found**: `settings`, the settings (by name) applied as the quick action has them, and `enabled`, whether the
+  node's enabled or disabled (or, without it, left as it is).
+- **When not found** (`mode`): `ensure` creates the node, with all its settings (the default); `if_present` doesn't
+  create it, and the quick action is still offered, leaving out its edges and window; `require` means the quick
+  action isn't offered. Or the role's ignored (`ignore`): never matched, and its edges left alone, so in a quick
+  action made from a whole graph the parts that don't matter to it can stay, to show where the parts that do are.
 
 Each edge is between roles, by port id, with a mode (`EdgeMode`): `ensure` connects it if the end that takes just one
 edge is free (a data stream's input, or the reading end of a value); `replace` connects it, replacing what was there;
-`remove` disconnects it; `ignore` leaves it as it is. Nodes are never removed: a quick action disables them, which keeps their settings for when
-they're wanted again.
+`remove` disconnects it; `ignore` leaves it as it is. Nodes are never removed: a quick action disables them, which
+keeps their settings for when they're wanted again.
 
-A role's `window` is opened (`{"open": placement}`) or closed (`"close"`), or, without one, left as it is. A window
-that's been open before opens where it was; opened for the first time, it goes as the placement says: `"default"`
-(where the app puts a new window: see `Layout::place`), `"largest"` (in front, as a tab in the largest group),
-`{"behind": role}` (as a tab behind that role's window) or `{"beside": {"of": role, "side": "right", "share": 0.5}}`
-(a group of its own on that side of that role's window's group, taking that share of the space). Placed relative to
-a window that isn't open, it goes where the app puts a new window. `panes.arrangement` arranges the panes (see
-[the layout](#the-layout)), each window by role. `base_directory_type` chooses the
-[base directory](base-directories.md) (not while recording), and `arrange_if_empty` lays out a graph built from
-nothing afresh.
+A role's `window` says what's done with the node's window: if it's open, it's closed (`"close": true`) or left open;
+if it isn't, it's opened (`"open": placement`) or left closed. A window that's been open before opens where it was;
+opened for the first time, it goes as the placement says: `"default"` (where the app puts a new window: see
+`Layout::place`), `"largest"` (in front, as a tab in the largest group), `{"behind": role}` (as a tab behind that
+role's window) or `{"beside": {"of": role, "side": "right", "share": 0.5}}` (a group of its own on that side of that
+role's window's group, taking that share of the space). Placed relative to a window that isn't open, it goes where
+the app puts a new window. `panes.arrangement` arranges the panes (see [the layout](#the-layout)), each window by
+role. `base_directory_type` chooses the [base directory](base-directories.md) (not while recording), and
+`arrange_if_empty` lays out a graph built from nothing afresh.
 
 A quick action is offered while its required roles are found and doing it would change the graph (see
 `QuickAction::run`). So one that's done isn't offered until something changes, and closing a window it opened doesn't
@@ -51,9 +54,9 @@ The roles are found in the order they're listed. A role added goes where it is i
 it's connected to that's in the graph, or, with none, below the graph; then down, clear of what's there.
 
 chen-neuro's quick actions show each of these: the standard LTX graph ensures everything, telling the spikes' and the
-LFP's band-pass filters (Band-pass High and Band-pass Low) apart by their cut-offs; "Use VR computer" and "Use camera" disable one source, enable the
-other, and replace the edges into the tracker view, Write LTX and the Alarm Processor; "Use synthetic data" and "Use
-real devices" set `source` on the board and the camera whose `source.kind` is, or isn't, `fake`.
+LFP's band-pass filters (Band-pass High and Band-pass Low) apart by their labels; "Use VR computer" and "Use camera"
+disable one source, enable the other, and replace the edges into the tracker view, Write LTX and the Alarm Processor;
+"Use synthetic data" and "Use real devices" set `source` on the board and the camera.
 
 ## The file
 
@@ -73,8 +76,7 @@ a project:
         "label": "Acquisition Board", "pos": [0, 0],
         "node": { "type": "AcquisitionBoard", "settings": { "...": "..." } },
         "quick": {
-          "mode": "if_present", "settings": ["source"],
-          "conditions": [{ "setting": "source.kind", "op": "!=", "value": "fake" }]
+          "mode": "if_present", "settings": ["source"]
         }
       }
     },
@@ -88,8 +90,8 @@ A quick action with a node type the build doesn't have can't be read, and Settin
 ## Making and changing them
 
 In Settings › Quick actions, **New from the graph** (or from the nodes selected) makes one from the graph: each node a
-role, ensured, setting nothing on what's found; the edges between them, ensured; their open windows, opened. A
-build's quick actions can't be changed, but **Duplicate** makes a copy to change.
+role, ensured, setting nothing on what's found; the edges between them, ensured; their open windows, opened. Each
+quick action has buttons to edit it, copy it to the clipboard, and delete its file; the folder icon opens the folder.
 
 The editor shows the quick action's nodes and edges as a graph, on a canvas like the app's, most of the window's
 size:
@@ -102,12 +104,11 @@ size:
   graph (**Add the nodes selected in the graph**, with the edges between them). Delete, or a node's menu, removes one;
   a node's menu also says how it's found, and an edge's what's done to it. **Arrange** lays them out afresh.
 - Beside the canvas, the inspector changes what's selected. For a node: its label; whether it's ignored; how it's
-  matched (its type, spelled out, and a label pattern), and what it matches in the graph now; when found, whether
-  it's enabled or disabled and which settings are set; when not found, whether a copy is added, the quick action
-  carries on without it, or isn't offered; and its window (left as it is, opened, or closed; opened, where it goes
-  the first time). For an edge, its mode. With nothing selected, the quick action's name, description, arrangement
-  and base directory. Each heading's ⓘ explains the choices under it. Conditions on settings are shown, but only the
-  file changes them, for now.
+  matched (its type, spelled out, and a label pattern), and what it matches in the graph now; when found, enable or
+  disable it, and which settings to apply; when not found, create it, don't, or don't offer the quick action; and its
+  window, if open (leave it open, or close it) and if not (leave it closed, or open it, and where, the first time).
+  For an edge, its mode. With nothing selected, the quick action's name, description, arrangement and base
+  directory. An ⓘ beside each option says what it does.
 - Ignored nodes and edges are drawn faded.
 - **Take the settings of** sets a node's settings from the node it's found as, so one way to change a quick action is
   to do it, change the graph by hand, and take the settings back.
