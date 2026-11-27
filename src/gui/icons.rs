@@ -189,12 +189,11 @@ impl Icon {
                 page(painter, &p, 5.0, 2.0, fade(PAPER), line);
             }
             Icon::Paste => {
-                let board = Color32::from_rgb(178, 132, 82);
-                painter.rect(r(2.5, 2.0, 13.5, 15.0), 1.5 * s, fade(board), line, StrokeKind::Middle);
-                painter.rect(r(4.5, 4.5, 11.5, 13.5), 0.5 * s, fade(PAPER), Stroke::NONE, StrokeKind::Middle);
-                painter.rect(r(5.5, 0.8, 10.5, 3.6), 1.0 * s, fade(Color32::from_gray(140)), line, StrokeKind::Middle);
-                for y in [7.0, 9.0, 11.0] {
-                    painter.line_segment([p(6.0, y), p(10.0, y)], Stroke::new(0.8 * s, fade(Color32::from_gray(120))));
+                // A clipboard, in paper and ink as Copy's pages are: the board, its clip, and lines of writing.
+                painter.rect(r(2.5, 2.0, 13.5, 15.0), 1.5 * s, fade(PAPER), line, StrokeKind::Middle);
+                painter.rect(r(5.5, 0.8, 10.5, 3.6), 1.0 * s, fade(PAPER), line, StrokeKind::Middle);
+                for y in [7.0, 9.5, 12.0] {
+                    painter.line_segment([p(5.5, y), p(10.5, y)], Stroke::new(0.9 * s, ink));
                 }
             }
             Icon::Graph => {

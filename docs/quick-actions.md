@@ -50,8 +50,9 @@ connects is enabled. Nodes are never removed: a quick action disables them, whic
 they're wanted again.
 
 `panes.arrangement` arranges the panes (see [the layout](#the-layout)), each window by role. `base_directory`
-chooses the [base directory](base-directories.md) (not while recording), and `lay_out_if_empty` lays out a graph
-built from nothing afresh.
+applies a [base directory](base-directories.md) `mode` (by its type's name; not while recording), with what that mode
+has (its directory, say), which the quick action leaves alone; the editor's "Apply mode" takes the mode the app has when
+it's chosen.
 
 A quick action is offered while its required roles are found and doing it would change the graph (see
 `QuickAction::run`). So one that's done isn't offered until something changes, and closing a window it opened doesn't

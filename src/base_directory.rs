@@ -144,6 +144,19 @@ impl BaseDirectories {
         self.current.as_ref()?.1.place(start)
     }
 
+    /// The type in use, by name, if any's offered: a quick action's base directory mode (see
+    /// `crate::quick_action::ApplyBaseDirectory`).
+    pub fn mode(&self) -> Option<&'static str> {
+        Some(self.types[self.chosen()?].name)
+    }
+
+    /// A quick action uses the type named `mode` with this, with what it has (if it's offered).
+    pub fn apply(&mut self, mode: &str) {
+        if let Some(index) = self.types.iter().position(|t| t.name == mode) {
+            self.choose(index);
+        }
+    }
+
     /// The app keeps this between runs of the program and in saved files: which type's in use, and what each has.
     pub fn save(&self) -> serde_json::Value {
         let mut types = self.saved.clone();
@@ -193,5 +206,14 @@ mod tests {
         assert_eq!((again.chosen(), again.place()), (Some(1), Some(Place::directory("/b"))));
         assert_eq!(saved["types"]["a"], "/a", "what the one not in use had");
         assert_eq!(BaseDirectories::new(&[], None).place(), None, "none offered");
+    }
+
+    #[test]
+    fn a_quick_action_uses_a_type_with_what_it_has() {
+        let mut directories = BaseDirectories::new(TYPES, None);
+        directories.apply("b");
+        assert_eq!((directories.mode(), directories.place()), (Some("b"), Some(Place::directory("/b"))));
+        directories.apply("c");
+        assert_eq!(directories.mode(), Some("b"), "none of that name");
     }
 }

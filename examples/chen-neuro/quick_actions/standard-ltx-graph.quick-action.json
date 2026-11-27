@@ -1056,6 +1056,7 @@
       ]
     }
   },
-  "lay_out_if_empty": true,
-  "base_directory": "Subject, date and trial"
+  "base_directory": {
+    "mode": "Subject, date and trial"
+  }
 }

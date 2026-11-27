@@ -35,6 +35,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 
+use eframe::egui;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -352,10 +353,8 @@ pub struct QuickAction<N> {
     pub roles: Vec<Role<N>>,
     pub edges: Vec<RoleEdge>,
     pub panes: Plan,
-    /// The base directory chosen, by its type's name (see `crate::base_directory`).
-    pub base_directory: Option<String>,
-    /// A graph built from nothing is laid out afresh (see the toolbar's Arrange).
-    pub lay_out_if_empty: bool,
+    /// The base directory mode applied, if any (see `crate::base_directory`).
+    pub base_directory: Option<ApplyBaseDirectory>,
 }
 
 /// A quick action works from this.
@@ -370,12 +369,17 @@ pub struct QuickChange<N: NodesEnum> {
     pub graph: Graph<N>,
     /// The panes, where they're to be.
     pub layout: Layout,
-    /// The graph's laid out afresh (see the toolbar's Arrange), as after building it from nothing.
-    pub arrange: bool,
     /// The log says what the action did, in a line: "added Spike Detector, Spike Viewer; connected 3", say.
     pub summary: String,
-    /// The base directory to use (see `crate::base_directory`), by its type's name.
-    pub base_directory: Option<String>,
+    /// The base directory mode to apply, if any (see `crate::base_directory`).
+    pub base_directory: Option<ApplyBaseDirectory>,
+}
+
+/// A quick action can apply a base directory mode (see `crate::base_directory`): a base directory type, by its name,
+/// used with what it has (its directory, say), which the quick action leaves alone.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub struct ApplyBaseDirectory {
+    pub mode: String,
 }
 
 // The file.
@@ -392,9 +396,7 @@ struct File {
     #[serde(default)]
     panes: Plan,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    base_directory: Option<String>,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    lay_out_if_empty: bool,
+    base_directory: Option<ApplyBaseDirectory>,
 }
 
 /// A quick action's graph, as a project's is saved, with each node's rule and each edge's.
@@ -457,7 +459,6 @@ impl<N: NodesEnum> QuickAction<N> {
             edges: file.graph.edges,
             panes: file.panes,
             base_directory: file.base_directory,
-            lay_out_if_empty: file.lay_out_if_empty,
         })
     }
 
@@ -485,7 +486,6 @@ impl<N: NodesEnum> QuickAction<N> {
             graph: FileGraph { next_id, nodes, edges: self.edges.clone() },
             panes: self.panes.clone(),
             base_directory: self.base_directory.clone(),
-            lay_out_if_empty: self.lay_out_if_empty,
         };
         serde_json::to_string_pretty(&file).unwrap_or_default()
     }
@@ -534,7 +534,6 @@ impl<N: NodesEnum> QuickAction<N> {
             edges,
             panes: Plan { arrangement },
             base_directory: None,
-            lay_out_if_empty: false,
         }
     }
 
@@ -672,24 +671,32 @@ impl<N: NodesEnum> QuickAction<N> {
     /// isn't found, or nothing would change (when it isn't offered).
     pub fn run(&self, state: &QuickState<N>) -> Option<QuickChange<N>> {
         let mut graph = state.graph.clone();
-        let empty = graph.iter().next().is_none();
         let mut summary = Summary::default();
 
         // Finding each role.
         let mut found = self.find(&graph).ok()?;
-        let missing: Vec<NodeId> = (self.roles.iter())
+        let mut missing: Vec<NodeId> = (self.roles.iter())
             .filter(|role| role.rule.used && role.rule.if_not_found == IfNotFound::Create)
             .filter(|role| !found.contains_key(&role.id))
             .map(|role| role.id)
             .collect();
 
-        // Adding those missing, beside what they're connected to, enabled.
+        // Adding those missing, each placed by one in the graph already (see `QuickAction::place`), enabled. Next is
+        // one connected to a node in the graph (from it, preferably; then to it), so as many as can be are placed by
+        // what they're connected to; otherwise the left-most.
+        let empty = graph.iter().next().is_none();
         let origin = self.origin();
         let mut added_ids = HashSet::new();
-        for id in missing {
+        while !missing.is_empty() {
+            let placed = |others: Vec<NodeId>| others.iter().any(|other| found.contains_key(other));
+            let next = (missing.iter().position(|id| placed(self.upstream(*id))))
+                .or_else(|| missing.iter().position(|id| placed(self.downstream(*id))))
+                .unwrap_or(0);
+            let id = missing.remove(next);
             let Some(role) = self.role(id) else { continue };
-            let pos = self.place(role, &graph, &found, empty, origin);
+            let (pos, down) = self.place(role, &graph, &found, empty, origin);
             let added = graph.add(role.node.clone(), pos);
+            clear(&mut graph, added, down);
             if let Some(entry) = graph.get_mut(added) {
                 let label_free = state.graph.iter().all(|(_, e)| e.label != role.label);
                 if label_free {
@@ -784,13 +791,7 @@ impl<N: NodesEnum> QuickAction<N> {
                 layout.arrange(&arrangement);
             }
         }
-        Some(QuickChange {
-            graph,
-            layout,
-            arrange: empty && self.lay_out_if_empty,
-            summary: summary.line(),
-            base_directory: self.base_directory.clone(),
-        })
+        Some(QuickChange { graph, layout, summary: summary.line(), base_directory: self.base_directory.clone() })
     }
 
     /// Whether the quick action can change the graph: whether it adds nodes, sets settings, enables or disables nodes,
@@ -815,9 +816,24 @@ impl<N: NodesEnum> QuickAction<N> {
         if self.roles.is_empty() { [0.0, 0.0] } else { [min(0), min(1)] }
     }
 
-    /// Where a role added goes: where it is in the quick action relative to a node it's connected to that's in the
-    /// graph (one it takes data from, preferably); otherwise, into an empty graph, where it is, or below the graph,
-    /// where it is relative to the quick action's top-left. Moved down, if need be, clear of the nodes there.
+    /// The roles `id` takes data from, by the quick action's edges.
+    fn upstream(&self, id: NodeId) -> Vec<NodeId> {
+        self.edges.iter().filter(|e| e.to.node == id).map(|e| e.from.node).collect()
+    }
+
+    /// The roles `id` gives data to, by the quick action's edges.
+    fn downstream(&self, id: NodeId) -> Vec<NodeId> {
+        self.edges.iter().filter(|e| e.from.node == id).map(|e| e.to.node).collect()
+    }
+
+    /// Where a role added goes: where it is in the quick action relative to another role, in the graph already (found
+    /// or added), at the same distance from it in the graph. That's one it takes data from, if any is in the graph;
+    /// otherwise one it gives data to; otherwise the nearest in the quick action. Of several it's connected to, it's
+    /// the nearest across in the quick action, then the nearest up or down. With none of the roles in the graph, it's where it is in the quick action,
+    /// into an empty graph, or otherwise below the graph, where it is relative to the quick action's top-left.
+    ///
+    /// This also says which way it's moved, if where it goes is taken (see `clear`): down, unless it's above the other
+    /// role in the quick action.
     fn place(
         &self,
         role: &Role<N>,
@@ -825,30 +841,44 @@ impl<N: NodesEnum> QuickAction<N> {
         found: &BTreeMap<NodeId, NodeId>,
         empty: bool,
         origin: [f32; 2],
-    ) -> [f32; 2] {
-        let upstream = self.edges.iter().filter(|e| e.to.node == role.id).map(|e| e.from.node);
-        let downstream = self.edges.iter().filter(|e| e.from.node == role.id).map(|e| e.to.node);
-        let anchor = upstream.chain(downstream).find_map(|other| {
-            let at = graph.get(*found.get(&other)?)?.pos;
-            let in_action = self.role(other)?.pos;
-            Some([at[0] + role.pos[0] - in_action[0], at[1] + role.pos[1] - in_action[1]])
-        });
-        let positions: Vec<[f32; 2]> = graph.iter().map(|(_, e)| e.pos).collect();
-        let mut pos = anchor.unwrap_or_else(|| {
-            if empty {
-                return role.pos;
-            }
-            let left = positions.iter().map(|p| p[0]).fold(f32::INFINITY, f32::min);
-            let bottom = positions.iter().map(|p| p[1] + NODE_HEIGHT + 60.0).fold(f32::NEG_INFINITY, f32::max);
-            [left + role.pos[0] - origin[0], bottom + role.pos[1] - origin[1]]
-        });
-        let taken = |pos: [f32; 2]| {
-            positions.iter().any(|p| (p[0] - pos[0]).abs() < NODE_WIDTH && (p[1] - pos[1]).abs() < NODE_HEIGHT)
+    ) -> ([f32; 2], bool) {
+        let in_graph = |others: Vec<NodeId>| -> Vec<(NodeId, [f32; 2])> {
+            (others.into_iter()).filter_map(|other| Some((other, graph.get(*found.get(&other)?)?.pos))).collect()
         };
-        while taken(pos) {
-            pos[1] += 40.0;
+        // Of several, the nearest across in the quick action, then the nearest up or down.
+        let apart = |other: NodeId| {
+            let at = self.role(other).map_or([f32::INFINITY; 2], |r| r.pos);
+            ((at[0] - role.pos[0]).abs(), (at[1] - role.pos[1]).abs())
+        };
+        let first = |others: Vec<(NodeId, [f32; 2])>| {
+            others.into_iter().min_by(|(a, _), (b, _)| {
+                let (a, b) = (apart(*a), apart(*b));
+                a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1))
+            })
+        };
+        let distance = |other: &Role<N>| (other.pos[0] - role.pos[0]).hypot(other.pos[1] - role.pos[1]);
+        let nearest = || {
+            let placed = self.roles.iter().filter(|r| r.id != role.id && found.contains_key(&r.id));
+            let other = placed.min_by(|a, b| distance(a).total_cmp(&distance(b)))?;
+            in_graph(vec![other.id]).pop()
+        };
+        let anchor = (first(in_graph(self.upstream(role.id))))
+            .or_else(|| first(in_graph(self.downstream(role.id))))
+            .or_else(nearest)
+            .and_then(|(other, at)| Some((self.role(other)?.pos, at)));
+        match anchor {
+            Some((in_action, at)) => {
+                let offset = [role.pos[0] - in_action[0], role.pos[1] - in_action[1]];
+                ([at[0] + offset[0], at[1] + offset[1]], offset[1] >= 0.0)
+            }
+            None if empty => (role.pos, true),
+            None => {
+                let rects = rects(graph);
+                let left = rects.iter().map(|(_, r)| r.left()).fold(f32::INFINITY, f32::min);
+                let bottom = rects.iter().map(|(_, r)| r.bottom() + 60.0).fold(f32::NEG_INFINITY, f32::max);
+                ([left + role.pos[0] - origin[0], bottom + role.pos[1] - origin[1]], true)
+            }
         }
-        pos
     }
 }
 
@@ -894,9 +924,35 @@ fn left_most(a: [f32; 2], b: [f32; 2]) -> std::cmp::Ordering {
     a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1]))
 }
 
-/// Room for a node on the canvas, about, for placing those added clear of the rest.
-const NODE_WIDTH: f32 = 250.0;
-const NODE_HEIGHT: f32 = 150.0;
+/// The room each node of `graph` takes on the canvas (see `canvas::node_size`).
+fn rects<N: NodesEnum>(graph: &Graph<N>) -> Vec<(NodeId, egui::Rect)> {
+    let resolved = graph.resolve();
+    (graph.iter())
+        .filter_map(|(id, entry)| {
+            let size = crate::gui::canvas::node_size(resolved.get(&id)?);
+            Some((id, egui::Rect::from_min_size(egui::Pos2::from(entry.pos), size)))
+        })
+        .collect()
+}
+
+/// A node added where another is, overlapping it, is moved `down` (or up) past it, keeping where it is across, until
+/// it's clear of them all, with this gap.
+const CLEARANCE: f32 = 20.0;
+
+/// A node added is moved clear of the rest with this (see `CLEARANCE`).
+fn clear<N: NodesEnum>(graph: &mut Graph<N>, id: NodeId, down: bool) {
+    let rects = rects(graph);
+    let Some(mut mine) = rects.iter().find(|(other, _)| *other == id).map(|(_, r)| *r) else { return };
+    let others: Vec<egui::Rect> = rects.iter().filter(|(other, _)| *other != id).map(|(_, r)| *r).collect();
+    // Touching isn't overlapping.
+    while let Some(hit) = others.iter().find(|other| other.intersects(mine.shrink(0.5))) {
+        let by = if down { hit.bottom() + CLEARANCE - mine.top() } else { hit.top() - CLEARANCE - mine.bottom() };
+        mine = mine.translate(egui::vec2(0.0, by));
+    }
+    if let Some(entry) = graph.get_mut(id) {
+        entry.pos = mine.min.into();
+    }
+}
 
 /// The port on `node` that `port` names by id.
 fn address<N: NodesEnum>(graph: &Graph<N>, node: NodeId, port: &SavedPort) -> Option<PortAddress> {
@@ -1132,6 +1188,36 @@ mod tests {
         assert!(action.run(&QuickState { graph: &change.graph, layout: &layout }).is_none(), "disabled already");
         action.edges[0].rule.if_connected = EnableOrDisable::Enable;
         assert!(action.run(&QuickState { graph: &change.graph, layout: &layout }).is_some());
+    }
+
+    #[test]
+    fn one_added_goes_as_it_is_from_what_it_is_connected_to_further_up_or_down_if_that_is_taken() {
+        let (graph, layout, _, _) = detector_and_viewer();
+        let mut action = QuickAction::from_graph("Spikes", &graph, &layout, &[], false);
+        // Where the viewer's added, with a filter at `blocked`, if any, and the room the filter takes.
+        let added_at = |action: &QuickAction<Nodes>, blocked: Option<[f32; 2]>| {
+            let mut graph = Graph::<Nodes>::default();
+            graph.add(Nodes::create(crate::NodeType::SpikeDetector), [1000.0, 500.0]);
+            let filter = blocked.map(|at| graph.add(Nodes::create(crate::NodeType::BandPassFilter), at));
+            let change = action.run(&QuickState { graph: &graph, layout: &Layout::default() }).unwrap();
+            let viewer = change.graph.iter().find(|(_, e)| e.label == "Spike Viewer").unwrap().0;
+            let rects = rects(&change.graph);
+            let rect = |id| rects.iter().find(|(other, _)| *other == id).map(|(_, r)| *r).unwrap();
+            (rect(viewer), filter.map(rect))
+        };
+        assert_eq!(added_at(&action, None).0.min, egui::pos2(1300.0, 500.0), "as it is from the detector");
+        let (viewer, filter) = added_at(&action, Some([1300.0, 500.0]));
+        assert_eq!(viewer.min, egui::pos2(1300.0, filter.unwrap().bottom() + CLEARANCE), "level with it: down, clear");
+        action.roles[1].pos = [300.0, -200.0];
+        let (viewer, filter) = added_at(&action, Some([1300.0, 300.0]));
+        assert_eq!(viewer.left(), 1300.0);
+        assert_eq!(viewer.bottom(), filter.unwrap().top() - CLEARANCE, "above it: further up, clear");
+        // Placed by what it gives data to, when nothing it takes data from is there.
+        let mut viewer_only = Graph::<Nodes>::default();
+        viewer_only.add(Nodes::create(crate::NodeType::SpikeViewer), [0.0, 0.0]);
+        let change = action.run(&QuickState { graph: &viewer_only, layout: &Layout::default() }).unwrap();
+        let detector = change.graph.iter().find(|(_, e)| e.label == "Spike Detector").map(|(_, e)| e.pos);
+        assert_eq!(detector, Some([-300.0, 200.0]));
     }
 
     #[test]

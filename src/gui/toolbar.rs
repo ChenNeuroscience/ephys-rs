@@ -388,6 +388,13 @@ pub fn small_icon_button(ui: &mut egui::Ui, icon: Icon, label: &str, tooltip: &s
     )
 }
 
+/// Shows a toggle for all of a list as on for only some of it: a dash, as on a checkbox, for icons and other buttons.
+pub fn mark_mixed(ui: &egui::Ui, button: &egui::Response) {
+    let (rect, stroke) = (button.rect, egui::Stroke::new(2.0, ui.visuals().strong_text_color()));
+    let y = rect.bottom() - 1.5;
+    ui.painter().line_segment([egui::pos2(rect.center().x - 6.0, y), egui::pos2(rect.center().x + 6.0, y)], stroke);
+}
+
 /// A small icon button can be on or off (shown selected while on).
 pub fn small_toggle_button(ui: &mut egui::Ui, icon: Icon, label: &str, tooltip: &str, on: bool) -> egui::Response {
     icon_button(

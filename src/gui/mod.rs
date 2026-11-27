@@ -6,7 +6,7 @@ mod about;
 mod actions;
 mod arrange;
 mod basic;
-mod canvas;
+pub(crate) mod canvas;
 mod create_menu;
 mod dev_tools;
 mod dialog;
@@ -33,7 +33,7 @@ pub mod widgets {
     pub use super::help::{help_link, info_icon, regex_cheat_sheet, with_help};
     pub use super::icons::Icon;
     pub use super::icons::eye;
-    pub use super::toolbar::{small_icon_button, small_toggle_button, toolbar_button};
+    pub use super::toolbar::{mark_mixed, small_icon_button, small_toggle_button, toolbar_button};
 }
 
 use std::collections::HashMap;
@@ -880,8 +880,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
     fn quick_action_editor(&mut self, ctx: &egui::Context) {
         let colours = self.colours();
         let Some(editor) = &mut self.quick_action_editor else { return };
-        let base_directories: Vec<&'static str> = self.base_directories.types().iter().map(|t| t.name).collect();
-        match editor.show::<A>(ctx, &self.graph, &self.layout, &base_directories, colours) {
+        match editor.show::<A>(ctx, &self.graph, &self.layout, &self.base_directories, colours) {
             quick_actions::Outcome::Open => {}
             quick_actions::Outcome::Cancelled => self.quick_action_editor = None,
             quick_actions::Outcome::Save => {
@@ -1306,22 +1305,16 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
         }
         let state = crate::quick_action::QuickState { graph: &self.graph, layout: &self.layout };
         let Some(change) = action.run(&state) else { return };
+        // A graph built from nothing is shown whole.
+        let was_empty = self.graph.iter().next().is_none();
         self.graph = change.graph;
         self.layout = change.layout;
-        if change.arrange {
-            for (id, pos) in arrange::arrange(&self.graph) {
-                if let Some(entry) = self.graph.get_mut(id) {
-                    entry.pos = pos;
-                }
-            }
+        if was_empty {
             self.canvas.frame_all();
         }
         let recording = self.recording.is_some();
-        let types = self.base_directories.types();
-        if let (Some(name), false) = (change.base_directory.as_deref(), recording)
-            && let Some(index) = types.iter().position(|t| t.name == name)
-        {
-            self.base_directories.choose(index);
+        if let (Some(apply), false) = (&change.base_directory, recording) {
+            self.base_directories.apply(&apply.mode);
         }
         log::info!("Quick action \"{}\": {}", action.name, change.summary);
     }
@@ -2230,7 +2223,7 @@ mod tests {
     use crate::standard::themes::THEMES;
     use crate::{AnnotationTypes, Nodes};
     use egui_kittest::Harness;
-    use egui_kittest::kittest::Queryable as _;
+    use egui_kittest::kittest::{NodeT as _, Queryable as _};
 
     /// Tests run the app on the example graph (which they don't save). Running with UPDATE_SNAPSHOTS=1 accepts changes;
     /// see tests/snapshots/.
@@ -3379,6 +3372,12 @@ mod tests {
         let editor = harness.state().quick_action_editor.as_ref().expect("open");
         assert_eq!(editor.name(), "Use VR computer");
         assert!(harness.query_by_label("Description").is_some(), "the quick action itself, with nothing selected");
+        // The base directory: the mode the app has when "Apply mode" is chosen, and nothing of its directory.
+        harness.get_by_label("Apply mode").click();
+        harness.run_steps(2);
+        let mode = harness.state().base_directories.mode().unwrap();
+        let apply = harness.state().quick_action_editor.as_ref().unwrap().action().base_directory.unwrap();
+        assert_eq!(apply.mode, mode);
         harness.snapshot("quick_action_editor");
         // A node selected, the inspector says how it's found and what's done to it.
         let detector = harness.state().quick_action_editor.as_ref().unwrap().role_named("Position Detector");
@@ -3411,6 +3410,35 @@ mod tests {
         harness.run_steps(3);
         assert!(harness.query_by_label("Swap to VR Computer").is_some());
         harness.snapshot("quick_action_editor_connection");
+        // A long name: the inspector scrolls sideways to show the rows that name it.
+        let vr = harness.state().quick_action_editor.as_ref().unwrap().role_named("VR Computer");
+        let long = "VR Computer in the second rig, behind the screen";
+        harness.state_mut().quick_action_editor.as_mut().unwrap().relabel(vr, long);
+        harness.state_mut().quick_action_editor.as_mut().unwrap().relabel(tracker, "Tracker View of the second rig");
+        harness.run_steps(3);
+        assert!(harness.query_by_label(&format!("Swap to {long}")).is_some());
+        harness.snapshot("quick_action_editor_long_name");
+        harness.state_mut().quick_action_editor.as_mut().unwrap().relabel(vr, "VR Computer");
+        harness.state_mut().quick_action_editor.as_mut().unwrap().relabel(tracker, "Tracker View");
+        // A node at one end ignored: the connection is too, and can't be used until the node is.
+        harness.state_mut().quick_action_editor.as_mut().unwrap().select(vr);
+        harness.run_steps(2);
+        harness.get_by_label("Use VR Computer").click();
+        harness.run_steps(2);
+        harness.state_mut().quick_action_editor.as_mut().unwrap().select_edge_into(tracker);
+        harness.run_steps(3);
+        let power = harness.get_by_role_and_label(egui::accesskit::Role::Button, "Use Connection");
+        assert!(power.accesskit_node().is_disabled(), "locked off");
+        assert!(harness.query_by_label("Swap to VR Computer").is_none(), "no options for an ignored connection");
+        harness.state_mut().quick_action_editor.as_mut().unwrap().select(vr);
+        harness.run_steps(2);
+        harness.get_by_label("Use VR Computer").click();
+        harness.run_steps(2);
+        harness.state_mut().quick_action_editor.as_mut().unwrap().select_edge_into(tracker);
+        harness.run_steps(3);
+        let power = harness.get_by_role_and_label(egui::accesskit::Role::Button, "Use Connection");
+        assert!(!power.accesskit_node().is_disabled(), "usable again");
+        assert!(harness.query_by_label("Swap to VR Computer").is_some());
         // Several nodes: in a box, with one checkbox for all of them.
         let some: Vec<NodeId> = ["TTL Viewer", "Camera", "Arduino"]
             .iter()
@@ -3421,12 +3449,16 @@ mod tests {
         harness.run_steps(3);
         assert!(harness.query_by_label("3 nodes").is_some());
         harness.snapshot("quick_action_editor_nodes");
-        harness.get_by_label("Use these nodes").click();
+        harness.get_by_label("Use 3 nodes").click();
         harness.run_steps(2);
-        assert!(some.iter().all(|id| !uses(&harness, id)), "all unticked");
-        harness.get_by_label("Use these nodes").click();
+        assert!(some.iter().all(|id| !uses(&harness, id)), "all ignored");
+        harness.get_by_label("Use 3 nodes").click();
         harness.run_steps(2);
-        assert!(some.iter().all(|id| uses(&harness, id)), "and ticked again");
+        assert!(some.iter().all(|id| uses(&harness, id)), "and used again");
+        // Closing the inspector's tab goes back to the quick action itself.
+        harness.get_by_label("Close 3 nodes").click();
+        harness.run_steps(2);
+        assert!(harness.query_by_label("Description").is_some(), "the quick action, with nothing selected");
     }
 
     /// With no quick actions, home links to managing them and to building a graph from scratch, in advanced mode; in

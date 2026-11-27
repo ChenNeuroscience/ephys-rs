@@ -3,6 +3,7 @@
 use eframe::egui;
 
 use ephys_rs::engine::{EdgeTypesEnum, Edges, ReadsValIn, UiContext};
+pub use ephys_rs::gui::widgets::mark_mixed;
 use ephys_rs::gui::widgets::{Icon, small_icon_button, small_toggle_button};
 use ephys_rs::theme::Colours;
 
@@ -109,13 +110,6 @@ pub fn small_toggle(ui: &mut egui::Ui, icon: Icon, on: &mut bool, label: &str, t
 pub fn power(ui: &mut egui::Ui, on: &mut bool, label: &str) -> egui::Response {
     let tip = if *on { "On: click to switch off, keeping the settings" } else { "Off: click to switch on" };
     small_toggle(ui, Icon::Power, on, label, tip)
-}
-
-/// Shows a toggle for all of a list as on for only some of it: a dash, as on a checkbox, for icons and other buttons.
-pub fn mark_mixed(ui: &egui::Ui, button: &egui::Response) {
-    let (rect, stroke) = (button.rect, egui::Stroke::new(2.0, ui.visuals().strong_text_color()));
-    let y = rect.bottom() - 1.5;
-    ui.painter().line_segment([egui::pos2(rect.center().x - 6.0, y), egui::pos2(rect.center().x + 6.0, y)], stroke);
 }
 
 /// A settings button, in the part of a view it's about, that opens the window of the node control `control` connects to:

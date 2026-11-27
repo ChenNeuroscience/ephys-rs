@@ -33,6 +33,32 @@ pub fn show(
     body: impl FnOnce(&mut egui::Ui),
     footer: impl FnOnce(&mut egui::Ui),
 ) -> bool {
+    show_with(ctx, title, width, colours, Margin::symmetric(PAD, 14), body, footer)
+}
+
+/// The app shows a dialog with this when the dialog's body fills it edge to edge, from its title bar to its footer:
+/// the body's `width` wide, with no margins.
+pub fn show_edge_to_edge(
+    ctx: &egui::Context,
+    title: &str,
+    width: f32,
+    colours: &Colours,
+    body: impl FnOnce(&mut egui::Ui),
+    footer: impl FnOnce(&mut egui::Ui),
+) -> bool {
+    show_with(ctx, title, width, colours, Margin::ZERO, body, footer)
+}
+
+/// A dialog, with `margin` around its body.
+fn show_with(
+    ctx: &egui::Context,
+    title: &str,
+    width: f32,
+    colours: &Colours,
+    margin: Margin,
+    body: impl FnOnce(&mut egui::Ui),
+    footer: impl FnOnce(&mut egui::Ui),
+) -> bool {
     let frame = Frame::popup(&ctx.global_style()).inner_margin(0).corner_radius(ROUNDING);
     let inner = width - 2.0 * f32::from(PAD);
     let modal = egui::Modal::new(egui::Id::unique(title)).frame(frame).show(ctx, |ui| {
@@ -41,8 +67,8 @@ pub fn show(
         ui.spacing_mut().item_spacing.y = 0.0;
         title_bar(ui, title, inner, colours);
         ui.painter().hline(ui.max_rect().x_range(), ui.cursor().top(), (1.0, colours.divider));
-        Frame::new().inner_margin(Margin::symmetric(PAD, 14)).show(ui, |ui| {
-            ui.set_width(inner);
+        Frame::new().inner_margin(margin).show(ui, |ui| {
+            ui.set_width(width - margin.sum().x);
             ui.spacing_mut().item_spacing = spacing;
             body(ui);
         });

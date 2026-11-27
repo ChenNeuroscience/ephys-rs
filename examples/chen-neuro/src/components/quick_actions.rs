@@ -83,8 +83,13 @@ mod tests {
         let empty = Graph::default();
         assert_eq!(offered(&empty), vec!["Standard LTX graph v0.5"]);
         let change = run("Standard LTX graph v0.5", &empty).unwrap();
-        assert!(change.arrange, "a new graph is laid out");
-        assert_eq!(change.base_directory.as_deref(), Some("Subject, date and trial"));
+        // Built from nothing, each node's where it is in the quick action.
+        let action = actions().into_iter().find(|a| a.name == "Standard LTX graph v0.5").unwrap();
+        for role in action.roles.iter().filter(|r| r.rule.used) {
+            let added = change.graph.iter().find(|(_, e)| e.label == role.label).map(|(_, e)| e.pos);
+            assert_eq!(added, Some(role.pos), "{}", role.label);
+        }
+        assert_eq!(change.base_directory.unwrap().mode, "Subject, date and trial");
         assert!(change.summary.starts_with("added Acquisition Board, "), "{}", change.summary);
         assert_eq!(change.layout.open_windows().len(), 5, "the five viewers");
         let graph = change.graph;
@@ -176,7 +181,8 @@ mod tests {
         without.remove(viewer);
         let change = run("Standard LTX graph v0.5", &without).unwrap();
         assert_eq!(change.summary, "added Spike Viewer; connected 3");
-        assert!(!change.arrange, "the rest stays where it is");
+        let pos = |g: &Graph<Nodes>| g.iter().find(|(_, e)| e.label == "Spike Viewer").map(|(_, e)| e.pos);
+        assert_eq!(pos(&change.graph), pos(&full), "where it was, by what it's connected to");
         assert_eq!(change.graph.iter().count(), full.iter().count());
         assert_eq!(change.graph.edges().len(), full.edges().len());
     }
