@@ -22,8 +22,7 @@
 //! Nothing's ever disconnected, and nodes are never removed: a quick action disables them, which keeps their settings
 //! for when they're wanted again.
 //!
-//! A quick action can also arrange the panes (`Plan`), choose the base directory, and have a graph it builds from
-//! nothing laid out afresh.
+//! A quick action can also apply a base directory mode (`ApplyBaseDirectory`).
 //!
 //! The basic view offers a quick action if its required roles are found and doing it would change the graph (or, for
 //! one that only opens and closes windows, which are open: see `QuickAction::changes_graph`). So one that's done is no
@@ -41,7 +40,7 @@ use serde_json::Value;
 
 use super::config_patching::{PatchSets, Versions};
 use super::engine::{Edge, Graph, NodeId, NodesEnum, PortAddress, PortRole, SavedPort};
-pub use super::layout::{Arrangement, Layout, Tab};
+pub use super::layout::{Layout, Spot};
 use super::layout::{Pane, WindowState};
 
 /// A role's label pattern, by default: any label.
@@ -312,14 +311,34 @@ pub struct ByShape {
     pub at: Position,
 }
 
-/// A window that's been open before opens where it was. Opened for the first time, it goes here: where the app puts a
-/// new window (see `Layout::place`); as a tab in a group chosen by its shape (`Layout::largest_group`, say); or in the
-/// group of another role's window (or, if that isn't open, where the app puts a new window).
+/// A window placed exactly: where a window was when the quick action was made, as its group's rectangle (fractions of
+/// the docked panes' area: see `Layout::spot`), as a tab at the front or the back.
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
+pub struct Exact {
+    pub rect: [f32; 4],
+    pub at: Position,
+}
+
+impl Exact {
+    pub fn of(spot: Spot) -> Self {
+        Exact { rect: spot.rect, at: if spot.front { Position::Front } else { Position::Back } }
+    }
+
+    pub fn spot(self) -> Spot {
+        Spot { rect: self.rect, front: self.at == Position::Front }
+    }
+}
+
+/// A window that's been open before opens where it was. Opened for the first time, it goes here: exactly where a
+/// window was (see `Layout::place_exactly`), placed before the rest; where the app puts a new window (see
+/// `Layout::place`); as a tab in a group chosen by its shape (`Layout::largest_group`, say); or in the group of another
+/// role's window (or, if that isn't open, where the app puts a new window).
 #[derive(Clone, Copy, PartialEq, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Placement {
     #[default]
     Default,
+    Exact(Exact),
     ByGroupShape(ByShape),
     Anchored(Anchor),
 }
@@ -329,19 +348,9 @@ impl Placement {
     pub fn anchor(self) -> Option<NodeId> {
         match self {
             Placement::Anchored(anchor) => Some(anchor.to),
-            Placement::Default | Placement::ByGroupShape(_) => None,
+            Placement::Default | Placement::Exact(_) | Placement::ByGroupShape(_) => None,
         }
     }
-}
-
-/// How the panes are arranged, if the quick action says.
-#[derive(Clone, PartialEq, Debug, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Plan {
-    /// The panes are arranged like this (each window by role), after the windows are opened. Windows of roles not
-    /// found are left out.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub arrangement: Option<Arrangement>,
 }
 
 /// A quick action (see the module docs).
@@ -352,7 +361,6 @@ pub struct QuickAction<N> {
     /// The roles, in the order they're found and added.
     pub roles: Vec<Role<N>>,
     pub edges: Vec<RoleEdge>,
-    pub panes: Plan,
     /// The base directory mode applied, if any (see `crate::base_directory`).
     pub base_directory: Option<ApplyBaseDirectory>,
 }
@@ -393,8 +401,6 @@ struct File {
     #[serde(default)]
     description: String,
     graph: FileGraph,
-    #[serde(default)]
-    panes: Plan,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     base_directory: Option<ApplyBaseDirectory>,
 }
@@ -457,7 +463,6 @@ impl<N: NodesEnum> QuickAction<N> {
             description: file.description,
             roles,
             edges: file.graph.edges,
-            panes: file.panes,
             base_directory: file.base_directory,
         })
     }
@@ -484,16 +489,16 @@ impl<N: NodesEnum> QuickAction<N> {
             name: self.name.clone(),
             description: self.description.clone(),
             graph: FileGraph { next_id, nodes, edges: self.edges.clone() },
-            panes: self.panes.clone(),
             base_directory: self.base_directory.clone(),
         };
         serde_json::to_string_pretty(&file).unwrap_or_default()
     }
 
     /// A quick action made from some of a graph's nodes (`ids`, or all of them, if none): each a role, created if not
-    /// found, with nothing done to what's found; the edges between them, connected if free; and the windows of theirs that are open,
-    /// opened, arranged as they are (if `arrange`).
-    pub fn from_graph(name: &str, graph: &Graph<N>, layout: &Layout, ids: &[NodeId], arrange: bool) -> Self {
+    /// found, with nothing done to what's found; the edges between them, connected if free; and the windows of theirs
+    /// that are open, opened: those docked exactly where they are (see `Layout::spot`), and those floating where the
+    /// app puts a new window.
+    pub fn from_graph(name: &str, graph: &Graph<N>, layout: &Layout, ids: &[NodeId]) -> Self {
         let chosen: Vec<NodeId> = if ids.is_empty() { graph.ids().collect() } else { ids.to_vec() };
         let open_windows = layout.open_windows();
         let roles: Vec<Role<N>> = chosen
@@ -507,9 +512,10 @@ impl<N: NodesEnum> QuickAction<N> {
                     node: entry.node.clone(),
                     show_in_basic_override: entry.show_in_basic_override,
                     rule: Rule {
-                        if_window_closed: match open_windows.contains(id) {
-                            true => IfWindowClosed::Open(Placement::Default),
-                            false => IfWindowClosed::DoNothing,
+                        if_window_closed: match layout.spot(Pane::Node(*id)) {
+                            Some(spot) => IfWindowClosed::Open(Placement::Exact(Exact::of(spot))),
+                            None if open_windows.contains(id) => IfWindowClosed::Open(Placement::Default),
+                            None => IfWindowClosed::DoNothing,
                         },
                         ..Rule::default()
                     },
@@ -523,22 +529,11 @@ impl<N: NodesEnum> QuickAction<N> {
             .filter_map(|e| graph.saved_edge(e))
             .map(|e| RoleEdge { from: e.from, to: e.to, rule: EdgeRule::default() })
             .collect();
-        let arrangement = arrange
-            .then(|| layout.arrangement())
-            .flatten()
-            .and_then(|a| a.map_windows(&|id| chosen.contains(&id).then_some(id)));
-        QuickAction {
-            name: name.to_string(),
-            description: String::new(),
-            roles,
-            edges,
-            panes: Plan { arrangement },
-            base_directory: None,
-        }
+        QuickAction { name: name.to_string(), description: String::new(), roles, edges, base_directory: None }
     }
 
-    /// The quick action's roles as a graph, each node with the id of its role (so the quick action's edges, windows
-    /// and arrangement name them), and the mode of each of the graph's edges. The quick action editor shows and
+    /// The quick action's roles as a graph, each node with the id of its role (so the quick action's edges and windows
+    /// name them), and the mode of each of the graph's edges. The quick action editor shows and
     /// changes it on a canvas (see `crate::gui::quick_actions`), and puts it back with `set_graph`.
     pub fn graph(&self) -> (Graph<N>, Vec<(Edge, EdgeRule)>) {
         let nodes: serde_json::Map<String, Value> = self
@@ -571,8 +566,8 @@ impl<N: NodesEnum> QuickAction<N> {
     }
 
     /// The quick action with the nodes and edges `graph` has (see `graph`): each node a role, with its rule from
-    /// `rules` (or, without one, the default), and each edge with its rule from `rules_of_edges` (or the default). Windows and the
-    /// arrangement leave out the roles no longer there.
+    /// `rules` (or, without one, the default), and each edge with its rule from `rules_of_edges` (or the default). A window
+    /// anchored to a role no longer there goes where the app puts a new one.
     pub fn set_graph(&mut self, graph: &Graph<N>, rules: &BTreeMap<NodeId, Rule>, rules_of_edges: &[(Edge, EdgeRule)]) {
         self.roles = graph
             .iter()
@@ -601,8 +596,6 @@ impl<N: NodesEnum> QuickAction<N> {
                 *placement = Placement::Default;
             }
         }
-        self.panes.arrangement =
-            self.panes.arrangement.as_ref().and_then(|a| a.map_windows(&|id| graph.contains(id).then_some(id)));
     }
 
     /// The role with id `id`.
@@ -765,31 +758,38 @@ impl<N: NodesEnum> QuickAction<N> {
         // Whether each window's open is as it was before the quick action, so a window that's both closed if open
         // and opened if not is toggled, not closed and opened again.
         let mut to_open = Vec::new();
+        let mut exactly = Vec::new();
         for role in &self.roles {
             let Some(&id) = found.get(&role.id) else { continue };
             let open = open_before.contains(&id);
             match (role.rule.if_window_open, role.rule.if_window_closed) {
                 (IfWindowOpen::Close, _) if open => layout.close(id),
+                (_, IfWindowClosed::Open(Placement::Exact(exact)))
+                    if !open && layout.window(id) == WindowState::Closed =>
+                {
+                    exactly.push((Pane::Node(id), exact.spot()))
+                }
                 (_, IfWindowClosed::Open(placement)) if !open => to_open.push((id, placement)),
                 _ => {}
             }
         }
-        // Windows placed relative to another's are opened after the rest, so that one's open already.
+        // Windows placed exactly go first, cutting the layout to fit; those that can't be go where the app puts a new
+        // window. Windows placed relative to another's are opened after the rest, so that one's open already.
+        for pane in layout.place_exactly(&exactly) {
+            if let Pane::Node(id) = pane {
+                to_open.push((id, Placement::Default));
+            }
+        }
         to_open.sort_by_key(|(_, placement)| placement.anchor().is_some());
         for (id, placement) in to_open {
             open_window(&mut layout, id, placement, &found);
         }
+        layout.close_empty();
         let windows_changed = layout.open_windows() != open_before;
 
         let changed = if self.changes_graph() { graph != *state.graph } else { windows_changed };
         if !changed {
             return None;
-        }
-        if let Some(arrangement) = &self.panes.arrangement {
-            let map = |role: NodeId| found.get(&role).copied();
-            if let Some(arrangement) = arrangement.map_windows(&map) {
-                layout.arrange(&arrangement);
-            }
         }
         Some(QuickChange { graph, layout, summary: summary.line(), base_directory: self.base_directory.clone() })
     }
@@ -1035,11 +1035,15 @@ mod tests {
     #[test]
     fn one_made_from_a_graph_builds_it_again_and_then_is_done() {
         let (graph, layout, _, viewer) = detector_and_viewer();
-        let action = QuickAction::from_graph("Spikes", &graph, &layout, &[], true);
+        let action = QuickAction::from_graph("Spikes", &graph, &layout, &[]);
         assert_eq!(action.roles.len(), 2);
         assert_eq!(action.edges.len(), 1);
-        assert_eq!(action.role(viewer).unwrap().rule.if_window_closed, IfWindowClosed::Open(Placement::Default));
-        assert!(action.panes.arrangement.as_ref().is_some_and(|a| a.windows() == vec![viewer]));
+        let spot = layout.spot(Pane::Node(viewer)).unwrap();
+        assert_eq!(
+            action.role(viewer).unwrap().rule.if_window_closed,
+            IfWindowClosed::Open(Placement::Exact(Exact::of(spot))),
+            "where it is"
+        );
         assert!(action.run(&QuickState { graph: &graph, layout: &layout }).is_none(), "nothing to do");
 
         let empty = Graph::default();
@@ -1048,6 +1052,7 @@ mod tests {
         assert_eq!(change.graph.edges().len(), 1);
         let new_viewer = change.graph.iter().find(|(_, e)| e.label == "Spike Viewer").unwrap().0;
         assert!(change.layout.open_windows().contains(&new_viewer));
+        assert_eq!(change.layout.spot(Pane::Node(new_viewer)), Some(spot), "where it was");
         let positions: Vec<[f32; 2]> = change.graph.iter().map(|(_, e)| e.pos).collect();
         assert_eq!(positions, vec![[0.0, 0.0], [300.0, 0.0]], "where they were, into an empty graph");
     }
@@ -1055,7 +1060,7 @@ mod tests {
     #[test]
     fn one_that_only_opens_windows_is_offered_while_they_are_closed() {
         let (graph, _, _, viewer) = detector_and_viewer();
-        let mut action = QuickAction::from_graph("Show the spikes", &graph, &Layout::default(), &[viewer], false);
+        let mut action = QuickAction::from_graph("Show the spikes", &graph, &Layout::default(), &[viewer]);
         action.roles[0].rule.if_not_found = IfNotFound::DontOffer;
         action.roles[0].rule.if_window_closed = IfWindowClosed::Open(Placement::Default);
         assert!(!action.changes_graph());
@@ -1070,7 +1075,7 @@ mod tests {
     #[test]
     fn as_a_graph_and_back_it_is_the_same() {
         let (graph, layout, detector, viewer) = detector_and_viewer();
-        let mut action = QuickAction::from_graph("Spikes", &graph, &layout, &[], true);
+        let mut action = QuickAction::from_graph("Spikes", &graph, &layout, &[]);
         action.roles[0].rule.if_not_found = IfNotFound::DontOffer;
         action.edges[0].rule = EdgeRule { if_occupied: IfOccupied::Swap, ..EdgeRule::default() };
         let (as_graph, modes) = action.graph();
@@ -1085,12 +1090,11 @@ mod tests {
         again.set_graph(&as_graph, &rules, &modes);
         let patches = PatchSets::default();
         assert_eq!(again.to_text(&patches), action.to_text(&patches));
-        // Without the viewer, its window and arrangement go too.
+        // Without the viewer, its window goes too.
         let mut fewer = as_graph.clone();
         fewer.remove(viewer);
         again.set_graph(&fewer, &rules, &modes);
         assert!(again.edges.is_empty() && again.roles.len() == 1);
-        assert!(again.panes.arrangement.is_some_and(|a| a.windows().is_empty()), "home's still placed");
     }
 
     #[test]
@@ -1099,7 +1103,7 @@ mod tests {
         let mut other = graph.clone();
         let second = other.add(Nodes::create(crate::NodeType::SpikeDetector), [0.0, 200.0]);
         // A quick action of the second detector feeding the viewer.
-        let mut action = QuickAction::from_graph("Second", &other, &layout, &[second, viewer], false);
+        let mut action = QuickAction::from_graph("Second", &other, &layout, &[second, viewer]);
         let edge = RoleEdge {
             from: SavedPort { node: second, role: PortRole::DataStreamOut, port: "spikes".into() },
             to: SavedPort { node: viewer, role: PortRole::DataStreamIn, port: "spikes".into() },
@@ -1119,7 +1123,7 @@ mod tests {
     #[test]
     fn what_is_ignored_plays_no_part() {
         let (graph, layout, _, _) = detector_and_viewer();
-        let mut action = QuickAction::from_graph("Spikes", &graph, &layout, &[], false);
+        let mut action = QuickAction::from_graph("Spikes", &graph, &layout, &[]);
         let empty = QuickState { graph: &Graph::default(), layout: &Layout::default() };
         action.roles[0].rule.used = false;
         let change = action.run(&empty).unwrap();
@@ -1141,7 +1145,7 @@ mod tests {
         let mut graph = Graph::<Nodes>::default();
         let right = graph.add(Nodes::create(crate::NodeType::SpikeDetector), [400.0, 0.0]);
         let left = graph.add(Nodes::create(crate::NodeType::SpikeDetector), [0.0, 300.0]);
-        let mut action = QuickAction::from_graph("Spikes", &graph, &Layout::default(), &[right], false);
+        let mut action = QuickAction::from_graph("Spikes", &graph, &Layout::default(), &[right]);
         let found =
             |action: &QuickAction<Nodes>, graph: &Graph<Nodes>| action.find(graph).unwrap().get(&right).copied();
         assert_eq!(found(&action, &graph), Some(left));
@@ -1162,7 +1166,7 @@ mod tests {
         let spikes = graph.add(filter(), [300.0, 0.0]);
         let other = graph.add(filter(), [600.0, 0.0]);
         graph.get_mut(lfp).unwrap().label = "LFP".into();
-        let mut action = QuickAction::from_graph("Filters", &graph, &Layout::default(), &[], false);
+        let mut action = QuickAction::from_graph("Filters", &graph, &Layout::default(), &[]);
         // In the quick action, the roles are listed the other way round from where they're placed.
         action.roles.reverse();
         for (role, x) in action.roles.iter_mut().zip([0.0, 300.0, 600.0]) {
@@ -1180,7 +1184,7 @@ mod tests {
     #[test]
     fn edges_connected_already_can_be_enabled_or_disabled() {
         let (graph, layout, _, _) = detector_and_viewer();
-        let mut action = QuickAction::from_graph("Spikes", &graph, &layout, &[], false);
+        let mut action = QuickAction::from_graph("Spikes", &graph, &layout, &[]);
         action.edges[0].rule.if_connected = EnableOrDisable::Disable;
         let change = action.run(&QuickState { graph: &graph, layout: &layout }).unwrap();
         assert!(change.graph.is_edge_disabled(&change.graph.edges()[0]));
@@ -1193,7 +1197,7 @@ mod tests {
     #[test]
     fn one_added_goes_as_it_is_from_what_it_is_connected_to_further_up_or_down_if_that_is_taken() {
         let (graph, layout, _, _) = detector_and_viewer();
-        let mut action = QuickAction::from_graph("Spikes", &graph, &layout, &[], false);
+        let mut action = QuickAction::from_graph("Spikes", &graph, &layout, &[]);
         // Where the viewer's added, with a filter at `blocked`, if any, and the room the filter takes.
         let added_at = |action: &QuickAction<Nodes>, blocked: Option<[f32; 2]>| {
             let mut graph = Graph::<Nodes>::default();
@@ -1226,7 +1230,7 @@ mod tests {
         // Home on the left, a third of the width, and the viewer's window on its right: as tall as home, but larger.
         let mut layout = Layout::default();
         layout.open(viewer, None);
-        let mut action = QuickAction::from_graph("Detector", &graph, &Layout::default(), &[detector], false);
+        let mut action = QuickAction::from_graph("Detector", &graph, &Layout::default(), &[detector]);
         action.roles[0].rule.if_not_found = IfNotFound::DoNothing;
         assert_ne!(layout.largest_group(&[]), layout.tallest_group(&[]), "the tallest, of two as tall, is home's");
         let by = |shape| ByShape { shape, at: Position::Front };

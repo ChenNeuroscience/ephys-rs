@@ -150,7 +150,17 @@
         ],
         "quick": {
           "if_window_closed": {
-            "open": "default"
+            "open": {
+              "exact": {
+                "rect": [
+                  0.3333333333333333,
+                  0,
+                  1,
+                  0.6666666666666666
+                ],
+                "at": "front"
+              }
+            }
           }
         }
       },
@@ -204,7 +214,17 @@
         ],
         "quick": {
           "if_window_closed": {
-            "open": "default"
+            "open": {
+              "exact": {
+                "rect": [
+                  0.3333333333333333,
+                  0.6666666666666666,
+                  1,
+                  1
+                ],
+                "at": "front"
+              }
+            }
           }
         }
       },
@@ -223,7 +243,17 @@
         ],
         "quick": {
           "if_window_closed": {
-            "open": "default"
+            "open": {
+              "exact": {
+                "rect": [
+                  0.3333333333333333,
+                  0.6666666666666666,
+                  1,
+                  1
+                ],
+                "at": "back"
+              }
+            }
           }
         }
       },
@@ -325,7 +355,17 @@
         ],
         "quick": {
           "if_window_closed": {
-            "open": "default"
+            "open": {
+              "exact": {
+                "rect": [
+                  0,
+                  0,
+                  0.3333333333333333,
+                  1
+                ],
+                "at": "front"
+              }
+            }
           }
         }
       },
@@ -496,7 +536,17 @@
         ],
         "quick": {
           "if_window_closed": {
-            "open": "default"
+            "open": {
+              "exact": {
+                "rect": [
+                  0.3333333333333333,
+                  0.6666666666666666,
+                  1,
+                  1
+                ],
+                "at": "back"
+              }
+            }
           }
         }
       }
@@ -995,66 +1045,6 @@
         }
       }
     ]
-  },
-  "panes": {
-    "arrangement": {
-      "row": [
-        [
-          0.3333333333333333,
-          {
-            "tabs": {
-              "tabs": [
-                "home",
-                {
-                  "window": 13
-                }
-              ],
-              "active": 1
-            }
-          }
-        ],
-        [
-          0.6666666666666666,
-          {
-            "column": [
-              [
-                0.6666666666666666,
-                {
-                  "tabs": {
-                    "tabs": [
-                      {
-                        "window": 6
-                      },
-                      "others"
-                    ],
-                    "active": 0
-                  }
-                }
-              ],
-              [
-                0.3333333333333333,
-                {
-                  "tabs": {
-                    "tabs": [
-                      {
-                        "window": 9
-                      },
-                      {
-                        "window": 10
-                      },
-                      {
-                        "window": 20
-                      }
-                    ],
-                    "active": 0
-                  }
-                }
-              ]
-            ]
-          }
-        ]
-      ]
-    }
   },
   "base_directory": {
     "mode": "Subject, date and trial"

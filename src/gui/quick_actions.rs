@@ -8,7 +8,7 @@
 //! by what's done to it. Nodes are added as they are on the app's canvas (clicking it, or a port), or copied from the
 //! nodes selected in the app's graph. Beside the canvas, the inspector changes what's selected: a node's rule, its
 //! settings (taken from the node it's found as, if wanted) and its window; an edge's mode; or, with nothing selected,
-//! the quick action's name, description, arrangement and base directory.
+//! the quick action's name, description and base directory.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
@@ -25,9 +25,9 @@ use crate::annotation::{Annotations, AnnotationsEnum};
 use crate::base_directory::BaseDirectories;
 use crate::config_patching::PatchSets;
 use crate::engine::{Edge, Graph, NodeId, NodesEnum};
-use crate::layout::Layout;
+use crate::layout::{Layout, Pane, Spot};
 use crate::quick_action::{
-    ANY_LABEL, Anchor, ApplyBaseDirectory, ByShape, EdgeRule, EnableOrDisable, IfFree, IfNotFound, IfOccupied,
+    ANY_LABEL, Anchor, ApplyBaseDirectory, ByShape, EdgeRule, EnableOrDisable, Exact, IfFree, IfNotFound, IfOccupied,
     IfWindowClosed, IfWindowOpen, Placement, Position, QuickAction, Rule, Settings, Shape,
 };
 use crate::theme::Colours;
@@ -660,13 +660,13 @@ impl<N: NodesEnum> Editor<N> {
                 return self.edge_inspector(ui, edge, colours);
             }
             if let Some(id) = self.selection.single() {
-                return self.node_inspector(ui, id, graph, found, colours);
+                return self.node_inspector(ui, id, graph, layout, found, colours);
             }
             if self.selection.nodes.len() > 1 {
                 return self.nodes_inspector(ui, colours);
             }
         }
-        self.action_inspector(ui, layout, found, base_directories, colours);
+        self.action_inspector(ui, base_directories, colours);
     }
 
     /// Whether a node at either end of `edge` is ignored, so that the connection is too (see `Selected::locked`).
@@ -788,9 +788,13 @@ impl<N: NodesEnum> Editor<N> {
         ui: &mut egui::Ui,
         id: NodeId,
         graph: &Graph<N>,
+        layout: &Layout,
         found: &Result<BTreeMap<NodeId, NodeId>, String>,
         colours: &Colours,
     ) {
+        // Where the window of the node found for this one is now, if it's docked and showing, with the node's label.
+        let found_id = found.as_ref().ok().and_then(|f| f.get(&id).copied());
+        let now = found_id.and_then(|other| Some((layout.spot(Pane::Node(other))?, graph.get(other)?.label.clone())));
         let others: Vec<(NodeId, String)> =
             self.graph.iter().filter(|(o, _)| *o != id).map(|(o, e)| (o, e.label.clone())).collect();
         let Some(entry) = self.graph.get_mut(id) else { return };
@@ -910,18 +914,11 @@ impl<N: NodesEnum> Editor<N> {
                 });
             });
 
-            window_ui(ui, &mut rule.if_window_open, &mut rule.if_window_closed, &others, colours);
+            window_ui(ui, &mut rule.if_window_open, &mut rule.if_window_closed, &others, now.as_ref(), colours);
         });
     }
 
-    fn action_inspector(
-        &mut self,
-        ui: &mut egui::Ui,
-        layout: &Layout,
-        found: &Result<BTreeMap<NodeId, NodeId>, String>,
-        base_directories: &BaseDirectories,
-        colours: &Colours,
-    ) {
+    fn action_inspector(&mut self, ui: &mut egui::Ui, base_directories: &BaseDirectories, colours: &Colours) {
         scrolled(ui, |ui| {
             let action = &mut self.action;
             let name = ui.label("Name");
@@ -931,36 +928,6 @@ impl<N: NodesEnum> Editor<N> {
             let description = ui.label("Description");
             let edit = egui::TextEdit::multiline(&mut action.description).desired_rows(3).desired_width(width);
             ui.add(edit).labelled_by(description.id);
-
-            section(ui, "Panes", colours, |ui| {
-                let action = &mut self.action;
-                let mut arrange = action.panes.arrangement.is_some();
-                let row = ui.horizontal(|ui| {
-                let ticked = ui.checkbox(&mut arrange, "Arrange as they are now");
-                info_icon(
-                    ui,
-                    "When the quick action runs, home and the windows of the nodes found are laid out as the app has \
-                     them now.",
-                );
-                ticked
-            });
-                leaf(row.response.rect);
-                let ticked = row.inner;
-                let again = arrange && {
-                    let again = ui.small_button("As they are now, again");
-                    leaf(again.rect);
-                    again.clicked()
-                };
-                if ticked.changed() && !arrange {
-                    action.panes.arrangement = None;
-                } else if ticked.changed() || again {
-                    let ids: Vec<(NodeId, NodeId)> =
-                        (found.iter()).flat_map(|f| f.iter()).map(|(role, id)| (*id, *role)).collect();
-                    action.panes.arrangement = layout
-                        .arrangement()
-                        .and_then(|a| a.map_windows(&|id| ids.iter().find(|(node, _)| *node == id).map(|p| p.1)));
-                }
-            });
 
             section(ui, "Base directory", colours, |ui| {
                 // As settings are applied: the mode's the one the app has now, which can't be changed here.
@@ -988,13 +955,14 @@ impl<N: NodesEnum> Editor<N> {
 }
 
 /// A node's window, if open, is left as it is or closed; if not, left as it is or opened, going (the first time)
-/// where `Placement` says, relative to the window of one of `others` (the quick action's other nodes, with their
-/// labels) for some.
+/// where `Placement` says: for some, relative to the window of one of `others` (the quick action's other nodes, with
+/// their labels), or where the window of the node found for this one is `now` (with its label), if it's docked.
 fn window_ui(
     ui: &mut egui::Ui,
     if_open: &mut IfWindowOpen,
     if_closed: &mut IfWindowClosed,
     others: &[(NodeId, String)],
+    now: Option<&(Spot, String)>,
     colours: &Colours,
 ) {
     if_else(ui, colours, |ui| {
@@ -1019,34 +987,62 @@ fn window_ui(
                 *if_closed = IfWindowClosed::Open(Placement::Default);
             }
             let IfWindowClosed::Open(placement) = if_closed else { return };
-            nested(ui, open.inner.rect, colours, |ui| placement_ui(ui, placement, others, colours));
+            nested(ui, open.inner.rect, colours, |ui| placement_ui(ui, placement, others, now, colours));
         });
     });
 }
 
-/// Where a window opened for the first time goes: each choice, and under the one chosen, what it needs (by group shape,
-/// which shape; anchored to another node's group, which node; and in either case, at the front or the back).
-fn placement_ui(ui: &mut egui::Ui, placement: &mut Placement, others: &[(NodeId, String)], colours: &Colours) {
+/// Where a window opened for the first time goes: each choice, and under the one chosen, what it needs (exactly where
+/// it is now, where that is; by group shape, which shape; anchored to another node's group, which node; and in either
+/// of those, at the front or the back). Where it is now is taken from the window of the node found for this one, `now`,
+/// when chosen, so it's offered only while that's docked.
+fn placement_ui(
+    ui: &mut egui::Ui,
+    placement: &mut Placement,
+    others: &[(NodeId, String)],
+    now: Option<&(Spot, String)>,
+    colours: &Colours,
+) {
     let first_other = others.first().map(|(o, _)| *o);
     let anchored = |to| Placement::Anchored(Anchor { to, at: Position::Back });
+    let exact = now.map(|(spot, _)| Placement::Exact(Exact::of(*spot)));
     let kinds: Vec<(&str, Option<Placement>)> = vec![
         ("Use default location", Some(Placement::Default)),
+        ("Where it is now", exact.or(matches!(placement, Placement::Exact(_)).then_some(*placement))),
         ("By group shape", Some(Placement::ByGroupShape(ByShape { shape: Shape::Largest, at: Position::Front }))),
         ("Anchor to group of another node", first_other.map(anchored)),
     ];
     let kind = |p: &Placement| match p {
         Placement::Default => 0,
-        Placement::ByGroupShape(_) => 1,
-        Placement::Anchored(_) => 2,
+        Placement::Exact(_) => 1,
+        Placement::ByGroupShape(_) => 2,
+        Placement::Anchored(_) => 3,
     };
     for (i, (text, choice)) in kinds.iter().enumerate() {
-        let Some(choice) = choice else { continue };
         let current = kind(placement);
+        let Some(choice) = choice else {
+            // Where it is now can't be taken without the window docked.
+            if i == 1 {
+                let row = ui.horizontal(|ui| {
+                    ui.add_enabled_ui(false, |ui| ui.radio(false, *text)).inner.on_disabled_hover_text(WHERE_IT_IS_NOT);
+                    info_icon(ui, WHERE_IT_IS);
+                });
+                leaf(row.response.rect);
+            }
+            continue;
+        };
         let row = ui.horizontal(|ui| {
             let button = ui.radio(i == current, *text);
             match choice {
                 Placement::Default => {
                     info_icon(ui, DEFAULT_LOCATION);
+                }
+                Placement::Exact(_) => {
+                    let info = match now {
+                        Some((_, label)) => format!("Taken from {label}'s window, in the graph now. {WHERE_IT_IS}"),
+                        None => WHERE_IT_IS.to_string(),
+                    };
+                    info_icon(ui, &info);
                 }
                 Placement::Anchored(_) => {
                     info_icon(
@@ -1065,7 +1061,12 @@ fn placement_ui(ui: &mut egui::Ui, placement: &mut Placement, others: &[(NodeId,
             *placement = *choice;
         }
         match placement {
-            Placement::ByGroupShape(by) if i == 1 => nested(ui, button.rect, colours, |ui| {
+            Placement::Exact(exact) if i == 1 => nested(ui, button.rect, colours, |ui| {
+                leaf(spot_diagram(ui, exact.rect, colours).rect);
+                let tab = if exact.at == Position::Front { "Tab at the front" } else { "Tab at the back" };
+                leaf(ui.label(RichText::new(tab).weak()).rect);
+            }),
+            Placement::ByGroupShape(by) if i == 2 => nested(ui, button.rect, colours, |ui| {
                 section(ui, "Group", colours, |ui| {
                     radio(ui, &mut by.shape, Shape::Largest, "Largest");
                     radio(ui, &mut by.shape, Shape::Widest, "Widest");
@@ -1076,7 +1077,7 @@ fn placement_ui(ui: &mut egui::Ui, placement: &mut Placement, others: &[(NodeId,
                     radio(ui, &mut by.at, Position::Back, "At the back");
                 });
             }),
-            Placement::Anchored(anchor) if i == 2 => {
+            Placement::Anchored(anchor) if i == 3 => {
                 nested(ui, button.rect, colours, |ui| anchored_ui(ui, anchor, others))
             }
             _ => {}
@@ -1105,6 +1106,18 @@ fn anchored_ui(ui: &mut egui::Ui, anchor: &mut Anchor, others: &[(NodeId, String
     radio(ui, &mut anchor.at, Position::Back, "At the back");
 }
 
+/// A window placed exactly is shown as this: the panes' area, and the rectangle of its group in it.
+fn spot_diagram(ui: &mut egui::Ui, rect: [f32; 4], colours: &Colours) -> egui::Response {
+    let (response, painter) = ui.allocate_painter(egui::vec2(96.0, 60.0), egui::Sense::hover());
+    let whole = response.rect;
+    painter.rect_stroke(whole, 2.0, egui::Stroke::new(1.0, colours.divider), egui::StrokeKind::Inside);
+    let at =
+        |x: f32, y: f32| whole.min + egui::vec2(x.clamp(0.0, 1.0) * whole.width(), y.clamp(0.0, 1.0) * whole.height());
+    let spot = egui::Rect::from_min_max(at(rect[0], rect[1]), at(rect[2], rect[3])).shrink(2.0);
+    painter.rect_filled(spot, 1.0, colours.accent.gamma_multiply(0.5));
+    response
+}
+
 /// Enabling or disabling, as a node or a connection found has it: doing nothing, enabling, or disabling.
 fn enable_or_disable(ui: &mut egui::Ui, choice: &mut EnableOrDisable) {
     radio(ui, choice, EnableOrDisable::DoNothing, DO_NOTHING);
@@ -1115,7 +1128,17 @@ fn enable_or_disable(ui: &mut egui::Ui, choice: &mut EnableOrDisable) {
 /// Beside "Use default location": where that is (see `Layout::place`).
 const DEFAULT_LOCATION: &str = "The app places a new window by how many groups of tabs are showing. With one group, \
 the window gets a new column to the right of it. With two groups, the window goes below the right-hand group. With \
-three or more, the window becomes a tab in the largest group.";
+three or more, the window becomes a tab in the largest group. Room left by windows placed where they are now is \
+filled first.";
+
+/// Beside "Where it is now": what's kept, and how it's placed (see `Layout::place_exactly`).
+const WHERE_IT_IS: &str = "The window's group is kept as a share of the panes' area, so it's the same in a window of \
+any size. Windows placed this way go first: the panes are cut to fit them, and those open already go in the group \
+they overlap most. Room left over goes to windows placed after, and any still empty is closed. To take where it is \
+again, choose another, then choose this again.";
+
+/// Beside "Where it is now", when it can't be chosen.
+const WHERE_IT_IS_NOT: &str = "Only for a node matched in the graph now, whose window is docked and showing";
 
 /// Beside "Apply mode": where the mode comes from, and what's left alone.
 const APPLYING_MODE: &str = "The base directory's mode is the one the app has when this is chosen. Its directory and \

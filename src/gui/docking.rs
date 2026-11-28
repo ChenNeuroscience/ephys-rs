@@ -16,11 +16,8 @@ use super::style;
 use super::{Event, basic, toolbar};
 use crate::annotation::{Annotations, AnnotationsEnum};
 use crate::engine::{Graph, NodeId, NodesEnum, Resolved, Runner, Snapshot};
-use crate::layout::{Layout, Mode, Pane, hide_tile};
+use crate::layout::{Layout, MIN_PANE, Mode, Pane, hide_tile};
 use crate::theme::Colours;
-
-/// A pane can't be dragged narrower or shorter than this.
-const MIN_PANE: f32 = 300.0;
 
 impl Layout {
     pub fn ui<N: NodesEnum, A: AnnotationsEnum>(&mut self, ui: &mut egui::Ui, panes: &mut Panes<N, A>) {
@@ -241,6 +238,8 @@ fn padded(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
 impl<N: NodesEnum, A: AnnotationsEnum> Panes<'_, N, A> {
     fn pane_contents(&mut self, ui: &mut egui::Ui, pane: Pane) {
         match pane {
+            // A placeholder's never drawn (see `Pane::Empty`).
+            Pane::Empty => {}
             Pane::Home => basic::show(
                 ui,
                 self.graph,
@@ -341,6 +340,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> egui_tiles::Behavior<Pane> for Panes<'_, 
             Pane::Graph => "Graph".into(),
             Pane::DevTools => "Developer Tools".into(),
             Pane::Annotation => "Annotation".into(),
+            Pane::Empty => "".into(),
             Pane::Node(id) => self.graph.get(id).map_or("?".into(), |e| e.label.clone()),
         };
         self.timings.push((name, started.elapsed().as_secs_f32() * 1000.0));
@@ -353,6 +353,7 @@ impl<N: NodesEnum, A: AnnotationsEnum> egui_tiles::Behavior<Pane> for Panes<'_, 
             Pane::Graph => "Graph".into(),
             Pane::DevTools => "Developer Tools".into(),
             Pane::Annotation => "Annotation".into(),
+            Pane::Empty => "".into(),
             Pane::Node(id) => match self.graph.get(*id) {
                 Some(entry) => tab_title(&entry.label, style::category_colour(entry.node.info().category)),
                 None => "?".into(),

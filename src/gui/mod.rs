@@ -820,13 +820,8 @@ impl<N: NodesEnum, A: AnnotationsEnum> App<N, A> {
             Request::New => {
                 let mut ids: Vec<NodeId> = self.selection.nodes.iter().copied().collect();
                 ids.sort();
-                let action = crate::quick_action::QuickAction::from_graph(
-                    "New quick action",
-                    &self.graph,
-                    &self.layout,
-                    &ids,
-                    false,
-                );
+                let action =
+                    crate::quick_action::QuickAction::from_graph("New quick action", &self.graph, &self.layout, &ids);
                 self.quick_action_editor = Some(Editor::new(action, None, self.colours()));
             }
             Request::Edit(index) => {
@@ -3404,6 +3399,24 @@ mod tests {
         assert_eq!(on_top, Some(egui::Order::Tooltip), "the help's in front of the editor");
         harness.get_all_by_label("What's this?").next().unwrap().click();
         harness.run_steps(2);
+        // Where it is now, taken from the window of the node found for it, once that's docked.
+        let found = node_named(harness.state(), "Tracker View");
+        let role = harness.state().quick_action_editor.as_ref().unwrap().role_named("Tracker View");
+        harness.state_mut().quick_action_editor.as_mut().unwrap().select(role);
+        harness.state_mut().layout.open(found, None);
+        harness.run_steps(3);
+        harness.get_by_label("Open it").click();
+        harness.run_steps(2);
+        harness.get_by_label("Where it is now").click();
+        harness.run_steps(2);
+        let spot = harness.state().layout.spot(Pane::Node(found)).unwrap();
+        let action = harness.state().quick_action_editor.as_ref().unwrap().action();
+        let placed = action.role(role).unwrap().rule.if_window_closed;
+        use crate::quick_action::{Exact, IfWindowClosed, Placement};
+        assert_eq!(placed, IfWindowClosed::Open(Placement::Exact(Exact::of(spot))));
+        harness.get_by_label(if spot.front { "Tab at the front" } else { "Tab at the back" }).scroll_to_me();
+        harness.run_steps(10);
+        harness.snapshot("quick_action_editor_where_it_is");
         // A connection: its ends, and what's done to it in each case.
         let tracker = harness.state().quick_action_editor.as_ref().unwrap().role_named("Tracker View");
         harness.state_mut().quick_action_editor.as_mut().unwrap().select_edge_into(tracker);
@@ -3535,7 +3548,9 @@ mod tests {
             group(&harness, "Continuous Data Viewer"),
         );
         assert!(tracker.1 && spikes.1 && eeg.1, "the viewers in front");
-        assert_eq!(layout.tab_group(Pane::Home), Some((tracker.0, false)), "home behind the tracker");
+        // Home and the dev tools, in the group that filled the layout, go where they overlap most: the top right.
+        assert_eq!(layout.tab_group(Pane::Home), Some((spikes.0, false)), "home behind the spikes");
+        assert_ne!(tracker.0, spikes.0);
         assert_eq!(layout.tab_group(Pane::DevTools), Some((spikes.0, false)), "the dev tools behind the spikes");
         assert_eq!(group(&harness, "TTL Viewer"), (eeg.0, false), "the TTLs behind the EEG");
         harness.snapshot("standard_ltx_layout");
@@ -3552,6 +3567,9 @@ mod tests {
         assert!(!offered(&harness, "Standard LTX graph v0.5"), "not offered once done");
         assert!(offered(&harness, "Use VR computer") && offered(&harness, "Use synthetic data"));
         harness.snapshot("basic_after_quick_actions");
+        // Home's in the top right, so its quick actions are further down.
+        harness.get_by_role_and_label(button, "Use VR computer").scroll_to_me();
+        harness.run_steps(10);
         harness.get_by_role_and_label(button, "Use VR computer").click();
         harness.run_steps(2);
         assert!(offered(&harness, "Use camera") && !offered(&harness, "Use VR computer"));
