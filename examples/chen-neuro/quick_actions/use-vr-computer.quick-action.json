@@ -58,7 +58,8 @@
           "if_found": {
             "enable_or_disable": "disable"
           },
-          "if_not_found": "do_nothing"
+          "if_not_found": "do_nothing",
+          "if_window_open": "close"
         }
       },
       "12": {
@@ -101,7 +102,8 @@
           "if_found": {
             "enable_or_disable": "disable"
           },
-          "if_not_found": "dont_offer"
+          "if_not_found": "dont_offer",
+          "if_window_open": "close"
         }
       },
       "13": {
@@ -181,7 +183,8 @@
           "if_found": {
             "enable_or_disable": "disable"
           },
-          "if_not_found": "do_nothing"
+          "if_not_found": "do_nothing",
+          "if_window_open": "close"
         }
       },
       "19": {
@@ -283,8 +286,8 @@
           },
           "if_window_closed": {
             "open": {
-              "anchored": {
-                "to": 10,
+              "by_group_shape": {
+                "shape": "widest",
                 "at": "back"
               }
             }

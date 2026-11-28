@@ -3374,6 +3374,31 @@ mod tests {
         let apply = harness.state().quick_action_editor.as_ref().unwrap().action().base_directory.unwrap();
         assert_eq!(apply.mode, mode);
         harness.snapshot("quick_action_editor");
+        // The inspector's a third of the editor's width, and its divider drags it wider, up to half.
+        fn open_editor<'a>(h: &'a Harness<'_, TestApp>) -> &'a quick_actions::Editor<Nodes> {
+            h.state().quick_action_editor.as_ref().unwrap()
+        }
+        let from = open_editor(&harness).divider();
+        let drag = |h: &mut Harness<TestApp>, to: egui::Pos2| {
+            let from = open_editor(h).divider();
+            h.hover_at(from);
+            h.run_steps(1);
+            h.drag_at(from);
+            h.run_steps(1);
+            h.hover_at(to);
+            h.run_steps(1);
+            h.drop_at(to);
+            h.run_steps(2);
+        };
+        drag(&mut harness, from - egui::vec2(100.0, 0.0));
+        assert!((open_editor(&harness).divider().x - (from.x - 100.0)).abs() < 2.0, "100 wider");
+        // Half: the divider in the middle, a sixth of the width left of where it was (at two thirds).
+        drag(&mut harness, egui::pos2(0.0, from.y));
+        let half = open_editor(&harness).inspector_width().unwrap();
+        assert!((open_editor(&harness).divider().x - (from.x - half / 3.0)).abs() < 2.0, "no wider than half");
+        drag(&mut harness, egui::pos2(from.x + 2000.0, from.y));
+        assert_eq!(open_editor(&harness).inspector_width(), Some(330.0), "no narrower than at first");
+        drag(&mut harness, from);
         // A node selected, the inspector says how it's found and what's done to it.
         let detector = harness.state().quick_action_editor.as_ref().unwrap().role_named("Position Detector");
         harness.state_mut().quick_action_editor.as_mut().unwrap().select(detector);
@@ -3385,12 +3410,12 @@ mod tests {
         harness.run_steps(3);
         assert!(harness.query_by_label("detection").is_some());
         harness.snapshot("quick_action_editor_settings");
-        // The log viewer's window opens behind the TTL viewer's, the first time.
+        // The log viewer's window opens where the TTL viewer's group is, behind it, the first time.
         let log = harness.state().quick_action_editor.as_ref().unwrap().role_named("Log Viewer");
         harness.state_mut().quick_action_editor.as_mut().unwrap().select(log);
         harness.run_steps(3);
         harness.snapshot("quick_action_editor_window");
-        assert!(harness.query_by_label("Node").is_some() && harness.query_by_label("At the back").is_some());
+        assert!(harness.query_by_label("Where it is now").is_some() && harness.query_by_label("Node").is_none());
         // Help clicked open, in the modal, shows in front of it.
         harness.get_all_by_label("What's this?").next().unwrap().click();
         harness.run_steps(3);
@@ -3414,9 +3439,29 @@ mod tests {
         let placed = action.role(role).unwrap().rule.if_window_closed;
         use crate::quick_action::{Exact, IfWindowClosed, Placement};
         assert_eq!(placed, IfWindowClosed::Open(Placement::Exact(Exact::of(spot))));
-        harness.get_by_label(if spot.front { "Tab at the front" } else { "Tab at the back" }).scroll_to_me();
+        // The ⓘ beside a choice sketches it: where the window is kept, or examples of the default location.
+        harness.get_by_label("By group shape").scroll_to_me();
         harness.run_steps(10);
-        harness.snapshot("quick_action_editor_where_it_is");
+        let help_beside = |h: &Harness<TestApp>, choice: &str| {
+            let y = h.get_by_label(choice).rect().center().y;
+            let icons = h.get_all_by_label("What's this?").map(|icon| icon.rect().center());
+            icons.min_by(|a, b| (a.y - y).abs().total_cmp(&(b.y - y).abs())).unwrap()
+        };
+        for (choice, snapshot) in [
+            ("Where it is now", "quick_action_editor_where_it_is"),
+            ("Use default location", "quick_action_editor_default_location"),
+        ] {
+            let icon = help_beside(&harness, choice);
+            harness.hover_at(icon);
+            harness.run_steps(1);
+            harness.drag_at(icon);
+            harness.drop_at(icon);
+            harness.run_steps(3);
+            harness.snapshot(snapshot);
+            harness.drag_at(icon);
+            harness.drop_at(icon);
+            harness.run_steps(2);
+        }
         // A connection: its ends, and what's done to it in each case.
         let tracker = harness.state().quick_action_editor.as_ref().unwrap().role_named("Tracker View");
         harness.state_mut().quick_action_editor.as_mut().unwrap().select_edge_into(tracker);

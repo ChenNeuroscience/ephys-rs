@@ -38,11 +38,11 @@ everywhere but two: a role not found is created, and a connection whose input is
 - **`if_window_open`**: `"close"`. **`if_window_closed`**: `{"open": placement}`, where a window that's been open
   before reopens where it was, and the placement says where it goes the first time: `"default"` (where the app puts
   a new window: see `Layout::place`); `{"exact": {"rect": [left, top, right, bottom], "at": "front"}}` (exactly where
-  a window was: its group's rectangle, as fractions of the panes' area, placed before the rest: see
-  [the layout](#the-layout)); `{"by_group_shape": {"shape": "largest", "at": "front"}}` (as a tab in the largest group, or
-`"widest"` or `"tallest"`, at the front or `"back"`); or
-  `{"anchored": {"to": role, "at": "back"}}` (or `"front"`: as a tab in the group of that role's window, or, if that
-  isn't open, where the app puts a new window).
+  a window was: its group's rectangle, as fractions of the panes' area: see [the layout](#the-layout));
+  `{"by_group_shape": {"shape": "largest", "at": "front"}}` (as a tab in the largest group, or `"widest"` or
+  `"tallest"`, at the front or `"back"`). Windows are opened in three passes: those placed exactly, then those in the
+  default location (with any that couldn't be placed exactly), then those by group shape; each pass going through
+  the roles left to right as the quick action has them (of two as far left, top to bottom).
 
 Each edge is between roles, by port id, with what's done in each case (`EdgeRule`): `if_connected` (the nodes found
 connected that way already: `"enable"`, `"disable"`); `if_free` (the end that takes just one edge, a data stream's
@@ -62,7 +62,9 @@ bring it back. One that can't change the graph (that only opens and closes windo
 which windows are open. Doing one is undone in one step.
 
 A role created goes where it is in the quick action relative to a node it's connected to that's in the graph, or,
-with none, below the graph; then down, clear of what's there.
+with none, below the graph. Where that overlaps a node, it keeps where it is across, and goes to the nearest gap
+among the nodes level with it (each with a margin around it): back towards the node it's placed by, without passing
+it, or failing that further away.
 
 chen-neuro's quick actions show each of these: the standard LTX graph creates whatever's missing, telling the spikes'
 and the LFP's band-pass filters (Band-pass High and Band-pass Low) apart by their labels; "Use VR computer" and "Use
@@ -94,7 +96,7 @@ as they would a project:
         "node": { "type": "LogViewer", "settings": { "...": "..." } },
         "quick": {
           "if_found": { "enable_or_disable": "enable" },
-          "if_window_closed": { "open": { "anchored": { "to": 10, "at": "back" } } }
+          "if_window_closed": { "open": { "exact": { "rect": [0.333, 0.667, 1, 1], "at": "back" } } }
         }
       }
     },
@@ -143,7 +145,9 @@ size:
   else, if it's occupied, swap to the source; either way, the source's other connections are left as
   they are). With nothing selected, the quick action's name, description and base
   directory. An ⓘ explains the few things that aren't plain: which node is used when several match, the
-  label pattern's syntax, connecting "if free", and where a window opens the first time.
+  label pattern's syntax, connecting "if free", and where a window opens the first time (its choices in the order
+  they're placed, each ⓘ a sketch of the panes: where a window is, as kept, or examples of the default location and
+  of each group shape).
 - Ignored nodes and edges are drawn faded, with no note.
 - **Take the settings of** sets a node's settings from the node it's found as, so one way to change a quick action is
   to do it, change the graph by hand, and take the settings back.

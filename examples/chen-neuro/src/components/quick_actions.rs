@@ -218,6 +218,25 @@ mod tests {
         let log_viewer = named(&vr, "Log Viewer");
         assert_eq!(feeding(&vr, log_viewer, DataStreamIn, 0).as_deref(), Some("VR Computer"));
         assert!(change.layout.open_windows().contains(&log_viewer), "its window's opened");
+        // What's disabled has its window closed, if it's open; using the camera again opens its window, and closes the
+        // VR computer's.
+        let action = |name: &str| actions().into_iter().find(|a| a.name == name).unwrap();
+        let (camera_node, detector, board) =
+            (named(&camera, "Camera"), named(&camera, "Position Detector"), named(&camera, "Arduino"));
+        let mut showing = Layout::default();
+        for id in [camera_node, detector, board] {
+            showing.open(id, None);
+        }
+        let change = action("Use VR computer").run(&QuickState { graph: &camera, layout: &showing }).unwrap();
+        for id in [camera_node, detector, board] {
+            assert!(!change.layout.open_windows().contains(&id), "{} closed", camera.get(id).unwrap().label);
+        }
+        let mut with_computer = change.layout.clone();
+        with_computer.open(computer, None);
+        let state = QuickState { graph: &change.graph, layout: &with_computer };
+        let back = action("Use camera").run(&state).unwrap();
+        assert!(back.layout.open_windows().contains(&camera_node), "the camera's window opens");
+        assert!(!back.layout.open_windows().contains(&computer), "the VR computer's closes");
         let settings = vr.edges_from(port((ltx, ValIn, 0))).next().unwrap();
         assert_eq!(settings.to.node, computer, "the custom settings are recorded");
         let resolved = vr.resolve();

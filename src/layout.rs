@@ -804,9 +804,9 @@ impl Cut {
     }
 
     /// The cut, put in `tiles`, returning its top tile: each group with the windows placed in its spot (of `spots`),
-    /// and the panes `adopted` into it (by group, in order, from `next`, each with whether it's showing), the first in
-    /// front of the windows placed there that should be, or of the panes in `fronts`, or failing that the first
-    /// showing. A group with nothing showing has a placeholder (`Pane::Empty`).
+    /// those at the front first and those at the back last, and between them the panes `adopted` into it (by group,
+    /// in order, from `next`, each with whether it's showing). In front is the first window placed there that should
+    /// be, or of the panes in `fronts`, or failing that the first showing. A group with nothing showing has a placeholder (`Pane::Empty`).
     fn build(
         &self,
         tiles: &mut Tiles<Pane>,
@@ -820,17 +820,24 @@ impl Cut {
                 let placed = spot.map_or(&[][..], |i| &spots[i].1[..]);
                 let others = &adopted[*next];
                 *next += 1;
+                // Windows placed at the front go before the panes there already, and those at the back after them.
                 let mut children = Vec::new();
                 let mut front = None;
-                for (pane, in_front) in placed {
-                    let tile = tiles.insert_pane(*pane);
-                    if *in_front && front.is_none() {
-                        front = Some(tile);
+                let mut first_placed = None;
+                let mut place = |tiles: &mut Tiles<Pane>, children: &mut Vec<TileId>, at_front: bool| {
+                    for (pane, in_front) in placed.iter().filter(|(_, in_front)| *in_front == at_front) {
+                        let tile = tiles.insert_pane(*pane);
+                        first_placed = first_placed.or(Some(tile));
+                        if *in_front && front.is_none() {
+                            front = Some(tile);
+                        }
+                        children.push(tile);
                     }
-                    children.push(tile);
-                }
+                };
+                place(tiles, &mut children, true);
                 let mut showing = !placed.is_empty();
                 let mut first_other = None;
+                let mut other_front = None;
                 for (pane, shown) in others {
                     let tile = tiles.insert_pane(*pane);
                     if *shown {
@@ -839,15 +846,16 @@ impl Cut {
                     } else {
                         tiles.set_visible(tile, false);
                     }
-                    if fronts.contains(pane) && front.is_none() {
-                        front = Some(tile);
+                    if fronts.contains(pane) && other_front.is_none() {
+                        other_front = Some(tile);
                     }
                     children.push(tile);
                 }
+                place(tiles, &mut children, false);
                 if !showing {
                     children.push(tiles.insert_pane(Pane::Empty));
                 }
-                let front = front.or(children.first().copied().filter(|_| !placed.is_empty())).or(first_other);
+                let front = front.or(other_front).or(first_other).or(first_placed);
                 let mut group = egui_tiles::Tabs::new(children);
                 if let Some(front) = front {
                     group.set_active(front);

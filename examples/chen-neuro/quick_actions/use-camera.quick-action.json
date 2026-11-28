@@ -41,7 +41,10 @@
           "if_found": {
             "enable_or_disable": "enable"
           },
-          "if_not_found": "do_nothing"
+          "if_not_found": "do_nothing",
+          "if_window_closed": {
+            "open": "default"
+          }
         }
       },
       "12": {
@@ -248,7 +251,8 @@
           "if_found": {
             "enable_or_disable": "disable"
           },
-          "if_not_found": "do_nothing"
+          "if_not_found": "do_nothing",
+          "if_window_open": "close"
         }
       },
       "22": {

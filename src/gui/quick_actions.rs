@@ -27,7 +27,7 @@ use crate::config_patching::PatchSets;
 use crate::engine::{Edge, Graph, NodeId, NodesEnum};
 use crate::layout::{Layout, Pane, Spot};
 use crate::quick_action::{
-    ANY_LABEL, Anchor, ApplyBaseDirectory, ByShape, EdgeRule, EnableOrDisable, Exact, IfFree, IfNotFound, IfOccupied,
+    ANY_LABEL, ApplyBaseDirectory, ByShape, EdgeRule, EnableOrDisable, Exact, IfFree, IfNotFound, IfOccupied,
     IfWindowClosed, IfWindowOpen, Placement, Position, QuickAction, Rule, Settings, Shape,
 };
 use crate::theme::Colours;
@@ -297,6 +297,11 @@ pub struct Editor<N> {
     on_quick_action_tab: bool,
     /// What was selected last frame, so something newly selected brings its tab to the front.
     last_selected: (BTreeSet<NodeId>, Option<Edge>),
+    /// The inspector's width, once its divider's been dragged (until then, a third of the editor's).
+    inspector_width: Option<f32>,
+    /// Where the inspector's divider was last drawn, for tests to drag it.
+    #[cfg(test)]
+    divider: egui::Pos2,
 }
 
 /// Each frame, the editor says what came of it.
@@ -439,8 +444,12 @@ fn set_edge_rule(rules: &mut Vec<(Edge, EdgeRule)>, edge: Edge, rule: EdgeRule) 
 /// A connection with a node at either end ignored is ignored too; its power button says why.
 const ENDS_IGNORED: &str = "Ignored, as a node at one end is: use both nodes to use the connection";
 
-/// The inspector, beside the canvas, is this wide.
+/// The inspector, beside the canvas, is a third of the editor's width, and can be dragged as wide as half of it, or as
+/// narrow as this.
 const INSPECTOR: f32 = 330.0;
+
+/// The inspector's divider can be grabbed this far either side of it.
+const GRAB: f32 = 4.0;
 
 impl<N: NodesEnum> Editor<N> {
     pub fn new(action: QuickAction<N>, file: Option<PathBuf>, colours: &'static Colours) -> Self {
@@ -458,6 +467,9 @@ impl<N: NodesEnum> Editor<N> {
             canvas,
             selection: Selection::default(),
             on_quick_action_tab: false,
+            inspector_width: None,
+            #[cfg(test)]
+            divider: egui::Pos2::ZERO,
             last_selected: Default::default(),
         }
     }
@@ -478,6 +490,18 @@ impl<N: NodesEnum> Editor<N> {
     #[cfg(test)]
     pub fn role_named(&self, label: &str) -> NodeId {
         self.graph.iter().find(|(_, e)| e.label == label).map(|(id, _)| id).unwrap()
+    }
+
+    /// Tests drag the inspector's divider from here.
+    #[cfg(test)]
+    pub fn divider(&self) -> egui::Pos2 {
+        self.divider
+    }
+
+    /// Tests see how wide the inspector is with this, once its divider's been dragged.
+    #[cfg(test)]
+    pub fn inspector_width(&self) -> Option<f32> {
+        self.inspector_width
     }
 
     /// Tests rename a node of the quick action with this.
@@ -539,16 +563,34 @@ impl<N: NodesEnum> Editor<N> {
                 // The canvas, a divider and the inspector fill the width exactly (any wider, and the dialog grows
                 // past its title bar and footer), edge to edge, so nothing's spaced between them.
                 let spacing = std::mem::replace(&mut ui.spacing_mut().item_spacing.x, 0.0);
-                let canvas_size = egui::vec2(size.x - INSPECTOR - 1.0, height);
+                let widest = (size.x / 2.0).max(INSPECTOR);
+                let inspector = self.inspector_width.unwrap_or(size.x / 3.0).clamp(INSPECTOR, widest);
+                let canvas_size = egui::vec2(size.x - inspector - 1.0, height);
                 ui.allocate_ui(canvas_size, |ui| {
                     ui.set_min_size(canvas_size);
                     ui.set_max_size(canvas_size);
                     self.canvas_ui::<A>(ui, colours);
                 });
-                // The divider, as the dialog has above and below its body.
+                // The divider, as the dialog has above and below its body, dragged to make the inspector wider or
+                // narrower.
                 let (divider, _) = ui.allocate_exact_size(egui::vec2(1.0, height), egui::Sense::hover());
-                ui.painter().vline(divider.center().x, divider.y_range(), (1.0, colours.divider));
-                let inner = egui::vec2(INSPECTOR, height);
+                let grab = divider.expand2(egui::vec2(GRAB, 0.0));
+                #[cfg(test)]
+                {
+                    self.divider = divider.center();
+                }
+                let dragged = ui.interact(grab, ui.scope_id().with("inspector divider"), egui::Sense::drag());
+                let dragging = dragged.hovered() || dragged.dragged();
+                if dragging {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                }
+                if dragged.dragged() {
+                    let width = (inspector - dragged.drag_delta().x).clamp(INSPECTOR, widest);
+                    self.inspector_width = Some(width);
+                }
+                let line = if dragging { colours.accent } else { colours.divider };
+                ui.painter().vline(divider.center().x, divider.y_range(), (1.0, line));
+                let inner = egui::vec2(inspector, height);
                 egui::Frame::new().fill(ui.visuals().panel_fill).show(ui, |ui| {
                     ui.spacing_mut().item_spacing.x = spacing;
                     ui.set_min_size(inner);
@@ -795,8 +837,6 @@ impl<N: NodesEnum> Editor<N> {
         // Where the window of the node found for this one is now, if it's docked and showing, with the node's label.
         let found_id = found.as_ref().ok().and_then(|f| f.get(&id).copied());
         let now = found_id.and_then(|other| Some((layout.spot(Pane::Node(other))?, graph.get(other)?.label.clone())));
-        let others: Vec<(NodeId, String)> =
-            self.graph.iter().filter(|(o, _)| *o != id).map(|(o, e)| (o, e.label.clone())).collect();
         let Some(entry) = self.graph.get_mut(id) else { return };
         let rule = self.rules.entry(id).or_default();
         let info = entry.node.info();
@@ -914,7 +954,7 @@ impl<N: NodesEnum> Editor<N> {
                 });
             });
 
-            window_ui(ui, &mut rule.if_window_open, &mut rule.if_window_closed, &others, now.as_ref(), colours);
+            window_ui(ui, &mut rule.if_window_open, &mut rule.if_window_closed, now.as_ref(), colours);
         });
     }
 
@@ -955,13 +995,12 @@ impl<N: NodesEnum> Editor<N> {
 }
 
 /// A node's window, if open, is left as it is or closed; if not, left as it is or opened, going (the first time)
-/// where `Placement` says: for some, relative to the window of one of `others` (the quick action's other nodes, with
-/// their labels), or where the window of the node found for this one is `now` (with its label), if it's docked.
+/// where `Placement` says: for one, where the window of the node found for this one is `now` (with its label), if it's
+/// docked.
 fn window_ui(
     ui: &mut egui::Ui,
     if_open: &mut IfWindowOpen,
     if_closed: &mut IfWindowClosed,
-    others: &[(NodeId, String)],
     now: Option<&(Spot, String)>,
     colours: &Colours,
 ) {
@@ -978,7 +1017,8 @@ fn window_ui(
                 info_icon(
                     ui,
                     "A window that's been open before reopens where it was. The choices below are for the first time \
-                     it opens.",
+                     it opens. Windows are placed in three passes, one for each choice below, in order, each going \
+                     left to right (and top to bottom) through the nodes.",
                 );
                 open
             });
@@ -987,135 +1027,208 @@ fn window_ui(
                 *if_closed = IfWindowClosed::Open(Placement::Default);
             }
             let IfWindowClosed::Open(placement) = if_closed else { return };
-            nested(ui, open.inner.rect, colours, |ui| placement_ui(ui, placement, others, now, colours));
+            nested(ui, open.inner.rect, colours, |ui| placement_ui(ui, placement, now, colours));
         });
     });
 }
 
-/// Where a window opened for the first time goes: each choice, and under the one chosen, what it needs (exactly where
-/// it is now, where that is; by group shape, which shape; anchored to another node's group, which node; and in either
-/// of those, at the front or the back). Where it is now is taken from the window of the node found for this one, `now`,
-/// when chosen, so it's offered only while that's docked.
-fn placement_ui(
-    ui: &mut egui::Ui,
-    placement: &mut Placement,
-    others: &[(NodeId, String)],
-    now: Option<&(Spot, String)>,
+/// Where a window opened for the first time goes: each choice, in the order of the passes that place them (see
+/// `QuickAction::run`), with sketches of it in its ⓘ, and under the one chosen, what it needs (by group shape, which
+/// shape, and at the front or the back). Where it is now is taken from the window of the node found for this one,
+/// `now` (with its label), when chosen, so it's offered only while that's docked.
+fn placement_ui(ui: &mut egui::Ui, placement: &mut Placement, now: Option<&(Spot, String)>, colours: &Colours) {
+    let taken = match placement {
+        Placement::Exact(exact) => Some(*exact),
+        _ => None,
+    };
+    let offered = now.map(|(spot, _)| Exact::of(*spot));
+    let row = ui.horizontal(|ui| {
+        let button = ui
+            .add_enabled_ui(taken.is_some() || offered.is_some(), |ui| ui.radio(taken.is_some(), "Where it is now"))
+            .inner
+            .on_disabled_hover_text(WHERE_IT_IS_NOT);
+        let from = now.map(|(_, label)| label.as_str());
+        info_icon_with(ui, |ui| where_it_is_help(ui, taken, offered, from, colours));
+        button
+    });
+    leaf(row.response.rect);
+    if row.inner.clicked()
+        && taken.is_none()
+        && let Some(exact) = offered
+    {
+        *placement = Placement::Exact(exact);
+    }
+
+    let row = ui.horizontal(|ui| {
+        let button = ui.radio(matches!(placement, Placement::Default), "Use default location");
+        info_icon_with(ui, |ui| default_location_help(ui, colours));
+        button
+    });
+    leaf(row.response.rect);
+    if row.inner.clicked() {
+        *placement = Placement::Default;
+    }
+
+    let row = ui.horizontal(|ui| {
+        let button = ui.radio(matches!(placement, Placement::ByGroupShape(_)), "By group shape");
+        info_icon_with(ui, |ui| group_shape_help(ui, colours));
+        button
+    });
+    leaf(row.response.rect);
+    if row.inner.clicked() && !matches!(placement, Placement::ByGroupShape(_)) {
+        *placement = Placement::ByGroupShape(ByShape { shape: Shape::Largest, at: Position::Front });
+    }
+    if let Placement::ByGroupShape(by) = placement {
+        nested(ui, row.inner.rect, colours, |ui| {
+            section(ui, "Group", colours, |ui| {
+                radio(ui, &mut by.shape, Shape::Largest, "Largest");
+                radio(ui, &mut by.shape, Shape::Widest, "Widest");
+                radio(ui, &mut by.shape, Shape::Tallest, "Tallest");
+            });
+            section(ui, "Tab", colours, |ui| {
+                radio(ui, &mut by.at, Position::Front, "At the front");
+                radio(ui, &mut by.at, Position::Back, "At the back");
+            });
+        });
+    }
+}
+
+// Sketches of the panes, for the window choices' help: each group of tabs a rectangle, as fractions of the panes'
+// area, as `Spot` has it.
+
+const THIRD: f32 = 1.0 / 3.0;
+const WHOLE: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
+const LEFT: [f32; 4] = [0.0, 0.0, THIRD, 1.0];
+const RIGHT: [f32; 4] = [THIRD, 0.0, 1.0, 1.0];
+const TOP_RIGHT: [f32; 4] = [THIRD, 0.0, 1.0, 2.0 * THIRD];
+const BOTTOM_RIGHT: [f32; 4] = [THIRD, 2.0 * THIRD, 1.0, 1.0];
+/// Groups whose largest, widest and tallest are different ones (the third, the first and the second).
+const SHAPES: [[f32; 4]; 4] =
+    [[0.0, 0.0, 1.0, 0.25], [0.0, 0.25, 0.35, 1.0], [0.35, 0.25, 1.0, 0.8], [0.35, 0.8, 1.0, 1.0]];
+
+/// A sketch's size.
+const SKETCH: egui::Vec2 = egui::vec2(72.0, 45.0);
+
+/// The room between two sketches, before and after, for the arrow.
+const ARROW: f32 = 24.0;
+
+/// The help's sketches are centred in this width.
+const SKETCHES: f32 = 200.0;
+
+/// Where the window goes in a sketch: into the group with this index, as a new group of its own or (`joins`) as a tab
+/// beside what's there.
+#[derive(Clone, Copy)]
+struct Into {
+    group: usize,
+    joins: bool,
+}
+
+/// A sketch of the panes, in `whole`: each of `groups` a rectangle with a tab at its top left, and the window going
+/// `into` one of them in the accent colour (filled, as a group of its own, or as a second tab).
+fn paint_sketch(
+    painter: &egui::Painter,
+    whole: egui::Rect,
+    groups: &[[f32; 4]],
+    into: Option<Into>,
     colours: &Colours,
 ) {
-    let first_other = others.first().map(|(o, _)| *o);
-    let anchored = |to| Placement::Anchored(Anchor { to, at: Position::Back });
-    let exact = now.map(|(spot, _)| Placement::Exact(Exact::of(*spot)));
-    let kinds: Vec<(&str, Option<Placement>)> = vec![
-        ("Use default location", Some(Placement::Default)),
-        ("Where it is now", exact.or(matches!(placement, Placement::Exact(_)).then_some(*placement))),
-        ("By group shape", Some(Placement::ByGroupShape(ByShape { shape: Shape::Largest, at: Position::Front }))),
-        ("Anchor to group of another node", first_other.map(anchored)),
-    ];
-    let kind = |p: &Placement| match p {
-        Placement::Default => 0,
-        Placement::Exact(_) => 1,
-        Placement::ByGroupShape(_) => 2,
-        Placement::Anchored(_) => 3,
+    let at = |x: f32, y: f32| whole.min + egui::vec2(x * whole.width(), y * whole.height());
+    let tab = |rect: egui::Rect, nth: f32| {
+        egui::Rect::from_min_size(rect.min + egui::vec2(2.0 + nth * 11.0, 2.0), egui::vec2(9.0, 3.0))
     };
-    for (i, (text, choice)) in kinds.iter().enumerate() {
-        let current = kind(placement);
-        let Some(choice) = choice else {
-            // Where it is now can't be taken without the window docked.
-            if i == 1 {
-                let row = ui.horizontal(|ui| {
-                    ui.add_enabled_ui(false, |ui| ui.radio(false, *text)).inner.on_disabled_hover_text(WHERE_IT_IS_NOT);
-                    info_icon(ui, WHERE_IT_IS);
-                });
-                leaf(row.response.rect);
-            }
-            continue;
-        };
-        let row = ui.horizontal(|ui| {
-            let button = ui.radio(i == current, *text);
-            match choice {
-                Placement::Default => {
-                    info_icon(ui, DEFAULT_LOCATION);
-                }
-                Placement::Exact(_) => {
-                    let info = match now {
-                        Some((_, label)) => format!("Taken from {label}'s window, in the graph now. {WHERE_IT_IS}"),
-                        None => WHERE_IT_IS.to_string(),
-                    };
-                    info_icon(ui, &info);
-                }
-                Placement::Anchored(_) => {
-                    info_icon(
-                        ui,
-                        "If the other node's window isn't open (or the node isn't there), this window goes in the \
-                         default location instead.",
-                    );
-                }
-                Placement::ByGroupShape(_) => {}
-            }
-            button
-        });
-        leaf(row.response.rect);
-        let button = row.inner;
-        if button.clicked() && i != current {
-            *placement = *choice;
-        }
-        match placement {
-            Placement::Exact(exact) if i == 1 => nested(ui, button.rect, colours, |ui| {
-                leaf(spot_diagram(ui, exact.rect, colours).rect);
-                let tab = if exact.at == Position::Front { "Tab at the front" } else { "Tab at the back" };
-                leaf(ui.label(RichText::new(tab).weak()).rect);
-            }),
-            Placement::ByGroupShape(by) if i == 2 => nested(ui, button.rect, colours, |ui| {
-                section(ui, "Group", colours, |ui| {
-                    radio(ui, &mut by.shape, Shape::Largest, "Largest");
-                    radio(ui, &mut by.shape, Shape::Widest, "Widest");
-                    radio(ui, &mut by.shape, Shape::Tallest, "Tallest");
-                });
-                section(ui, "Tab", colours, |ui| {
-                    radio(ui, &mut by.at, Position::Front, "At the front");
-                    radio(ui, &mut by.at, Position::Back, "At the back");
-                });
-            }),
-            Placement::Anchored(anchor) if i == 3 => {
-                nested(ui, button.rect, colours, |ui| anchored_ui(ui, anchor, others))
-            }
-            _ => {}
+    // The panes' whole area, for groups that don't fill it.
+    painter.rect_stroke(whole, 1.5, egui::Stroke::new(1.0, colours.divider), egui::StrokeKind::Inside);
+    for (i, group) in groups.iter().enumerate() {
+        let rect = egui::Rect::from_min_max(at(group[0], group[1]), at(group[2], group[3])).shrink(1.0);
+        let target = into.filter(|into| into.group == i);
+        let new_group = target.is_some_and(|into| !into.joins);
+        let fill = if new_group { colours.accent.gamma_multiply(0.35) } else { colours.surface_raised };
+        let edge = if target.is_some() { colours.accent } else { colours.border };
+        painter.rect_filled(rect, 1.5, fill);
+        painter.rect_stroke(rect, 1.5, egui::Stroke::new(1.0, edge), egui::StrokeKind::Inside);
+        painter.rect_filled(tab(rect, 0.0), 0.5, if new_group { colours.accent } else { colours.border });
+        if target.is_some_and(|into| into.joins) {
+            painter.rect_filled(tab(rect, 1.0), 0.5, colours.accent);
         }
     }
 }
 
-/// A window anchored to the group of another node's window: which node, and whether as a tab at the front of the
-/// group or the back.
-fn anchored_ui(ui: &mut egui::Ui, anchor: &mut Anchor, others: &[(NodeId, String)]) {
-    let name = |of: NodeId| others.iter().find(|(o, _)| *o == of).map_or("?", |(_, l)| l.as_str()).to_string();
-    let row = ui.horizontal(|ui| {
-        let label = ui.label("Node");
-        egui::ComboBox::from_id_salt("anchor")
-            .selected_text(name(anchor.to))
-            .show_ui(ui, |ui| {
-                for (other, label) in others {
-                    ui.selectable_value(&mut anchor.to, *other, label);
-                }
-            })
-            .response
-            .labelled_by(label.id);
+/// A caption, and under it, centred, a sketch of the panes `before` (if any), an arrow, and the panes `after`, the
+/// window gone `into` one of them.
+fn captioned(
+    ui: &mut egui::Ui,
+    caption: &str,
+    before: Option<&[[f32; 4]]>,
+    after: &[[f32; 4]],
+    into: Option<Into>,
+    colours: &Colours,
+) {
+    ui.vertical_centered(|ui| {
+        ui.label(RichText::new(caption).weak());
+        let width = if before.is_some() { SKETCH.x * 2.0 + ARROW } else { SKETCH.x };
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(width, SKETCH.y), egui::Sense::hover());
+        let painter = ui.painter();
+        let last = egui::Rect::from_min_size(rect.right_top() - egui::vec2(SKETCH.x, 0.0), SKETCH);
+        if let Some(before) = before {
+            paint_sketch(painter, egui::Rect::from_min_size(rect.min, SKETCH), before, None, colours);
+            let stroke = egui::Stroke::new(1.0, ui.visuals().weak_text_color());
+            let from = egui::pos2(rect.left() + SKETCH.x + 5.0, rect.center().y);
+            painter.arrow(from, egui::vec2(ARROW - 10.0, 0.0), stroke);
+        }
+        paint_sketch(painter, last, after, into, colours);
     });
-    leaf(row.response.rect);
-    radio(ui, &mut anchor.at, Position::Front, "At the front");
-    radio(ui, &mut anchor.at, Position::Back, "At the back");
 }
 
-/// A window placed exactly is shown as this: the panes' area, and the rectangle of its group in it.
-fn spot_diagram(ui: &mut egui::Ui, rect: [f32; 4], colours: &Colours) -> egui::Response {
-    let (response, painter) = ui.allocate_painter(egui::vec2(96.0, 60.0), egui::Sense::hover());
-    let whole = response.rect;
-    painter.rect_stroke(whole, 2.0, egui::Stroke::new(1.0, colours.divider), egui::StrokeKind::Inside);
-    let at =
-        |x: f32, y: f32| whole.min + egui::vec2(x.clamp(0.0, 1.0) * whole.width(), y.clamp(0.0, 1.0) * whole.height());
-    let spot = egui::Rect::from_min_max(at(rect[0], rect[1]), at(rect[2], rect[3])).shrink(2.0);
-    painter.rect_filled(spot, 1.0, colours.accent.gamma_multiply(0.5));
-    response
+/// The help's sketches, one under another, in a width of their own to be centred in.
+fn sketches(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
+    ui.set_min_width(SKETCHES);
+    ui.set_max_width(SKETCHES);
+    ui.spacing_mut().item_spacing.y = 4.0;
+    add(ui);
+}
+
+/// Beside "Use default location": examples of where that is (see `Layout::place`).
+fn default_location_help(ui: &mut egui::Ui, colours: &Colours) {
+    sketches(ui, |ui| {
+        let three = [LEFT, TOP_RIGHT, BOTTOM_RIGHT];
+        let new = |group| Some(Into { group, joins: false });
+        captioned(ui, "One group: a column on its right", Some(&[WHOLE]), &[LEFT, RIGHT], new(1), colours);
+        captioned(ui, "Two: below the right one", Some(&[LEFT, RIGHT]), &three, new(2), colours);
+        let largest = Some(Into { group: 1, joins: true });
+        captioned(ui, "Three or more: a tab in the largest", Some(&three), &three, largest, colours);
+    });
+}
+
+/// Beside "By group shape": an example of each shape.
+fn group_shape_help(ui: &mut egui::Ui, colours: &Colours) {
+    sketches(ui, |ui| {
+        for (caption, group) in [("A tab in the largest", 2), ("In the widest", 0), ("In the tallest", 1)] {
+            captioned(ui, caption, None, &SHAPES, Some(Into { group, joins: true }), colours);
+        }
+    });
+}
+
+/// Beside "Where it is now": the window's group as kept (`taken`) or, not chosen, as it would be taken now
+/// (`offered`, from the window of the node labelled `from`).
+fn where_it_is_help(
+    ui: &mut egui::Ui,
+    taken: Option<Exact>,
+    offered: Option<Exact>,
+    from: Option<&str>,
+    colours: &Colours,
+) {
+    sketches(ui, |ui| {
+        let tab = |exact: Exact| if exact.at == Position::Front { "tab in front" } else { "tab behind" };
+        let (shown, caption) = match (taken, offered, from) {
+            (Some(taken), _, _) => (taken, format!("As kept, {}", tab(taken))),
+            (None, Some(offered), Some(from)) => (offered, format!("As {from} is now, {}", tab(offered))),
+            _ => {
+                ui.vertical_centered(|ui| ui.label(RichText::new(WHERE_IT_IS_NOT).weak()));
+                return;
+            }
+        };
+        captioned(ui, &caption, None, &[shown.rect], Some(Into { group: 0, joins: false }), colours);
+    });
 }
 
 /// Enabling or disabling, as a node or a connection found has it: doing nothing, enabling, or disabling.
@@ -1124,18 +1237,6 @@ fn enable_or_disable(ui: &mut egui::Ui, choice: &mut EnableOrDisable) {
     radio(ui, choice, EnableOrDisable::Enable, "Enable");
     radio(ui, choice, EnableOrDisable::Disable, "Disable");
 }
-
-/// Beside "Use default location": where that is (see `Layout::place`).
-const DEFAULT_LOCATION: &str = "The app places a new window by how many groups of tabs are showing. With one group, \
-the window gets a new column to the right of it. With two groups, the window goes below the right-hand group. With \
-three or more, the window becomes a tab in the largest group. Room left by windows placed where they are now is \
-filled first.";
-
-/// Beside "Where it is now": what's kept, and how it's placed (see `Layout::place_exactly`).
-const WHERE_IT_IS: &str = "The window's group is kept as a share of the panes' area, so it's the same in a window of \
-any size. Windows placed this way go first: the panes are cut to fit them, and those open already go in the group \
-they overlap most. Room left over goes to windows placed after, and any still empty is closed. To take where it is \
-again, choose another, then choose this again.";
 
 /// Beside "Where it is now", when it can't be chosen.
 const WHERE_IT_IS_NOT: &str = "Only for a node matched in the graph now, whose window is docked and showing";
@@ -1179,7 +1280,9 @@ fn connection_diagram(
     // Room at the right of the nodes for the wire, looping out from one port to the other.
     const LOOP: f32 = 40.0;
     under_bar(ui, |ui| {
-        let width = ui.available_width() - LOOP;
+        // The nodes as wide as the narrowest inspector has room for, however wide it's dragged: wider, they look
+        // stretched.
+        let width = ui.available_width().min(INSPECTOR - 20.0) - LOOP;
         let node = |ui: &mut egui::Ui, (label, colour, port): &(String, egui::Color32, String)| {
             let frame = egui::Frame::new()
                 .fill(colours.surface_raised)

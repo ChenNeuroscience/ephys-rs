@@ -287,13 +287,6 @@ pub enum Position {
     Back,
 }
 
-/// A window placed by another role's window (`to`): as a tab in its group, at the front or the back.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
-pub struct Anchor {
-    pub to: NodeId,
-    pub at: Position,
-}
-
 /// A group of tabs chosen by its shape, as laid out: the largest, the widest or the tallest.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -330,9 +323,8 @@ impl Exact {
 }
 
 /// A window that's been open before opens where it was. Opened for the first time, it goes here: exactly where a
-/// window was (see `Layout::place_exactly`), placed before the rest; where the app puts a new window (see
-/// `Layout::place`); as a tab in a group chosen by its shape (`Layout::largest_group`, say); or in the group of another
-/// role's window (or, if that isn't open, where the app puts a new window).
+/// window was (see `Layout::place_exactly`); where the app puts a new window (see `Layout::place`); or as a tab in a
+/// group chosen by its shape (`Layout::largest_group`, say). Windows are placed in that order, in passes (see `run`).
 #[derive(Clone, Copy, PartialEq, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Placement {
@@ -340,17 +332,6 @@ pub enum Placement {
     Default,
     Exact(Exact),
     ByGroupShape(ByShape),
-    Anchored(Anchor),
-}
-
-impl Placement {
-    /// The role whose window the placement is relative to, if any.
-    pub fn anchor(self) -> Option<NodeId> {
-        match self {
-            Placement::Anchored(anchor) => Some(anchor.to),
-            Placement::Default | Placement::Exact(_) | Placement::ByGroupShape(_) => None,
-        }
-    }
 }
 
 /// A quick action (see the module docs).
@@ -566,8 +547,7 @@ impl<N: NodesEnum> QuickAction<N> {
     }
 
     /// The quick action with the nodes and edges `graph` has (see `graph`): each node a role, with its rule from
-    /// `rules` (or, without one, the default), and each edge with its rule from `rules_of_edges` (or the default). A window
-    /// anchored to a role no longer there goes where the app puts a new one.
+    /// `rules` (or, without one, the default), and each edge with its rule from `rules_of_edges` (or the default).
     pub fn set_graph(&mut self, graph: &Graph<N>, rules: &BTreeMap<NodeId, Rule>, rules_of_edges: &[(Edge, EdgeRule)]) {
         self.roles = graph
             .iter()
@@ -588,14 +568,6 @@ impl<N: NodesEnum> QuickAction<N> {
                 Some(RoleEdge { from: saved.from, to: saved.to, rule })
             })
             .collect();
-        // A window placed relative to a role no longer there goes where the app puts a new one.
-        for role in &mut self.roles {
-            if let IfWindowClosed::Open(placement) = &mut role.rule.if_window_closed
-                && placement.anchor().is_some_and(|of| !graph.contains(of))
-            {
-                *placement = Placement::Default;
-            }
-        }
     }
 
     /// The role with id `id`.
@@ -687,9 +659,9 @@ impl<N: NodesEnum> QuickAction<N> {
                 .unwrap_or(0);
             let id = missing.remove(next);
             let Some(role) = self.role(id) else { continue };
-            let (pos, down) = self.place(role, &graph, &found, empty, origin);
+            let (pos, anchor) = self.place(role, &graph, &found, empty, origin);
             let added = graph.add(role.node.clone(), pos);
-            clear(&mut graph, added, down);
+            clear(&mut graph, added, anchor);
             if let Some(entry) = graph.get_mut(added) {
                 let label_free = state.graph.iter().all(|(_, e)| e.label != role.label);
                 if label_free {
@@ -757,9 +729,15 @@ impl<N: NodesEnum> QuickAction<N> {
         let open_before = layout.open_windows();
         // Whether each window's open is as it was before the quick action, so a window that's both closed if open
         // and opened if not is toggled, not closed and opened again.
+        //
+        // Windows are opened in three passes: those placed where they were (cutting the layout to fit), then those in
+        // the default location (with those that couldn't be placed where they were), then those by group shape; each
+        // pass in the order the roles are in the quick action, left to right (and of two as far left, top to bottom).
+        let mut roles: Vec<&Role<N>> = self.roles.iter().collect();
+        roles.sort_by(|a, b| left_most(a.pos, b.pos));
         let mut to_open = Vec::new();
         let mut exactly = Vec::new();
-        for role in &self.roles {
+        for role in roles {
             let Some(&id) = found.get(&role.id) else { continue };
             let open = open_before.contains(&id);
             match (role.rule.if_window_open, role.rule.if_window_closed) {
@@ -773,16 +751,21 @@ impl<N: NodesEnum> QuickAction<N> {
                 _ => {}
             }
         }
-        // Windows placed exactly go first, cutting the layout to fit; those that can't be go where the app puts a new
-        // window. Windows placed relative to another's are opened after the rest, so that one's open already.
+        let order: Vec<NodeId> = exactly
+            .iter()
+            .filter_map(|(pane, _)| if let Pane::Node(id) = pane { Some(*id) } else { None })
+            .chain(to_open.iter().map(|(id, _)| *id))
+            .collect();
         for pane in layout.place_exactly(&exactly) {
             if let Pane::Node(id) = pane {
                 to_open.push((id, Placement::Default));
             }
         }
-        to_open.sort_by_key(|(_, placement)| placement.anchor().is_some());
+        let pass = |placement: &Placement| matches!(placement, Placement::ByGroupShape(_));
+        let place = |id: &NodeId| order.iter().position(|o| o == id);
+        to_open.sort_by_key(|(id, placement)| (pass(placement), place(id)));
         for (id, placement) in to_open {
-            open_window(&mut layout, id, placement, &found);
+            open_window(&mut layout, id, placement);
         }
         layout.close_empty();
         let windows_changed = layout.open_windows() != open_before;
@@ -832,8 +815,8 @@ impl<N: NodesEnum> QuickAction<N> {
     /// the nearest across in the quick action, then the nearest up or down. With none of the roles in the graph, it's where it is in the quick action,
     /// into an empty graph, or otherwise below the graph, where it is relative to the quick action's top-left.
     ///
-    /// This also says which way it's moved, if where it goes is taken (see `clear`): down, unless it's above the other
-    /// role in the quick action.
+    /// This also gives the top of the node it's placed relative to, if any, which says which way it's moved if where
+    /// it goes is taken (see `clear`).
     fn place(
         &self,
         role: &Role<N>,
@@ -841,7 +824,7 @@ impl<N: NodesEnum> QuickAction<N> {
         found: &BTreeMap<NodeId, NodeId>,
         empty: bool,
         origin: [f32; 2],
-    ) -> ([f32; 2], bool) {
+    ) -> ([f32; 2], Option<f32>) {
         let in_graph = |others: Vec<NodeId>| -> Vec<(NodeId, [f32; 2])> {
             (others.into_iter()).filter_map(|other| Some((other, graph.get(*found.get(&other)?)?.pos))).collect()
         };
@@ -869,40 +852,29 @@ impl<N: NodesEnum> QuickAction<N> {
         match anchor {
             Some((in_action, at)) => {
                 let offset = [role.pos[0] - in_action[0], role.pos[1] - in_action[1]];
-                ([at[0] + offset[0], at[1] + offset[1]], offset[1] >= 0.0)
+                ([at[0] + offset[0], at[1] + offset[1]], Some(at[1]))
             }
-            None if empty => (role.pos, true),
+            None if empty => (role.pos, None),
             None => {
                 let rects = rects(graph);
                 let left = rects.iter().map(|(_, r)| r.left()).fold(f32::INFINITY, f32::min);
                 let bottom = rects.iter().map(|(_, r)| r.bottom() + 60.0).fold(f32::NEG_INFINITY, f32::max);
-                ([left + role.pos[0] - origin[0], bottom + role.pos[1] - origin[1]], true)
+                ([left + role.pos[0] - origin[0], bottom + role.pos[1] - origin[1]], None)
             }
         }
     }
 }
 
 /// The window of `id` (a node found for a role), opened as `placement` says, the first time; otherwise where it was.
-/// A placement relative to a role whose window isn't open falls back to where the app puts a new window.
-fn open_window(layout: &mut Layout, id: NodeId, placement: Placement, found: &BTreeMap<NodeId, NodeId>) {
+fn open_window(layout: &mut Layout, id: NodeId, placement: Placement) {
     if layout.window(id) != WindowState::Closed {
         return layout.open(id, None);
     }
     let pane = Pane::Node(id);
-    let group_of = |layout: &Layout, role: NodeId| {
-        let other = *found.get(&role)?;
-        (other != id && layout.open_windows().contains(&other)).then(|| layout.group_of(Pane::Node(other)))?
-    };
     match placement {
         Placement::ByGroupShape(by) if let Some(group) = group_by_shape(layout, by.shape) => {
             layout.add_tab(group, pane);
             if by.at == Position::Front {
-                layout.show(pane);
-            }
-        }
-        Placement::Anchored(anchor) if let Some(group) = group_of(layout, anchor.to) => {
-            layout.add_tab(group, pane);
-            if anchor.at == Position::Front {
                 layout.show(pane);
             }
         }
@@ -935,22 +907,51 @@ fn rects<N: NodesEnum>(graph: &Graph<N>) -> Vec<(NodeId, egui::Rect)> {
         .collect()
 }
 
-/// A node added where another is, overlapping it, is moved `down` (or up) past it, keeping where it is across, until
-/// it's clear of them all, with this gap.
-const CLEARANCE: f32 = 20.0;
+/// A node added where another is, overlapping it, is moved up or down to a gap among those it's level with across,
+/// with this much room around each of them.
+const MARGIN: f32 = 40.0;
 
-/// A node added is moved clear of the rest with this (see `CLEARANCE`).
-fn clear<N: NodesEnum>(graph: &mut Graph<N>, id: NodeId, down: bool) {
+/// A node added is moved clear of the rest with this, if it overlaps any, keeping where it is across: to the gap
+/// nearest where it is, going back towards the node it's placed relative to (whose top is `anchor`) without passing
+/// it, or failing that, further away (see `slot`).
+fn clear<N: NodesEnum>(graph: &mut Graph<N>, id: NodeId, anchor: Option<f32>) {
     let rects = rects(graph);
-    let Some(mut mine) = rects.iter().find(|(other, _)| *other == id).map(|(_, r)| *r) else { return };
+    let Some(mine) = rects.iter().find(|(other, _)| *other == id).map(|(_, r)| *r) else { return };
     let others: Vec<egui::Rect> = rects.iter().filter(|(other, _)| *other != id).map(|(_, r)| *r).collect();
     // Touching isn't overlapping.
-    while let Some(hit) = others.iter().find(|other| other.intersects(mine.shrink(0.5))) {
-        let by = if down { hit.bottom() + CLEARANCE - mine.top() } else { hit.top() - CLEARANCE - mine.bottom() };
-        mine = mine.translate(egui::vec2(0.0, by));
+    if !others.iter().any(|other| other.intersects(mine.shrink(0.5))) {
+        return;
     }
+    // The tops it can't have: within the margin of a node it's level with across (within the margin too).
+    let blocked: Vec<(f32, f32)> = (others.iter())
+        .filter(|other| other.right() + MARGIN > mine.left() && other.left() - MARGIN < mine.right())
+        .map(|other| (other.top() - MARGIN - mine.height(), other.bottom() + MARGIN))
+        .collect();
+    let top = slot(mine.top(), anchor, blocked);
     if let Some(entry) = graph.get_mut(id) {
-        entry.pos = mine.min.into();
+        entry.pos = [mine.left(), top];
+    }
+}
+
+/// The top a node added goes at: `want`, if that's free of `blocked` (each the tops between two it can't have), or
+/// otherwise the nearest free from `want` back towards `anchor` (the top of the node it's placed relative to) on the
+/// same side of it (below it, if level), or failing that the nearest away from it. Without an anchor, it goes down.
+fn slot(want: f32, anchor: Option<f32>, mut blocked: Vec<(f32, f32)>) -> f32 {
+    blocked.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut merged: Vec<(f32, f32)> = Vec::new();
+    for (from, to) in blocked {
+        match merged.last_mut() {
+            Some(last) if from <= last.1 => last.1 = last.1.max(to),
+            _ => merged.push((from, to)),
+        }
+    }
+    let Some(&(above, below)) = merged.iter().find(|(from, to)| want > *from && want < *to) else { return want };
+    let under = anchor.is_none_or(|anchor| want >= anchor);
+    match anchor {
+        Some(anchor) if under && above >= anchor => above,
+        Some(anchor) if !under && below <= anchor => below,
+        _ if under => below,
+        _ => above,
     }
 }
 
@@ -1055,6 +1056,25 @@ mod tests {
         assert_eq!(change.layout.spot(Pane::Node(new_viewer)), Some(spot), "where it was");
         let positions: Vec<[f32; 2]> = change.graph.iter().map(|(_, e)| e.pos).collect();
         assert_eq!(positions, vec![[0.0, 0.0], [300.0, 0.0]], "where they were, into an empty graph");
+    }
+
+    #[test]
+    fn windows_open_left_to_right_whatever_order_the_roles_are_in() {
+        let mut graph = Graph::<Nodes>::default();
+        let right = graph.add(Nodes::create(crate::NodeType::SpikeViewer), [500.0, 0.0]);
+        let left = graph.add(Nodes::create(crate::NodeType::SpikeViewer), [0.0, 0.0]);
+        let mut action = QuickAction::from_graph("Viewers", &graph, &Layout::default(), &[]);
+        for role in &mut action.roles {
+            role.rule.if_window_closed = IfWindowClosed::Open(Placement::Default);
+        }
+        let change = action.run(&QuickState { graph: &Graph::default(), layout: &Layout::default() }).unwrap();
+        let label = |role| &action.role(role).unwrap().label;
+        let window = |role| {
+            let id = change.graph.iter().find(|(_, e)| e.label == *label(role)).unwrap().0;
+            change.layout.spot(Pane::Node(id)).unwrap().rect
+        };
+        // The left one first: a column beside home; then the right one, below it.
+        assert!(window(left)[1] < 0.01 && window(right)[1] > 0.5, "{:?} {:?}", window(left), window(right));
     }
 
     #[test]
@@ -1211,17 +1231,36 @@ mod tests {
         };
         assert_eq!(added_at(&action, None).0.min, egui::pos2(1300.0, 500.0), "as it is from the detector");
         let (viewer, filter) = added_at(&action, Some([1300.0, 500.0]));
-        assert_eq!(viewer.min, egui::pos2(1300.0, filter.unwrap().bottom() + CLEARANCE), "level with it: down, clear");
+        assert_eq!(viewer.min, egui::pos2(1300.0, filter.unwrap().bottom() + MARGIN), "level with it: down, clear");
+        // Above the detector (at 500), with a filter (80 tall) where it'd go: back down towards the detector, below the
+        // filter, where there's room for it (110 tall) above the detector's top...
         action.roles[1].pos = [300.0, -200.0];
         let (viewer, filter) = added_at(&action, Some([1300.0, 300.0]));
         assert_eq!(viewer.left(), 1300.0);
-        assert_eq!(viewer.bottom(), filter.unwrap().top() - CLEARANCE, "above it: further up, clear");
+        assert_eq!(viewer.top(), filter.unwrap().bottom() + MARGIN, "above it: back towards it, clear");
+        // ...and, where there isn't, further up.
+        let (viewer, filter) = added_at(&action, Some([1300.0, 400.0]));
+        assert_eq!(viewer.bottom(), filter.unwrap().top() - MARGIN, "above it: further up, clear");
         // Placed by what it gives data to, when nothing it takes data from is there.
         let mut viewer_only = Graph::<Nodes>::default();
         viewer_only.add(Nodes::create(crate::NodeType::SpikeViewer), [0.0, 0.0]);
         let change = action.run(&QuickState { graph: &viewer_only, layout: &Layout::default() }).unwrap();
         let detector = change.graph.iter().find(|(_, e)| e.label == "Spike Detector").map(|(_, e)| e.pos);
         assert_eq!(detector, Some([-300.0, 200.0]));
+    }
+
+    #[test]
+    fn a_node_where_another_is_goes_to_the_nearest_gap_back_towards_what_it_is_placed_by() {
+        // Tops between 100 and 200 are taken, and between 250 and 400.
+        let blocked = || vec![(250.0, 400.0), (100.0, 200.0)];
+        assert_eq!(slot(50.0, Some(0.0), blocked()), 50.0, "free");
+        assert_eq!(slot(300.0, Some(0.0), blocked()), 250.0, "back towards it, below it");
+        assert_eq!(slot(300.0, Some(260.0), blocked()), 400.0, "not passing it: further down");
+        assert_eq!(slot(150.0, Some(500.0), blocked()), 200.0, "back towards it, above it");
+        assert_eq!(slot(150.0, Some(180.0), blocked()), 100.0, "not passing it: further up");
+        assert_eq!(slot(150.0, None, blocked()), 200.0, "with nothing it's placed by, down");
+        // Gaps that overlap are one.
+        assert_eq!(slot(300.0, Some(0.0), vec![(150.0, 260.0), (250.0, 400.0)]), 150.0);
     }
 
     #[test]
